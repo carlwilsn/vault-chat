@@ -76,8 +76,8 @@ export function MarkdownView() {
         </button>
       </div>
       {mode === "view" ? (
-        <div className="flex-1 overflow-auto px-8 py-6">
-          <div className="prose-md">
+        <div className="flex-1 overflow-auto py-10 px-8">
+          <div className="prose-md mx-auto">
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath]}
               rehypePlugins={[rehypeKatex, rehypeHighlight]}
@@ -87,21 +87,22 @@ export function MarkdownView() {
           </div>
         </div>
       ) : (
-        <div className="flex-1 overflow-hidden">
-          <CodeMirror
-            value={currentContent}
-            onChange={onChange}
-            extensions={[markdown(), EditorView.lineWrapping]}
-            theme="dark"
-            height="100%"
-            style={{ height: "100%", fontSize: "13.5px" }}
-            basicSetup={{
-              lineNumbers: false,
-              foldGutter: false,
-              highlightActiveLine: false,
-              highlightActiveLineGutter: false,
-            }}
-          />
+        <div className="flex-1 overflow-auto py-8 px-8">
+          <div className="mx-auto max-w-[780px]">
+            <CodeMirror
+              value={currentContent}
+              onChange={onChange}
+              extensions={[markdown(), EditorView.lineWrapping]}
+              theme="dark"
+              style={{ fontSize: "13.5px" }}
+              basicSetup={{
+                lineNumbers: false,
+                foldGutter: false,
+                highlightActiveLine: false,
+                highlightActiveLineGutter: false,
+              }}
+            />
+          </div>
         </div>
       )}
     </div>

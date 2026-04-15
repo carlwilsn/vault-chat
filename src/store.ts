@@ -44,6 +44,9 @@ type State = {
   busy: boolean;
   showSettings: boolean;
   mode: "view" | "edit";
+  leftCollapsed: boolean;
+  rightCollapsed: boolean;
+  popoutOpen: boolean;
 
   setVault: (p: string) => void;
   setFiles: (f: FileEntry[]) => void;
@@ -57,6 +60,17 @@ type State = {
   setShowSettings: (b: boolean) => void;
   setMode: (m: "view" | "edit") => void;
   toggleMode: () => void;
+  toggleLeft: () => void;
+  toggleRight: () => void;
+  setPopoutOpen: (b: boolean) => void;
+  applyChatSnapshot: (s: {
+    vaultPath: string | null;
+    currentFile: string | null;
+    currentContent: string;
+    files: FileEntry[];
+    messages: ChatMessage[];
+    busy: boolean;
+  }) => void;
   clearMessages: () => void;
 };
 
@@ -72,6 +86,9 @@ export const useStore = create<State>((set) => ({
   busy: false,
   showSettings: false,
   mode: "view",
+  leftCollapsed: false,
+  rightCollapsed: false,
+  popoutOpen: false,
 
   setVault: (p) => set({ vaultPath: p }),
   setFiles: (f) => set({ files: f }),
@@ -93,5 +110,17 @@ export const useStore = create<State>((set) => ({
   setShowSettings: (b) => set({ showSettings: b }),
   setMode: (m) => set({ mode: m }),
   toggleMode: () => set((s) => ({ mode: s.mode === "view" ? "edit" : "view" })),
+  toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
+  toggleRight: () => set((s) => ({ rightCollapsed: !s.rightCollapsed })),
+  setPopoutOpen: (b) => set({ popoutOpen: b }),
+  applyChatSnapshot: (s) =>
+    set({
+      vaultPath: s.vaultPath,
+      currentFile: s.currentFile,
+      currentContent: s.currentContent,
+      files: s.files,
+      messages: s.messages,
+      busy: s.busy,
+    }),
   clearMessages: () => set({ messages: [] }),
 }));

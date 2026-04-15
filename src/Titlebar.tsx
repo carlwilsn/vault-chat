@@ -2,11 +2,21 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, RotateCw, Minus, Square, Copy, X, Settings } from "lucide-react";
+import { FolderOpen, RotateCw, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 
 export function Titlebar() {
-  const { vaultPath, setVault, setFiles, setShowSettings, showSettings } = useStore();
+  const {
+    vaultPath,
+    setVault,
+    setFiles,
+    setShowSettings,
+    showSettings,
+    leftCollapsed,
+    rightCollapsed,
+    toggleLeft,
+    toggleRight,
+  } = useStore();
   const [maximized, setMaximized] = useState(false);
   const win = getCurrentWindow();
 
@@ -47,6 +57,13 @@ export function Titlebar() {
     >
       <div className="flex items-center gap-1 px-2">
         <button
+          onClick={toggleLeft}
+          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${leftCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
+          title={`${leftCollapsed ? "Show" : "Hide"} file panel (Ctrl+B)`}
+        >
+          <PanelLeft className="h-3.5 w-3.5" />
+        </button>
+        <button
           onClick={pickVault}
           className="h-7 flex items-center gap-1.5 px-2 rounded hover:bg-accent/60 text-[12px] text-foreground/90"
           title="Open vault"
@@ -68,6 +85,13 @@ export function Titlebar() {
       <div data-tauri-drag-region className="flex-1 h-full" />
 
       <div className="flex items-center">
+        <button
+          onClick={toggleRight}
+          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 mr-1 ${rightCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
+          title={`${rightCollapsed ? "Show" : "Hide"} chat panel (Ctrl+Shift+B)`}
+        >
+          <PanelRight className="h-3.5 w-3.5" />
+        </button>
         <button
           onClick={() => setShowSettings(!showSettings)}
           className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1"

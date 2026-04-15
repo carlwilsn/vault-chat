@@ -10,35 +10,49 @@ import "./App.css";
 
 export default function App() {
   const toggleMode = useStore((s) => s.toggleMode);
+  const toggleLeft = useStore((s) => s.toggleLeft);
+  const toggleRight = useStore((s) => s.toggleRight);
   const currentFile = useStore((s) => s.currentFile);
+  const leftCollapsed = useStore((s) => s.leftCollapsed);
+  const rightCollapsed = useStore((s) => s.rightCollapsed);
+  const popoutOpen = useStore((s) => s.popoutOpen);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "e") {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const k = e.key.toLowerCase();
+      if (k === "e") {
         if (!currentFile) return;
         e.preventDefault();
         toggleMode();
+      } else if (k === "b" && !e.shiftKey) {
+        e.preventDefault();
+        toggleLeft();
+      } else if (k === "b" && e.shiftKey) {
+        e.preventDefault();
+        toggleRight();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleMode, currentFile]);
+  }, [toggleMode, toggleLeft, toggleRight, currentFile]);
 
   return (
     <div className="h-full w-full bg-background flex flex-col">
       <Titlebar />
       <div className="flex-1 min-h-0">
-      <Allotment>
-        <Allotment.Pane preferredSize={260} minSize={180}>
-          <FileTree />
-        </Allotment.Pane>
-        <Allotment.Pane minSize={340}>
-          <MarkdownView />
-        </Allotment.Pane>
-        <Allotment.Pane preferredSize={440} minSize={320}>
-          <ChatPane />
-        </Allotment.Pane>
-      </Allotment>
+        <Allotment>
+          <Allotment.Pane preferredSize={260} minSize={180} visible={!leftCollapsed} snap>
+            <FileTree />
+          </Allotment.Pane>
+          <Allotment.Pane minSize={340}>
+            <MarkdownView />
+          </Allotment.Pane>
+          <Allotment.Pane preferredSize={440} minSize={320} visible={!rightCollapsed && !popoutOpen} snap>
+            <ChatPane />
+          </Allotment.Pane>
+        </Allotment>
       </div>
     </div>
   );

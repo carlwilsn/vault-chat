@@ -19,6 +19,18 @@ fn list_markdown_files(vault: String) -> Result<Vec<FileEntry>, String> {
     }
     let mut entries: Vec<FileEntry> = Vec::new();
     for entry in WalkDir::new(&root)
+        .sort_by(|a, b| {
+            let a_dir = a.file_type().is_dir();
+            let b_dir = b.file_type().is_dir();
+            b_dir
+                .cmp(&a_dir)
+                .then_with(|| {
+                    a.file_name()
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .cmp(&b.file_name().to_string_lossy().to_lowercase())
+                })
+        })
         .into_iter()
         .filter_entry(|e| {
             let name = e.file_name().to_string_lossy();
@@ -44,7 +56,6 @@ fn list_markdown_files(vault: String) -> Result<Vec<FileEntry>, String> {
             depth: rel.components().count().saturating_sub(1),
         });
     }
-    entries.sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
     Ok(entries)
 }
 

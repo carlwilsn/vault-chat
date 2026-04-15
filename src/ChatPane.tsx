@@ -4,7 +4,8 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
-import { Settings, Trash2, Square, ArrowUp, ChevronDown, Wrench, Sparkles } from "lucide-react";
+import { Settings, Trash2, Square, ArrowUp, ChevronDown, Wrench, Sparkles, ExternalLink } from "lucide-react";
+import { openChatPopout } from "./sync";
 import { useStore } from "./store";
 import { runAgent } from "./agent";
 import { invoke } from "@tauri-apps/api/core";
@@ -14,6 +15,8 @@ import { SettingsPane } from "./SettingsPane";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
 import type { FileEntry } from "./store";
+
+const isPopout = new URLSearchParams(window.location.search).get("view") === "chat";
 
 export function ChatPane() {
   const {
@@ -188,6 +191,11 @@ export function ChatPane() {
           {messages.length > 0 && (
             <Button variant="ghost" size="icon" onClick={clearMessages} title="Clear conversation">
               <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {!isPopout && (
+            <Button variant="ghost" size="icon" onClick={openChatPopout} title="Pop out chat">
+              <ExternalLink className="h-3.5 w-3.5" />
             </Button>
           )}
           <Button variant="ghost" size="icon" onClick={() => setShowSettings(true)} title="Settings">
