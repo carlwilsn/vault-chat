@@ -6,12 +6,10 @@ import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
-import CodeMirror from "@uiw/react-codemirror";
-import { markdown } from "@codemirror/lang-markdown";
-import { EditorView } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
 import { FileText, Eye, Pencil } from "lucide-react";
 import { useStore } from "./store";
+import { BlockEditor } from "./BlockEditor";
 
 export function MarkdownView() {
   const { currentFile, currentContent, mode, toggleMode, reloadCurrent } = useStore();
@@ -87,21 +85,9 @@ export function MarkdownView() {
           </div>
         </div>
       ) : (
-        <div className="flex-1 overflow-auto py-8 px-8">
+        <div className="flex-1 overflow-auto py-10 px-8">
           <div className="mx-auto max-w-[780px]">
-            <CodeMirror
-              value={currentContent}
-              onChange={onChange}
-              extensions={[markdown(), EditorView.lineWrapping]}
-              theme="dark"
-              style={{ fontSize: "13.5px" }}
-              basicSetup={{
-                lineNumbers: false,
-                foldGutter: false,
-                highlightActiveLine: false,
-                highlightActiveLineGutter: false,
-              }}
-            />
+            <BlockEditor value={currentContent} onChange={onChange} />
           </div>
         </div>
       )}
