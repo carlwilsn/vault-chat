@@ -82,6 +82,7 @@ export function BlockEditor({
 }) {
   const blocks = useMemo(() => parseBlocks(value), [value]);
   const [active, setActive] = useState<number | null>(null);
+  const [draft, setDraft] = useState<string>("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
@@ -93,12 +94,23 @@ export function BlockEditor({
     }
   }, [active]);
 
-  const updateBlock = (i: number, text: string) => {
+  const enterBlock = (i: number) => {
+    if (active === i) return;
+    if (active != null) commitDraft(active, draft);
+    setDraft(blocks[i].text);
+    setActive(i);
+  };
+
+  const commitDraft = (i: number, text: string) => {
+    if (text === blocks[i].text) return;
     const next = blocks.map((b, idx) => (idx === i ? { ...b, text } : b));
     onChange(serialize(next));
   };
 
-  const commitActive = () => setActive(null);
+  const commitActive = () => {
+    if (active != null) commitDraft(active, draft);
+    setActive(null);
+  };
 
   return (
     <div className="prose-md">
@@ -109,9 +121,9 @@ export function BlockEditor({
             <textarea
               key={i}
               ref={textareaRef}
-              value={b.text}
+              value={draft}
               onChange={(e) => {
-                updateBlock(i, e.target.value);
+                setDraft(e.target.value);
                 autosize(e.currentTarget);
               }}
               onBlur={commitActive}
@@ -123,18 +135,18 @@ export function BlockEditor({
                 if (e.key === "ArrowDown" && atLastLine(e.currentTarget)) {
                   if (i < blocks.length - 1) {
                     e.preventDefault();
-                    setActive(i + 1);
+                    enterBlock(i + 1);
                   }
                 }
                 if (e.key === "ArrowUp" && atFirstLine(e.currentTarget)) {
                   if (i > 0) {
                     e.preventDefault();
-                    setActive(i - 1);
+                    enterBlock(i - 1);
                   }
                 }
               }}
               className="w-full resize-none bg-muted/40 border border-border/60 rounded px-2 py-1 my-1 font-mono text-[13px] leading-relaxed outline-none focus:border-primary/60"
-              rows={Math.max(1, b.text.split("\n").length)}
+              rows={Math.max(1, draft.split("\n").length)}
               spellCheck={false}
             />
           );
@@ -143,7 +155,7 @@ export function BlockEditor({
           return (
             <div
               key={i}
-              onClick={() => setActive(i)}
+              onClick={() => enterBlock(i)}
               className="h-4 cursor-text"
             />
           );
@@ -151,7 +163,7 @@ export function BlockEditor({
         return (
           <div
             key={i}
-            onClick={() => setActive(i)}
+            onClick={() => enterBlock(i)}
             className="cursor-text rounded hover:bg-accent/20 transition-colors"
           >
             <ReactMarkdown
