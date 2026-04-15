@@ -240,7 +240,7 @@ const liveTheme = EditorView.theme({
   ".cm-editor": { height: "100%" },
   ".cm-content": {
     fontFamily: "inherit",
-    padding: "0",
+    padding: "2.5rem max(2rem, calc(50% - 390px))",
     caretColor: "hsl(var(--foreground))",
     lineHeight: "1.7",
     minHeight: "100%",
@@ -250,7 +250,6 @@ const liveTheme = EditorView.theme({
   ".cm-scroller": {
     overflow: "auto",
     fontFamily: "inherit",
-    padding: "2.5rem max(2rem, calc(50% - 390px))",
   },
   ".cm-h": { fontWeight: "600", letterSpacing: "-0.01em" },
   ".cm-h1": { fontSize: "1.7em", marginTop: "0.6em", marginBottom: "0.2em" },
