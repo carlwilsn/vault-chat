@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import remarkCallouts from "@portaljs/remark-callouts";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 
@@ -156,7 +155,7 @@ export function BlockEditor({
             className="cursor-text rounded hover:bg-accent/20 transition-colors"
           >
             <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath, remarkCallouts]}
+              remarkPlugins={[remarkGfm, remarkMath]}
               rehypePlugins={[rehypeKatex, rehypeHighlight]}
             >
               {b.text}
