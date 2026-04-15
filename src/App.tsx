@@ -51,7 +51,7 @@ export default function App() {
       <Titlebar />
       <div className="flex-1 min-h-0">
         <Allotment>
-          <Allotment.Pane preferredSize={260} minSize={180} maxSize={leftMax} visible={!leftCollapsed} snap>
+          <Allotment.Pane preferredSize={200} minSize={160} maxSize={leftMax} visible={!leftCollapsed} snap>
             <FileTree />
           </Allotment.Pane>
           <Allotment.Pane minSize={340}>
