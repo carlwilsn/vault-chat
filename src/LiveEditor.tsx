@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { EditorState, StateField } from "@codemirror/state";
+import { EditorState } from "@codemirror/state";
 import type { Range } from "@codemirror/state";
 import { EditorView, Decoration, ViewPlugin, keymap, WidgetType } from "@codemirror/view";
 import type { DecorationSet, ViewUpdate } from "@codemirror/view";
@@ -32,16 +32,28 @@ class MathWidget extends WidgetType {
   }
 }
 
-function lineHasCursor(view: EditorView, from: number, to: number): boolean {
+function activeLines(view: EditorView): Set<number> {
+  const s = new Set<number>();
+  const doc = view.state.doc;
   for (const r of view.state.selection.ranges) {
-    if (r.from <= to && r.to >= from) return true;
+    const a = doc.lineAt(r.from).number;
+    const b = doc.lineAt(r.to).number;
+    for (let i = a; i <= b; i++) s.add(i);
   }
-  return false;
+  return s;
 }
 
 function buildDecorations(view: EditorView): DecorationSet {
   const builder: Range<Decoration>[] = [];
   const doc = view.state.doc;
+  const active = activeLines(view);
+  const lineActive = (pos: number) => active.has(doc.lineAt(pos).number);
+  const rangeActive = (from: number, to: number) => {
+    const a = doc.lineAt(from).number;
+    const b = doc.lineAt(to).number;
+    for (let i = a; i <= b; i++) if (active.has(i)) return true;
+    return false;
+  };
 
   for (const { from, to } of view.visibleRanges) {
     syntaxTree(view.state).iterate({
@@ -51,16 +63,13 @@ function buildDecorations(view: EditorView): DecorationSet {
         const name = node.name;
         const nFrom = node.from;
         const nTo = node.to;
-        const lineFrom = doc.lineAt(nFrom).from;
-        const lineTo = doc.lineAt(nTo).to;
-        const cursorOnLine = lineHasCursor(view, lineFrom, lineTo);
 
         if (name.startsWith("ATXHeading")) {
           const level = parseInt(name.slice("ATXHeading".length), 10);
           builder.push(
             Decoration.line({ class: `cm-h cm-h${level}` }).range(doc.lineAt(nFrom).from)
           );
-          if (!cursorOnLine) {
+          if (!lineActive(nFrom)) {
             node.node.getChildren("HeaderMark").forEach((m) => {
               const next = doc.sliceString(m.to, m.to + 1);
               const end = next === " " ? m.to + 1 : m.to;
@@ -73,7 +82,7 @@ function buildDecorations(view: EditorView): DecorationSet {
         if (name === "StrongEmphasis" || name === "Emphasis") {
           const cls = name === "StrongEmphasis" ? "cm-strong" : "cm-em";
           builder.push(Decoration.mark({ class: cls }).range(nFrom, nTo));
-          if (!cursorOnLine) {
+          if (!rangeActive(nFrom, nTo)) {
             node.node.getChildren("EmphasisMark").forEach((m) => {
               builder.push(hideDeco.range(m.from, m.to));
             });
@@ -83,7 +92,7 @@ function buildDecorations(view: EditorView): DecorationSet {
 
         if (name === "InlineCode") {
           builder.push(Decoration.mark({ class: "cm-code" }).range(nFrom, nTo));
-          if (!cursorOnLine) {
+          if (!lineActive(nFrom)) {
             node.node.getChildren("CodeMark").forEach((m) => {
               builder.push(hideDeco.range(m.from, m.to));
             });
@@ -92,10 +101,10 @@ function buildDecorations(view: EditorView): DecorationSet {
         }
 
         if (name === "Link") {
-          if (!cursorOnLine) {
+          if (!lineActive(nFrom)) {
             const text = doc.sliceString(nFrom, nTo);
             const m = /^\[([^\]]*)\]\(([^)]*)\)$/.exec(text);
-            if (m) {
+            if (m && m[1].length > 0) {
               builder.push(hideDeco.range(nFrom, nFrom + 1));
               const closeBracket = nFrom + 1 + m[1].length;
               builder.push(hideDeco.range(closeBracket, nTo));
@@ -118,6 +127,51 @@ function buildDecorations(view: EditorView): DecorationSet {
           }
           return;
         }
+
+        if (name === "ListMark") {
+          if (!lineActive(nFrom)) {
+            const ch = doc.sliceString(nFrom, nTo);
+            if (/^[-*+]$/.test(ch)) {
+              builder.push(
+                Decoration.replace({
+                  widget: new (class extends WidgetType {
+                    toDOM() {
+                      const s = document.createElement("span");
+                      s.textContent = "•";
+                      s.className = "cm-bullet";
+                      return s;
+                    }
+                  })(),
+                }).range(nFrom, nTo)
+              );
+            }
+          }
+          return;
+        }
+
+        if (name === "FencedCode") {
+          const startLine = doc.lineAt(nFrom);
+          const endLine = doc.lineAt(nTo);
+          for (let ln = startLine.number; ln <= endLine.number; ln++) {
+            builder.push(Decoration.line({ class: "cm-fenced-line" }).range(doc.line(ln).from));
+          }
+          if (!rangeActive(nFrom, nTo)) {
+            const firstText = startLine.text;
+            const lastText = endLine.text;
+            if (/^\s*(```|~~~)/.test(firstText)) {
+              builder.push(hideDeco.range(startLine.from, startLine.to));
+            }
+            if (endLine.number !== startLine.number && /^\s*(```|~~~)\s*$/.test(lastText)) {
+              builder.push(hideDeco.range(endLine.from, endLine.to));
+            }
+          }
+          return;
+        }
+
+        if (name === "HorizontalRule") {
+          builder.push(Decoration.line({ class: "cm-hr" }).range(doc.lineAt(nFrom).from));
+          return;
+        }
       },
     });
   }
@@ -125,13 +179,12 @@ function buildDecorations(view: EditorView): DecorationSet {
   const inlineMathRe = /(?<!\$)\$([^$\n]+?)\$(?!\$)/g;
   for (const { from, to } of view.visibleRanges) {
     let pos = from;
-    while (pos < to) {
+    while (pos <= to) {
       const line = doc.lineAt(pos);
-      const text = line.text;
-      const cursorOnLine = lineHasCursor(view, line.from, line.to);
-      if (!cursorOnLine) {
-        let m: RegExpExecArray | null;
+      if (!active.has(line.number)) {
+        const text = line.text;
         inlineMathRe.lastIndex = 0;
+        let m: RegExpExecArray | null;
         while ((m = inlineMathRe.exec(text))) {
           const s = line.from + m.index;
           const e = s + m[0].length;
@@ -140,23 +193,26 @@ function buildDecorations(view: EditorView): DecorationSet {
           );
         }
       }
+      if (line.to >= to) break;
       pos = line.to + 1;
     }
   }
 
-  const text = doc.toString();
-  const blockRe = /\$\$([\s\S]*?)\$\$/g;
-  let bm: RegExpExecArray | null;
-  while ((bm = blockRe.exec(text))) {
-    const s = bm.index;
-    const e = s + bm[0].length;
-    const lineFrom = doc.lineAt(s).from;
-    const lineTo = doc.lineAt(e).to;
-    const cursorInside = lineHasCursor(view, lineFrom, lineTo);
-    if (!cursorInside) {
-      builder.push(
-        Decoration.replace({ widget: new MathWidget(bm[1].trim(), true), block: true }).range(s, e)
-      );
+  for (const { from, to } of view.visibleRanges) {
+    const slice = doc.sliceString(from, to);
+    const blockRe = /\$\$([\s\S]*?)\$\$/g;
+    let bm: RegExpExecArray | null;
+    while ((bm = blockRe.exec(slice))) {
+      const s = from + bm.index;
+      const e = s + bm[0].length;
+      if (!rangeActive(s, e)) {
+        builder.push(
+          Decoration.replace({
+            widget: new MathWidget(bm[1].trim(), true),
+            block: true,
+          }).range(s, e)
+        );
+      }
     }
   }
 
@@ -167,12 +223,24 @@ function buildDecorations(view: EditorView): DecorationSet {
 const livePreviewPlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
+    lastActiveKey = "";
     constructor(view: EditorView) {
       this.decorations = buildDecorations(view);
+      this.lastActiveKey = this.activeKey(view);
+    }
+    activeKey(view: EditorView): string {
+      const doc = view.state.doc;
+      const parts: number[] = [];
+      for (const r of view.state.selection.ranges) {
+        parts.push(doc.lineAt(r.from).number, doc.lineAt(r.to).number);
+      }
+      return parts.join(",");
     }
     update(u: ViewUpdate) {
-      if (u.docChanged || u.selectionSet || u.viewportChanged) {
+      const newKey = this.activeKey(u.view);
+      if (u.docChanged || u.viewportChanged || newKey !== this.lastActiveKey) {
         this.decorations = buildDecorations(u.view);
+        this.lastActiveKey = newKey;
       }
     }
   },
@@ -216,6 +284,23 @@ const liveTheme = EditorView.theme({
     color: "hsl(var(--muted-foreground))",
     fontStyle: "italic",
   },
+  ".cm-bullet": {
+    color: "hsl(var(--muted-foreground))",
+    display: "inline-block",
+    width: "1em",
+  },
+  ".cm-fenced-line": {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: "0.9em",
+    background: "hsl(var(--muted) / 0.5)",
+  },
+  ".cm-hr": {
+    borderTop: "1px solid hsl(var(--border))",
+    height: "0",
+    marginTop: "1em",
+    marginBottom: "1em",
+    color: "transparent",
+  },
   ".cm-math-block": { display: "block", margin: "0.5em 0", textAlign: "center" },
   ".cm-math-inline": { display: "inline" },
   ".cm-cursor": { borderLeftColor: "hsl(var(--foreground))" },
@@ -246,10 +331,6 @@ export function LiveEditor({
       EditorView.lineWrapping,
       EditorView.updateListener.of((u) => {
         if (u.docChanged) onChangeRef.current(u.state.doc.toString());
-      }),
-      StateField.define<null>({
-        create: () => null,
-        update: () => null,
       }),
     ],
     []
