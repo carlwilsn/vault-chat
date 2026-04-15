@@ -43,6 +43,7 @@ type State = {
   skills: Skill[];
   busy: boolean;
   showSettings: boolean;
+  mode: "view" | "edit";
 
   setVault: (p: string) => void;
   setFiles: (f: FileEntry[]) => void;
@@ -54,6 +55,8 @@ type State = {
   setSkills: (s: Skill[]) => void;
   setBusy: (b: boolean) => void;
   setShowSettings: (b: boolean) => void;
+  setMode: (m: "view" | "edit") => void;
+  toggleMode: () => void;
   clearMessages: () => void;
 };
 
@@ -68,6 +71,7 @@ export const useStore = create<State>((set) => ({
   skills: [],
   busy: false,
   showSettings: false,
+  mode: "view",
 
   setVault: (p) => set({ vaultPath: p }),
   setFiles: (f) => set({ files: f }),
@@ -87,5 +91,7 @@ export const useStore = create<State>((set) => ({
   setSkills: (s) => set({ skills: s }),
   setBusy: (b) => set({ busy: b }),
   setShowSettings: (b) => set({ showSettings: b }),
+  setMode: (m) => set({ mode: m }),
+  toggleMode: () => set((s) => ({ mode: s.mode === "view" ? "edit" : "view" })),
   clearMessages: () => set({ messages: [] }),
 }));
