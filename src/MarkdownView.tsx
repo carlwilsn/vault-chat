@@ -86,10 +86,8 @@ export function MarkdownView() {
           </div>
         </div>
       ) : (
-        <div className="flex-1 overflow-auto py-10 px-8">
-          <div className="prose-md mx-auto">
-            <LiveEditor value={currentContent} onChange={onChange} />
-          </div>
+        <div className="flex-1 min-h-0">
+          <LiveEditor value={currentContent} onChange={onChange} />
         </div>
       )}
     </div>

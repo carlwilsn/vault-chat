@@ -247,7 +247,11 @@ const liveTheme = EditorView.theme({
   },
   ".cm-line": { padding: "0", cursor: "text" },
   "&.cm-focused": { outline: "none" },
-  ".cm-scroller": { overflow: "visible", fontFamily: "inherit" },
+  ".cm-scroller": {
+    overflow: "auto",
+    fontFamily: "inherit",
+    padding: "2.5rem max(2rem, calc(50% - 390px))",
+  },
   ".cm-h": { fontWeight: "600", letterSpacing: "-0.01em" },
   ".cm-h1": { fontSize: "1.7em", marginTop: "0.6em", marginBottom: "0.2em" },
   ".cm-h2": { fontSize: "1.4em", marginTop: "0.6em", marginBottom: "0.2em" },
@@ -348,5 +352,5 @@ export function LiveEditor({
     }
   }, [value]);
 
-  return <div ref={hostRef} className="live-editor" />;
+  return <div ref={hostRef} className="live-editor h-full" />;
 }
