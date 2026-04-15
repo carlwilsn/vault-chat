@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import remarkBreaks from "remark-breaks";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
@@ -77,7 +78,7 @@ export function MarkdownView() {
         <div className="flex-1 overflow-auto py-10 px-8">
           <div className="prose-md mx-auto">
             <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath]}
+              remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
               rehypePlugins={[rehypeKatex, rehypeHighlight]}
             >
               {currentContent}

@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import remarkBreaks from "remark-breaks";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 
@@ -73,7 +74,7 @@ function serialize(blocks: Block[]): string {
   return blocks.map((b) => b.text).join("\n");
 }
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath];
+const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreaks];
 const REHYPE_PLUGINS = [rehypeKatex, rehypeHighlight];
 
 const RenderedBlock = memo(function RenderedBlock({
