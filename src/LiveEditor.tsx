@@ -240,7 +240,9 @@ const liveTheme = EditorView.theme({
   ".cm-editor": { height: "100%" },
   ".cm-content": {
     fontFamily: "inherit",
-    padding: "2.5rem max(2rem, calc(50% - 390px))",
+    padding: "2.5rem 2rem",
+    maxWidth: "780px",
+    margin: "0 auto",
     caretColor: "hsl(var(--foreground))",
     lineHeight: "1.7",
     minHeight: "100%",
