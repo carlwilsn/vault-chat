@@ -8,7 +8,7 @@ import { syntaxTree } from "@codemirror/language";
 import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
 import katex from "katex";
 
-const hideDeco = Decoration.replace({});
+const dimDeco = Decoration.mark({ class: "cm-syntax-dim" });
 
 class MathWidget extends WidgetType {
   constructor(readonly src: string, readonly display: boolean) {
@@ -73,7 +73,7 @@ function buildDecorations(view: EditorView): DecorationSet {
             node.node.getChildren("HeaderMark").forEach((m) => {
               const next = doc.sliceString(m.to, m.to + 1);
               const end = next === " " ? m.to + 1 : m.to;
-              if (end > m.from) builder.push(hideDeco.range(m.from, end));
+              if (end > m.from) builder.push(dimDeco.range(m.from, end));
             });
           }
           return;
@@ -84,7 +84,7 @@ function buildDecorations(view: EditorView): DecorationSet {
           builder.push(Decoration.mark({ class: cls }).range(nFrom, nTo));
           if (!rangeActive(nFrom, nTo)) {
             node.node.getChildren("EmphasisMark").forEach((m) => {
-              builder.push(hideDeco.range(m.from, m.to));
+              builder.push(dimDeco.range(m.from, m.to));
             });
           }
           return;
@@ -94,7 +94,7 @@ function buildDecorations(view: EditorView): DecorationSet {
           builder.push(Decoration.mark({ class: "cm-code" }).range(nFrom, nTo));
           if (!lineActive(nFrom)) {
             node.node.getChildren("CodeMark").forEach((m) => {
-              builder.push(hideDeco.range(m.from, m.to));
+              builder.push(dimDeco.range(m.from, m.to));
             });
           }
           return;
@@ -105,9 +105,9 @@ function buildDecorations(view: EditorView): DecorationSet {
             const text = doc.sliceString(nFrom, nTo);
             const m = /^\[([^\]]*)\]\(([^)]*)\)$/.exec(text);
             if (m && m[1].length > 0) {
-              builder.push(hideDeco.range(nFrom, nFrom + 1));
+              builder.push(dimDeco.range(nFrom, nFrom + 1));
               const closeBracket = nFrom + 1 + m[1].length;
-              builder.push(hideDeco.range(closeBracket, nTo));
+              builder.push(dimDeco.range(closeBracket, nTo));
               builder.push(
                 Decoration.mark({ class: "cm-link" }).range(nFrom + 1, closeBracket)
               );
@@ -129,23 +129,7 @@ function buildDecorations(view: EditorView): DecorationSet {
         }
 
         if (name === "ListMark") {
-          if (!lineActive(nFrom)) {
-            const ch = doc.sliceString(nFrom, nTo);
-            if (/^[-*+]$/.test(ch)) {
-              builder.push(
-                Decoration.replace({
-                  widget: new (class extends WidgetType {
-                    toDOM() {
-                      const s = document.createElement("span");
-                      s.textContent = "•";
-                      s.className = "cm-bullet";
-                      return s;
-                    }
-                  })(),
-                }).range(nFrom, nTo)
-              );
-            }
-          }
+          builder.push(Decoration.mark({ class: "cm-list-mark" }).range(nFrom, nTo));
           return;
         }
 
@@ -159,10 +143,10 @@ function buildDecorations(view: EditorView): DecorationSet {
             const firstText = startLine.text;
             const lastText = endLine.text;
             if (/^\s*(```|~~~)/.test(firstText)) {
-              builder.push(hideDeco.range(startLine.from, startLine.to));
+              builder.push(dimDeco.range(startLine.from, startLine.to));
             }
             if (endLine.number !== startLine.number && /^\s*(```|~~~)\s*$/.test(lastText)) {
-              builder.push(hideDeco.range(endLine.from, endLine.to));
+              builder.push(dimDeco.range(endLine.from, endLine.to));
             }
           }
           return;
@@ -287,10 +271,11 @@ const liveTheme = EditorView.theme({
     color: "hsl(var(--muted-foreground))",
     fontStyle: "italic",
   },
-  ".cm-bullet": {
+  ".cm-syntax-dim": {
+    color: "hsl(var(--muted-foreground) / 0.55)",
+  },
+  ".cm-list-mark": {
     color: "hsl(var(--muted-foreground))",
-    display: "inline-block",
-    width: "1em",
   },
   ".cm-fenced-line": {
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
