@@ -136,17 +136,27 @@ function buildDecorations(view: EditorView): DecorationSet {
         if (name === "FencedCode") {
           const startLine = doc.lineAt(nFrom);
           const endLine = doc.lineAt(nTo);
-          for (let ln = startLine.number; ln <= endLine.number; ln++) {
+          const active = rangeActive(nFrom, nTo);
+          const firstIsFence = /^\s*(```|~~~)/.test(startLine.text);
+          const lastIsFence =
+            endLine.number !== startLine.number && /^\s*(```|~~~)\s*$/.test(endLine.text);
+          const innerStart = firstIsFence && !active ? startLine.number + 1 : startLine.number;
+          const innerEnd = lastIsFence && !active ? endLine.number - 1 : endLine.number;
+          for (let ln = innerStart; ln <= innerEnd; ln++) {
             builder.push(Decoration.line({ class: "cm-fenced-line" }).range(doc.line(ln).from));
           }
-          if (!rangeActive(nFrom, nTo)) {
-            const firstText = startLine.text;
-            const lastText = endLine.text;
-            if (/^\s*(```|~~~)/.test(firstText)) {
-              builder.push(hideDeco.range(startLine.from, startLine.to));
+          if (!active) {
+            if (firstIsFence) {
+              const end = startLine.to < doc.length ? startLine.to + 1 : startLine.to;
+              builder.push(
+                Decoration.replace({ block: true }).range(startLine.from, end)
+              );
             }
-            if (endLine.number !== startLine.number && /^\s*(```|~~~)\s*$/.test(lastText)) {
-              builder.push(hideDeco.range(endLine.from, endLine.to));
+            if (lastIsFence) {
+              const from = endLine.from > 0 ? endLine.from - 1 : endLine.from;
+              builder.push(
+                Decoration.replace({ block: true }).range(from, endLine.to)
+              );
             }
           }
           return;
