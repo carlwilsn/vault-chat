@@ -21,6 +21,9 @@ type ApiKeys = Partial<Record<ProviderId, string>>;
 
 const KEYS_STORAGE = "vault_chat_api_keys";
 const MODEL_STORAGE = "vault_chat_model";
+const THEME_STORAGE = "vault_chat_theme";
+
+export type Theme = "dark" | "graphite";
 
 function loadKeys(): ApiKeys {
   try {
@@ -40,6 +43,7 @@ type State = {
   messages: ChatMessage[];
   apiKeys: ApiKeys;
   modelId: string;
+  theme: Theme;
   skills: Skill[];
   busy: boolean;
   showSettings: boolean;
@@ -55,6 +59,7 @@ type State = {
   appendMessage: (m: ChatMessage) => void;
   setApiKey: (p: ProviderId, k: string) => void;
   setModelId: (id: string) => void;
+  setTheme: (t: Theme) => void;
   setSkills: (s: Skill[]) => void;
   setBusy: (b: boolean) => void;
   setShowSettings: (b: boolean) => void;
@@ -82,6 +87,7 @@ export const useStore = create<State>((set) => ({
   messages: [],
   apiKeys: loadKeys(),
   modelId: localStorage.getItem(MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
+  theme: ((localStorage.getItem(THEME_STORAGE) as Theme) ?? "dark"),
   skills: [],
   busy: false,
   showSettings: false,
@@ -104,6 +110,10 @@ export const useStore = create<State>((set) => ({
   setModelId: (id) => {
     localStorage.setItem(MODEL_STORAGE, id);
     set({ modelId: id });
+  },
+  setTheme: (t) => {
+    localStorage.setItem(THEME_STORAGE, t);
+    set({ theme: t });
   },
   setSkills: (s) => set({ skills: s }),
   setBusy: (b) => set({ busy: b }),

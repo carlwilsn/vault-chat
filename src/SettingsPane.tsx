@@ -13,7 +13,7 @@ const KEY_PLACEHOLDER: Record<ProviderId, string> = {
 };
 
 export function SettingsPane() {
-  const { apiKeys, modelId, setApiKey, setModelId, setShowSettings } = useStore();
+  const { apiKeys, modelId, theme, setApiKey, setModelId, setTheme, setShowSettings } = useStore();
   const [drafts, setDrafts] = useState<Record<ProviderId, string>>({
     anthropic: apiKeys.anthropic ?? "",
     openai: apiKeys.openai ?? "",
@@ -57,6 +57,23 @@ export function SettingsPane() {
                 [{PROVIDER_LABEL[m.provider]}] {m.label}
               </option>
             ))}
+          </Select>
+        </section>
+
+        <div className="h-px bg-border" />
+
+        <section className="space-y-2">
+          <div>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Theme
+            </h3>
+            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
+              App color palette.
+            </p>
+          </div>
+          <Select value={theme} onChange={(e) => setTheme(e.target.value as "dark" | "graphite")}>
+            <option value="dark">Dark (default)</option>
+            <option value="graphite">Graphite</option>
           </Select>
         </section>
 

@@ -2,10 +2,16 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { X, Minus, Square } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ChatPane } from "./ChatPane";
+import { useStore } from "./store";
 
 export function ChatWindow() {
   const win = getCurrentWindow();
   const [maximized, setMaximized] = useState(false);
+  const theme = useStore((s) => s.theme);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
