@@ -53,6 +53,12 @@ function buildDecorations(state: EditorState): DecorationSet {
     for (let i = a; i <= b; i++) if (active.has(i)) return true;
     return false;
   };
+  const spanActive = (from: number, to: number) => {
+    for (const r of state.selection.ranges) {
+      if (r.from <= to && r.to >= from) return true;
+    }
+    return false;
+  };
 
   syntaxTree(state).iterate({
     enter: (node) => {
@@ -78,7 +84,7 @@ function buildDecorations(state: EditorState): DecorationSet {
       if (name === "StrongEmphasis" || name === "Emphasis") {
         const cls = name === "StrongEmphasis" ? "cm-strong" : "cm-em";
         builder.push(Decoration.mark({ class: cls }).range(nFrom, nTo));
-        if (!rangeActive(nFrom, nTo)) {
+        if (!spanActive(nFrom, nTo)) {
           node.node.getChildren("EmphasisMark").forEach((m) => {
             builder.push(hideDeco.range(m.from, m.to));
           });
@@ -88,7 +94,7 @@ function buildDecorations(state: EditorState): DecorationSet {
 
       if (name === "InlineCode") {
         builder.push(Decoration.mark({ class: "cm-code" }).range(nFrom, nTo));
-        if (!lineActive(nFrom)) {
+        if (!spanActive(nFrom, nTo)) {
           node.node.getChildren("CodeMark").forEach((m) => {
             builder.push(hideDeco.range(m.from, m.to));
           });
@@ -97,7 +103,7 @@ function buildDecorations(state: EditorState): DecorationSet {
       }
 
       if (name === "Link") {
-        if (!lineActive(nFrom)) {
+        if (!spanActive(nFrom, nTo)) {
           const text = doc.sliceString(nFrom, nTo);
           const m = /^\[([^\]]*)\]\(([^)]*)\)$/.exec(text);
           if (m && m[1].length > 0) {
