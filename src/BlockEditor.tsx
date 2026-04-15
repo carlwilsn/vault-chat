@@ -189,7 +189,7 @@ export function BlockEditor({
                   }
                 }
               }}
-              className="w-full resize-none bg-muted/40 border border-border/60 rounded px-2 py-1 my-1 font-mono text-[13px] leading-relaxed outline-none focus:border-primary/60"
+              className="w-full resize-none overflow-hidden bg-muted/40 border border-border/60 rounded px-2 py-1 my-1 font-mono text-[13px] leading-relaxed outline-none focus:border-primary/60"
               rows={Math.max(1, draft.split("\n").length)}
               spellCheck={false}
             />
