@@ -142,9 +142,7 @@ function buildDecorations(state: EditorState): DecorationSet {
         const firstIsFence = /^\s*(```|~~~)/.test(startLine.text);
         const lastIsFence =
           endLine.number !== startLine.number && /^\s*(```|~~~)\s*$/.test(endLine.text);
-        const innerStart = firstIsFence && !a ? startLine.number + 1 : startLine.number;
-        const innerEnd = lastIsFence && !a ? endLine.number - 1 : endLine.number;
-        for (let ln = innerStart; ln <= innerEnd; ln++) {
+        for (let ln = startLine.number; ln <= endLine.number; ln++) {
           builder.push(Decoration.line({ class: "cm-fenced-line" }).range(doc.line(ln).from));
         }
         if (!a) {
