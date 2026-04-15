@@ -251,14 +251,17 @@ const liveTheme = EditorView.theme({
   "&": {
     fontSize: "14px",
     color: "hsl(var(--foreground))",
+    height: "100%",
   },
+  ".cm-editor": { height: "100%" },
   ".cm-content": {
     fontFamily: "inherit",
     padding: "0",
     caretColor: "hsl(var(--foreground))",
     lineHeight: "1.7",
+    minHeight: "100%",
   },
-  ".cm-line": { padding: "0" },
+  ".cm-line": { padding: "0", cursor: "text" },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": { overflow: "visible", fontFamily: "inherit" },
   ".cm-h": { fontWeight: "600", letterSpacing: "-0.01em" },
