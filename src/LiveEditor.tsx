@@ -10,6 +10,22 @@ import katex from "katex";
 
 const hideDeco = Decoration.replace({});
 
+class EmptyBlockWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const el = document.createElement("div");
+    el.style.height = "0";
+    el.style.overflow = "hidden";
+    return el;
+  }
+  get estimatedHeight() {
+    return 0;
+  }
+}
+const emptyBlock = new EmptyBlockWidget();
+
 class MathWidget extends WidgetType {
   constructor(readonly src: string, readonly display: boolean) {
     super();
@@ -149,13 +165,13 @@ function buildDecorations(state: EditorState): DecorationSet {
           if (firstIsFence) {
             const end = startLine.to < doc.length ? startLine.to + 1 : startLine.to;
             builder.push(
-              Decoration.replace({ block: true }).range(startLine.from, end)
+              Decoration.replace({ widget: emptyBlock, block: true }).range(startLine.from, end)
             );
           }
           if (lastIsFence) {
             const end = endLine.to < doc.length ? endLine.to + 1 : endLine.to;
             builder.push(
-              Decoration.replace({ block: true }).range(endLine.from, end)
+              Decoration.replace({ widget: emptyBlock, block: true }).range(endLine.from, end)
             );
           }
         }
