@@ -10,7 +10,7 @@ import "highlight.js/styles/github-dark.css";
 import { invoke } from "@tauri-apps/api/core";
 import { FileText, Eye, Pencil } from "lucide-react";
 import { useStore } from "./store";
-import { BlockEditor } from "./BlockEditor";
+import { LiveEditor } from "./LiveEditor";
 
 export function MarkdownView() {
   const { currentFile, currentContent, mode, toggleMode, reloadCurrent } = useStore();
@@ -87,8 +87,8 @@ export function MarkdownView() {
         </div>
       ) : (
         <div className="flex-1 overflow-auto py-10 px-8">
-          <div className="mx-auto max-w-[780px]">
-            <BlockEditor value={currentContent} onChange={onChange} />
+          <div className="prose-md mx-auto">
+            <LiveEditor value={currentContent} onChange={onChange} />
           </div>
         </div>
       )}
