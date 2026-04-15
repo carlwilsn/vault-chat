@@ -1,0 +1,341 @@
+use serde::Serialize;
+use std::path::PathBuf;
+use std::process::Command;
+use walkdir::WalkDir;
+
+#[derive(Serialize)]
+struct FileEntry {
+    path: String,
+    name: String,
+    is_dir: bool,
+    depth: usize,
+}
+
+#[tauri::command]
+fn list_markdown_files(vault: String) -> Result<Vec<FileEntry>, String> {
+    let root = PathBuf::from(&vault);
+    if !root.is_dir() {
+        return Err(format!("Not a directory: {}", vault));
+    }
+    let mut entries: Vec<FileEntry> = Vec::new();
+    for entry in WalkDir::new(&root)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !name.starts_with('.') && name != "node_modules" && name != "target"
+        })
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        let is_dir = path.is_dir();
+        if !is_dir {
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+        }
+        let rel = path.strip_prefix(&root).unwrap_or(path);
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        entries.push(FileEntry {
+            path: path.to_string_lossy().replace('\\', "/"),
+            name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+            is_dir,
+            depth: rel.components().count().saturating_sub(1),
+        });
+    }
+    entries.sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
+    Ok(entries)
+}
+
+#[tauri::command]
+fn read_text_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, contents).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn edit_text_file(
+    path: String,
+    old_string: String,
+    new_string: String,
+    replace_all: Option<bool>,
+) -> Result<String, String> {
+    let contents = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let all = replace_all.unwrap_or(false);
+    if all {
+        let count = contents.matches(&old_string).count();
+        if count == 0 {
+            return Err(format!("old_string not found in {}", path));
+        }
+        let new_contents = contents.replace(&old_string, &new_string);
+        std::fs::write(&path, new_contents).map_err(|e| e.to_string())?;
+        Ok(format!("replaced {} occurrence(s) in {}", count, path))
+    } else {
+        let count = contents.matches(&old_string).count();
+        if count == 0 {
+            return Err(format!("old_string not found in {}", path));
+        }
+        if count > 1 {
+            return Err(format!(
+                "old_string matches {} times in {} — provide more context to make it unique, or set replace_all=true",
+                count, path
+            ));
+        }
+        let new_contents = contents.replacen(&old_string, &new_string, 1);
+        std::fs::write(&path, new_contents).map_err(|e| e.to_string())?;
+        Ok(format!("edited {}", path))
+    }
+}
+
+#[tauri::command]
+fn glob_files(pattern: String, cwd: Option<String>) -> Result<Vec<String>, String> {
+    let base = cwd
+        .as_deref()
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir());
+    let full_pattern = match &base {
+        Some(b) => {
+            let joined = b.join(&pattern);
+            joined.to_string_lossy().replace('\\', "/")
+        }
+        None => pattern.clone(),
+    };
+    let paths = glob::glob(&full_pattern).map_err(|e| e.to_string())?;
+    let mut out: Vec<(String, std::time::SystemTime)> = Vec::new();
+    for entry in paths.filter_map(|r| r.ok()) {
+        if entry.is_file() {
+            let mtime = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            out.push((entry.to_string_lossy().replace('\\', "/"), mtime));
+        }
+    }
+    out.sort_by(|a, b| b.1.cmp(&a.1));
+    Ok(out.into_iter().map(|(p, _)| p).collect())
+}
+
+#[derive(Serialize)]
+struct GrepMatch {
+    path: String,
+    line: usize,
+    text: String,
+}
+
+#[tauri::command]
+fn grep_files(
+    pattern: String,
+    path: String,
+    glob_filter: Option<String>,
+    case_insensitive: Option<bool>,
+    max_results: Option<usize>,
+) -> Result<Vec<GrepMatch>, String> {
+    let mut builder = regex::RegexBuilder::new(&pattern);
+    builder.case_insensitive(case_insensitive.unwrap_or(false));
+    let re = builder.build().map_err(|e| e.to_string())?;
+    let root = PathBuf::from(&path);
+    if !root.exists() {
+        return Err(format!("path does not exist: {}", path));
+    }
+
+    let glob_pat = glob_filter
+        .as_deref()
+        .and_then(|g| glob::Pattern::new(g).ok());
+
+    let limit = max_results.unwrap_or(500);
+    let mut results: Vec<GrepMatch> = Vec::new();
+
+    let walker = if root.is_dir() {
+        WalkDir::new(&root)
+    } else {
+        WalkDir::new(&root)
+    };
+
+    for entry in walker
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !name.starts_with('.') && name != "node_modules" && name != "target"
+        })
+        .filter_map(|e| e.ok())
+    {
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        if let Some(ref gp) = glob_pat {
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            if !gp.matches(&name) {
+                continue;
+            }
+        }
+        let content = match std::fs::read_to_string(p) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for (i, line) in content.lines().enumerate() {
+            if re.is_match(line) {
+                results.push(GrepMatch {
+                    path: p.to_string_lossy().replace('\\', "/"),
+                    line: i + 1,
+                    text: line.to_string(),
+                });
+                if results.len() >= limit {
+                    return Ok(results);
+                }
+            }
+        }
+    }
+    Ok(results)
+}
+
+#[derive(Serialize)]
+struct BashResult {
+    stdout: String,
+    stderr: String,
+    code: i32,
+    timed_out: bool,
+}
+
+#[tauri::command]
+fn bash_exec(
+    command: String,
+    cwd: Option<String>,
+    timeout_ms: Option<u64>,
+) -> Result<BashResult, String> {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(120_000));
+    let working_dir = cwd.clone().filter(|c| PathBuf::from(c).is_dir());
+
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(&command);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new("bash");
+        c.arg("-lc").arg(&command);
+        c
+    };
+
+    if let Some(d) = &working_dir {
+        cmd.current_dir(d);
+    }
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let start = Instant::now();
+    let mut timed_out = false;
+    let code;
+    loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) => {
+                code = status.code().unwrap_or(-1);
+                break;
+            }
+            None => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    timed_out = true;
+                    code = -1;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut o) = child.stdout.take() {
+        let _ = o.read_to_string(&mut stdout);
+    }
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut stderr);
+    }
+
+    const MAX_OUT: usize = 50_000;
+    if stdout.len() > MAX_OUT {
+        stdout = format!(
+            "{}\n…[truncated {} bytes]",
+            &stdout[..MAX_OUT],
+            stdout.len() - MAX_OUT
+        );
+    }
+    if stderr.len() > MAX_OUT {
+        stderr = format!(
+            "{}\n…[truncated {} bytes]",
+            &stderr[..MAX_OUT],
+            stderr.len() - MAX_OUT
+        );
+    }
+
+    Ok(BashResult {
+        stdout,
+        stderr,
+        code,
+        timed_out,
+    })
+}
+
+#[tauri::command]
+fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err(format!("not a directory: {}", path));
+    }
+    let mut entries: Vec<FileEntry> = Vec::new();
+    for entry in std::fs::read_dir(&p).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        entries.push(FileEntry {
+            path: path.to_string_lossy().replace('\\', "/"),
+            name,
+            is_dir: path.is_dir(),
+            depth: 0,
+        });
+    }
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(entries)
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .invoke_handler(tauri::generate_handler![
+            list_markdown_files,
+            read_text_file,
+            write_text_file,
+            edit_text_file,
+            glob_files,
+            grep_files,
+            bash_exec,
+            list_dir
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
