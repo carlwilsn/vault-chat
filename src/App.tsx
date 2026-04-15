@@ -16,6 +16,9 @@ export default function App() {
   const leftCollapsed = useStore((s) => s.leftCollapsed);
   const rightCollapsed = useStore((s) => s.rightCollapsed);
   const popoutOpen = useStore((s) => s.popoutOpen);
+  const files = useStore((s) => s.files);
+  const maxDepth = files.reduce((m, f) => Math.max(m, f.depth), 0);
+  const leftMax = Math.max(420, 120 + maxDepth * 14 + 200);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -43,7 +46,7 @@ export default function App() {
       <Titlebar />
       <div className="flex-1 min-h-0">
         <Allotment>
-          <Allotment.Pane preferredSize={260} minSize={180} visible={!leftCollapsed} snap>
+          <Allotment.Pane preferredSize={260} minSize={180} maxSize={leftMax} visible={!leftCollapsed} snap>
             <FileTree />
           </Allotment.Pane>
           <Allotment.Pane minSize={340}>

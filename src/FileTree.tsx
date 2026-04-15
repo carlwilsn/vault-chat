@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileText, ChevronRight, ChevronDown } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
@@ -7,6 +7,19 @@ import { cn } from "./lib/utils";
 export function FileTree() {
   const { vaultPath, files, currentFile, setCurrentFile } = useStore();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const lastVaultRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (
+      vaultPath &&
+      vaultPath !== lastVaultRef.current &&
+      files.length > 0 &&
+      files[0].path.startsWith(vaultPath)
+    ) {
+      lastVaultRef.current = vaultPath;
+      setCollapsed(new Set(files.filter((f) => f.is_dir).map((f) => f.path)));
+    }
+  }, [vaultPath, files]);
 
   const openFile = async (f: FileEntry) => {
     if (f.is_dir) return;
