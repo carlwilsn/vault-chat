@@ -155,9 +155,9 @@ function buildDecorations(state: EditorState): DecorationSet {
             );
           }
           if (lastIsFence) {
-            const from = endLine.from > 0 ? endLine.from - 1 : endLine.from;
+            const end = endLine.to < doc.length ? endLine.to + 1 : endLine.to;
             builder.push(
-              Decoration.replace({ block: true }).range(from, endLine.to)
+              Decoration.replace({ block: true }).range(endLine.from, end)
             );
           }
         }
