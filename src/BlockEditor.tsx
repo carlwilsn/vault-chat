@@ -5,7 +5,15 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 
-type Block = { kind: "line" | "fenced" | "math"; text: string };
+type Block = { kind: "line" | "fenced" | "math" | "table"; text: string };
+
+function isTableSeparator(line: string): boolean {
+  return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(line);
+}
+
+function isTableRow(line: string): boolean {
+  return /\|/.test(line) && !/^\s*$/.test(line);
+}
 
 function parseBlocks(content: string): Block[] {
   const lines = content.split("\n");
@@ -21,6 +29,17 @@ function parseBlocks(content: string): Block[] {
       const end = j < lines.length ? j : lines.length - 1;
       out.push({ kind: "fenced", text: lines.slice(i, end + 1).join("\n") });
       i = end + 1;
+      continue;
+    }
+    if (
+      isTableRow(line) &&
+      i + 1 < lines.length &&
+      isTableSeparator(lines[i + 1])
+    ) {
+      let j = i + 2;
+      while (j < lines.length && isTableRow(lines[j])) j++;
+      out.push({ kind: "table", text: lines.slice(i, j).join("\n") });
+      i = j;
       continue;
     }
     if (/^\s*\$\$\s*$/.test(line) || /^\s*\$\$/.test(line)) {
