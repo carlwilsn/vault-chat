@@ -5,7 +5,7 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 
-type Block = { kind: "line" | "fenced" | "math" | "table"; text: string };
+type Block = { kind: "line" | "fenced" | "math" | "table" | "blockquote"; text: string };
 
 function isTableSeparator(line: string): boolean {
   return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(line);
@@ -29,6 +29,13 @@ function parseBlocks(content: string): Block[] {
       const end = j < lines.length ? j : lines.length - 1;
       out.push({ kind: "fenced", text: lines.slice(i, end + 1).join("\n") });
       i = end + 1;
+      continue;
+    }
+    if (/^\s*>/.test(line)) {
+      let j = i + 1;
+      while (j < lines.length && /^\s*>/.test(lines[j])) j++;
+      out.push({ kind: "blockquote", text: lines.slice(i, j).join("\n") });
+      i = j;
       continue;
     }
     if (
