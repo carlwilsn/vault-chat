@@ -36,13 +36,13 @@
   }
 
   [data-theme="graphite"] {
-    --background: 0 0% 6%;
+    --background: 0 0% 10%;
     --foreground: 0 0% 92%;
 
-    --card: 0 0% 10%;
+    --card: 0 0% 13%;
     --card-foreground: 0 0% 92%;
 
-    --popover: 0 0% 10%;
+    --popover: 0 0% 13%;
     --popover-foreground: 0 0% 92%;
 
     --primary: 0 0% 85%;
