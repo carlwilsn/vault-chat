@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -73,6 +73,38 @@ function serialize(blocks: Block[]): string {
   return blocks.map((b) => b.text).join("\n");
 }
 
+const REMARK_PLUGINS = [remarkGfm, remarkMath];
+const REHYPE_PLUGINS = [rehypeKatex, rehypeHighlight];
+
+const RenderedBlock = memo(function RenderedBlock({
+  index,
+  text,
+  onEnter,
+}: {
+  index: number;
+  text: string;
+  onEnter: (i: number) => void;
+}) {
+  if (text === "") {
+    return (
+      <div
+        onClick={() => onEnter(index)}
+        className="h-4 cursor-text"
+      />
+    );
+  }
+  return (
+    <div
+      onClick={() => onEnter(index)}
+      className="cursor-text rounded hover:bg-accent/20 transition-colors"
+    >
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+});
+
 export function BlockEditor({
   value,
   onChange,
@@ -85,6 +117,9 @@ export function BlockEditor({
   const [draft, setDraft] = useState<string>("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
+  const stateRef = useRef({ blocks, active, draft });
+  stateRef.current = { blocks, active, draft };
+
   useEffect(() => {
     if (active != null && textareaRef.current) {
       textareaRef.current.focus();
@@ -94,29 +129,38 @@ export function BlockEditor({
     }
   }, [active]);
 
-  const enterBlock = (i: number) => {
-    if (active === i) return;
-    if (active != null) commitDraft(active, draft);
-    setDraft(blocks[i].text);
-    setActive(i);
-  };
-
-  const commitDraft = (i: number, text: string) => {
-    if (text === blocks[i].text) return;
-    const next = blocks.map((b, idx) => (idx === i ? { ...b, text } : b));
+  const commitDraft = useCallback((i: number, text: string) => {
+    const { blocks: bs } = stateRef.current;
+    if (text === bs[i].text) return;
+    const next = bs.map((b, idx) => (idx === i ? { ...b, text } : b));
     onChange(serialize(next));
-  };
+  }, [onChange]);
 
-  const commitActive = () => {
-    if (active != null) commitDraft(active, draft);
+  const enterBlock = useCallback((i: number) => {
+    const { active: a, draft: d, blocks: bs } = stateRef.current;
+    if (a === i) return;
+    if (a != null) commitDraft(a, d);
+    setDraft(bs[i].text);
+    setActive(i);
+  }, [commitDraft]);
+
+  const commitActive = useCallback(() => {
+    const { active: a, draft: d } = stateRef.current;
+    if (a != null) commitDraft(a, d);
     setActive(null);
-  };
+  }, [commitDraft]);
+
+  useEffect(() => {
+    return () => {
+      const { active: a, draft: d } = stateRef.current;
+      if (a != null) commitDraft(a, d);
+    };
+  }, [commitDraft]);
 
   return (
     <div className="prose-md">
       {blocks.map((b, i) => {
-        const isActive = i === active;
-        if (isActive) {
+        if (i === active) {
           return (
             <textarea
               key={i}
@@ -151,29 +195,7 @@ export function BlockEditor({
             />
           );
         }
-        if (b.text === "") {
-          return (
-            <div
-              key={i}
-              onClick={() => enterBlock(i)}
-              className="h-4 cursor-text"
-            />
-          );
-        }
-        return (
-          <div
-            key={i}
-            onClick={() => enterBlock(i)}
-            className="cursor-text rounded hover:bg-accent/20 transition-colors"
-          >
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[rehypeKatex, rehypeHighlight]}
-            >
-              {b.text}
-            </ReactMarkdown>
-          </div>
-        );
+        return <RenderedBlock key={i} index={i} text={b.text} onEnter={enterBlock} />;
       })}
     </div>
   );
