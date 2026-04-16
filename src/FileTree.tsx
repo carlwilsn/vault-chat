@@ -1,13 +1,23 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { FileText, ChevronRight, ChevronDown } from "lucide-react";
+import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2 } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { cn } from "./lib/utils";
 
+type PendingKind = "file" | "folder";
+type Menu = { x: number; y: number; entry: FileEntry } | null;
+
 export function FileTree() {
-  const { vaultPath, files, currentFile, setCurrentFile } = useStore();
+  const { vaultPath, files, currentFile, setCurrentFile, setFiles } = useStore();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [pending, setPending] = useState<{ kind: PendingKind; parent: string } | null>(null);
+  const [pendingName, setPendingName] = useState("");
+  const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null);
+  const [menu, setMenu] = useState<Menu>(null);
+  const [selectedDir, setSelectedDir] = useState<string | null>(null);
   const lastVaultRef = useRef<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const renameRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (
@@ -20,6 +30,28 @@ export function FileTree() {
       setCollapsed(new Set(files.filter((f) => f.is_dir).map((f) => f.path)));
     }
   }, [vaultPath, files]);
+
+  useEffect(() => {
+    if (pending && inputRef.current) inputRef.current.focus();
+  }, [pending]);
+
+  useEffect(() => {
+    if (renaming && renameRef.current) {
+      renameRef.current.focus();
+      const dot = renaming.value.lastIndexOf(".");
+      const end = dot > 0 ? dot : renaming.value.length;
+      renameRef.current.setSelectionRange(0, end);
+    }
+  }, [renaming]);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener("mousedown", close);
+    return () => {
+      window.removeEventListener("mousedown", close);
+    };
+  }, [menu]);
 
   const openFile = async (f: FileEntry) => {
     if (f.is_dir) return;
@@ -43,11 +75,131 @@ export function FileTree() {
     return false;
   };
 
+  const refreshFiles = async () => {
+    if (!vaultPath) return;
+    const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: vaultPath });
+    setFiles(listed);
+  };
+
+  const beginCreate = (kind: PendingKind) => {
+    if (!vaultPath) return;
+    const parent = selectedDir ?? vaultPath;
+    if (parent !== vaultPath) {
+      setCollapsed((prev) => {
+        const n = new Set(prev);
+        n.delete(parent);
+        return n;
+      });
+    }
+    setPending({ kind, parent });
+    setPendingName("");
+  };
+
+  const commitCreate = async () => {
+    if (!pending || !pendingName.trim()) {
+      setPending(null);
+      return;
+    }
+    const raw = pendingName.trim();
+    const base = pending.parent.replace(/\/$/, "");
+    if (pending.kind === "file") {
+      const name = /\.[^./\\]+$/.test(raw) ? raw : `${raw}.md`;
+      const path = `${base}/${name}`;
+      try {
+        await invoke("write_text_file", { path, contents: "" });
+        await refreshFiles();
+        const content = await invoke<string>("read_text_file", { path });
+        setCurrentFile(path, content);
+      } catch (e) {
+        console.error(e);
+      }
+    } else {
+      const path = `${base}/${raw}`;
+      try {
+        await invoke("create_dir", { path });
+        await refreshFiles();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    setPending(null);
+    setPendingName("");
+  };
+
+  const cancelCreate = () => {
+    setPending(null);
+    setPendingName("");
+  };
+
+  const beginRename = (f: FileEntry) => {
+    setRenaming({ path: f.path, value: f.name });
+  };
+
+  const commitRename = async () => {
+    if (!renaming) return;
+    const next = renaming.value.trim();
+    const cur = renaming.path.split("/").pop() ?? "";
+    if (!next || next === cur) {
+      setRenaming(null);
+      return;
+    }
+    const parent = renaming.path.substring(0, renaming.path.lastIndexOf("/"));
+    const to = `${parent}/${next}`;
+    try {
+      await invoke("rename_path", { from: renaming.path, to });
+      if (currentFile === renaming.path) {
+        const content = await invoke<string>("read_text_file", { path: to });
+        setCurrentFile(to, content);
+      }
+      await refreshFiles();
+    } catch (e) {
+      console.error(e);
+    }
+    setRenaming(null);
+  };
+
+  const cancelRename = () => setRenaming(null);
+
+  const doDelete = async (f: FileEntry) => {
+    const label = f.is_dir ? "folder" : "file";
+    if (!confirm(`Delete ${label} "${f.name}"?${f.is_dir ? " This removes everything inside." : ""}`)) return;
+    try {
+      await invoke("delete_file", { path: f.path });
+      if (currentFile === f.path || (f.is_dir && currentFile && currentFile.startsWith(f.path + "/"))) {
+        setCurrentFile(null, "");
+      }
+      await refreshFiles();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const pendingParentDepth =
+    pending && pending.parent !== vaultPath
+      ? (files.find((f) => f.path === pending.parent)?.depth ?? 0) + 1
+      : 0;
+
   return (
     <div className="h-full flex flex-col bg-card border-r border-border">
       {vaultPath && (
-        <div className="px-3 py-1.5 text-[10px] text-muted-foreground/70 font-mono truncate border-b border-border/50 shrink-0">
-          {vaultPath}
+        <div className="flex items-center gap-1 px-2 py-1 border-b border-border/50 shrink-0">
+          <div className="flex-1 text-[10px] text-muted-foreground/70 font-mono truncate">
+            {vaultPath}
+          </div>
+          <button
+            onClick={() => beginCreate("file")}
+            title="New file"
+            className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
+          >
+            <FilePlus className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => beginCreate("folder")}
+            title="New folder"
+            className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
+          >
+            <FolderPlus className="h-3.5 w-3.5" />
+          </button>
         </div>
       )}
       <div className="flex-1 overflow-auto py-1">
@@ -56,37 +208,166 @@ export function FileTree() {
             Open a folder to begin.
           </div>
         )}
+        {pending && pending.parent === vaultPath && (
+          <PendingRow
+            kind={pending.kind}
+            depth={0}
+            name={pendingName}
+            onChange={setPendingName}
+            onCommit={commitCreate}
+            onCancel={cancelCreate}
+            inputRef={inputRef}
+          />
+        )}
         {files.map((f) => {
           if (isHidden(f)) return null;
           const isActive = currentFile === f.path;
+          const isSelectedDir = f.is_dir && selectedDir === f.path;
           const isOpen = f.is_dir && !collapsed.has(f.path);
+          const isRenaming = renaming?.path === f.path;
           return (
-            <div
-              key={f.path}
-              className={cn(
-                "flex items-center gap-1 px-2 py-1 text-[12.5px] cursor-pointer select-none",
-                f.is_dir
-                  ? "text-muted-foreground hover:text-foreground/90"
-                  : "hover:bg-accent/60 rounded-sm mx-1",
-                isActive && "bg-accent text-accent-foreground rounded-sm mx-1"
-              )}
-              style={{ paddingLeft: 8 + f.depth * 12 }}
-              onClick={() => (f.is_dir ? toggleFolder(f.path) : openFile(f))}
-            >
-              {f.is_dir ? (
-                isOpen ? (
-                  <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-70" />
-                )
+            <div key={f.path} className="mx-1 rounded-sm">
+              {isRenaming ? (
+                <div
+                  className="flex items-center gap-1 px-2 py-1 text-[12.5px] rounded-sm bg-accent/30"
+                  style={{ paddingLeft: 8 + f.depth * 12 }}
+                >
+                  {f.is_dir ? (
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                  ) : (
+                    <FileText className="h-3.5 w-3.5 shrink-0 opacity-70 ml-3.5" />
+                  )}
+                  <input
+                    ref={renameRef}
+                    size={1}
+                    value={renaming.value}
+                    onChange={(e) => setRenaming({ path: renaming.path, value: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitRename();
+                      else if (e.key === "Escape") cancelRename();
+                    }}
+                    onBlur={commitRename}
+                    className="flex-1 min-w-0 bg-transparent outline-none text-foreground p-0"
+                  />
+                </div>
               ) : (
-                <FileText className="h-3.5 w-3.5 shrink-0 opacity-70 ml-3.5" />
+                <div
+                  className={cn(
+                    "flex items-center gap-1 px-2 py-1 text-[12.5px] cursor-pointer select-none rounded-sm",
+                    f.is_dir
+                      ? "text-muted-foreground hover:text-foreground/90"
+                      : "hover:bg-accent/60",
+                    isActive && "bg-accent text-accent-foreground",
+                    isSelectedDir && "bg-accent/40"
+                  )}
+                  style={{ paddingLeft: 8 + f.depth * 12 }}
+                  onClick={() => {
+                    if (f.is_dir) {
+                      setSelectedDir((prev) => (prev === f.path ? null : f.path));
+                      toggleFolder(f.path);
+                    } else {
+                      setSelectedDir(null);
+                      openFile(f);
+                    }
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setMenu({ x: e.clientX, y: e.clientY, entry: f });
+                  }}
+                  onMouseDown={(e) => {
+                    if (e.button === 2) e.stopPropagation();
+                  }}
+                >
+                  {f.is_dir ? (
+                    isOpen ? (
+                      <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                    )
+                  ) : (
+                    <FileText className="h-3.5 w-3.5 shrink-0 opacity-70 ml-3.5" />
+                  )}
+                  <span className="truncate">{f.name.replace(/\.md$/, "")}</span>
+                </div>
               )}
-              <span className="truncate">{f.name.replace(/\.md$/, "")}</span>
+              {pending && pending.parent === f.path && (
+                <PendingRow
+                  kind={pending.kind}
+                  depth={pendingParentDepth}
+                  name={pendingName}
+                  onChange={setPendingName}
+                  onCommit={commitCreate}
+                  onCancel={cancelCreate}
+                  inputRef={inputRef}
+                />
+              )}
             </div>
           );
         })}
       </div>
+      {menu && (
+        <div
+          className="fixed z-50 rounded-md border border-border bg-card shadow-lg py-1 text-[12.5px]"
+          style={{ left: menu.x, top: menu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+            onClick={() => {
+              beginRename(menu.entry);
+              setMenu(null);
+            }}
+          >
+            <Pencil className="h-3.5 w-3.5 opacity-70" /> Rename
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PendingRow({
+  kind,
+  depth,
+  name,
+  onChange,
+  onCommit,
+  onCancel,
+  inputRef,
+}: {
+  kind: PendingKind;
+  depth: number;
+  name: string;
+  onChange: (v: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+  inputRef: React.MutableRefObject<HTMLInputElement | null>;
+}) {
+  return (
+    <div
+      className="flex items-center gap-1 px-2 py-1 text-[12.5px] mx-1 rounded-sm bg-accent/30"
+      style={{ paddingLeft: 8 + depth * 12 }}
+    >
+      {kind === "folder" ? (
+        <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-70" />
+      ) : (
+        <FileText className="h-3.5 w-3.5 shrink-0 opacity-70 ml-3.5" />
+      )}
+      <input
+        ref={inputRef}
+        size={1}
+        value={name}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") onCommit();
+          else if (e.key === "Escape") onCancel();
+        }}
+        onBlur={onCommit}
+        placeholder={kind === "file" ? "filename.md" : "folder"}
+        className="flex-1 min-w-0 bg-transparent outline-none text-foreground placeholder:text-muted-foreground/60 p-0"
+      />
     </div>
   );
 }

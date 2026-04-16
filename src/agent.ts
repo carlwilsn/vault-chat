@@ -23,7 +23,7 @@ Core behaviors:
 - When the vault defines rules (e.g. LEARNING_RULES.md), treat them as binding. They override generic defaults.
 - Render math using $$...$$ display style. Do not use inline $...$ in chat — it will not render.
 - All paths passed to tools must be absolute.
-- Tools available: Read, Write, Edit, Glob, Grep, Bash, ListDir, WebFetch, and (if configured) WebSearch. Prefer Edit over Write for small changes. Prefer Grep+Glob over reading many files blindly. Use WebFetch when you know the URL. Use WebSearch for current information or to find URLs when the user asks a general web question.
+- Tools available: Read, Write, Edit, Delete, Glob, Grep, Bash, ListDir, WebFetch, and (if configured) WebSearch. Prefer Edit over Write for small changes. Prefer Grep+Glob over reading many files blindly. Use Delete only when the user has explicitly asked to remove a file — it is irreversible. Use WebFetch when you know the URL. Use WebSearch for current information or to find URLs when the user asks a general web question.
 - Bash runs in the vault root by default. Use it for git, pytest, scripts, and anything shell-native.`;
 
 export async function runAgent(params: {

@@ -12,7 +12,13 @@ struct FileEntry {
 }
 
 #[tauri::command]
-fn list_markdown_files(vault: String) -> Result<Vec<FileEntry>, String> {
+async fn list_markdown_files(vault: String) -> Result<Vec<FileEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_markdown_files_sync(vault))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
     let root = PathBuf::from(&vault);
     if !root.is_dir() {
         return Err(format!("Not a directory: {}", vault));
@@ -60,16 +66,59 @@ fn list_markdown_files(vault: String) -> Result<Vec<FileEntry>, String> {
 }
 
 #[tauri::command]
-fn read_text_file(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+async fn read_text_file(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn write_text_file(path: String, contents: String) -> Result<(), String> {
-    if let Some(parent) = std::path::Path::new(&path).parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&path, contents).map_err(|e| e.to_string())
+async fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&path, contents).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn rename_path(from: String, to: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(parent) = std::path::Path::new(&to).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::rename(&from, &to).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn create_dir(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::create_dir_all(&path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn delete_file(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = std::path::Path::new(&path);
+        if p.is_dir() {
+            std::fs::remove_dir_all(p).map_err(|e| e.to_string())
+        } else {
+            std::fs::remove_file(p).map_err(|e| e.to_string())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -142,7 +191,21 @@ struct GrepMatch {
 }
 
 #[tauri::command]
-fn grep_files(
+async fn grep_files(
+    pattern: String,
+    path: String,
+    glob_filter: Option<String>,
+    case_insensitive: Option<bool>,
+    max_results: Option<usize>,
+) -> Result<Vec<GrepMatch>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        grep_files_sync(pattern, path, glob_filter, case_insensitive, max_results)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn grep_files_sync(
     pattern: String,
     path: String,
     glob_filter: Option<String>,
@@ -230,8 +293,10 @@ fn bash_exec(
 
     #[cfg(windows)]
     let mut cmd = {
+        use std::os::windows::process::CommandExt;
         let mut c = Command::new("cmd");
         c.arg("/C").arg(&command);
+        c.creation_flags(0x08000000);
         c
     };
     #[cfg(not(windows))]
@@ -513,6 +578,9 @@ pub fn run() {
             list_markdown_files,
             read_text_file,
             write_text_file,
+            delete_file,
+            create_dir,
+            rename_path,
             edit_text_file,
             glob_files,
             grep_files,

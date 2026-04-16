@@ -28,6 +28,18 @@ export function buildTools(vault: string, tavilyKey?: string) {
       },
     }),
 
+    Delete: tool({
+      description:
+        "Delete a file or directory at the given absolute path. Directories are removed recursively. Irreversible — only use when the user has asked for deletion.",
+      inputSchema: z.object({
+        path: z.string().describe("Absolute path to the file or directory to delete."),
+      }),
+      execute: async ({ path }) => {
+        await invoke("delete_file", { path });
+        return `deleted ${path}`;
+      },
+    }),
+
     Edit: tool({
       description:
         "Replace a string in a file. old_string must be unique in the file unless replace_all is true. Fails if old_string is not found or is not unique (without replace_all). Prefer Edit over Write for small changes to large files.",
