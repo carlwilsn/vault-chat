@@ -16,22 +16,26 @@ self.MonacoEnvironment = {
   },
 };
 
+// Graphite: --background = hsl(0 0% 10%) = #1a1a1a
+// Light:    --background = hsl(0 0% 98%) = #fafafa
 monaco.editor.defineTheme("vault-graphite", {
   base: "vs-dark",
   inherit: true,
   rules: [],
   colors: {
-    "editor.background": "#1f1f23",
-    "editor.foreground": "#e8ebee",
-    "editor.lineHighlightBackground": "#26262c",
-    "editorLineNumber.foreground": "#555560",
+    "editor.background": "#1a1a1a",
+    "editor.foreground": "#ebebeb",
+    "editor.lineHighlightBackground": "#242424",
+    "editorLineNumber.foreground": "#4a4a4a",
     "editorLineNumber.activeForeground": "#a8acb2",
-    "editorGutter.background": "#1f1f23",
+    "editorGutter.background": "#1a1a1a",
     "editor.selectionBackground": "#3a3a45",
-    "editorCursor.foreground": "#e8ebee",
-    "editorIndentGuide.background1": "#2a2a30",
+    "editorCursor.foreground": "#ebebeb",
+    "editorIndentGuide.background1": "#262626",
     "editorBracketMatch.background": "#3a3a45",
     "editorBracketMatch.border": "#5a5a65",
+    "editorWidget.background": "#1a1a1a",
+    "editorWidget.border": "#2a2a2a",
   },
 });
 
@@ -40,8 +44,12 @@ monaco.editor.defineTheme("vault-light", {
   inherit: true,
   rules: [],
   colors: {
-    "editor.background": "#ffffff",
+    "editor.background": "#fafafa",
     "editor.foreground": "#1f1f23",
+    "editorGutter.background": "#fafafa",
+    "editorLineNumber.foreground": "#b0b0b0",
+    "editorLineNumber.activeForeground": "#606060",
+    "editor.lineHighlightBackground": "#f0f0f0",
   },
 });
 

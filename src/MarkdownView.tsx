@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkBreaks from "remark-breaks";
+import rehypeRaw from "rehype-raw";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
@@ -11,12 +12,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { FileText, Eye, Pencil, X } from "lucide-react";
 import { useStore } from "./store";
 import { MonacoEditor } from "./MonacoEditor";
+import { LiveEditor } from "./LiveEditor";
 import { CodeView } from "./CodeView";
 import { NotebookView } from "./NotebookView";
 import { PdfView } from "./PdfView";
+import { HtmlView } from "./HtmlView";
 import { VAULT_PANE_MIME } from "./dnd";
 
-type FileKind = "markdown" | "notebook" | "pdf" | "code";
+type FileKind = "markdown" | "notebook" | "pdf" | "html" | "code";
 
 function fileKind(path: string): { kind: FileKind; ext: string } {
   const dot = path.lastIndexOf(".");
@@ -24,6 +27,7 @@ function fileKind(path: string): { kind: FileKind; ext: string } {
   if (ext === "md" || ext === "markdown") return { kind: "markdown", ext };
   if (ext === "ipynb") return { kind: "notebook", ext };
   if (ext === "pdf") return { kind: "pdf", ext };
+  if (ext === "html" || ext === "htm") return { kind: "html", ext };
   return { kind: "code", ext };
 }
 
@@ -162,7 +166,11 @@ export function MarkdownView({ paneId }: Props) {
           )}
         </div>
       </div>
-      {showingEditor ? (
+      {showingEditor && kind === "markdown" ? (
+        <div className="flex-1 min-h-0">
+          <LiveEditor value={content} onChange={onChange} />
+        </div>
+      ) : showingEditor ? (
         <div className="flex-1 min-h-0">
           <MonacoEditor value={content} onChange={onChange} ext={ext} />
         </div>
@@ -171,7 +179,7 @@ export function MarkdownView({ paneId }: Props) {
           <div className="prose-md mx-auto">
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
-              rehypePlugins={[rehypeKatex, rehypeHighlight]}
+              rehypePlugins={[rehypeRaw, rehypeKatex, rehypeHighlight]}
             >
               {content}
             </ReactMarkdown>
@@ -181,6 +189,8 @@ export function MarkdownView({ paneId }: Props) {
         <NotebookView content={content} />
       ) : kind === "pdf" ? (
         <PdfView path={file} />
+      ) : kind === "html" ? (
+        <HtmlView content={content} />
       ) : (
         <CodeView content={content} ext={ext} />
       )}
