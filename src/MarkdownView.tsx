@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -34,18 +34,16 @@ function fileKind(path: string): { kind: FileKind; ext: string } {
 type Props = { paneId?: string };
 
 export function MarkdownView({ paneId }: Props) {
-  const {
-    currentFile,
-    currentContent,
-    panes,
-    activePaneId,
-    mode,
-    toggleMode,
-    reloadCurrent,
-    setActivePane,
-    closePane,
-    updatePaneContent,
-  } = useStore();
+  const currentFile = useStore((s) => s.currentFile);
+  const currentContent = useStore((s) => s.currentContent);
+  const panes = useStore((s) => s.panes);
+  const activePaneId = useStore((s) => s.activePaneId);
+  const mode = useStore((s) => s.mode);
+  const toggleMode = useStore((s) => s.toggleMode);
+  const reloadCurrent = useStore((s) => s.reloadCurrent);
+  const setActivePane = useStore((s) => s.setActivePane);
+  const closePane = useStore((s) => s.closePane);
+  const updatePaneContent = useStore((s) => s.updatePaneContent);
 
   const pane = paneId ? panes.find((p) => p.id === paneId) : null;
   const file = pane ? pane.file : currentFile;
@@ -55,9 +53,12 @@ export function MarkdownView({ paneId }: Props) {
 
   const saveTimer = useRef<number | null>(null);
   const lastSaved = useRef<string>(content);
+  const scrollRatioRef = useRef(0);
+  const viewScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     lastSaved.current = content;
+    scrollRatioRef.current = 0;
   }, [file]);
 
   useEffect(() => {
@@ -65,6 +66,21 @@ export function MarkdownView({ paneId }: Props) {
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
     };
   }, []);
+
+  useLayoutEffect(() => {
+    const el = viewScrollRef.current;
+    if (!el) return;
+    const ratio = scrollRatioRef.current;
+    if (ratio <= 0) return;
+    const max = el.scrollHeight - el.clientHeight;
+    if (max > 0) el.scrollTop = ratio * max;
+  }, [mode, file]);
+
+  const onViewScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const max = el.scrollHeight - el.clientHeight;
+    scrollRatioRef.current = max > 0 ? el.scrollTop / max : 0;
+  };
 
   const onChange = (value: string) => {
     if (paneId) {
@@ -168,14 +184,25 @@ export function MarkdownView({ paneId }: Props) {
       </div>
       {showingEditor && kind === "markdown" ? (
         <div className="flex-1 min-h-0">
-          <LiveEditor value={content} onChange={onChange} />
+          <LiveEditor
+            value={content}
+            onChange={onChange}
+            initialScrollRatio={scrollRatioRef.current}
+            onScrollRatio={(r) => {
+              scrollRatioRef.current = r;
+            }}
+          />
         </div>
       ) : showingEditor ? (
         <div className="flex-1 min-h-0">
           <MonacoEditor value={content} onChange={onChange} ext={ext} />
         </div>
       ) : kind === "markdown" ? (
-        <div className="flex-1 overflow-auto py-10 px-8">
+        <div
+          ref={viewScrollRef}
+          onScroll={onViewScroll}
+          className="flex-1 overflow-auto py-10 px-8"
+        >
           <div className="prose-md mx-auto">
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}

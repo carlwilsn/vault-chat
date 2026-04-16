@@ -282,14 +282,15 @@ fn open_terminal(cwd: Option<String>) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // CREATE_NEW_CONSOLE = 0x00000010 gives the child its own visible window
-        Command::new("powershell.exe")
-            .args([
-                "-NoExit",
-                "-Command",
-                &format!("Set-Location -LiteralPath '{}'", dir.replace('\'', "''")),
-            ])
-            .creation_flags(0x00000010)
+        // Use `cmd /C start "" cmd` to fully detach: the outer cmd runs `start`,
+        // which launches a new cmd window with its own stdio (not piped back to
+        // the parent GUI process), then the outer cmd exits. CREATE_NO_WINDOW
+        // hides the brief outer cmd flash.
+        let win_dir = dir.replace('/', "\\");
+        Command::new("cmd")
+            .args(["/C", "start", "", "cmd"])
+            .current_dir(&win_dir)
+            .creation_flags(0x08000000)
             .spawn()
             .map_err(|e| e.to_string())?;
         Ok(())

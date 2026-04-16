@@ -11,6 +11,7 @@ export function Titlebar() {
     vaultPath,
     setVault,
     setFiles,
+    setCurrentFile,
     setShowSettings,
     showSettings,
     leftCollapsed,
@@ -41,7 +42,10 @@ export function Titlebar() {
   const pickVault = async () => {
     const picked = await open({ directory: true, multiple: false });
     if (typeof picked === "string") {
-      setVault(picked.replace(/\\/g, "/"));
+      const normalized = picked.replace(/\\/g, "/");
+      const switching = normalized !== vaultPath;
+      setVault(normalized);
+      if (switching) setCurrentFile(null, "");
       const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: picked });
       setFiles(listed);
     }

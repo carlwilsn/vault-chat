@@ -1,9 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { tool } from "ai";
 import { z } from "zod";
+import * as pdfjs from "pdfjs-dist";
+import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+
+pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
 const READ_CAP = 24_000;
 const SHORT_CAP = 8_000;
+const PDF_CAP = 60_000;
 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
@@ -12,6 +17,68 @@ function truncate(text: string, max: number): string {
     text.slice(0, max) +
     `\n…[truncated, ${omitted.toLocaleString()} more chars]`
   );
+}
+
+function parsePageSpec(spec: string | undefined, total: number): number[] {
+  if (!spec || !spec.trim()) {
+    const out: number[] = [];
+    for (let i = 1; i <= total; i++) out.push(i);
+    return out;
+  }
+  const set = new Set<number>();
+  for (const part of spec.split(",")) {
+    const p = part.trim();
+    if (!p) continue;
+    const m = p.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      let a = parseInt(m[1], 10);
+      let b = parseInt(m[2], 10);
+      if (a > b) [a, b] = [b, a];
+      for (let i = Math.max(1, a); i <= Math.min(total, b); i++) set.add(i);
+    } else {
+      const n = parseInt(p, 10);
+      if (!Number.isNaN(n) && n >= 1 && n <= total) set.add(n);
+    }
+  }
+  return Array.from(set).sort((a, b) => a - b);
+}
+
+async function extractPdfText(path: string, pageSpec?: string): Promise<string> {
+  const bytes = await invoke<number[]>("read_binary_file", { path });
+  const data = new Uint8Array(bytes);
+  const doc = await pdfjs.getDocument({ data }).promise;
+  try {
+    const pages = parsePageSpec(pageSpec, doc.numPages);
+    const out: string[] = [];
+    out.push(`[${path}] ${doc.numPages} page(s) · extracting ${pages.length}`);
+    for (const pageNum of pages) {
+      const page = await doc.getPage(pageNum);
+      const tc = await page.getTextContent();
+      const lines: string[] = [];
+      let cur = "";
+      let lastY: number | null = null;
+      for (const item of tc.items as any[]) {
+        if (typeof item.str !== "string") continue;
+        const y = item.transform?.[5];
+        if (lastY !== null && y !== undefined && Math.abs(y - lastY) > 2) {
+          if (cur) lines.push(cur);
+          cur = "";
+        }
+        cur += item.str;
+        if (item.hasEOL) {
+          lines.push(cur);
+          cur = "";
+        }
+        if (y !== undefined) lastY = y;
+      }
+      if (cur) lines.push(cur);
+      out.push(`\n--- page ${pageNum} ---\n${lines.join("\n").trim()}`);
+      page.cleanup();
+    }
+    return out.join("\n");
+  } finally {
+    doc.destroy();
+  }
 }
 
 function stripNotebook(raw: string): string {
@@ -157,6 +224,26 @@ export function buildTools(vault: string, tavilyKey?: string) {
         if (result.stdout) parts.push(`stdout:\n${truncate(result.stdout, SHORT_CAP)}`);
         if (result.stderr) parts.push(`stderr:\n${truncate(result.stderr, SHORT_CAP)}`);
         return parts.join("\n");
+      },
+    }),
+
+    PdfExtract: tool({
+      description:
+        "Extract text from a PDF file. Returns plain text grouped by page. Use `pages` to limit (e.g., '1', '1-5', '1,3,7-9'); omit to extract all. Output is truncated at ~60k chars — prefer page ranges for long PDFs. Useful for reading lecture slides, papers, and other PDF content in the vault.",
+      inputSchema: z.object({
+        path: z.string().describe("Absolute path to the PDF file."),
+        pages: z
+          .string()
+          .optional()
+          .describe("Page selection: '1', '1-5', '1,3,7-9'. Omit for all pages."),
+      }),
+      execute: async ({ path, pages }) => {
+        try {
+          const text = await extractPdfText(path, pages);
+          return truncate(text, PDF_CAP);
+        } catch (e) {
+          return `PDF extraction failed: ${(e as Error).message}`;
+        }
       },
     }),
 
