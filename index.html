@@ -4,11 +4,78 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + Typescript</title>
+    <title>vault-chat</title>
+    <script>
+      // Set theme synchronously before any paint, so the first frame matches
+      // the user's chosen theme.
+      try {
+        var t = localStorage.getItem("vault_chat_theme");
+        document.documentElement.dataset.theme = t === "light" ? "light" : "graphite";
+      } catch (e) {
+        document.documentElement.dataset.theme = "graphite";
+      }
+    </script>
+    <style>
+      /* Critical CSS — applied on the first WebView paint, before Vite
+         delivers the real stylesheet. Prevents the white/unstyled flash. */
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: hsl(0 0% 10%);
+        color: hsl(0 0% 92%);
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 13px;
+        overflow: hidden;
+      }
+      html[data-theme="light"], html[data-theme="light"] body {
+        background: hsl(0 0% 98%);
+        color: hsl(0 0% 12%);
+      }
+      #root { height: 100%; }
+
+      /* Splash sits on top of #root while React mounts and the initial
+         vault/file listing resolves. It fades out the moment the app
+         signals it's ready. */
+      #vault-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        background: hsl(0 0% 13%);
+        color: hsl(0 0% 55%);
+        letter-spacing: 0.04em;
+        font-size: 11.5px;
+        transition: opacity 180ms ease;
+      }
+      html[data-theme="light"] #vault-splash {
+        background: hsl(0 0% 100%);
+        color: hsl(0 0% 42%);
+      }
+      #vault-splash.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #vault-splash .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        opacity: 0.5;
+        animation: vault-pulse 1.1s ease-in-out infinite;
+      }
+      @keyframes vault-pulse {
+        0%, 100% { opacity: 0.25; transform: scale(0.85); }
+        50%      { opacity: 0.85; transform: scale(1); }
+      }
+    </style>
   </head>
 
   <body>
     <div id="root"></div>
+    <div id="vault-splash"><span class="dot"></span>vault-chat</div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

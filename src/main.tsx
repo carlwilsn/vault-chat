@@ -29,3 +29,17 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <Root />
   </React.StrictMode>,
 );
+
+// Hide the boot splash on the next paint after React mounts. One rAF
+// ensures the first real frame has been committed, and a short delay
+// gives CSS/layout one more tick so the fade-out looks smooth rather
+// than snapping.
+requestAnimationFrame(() => {
+  requestAnimationFrame(() => {
+    const splash = document.getElementById("vault-splash");
+    if (splash) {
+      splash.classList.add("hidden");
+      setTimeout(() => splash.remove(), 250);
+    }
+  });
+});
