@@ -26,7 +26,12 @@ const KEYS_STORAGE = "vault_chat_api_keys";
 const MODEL_STORAGE = "vault_chat_model";
 const THEME_STORAGE = "vault_chat_theme";
 
-export type Theme = "dark" | "graphite";
+export type Theme = "graphite" | "light";
+
+function loadTheme(): Theme {
+  const raw = localStorage.getItem(THEME_STORAGE);
+  return raw === "light" ? "light" : "graphite";
+}
 
 function loadKeys(): ApiKeys {
   try {
@@ -104,7 +109,7 @@ export const useStore = create<State>((set) => ({
   messages: [],
   apiKeys: loadKeys(),
   modelId: localStorage.getItem(MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
-  theme: ((localStorage.getItem(THEME_STORAGE) as Theme) ?? "dark"),
+  theme: loadTheme(),
   skills: [],
   busy: false,
   showSettings: false,

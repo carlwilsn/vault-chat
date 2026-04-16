@@ -170,10 +170,13 @@ export function ChatPane() {
                 >
                   {streamingText}
                 </ReactMarkdown>
-                <span className="inline-block w-1.5 h-3 bg-primary/70 ml-0.5 animate-pulse align-middle" />
               </div>
             )}
           </div>
+        )}
+
+        {busy && !streamingText && (
+          <ThinkingIndicator activeTool={liveTools.find((t) => !t.result)?.name} />
         )}
         </div>
       </div>
@@ -305,6 +308,32 @@ function MessageBubble({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ThinkingIndicator({ activeTool }: { activeTool?: string }) {
+  const [phase, setPhase] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setPhase((p) => (p + 1) % 3), 400);
+    return () => clearInterval(id);
+  }, []);
+  const label = activeTool ? `Running ${activeTool}` : "Thinking";
+  return (
+    <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
+      <Sparkles className="h-3 w-3 animate-pulse" />
+      <span>{label}</span>
+      <span className="inline-flex gap-0.5">
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className={cn(
+              "h-1 w-1 rounded-full bg-current transition-opacity",
+              phase === i ? "opacity-100" : "opacity-30"
+            )}
+          />
+        ))}
+      </span>
     </div>
   );
 }

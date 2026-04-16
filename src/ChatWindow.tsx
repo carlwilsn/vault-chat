@@ -1,10 +1,9 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { X, Minus, Square, Settings, Trash2 } from "lucide-react";
+import { X, Minus, Square, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ChatPane } from "./ChatPane";
 import { SettingsPane } from "./SettingsPane";
 import { useStore } from "./store";
-import { dispatchChatAction } from "./sync";
 
 export function ChatWindow() {
   const win = getCurrentWindow();
@@ -12,7 +11,6 @@ export function ChatWindow() {
   const theme = useStore((s) => s.theme);
   const showSettings = useStore((s) => s.showSettings);
   const setShowSettings = useStore((s) => s.setShowSettings);
-  const messages = useStore((s) => s.messages);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -43,15 +41,6 @@ export function ChatWindow() {
         >
           Chat
         </div>
-        {messages.length > 0 && (
-          <button
-            onClick={() => dispatchChatAction({ kind: "clear" })}
-            className="h-8 w-9 flex items-center justify-center hover:bg-accent/60 text-muted-foreground"
-            title="Clear conversation"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        )}
         <button
           onClick={() => setShowSettings(!showSettings)}
           className="h-8 w-9 flex items-center justify-center hover:bg-accent/60 text-muted-foreground"

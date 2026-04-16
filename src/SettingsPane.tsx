@@ -71,9 +71,9 @@ export function SettingsPane() {
               App color palette.
             </p>
           </div>
-          <Select value={theme} onChange={(e) => setTheme(e.target.value as "dark" | "graphite")}>
-            <option value="dark">Dark (default)</option>
-            <option value="graphite">Graphite</option>
+          <Select value={theme} onChange={(e) => setTheme(e.target.value as "graphite" | "light")}>
+            <option value="graphite">Graphite (default)</option>
+            <option value="light">Light</option>
           </Select>
         </section>
 
