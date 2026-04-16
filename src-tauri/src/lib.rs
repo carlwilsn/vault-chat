@@ -1,7 +1,10 @@
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 use walkdir::WalkDir;
+
+const IGNORE_FILE: &str = ".vaultchatignore";
 
 #[derive(Serialize)]
 struct FileEntry {
@@ -9,6 +12,40 @@ struct FileEntry {
     name: String,
     is_dir: bool,
     depth: usize,
+    hidden: bool,
+}
+
+fn load_ignore_set(vault: &std::path::Path) -> HashSet<String> {
+    let path = vault.join(IGNORE_FILE);
+    let mut set = HashSet::new();
+    if let Ok(contents) = std::fs::read_to_string(&path) {
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let normalized = trimmed
+                .trim_start_matches('/')
+                .trim_end_matches('/')
+                .replace('\\', "/");
+            if !normalized.is_empty() {
+                set.insert(normalized);
+            }
+        }
+    }
+    set
+}
+
+fn is_hidden_path(rel_path: &str, ignored: &HashSet<String>) -> bool {
+    if ignored.contains(rel_path) {
+        return true;
+    }
+    for (i, _) in rel_path.match_indices('/') {
+        if ignored.contains(&rel_path[..i]) {
+            return true;
+        }
+    }
+    false
 }
 
 #[tauri::command]
@@ -23,6 +60,7 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
     if !root.is_dir() {
         return Err(format!("Not a directory: {}", vault));
     }
+    let ignored = load_ignore_set(&root);
     let mut entries: Vec<FileEntry> = Vec::new();
     for entry in WalkDir::new(&root)
         .sort_by(|a, b| {
@@ -55,14 +93,111 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
         if rel.as_os_str().is_empty() {
             continue;
         }
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        let hidden = is_hidden_path(&rel_str, &ignored);
         entries.push(FileEntry {
             path: path.to_string_lossy().replace('\\', "/"),
             name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
             is_dir,
             depth: rel.components().count().saturating_sub(1),
+            hidden,
         });
     }
     Ok(entries)
+}
+
+#[tauri::command]
+async fn read_ignore_lines(vault: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = std::path::Path::new(&vault).join(IGNORE_FILE);
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let mut out: Vec<String> = Vec::new();
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let normalized = trimmed
+                .trim_start_matches('/')
+                .trim_end_matches('/')
+                .replace('\\', "/");
+            if !normalized.is_empty() {
+                out.push(normalized);
+            }
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn add_to_ignore(vault: String, relative_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let normalized = relative_path
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .replace('\\', "/");
+        if normalized.is_empty() {
+            return Err("cannot hide vault root".to_string());
+        }
+        let path = std::path::Path::new(&vault).join(IGNORE_FILE);
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        for line in existing.lines() {
+            if line.trim() == normalized {
+                return Ok(());
+            }
+        }
+        let mut new_contents = existing;
+        if !new_contents.is_empty() && !new_contents.ends_with('\n') {
+            new_contents.push('\n');
+        }
+        new_contents.push_str(&normalized);
+        new_contents.push('\n');
+        std::fs::write(&path, new_contents).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn remove_from_ignore(vault: String, relative_paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let targets: HashSet<String> = relative_paths
+            .into_iter()
+            .map(|p| {
+                p.trim_start_matches('/')
+                    .trim_end_matches('/')
+                    .replace('\\', "/")
+            })
+            .filter(|p| !p.is_empty())
+            .collect();
+        if targets.is_empty() {
+            return Ok(());
+        }
+        let path = std::path::Path::new(&vault).join(IGNORE_FILE);
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Ok(()),
+        };
+        let kept: Vec<&str> = existing
+            .lines()
+            .filter(|l| !targets.contains(l.trim()))
+            .collect();
+        let new_contents = if kept.iter().all(|l| l.trim().is_empty()) {
+            String::new()
+        } else {
+            let mut s = kept.join("\n");
+            s.push('\n');
+            s
+        };
+        std::fs::write(&path, new_contents).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -510,6 +645,7 @@ fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
             name,
             is_dir: path.is_dir(),
             depth: 0,
+            hidden: false,
         });
     }
     entries.sort_by(|a, b| {
@@ -587,7 +723,10 @@ pub fn run() {
             bash_exec,
             list_dir,
             http_fetch,
-            tavily_search
+            tavily_search,
+            read_ignore_lines,
+            add_to_ignore,
+            remove_from_ignore
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

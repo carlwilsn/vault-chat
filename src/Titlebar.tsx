@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, RotateCw, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink } from "lucide-react";
+import { FolderOpen, RotateCw, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 
@@ -20,6 +20,9 @@ export function Titlebar() {
     toggleRight,
   } = useStore();
   const [maximized, setMaximized] = useState(false);
+  const [hiddenOpen, setHiddenOpen] = useState(false);
+  const [hiddenLines, setHiddenLines] = useState<string[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const win = getCurrentWindow();
 
   useEffect(() => {
@@ -50,9 +53,57 @@ export function Titlebar() {
     setFiles(listed);
   };
 
+  const openHidden = async () => {
+    if (!vaultPath) return;
+    try {
+      const lines = await invoke<string[]>("read_ignore_lines", { vault: vaultPath });
+      setHiddenLines(lines);
+      setSelected(new Set());
+      setHiddenOpen(true);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const toggleSel = (line: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(line)) next.delete(line);
+      else next.add(line);
+      return next;
+    });
+
+  const unhideSelected = async () => {
+    if (!vaultPath || selected.size === 0) {
+      setHiddenOpen(false);
+      return;
+    }
+    try {
+      await invoke("remove_from_ignore", {
+        vault: vaultPath,
+        relativePaths: Array.from(selected),
+      });
+      const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: vaultPath });
+      setFiles(listed);
+    } catch (e) {
+      console.error(e);
+    }
+    setHiddenOpen(false);
+  };
+
+  useEffect(() => {
+    if (!hiddenOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setHiddenOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [hiddenOpen]);
+
   const vaultName = vaultPath ? vaultPath.split("/").filter(Boolean).pop() : null;
 
   return (
+    <>
     <div
       data-tauri-drag-region
       className="h-9 flex items-center bg-card border-b border-border select-none shrink-0"
@@ -74,13 +125,22 @@ export function Titlebar() {
           <span className="max-w-[220px] truncate">{vaultName ?? "Open vault"}</span>
         </button>
         {vaultPath && (
-          <button
-            onClick={refresh}
-            className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
-            title="Refresh"
-          >
-            <RotateCw className="h-3.5 w-3.5" />
-          </button>
+          <>
+            <button
+              onClick={openHidden}
+              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
+              title="Hidden files"
+            >
+              <Eye className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={refresh}
+              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
+              title="Refresh"
+            >
+              <RotateCw className="h-3.5 w-3.5" />
+            </button>
+          </>
         )}
       </div>
 
@@ -132,5 +192,64 @@ export function Titlebar() {
         </button>
       </div>
     </div>
+    {hiddenOpen && (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        onMouseDown={(e) => {
+          if (e.target === e.currentTarget) setHiddenOpen(false);
+        }}
+      >
+        <div
+          className="w-[420px] max-h-[70vh] flex flex-col rounded-md border border-border bg-card shadow-xl"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="px-4 pt-4 pb-2">
+            <div className="text-[13px] font-semibold text-foreground">Hidden files</div>
+            <div className="text-[11.5px] text-muted-foreground mt-0.5">
+              {hiddenLines.length === 0
+                ? "Nothing hidden in this vault."
+                : "Select entries to unhide. The agent can still see hidden files."}
+            </div>
+          </div>
+          <div className="flex-1 overflow-auto px-2 py-1 min-h-0">
+            {hiddenLines.map((line) => (
+              <label
+                key={line}
+                className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/60 cursor-pointer text-[12.5px]"
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.has(line)}
+                  onChange={() => toggleSel(line)}
+                  className="shrink-0"
+                />
+                <span className="truncate font-mono text-[11.5px] text-foreground/90">{line}</span>
+              </label>
+            ))}
+          </div>
+          <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-border/60">
+            <div className="text-[11px] text-muted-foreground">
+              {selected.size > 0 ? `${selected.size} selected` : ""}
+            </div>
+            <div className="flex gap-2">
+              <button
+                className="px-3 py-1 rounded text-[12px] hover:bg-accent/60 text-foreground"
+                onClick={() => setHiddenOpen(false)}
+              >
+                Close
+              </button>
+              <button
+                className="px-3 py-1 rounded text-[12px] bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed"
+                disabled={selected.size === 0}
+                onClick={unhideSelected}
+              >
+                Unhide
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2 } from "lucide-react";
+import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { cn } from "./lib/utils";
 
@@ -170,6 +170,17 @@ export function FileTree() {
 
   const cancelRename = () => setRenaming(null);
 
+  const hideEntry = async (f: FileEntry) => {
+    if (!vaultPath || !f.path.startsWith(vaultPath + "/")) return;
+    const rel = f.path.slice(vaultPath.length + 1);
+    try {
+      await invoke("add_to_ignore", { vault: vaultPath, relativePath: rel });
+      await refreshFiles();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const doDelete = async (f: FileEntry) => {
     try {
       await invoke("delete_file", { path: f.path });
@@ -235,6 +246,7 @@ export function FileTree() {
           />
         )}
         {files.map((f) => {
+          if (f.hidden) return null;
           if (isHidden(f)) return null;
           const isActive = currentFile === f.path;
           const isSelectedDir = f.is_dir && selectedDir === f.path;
@@ -330,6 +342,29 @@ export function FileTree() {
         >
           {menu.entry ? (
             <>
+              {menu.entry.is_dir && (
+                <>
+                  <button
+                    className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                    onClick={() => {
+                      beginCreate("file", menu.entry!.path);
+                      setMenu(null);
+                    }}
+                  >
+                    <FilePlus className="h-3.5 w-3.5 opacity-70" /> New file
+                  </button>
+                  <button
+                    className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                    onClick={() => {
+                      beginCreate("folder", menu.entry!.path);
+                      setMenu(null);
+                    }}
+                  >
+                    <FolderPlus className="h-3.5 w-3.5 opacity-70" /> New folder
+                  </button>
+                  <div className="my-1 h-px bg-border/60" />
+                </>
+              )}
               <button
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
@@ -338,6 +373,15 @@ export function FileTree() {
                 }}
               >
                 <Pencil className="h-3.5 w-3.5 opacity-70" /> Rename
+              </button>
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                onClick={() => {
+                  hideEntry(menu.entry!);
+                  setMenu(null);
+                }}
+              >
+                <EyeOff className="h-3.5 w-3.5 opacity-70" /> Hide
               </button>
               <button
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-destructive whitespace-nowrap"

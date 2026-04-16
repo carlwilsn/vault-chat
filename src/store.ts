@@ -9,6 +9,7 @@ export type FileEntry = {
   name: string;
   is_dir: boolean;
   depth: number;
+  hidden: boolean;
 };
 
 export type ChatRole = "user" | "assistant";
