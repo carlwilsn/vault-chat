@@ -283,12 +283,8 @@ fn open_terminal(cwd: Option<String>) -> Result<(), String> {
     {
         use std::os::windows::process::CommandExt;
         // CREATE_NEW_CONSOLE = 0x00000010 gives the child its own visible window
-        Command::new("powershell.exe")
-            .args([
-                "-NoExit",
-                "-Command",
-                &format!("Set-Location -LiteralPath '{}'", dir.replace('\'', "''")),
-            ])
+        Command::new("cmd.exe")
+            .args(["/K", &format!("cd /D \"{}\"", dir)])
             .creation_flags(0x00000010)
             .spawn()
             .map_err(|e| e.to_string())?;
