@@ -17,7 +17,10 @@ export type ChatMessage = {
   role: ChatRole;
   content: string;
   toolCalls?: { id?: string; name: string; input: any; result?: string }[];
+  system?: boolean;
 };
+
+export const MODEL_CONTEXT_LIMIT = 200_000;
 
 export type LiveTool = { id: string; name: string; input: any; result?: string };
 
@@ -84,6 +87,9 @@ type State = {
   rightCollapsed: boolean;
   popoutOpen: boolean;
   tokenUsage: { prompt: number; completion: number; total: number };
+  lastContext: number;
+  compactionSummary: string | null;
+  compacting: boolean;
   streamingText: string;
   liveTools: LiveTool[];
 
@@ -113,6 +119,9 @@ type State = {
   toggleRight: () => void;
   setPopoutOpen: (b: boolean) => void;
   addTokenUsage: (u: { prompt: number; completion: number; total: number }) => void;
+  setLastContext: (n: number) => void;
+  setCompacting: (b: boolean) => void;
+  applyCompaction: (summary: string, keepCount: number, banner: ChatMessage) => void;
   appendStreamingText: (s: string) => void;
   setStreamingText: (s: string) => void;
   pushLiveTool: (t: LiveTool) => void;
@@ -127,6 +136,9 @@ type State = {
     busy: boolean;
     modelId?: string;
     tokenUsage?: { prompt: number; completion: number; total: number };
+    lastContext?: number;
+    compactionSummary?: string | null;
+    compacting?: boolean;
     streamingText?: string;
     liveTools?: LiveTool[];
   }) => void;
@@ -151,9 +163,12 @@ export const useStore = create<State>((set) => ({
   showSettings: false,
   mode: "view",
   leftCollapsed: false,
-  rightCollapsed: false,
+  rightCollapsed: true,
   popoutOpen: false,
   tokenUsage: { prompt: 0, completion: 0, total: 0 },
+  lastContext: 0,
+  compactionSummary: null,
+  compacting: false,
   streamingText: "",
   liveTools: [],
 
@@ -355,6 +370,14 @@ export const useStore = create<State>((set) => ({
         total: s.tokenUsage.total + u.total,
       },
     })),
+  setLastContext: (n) => set({ lastContext: n }),
+  setCompacting: (b) => set({ compacting: b }),
+  applyCompaction: (summary, keepCount, banner) =>
+    set((s) => ({
+      messages: [banner, ...s.messages.slice(-keepCount)],
+      compactionSummary: summary,
+      lastContext: 0,
+    })),
   appendStreamingText: (s) => set((prev) => ({ streamingText: prev.streamingText + s })),
   setStreamingText: (s) => set({ streamingText: s }),
   pushLiveTool: (t) => set((prev) => ({ liveTools: [...prev.liveTools, t] })),
@@ -376,8 +399,17 @@ export const useStore = create<State>((set) => ({
       busy: s.busy,
       modelId: s.modelId ?? prev.modelId,
       tokenUsage: s.tokenUsage ?? prev.tokenUsage,
+      lastContext: s.lastContext ?? prev.lastContext,
+      compactionSummary: s.compactionSummary ?? null,
+      compacting: s.compacting ?? false,
       streamingText: s.streamingText ?? "",
       liveTools: s.liveTools ?? [],
     })),
-  clearMessages: () => set({ messages: [], tokenUsage: { prompt: 0, completion: 0, total: 0 } }),
+  clearMessages: () =>
+    set({
+      messages: [],
+      tokenUsage: { prompt: 0, completion: 0, total: 0 },
+      lastContext: 0,
+      compactionSummary: null,
+    }),
 }));

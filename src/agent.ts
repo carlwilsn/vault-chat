@@ -4,7 +4,12 @@ import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
 
-export type TokenUsage = { prompt: number; completion: number; total: number };
+export type TokenUsage = {
+  prompt: number;
+  completion: number;
+  total: number;
+  context: number;
+};
 
 export type StreamEvent =
   | { kind: "text"; delta: string }
@@ -112,9 +117,16 @@ export async function runAgent(params: {
     if (usage) {
       const prompt = usage.inputTokens ?? 0;
       const completion = usage.outputTokens ?? 0;
+      const cached = (usage as any).cachedInputTokens ?? 0;
+      const context = prompt + cached;
       onEvent({
         kind: "done",
-        usage: { prompt, completion, total: usage.totalTokens ?? (prompt + completion) },
+        usage: {
+          prompt,
+          completion,
+          total: usage.totalTokens ?? prompt + completion + cached,
+          context,
+        },
       });
     } else {
       onEvent({ kind: "done" });

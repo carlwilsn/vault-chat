@@ -1,5 +1,6 @@
-import { useEffect } from "react";
-import { Allotment } from "allotment";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Allotment, LayoutPriority } from "allotment";
+import type { FileEntry } from "./store";
 import "allotment/dist/style.css";
 import { FileTree } from "./FileTree";
 import { MarkdownArea } from "./MarkdownArea";
@@ -25,8 +26,23 @@ export default function App() {
   const showSettings = useStore((s) => s.showSettings);
   const chatHidden = rightCollapsed || popoutOpen;
   const files = useStore((s) => s.files);
-  const maxDepth = files.reduce((m, f) => Math.max(m, f.depth), 0);
-  const leftMax = Math.max(420, 120 + maxDepth * 14 + 200);
+  const vaultPath = useStore((s) => s.vaultPath);
+  const fitWidth = useMemo(() => computeFitWidth(files), [files]);
+  const leftMax = Math.max(fitWidth, 600);
+
+  const [layoutKey, setLayoutKey] = useState<string>("empty");
+  const lastVaultRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      vaultPath &&
+      vaultPath !== lastVaultRef.current &&
+      files.length > 0 &&
+      files[0].path.startsWith(vaultPath)
+    ) {
+      lastVaultRef.current = vaultPath;
+      setLayoutKey(vaultPath);
+    }
+  }, [vaultPath, files]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -53,11 +69,11 @@ export default function App() {
     <div className="h-full w-full bg-background flex flex-col">
       <Titlebar />
       <div className="flex-1 min-h-0">
-        <Allotment>
-          <Allotment.Pane preferredSize={200} minSize={160} maxSize={leftMax} visible={!leftCollapsed} snap>
+        <Allotment key={layoutKey} proportionalLayout={false}>
+          <Allotment.Pane preferredSize={fitWidth} minSize={160} maxSize={leftMax} visible={!leftCollapsed} snap>
             <FileTree />
           </Allotment.Pane>
-          <Allotment.Pane minSize={340}>
+          <Allotment.Pane minSize={340} priority={LayoutPriority.High}>
             {showSettings && chatHidden ? <SettingsPane /> : <MarkdownArea />}
           </Allotment.Pane>
           <Allotment.Pane preferredSize={440} minSize={320} visible={!rightCollapsed && !popoutOpen} snap>
@@ -67,4 +83,32 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+function getMeasureCtx(): CanvasRenderingContext2D | null {
+  if (measureCtx !== undefined) return measureCtx;
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  if (ctx) ctx.font = "12.5px ui-sans-serif, system-ui, sans-serif";
+  measureCtx = ctx;
+  return ctx;
+}
+
+function computeFitWidth(files: FileEntry[]): number {
+  if (!files.length) return 180;
+  const ctx = getMeasureCtx();
+  let max = 0;
+  for (const f of files) {
+    if (f.hidden) continue;
+    if (f.depth !== 0) continue;
+    const label = f.is_dir ? f.name : f.name.replace(/\.md$/, "");
+    const indent = 8;
+    const iconAndGap = 22;
+    const text = ctx ? ctx.measureText(label).width : label.length * 7;
+    const right = 16;
+    const w = indent + iconAndGap + text + right;
+    if (w > max) max = w;
+  }
+  return Math.max(160, Math.min(320, Math.round(max)));
 }

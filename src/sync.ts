@@ -17,6 +17,9 @@ type Snapshot = {
   busy: boolean;
   modelId: string;
   tokenUsage: { prompt: number; completion: number; total: number };
+  lastContext: number;
+  compactionSummary: string | null;
+  compacting: boolean;
   streamingText: string;
   liveTools: LiveTool[];
 };
@@ -38,6 +41,9 @@ function takeSnapshot(): Snapshot {
     busy: s.busy,
     modelId: s.modelId,
     tokenUsage: s.tokenUsage,
+    lastContext: s.lastContext,
+    compactionSummary: s.compactionSummary,
+    compacting: s.compacting,
     streamingText: s.streamingText,
     liveTools: s.liveTools,
   };
@@ -85,6 +91,9 @@ export async function installMainSync() {
       state.liveTools !== prev.liveTools ||
       state.modelId !== prev.modelId ||
       state.tokenUsage !== prev.tokenUsage ||
+      state.lastContext !== prev.lastContext ||
+      state.compactionSummary !== prev.compactionSummary ||
+      state.compacting !== prev.compacting ||
       state.vaultPath !== prev.vaultPath ||
       state.currentFile !== prev.currentFile ||
       state.currentContent !== prev.currentContent ||

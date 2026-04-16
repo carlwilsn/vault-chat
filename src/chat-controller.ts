@@ -1,9 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import { runAgent } from "./agent";
 import { findModel } from "./providers";
-import { useStore, type FileEntry, type LiveTool } from "./store";
+import { compactConversation } from "./compactor";
+import {
+  useStore,
+  MODEL_CONTEXT_LIMIT,
+  type ChatMessage,
+  type FileEntry,
+  type LiveTool,
+} from "./store";
 
 let abortRef: AbortController | null = null;
+
+const COMPACT_THRESHOLD = 0.85;
+const KEEP_RECENT = 4;
 
 export async function sendMessage(text: string) {
   const s = useStore.getState();
@@ -12,19 +22,65 @@ export async function sendMessage(text: string) {
   if (!trimmed) return;
   const spec = findModel(s.modelId);
   const apiKey = spec ? s.apiKeys[spec.provider] : undefined;
-  if (!s.vaultPath || !apiKey) return;
+  if (!s.vaultPath || !apiKey || !spec) return;
   const tavilyKey = s.serviceKeys.tavily;
 
-  s.appendMessage({ role: "user", content: trimmed });
-  s.setBusy(true);
-  s.resetStreaming();
+  if (
+    s.lastContext > COMPACT_THRESHOLD * MODEL_CONTEXT_LIMIT &&
+    s.messages.length > KEEP_RECENT
+  ) {
+    s.setBusy(true);
+    s.setCompacting(true);
+    try {
+      const toSummarize = s.messages.slice(0, -KEEP_RECENT);
+      const summary = await compactConversation({
+        provider: spec.provider,
+        apiKey,
+        messages: toSummarize,
+      });
+      const banner: ChatMessage = {
+        role: "assistant",
+        content: "Conversation compacted to free context.",
+        system: true,
+      };
+      useStore.getState().applyCompaction(summary, KEEP_RECENT, banner);
+    } catch (err) {
+      console.error("[compaction] failed:", err);
+      useStore.getState().appendMessage({
+        role: "assistant",
+        content: `⚠️ Compaction failed: ${(err as any)?.message ?? String(err)}`,
+        system: true,
+      });
+    }
+    useStore.getState().setCompacting(false);
+    useStore.getState().setBusy(false);
+  }
 
-  const history = s.messages.map((m) => ({ role: m.role, content: m.content }));
-  const vault = s.vaultPath;
-  const modelId = s.modelId;
-  const currentFile = s.currentFile;
+  const cur = useStore.getState();
+  cur.appendMessage({ role: "user", content: trimmed });
+  cur.setBusy(true);
+  cur.resetStreaming();
 
-  const openPaneIds = s.panes.map((p) => p.id);
+  const filtered = cur.messages.filter((m) => !m.system);
+  const baseHistory = filtered.map((m) => ({ role: m.role, content: m.content }));
+  const history = cur.compactionSummary
+    ? [
+        {
+          role: "user" as const,
+          content: `[Earlier conversation summary]\n\n${cur.compactionSummary}`,
+        },
+        {
+          role: "assistant" as const,
+          content: "Continuing from where we left off.",
+        },
+        ...baseHistory,
+      ]
+    : baseHistory;
+
+  const vault = cur.vaultPath!;
+  const modelId = cur.modelId;
+  const currentFile = cur.currentFile;
+  const openPaneIds = cur.panes.map((p) => p.id);
 
   abortRef = new AbortController();
   const signal = abortRef.signal;
@@ -54,7 +110,10 @@ export async function sendMessage(text: string) {
         if (t) t.result = e.result;
         store.updateLiveToolResult(e.id, e.result);
       } else if (e.kind === "done") {
-        if (e.usage) store.addTokenUsage(e.usage);
+        if (e.usage) {
+          store.addTokenUsage(e.usage);
+          store.setLastContext(e.usage.context);
+        }
         store.appendMessage({
           role: "assistant",
           content: acc,

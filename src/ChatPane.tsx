@@ -6,7 +6,7 @@ import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Sparkles } from "lucide-react";
 import { dispatchChatAction } from "./sync";
-import { useStore } from "./store";
+import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage } from "./store";
 import { findModel, MODELS } from "./providers";
 import { loadSkills } from "./skills";
 import { SettingsPane } from "./SettingsPane";
@@ -22,7 +22,8 @@ export function ChatPane() {
     skills,
     busy,
     showSettings,
-    tokenUsage,
+    lastContext,
+    compacting,
     setSkills,
     setShowSettings,
     streamingText,
@@ -143,6 +144,13 @@ export function ChatPane() {
           <MessageBubble key={i} message={m} />
         ))}
 
+        {compacting && (
+          <div className="flex items-center justify-center gap-2 py-2 text-[11.5px] text-muted-foreground">
+            <Sparkles className="h-3 w-3 animate-pulse" />
+            <span>Compacting conversation…</span>
+          </div>
+        )}
+
         {(streamingText || liveTools.length > 0) && (
           <div className="space-y-2">
             {liveTools.length > 0 && (
@@ -237,10 +245,13 @@ export function ChatPane() {
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
             <ModelPicker modelId={modelId} apiKeys={apiKeys} onSelect={onSelectModel} />
             <div className="flex items-center gap-2">
-              {tokenUsage.total > 0 && (
-                <div className="flex items-center gap-1.5" title={`${tokenUsage.prompt.toLocaleString()} in / ${tokenUsage.completion.toLocaleString()} out`}>
-                  <TokenRing used={tokenUsage.total} limit={200000} size={14} />
-                  <span>{formatTokens(tokenUsage.total)}</span>
+              {lastContext > 0 && (
+                <div
+                  className="flex items-center gap-1.5"
+                  title={`Context: ${lastContext.toLocaleString()} / ${MODEL_CONTEXT_LIMIT.toLocaleString()} tokens`}
+                >
+                  <TokenRing used={lastContext} limit={MODEL_CONTEXT_LIMIT} size={14} />
+                  <span>{formatTokens(lastContext)}</span>
                 </div>
               )}
               {messages.length > 0 && (
@@ -285,8 +296,17 @@ function toolSummary(input: any): string {
 function MessageBubble({
   message,
 }: {
-  message: { role: "user" | "assistant"; content: string; toolCalls?: { id?: string; name: string; input: any; result?: string }[] };
+  message: ChatMessage;
 }) {
+  if (message.system) {
+    return (
+      <div className="flex items-center justify-center gap-2 py-2 text-[11px] text-muted-foreground">
+        <div className="h-px w-8 bg-border" />
+        <span className="italic">{message.content}</span>
+        <div className="h-px w-8 bg-border" />
+      </div>
+    );
+  }
   const isUser = message.role === "user";
   return (
     <div className={cn("flex flex-col gap-1.5", isUser && "items-end")}>

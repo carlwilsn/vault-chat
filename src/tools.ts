@@ -2,16 +2,48 @@ import { invoke } from "@tauri-apps/api/core";
 import { tool } from "ai";
 import { z } from "zod";
 
+const READ_CAP = 24_000;
+const SHORT_CAP = 8_000;
+
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const omitted = text.length - max;
+  return (
+    text.slice(0, max) +
+    `\n…[truncated, ${omitted.toLocaleString()} more chars]`
+  );
+}
+
+function stripNotebook(raw: string): string {
+  try {
+    const nb = JSON.parse(raw);
+    if (!nb || !Array.isArray(nb.cells)) return raw;
+    const out: string[] = [];
+    nb.cells.forEach((cell: any, i: number) => {
+      const type = cell.cell_type ?? "code";
+      const src = Array.isArray(cell.source) ? cell.source.join("") : String(cell.source ?? "");
+      out.push(`# Cell ${i} [${type}]`);
+      out.push(src.trimEnd());
+      out.push("");
+    });
+    return out.join("\n");
+  } catch {
+    return raw;
+  }
+}
+
 export function buildTools(vault: string, tavilyKey?: string) {
   const base = {
     Read: tool({
       description:
-        "Read a UTF-8 text file. Use absolute paths. Returns the file contents.",
+        "Read a UTF-8 text file. Use absolute paths. Returns the file contents. Jupyter notebooks (.ipynb) return source cells only (outputs stripped). Long files are truncated; use Edit/Grep for surgical access.",
       inputSchema: z.object({
         path: z.string().describe("Absolute path to the file."),
       }),
       execute: async ({ path }) => {
-        return await invoke<string>("read_text_file", { path });
+        const raw = await invoke<string>("read_text_file", { path });
+        const text = path.toLowerCase().endsWith(".ipynb") ? stripNotebook(raw) : raw;
+        return truncate(text, READ_CAP);
       },
     }),
 
@@ -70,7 +102,8 @@ export function buildTools(vault: string, tavilyKey?: string) {
           pattern,
           cwd: vault,
         });
-        return results.length ? results.join("\n") : "(no matches)";
+        if (!results.length) return "(no matches)";
+        return truncate(results.join("\n"), SHORT_CAP);
       },
     }),
 
@@ -96,7 +129,7 @@ export function buildTools(vault: string, tavilyKey?: string) {
           }
         );
         if (!results.length) return "(no matches)";
-        return results.map((r) => `${r.path}:${r.line}: ${r.text}`).join("\n");
+        return truncate(results.map((r) => `${r.path}:${r.line}: ${r.text}`).join("\n"), SHORT_CAP);
       },
     }),
 
@@ -121,8 +154,8 @@ export function buildTools(vault: string, tavilyKey?: string) {
         });
         const parts: string[] = [];
         parts.push(`exit: ${result.code}${result.timed_out ? " (TIMED OUT)" : ""}`);
-        if (result.stdout) parts.push(`stdout:\n${result.stdout}`);
-        if (result.stderr) parts.push(`stderr:\n${result.stderr}`);
+        if (result.stdout) parts.push(`stdout:\n${truncate(result.stdout, SHORT_CAP)}`);
+        if (result.stderr) parts.push(`stderr:\n${truncate(result.stderr, SHORT_CAP)}`);
         return parts.join("\n");
       },
     }),
@@ -137,7 +170,10 @@ export function buildTools(vault: string, tavilyKey?: string) {
           "list_dir",
           { path }
         );
-        return entries.map((e) => `${e.is_dir ? "[dir] " : "      "}${e.name}`).join("\n");
+        return truncate(
+          entries.map((e) => `${e.is_dir ? "[dir] " : "      "}${e.name}`).join("\n"),
+          SHORT_CAP,
+        );
       },
     }),
 
