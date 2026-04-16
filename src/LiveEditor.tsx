@@ -163,16 +163,20 @@ function buildDecorations(state: EditorState): DecorationSet {
         }
         if (!a) {
           if (firstIsFence) {
-            const end = startLine.to < doc.length ? startLine.to + 1 : startLine.to;
             builder.push(
-              Decoration.replace({ widget: emptyBlock, block: true }).range(startLine.from, end)
+              Decoration.line({ class: "cm-fence-collapsed" }).range(startLine.from)
             );
+            if (startLine.to > startLine.from) {
+              builder.push(hideDeco.range(startLine.from, startLine.to));
+            }
           }
           if (lastIsFence) {
-            const end = endLine.to < doc.length ? endLine.to + 1 : endLine.to;
             builder.push(
-              Decoration.replace({ widget: emptyBlock, block: true }).range(endLine.from, end)
+              Decoration.line({ class: "cm-fence-collapsed" }).range(endLine.from)
             );
+            if (endLine.to > endLine.from) {
+              builder.push(hideDeco.range(endLine.from, endLine.to));
+            }
           }
         }
         return;
@@ -281,6 +285,13 @@ const liveTheme = EditorView.theme({
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
     fontSize: "0.9em",
     background: "hsl(var(--muted) / 0.5)",
+  },
+  ".cm-fence-collapsed": {
+    fontSize: "0 !important",
+    lineHeight: "0 !important",
+    padding: "0 !important",
+    height: "0 !important",
+    overflow: "hidden",
   },
   ".cm-hr": {
     borderTop: "1px solid hsl(var(--border))",

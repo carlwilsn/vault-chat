@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, RotateCw, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight } from "lucide-react";
+import { FolderOpen, RotateCw, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
+import { openChatPopout } from "./sync";
 
 export function Titlebar() {
   const {
@@ -14,6 +15,7 @@ export function Titlebar() {
     showSettings,
     leftCollapsed,
     rightCollapsed,
+    popoutOpen,
     toggleLeft,
     toggleRight,
   } = useStore();
@@ -91,6 +93,14 @@ export function Titlebar() {
           title={`${rightCollapsed ? "Show" : "Hide"} chat panel (Ctrl+Shift+B)`}
         >
           <PanelRight className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={() => openChatPopout().catch((err) => console.error("[popout] failed:", err))}
+          disabled={popoutOpen}
+          className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1 disabled:opacity-40 disabled:cursor-not-allowed"
+          title={popoutOpen ? "Chat is popped out" : "Pop out chat"}
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
         </button>
         <button
           onClick={() => setShowSettings(!showSettings)}

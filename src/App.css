@@ -76,7 +76,7 @@
     overscroll-behavior: none;
   }
 
-  ::-webkit-scrollbar { width: 7px; height: 7px; }
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { @apply bg-border rounded-full; }
   ::-webkit-scrollbar-thumb:hover { @apply bg-muted-foreground/40; }

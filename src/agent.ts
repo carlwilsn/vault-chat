@@ -4,16 +4,20 @@ import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
 
+export type TokenUsage = { prompt: number; completion: number; total: number };
+
 export type StreamEvent =
   | { kind: "text"; delta: string }
   | { kind: "tool_use"; id: string; name: string; input: any }
   | { kind: "tool_result"; id: string; result: string }
-  | { kind: "done" }
+  | { kind: "done"; usage?: TokenUsage }
   | { kind: "error"; message: string };
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 
 const BASE_SYSTEM = `You are the runtime for a personal knowledge vault. The user interacts with you through a desktop app that shows a file tree, a markdown viewer, and this chat pane.
+
+You are working inside the user's vault. Your working directory is the vault root. When the user refers to files, they mean files in this vault. Start by understanding the vault's structure before making changes.
 
 Core behaviors:
 - When the vault defines rules (e.g. LEARNING_RULES.md), treat them as binding. They override generic defaults.
@@ -103,7 +107,17 @@ export async function runAgent(params: {
       }
     }
 
-    onEvent({ kind: "done" });
+    const usage = await result.usage;
+    if (usage) {
+      const prompt = usage.inputTokens ?? 0;
+      const completion = usage.outputTokens ?? 0;
+      onEvent({
+        kind: "done",
+        usage: { prompt, completion, total: usage.totalTokens ?? (prompt + completion) },
+      });
+    } else {
+      onEvent({ kind: "done" });
+    }
   } catch (e: any) {
     onEvent({ kind: "error", message: e?.message ?? String(e) });
   }

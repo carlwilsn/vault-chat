@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { emit } from "@tauri-apps/api/event";
 import type { ProviderId } from "./providers";
 import { DEFAULT_MODEL_ID } from "./providers";
 import type { Skill } from "./skills";
@@ -16,6 +17,8 @@ export type ChatMessage = {
   content: string;
   toolCalls?: { id?: string; name: string; input: any; result?: string }[];
 };
+
+export type LiveTool = { id: string; name: string; input: any; result?: string };
 
 type ApiKeys = Partial<Record<ProviderId, string>>;
 
@@ -51,6 +54,9 @@ type State = {
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   popoutOpen: boolean;
+  tokenUsage: { prompt: number; completion: number; total: number };
+  streamingText: string;
+  liveTools: LiveTool[];
 
   setVault: (p: string) => void;
   setFiles: (f: FileEntry[]) => void;
@@ -60,6 +66,7 @@ type State = {
   setApiKey: (p: ProviderId, k: string) => void;
   setModelId: (id: string) => void;
   setTheme: (t: Theme) => void;
+  applyThemeFromEvent: (t: Theme) => void;
   setSkills: (s: Skill[]) => void;
   setBusy: (b: boolean) => void;
   setShowSettings: (b: boolean) => void;
@@ -68,6 +75,12 @@ type State = {
   toggleLeft: () => void;
   toggleRight: () => void;
   setPopoutOpen: (b: boolean) => void;
+  addTokenUsage: (u: { prompt: number; completion: number; total: number }) => void;
+  appendStreamingText: (s: string) => void;
+  setStreamingText: (s: string) => void;
+  pushLiveTool: (t: LiveTool) => void;
+  updateLiveToolResult: (id: string, result: string) => void;
+  resetStreaming: () => void;
   applyChatSnapshot: (s: {
     vaultPath: string | null;
     currentFile: string | null;
@@ -75,6 +88,10 @@ type State = {
     files: FileEntry[];
     messages: ChatMessage[];
     busy: boolean;
+    modelId?: string;
+    tokenUsage?: { prompt: number; completion: number; total: number };
+    streamingText?: string;
+    liveTools?: LiveTool[];
   }) => void;
   clearMessages: () => void;
 };
@@ -95,6 +112,9 @@ export const useStore = create<State>((set) => ({
   leftCollapsed: false,
   rightCollapsed: false,
   popoutOpen: false,
+  tokenUsage: { prompt: 0, completion: 0, total: 0 },
+  streamingText: "",
+  liveTools: [],
 
   setVault: (p) => set({ vaultPath: p }),
   setFiles: (f) => set({ files: f }),
@@ -114,6 +134,11 @@ export const useStore = create<State>((set) => ({
   setTheme: (t) => {
     localStorage.setItem(THEME_STORAGE, t);
     set({ theme: t });
+    emit("theme:changed", t).catch(() => {});
+  },
+  applyThemeFromEvent: (t) => {
+    localStorage.setItem(THEME_STORAGE, t);
+    set({ theme: t });
   },
   setSkills: (s) => set({ skills: s }),
   setBusy: (b) => set({ busy: b }),
@@ -123,14 +148,34 @@ export const useStore = create<State>((set) => ({
   toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
   toggleRight: () => set((s) => ({ rightCollapsed: !s.rightCollapsed })),
   setPopoutOpen: (b) => set({ popoutOpen: b }),
+  addTokenUsage: (u) =>
+    set((s) => ({
+      tokenUsage: {
+        prompt: s.tokenUsage.prompt + u.prompt,
+        completion: s.tokenUsage.completion + u.completion,
+        total: s.tokenUsage.total + u.total,
+      },
+    })),
+  appendStreamingText: (s) => set((prev) => ({ streamingText: prev.streamingText + s })),
+  setStreamingText: (s) => set({ streamingText: s }),
+  pushLiveTool: (t) => set((prev) => ({ liveTools: [...prev.liveTools, t] })),
+  updateLiveToolResult: (id, result) =>
+    set((prev) => ({
+      liveTools: prev.liveTools.map((t) => (t.id === id ? { ...t, result } : t)),
+    })),
+  resetStreaming: () => set({ streamingText: "", liveTools: [] }),
   applyChatSnapshot: (s) =>
-    set({
+    set((prev) => ({
       vaultPath: s.vaultPath,
       currentFile: s.currentFile,
       currentContent: s.currentContent,
       files: s.files,
       messages: s.messages,
       busy: s.busy,
-    }),
-  clearMessages: () => set({ messages: [] }),
+      modelId: s.modelId ?? prev.modelId,
+      tokenUsage: s.tokenUsage ?? prev.tokenUsage,
+      streamingText: s.streamingText ?? "",
+      liveTools: s.liveTools ?? [],
+    })),
+  clearMessages: () => set({ messages: [], tokenUsage: { prompt: 0, completion: 0, total: 0 } }),
 }));

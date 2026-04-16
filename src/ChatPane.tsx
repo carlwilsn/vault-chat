@@ -4,19 +4,14 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
-import { Settings, Trash2, Square, ArrowUp, ChevronDown, Wrench, Sparkles, ExternalLink } from "lucide-react";
-import { openChatPopout } from "./sync";
+import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Sparkles } from "lucide-react";
+import { dispatchChatAction } from "./sync";
 import { useStore } from "./store";
-import { runAgent } from "./agent";
-import { invoke } from "@tauri-apps/api/core";
-import { findModel } from "./providers";
+import { findModel, MODELS } from "./providers";
 import { loadSkills } from "./skills";
 import { SettingsPane } from "./SettingsPane";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
-import type { FileEntry } from "./store";
-
-const isPopout = new URLSearchParams(window.location.search).get("view") === "chat";
 
 export function ChatPane() {
   const {
@@ -27,25 +22,17 @@ export function ChatPane() {
     skills,
     busy,
     showSettings,
-    appendMessage,
-    setBusy,
-    setFiles,
+    tokenUsage,
     setSkills,
     setShowSettings,
-    clearMessages,
-    currentFile,
-    reloadCurrent,
+    streamingText,
+    liveTools,
   } = useStore();
 
   const [input, setInput] = useState("");
-  const [streamingText, setStreamingText] = useState("");
-  const [liveTools, setLiveTools] = useState<
-    { id: string; name: string; input: any; result?: string }[]
-  >([]);
   const [showSkillMenu, setShowSkillMenu] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
 
   const activeSpec = findModel(modelId);
   const activeKey = activeSpec ? apiKeys[activeSpec.provider] : undefined;
@@ -95,67 +82,17 @@ export function ChatPane() {
     );
   }
 
-  const send = async () => {
-    if (!input.trim() || busy || !vaultPath || !activeKey) return;
-    const userMsg = input.trim();
+  const send = () => {
+    if (!input.trim() || busy || !ready) return;
+    const text = input.trim();
     setInput("");
     setShowSkillMenu(false);
-    appendMessage({ role: "user", content: userMsg });
-    setBusy(true);
-    setStreamingText("");
-    setLiveTools([]);
-
-    let acc = "";
-    const tools: { id: string; name: string; input: any; result?: string }[] = [];
-    abortRef.current = new AbortController();
-
-    await runAgent({
-      modelId,
-      apiKey: activeKey,
-      vault: vaultPath,
-      history: messages.map((m) => ({ role: m.role, content: m.content })),
-      userMessage: userMsg,
-      abortSignal: abortRef.current.signal,
-      onEvent: (e) => {
-        if (e.kind === "text") {
-          acc += e.delta;
-          setStreamingText(acc);
-        } else if (e.kind === "tool_use") {
-          tools.push({ id: e.id, name: e.name, input: e.input });
-          setLiveTools([...tools]);
-        } else if (e.kind === "tool_result") {
-          const t = tools.find((x) => x.id === e.id);
-          if (t) t.result = e.result;
-          setLiveTools([...tools]);
-        } else if (e.kind === "done") {
-          appendMessage({
-            role: "assistant",
-            content: acc,
-            toolCalls: tools.length ? tools : undefined,
-          });
-          setStreamingText("");
-          setLiveTools([]);
-          setBusy(false);
-          if (vaultPath) {
-            invoke<FileEntry[]>("list_markdown_files", { vault: vaultPath })
-              .then(setFiles)
-              .catch(() => {});
-          }
-          if (currentFile) {
-            invoke<string>("read_text_file", { path: currentFile })
-              .then(reloadCurrent)
-              .catch(() => {});
-          }
-        } else if (e.kind === "error") {
-          appendMessage({ role: "assistant", content: `⚠️ ${e.message}` });
-          setStreamingText("");
-          setBusy(false);
-        }
-      },
-    });
+    dispatchChatAction({ kind: "send", text });
   };
 
-  const stop = () => abortRef.current?.abort();
+  const stop = () => dispatchChatAction({ kind: "stop" });
+  const onClear = () => dispatchChatAction({ kind: "clear" });
+  const onSelectModel = (id: string) => dispatchChatAction({ kind: "setModel", id });
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey && !showSkillMenu) {
@@ -181,30 +118,9 @@ export function ChatPane() {
     : [];
 
   return (
-    <div className="h-full flex flex-col bg-card border-l border-border">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-        <div className="flex items-center gap-2 text-[12px]">
-          <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-          <span className="font-medium">{activeSpec?.label ?? modelId}</span>
-        </div>
-        <div className="flex items-center gap-1">
-          {messages.length > 0 && (
-            <Button variant="ghost" size="icon" onClick={clearMessages} title="Clear conversation">
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
-          )}
-          {!isPopout && (
-            <Button variant="ghost" size="icon" onClick={openChatPopout} title="Pop out chat">
-              <ExternalLink className="h-3.5 w-3.5" />
-            </Button>
-          )}
-          <Button variant="ghost" size="icon" onClick={() => setShowSettings(true)} title="Settings">
-            <Settings className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-auto px-3 py-4 space-y-4" ref={scrollRef}>
+    <div className="h-full flex flex-col bg-card border-l border-border relative">
+      <div className="flex-1 min-h-0 overflow-auto px-3 py-4 pb-8" ref={scrollRef}>
+        <div className="max-w-[820px] mx-auto space-y-4">
         {messages.length === 0 && !streamingText && (
           <div className="flex flex-col items-center justify-center h-full text-center px-4 space-y-3">
             <div className="h-9 w-9 rounded-lg bg-muted flex items-center justify-center">
@@ -259,9 +175,11 @@ export function ChatPane() {
             )}
           </div>
         )}
+        </div>
       </div>
 
-      <div className="relative border-t border-border">
+      <div className="relative">
+        <div className="pointer-events-none absolute -top-12 left-0 right-0 h-12 bg-gradient-to-t from-card to-transparent" />
         {showSkillMenu && filteredSkills.length > 0 && (
           <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg">
             {filteredSkills.slice(0, 8).map((s) => (
@@ -284,8 +202,8 @@ export function ChatPane() {
           </div>
         )}
 
-        <div className="p-3">
-          <div className="relative rounded-lg border border-border bg-background focus-within:border-ring/60 focus-within:ring-1 focus-within:ring-ring/40 transition-colors">
+        <div className="p-3 max-w-[820px] mx-auto w-full">
+          <div className="relative flex items-end rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors">
             <Textarea
               ref={inputRef}
               value={input}
@@ -294,11 +212,11 @@ export function ChatPane() {
               placeholder={ready ? "Ask anything, or / for commands…" : "Open a vault first"}
               disabled={!ready || busy}
               rows={1}
-              className="border-0 bg-transparent pr-11 min-h-[44px] max-h-[200px] focus-visible:ring-0 shadow-none"
+              className="border-0 bg-transparent pr-11 min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !px-3"
             />
-            <div className="absolute right-2 bottom-2">
+            <div className="absolute right-3 bottom-2">
               {busy ? (
-                <Button size="icon" variant="secondary" onClick={stop} className="h-7 w-7">
+                <Button size="icon" variant="secondary" onClick={stop} className="h-7 w-7 rounded-lg">
                   <Square className="h-3 w-3 fill-current" />
                 </Button>
               ) : (
@@ -306,10 +224,30 @@ export function ChatPane() {
                   size="icon"
                   onClick={send}
                   disabled={!ready || !input.trim()}
-                  className="h-7 w-7"
+                  className="h-7 w-7 rounded-lg"
                 >
                   <ArrowUp className="h-3.5 w-3.5" />
                 </Button>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
+            <ModelPicker modelId={modelId} apiKeys={apiKeys} onSelect={onSelectModel} />
+            <div className="flex items-center gap-2">
+              {tokenUsage.total > 0 && (
+                <div className="flex items-center gap-1.5" title={`${tokenUsage.prompt.toLocaleString()} in / ${tokenUsage.completion.toLocaleString()} out`}>
+                  <TokenRing used={tokenUsage.total} limit={200000} size={14} />
+                  <span>{formatTokens(tokenUsage.total)}</span>
+                </div>
+              )}
+              {messages.length > 0 && (
+                <button
+                  onClick={onClear}
+                  className="hover:text-foreground transition-colors"
+                  title="Clear conversation"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
               )}
             </div>
           </div>
@@ -328,7 +266,7 @@ function MessageBubble({
   return (
     <div className={cn("flex flex-col gap-1.5", isUser && "items-end")}>
       {isUser ? (
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap break-words overflow-hidden">
           {message.content}
         </div>
       ) : (
@@ -365,6 +303,85 @@ function MessageBubble({
               </div>
             </details>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TokenRing({ used, limit, size }: { used: number; limit: number; size: number }) {
+  const r = (size - 2) / 2;
+  const circ = 2 * Math.PI * r;
+  const pct = Math.min(used / limit, 1);
+  const color = pct < 0.5 ? "hsl(var(--muted-foreground))" : pct < 0.8 ? "hsl(40, 90%, 55%)" : "hsl(0, 72%, 58%)";
+  return (
+    <svg width={size} height={size} className="shrink-0">
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="hsl(var(--border))" strokeWidth={1.5} />
+      <circle
+        cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={1.5}
+        strokeDasharray={circ} strokeDashoffset={circ * (1 - pct)}
+        strokeLinecap="round"
+        transform={`rotate(-90 ${size / 2} ${size / 2})`}
+      />
+    </svg>
+  );
+}
+
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 100_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${Math.round(n / 1000)}k`;
+}
+
+function ModelPicker({
+  modelId,
+  apiKeys,
+  onSelect,
+}: {
+  modelId: string;
+  apiKeys: Partial<Record<string, string>>;
+  onSelect: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const available = MODELS.filter((m) => apiKeys[m.provider]);
+  const current = findModel(modelId);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <span>{current?.label ?? modelId}</span>
+        <ChevronUp className="h-3 w-3" />
+      </button>
+      {open && (
+        <div
+          className="absolute bottom-full left-0 mb-1 rounded-lg border border-border shadow-lg py-1 z-50 whitespace-nowrap"
+          style={{ background: "hsl(var(--card))" }}
+        >
+          {available.map((m) => (
+            <button
+              key={m.id}
+              onClick={() => { onSelect(m.id); setOpen(false); }}
+              className={cn(
+                "w-full text-left px-3 py-1.5 text-[11px] hover:bg-accent transition-colors",
+                m.id === modelId ? "text-foreground font-medium" : "text-muted-foreground"
+              )}
+            >
+              {m.label}
+            </button>
+          ))}
         </div>
       )}
     </div>
