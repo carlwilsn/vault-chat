@@ -35,6 +35,13 @@
     --radius: 0.5rem;
 
     --focus-border: hsl(0, 0%, 92%);
+
+    --tex-body: 185 75% 65%;
+    --tex-cmd: 320 70% 72%;
+    --tex-brace: 0 0% 60%;
+    --tex-sub: 20 90% 68%;
+    --tex-num: 45 90% 70%;
+    --tex-esc: 280 70% 78%;
   }
 
   [data-theme="light"] {
@@ -67,6 +74,13 @@
     --ring: 0 0% 40%;
 
     --focus-border: hsl(0, 0%, 20%);
+
+    --tex-body: 200 85% 30%;
+    --tex-cmd: 330 70% 38%;
+    --tex-brace: 0 0% 45%;
+    --tex-sub: 20 90% 40%;
+    --tex-num: 30 90% 38%;
+    --tex-esc: 275 70% 40%;
   }
 
   * { @apply border-border; }

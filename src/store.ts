@@ -21,8 +21,10 @@ export type ChatMessage = {
 export type LiveTool = { id: string; name: string; input: any; result?: string };
 
 type ApiKeys = Partial<Record<ProviderId, string>>;
+export type ServiceKeys = { tavily?: string };
 
 const KEYS_STORAGE = "vault_chat_api_keys";
+const SERVICE_KEYS_STORAGE = "vault_chat_service_keys";
 const MODEL_STORAGE = "vault_chat_model";
 const THEME_STORAGE = "vault_chat_theme";
 
@@ -43,6 +45,14 @@ function loadKeys(): ApiKeys {
   return {};
 }
 
+function loadServiceKeys(): ServiceKeys {
+  try {
+    const raw = localStorage.getItem(SERVICE_KEYS_STORAGE);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return {};
+}
+
 type State = {
   vaultPath: string | null;
   files: FileEntry[];
@@ -50,6 +60,7 @@ type State = {
   currentContent: string;
   messages: ChatMessage[];
   apiKeys: ApiKeys;
+  serviceKeys: ServiceKeys;
   modelId: string;
   theme: Theme;
   skills: Skill[];
@@ -69,6 +80,7 @@ type State = {
   reloadCurrent: (content: string) => void;
   appendMessage: (m: ChatMessage) => void;
   setApiKey: (p: ProviderId, k: string) => void;
+  setServiceKey: (name: keyof ServiceKeys, k: string) => void;
   setModelId: (id: string) => void;
   setTheme: (t: Theme) => void;
   applyThemeFromEvent: (t: Theme) => void;
@@ -108,6 +120,7 @@ export const useStore = create<State>((set) => ({
   currentContent: "",
   messages: [],
   apiKeys: loadKeys(),
+  serviceKeys: loadServiceKeys(),
   modelId: localStorage.getItem(MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
   theme: loadTheme(),
   skills: [],
@@ -131,6 +144,12 @@ export const useStore = create<State>((set) => ({
       const next = { ...s.apiKeys, [p]: k };
       localStorage.setItem(KEYS_STORAGE, JSON.stringify(next));
       return { apiKeys: next };
+    }),
+  setServiceKey: (name, k) =>
+    set((s) => {
+      const next = { ...s.serviceKeys, [name]: k };
+      localStorage.setItem(SERVICE_KEYS_STORAGE, JSON.stringify(next));
+      return { serviceKeys: next };
     }),
   setModelId: (id) => {
     localStorage.setItem(MODEL_STORAGE, id);

@@ -13,13 +13,14 @@ const KEY_PLACEHOLDER: Record<ProviderId, string> = {
 };
 
 export function SettingsPane() {
-  const { apiKeys, modelId, theme, setApiKey, setModelId, setTheme, setShowSettings } = useStore();
+  const { apiKeys, serviceKeys, modelId, theme, setApiKey, setServiceKey, setModelId, setTheme, setShowSettings } = useStore();
   const [drafts, setDrafts] = useState<Record<ProviderId, string>>({
     anthropic: apiKeys.anthropic ?? "",
     openai: apiKeys.openai ?? "",
     google: apiKeys.google ?? "",
   });
-  const [savedFlash, setSavedFlash] = useState<ProviderId | null>(null);
+  const [tavilyDraft, setTavilyDraft] = useState(serviceKeys.tavily ?? "");
+  const [savedFlash, setSavedFlash] = useState<ProviderId | "tavily" | null>(null);
 
   const save = (p: ProviderId) => {
     const v = drafts[p].trim();
@@ -27,6 +28,15 @@ export function SettingsPane() {
       setApiKey(p, v);
       setSavedFlash(p);
       setTimeout(() => setSavedFlash((x) => (x === p ? null : x)), 1500);
+    }
+  };
+
+  const saveTavily = () => {
+    const v = tavilyDraft.trim();
+    if (v) {
+      setServiceKey("tavily", v);
+      setSavedFlash("tavily");
+      setTimeout(() => setSavedFlash((x) => (x === "tavily" ? null : x)), 1500);
     }
   };
 
@@ -113,6 +123,44 @@ export function SettingsPane() {
             </div>
           </section>
         ))}
+
+        <div className="h-px bg-border" />
+
+        <section className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <Key className="h-3 w-3" />
+                Tavily (web search)
+              </h3>
+              <p className="text-[11px] text-muted-foreground/70 mt-0.5 font-mono">
+                {mask(serviceKeys.tavily)}
+              </p>
+            </div>
+            {savedFlash === "tavily" && (
+              <span className="text-[11px] text-emerald-500 flex items-center gap-1">
+                <Check className="h-3 w-3" /> saved
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              placeholder="tvly-…"
+              value={tavilyDraft}
+              onChange={(e) => setTavilyDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveTavily();
+              }}
+            />
+            <Button size="sm" onClick={saveTavily} disabled={!tavilyDraft.trim()}>
+              Save
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground/80">
+            Enables WebSearch. Get a free key at tavily.com.
+          </p>
+        </section>
 
         <div className="h-px bg-border" />
 

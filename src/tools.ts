@@ -2,8 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { tool } from "ai";
 import { z } from "zod";
 
-export function buildTools(vault: string) {
-  return {
+export function buildTools(vault: string, tavilyKey?: string) {
+  const base = {
     Read: tool({
       description:
         "Read a UTF-8 text file. Use absolute paths. Returns the file contents.",
@@ -126,6 +126,40 @@ export function buildTools(vault: string) {
           { path }
         );
         return entries.map((e) => `${e.is_dir ? "[dir] " : "      "}${e.name}`).join("\n");
+      },
+    }),
+
+    WebFetch: tool({
+      description:
+        "Fetch a URL over HTTPS and return the body as text. HTML is stripped to readable text. Use for documentation, articles, and API responses. Follows redirects. Output is truncated at ~120k chars.",
+      inputSchema: z.object({
+        url: z.string().describe("Fully-qualified URL starting with http:// or https://"),
+        max_chars: z.number().int().optional().describe("Cap on returned text length. Default 120000."),
+      }),
+      execute: async ({ url, max_chars }) => {
+        return await invoke<string>("http_fetch", { url, maxChars: max_chars ?? null });
+      },
+    }),
+  };
+
+  if (!tavilyKey) return base;
+
+  return {
+    ...base,
+    WebSearch: tool({
+      description:
+        "Search the web and return the top results (title, URL, snippet) plus a synthesized answer. Use this when the user asks a question that requires current information, or when you don't know a specific URL. Prefer WebFetch if you already know the URL.",
+      inputSchema: z.object({
+        query: z.string().describe("The search query."),
+        max_results: z.number().int().optional().describe("Default 5, max 10."),
+      }),
+      execute: async ({ query, max_results }) => {
+        return await invoke<string>("tavily_search", {
+          query,
+          apiKey: tavilyKey,
+          maxResults: max_results ?? null,
+          includeAnswer: true,
+        });
       },
     }),
   };

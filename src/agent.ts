@@ -23,7 +23,7 @@ Core behaviors:
 - When the vault defines rules (e.g. LEARNING_RULES.md), treat them as binding. They override generic defaults.
 - Render math using $$...$$ display style. Do not use inline $...$ in chat — it will not render.
 - All paths passed to tools must be absolute.
-- Tools available: Read, Write, Edit, Glob, Grep, Bash, ListDir. Prefer Edit over Write for small changes. Prefer Grep+Glob over reading many files blindly.
+- Tools available: Read, Write, Edit, Glob, Grep, Bash, ListDir, WebFetch, and (if configured) WebSearch. Prefer Edit over Write for small changes. Prefer Grep+Glob over reading many files blindly. Use WebFetch when you know the URL. Use WebSearch for current information or to find URLs when the user asks a general web question.
 - Bash runs in the vault root by default. Use it for git, pytest, scripts, and anything shell-native.`;
 
 export async function runAgent(params: {
@@ -34,8 +34,9 @@ export async function runAgent(params: {
   userMessage: string;
   onEvent: (e: StreamEvent) => void;
   abortSignal?: AbortSignal;
+  tavilyKey?: string;
 }) {
-  const { modelId, apiKey, vault, history, userMessage, onEvent, abortSignal } = params;
+  const { modelId, apiKey, vault, history, userMessage, onEvent, abortSignal, tavilyKey } = params;
 
   try {
     const spec = findModel(modelId) ?? findModel(DEFAULT_MODEL_ID);
@@ -63,7 +64,7 @@ export async function runAgent(params: {
       { role: "user", content: expandedMessage },
     ];
 
-    const tools = buildTools(vault);
+    const tools = buildTools(vault, tavilyKey);
 
     const result = streamText({
       model,

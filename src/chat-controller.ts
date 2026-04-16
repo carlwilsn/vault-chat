@@ -13,6 +13,7 @@ export async function sendMessage(text: string) {
   const spec = findModel(s.modelId);
   const apiKey = spec ? s.apiKeys[spec.provider] : undefined;
   if (!s.vaultPath || !apiKey) return;
+  const tavilyKey = s.serviceKeys.tavily;
 
   s.appendMessage({ role: "user", content: trimmed });
   s.setBusy(true);
@@ -36,6 +37,7 @@ export async function sendMessage(text: string) {
     history,
     userMessage: trimmed,
     abortSignal: signal,
+    tavilyKey,
     onEvent: (e) => {
       const store = useStore.getState();
       if (e.kind === "text") {

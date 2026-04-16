@@ -9,6 +9,9 @@ import App from "./App";
 import { ChatWindow } from "./ChatWindow";
 import { installMainSync, installPopoutSync } from "./sync";
 
+const savedTheme = localStorage.getItem("vault_chat_theme");
+document.documentElement.dataset.theme = savedTheme === "light" ? "light" : "graphite";
+
 const view = new URLSearchParams(window.location.search).get("view");
 const isPopout = view === "chat";
 

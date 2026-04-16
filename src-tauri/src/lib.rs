@@ -302,6 +302,130 @@ fn bash_exec(
     })
 }
 
+fn html_to_text(html: &str) -> String {
+    let script_re = regex::Regex::new(r"(?is)<script\b[^>]*>.*?</script>").unwrap();
+    let style_re = regex::Regex::new(r"(?is)<style\b[^>]*>.*?</style>").unwrap();
+    let noscript_re = regex::Regex::new(r"(?is)<noscript\b[^>]*>.*?</noscript>").unwrap();
+    let s1 = script_re.replace_all(html, " ");
+    let s2 = style_re.replace_all(&s1, " ");
+    let s3 = noscript_re.replace_all(&s2, " ");
+    let tag_re = regex::Regex::new(r"(?s)<[^>]+>").unwrap();
+    let no_tags = tag_re.replace_all(&s3, " ");
+    let decoded = no_tags
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'");
+    let ws_re = regex::Regex::new(r"[ \t]+").unwrap();
+    let single_spaces = ws_re.replace_all(&decoded, " ");
+    let nl_re = regex::Regex::new(r"\n{3,}").unwrap();
+    nl_re.replace_all(&single_spaces, "\n\n").trim().to_string()
+}
+
+#[tauri::command]
+async fn http_fetch(url: String, max_chars: Option<usize>) -> Result<String, String> {
+    let limit = max_chars.unwrap_or(120_000);
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("vault-chat/0.1")
+            .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let resp = client.get(&url).send().map_err(|e| e.to_string())?;
+        let status = resp.status();
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let body = resp.text().map_err(|e| e.to_string())?;
+        if !status.is_success() {
+            return Err(format!("HTTP {}: {}", status, body.chars().take(200).collect::<String>()));
+        }
+        let text = if ct.contains("html") || body.trim_start().starts_with("<!") || body.trim_start().starts_with("<html") {
+            html_to_text(&body)
+        } else {
+            body
+        };
+        Ok(text)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    if result.chars().count() > limit {
+        let truncated: String = result.chars().take(limit).collect();
+        Ok(format!("{}\n…[truncated; full length {} chars]", truncated, result.chars().count()))
+    } else {
+        Ok(result)
+    }
+}
+
+#[tauri::command]
+async fn tavily_search(
+    query: String,
+    api_key: String,
+    max_results: Option<usize>,
+    include_answer: Option<bool>,
+) -> Result<String, String> {
+    let max = max_results.unwrap_or(5).min(10);
+    let answer = include_answer.unwrap_or(true);
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("vault-chat/0.1")
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let body = serde_json::json!({
+            "api_key": api_key,
+            "query": query,
+            "max_results": max,
+            "include_answer": answer,
+            "search_depth": "basic",
+        });
+        let body_str = serde_json::to_string(&body).map_err(|e| e.to_string())?;
+        let resp = client
+            .post("https://api.tavily.com/search")
+            .header("content-type", "application/json")
+            .body(body_str)
+            .send()
+            .map_err(|e: reqwest::Error| e.to_string())?;
+        let status = resp.status();
+        let text = resp.text().map_err(|e: reqwest::Error| e.to_string())?;
+        if !status.is_success() {
+            return Err(format!("Tavily HTTP {}: {}", status, text.chars().take(400).collect::<String>()));
+        }
+        let parsed: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        let mut out = String::new();
+        if let Some(ans) = parsed.get("answer").and_then(|a| a.as_str()) {
+            if !ans.is_empty() {
+                out.push_str("Answer: ");
+                out.push_str(ans);
+                out.push_str("\n\n");
+            }
+        }
+        if let Some(results) = parsed.get("results").and_then(|r| r.as_array()) {
+            for (i, r) in results.iter().enumerate() {
+                let title = r.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                let url = r.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                out.push_str(&format!("[{}] {}\n{}\n{}\n\n", i + 1, title, url, content));
+            }
+        }
+        if out.is_empty() {
+            Ok(format!("(no results)\n{}", text.chars().take(500).collect::<String>()))
+        } else {
+            Ok(out.trim_end().to_string())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
     let p = PathBuf::from(&path);
@@ -393,7 +517,9 @@ pub fn run() {
             glob_files,
             grep_files,
             bash_exec,
-            list_dir
+            list_dir,
+            http_fetch,
+            tavily_search
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

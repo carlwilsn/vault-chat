@@ -215,7 +215,7 @@ export function ChatPane() {
               placeholder={ready ? "Ask anything, or / for commands…" : "Open a vault first"}
               disabled={!ready || busy}
               rows={1}
-              className="border-0 bg-transparent pr-11 min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !px-3"
+              className="border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pl-3 !pr-11"
             />
             <div className="absolute right-3 bottom-2">
               {busy ? (
