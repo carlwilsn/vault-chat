@@ -84,8 +84,9 @@ export function MarkdownArea() {
 
     const path = e.dataTransfer.getData(VAULT_PATH_MIME);
     if (!path) return;
+    const binary = path.toLowerCase().endsWith(".pdf");
     try {
-      const text = await invoke<string>("read_text_file", { path });
+      const text = binary ? "" : await invoke<string>("read_text_file", { path });
       s.placeFileAtEdge(path, text, side);
     } catch (err) {
       console.error("[drop] failed:", err);

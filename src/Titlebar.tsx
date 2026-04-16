@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, RotateCw, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye } from "lucide-react";
+import { FolderOpen, RotateCw, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 
@@ -161,6 +161,17 @@ export function Titlebar() {
           title={popoutOpen ? "Chat is popped out" : "Pop out chat"}
         >
           <ExternalLink className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={() =>
+            invoke("open_terminal", { cwd: vaultPath ?? undefined }).catch((err) =>
+              console.error("[terminal] failed:", err),
+            )
+          }
+          className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1"
+          title={vaultPath ? `Open terminal in ${vaultPath}` : "Open terminal"}
+        >
+          <Terminal className="h-3.5 w-3.5" />
         </button>
         <button
           onClick={() => setShowSettings(!showSettings)}

@@ -15,6 +15,68 @@ struct FileEntry {
     hidden: bool,
 }
 
+fn is_viewable_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "md"
+            | "markdown"
+            | "txt"
+            | "log"
+            | "py"
+            | "ipynb"
+            | "pdf"
+            | "json"
+            | "jsonl"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "xml"
+            | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "mjs"
+            | "cjs"
+            | "rs"
+            | "go"
+            | "java"
+            | "c"
+            | "h"
+            | "cpp"
+            | "hpp"
+            | "cs"
+            | "rb"
+            | "php"
+            | "swift"
+            | "kt"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "ps1"
+            | "bat"
+            | "cmd"
+            | "css"
+            | "scss"
+            | "sass"
+            | "less"
+            | "html"
+            | "htm"
+            | "svg"
+            | "tex"
+            | "bib"
+            | "sql"
+            | "r"
+            | "jl"
+            | "lua"
+            | "ini"
+            | "cfg"
+            | "env"
+            | "dockerfile"
+            | "makefile"
+            | "lark"
+    )
+}
+
 fn load_ignore_set(vault: &std::path::Path) -> HashSet<String> {
     let path = vault.join(IGNORE_FILE);
     let mut set = HashSet::new();
@@ -85,7 +147,11 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
         let path = entry.path();
         let is_dir = path.is_dir();
         if !is_dir {
-            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_lowercase());
+            if !ext.map(|e| is_viewable_ext(&e)).unwrap_or(false) {
                 continue;
             }
         }
@@ -198,6 +264,55 @@ async fn remove_from_ignore(vault: String, relative_paths: Vec<String>) -> Resul
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read(&path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn open_terminal(cwd: Option<String>) -> Result<(), String> {
+    let dir = cwd.unwrap_or_else(|| ".".to_string());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_CONSOLE = 0x00000010 gives the child its own visible window
+        Command::new("powershell.exe")
+            .args([
+                "-NoExit",
+                "-Command",
+                &format!("Set-Location -LiteralPath '{}'", dir.replace('\'', "''")),
+            ])
+            .creation_flags(0x00000010)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .args(["-a", "Terminal", &dir])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        for term in ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"] {
+            if Command::new(term).current_dir(&dir).spawn().is_ok() {
+                return Ok(());
+            }
+        }
+        Err("no terminal emulator found".to_string())
+    }
 }
 
 #[tauri::command]
@@ -713,6 +828,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_markdown_files,
             read_text_file,
+            read_binary_file,
             write_text_file,
             delete_file,
             create_dir,
@@ -726,7 +842,8 @@ pub fn run() {
             tavily_search,
             read_ignore_lines,
             add_to_ignore,
-            remove_from_ignore
+            remove_from_ignore,
+            open_terminal
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

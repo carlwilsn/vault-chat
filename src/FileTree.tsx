@@ -5,6 +5,11 @@ import { useStore, type FileEntry } from "./store";
 import { VAULT_PATH_MIME } from "./dnd";
 import { cn } from "./lib/utils";
 
+const isBinaryExt = (path: string): boolean => {
+  const ext = path.split(".").pop()?.toLowerCase();
+  return ext === "pdf";
+};
+
 type PendingKind = "file" | "folder";
 type Menu = { x: number; y: number; entry: FileEntry | null } | null;
 
@@ -66,6 +71,10 @@ export function FileTree() {
 
   const openFile = async (f: FileEntry) => {
     if (f.is_dir) return;
+    if (isBinaryExt(f.path)) {
+      setCurrentFile(f.path, "");
+      return;
+    }
     const content = await invoke<string>("read_text_file", { path: f.path });
     setCurrentFile(f.path, content);
   };

@@ -10,8 +10,22 @@ import "highlight.js/styles/github-dark.css";
 import { invoke } from "@tauri-apps/api/core";
 import { FileText, Eye, Pencil, X } from "lucide-react";
 import { useStore } from "./store";
-import { LiveEditor } from "./LiveEditor";
+import { MonacoEditor } from "./MonacoEditor";
+import { CodeView } from "./CodeView";
+import { NotebookView } from "./NotebookView";
+import { PdfView } from "./PdfView";
 import { VAULT_PANE_MIME } from "./dnd";
+
+type FileKind = "markdown" | "notebook" | "pdf" | "code";
+
+function fileKind(path: string): { kind: FileKind; ext: string } {
+  const dot = path.lastIndexOf(".");
+  const ext = dot > 0 ? path.slice(dot + 1).toLowerCase() : "";
+  if (ext === "md" || ext === "markdown") return { kind: "markdown", ext };
+  if (ext === "ipynb") return { kind: "notebook", ext };
+  if (ext === "pdf") return { kind: "pdf", ext };
+  return { kind: "code", ext };
+}
 
 type Props = { paneId?: string };
 
@@ -89,6 +103,9 @@ export function MarkdownView({ paneId }: Props) {
 
   const relPath = file.split("/").slice(-3).join(" › ");
   const showActiveOutline = inSplit && isActive;
+  const { kind, ext } = fileKind(file);
+  const editable = kind === "markdown" || kind === "code";
+  const showingEditor = editable && mode === "edit" && isActive;
 
   return (
     <div
@@ -108,26 +125,28 @@ export function MarkdownView({ paneId }: Props) {
           {relPath}
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              if (paneId && !isActive) setActivePane(paneId);
-              toggleMode();
-            }}
-            className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-            title={mode === "view" ? "Edit (Ctrl+E)" : "View (Ctrl+E)"}
-            draggable={false}
-          >
-            {mode === "view" ? (
-              <>
-                <Eye className="h-3 w-3" /> view
-              </>
-            ) : (
-              <>
-                <Pencil className="h-3 w-3" /> editing
-              </>
-            )}
-          </button>
+          {editable && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (paneId && !isActive) setActivePane(paneId);
+                toggleMode();
+              }}
+              className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+              title={mode === "view" ? "Edit (Ctrl+E)" : "View (Ctrl+E)"}
+              draggable={false}
+            >
+              {mode === "view" ? (
+                <>
+                  <Eye className="h-3 w-3" /> view
+                </>
+              ) : (
+                <>
+                  <Pencil className="h-3 w-3" /> editing
+                </>
+              )}
+            </button>
+          )}
           {paneId && (
             <button
               onClick={(e) => {
@@ -143,7 +162,11 @@ export function MarkdownView({ paneId }: Props) {
           )}
         </div>
       </div>
-      {mode === "view" || !isActive ? (
+      {showingEditor ? (
+        <div className="flex-1 min-h-0">
+          <MonacoEditor value={content} onChange={onChange} ext={ext} />
+        </div>
+      ) : kind === "markdown" ? (
         <div className="flex-1 overflow-auto py-10 px-8">
           <div className="prose-md mx-auto">
             <ReactMarkdown
@@ -154,10 +177,12 @@ export function MarkdownView({ paneId }: Props) {
             </ReactMarkdown>
           </div>
         </div>
+      ) : kind === "notebook" ? (
+        <NotebookView content={content} />
+      ) : kind === "pdf" ? (
+        <PdfView path={file} />
       ) : (
-        <div className="flex-1 min-h-0">
-          <LiveEditor value={content} onChange={onChange} />
-        </div>
+        <CodeView content={content} ext={ext} />
       )}
     </div>
   );
