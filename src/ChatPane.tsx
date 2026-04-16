@@ -152,12 +152,12 @@ export function ChatPane() {
                     key={t.id}
                     className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground"
                   >
-                    <Wrench className={cn("h-3 w-3", !t.result && "animate-pulse")} />
-                    <span className="text-foreground/80">{t.name}</span>
-                    <span className="opacity-60 truncate">
-                      ({Object.keys(t.input).slice(0, 3).join(", ")})
+                    <Wrench className={cn("h-3 w-3 shrink-0", !t.result && "animate-pulse")} />
+                    <span className="text-foreground/80 shrink-0">{t.name}</span>
+                    <span className="opacity-70 truncate" title={toolSummary(t.input)}>
+                      {toolSummary(t.input)}
                     </span>
-                    {t.result ? <span className="text-emerald-500 ml-auto">✓</span> : <span className="opacity-40">…</span>}
+                    {t.result ? <span className="text-emerald-500 ml-auto shrink-0">✓</span> : <span className="opacity-40 shrink-0">…</span>}
                   </div>
                 ))}
               </div>
@@ -258,6 +258,28 @@ export function ChatPane() {
       </div>
     </div>
   );
+}
+
+function toolSummary(input: any): string {
+  if (!input || typeof input !== "object") return "";
+  const primary =
+    input.path ??
+    input.command ??
+    input.pattern ??
+    input.url ??
+    input.query ??
+    input.from ??
+    null;
+  if (primary != null && typeof primary !== "object") {
+    const extra =
+      input.to != null ? ` → ${input.to}` :
+      input.old_string != null ? ` (edit)` :
+      input.glob_filter != null ? ` [${input.glob_filter}]` :
+      "";
+    return `${primary}${extra}`;
+  }
+  const first = Object.values(input)[0];
+  return typeof first === "object" || first == null ? "" : String(first);
 }
 
 function MessageBubble({
@@ -404,7 +426,7 @@ function ModelPicker({
               key={m.id}
               onClick={() => { onSelect(m.id); setOpen(false); }}
               className={cn(
-                "w-full text-left px-3 py-1.5 text-[11px] hover:bg-accent transition-colors",
+                "block w-full text-left px-3 py-1.5 text-[11px] hover:bg-accent transition-colors",
                 m.id === modelId ? "text-foreground font-medium" : "text-muted-foreground"
               )}
             >
