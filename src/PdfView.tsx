@@ -2,18 +2,24 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { Eye, FileText, ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
+import { Eye, FileText, ZoomIn, ZoomOut } from "lucide-react";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
-const ZOOM_STEPS = [0.5, 0.67, 0.8, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 5;
+const BASE_RENDER_SCALE = 1.5;
+
+function clampZoom(z: number) {
+  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
+}
 
 export function PdfView({ path }: { path: string }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [pages, setPages] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [zoom, setZoom] = useState<number | "fit">("fit");
+  const [zoom, setZoom] = useState(1);
 
   useEffect(() => {
     let cancelled = false;
@@ -23,6 +29,7 @@ export function PdfView({ path }: { path: string }) {
     setLoading(true);
     setError(null);
     setPages(0);
+    setZoom(1);
 
     (async () => {
       try {
@@ -43,21 +50,17 @@ export function PdfView({ path }: { path: string }) {
           }
           const page = await doc.getPage(i);
           const unscaled = page.getViewport({ scale: 1 });
-          let scale: number;
-          if (zoom === "fit") {
-            const containerWidth = host.clientWidth - 32;
-            scale = Math.min(2, Math.max(0.8, containerWidth / unscaled.width));
-          } else {
-            scale = zoom;
-          }
+          const containerWidth = host.clientWidth - 32;
+          const fitScale = Math.max(0.8, containerWidth / unscaled.width);
+          const scale = fitScale * BASE_RENDER_SCALE;
           const viewport = page.getViewport({ scale });
 
           const canvas = document.createElement("canvas");
           const dpr = window.devicePixelRatio || 1;
           canvas.width = Math.floor(viewport.width * dpr);
           canvas.height = Math.floor(viewport.height * dpr);
-          canvas.style.width = `${Math.floor(viewport.width)}px`;
-          canvas.style.height = `${Math.floor(viewport.height)}px`;
+          canvas.style.width = `${Math.floor(viewport.width / BASE_RENDER_SCALE)}px`;
+          canvas.style.height = `${Math.floor(viewport.height / BASE_RENDER_SCALE)}px`;
           canvas.className = "pdf-page shadow-md rounded";
           const transform: [number, number, number, number, number, number] =
             dpr === 1 ? [1, 0, 0, 1, 0, 0] : [dpr, 0, 0, dpr, 0, 0];
@@ -83,43 +86,7 @@ export function PdfView({ path }: { path: string }) {
     return () => {
       cancelled = true;
     };
-  }, [path, zoom]);
-
-  const currentScaleLabel = () => {
-    if (zoom === "fit") return "Fit";
-    return `${Math.round(zoom * 100)}%`;
-  };
-
-  const stepZoom = (dir: 1 | -1) => {
-    setZoom((prev) => {
-      const cur =
-        prev === "fit"
-          ? ZOOM_STEPS.find((s) => s >= 1) ?? 1
-          : prev;
-      const idx = ZOOM_STEPS.indexOf(cur);
-      if (idx === -1) return 1;
-      const next = ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, idx + dir))];
-      return next;
-    });
-  };
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      if (e.key === "=" || e.key === "+") {
-        e.preventDefault();
-        stepZoom(1);
-      } else if (e.key === "-") {
-        e.preventDefault();
-        stepZoom(-1);
-      } else if (e.key === "0") {
-        e.preventDefault();
-        setZoom("fit");
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [path]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-muted/20">
@@ -134,32 +101,34 @@ export function PdfView({ path }: { path: string }) {
         )}
         <div className="ml-auto flex items-center gap-1">
           <button
-            onClick={() => stepZoom(-1)}
+            onClick={() => {
+              if (loading) return;
+              setZoom((z) => clampZoom(z / 1.1));
+            }}
             className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-            title="Zoom out (Ctrl+-)"
+            title="Zoom out"
           >
             <ZoomOut className="h-3 w-3" />
           </button>
           <button
-            onClick={() => setZoom("fit")}
+            onClick={() => {
+              if (loading) return;
+              setZoom(1);
+            }}
             className="h-6 min-w-[48px] px-2 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground font-mono text-[10.5px]"
-            title="Reset to fit (Ctrl+0)"
+            title="Reset zoom"
           >
-            {currentScaleLabel()}
+            {Math.round(zoom * 100)}%
           </button>
           <button
-            onClick={() => stepZoom(1)}
+            onClick={() => {
+              if (loading) return;
+              setZoom((z) => clampZoom(z * 1.1));
+            }}
             className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-            title="Zoom in (Ctrl+=)"
+            title="Zoom in"
           >
             <ZoomIn className="h-3 w-3" />
-          </button>
-          <button
-            onClick={() => setZoom("fit")}
-            className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-            title="Fit to width"
-          >
-            <Maximize2 className="h-3 w-3" />
           </button>
         </div>
       </div>
@@ -171,7 +140,13 @@ export function PdfView({ path }: { path: string }) {
       {loading && !error && (
         <div className="p-8 text-muted-foreground text-sm">Loading PDF…</div>
       )}
-      <div ref={hostRef} className="flex-1 overflow-auto p-4 space-y-4" />
+      <div className="flex-1 overflow-auto p-4">
+        <div
+          ref={hostRef}
+          className="space-y-4"
+          style={{ zoom }}
+        />
+      </div>
     </div>
   );
 }
