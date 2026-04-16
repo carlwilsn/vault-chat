@@ -337,39 +337,46 @@ function buildDecorations(state: EditorState): DecorationSet {
     },
   });
 
-  const inlineMathRe = /(?<!\$)\$([^$\n]+?)\$(?!\$)/g;
-  for (let ln = 1; ln <= doc.lines; ln++) {
-    const line = doc.line(ln);
-    inlineMathRe.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = inlineMathRe.exec(line.text))) {
-      const s = line.from + m.index;
-      const e = s + m[0].length;
-      if (spanActive(s, e)) {
-        applyTexTokens(builder, doc, s, e);
-      } else {
-        builder.push(
-          Decoration.replace({ widget: new MathWidget(m[1], false) }).range(s, e)
-        );
+  const text = doc.toString();
+  const hasDollar = text.indexOf("$") !== -1;
+
+  if (hasDollar) {
+    const inlineMathRe = /(?<!\$)\$([^$\n]+?)\$(?!\$)/g;
+    for (let ln = 1; ln <= doc.lines; ln++) {
+      const line = doc.line(ln);
+      if (line.text.indexOf("$") === -1) continue;
+      inlineMathRe.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = inlineMathRe.exec(line.text))) {
+        const s = line.from + m.index;
+        const e = s + m[0].length;
+        if (spanActive(s, e)) {
+          applyTexTokens(builder, doc, s, e);
+        } else {
+          builder.push(
+            Decoration.replace({ widget: new MathWidget(m[1], false) }).range(s, e)
+          );
+        }
       }
     }
-  }
 
-  const text = doc.toString();
-  const blockRe = /\$\$([\s\S]*?)\$\$/g;
-  let bm: RegExpExecArray | null;
-  while ((bm = blockRe.exec(text))) {
-    const s = bm.index;
-    const e = s + bm[0].length;
-    if (spanActive(s, e)) {
-      applyTexTokens(builder, doc, s, e);
-    } else {
-      builder.push(
-        Decoration.replace({
-          widget: new MathWidget(bm[1].trim(), true),
-          block: true,
-        }).range(s, e)
-      );
+    if (text.indexOf("$$") !== -1) {
+      const blockRe = /\$\$([\s\S]*?)\$\$/g;
+      let bm: RegExpExecArray | null;
+      while ((bm = blockRe.exec(text))) {
+        const s = bm.index;
+        const e = s + bm[0].length;
+        if (spanActive(s, e)) {
+          applyTexTokens(builder, doc, s, e);
+        } else {
+          builder.push(
+            Decoration.replace({
+              widget: new MathWidget(bm[1].trim(), true),
+              block: true,
+            }).range(s, e)
+          );
+        }
+      }
     }
   }
 
@@ -499,14 +506,20 @@ const liveTheme = EditorView.theme({
 export function LiveEditor({
   value,
   onChange,
+  initialScrollRatio,
+  onScrollRatio,
 }: {
   value: string;
   onChange: (next: string) => void;
+  initialScrollRatio?: number;
+  onScrollRatio?: (ratio: number) => void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onScrollRatioRef = useRef(onScrollRatio);
+  onScrollRatioRef.current = onScrollRatio;
 
   const extensions = useMemo<Extension[]>(
     () => [
@@ -519,6 +532,15 @@ export function LiveEditor({
       EditorView.updateListener.of((u) => {
         if (u.docChanged) onChangeRef.current(u.state.doc.toString());
       }),
+      EditorView.domEventHandlers({
+        scroll: (_e, view) => {
+          const cb = onScrollRatioRef.current;
+          if (!cb) return;
+          const el = view.scrollDOM;
+          const max = el.scrollHeight - el.clientHeight;
+          cb(max > 0 ? el.scrollTop / max : 0);
+        },
+      }),
     ],
     []
   );
@@ -530,6 +552,13 @@ export function LiveEditor({
       parent: hostRef.current,
     });
     viewRef.current = view;
+    if (initialScrollRatio && initialScrollRatio > 0) {
+      requestAnimationFrame(() => {
+        const el = view.scrollDOM;
+        const max = el.scrollHeight - el.clientHeight;
+        if (max > 0) el.scrollTop = initialScrollRatio * max;
+      });
+    }
     return () => {
       view.destroy();
       viewRef.current = null;
