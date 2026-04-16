@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Allotment, LayoutPriority } from "allotment";
+import { invoke } from "@tauri-apps/api/core";
 import type { FileEntry } from "./store";
 import "allotment/dist/style.css";
 import { FileTree } from "./FileTree";
@@ -20,6 +21,27 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  const setFiles = useStore((s) => s.setFiles);
+  useEffect(() => {
+    const saved = useStore.getState().vaultPath;
+    if (!saved) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: saved });
+        if (!cancelled) setFiles(listed);
+      } catch {
+        if (!cancelled) {
+          localStorage.removeItem("vault_chat_last_vault");
+          useStore.setState({ vaultPath: null });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [setFiles]);
   const leftCollapsed = useStore((s) => s.leftCollapsed);
   const rightCollapsed = useStore((s) => s.rightCollapsed);
   const popoutOpen = useStore((s) => s.popoutOpen);

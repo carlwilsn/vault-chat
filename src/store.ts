@@ -40,6 +40,7 @@ const KEYS_STORAGE = "vault_chat_api_keys";
 const SERVICE_KEYS_STORAGE = "vault_chat_service_keys";
 const MODEL_STORAGE = "vault_chat_model";
 const THEME_STORAGE = "vault_chat_theme";
+const VAULT_STORAGE = "vault_chat_last_vault";
 
 export type Theme = "graphite" | "light";
 
@@ -146,7 +147,7 @@ type State = {
 };
 
 export const useStore = create<State>((set) => ({
-  vaultPath: null,
+  vaultPath: localStorage.getItem(VAULT_STORAGE),
   files: [],
   currentFile: null,
   currentContent: "",
@@ -172,7 +173,10 @@ export const useStore = create<State>((set) => ({
   streamingText: "",
   liveTools: [],
 
-  setVault: (p) => set({ vaultPath: p }),
+  setVault: (p) => {
+    localStorage.setItem(VAULT_STORAGE, p);
+    set({ vaultPath: p });
+  },
   setFiles: (f) => set({ files: f }),
   setCurrentFile: (p, content) =>
     set((s) => {
