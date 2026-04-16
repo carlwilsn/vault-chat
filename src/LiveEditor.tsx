@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { EditorState, StateField } from "@codemirror/state";
 import type { Range, Extension } from "@codemirror/state";
 import { EditorView, Decoration, keymap, WidgetType } from "@codemirror/view";
@@ -8,6 +8,11 @@ import { Table } from "@lezer/markdown";
 import { syntaxTree } from "@codemirror/language";
 import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
 import katex from "katex";
+import {
+  InlineEditPrompt,
+  type InlineEditMode,
+  type InlineEditRequest,
+} from "./InlineEditPrompt";
 
 const hideDeco = Decoration.replace({});
 
@@ -503,6 +508,12 @@ const liveTheme = EditorView.theme({
   },
 });
 
+type InlineEditContext = InlineEditRequest & {
+  from: number;
+  to: number;
+  mode: InlineEditMode;
+};
+
 export function LiveEditor({
   value,
   onChange,
@@ -521,10 +532,31 @@ export function LiveEditor({
   const onScrollRatioRef = useRef(onScrollRatio);
   onScrollRatioRef.current = onScrollRatio;
 
+  const [inlineEdit, setInlineEdit] = useState<InlineEditContext | null>(null);
+
   const extensions = useMemo<Extension[]>(
     () => [
       history(),
-      keymap.of([...defaultKeymap, ...historyKeymap]),
+      keymap.of([
+        {
+          key: "Mod-k",
+          preventDefault: true,
+          run: (view) => {
+            setInlineEdit(buildInlineEditContext(view, "md", "edit"));
+            return true;
+          },
+        },
+        {
+          key: "Mod-l",
+          preventDefault: true,
+          run: (view) => {
+            setInlineEdit(buildInlineEditContext(view, "md", "ask"));
+            return true;
+          },
+        },
+        ...defaultKeymap,
+        ...historyKeymap,
+      ]),
       markdown({ extensions: [Table] }),
       livePreviewField,
       liveTheme,
@@ -576,5 +608,54 @@ export function LiveEditor({
     }
   }, [value]);
 
-  return <div ref={hostRef} className="live-editor h-full" />;
+  const acceptInlineEdit = (result: string) => {
+    const view = viewRef.current;
+    if (!view || !inlineEdit) return;
+    view.dispatch({
+      changes: { from: inlineEdit.from, to: inlineEdit.to, insert: result },
+      selection: { anchor: inlineEdit.from + result.length },
+    });
+    setInlineEdit(null);
+    view.focus();
+  };
+
+  const cancelInlineEdit = () => {
+    setInlineEdit(null);
+    viewRef.current?.focus();
+  };
+
+  return (
+    <>
+      <div ref={hostRef} className="live-editor h-full" />
+      {inlineEdit && (
+        <InlineEditPrompt
+          request={inlineEdit}
+          initialMode={inlineEdit.mode}
+          onAccept={acceptInlineEdit}
+          onCancel={cancelInlineEdit}
+        />
+      )}
+    </>
+  );
+}
+
+function buildInlineEditContext(
+  view: EditorView,
+  language: string,
+  mode: InlineEditMode,
+): InlineEditContext {
+  const sel = view.state.selection.main;
+  const from = sel.from;
+  const to = sel.to;
+  const doc = view.state.doc;
+  const selection = doc.sliceString(from, to);
+  const before = doc.sliceString(Math.max(0, from - 6000), from);
+  const after = doc.sliceString(to, Math.min(doc.length, to + 6000));
+
+  const coords = view.coordsAtPos(to) ?? view.coordsAtPos(from);
+  const anchor = coords
+    ? { left: coords.left, top: coords.top, bottom: coords.bottom }
+    : { left: 100, top: 100, bottom: 120 };
+
+  return { from, to, selection, before, after, language, anchor, mode };
 }
