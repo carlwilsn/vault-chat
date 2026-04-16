@@ -97,7 +97,8 @@
     @apply bg-muted/60 border border-border/60 rounded-lg p-3 my-2 overflow-auto text-[12px] font-mono;
   }
   .prose-chat pre code { @apply bg-transparent p-0; }
-  .prose-chat ul, .prose-chat ol { @apply my-2 pl-5; }
+  .prose-chat ul { @apply my-2 pl-5 list-disc; }
+  .prose-chat ol { @apply my-2 pl-5 list-decimal; }
   .prose-chat li { @apply my-0.5; }
   .prose-chat h1 { @apply text-base font-semibold mt-3 mb-1.5; }
   .prose-chat h2 { @apply text-[14px] font-semibold mt-3 mb-1; }
@@ -125,7 +126,8 @@
     @apply bg-muted/60 border border-border/60 rounded-lg p-4 my-3 overflow-auto text-[13px] font-mono;
   }
   .prose-md pre code { @apply bg-transparent p-0; }
-  .prose-md ul, .prose-md ol { @apply my-3 pl-6; }
+  .prose-md ul { @apply my-3 pl-6 list-disc; }
+  .prose-md ol { @apply my-3 pl-6 list-decimal; }
   .prose-md li { @apply my-1; }
   .prose-md a { @apply text-primary underline underline-offset-2 hover:opacity-80; }
   .prose-md blockquote { @apply border-l-2 border-primary/60 pl-4 text-muted-foreground my-3 italic; }

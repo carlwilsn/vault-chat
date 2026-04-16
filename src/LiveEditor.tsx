@@ -78,6 +78,21 @@ class TableWidget extends WidgetType {
   }
 }
 
+class BulletWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = "cm-bullet";
+    el.textContent = "•";
+    return el;
+  }
+  ignoreEvent() {
+    return false;
+  }
+}
+
 class MathWidget extends WidgetType {
   constructor(readonly src: string, readonly display: boolean) {
     super();
@@ -97,6 +112,34 @@ class MathWidget extends WidgetType {
   }
   ignoreEvent() {
     return false;
+  }
+}
+
+const texTokenRe =
+  /\\[a-zA-Z@]+|\\[{}\\$_^&%#]|\$\$|\$|[{}]|\^|_|[0-9]+(?:\.[0-9]+)?/g;
+
+function applyTexTokens(
+  builder: Range<Decoration>[],
+  doc: EditorState["doc"],
+  from: number,
+  to: number,
+) {
+  builder.push(Decoration.mark({ class: "cm-math-src" }).range(from, to));
+  const src = doc.sliceString(from, to);
+  texTokenRe.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = texTokenRe.exec(src))) {
+    const s = from + m.index;
+    const e = s + m[0].length;
+    const tok = m[0];
+    let cls: string;
+    if (tok === "$" || tok === "$$") cls = "cm-tex-delim";
+    else if (tok.startsWith("\\") && /^[\\][a-zA-Z@]+$/.test(tok)) cls = "cm-tex-cmd";
+    else if (tok.startsWith("\\")) cls = "cm-tex-esc";
+    else if (tok === "{" || tok === "}") cls = "cm-tex-brace";
+    else if (tok === "^" || tok === "_") cls = "cm-tex-sub";
+    else cls = "cm-tex-num";
+    builder.push(Decoration.mark({ class: cls }).range(s, e));
   }
 }
 
@@ -199,7 +242,14 @@ function buildDecorations(state: EditorState): DecorationSet {
       }
 
       if (name === "ListMark") {
-        builder.push(Decoration.mark({ class: "cm-list-mark" }).range(nFrom, nTo));
+        const text = doc.sliceString(nFrom, nTo);
+        if (/^[-*+]$/.test(text) && !spanActive(nFrom, nTo)) {
+          builder.push(
+            Decoration.replace({ widget: new BulletWidget() }).range(nFrom, nTo)
+          );
+        } else {
+          builder.push(Decoration.mark({ class: "cm-list-mark" }).range(nFrom, nTo));
+        }
         return;
       }
 
@@ -258,15 +308,18 @@ function buildDecorations(state: EditorState): DecorationSet {
   const inlineMathRe = /(?<!\$)\$([^$\n]+?)\$(?!\$)/g;
   for (let ln = 1; ln <= doc.lines; ln++) {
     const line = doc.line(ln);
-    if (active.has(line.number)) continue;
     inlineMathRe.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = inlineMathRe.exec(line.text))) {
       const s = line.from + m.index;
       const e = s + m[0].length;
-      builder.push(
-        Decoration.replace({ widget: new MathWidget(m[1], false) }).range(s, e)
-      );
+      if (spanActive(s, e)) {
+        applyTexTokens(builder, doc, s, e);
+      } else {
+        builder.push(
+          Decoration.replace({ widget: new MathWidget(m[1], false) }).range(s, e)
+        );
+      }
     }
   }
 
@@ -276,7 +329,9 @@ function buildDecorations(state: EditorState): DecorationSet {
   while ((bm = blockRe.exec(text))) {
     const s = bm.index;
     const e = s + bm[0].length;
-    if (!rangeActive(s, e)) {
+    if (spanActive(s, e)) {
+      applyTexTokens(builder, doc, s, e);
+    } else {
       builder.push(
         Decoration.replace({
           widget: new MathWidget(bm[1].trim(), true),
@@ -347,6 +402,11 @@ const liveTheme = EditorView.theme({
   ".cm-list-mark": {
     color: "hsl(var(--muted-foreground))",
   },
+  ".cm-bullet": {
+    color: "hsl(var(--muted-foreground))",
+    display: "inline-block",
+    width: "1ch",
+  },
   ".cm-fenced-line": {
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
     fontSize: "0.9em",
@@ -366,6 +426,19 @@ const liveTheme = EditorView.theme({
     color: "transparent",
   },
   ".cm-math-block": { display: "block", padding: "0.5em 0", textAlign: "center" },
+  ".cm-math-src": {
+    color: "hsl(185, 75%, 65%)",
+    fontFamily: '"Times New Roman", Cambria, Georgia, serif',
+    fontStyle: "italic",
+    fontWeight: "500",
+    fontSize: "1.08em",
+  },
+  ".cm-tex-cmd": { color: "hsl(320, 70%, 72%)", fontStyle: "normal" },
+  ".cm-tex-delim": { color: "hsl(var(--muted-foreground))", fontStyle: "normal", opacity: "0.7" },
+  ".cm-tex-brace": { color: "hsl(var(--muted-foreground))", fontStyle: "normal" },
+  ".cm-tex-sub": { color: "hsl(20, 90%, 68%)", fontStyle: "normal" },
+  ".cm-tex-num": { color: "hsl(45, 90%, 70%)", fontStyle: "normal" },
+  ".cm-tex-esc": { color: "hsl(280, 70%, 78%)", fontStyle: "normal" },
   ".cm-table": {
     borderCollapse: "collapse",
     display: "table",
