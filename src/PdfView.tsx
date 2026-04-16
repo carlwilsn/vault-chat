@@ -2,15 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { Eye, FileText } from "lucide-react";
+import { Eye, FileText, ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
+
+const ZOOM_STEPS = [0.5, 0.67, 0.8, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 
 export function PdfView({ path }: { path: string }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [pages, setPages] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [zoom, setZoom] = useState<number | "fit">("fit");
 
   useEffect(() => {
     let cancelled = false;
@@ -39,9 +42,14 @@ export function PdfView({ path }: { path: string }) {
             return;
           }
           const page = await doc.getPage(i);
-          const containerWidth = host.clientWidth - 32;
           const unscaled = page.getViewport({ scale: 1 });
-          const scale = Math.min(2, Math.max(0.8, containerWidth / unscaled.width));
+          let scale: number;
+          if (zoom === "fit") {
+            const containerWidth = host.clientWidth - 32;
+            scale = Math.min(2, Math.max(0.8, containerWidth / unscaled.width));
+          } else {
+            scale = zoom;
+          }
           const viewport = page.getViewport({ scale });
 
           const canvas = document.createElement("canvas");
@@ -75,7 +83,43 @@ export function PdfView({ path }: { path: string }) {
     return () => {
       cancelled = true;
     };
-  }, [path]);
+  }, [path, zoom]);
+
+  const currentScaleLabel = () => {
+    if (zoom === "fit") return "Fit";
+    return `${Math.round(zoom * 100)}%`;
+  };
+
+  const stepZoom = (dir: 1 | -1) => {
+    setZoom((prev) => {
+      const cur =
+        prev === "fit"
+          ? ZOOM_STEPS.find((s) => s >= 1) ?? 1
+          : prev;
+      const idx = ZOOM_STEPS.indexOf(cur);
+      if (idx === -1) return 1;
+      const next = ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, idx + dir))];
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        stepZoom(1);
+      } else if (e.key === "-") {
+        e.preventDefault();
+        stepZoom(-1);
+      } else if (e.key === "0") {
+        e.preventDefault();
+        setZoom("fit");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-muted/20">
@@ -88,6 +132,36 @@ export function PdfView({ path }: { path: string }) {
             <span className="font-mono">{pages} page{pages === 1 ? "" : "s"}</span>
           </>
         )}
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            onClick={() => stepZoom(-1)}
+            className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
+            title="Zoom out (Ctrl+-)"
+          >
+            <ZoomOut className="h-3 w-3" />
+          </button>
+          <button
+            onClick={() => setZoom("fit")}
+            className="h-6 min-w-[48px] px-2 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground font-mono text-[10.5px]"
+            title="Reset to fit (Ctrl+0)"
+          >
+            {currentScaleLabel()}
+          </button>
+          <button
+            onClick={() => stepZoom(1)}
+            className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
+            title="Zoom in (Ctrl+=)"
+          >
+            <ZoomIn className="h-3 w-3" />
+          </button>
+          <button
+            onClick={() => setZoom("fit")}
+            className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
+            title="Fit to width"
+          >
+            <Maximize2 className="h-3 w-3" />
+          </button>
+        </div>
       </div>
       {error && (
         <div className="p-8 text-destructive text-sm font-mono flex items-center gap-2">
