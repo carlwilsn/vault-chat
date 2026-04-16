@@ -5,7 +5,7 @@ import { useStore, type FileEntry } from "./store";
 import { cn } from "./lib/utils";
 
 type PendingKind = "file" | "folder";
-type Menu = { x: number; y: number; entry: FileEntry } | null;
+type Menu = { x: number; y: number; entry: FileEntry | null } | null;
 
 export function FileTree() {
   const { vaultPath, files, currentFile, setCurrentFile, setFiles } = useStore();
@@ -14,6 +14,7 @@ export function FileTree() {
   const [pendingName, setPendingName] = useState("");
   const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null);
   const [menu, setMenu] = useState<Menu>(null);
+  const [confirmDelete, setConfirmDelete] = useState<FileEntry | null>(null);
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
   const lastVaultRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -42,7 +43,7 @@ export function FileTree() {
       const end = dot > 0 ? dot : renaming.value.length;
       renameRef.current.setSelectionRange(0, end);
     }
-  }, [renaming]);
+  }, [renaming?.path]);
 
   useEffect(() => {
     if (!menu) return;
@@ -52,6 +53,15 @@ export function FileTree() {
       window.removeEventListener("mousedown", close);
     };
   }, [menu]);
+
+  useEffect(() => {
+    if (!confirmDelete) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirmDelete(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmDelete]);
 
   const openFile = async (f: FileEntry) => {
     if (f.is_dir) return;
@@ -81,9 +91,9 @@ export function FileTree() {
     setFiles(listed);
   };
 
-  const beginCreate = (kind: PendingKind) => {
+  const beginCreate = (kind: PendingKind, parentOverride?: string) => {
     if (!vaultPath) return;
-    const parent = selectedDir ?? vaultPath;
+    const parent = parentOverride ?? selectedDir ?? vaultPath;
     if (parent !== vaultPath) {
       setCollapsed((prev) => {
         const n = new Set(prev);
@@ -161,8 +171,6 @@ export function FileTree() {
   const cancelRename = () => setRenaming(null);
 
   const doDelete = async (f: FileEntry) => {
-    const label = f.is_dir ? "folder" : "file";
-    if (!confirm(`Delete ${label} "${f.name}"?${f.is_dir ? " This removes everything inside." : ""}`)) return;
     try {
       await invoke("delete_file", { path: f.path });
       if (currentFile === f.path || (f.is_dir && currentFile && currentFile.startsWith(f.path + "/"))) {
@@ -202,7 +210,14 @@ export function FileTree() {
           </button>
         </div>
       )}
-      <div className="flex-1 overflow-auto py-1">
+      <div
+        className="flex-1 overflow-auto py-1"
+        onContextMenu={(e) => {
+          if (!vaultPath) return;
+          e.preventDefault();
+          setMenu({ x: e.clientX, y: e.clientY, entry: null });
+        }}
+      >
         {!vaultPath && (
           <div className="px-4 py-8 text-center text-[12px] text-muted-foreground">
             Open a folder to begin.
@@ -313,15 +328,96 @@ export function FileTree() {
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
-          <button
-            className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-            onClick={() => {
-              beginRename(menu.entry);
-              setMenu(null);
-            }}
+          {menu.entry ? (
+            <>
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                onClick={() => {
+                  beginRename(menu.entry!);
+                  setMenu(null);
+                }}
+              >
+                <Pencil className="h-3.5 w-3.5 opacity-70" /> Rename
+              </button>
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-destructive whitespace-nowrap"
+                onClick={() => {
+                  setConfirmDelete(menu.entry);
+                  setMenu(null);
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5 opacity-70" /> Delete
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                onClick={() => {
+                  beginCreate("file", vaultPath ?? undefined);
+                  setMenu(null);
+                }}
+              >
+                <FilePlus className="h-3.5 w-3.5 opacity-70" /> New file
+              </button>
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                onClick={() => {
+                  beginCreate("folder", vaultPath ?? undefined);
+                  setMenu(null);
+                }}
+              >
+                <FolderPlus className="h-3.5 w-3.5 opacity-70" /> New folder
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      {confirmDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setConfirmDelete(null);
+          }}
+        >
+          <div
+            className="w-[320px] rounded-md border border-border bg-card shadow-xl p-4"
+            onMouseDown={(e) => e.stopPropagation()}
           >
-            <Pencil className="h-3.5 w-3.5 opacity-70" /> Rename
-          </button>
+            <div className="text-[13px] font-semibold text-foreground">
+              Delete {confirmDelete.is_dir ? "folder" : "file"}?
+            </div>
+            <div className="text-[12px] text-muted-foreground mt-1 break-all">
+              {confirmDelete.name}
+              {confirmDelete.is_dir && (
+                <div className="mt-1.5 text-destructive/90">
+                  Everything inside will be permanently removed.
+                </div>
+              )}
+              {!confirmDelete.is_dir && (
+                <div className="mt-1.5 text-destructive/90">This cannot be undone.</div>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                className="px-3 py-1 rounded text-[12px] hover:bg-accent/60 text-foreground"
+                onClick={() => setConfirmDelete(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-3 py-1 rounded text-[12px] bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                autoFocus
+                onClick={() => {
+                  const f = confirmDelete;
+                  setConfirmDelete(null);
+                  doDelete(f);
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
