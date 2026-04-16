@@ -21,6 +21,15 @@ export type ChatMessage = {
 
 export type LiveTool = { id: string; name: string; input: any; result?: string };
 
+export type Pane = { id: string; file: string; content: string };
+export type SplitDirection = "horizontal" | "vertical" | null;
+export type DropSide = "left" | "right" | "top" | "bottom";
+
+const newPaneId = () =>
+  (typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `p_${Math.random().toString(36).slice(2)}`);
+
 type ApiKeys = Partial<Record<ProviderId, string>>;
 export type ServiceKeys = { tavily?: string };
 
@@ -59,6 +68,9 @@ type State = {
   files: FileEntry[];
   currentFile: string | null;
   currentContent: string;
+  panes: Pane[];
+  splitDirection: SplitDirection;
+  activePaneId: string | null;
   messages: ChatMessage[];
   apiKeys: ApiKeys;
   serviceKeys: ServiceKeys;
@@ -77,8 +89,15 @@ type State = {
 
   setVault: (p: string) => void;
   setFiles: (f: FileEntry[]) => void;
-  setCurrentFile: (p: string, content: string) => void;
+  setCurrentFile: (p: string | null, content: string) => void;
   reloadCurrent: (content: string) => void;
+  splitWith: (path: string, content: string, side: DropSide) => void;
+  setPaneFile: (paneId: string, path: string, content: string) => void;
+  closePane: (paneId: string) => void;
+  setActivePane: (paneId: string) => void;
+  updatePaneContent: (paneId: string, content: string) => void;
+  rearrangePanes: (draggedId: string, targetId: string, side: DropSide) => void;
+  placeFileAtEdge: (path: string, content: string, side: DropSide) => void;
   appendMessage: (m: ChatMessage) => void;
   setApiKey: (p: ProviderId, k: string) => void;
   setServiceKey: (name: keyof ServiceKeys, k: string) => void;
@@ -119,6 +138,9 @@ export const useStore = create<State>((set) => ({
   files: [],
   currentFile: null,
   currentContent: "",
+  panes: [],
+  splitDirection: null,
+  activePaneId: null,
   messages: [],
   apiKeys: loadKeys(),
   serviceKeys: loadServiceKeys(),
@@ -137,8 +159,160 @@ export const useStore = create<State>((set) => ({
 
   setVault: (p) => set({ vaultPath: p }),
   setFiles: (f) => set({ files: f }),
-  setCurrentFile: (p, content) => set({ currentFile: p, currentContent: content }),
-  reloadCurrent: (content) => set({ currentContent: content }),
+  setCurrentFile: (p, content) =>
+    set((s) => {
+      if (s.panes.length > 0 && s.activePaneId && p) {
+        const panes = s.panes.map((pane) =>
+          pane.id === s.activePaneId ? { ...pane, file: p, content } : pane,
+        );
+        return { panes, currentFile: p, currentContent: content };
+      }
+      return { currentFile: p, currentContent: content, panes: [], splitDirection: null, activePaneId: null };
+    }),
+  reloadCurrent: (content) =>
+    set((s) => {
+      if (s.panes.length > 0 && s.activePaneId) {
+        const panes = s.panes.map((pane) =>
+          pane.id === s.activePaneId ? { ...pane, content } : pane,
+        );
+        return { panes, currentContent: content };
+      }
+      return { currentContent: content };
+    }),
+  splitWith: (path, content, side) =>
+    set((s) => {
+      const existingFile = s.currentFile;
+      const existingContent = s.currentContent;
+      if (!existingFile) {
+        return { currentFile: path, currentContent: content };
+      }
+      const direction: SplitDirection = side === "left" || side === "right" ? "horizontal" : "vertical";
+      const newPane: Pane = { id: newPaneId(), file: path, content };
+      const existingPane: Pane = { id: newPaneId(), file: existingFile, content: existingContent };
+      const panes =
+        side === "left" || side === "top" ? [newPane, existingPane] : [existingPane, newPane];
+      return {
+        panes,
+        splitDirection: direction,
+        activePaneId: newPane.id,
+        currentFile: path,
+        currentContent: content,
+      };
+    }),
+  setPaneFile: (paneId, path, content) =>
+    set((s) => {
+      const panes = s.panes.map((p) => (p.id === paneId ? { ...p, file: path, content } : p));
+      const isActive = paneId === s.activePaneId;
+      return isActive
+        ? { panes, currentFile: path, currentContent: content }
+        : { panes };
+    }),
+  closePane: (paneId) =>
+    set((s) => {
+      const remaining = s.panes.filter((p) => p.id !== paneId);
+      if (remaining.length <= 1) {
+        const survivor = remaining[0];
+        if (survivor) {
+          return {
+            panes: [],
+            splitDirection: null,
+            activePaneId: null,
+            currentFile: survivor.file,
+            currentContent: survivor.content,
+          };
+        }
+        return { panes: [], splitDirection: null, activePaneId: null };
+      }
+      const newActive = remaining[0].id;
+      return {
+        panes: remaining,
+        activePaneId: newActive,
+        currentFile: remaining[0].file,
+        currentContent: remaining[0].content,
+      };
+    }),
+  setActivePane: (paneId) =>
+    set((s) => {
+      const pane = s.panes.find((p) => p.id === paneId);
+      if (!pane) return {};
+      return {
+        activePaneId: paneId,
+        currentFile: pane.file,
+        currentContent: pane.content,
+      };
+    }),
+  updatePaneContent: (paneId, content) =>
+    set((s) => {
+      const panes = s.panes.map((p) => (p.id === paneId ? { ...p, content } : p));
+      const isActive = paneId === s.activePaneId;
+      return isActive ? { panes, currentContent: content } : { panes };
+    }),
+  rearrangePanes: (draggedId, targetId, side) =>
+    set((s) => {
+      if (draggedId === targetId) return {};
+      const dragged = s.panes.find((p) => p.id === draggedId);
+      const target = s.panes.find((p) => p.id === targetId);
+      if (!dragged || !target) return {};
+      const direction: SplitDirection =
+        side === "left" || side === "right" ? "horizontal" : "vertical";
+      const panes =
+        side === "left" || side === "top" ? [dragged, target] : [target, dragged];
+      return { panes, splitDirection: direction };
+    }),
+  placeFileAtEdge: (path, content, side) =>
+    set((s) => {
+      const newDirection: SplitDirection =
+        side === "left" || side === "right" ? "horizontal" : "vertical";
+
+      if (!s.currentFile && s.panes.length === 0) {
+        return { currentFile: path, currentContent: content };
+      }
+
+      if (s.panes.length === 0) {
+        const newPane: Pane = { id: newPaneId(), file: path, content };
+        const existingPane: Pane = {
+          id: newPaneId(),
+          file: s.currentFile!,
+          content: s.currentContent,
+        };
+        const panes =
+          side === "left" || side === "top" ? [newPane, existingPane] : [existingPane, newPane];
+        return {
+          panes,
+          splitDirection: newDirection,
+          activePaneId: newPane.id,
+          currentFile: path,
+          currentContent: content,
+        };
+      }
+
+      if (newDirection === s.splitDirection) {
+        const edgeIndex = side === "left" || side === "top" ? 0 : 1;
+        const target = s.panes[edgeIndex];
+        const panes = s.panes.map((p) =>
+          p.id === target.id ? { ...p, file: path, content } : p,
+        );
+        return {
+          panes,
+          activePaneId: target.id,
+          currentFile: path,
+          currentContent: content,
+        };
+      }
+
+      const activeIdx = s.panes.findIndex((p) => p.id === s.activePaneId);
+      const keep = s.panes[activeIdx >= 0 ? activeIdx : 0];
+      const newPane: Pane = { id: newPaneId(), file: path, content };
+      const panes =
+        side === "left" || side === "top" ? [newPane, keep] : [keep, newPane];
+      return {
+        panes,
+        splitDirection: newDirection,
+        activePaneId: newPane.id,
+        currentFile: path,
+        currentContent: content,
+      };
+    }),
   appendMessage: (m) => set((s) => ({ messages: [...s.messages, m] })),
   setApiKey: (p, k) =>
     set((s) => {
@@ -194,6 +368,9 @@ export const useStore = create<State>((set) => ({
       vaultPath: s.vaultPath,
       currentFile: s.currentFile,
       currentContent: s.currentContent,
+      panes: [],
+      splitDirection: null,
+      activePaneId: null,
       files: s.files,
       messages: s.messages,
       busy: s.busy,

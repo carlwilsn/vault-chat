@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { Allotment } from "allotment";
 import "allotment/dist/style.css";
 import { FileTree } from "./FileTree";
-import { MarkdownView } from "./MarkdownView";
+import { MarkdownArea } from "./MarkdownArea";
 import { ChatPane } from "./ChatPane";
 import { SettingsPane } from "./SettingsPane";
 import { Titlebar } from "./Titlebar";
@@ -58,7 +58,7 @@ export default function App() {
             <FileTree />
           </Allotment.Pane>
           <Allotment.Pane minSize={340}>
-            {showSettings && chatHidden ? <SettingsPane /> : <MarkdownView />}
+            {showSettings && chatHidden ? <SettingsPane /> : <MarkdownArea />}
           </Allotment.Pane>
           <Allotment.Pane preferredSize={440} minSize={320} visible={!rightCollapsed && !popoutOpen} snap>
             <ChatPane />

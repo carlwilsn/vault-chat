@@ -24,6 +24,8 @@ export async function sendMessage(text: string) {
   const modelId = s.modelId;
   const currentFile = s.currentFile;
 
+  const openPaneIds = s.panes.map((p) => p.id);
+
   abortRef = new AbortController();
   const signal = abortRef.signal;
 
@@ -63,7 +65,16 @@ export async function sendMessage(text: string) {
         invoke<FileEntry[]>("list_markdown_files", { vault })
           .then(store.setFiles)
           .catch(() => {});
-        if (currentFile) {
+        if (openPaneIds.length > 0) {
+          for (const paneId of openPaneIds) {
+            const pane = useStore.getState().panes.find((p) => p.id === paneId);
+            if (!pane) continue;
+            const path = pane.file;
+            invoke<string>("read_text_file", { path })
+              .then((text) => useStore.getState().setPaneFile(paneId, path, text))
+              .catch(() => {});
+          }
+        } else if (currentFile) {
           invoke<string>("read_text_file", { path: currentFile })
             .then(store.reloadCurrent)
             .catch(() => {});

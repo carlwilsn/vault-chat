@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
+import { VAULT_PATH_MIME } from "./dnd";
 import { cn } from "./lib/utils";
 
 type PendingKind = "file" | "folder";
@@ -288,6 +289,13 @@ export function FileTree() {
                     isSelectedDir && "bg-accent/40"
                   )}
                   style={{ paddingLeft: 8 + f.depth * 12 }}
+                  draggable={!f.is_dir}
+                  onDragStart={(e) => {
+                    if (f.is_dir) return;
+                    e.dataTransfer.setData(VAULT_PATH_MIME, f.path);
+                    e.dataTransfer.setData("text/plain", f.path);
+                    e.dataTransfer.effectAllowed = "copy";
+                  }}
                   onClick={() => {
                     if (f.is_dir) {
                       setSelectedDir((prev) => (prev === f.path ? null : f.path));
