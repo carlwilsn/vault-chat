@@ -4,27 +4,79 @@ import type { Range, Extension } from "@codemirror/state";
 import { EditorView, Decoration, keymap, WidgetType } from "@codemirror/view";
 import type { DecorationSet } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
+import { Table } from "@lezer/markdown";
 import { syntaxTree } from "@codemirror/language";
 import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
 import katex from "katex";
 
 const hideDeco = Decoration.replace({});
 
-class EmptyBlockWidget extends WidgetType {
-  eq() {
-    return true;
+function parseTableRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|")) s = s.slice(0, -1);
+  return s.split("|").map((c) => c.trim());
+}
+
+function parseTableAlign(line: string): (string | null)[] {
+  return parseTableRow(line).map((c) => {
+    const L = c.startsWith(":");
+    const R = c.endsWith(":");
+    if (L && R) return "center";
+    if (R) return "right";
+    if (L) return "left";
+    return null;
+  });
+}
+
+class TableWidget extends WidgetType {
+  constructor(readonly src: string) {
+    super();
+  }
+  eq(other: TableWidget) {
+    return other.src === this.src;
   }
   toDOM() {
-    const el = document.createElement("div");
-    el.style.height = "0";
-    el.style.overflow = "hidden";
-    return el;
+    const lines = this.src.split("\n").filter((l) => l.trim().length > 0);
+    if (lines.length < 2) {
+      const el = document.createElement("div");
+      el.textContent = this.src;
+      return el;
+    }
+    const rows = lines.map(parseTableRow);
+    const align = parseTableAlign(lines[1]);
+    const table = document.createElement("table");
+    table.className = "cm-table";
+
+    const thead = document.createElement("thead");
+    const headerTr = document.createElement("tr");
+    rows[0].forEach((cell, i) => {
+      const th = document.createElement("th");
+      th.textContent = cell;
+      if (align[i]) th.style.textAlign = align[i]!;
+      headerTr.appendChild(th);
+    });
+    thead.appendChild(headerTr);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    for (let i = 2; i < rows.length; i++) {
+      const tr = document.createElement("tr");
+      rows[i].forEach((cell, j) => {
+        const td = document.createElement("td");
+        td.textContent = cell;
+        if (align[j]) td.style.textAlign = align[j]!;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    return table;
   }
-  get estimatedHeight() {
-    return 0;
+  ignoreEvent() {
+    return false;
   }
 }
-const emptyBlock = new EmptyBlockWidget();
 
 class MathWidget extends WidgetType {
   constructor(readonly src: string, readonly display: boolean) {
@@ -182,6 +234,20 @@ function buildDecorations(state: EditorState): DecorationSet {
         return;
       }
 
+      if (name === "Table") {
+        if (!rangeActive(nFrom, nTo)) {
+          const src = doc.sliceString(nFrom, nTo);
+          builder.push(
+            Decoration.replace({
+              widget: new TableWidget(src),
+              block: true,
+            }).range(nFrom, nTo)
+          );
+          return false;
+        }
+        return;
+      }
+
       if (name === "HorizontalRule") {
         builder.push(Decoration.line({ class: "cm-hr" }).range(doc.lineAt(nFrom).from));
         return;
@@ -295,12 +361,25 @@ const liveTheme = EditorView.theme({
   },
   ".cm-hr": {
     borderTop: "1px solid hsl(var(--border))",
-    height: "0",
-    marginTop: "1em",
-    marginBottom: "1em",
+    paddingTop: "1em",
+    paddingBottom: "1em",
     color: "transparent",
   },
-  ".cm-math-block": { display: "block", margin: "0.5em 0", textAlign: "center" },
+  ".cm-math-block": { display: "block", padding: "0.5em 0", textAlign: "center" },
+  ".cm-table": {
+    borderCollapse: "collapse",
+    display: "table",
+    fontSize: "0.95em",
+  },
+  ".cm-table th, .cm-table td": {
+    border: "1px solid hsl(var(--border))",
+    padding: "4px 10px",
+  },
+  ".cm-table th": {
+    background: "hsl(var(--muted) / 0.5)",
+    fontWeight: "600",
+    textAlign: "left",
+  },
   ".cm-math-inline": { display: "inline" },
   ".cm-cursor": { borderLeftColor: "hsl(var(--foreground))" },
   ".cm-selectionBackground, ::selection": {
@@ -324,7 +403,7 @@ export function LiveEditor({
     () => [
       history(),
       keymap.of([...defaultKeymap, ...historyKeymap]),
-      markdown(),
+      markdown({ extensions: [Table] }),
       livePreviewField,
       liveTheme,
       EditorView.lineWrapping,
