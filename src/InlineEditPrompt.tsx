@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
-import { Check, X, Loader2, CornerDownLeft } from "lucide-react";
+import { Check, X, Loader2, CornerDownLeft, MessageSquare } from "lucide-react";
 import { useStore } from "./store";
 import { findModel } from "./providers";
 import {
@@ -38,11 +38,13 @@ const MIN_VERTICAL_SPACE = 160;
 export function InlineEditPrompt({
   request,
   initialMode = "edit",
+  askOnly = false,
   onAccept,
   onCancel,
 }: {
   request: InlineEditRequest;
   initialMode?: InlineEditMode;
+  askOnly?: boolean;
   onAccept: (result: string) => void;
   onCancel: () => void;
 }) {
@@ -183,6 +185,34 @@ export function InlineEditPrompt({
     onAccept(stripCodeFence(result));
   };
 
+  const sendToChat = () => {
+    if (!result || streaming) return;
+    const store = useStore.getState();
+    const turns: { prompt: string; result: string }[] = [
+      ...priorTurns,
+      ...(lastPrompt !== null ? [{ prompt: lastPrompt, result }] : []),
+    ];
+    if (turns.length === 0) return;
+
+    // Prepend the inline-ask context to the first user message so the
+    // main agent has everything this popover saw (selection + file
+    // excerpt). Subsequent turns are pasted as-is.
+    const preamble = buildContextPreamble(request);
+    // The preamble goes in as a hidden user message so the agent sees
+    // the selection + file context, but the chat UI only shows what the
+    // user actually typed.
+    store.appendMessage({ role: "user", content: preamble, hidden: true });
+    turns.forEach((t) => {
+      store.appendMessage({ role: "user", content: t.prompt });
+      store.appendMessage({ role: "assistant", content: t.result });
+    });
+
+    // Reveal the chat pane if it was collapsed.
+    if (store.rightCollapsed) store.toggleRight();
+
+    onCancel();
+  };
+
   const cancel = () => {
     abortRef.current?.abort();
     onCancel();
@@ -277,6 +307,15 @@ export function InlineEditPrompt({
             accept
           </button>
         )}
+        {!streaming && result && mode === "ask" && (
+          <button
+            onClick={sendToChat}
+            className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+            title="Send conversation to chat panel"
+          >
+            <MessageSquare className="h-3 w-3" />
+          </button>
+        )}
         <button
           onClick={cancel}
           className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
@@ -317,29 +356,34 @@ export function InlineEditPrompt({
       )}
       <div className="flex items-center justify-between border-t border-border/60 px-3 py-1 text-[10.5px] text-muted-foreground shrink-0">
         <div className="flex items-center gap-1">
-          <button
-            onClick={() => switchMode("edit")}
-            disabled={streaming}
-            className={
-              mode === "edit"
-                ? "px-1.5 py-0.5 rounded text-foreground"
-                : "px-1.5 py-0.5 rounded opacity-60 hover:opacity-100 disabled:opacity-40"
-            }
-          >
-            edit
-          </button>
-          <span className="opacity-40">·</span>
-          <button
-            onClick={() => switchMode("ask")}
-            disabled={streaming}
-            className={
-              mode === "ask"
-                ? "px-1.5 py-0.5 rounded text-foreground"
-                : "px-1.5 py-0.5 rounded opacity-60 hover:opacity-100 disabled:opacity-40"
-            }
-          >
-            ask
-          </button>
+          {!askOnly && (
+            <>
+              <button
+                onClick={() => switchMode("edit")}
+                disabled={streaming}
+                className={
+                  mode === "edit"
+                    ? "px-1.5 py-0.5 rounded text-foreground"
+                    : "px-1.5 py-0.5 rounded opacity-60 hover:opacity-100 disabled:opacity-40"
+                }
+              >
+                edit
+              </button>
+              <span className="opacity-40">·</span>
+              <button
+                onClick={() => switchMode("ask")}
+                disabled={streaming}
+                className={
+                  mode === "ask"
+                    ? "px-1.5 py-0.5 rounded text-foreground"
+                    : "px-1.5 py-0.5 rounded opacity-60 hover:opacity-100 disabled:opacity-40"
+                }
+              >
+                ask
+              </button>
+            </>
+          )}
+          {askOnly && <span className="text-foreground">ask</span>}
           <span className="ml-2 opacity-50">
             {request.selection
               ? `${request.selection.length} char selection`
@@ -358,6 +402,31 @@ export function InlineEditPrompt({
     </div>,
     document.body,
   );
+}
+
+function buildContextPreamble(request: InlineEditRequest): string {
+  const parts: string[] = [];
+  parts.push(
+    "Context from an inline Ctrl+L ask in the editor — continuing the conversation in the chat pane.",
+  );
+  if (request.selection) {
+    parts.push(`Selection:\n\n\`\`\`\n${request.selection}\n\`\`\``);
+  } else {
+    parts.push("(no selection — the question was about the surrounding file)");
+  }
+  const BEFORE_KEEP = 1500;
+  const AFTER_KEEP = 1500;
+  const before =
+    request.before.length > BEFORE_KEEP
+      ? "…" + request.before.slice(-BEFORE_KEEP)
+      : request.before;
+  const after =
+    request.after.length > AFTER_KEEP
+      ? request.after.slice(0, AFTER_KEEP) + "…"
+      : request.after;
+  parts.push(`Before:\n\n\`\`\`\n${before}\n\`\`\``);
+  parts.push(`After:\n\n\`\`\`\n${after}\n\`\`\``);
+  return parts.join("\n\n");
 }
 
 function computePlacement(anchor: InlineEditAnchor) {

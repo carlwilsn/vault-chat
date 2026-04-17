@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -18,6 +18,7 @@ import { NotebookView } from "./NotebookView";
 import { PdfView } from "./PdfView";
 import { HtmlView } from "./HtmlView";
 import { VAULT_PANE_MIME } from "./dnd";
+import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 
 type FileKind = "markdown" | "notebook" | "pdf" | "html" | "code";
 
@@ -55,6 +56,7 @@ export function MarkdownView({ paneId }: Props) {
   const lastSaved = useRef<string>(content);
   const scrollRatioRef = useRef(0);
   const viewScrollRef = useRef<HTMLDivElement | null>(null);
+  const [inlineAsk, setInlineAsk] = useState<InlineEditRequest | null>(null);
 
   useEffect(() => {
     lastSaved.current = content;
@@ -109,6 +111,73 @@ export function MarkdownView({ paneId }: Props) {
     e.dataTransfer.setData(VAULT_PANE_MIME, paneId);
     e.dataTransfer.effectAllowed = "move";
   };
+
+  // Ctrl+L in view mode opens the inline ask popover, using any text
+  // the user has highlighted in the rendered markdown as the selection.
+  // Only the active pane responds, so multi-pane doesn't double-fire.
+  useEffect(() => {
+    if (!file) return;
+    const scroller = viewScrollRef.current;
+    if (!scroller) return;
+    const { kind: k, ext: e2 } = fileKind(file);
+    if (mode !== "view" || k !== "markdown" || !isActive) return;
+
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod || e.key.toLowerCase() !== "l") return;
+
+      const sel = window.getSelection();
+      const selectionText = sel && !sel.isCollapsed ? sel.toString() : "";
+
+      // Anchor: bottom of the selection if present, else the viewer's
+      // visible center-ish as a graceful fallback.
+      let anchor: InlineEditRequest["anchor"];
+      if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
+        const rect = sel.getRangeAt(0).getBoundingClientRect();
+        anchor = { left: rect.left, top: rect.top, bottom: rect.bottom };
+      } else {
+        const r = scroller.getBoundingClientRect();
+        anchor = {
+          left: r.left + 40,
+          top: r.top + r.height * 0.25,
+          bottom: r.top + r.height * 0.25 + 20,
+        };
+      }
+
+      // Context: if there's a selection, try to locate it in the source
+      // content to slice before/after. Fall back to the whole file
+      // being "before" if we can't find it (whitespace or formatting
+      // normalization can make exact matches miss).
+      let before = content;
+      let after = "";
+      if (selectionText) {
+        const idx = content.indexOf(selectionText);
+        if (idx >= 0) {
+          before = content.slice(Math.max(0, idx - 6000), idx);
+          after = content.slice(
+            idx + selectionText.length,
+            Math.min(content.length, idx + selectionText.length + 6000),
+          );
+        } else {
+          before = content.slice(-6000);
+        }
+      } else {
+        before = content.slice(-6000);
+      }
+
+      e.preventDefault();
+      setInlineAsk({
+        anchor,
+        selection: selectionText,
+        before,
+        after,
+        language: e2,
+      });
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mode, file, isActive, content]);
 
   if (!file) {
     return (
@@ -220,6 +289,15 @@ export function MarkdownView({ paneId }: Props) {
         <HtmlView content={content} />
       ) : (
         <CodeView content={content} ext={ext} />
+      )}
+      {inlineAsk && (
+        <InlineEditPrompt
+          request={inlineAsk}
+          initialMode="ask"
+          askOnly
+          onAccept={() => setInlineAsk(null)}
+          onCancel={() => setInlineAsk(null)}
+        />
       )}
     </div>
   );

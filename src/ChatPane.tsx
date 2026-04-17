@@ -174,9 +174,9 @@ export function ChatPane() {
           </div>
         )}
 
-        {messages.map((m, i) => (
-          <MessageBubble key={i} message={m} />
-        ))}
+        {messages.map((m, i) =>
+          m.hidden ? null : <MessageBubble key={i} message={m} />,
+        )}
 
         {compacting && (
           <div className="flex items-center justify-center gap-2 py-2 text-[11.5px] text-muted-foreground">
