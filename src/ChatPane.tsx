@@ -1,12 +1,12 @@
-import { useState, useRef, useEffect } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
-import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Sparkles } from "lucide-react";
+import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench } from "lucide-react";
 import { dispatchChatAction } from "./sync";
-import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage } from "./store";
+import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage, type LiveTool } from "./store";
 import { findModel, MODELS } from "./providers";
 import { loadSkills } from "./skills";
 import { SettingsPane } from "./SettingsPane";
@@ -14,34 +14,70 @@ import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
 
 export function ChatPane() {
-  const {
-    vaultPath,
-    messages,
-    apiKeys,
-    modelId,
-    skills,
-    busy,
-    showSettings,
-    lastContext,
-    compacting,
-    setSkills,
-    setShowSettings,
-    streamingText,
-    liveTools,
-  } = useStore();
+  // Per-field selectors so the pane only re-renders when the field it
+  // actually reads changes. Destructuring the whole store was causing
+  // every keystroke to rebuild the entire message list because the
+  // agent's streamingText/liveTools updates were waking this component
+  // 60+ times per second.
+  const vaultPath = useStore((s) => s.vaultPath);
+  const messages = useStore((s) => s.messages);
+  const apiKeys = useStore((s) => s.apiKeys);
+  const modelId = useStore((s) => s.modelId);
+  const skills = useStore((s) => s.skills);
+  const busy = useStore((s) => s.busy);
+  const showSettings = useStore((s) => s.showSettings);
+  const lastContext = useStore((s) => s.lastContext);
+  const compacting = useStore((s) => s.compacting);
+  const setSkills = useStore((s) => s.setSkills);
+  const setShowSettings = useStore((s) => s.setShowSettings);
+  const streamingText = useStore((s) => s.streamingText);
+  const liveTools = useStore((s) => s.liveTools);
 
   const [input, setInput] = useState("");
   const [showSkillMenu, setShowSkillMenu] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Track whether the user is pinned near the bottom. If they scroll up
+  // mid-stream, stop auto-scrolling so they can read older messages in
+  // peace. Re-pins automatically when they scroll back to the bottom.
+  const pinnedToBottomRef = useRef(true);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
   const activeSpec = findModel(modelId);
   const activeKey = activeSpec ? apiKeys[activeSpec.provider] : undefined;
   const ready = Boolean(vaultPath && activeKey);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    const el = scrollRef.current;
+    if (!el) return;
+    if (pinnedToBottomRef.current) {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    }
   }, [messages, streamingText, liveTools]);
+
+  // When the user sends a new message, re-pin so their own turn scrolls
+  // into view even if they had scrolled away during the previous stream.
+  useEffect(() => {
+    pinnedToBottomRef.current = true;
+    setShowJumpToLatest(false);
+  }, [messages.length]);
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distanceFromBottom < 40;
+    pinnedToBottomRef.current = atBottom;
+    setShowJumpToLatest(!atBottom && (busy || streamingText.length > 0));
+  };
+
+  const jumpToLatest = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    pinnedToBottomRef.current = true;
+    setShowJumpToLatest(false);
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
 
   useEffect(() => {
     if (vaultPath) {
@@ -65,9 +101,6 @@ export function ChatPane() {
       <div className="h-full flex flex-col bg-card border-l border-border">
         <div className="flex-1 flex items-center justify-center px-8">
           <div className="max-w-[280px] text-center space-y-4">
-            <div className="mx-auto h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-              <Sparkles className="h-5 w-5 text-primary" />
-            </div>
             <div className="space-y-1.5">
               <h3 className="text-[14px] font-semibold">Set up a provider</h3>
               <p className="text-[12px] text-muted-foreground leading-relaxed">
@@ -120,13 +153,14 @@ export function ChatPane() {
 
   return (
     <div className="h-full flex flex-col bg-card border-l border-border relative">
-      <div className="flex-1 min-h-0 overflow-auto px-3 py-4 pb-8" ref={scrollRef}>
+      <div
+        className="flex-1 min-h-0 overflow-auto px-3 py-4 pb-8 relative"
+        ref={scrollRef}
+        onScroll={onScroll}
+      >
         <div className="max-w-[820px] mx-auto space-y-4">
         {messages.length === 0 && !streamingText && (
           <div className="flex flex-col items-center justify-center h-full text-center px-4 space-y-3">
-            <div className="h-9 w-9 rounded-lg bg-muted flex items-center justify-center">
-              <Sparkles className="h-4 w-4 text-muted-foreground" />
-            </div>
             <div className="space-y-1">
               <p className="text-[13px] text-foreground/90">Ready.</p>
               {skills.length > 0 ? (
@@ -146,30 +180,13 @@ export function ChatPane() {
 
         {compacting && (
           <div className="flex items-center justify-center gap-2 py-2 text-[11.5px] text-muted-foreground">
-            <Sparkles className="h-3 w-3 animate-pulse" />
             <span>Compacting conversation…</span>
           </div>
         )}
 
         {(streamingText || liveTools.length > 0) && (
           <div className="space-y-2">
-            {liveTools.length > 0 && (
-              <div className="space-y-1">
-                {liveTools.map((t) => (
-                  <div
-                    key={t.id}
-                    className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground"
-                  >
-                    <Wrench className={cn("h-3 w-3 shrink-0", !t.result && "animate-pulse")} />
-                    <span className="text-foreground/80 shrink-0">{t.name}</span>
-                    <span className="opacity-70 truncate" title={toolSummary(t.input)}>
-                      {toolSummary(t.input)}
-                    </span>
-                    {t.result ? <span className="text-emerald-500 ml-auto shrink-0">✓</span> : <span className="opacity-40 shrink-0">…</span>}
-                  </div>
-                ))}
-              </div>
-            )}
+            {liveTools.length > 0 && <LiveToolTicker tools={liveTools} />}
             {streamingText && (
               <div className="prose-chat text-foreground/95">
                 <ReactMarkdown
@@ -191,6 +208,16 @@ export function ChatPane() {
 
       <div className="relative">
         <div className="pointer-events-none absolute -top-12 left-0 right-0 h-12 bg-gradient-to-t from-card to-transparent" />
+        {showJumpToLatest && (
+          <button
+            onClick={jumpToLatest}
+            className="absolute -top-10 left-1/2 -translate-x-1/2 h-7 px-3 flex items-center gap-1.5 rounded-full border border-border bg-card shadow-md text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/60 z-10"
+            title="Jump to latest"
+          >
+            <ChevronDown className="h-3 w-3" />
+            new messages
+          </button>
+        )}
         {showSkillMenu && filteredSkills.length > 0 && (
           <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg">
             {filteredSkills.slice(0, 8).map((s) => (
@@ -293,7 +320,7 @@ function toolSummary(input: any): string {
   return typeof first === "object" || first == null ? "" : String(first);
 }
 
-function MessageBubble({
+const MessageBubble = memo(function MessageBubble({
   message,
 }: {
   message: ChatMessage;
@@ -352,6 +379,42 @@ function MessageBubble({
       )}
     </div>
   );
+});
+
+// Single-line ticker for live tool calls. Instead of stacking every
+// tool invocation, it shows only the most recent one, cross-fading
+// between entries as they arrive. A small count in the corner makes it
+// clear more than one tool has run in this turn.
+function LiveToolTicker({ tools }: { tools: LiveTool[] }) {
+  const latest = tools[tools.length - 1];
+  if (!latest) return null;
+  const total = tools.length;
+  const done = tools.filter((t) => t.result).length;
+  const running = !latest.result;
+  return (
+    <div className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground overflow-hidden">
+      <Wrench className={cn("h-3 w-3 shrink-0", running && "animate-pulse")} />
+      <span
+        key={latest.id}
+        className="live-tool-flip flex min-w-0 flex-1 items-center gap-2"
+      >
+        <span className="text-foreground/80 shrink-0">{latest.name}</span>
+        <span className="opacity-70 truncate" title={toolSummary(latest.input)}>
+          {toolSummary(latest.input)}
+        </span>
+      </span>
+      {total > 1 && (
+        <span className="shrink-0 opacity-50">
+          {done}/{total}
+        </span>
+      )}
+      {running ? (
+        <span className="opacity-40 shrink-0">…</span>
+      ) : (
+        <span className="text-emerald-500 shrink-0">✓</span>
+      )}
+    </div>
+  );
 }
 
 function ThinkingIndicator({ activeTool }: { activeTool?: string }) {
@@ -363,7 +426,6 @@ function ThinkingIndicator({ activeTool }: { activeTool?: string }) {
   const label = activeTool ? `Running ${activeTool}` : "Thinking";
   return (
     <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
-      <Sparkles className="h-3 w-3 animate-pulse" />
       <span>{label}</span>
       <span className="inline-flex gap-0.5">
         {[0, 1, 2].map((i) => (
