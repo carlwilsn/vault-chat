@@ -127,7 +127,7 @@ export async function sendMessage(text: string) {
         // the result. The commit message is a short summary of the
         // assistant's final reply (first line, or "agent changes" as
         // fallback) plus the list of files touched.
-        const mutating = new Set(["Write", "Edit", "Delete", "Bash"]);
+        const mutating = new Set(["Write", "Edit", "Delete", "Bash", "NotebookEdit"]);
         const touched = tools.filter((t) => mutating.has(t.name));
         if (touched.length > 0) {
           const subject = summarizeTurn(acc, touched);
