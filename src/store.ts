@@ -18,6 +18,9 @@ export type ChatMessage = {
   content: string;
   toolCalls?: { id?: string; name: string; input: any; result?: string }[];
   system?: boolean;
+  // Excluded from the UI but still sent to the agent. Used for inline-ask
+  // context preambles that the user didn't type.
+  hidden?: boolean;
 };
 
 export const MODEL_CONTEXT_LIMIT = 200_000;
