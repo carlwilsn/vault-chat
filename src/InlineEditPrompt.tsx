@@ -29,6 +29,9 @@ export type InlineEditRequest = {
   before: string;
   after: string;
   language?: string;
+  // Optional screenshot (data URL) sent to the agent alongside the
+  // text context in ask mode. Not shown to the user.
+  imageDataUrl?: string;
 };
 
 const POPOVER_WIDTH = 416;
@@ -146,6 +149,7 @@ export function InlineEditPrompt({
           before: request.before,
           after: request.after,
           language: request.language,
+          imageDataUrl: request.imageDataUrl,
           priorTurns: nextPrior,
           abortSignal: ac.signal,
         })) {

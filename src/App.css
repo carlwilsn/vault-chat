@@ -167,4 +167,31 @@
     from { opacity: 0; transform: translateY(4px); }
     to   { opacity: 1; transform: translateY(0); }
   }
+
+  /* PDF text layer: invisible spans positioned to match rendered
+     glyphs. Used *only* by the marquee-capture code (it queries these
+     spans by bounding rect); the user never directly interacts with
+     them. Cursor stays default and text selection is disabled so the
+     PDF reads as a flat image from the user's perspective. */
+  .pdf-text-layer {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    opacity: 1;
+    line-height: 1;
+    user-select: none;
+    -webkit-user-select: none;
+    pointer-events: none;
+    cursor: default;
+  }
+  .pdf-text-layer > span,
+  .pdf-text-layer > br {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    transform-origin: 0% 0%;
+  }
+  .pdf-text-layer .endOfContent {
+    display: none;
+  }
 }
