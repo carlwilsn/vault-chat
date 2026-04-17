@@ -3,6 +3,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { useStore, type TodoItem } from "./store";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -343,6 +344,31 @@ export function buildTools(vault: string, tavilyKey?: string) {
         } catch (e) {
           return `PDF extraction failed: ${(e as Error).message}`;
         }
+      },
+    }),
+
+    TodoWrite: tool({
+      description:
+        "Maintain a live to-do list visible to the user while you work on a multi-step task. Call this at the start of a larger task to lay out the plan, then re-call after each meaningful step to update status (pending → in_progress → completed). The user sees the list update in real time. Use for tasks with 3+ steps or when the user asked for several things. Skip for trivial one-step requests. Each item: `content` (imperative: 'Read the file'), `status`, and optional `activeForm` (present continuous: 'Reading the file') shown while in_progress. Keep to at most one in_progress at a time.",
+      inputSchema: z.object({
+        todos: z.array(
+          z.object({
+            content: z.string(),
+            status: z.enum(["pending", "in_progress", "completed"]),
+            activeForm: z.string().optional(),
+          }),
+        ),
+      }),
+      execute: async ({ todos }) => {
+        useStore.getState().setAgentTodos(todos as TodoItem[]);
+        const counts = todos.reduce(
+          (acc, t) => {
+            acc[t.status] = (acc[t.status] ?? 0) + 1;
+            return acc;
+          },
+          {} as Record<string, number>,
+        );
+        return `updated: ${todos.length} items (${counts.completed ?? 0} done, ${counts.in_progress ?? 0} active, ${counts.pending ?? 0} pending)`;
       },
     }),
 

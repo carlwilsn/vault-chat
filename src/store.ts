@@ -27,6 +27,9 @@ export const MODEL_CONTEXT_LIMIT = 200_000;
 
 export type LiveTool = { id: string; name: string; input: any; result?: string };
 
+export type TodoStatus = "pending" | "in_progress" | "completed";
+export type TodoItem = { content: string; status: TodoStatus; activeForm?: string };
+
 export type Pane = { id: string; file: string; content: string };
 export type SplitDirection = "horizontal" | "vertical" | null;
 export type DropSide = "left" | "right" | "top" | "bottom";
@@ -96,6 +99,7 @@ type State = {
   compacting: boolean;
   streamingText: string;
   liveTools: LiveTool[];
+  agentTodos: TodoItem[];
 
   setVault: (p: string) => void;
   setFiles: (f: FileEntry[]) => void;
@@ -130,6 +134,7 @@ type State = {
   setStreamingText: (s: string) => void;
   pushLiveTool: (t: LiveTool) => void;
   updateLiveToolResult: (id: string, result: string) => void;
+  setAgentTodos: (todos: TodoItem[]) => void;
   resetStreaming: () => void;
   applyChatSnapshot: (s: {
     vaultPath: string | null;
@@ -175,6 +180,7 @@ export const useStore = create<State>((set) => ({
   compacting: false,
   streamingText: "",
   liveTools: [],
+  agentTodos: [],
 
   setVault: (p) => {
     localStorage.setItem(VAULT_STORAGE, p);
@@ -392,7 +398,8 @@ export const useStore = create<State>((set) => ({
     set((prev) => ({
       liveTools: prev.liveTools.map((t) => (t.id === id ? { ...t, result } : t)),
     })),
-  resetStreaming: () => set({ streamingText: "", liveTools: [] }),
+  setAgentTodos: (todos) => set({ agentTodos: todos }),
+  resetStreaming: () => set({ streamingText: "", liveTools: [], agentTodos: [] }),
   applyChatSnapshot: (s) =>
     set((prev) => ({
       vaultPath: s.vaultPath,
@@ -418,5 +425,6 @@ export const useStore = create<State>((set) => ({
       tokenUsage: { prompt: 0, completion: 0, total: 0 },
       lastContext: 0,
       compactionSummary: null,
+      agentTodos: [],
     }),
 }));

@@ -6,7 +6,7 @@ import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench } from "lucide-react";
 import { dispatchChatAction } from "./sync";
-import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage, type LiveTool } from "./store";
+import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage, type LiveTool, type TodoItem } from "./store";
 import { findModel, MODELS } from "./providers";
 import { loadSkills } from "./skills";
 import { SettingsPane } from "./SettingsPane";
@@ -32,6 +32,7 @@ export function ChatPane() {
   const setShowSettings = useStore((s) => s.setShowSettings);
   const streamingText = useStore((s) => s.streamingText);
   const liveTools = useStore((s) => s.liveTools);
+  const agentTodos = useStore((s) => s.agentTodos);
 
   const [input, setInput] = useState("");
   const [showSkillMenu, setShowSkillMenu] = useState(false);
@@ -183,6 +184,8 @@ export function ChatPane() {
             <span>Compacting conversation…</span>
           </div>
         )}
+
+        {agentTodos.length > 0 && <AgentTodoList todos={agentTodos} />}
 
         {(streamingText || liveTools.length > 0) && (
           <div className="space-y-2">
@@ -380,6 +383,54 @@ const MessageBubble = memo(function MessageBubble({
     </div>
   );
 });
+
+// Compact visual of the agent's current plan. Shows one row per todo,
+// uses different glyphs/styles for pending / in_progress / completed.
+// The agent maintains this list via the TodoWrite tool.
+function AgentTodoList({ todos }: { todos: TodoItem[] }) {
+  const done = todos.filter((t) => t.status === "completed").length;
+  return (
+    <div className="rounded-md border border-border/60 bg-muted/30 p-2.5 space-y-1">
+      <div className="flex items-center justify-between text-[10.5px] text-muted-foreground">
+        <span>Plan</span>
+        <span className="font-mono">
+          {done}/{todos.length}
+        </span>
+      </div>
+      <ul className="space-y-0.5">
+        {todos.map((t, i) => {
+          const label =
+            t.status === "in_progress" && t.activeForm ? t.activeForm : t.content;
+          return (
+            <li
+              key={i}
+              className="flex items-start gap-2 text-[12px] leading-relaxed"
+            >
+              <span
+                className={cn(
+                  "mt-[5px] h-2 w-2 shrink-0 rounded-full",
+                  t.status === "completed" && "bg-emerald-500",
+                  t.status === "in_progress" && "bg-primary animate-pulse",
+                  t.status === "pending" && "bg-muted-foreground/40",
+                )}
+              />
+              <span
+                className={cn(
+                  "min-w-0 flex-1",
+                  t.status === "completed" && "line-through text-muted-foreground",
+                  t.status === "in_progress" && "text-foreground",
+                  t.status === "pending" && "text-muted-foreground",
+                )}
+              >
+                {label}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
 
 // Single-line ticker for live tool calls. Instead of stacking every
 // tool invocation, it shows only the most recent one, cross-fading
