@@ -244,17 +244,6 @@ export function FileTree() {
             Open a folder to begin.
           </div>
         )}
-        {pending && pending.parent === vaultPath && (
-          <PendingRow
-            kind={pending.kind}
-            depth={0}
-            name={pendingName}
-            onChange={setPendingName}
-            onCommit={commitCreate}
-            onCancel={cancelCreate}
-            inputRef={inputRef}
-          />
-        )}
         {files.map((f) => {
           if (f.hidden) return null;
           if (isHidden(f)) return null;
@@ -349,6 +338,17 @@ export function FileTree() {
             </div>
           );
         })}
+        {pending && pending.parent === vaultPath && (
+          <PendingRow
+            kind={pending.kind}
+            depth={0}
+            name={pendingName}
+            onChange={setPendingName}
+            onCommit={commitCreate}
+            onCancel={cancelCreate}
+            inputRef={inputRef}
+          />
+        )}
       </div>
       {menu && (
         <div
