@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { Eye, FileText, ZoomIn, ZoomOut, SquareDashedMousePointer } from "lucide-react";
+import { Eye, FileText, ZoomIn, ZoomOut, BoxSelect } from "lucide-react";
 import { cn } from "./lib/utils";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 
@@ -403,7 +403,7 @@ export function PdfView({ path }: { path: string }) {
                 : "Marquee ask: click, then drag a box over text to ask about it"
             }
           >
-            <SquareDashedMousePointer className="h-3 w-3" />
+            <BoxSelect className="h-3 w-3" />
           </button>
           <button
             onClick={() => {
