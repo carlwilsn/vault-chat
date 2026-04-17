@@ -9,7 +9,6 @@ import "./monaco-setup";
 import App from "./App";
 import { ChatWindow } from "./ChatWindow";
 import { installMainSync, installPopoutSync } from "./sync";
-import { installSessionPersistence } from "./session";
 
 const savedTheme = localStorage.getItem("vault_chat_theme");
 document.documentElement.dataset.theme = savedTheme === "light" ? "light" : "graphite";
@@ -21,7 +20,6 @@ if (isPopout) {
   installPopoutSync();
 } else {
   installMainSync();
-  installSessionPersistence();
 }
 
 const Root = isPopout ? ChatWindow : App;

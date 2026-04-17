@@ -184,7 +184,7 @@ export function MarkdownView({ paneId }: Props) {
       <div className="h-full flex items-center justify-center bg-background">
         <div className="flex flex-col items-center gap-3 text-muted-foreground">
           <FileText className="h-8 w-8 opacity-30" />
-          <p className="text-sm">Open a vault, then pick a markdown file.</p>
+          <p className="text-sm">Open a vault and pick a file to get started.</p>
         </div>
       </div>
     );
