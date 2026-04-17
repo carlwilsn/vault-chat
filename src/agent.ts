@@ -64,8 +64,37 @@ export async function runAgent(params: {
       .filter(Boolean)
       .join("\n");
 
+    // Prompt caching (Anthropic): mark the system prompt and the prior
+    // conversation prefix as cacheable. The current user turn is never
+    // cached — it changes every call. On a 10-turn conversation this
+    // cuts input-token cost ~10x for cached reads ($0.30/M vs $3/M on
+    // Sonnet), 5-minute TTL while the session is active.
+    //
+    // Up to 4 breakpoints are allowed; we use 2: after the system, and
+    // on the last history message. Other providers (OpenAI, Google)
+    // silently ignore providerOptions.anthropic.
+    const cacheControl = {
+      anthropic: { cacheControl: { type: "ephemeral" as const } },
+    };
+
+    const historyMessages: ModelMessage[] = history.map<ModelMessage>((h, i) => {
+      const isLast = i === history.length - 1;
+      return {
+        role: h.role,
+        content: h.content,
+        ...(isLast ? { providerOptions: cacheControl } : {}),
+      };
+    });
+
+    const systemMessage: ModelMessage = {
+      role: "system",
+      content: system,
+      providerOptions: cacheControl,
+    };
+
     const messages: ModelMessage[] = [
-      ...history.map<ModelMessage>((h) => ({ role: h.role, content: h.content })),
+      systemMessage,
+      ...historyMessages,
       { role: "user", content: expandedMessage },
     ];
 
@@ -73,7 +102,6 @@ export async function runAgent(params: {
 
     const result = streamText({
       model,
-      system,
       messages,
       tools,
       stopWhen: stepCountIs(25),
