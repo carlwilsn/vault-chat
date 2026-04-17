@@ -9,6 +9,7 @@ import { ChatPane } from "./ChatPane";
 import { SettingsPane } from "./SettingsPane";
 import { Titlebar } from "./Titlebar";
 import { useStore } from "./store";
+import { gitInitIfNeeded } from "./git";
 import "./App.css";
 
 export default function App() {
@@ -31,6 +32,7 @@ export default function App() {
       try {
         const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: saved });
         if (!cancelled) setFiles(listed);
+        gitInitIfNeeded(saved).catch(() => {});
       } catch {
         if (!cancelled) {
           localStorage.removeItem("vault_chat_last_vault");

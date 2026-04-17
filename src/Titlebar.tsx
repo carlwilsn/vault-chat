@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, RotateCw, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal } from "lucide-react";
+import { FolderOpen, RotateCw, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, Undo2, History } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
+import { gitInitIfNeeded, gitRevertHead, gitRecentCommits, gitShowCommit, type GitCommit } from "./git";
 
 export function Titlebar() {
   const {
@@ -24,6 +25,11 @@ export function Titlebar() {
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const [hiddenLines, setHiddenLines] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [commits, setCommits] = useState<GitCommit[]>([]);
+  const [viewing, setViewing] = useState<{ hash: string; patch: string } | null>(null);
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [undoError, setUndoError] = useState<string | null>(null);
   const win = getCurrentWindow();
 
   useEffect(() => {
@@ -48,6 +54,9 @@ export function Titlebar() {
       if (switching) setCurrentFile(null, "");
       const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: picked });
       setFiles(listed);
+      // Ensure the vault is a git repo so agent turns can auto-commit.
+      // Silent no-op if already one.
+      gitInitIfNeeded(normalized).catch(() => {});
     }
   };
 
@@ -67,6 +76,42 @@ export function Titlebar() {
     } catch (e) {
       console.error(e);
     }
+  };
+
+  const openHistory = async () => {
+    if (!vaultPath) return;
+    const c = await gitRecentCommits(vaultPath, 30);
+    setCommits(c);
+    setViewing(null);
+    setHistoryOpen(true);
+  };
+
+  const viewCommit = async (hash: string) => {
+    if (!vaultPath) return;
+    try {
+      const patch = await gitShowCommit(vaultPath, hash);
+      setViewing({ hash, patch });
+    } catch (e) {
+      setViewing({ hash, patch: String(e) });
+    }
+  };
+
+  const undoLast = async () => {
+    if (!vaultPath || undoBusy) return;
+    setUndoBusy(true);
+    setUndoError(null);
+    try {
+      await gitRevertHead(vaultPath);
+      const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: vaultPath });
+      setFiles(listed);
+      if (historyOpen) {
+        const c = await gitRecentCommits(vaultPath, 30);
+        setCommits(c);
+      }
+    } catch (e) {
+      setUndoError(String(e));
+    }
+    setUndoBusy(false);
   };
 
   const toggleSel = (line: string) =>
@@ -143,6 +188,21 @@ export function Titlebar() {
               title="Refresh"
             >
               <RotateCw className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={undoLast}
+              disabled={undoBusy}
+              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground disabled:opacity-40"
+              title={undoError ? `Undo failed: ${undoError}` : "Undo last change (git revert)"}
+            >
+              <Undo2 className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={openHistory}
+              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
+              title="History"
+            >
+              <History className="h-3.5 w-3.5" />
             </button>
           </>
         )}
@@ -262,6 +322,75 @@ export function Titlebar() {
               </button>
             </div>
           </div>
+        </div>
+      </div>
+    )}
+    {historyOpen && (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        onMouseDown={(e) => {
+          if (e.target === e.currentTarget) setHistoryOpen(false);
+        }}
+      >
+        <div
+          className="w-[720px] max-h-[80vh] flex flex-col rounded-md border border-border bg-card shadow-xl"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="px-4 pt-4 pb-2 flex items-center justify-between">
+            <div>
+              <div className="text-[13px] font-semibold text-foreground">History</div>
+              <div className="text-[11.5px] text-muted-foreground mt-0.5">
+                Auto-committed after each agent turn that writes files.
+              </div>
+            </div>
+            <button
+              onClick={undoLast}
+              disabled={undoBusy}
+              className="h-7 px-3 rounded text-[12px] border border-border hover:bg-accent/60 flex items-center gap-1.5 disabled:opacity-40"
+            >
+              <Undo2 className="h-3 w-3" />
+              Undo last
+            </button>
+          </div>
+          <div className="flex-1 min-h-0 flex">
+            <div className="w-[280px] border-r border-border/60 overflow-auto">
+              {commits.length === 0 && (
+                <div className="p-4 text-[12px] text-muted-foreground">
+                  No commits yet.
+                </div>
+              )}
+              {commits.map((c) => (
+                <button
+                  key={c.hash}
+                  onClick={() => viewCommit(c.hash)}
+                  className={`w-full text-left px-3 py-2 border-b border-border/40 hover:bg-accent/40 ${
+                    viewing?.hash === c.hash ? "bg-accent/60" : ""
+                  }`}
+                >
+                  <div className="text-[12px] text-foreground truncate">{c.subject}</div>
+                  <div className="text-[10.5px] text-muted-foreground font-mono mt-0.5">
+                    {c.short_hash} · {c.date}
+                  </div>
+                </button>
+              ))}
+            </div>
+            <div className="flex-1 overflow-auto p-3">
+              {viewing ? (
+                <pre className="text-[11.5px] font-mono whitespace-pre-wrap text-foreground/90">
+                  {viewing.patch}
+                </pre>
+              ) : (
+                <div className="text-[12px] text-muted-foreground p-2">
+                  Pick a commit to view the diff.
+                </div>
+              )}
+            </div>
+          </div>
+          {undoError && (
+            <div className="px-4 py-2 border-t border-border/60 text-[11.5px] text-destructive">
+              {undoError}
+            </div>
+          )}
         </div>
       </div>
     )}

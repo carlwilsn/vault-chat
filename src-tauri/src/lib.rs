@@ -772,6 +772,210 @@ fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
     Ok(entries)
 }
 
+#[derive(Serialize)]
+struct GitCommit {
+    hash: String,
+    short_hash: String,
+    subject: String,
+    body: String,
+    author: String,
+    date: String,
+}
+
+fn run_git(
+    cwd: &str,
+    args: &[&str],
+) -> Result<(String, String, i32), String> {
+    use std::io::Read;
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new("git");
+        c.creation_flags(0x08000000);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = Command::new("git");
+    cmd.current_dir(cwd);
+    cmd.args(args);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut o) = child.stdout.take() {
+        let _ = o.read_to_string(&mut stdout);
+    }
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut stderr);
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    Ok((stdout, stderr, status.code().unwrap_or(-1)))
+}
+
+/// Ensure the vault has a git repo. If not, create one and make an
+/// initial commit capturing the current state. Idempotent.
+#[tauri::command]
+fn git_init_if_needed(vault: String) -> Result<bool, String> {
+    let git_dir = PathBuf::from(&vault).join(".git");
+    if git_dir.is_dir() {
+        return Ok(false);
+    }
+    run_git(&vault, &["init", "-q"])?;
+    // Use a neutral author so it doesn't require user git config.
+    run_git(
+        &vault,
+        &[
+            "-c",
+            "user.email=vault-chat@local",
+            "-c",
+            "user.name=vault-chat",
+            "add",
+            "-A",
+        ],
+    )?;
+    // First commit may be empty; allow that so the repo has HEAD.
+    run_git(
+        &vault,
+        &[
+            "-c",
+            "user.email=vault-chat@local",
+            "-c",
+            "user.name=vault-chat",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "initial state",
+        ],
+    )?;
+    Ok(true)
+}
+
+/// Stage all changes and commit with the given message. Returns the
+/// short hash of the new commit, or None if nothing was staged.
+#[tauri::command]
+fn git_commit_all(
+    vault: String,
+    message: String,
+) -> Result<Option<String>, String> {
+    let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
+    if status_out.trim().is_empty() {
+        return Ok(None);
+    }
+    run_git(
+        &vault,
+        &[
+            "-c",
+            "user.email=vault-chat@local",
+            "-c",
+            "user.name=vault-chat",
+            "add",
+            "-A",
+        ],
+    )?;
+    run_git(
+        &vault,
+        &[
+            "-c",
+            "user.email=vault-chat@local",
+            "-c",
+            "user.name=vault-chat",
+            "commit",
+            "-q",
+            "-m",
+            &message,
+        ],
+    )?;
+    let (hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
+    Ok(Some(hash.trim().to_string()))
+}
+
+/// Return the most recent N commits as structured records.
+#[tauri::command]
+fn git_recent_commits(vault: String, n: Option<usize>) -> Result<Vec<GitCommit>, String> {
+    let n = n.unwrap_or(30).min(500);
+    let fmt = "%H%x1f%h%x1f%s%x1f%an%x1f%ad%x1f%b%x1e";
+    let (out, _, _) = run_git(
+        &vault,
+        &[
+            "log",
+            &format!("-{}", n),
+            &format!("--pretty=format:{}", fmt),
+            "--date=format:%Y-%m-%d %H:%M",
+        ],
+    )?;
+    let mut commits = Vec::new();
+    for record in out.split('\x1e') {
+        let r = record.trim();
+        if r.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = r.splitn(6, '\x1f').collect();
+        if parts.len() < 5 {
+            continue;
+        }
+        commits.push(GitCommit {
+            hash: parts[0].to_string(),
+            short_hash: parts[1].to_string(),
+            subject: parts[2].to_string(),
+            author: parts[3].to_string(),
+            date: parts[4].to_string(),
+            body: parts.get(5).map(|s| s.trim().to_string()).unwrap_or_default(),
+        });
+    }
+    Ok(commits)
+}
+
+/// Revert the most recent commit (leaves a new commit that undoes it
+/// — safer than reset, keeps history). Errors if HEAD is the initial
+/// commit.
+#[tauri::command]
+fn git_revert_head(vault: String) -> Result<String, String> {
+    // Can we even revert? Need at least 2 commits.
+    let (count_out, _, _) = run_git(&vault, &["rev-list", "--count", "HEAD"])?;
+    let count: usize = count_out.trim().parse().unwrap_or(0);
+    if count < 2 {
+        return Err("nothing to undo yet".to_string());
+    }
+    let (_, stderr, code) = run_git(
+        &vault,
+        &[
+            "-c",
+            "user.email=vault-chat@local",
+            "-c",
+            "user.name=vault-chat",
+            "revert",
+            "--no-edit",
+            "HEAD",
+        ],
+    )?;
+    if code != 0 {
+        return Err(format!("revert failed: {}", stderr.trim()));
+    }
+    let (hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
+    Ok(hash.trim().to_string())
+}
+
+/// Show the patch for a given commit hash.
+#[tauri::command]
+fn git_show_commit(vault: String, hash: String) -> Result<String, String> {
+    let (out, stderr, code) = run_git(
+        &vault,
+        &[
+            "show",
+            "--stat",
+            "--patch",
+            "--format=%h %s%n%n%b",
+            &hash,
+        ],
+    )?;
+    if code != 0 {
+        return Err(stderr.trim().to_string());
+    }
+    Ok(out)
+}
+
 #[cfg(windows)]
 fn apply_titlebar_color(window: &tauri::WebviewWindow) {
     use windows_sys::Win32::Foundation::HWND;
@@ -844,7 +1048,12 @@ pub fn run() {
             read_ignore_lines,
             add_to_ignore,
             remove_from_ignore,
-            open_terminal
+            open_terminal,
+            git_init_if_needed,
+            git_commit_all,
+            git_recent_commits,
+            git_revert_head,
+            git_show_commit
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

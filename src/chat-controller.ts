@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { runAgent } from "./agent";
 import { findModel } from "./providers";
 import { compactConversation } from "./compactor";
+import { gitCommitAll } from "./git";
 import {
   useStore,
   MODEL_CONTEXT_LIMIT,
@@ -121,6 +122,20 @@ export async function sendMessage(text: string) {
         });
         store.resetStreaming();
         store.setBusy(false);
+
+        // If the agent wrote / edited / deleted / ran bash, auto-commit
+        // the result. The commit message is a short summary of the
+        // assistant's final reply (first line, or "agent changes" as
+        // fallback) plus the list of files touched.
+        const mutating = new Set(["Write", "Edit", "Delete", "Bash"]);
+        const touched = tools.filter((t) => mutating.has(t.name));
+        if (touched.length > 0) {
+          const subject = summarizeTurn(acc, touched);
+          const body = touchedFilesBody(touched);
+          const msg = body ? `${subject}\n\n${body}` : subject;
+          gitCommitAll(vault, msg).catch(() => {});
+        }
+
         invoke<FileEntry[]>("list_markdown_files", { vault })
           .then(store.setFiles)
           .catch(() => {});
@@ -159,4 +174,36 @@ export function clearChat() {
 
 export function setModel(id: string) {
   useStore.getState().setModelId(id);
+}
+
+function summarizeTurn(finalText: string, touched: LiveTool[]): string {
+  const firstLine = finalText.split("\n").find((l) => l.trim().length > 0);
+  if (firstLine && firstLine.length <= 80) return firstLine.trim();
+  if (firstLine) return firstLine.slice(0, 77).trim() + "…";
+  const verbs: Record<string, string> = {
+    Write: "wrote",
+    Edit: "edited",
+    Delete: "deleted",
+    Bash: "ran",
+  };
+  const primary = touched[touched.length - 1];
+  return `agent ${verbs[primary.name] ?? "touched"} ${touchedName(primary)}`;
+}
+
+function touchedName(t: LiveTool): string {
+  if (t.name === "Bash") {
+    const cmd = typeof t.input?.command === "string" ? t.input.command : "";
+    return cmd.split(/\s+/)[0] || "shell command";
+  }
+  const p = typeof t.input?.path === "string" ? t.input.path : "";
+  return p.split("/").pop() ?? "file";
+}
+
+function touchedFilesBody(touched: LiveTool[]): string {
+  const lines: string[] = [];
+  for (const t of touched) {
+    const name = touchedName(t);
+    lines.push(`- ${t.name}: ${name}`);
+  }
+  return lines.join("\n");
 }
