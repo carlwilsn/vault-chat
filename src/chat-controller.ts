@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { runAgent } from "./agent";
 import { findModel } from "./providers";
 import { compactConversation } from "./compactor";
+import { clearSession } from "./session";
 import {
   useStore,
   MODEL_CONTEXT_LIMIT,
@@ -155,6 +156,9 @@ export function clearChat() {
   const s = useStore.getState();
   s.clearMessages();
   s.resetStreaming();
+  if (s.vaultPath) {
+    clearSession(s.vaultPath).catch(() => {});
+  }
 }
 
 export function setModel(id: string) {
