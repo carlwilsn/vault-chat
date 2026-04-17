@@ -34,6 +34,34 @@ function parseTableAlign(line: string): (string | null)[] {
   });
 }
 
+// Render markdown table-cell content into a DOM node: inline math
+// ($$..$$ treated as inline here because a table cell is always
+// inline flow) + plain text segments. Escaped `\|` was already turned
+// into a pipe by parseTableRow, so we don't handle it again.
+function renderCellInto(el: HTMLElement, src: string) {
+  const re = /\$\$([^$\n]+?)\$\$|\$([^$\n]+?)\$/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) {
+    if (m.index > last) {
+      el.appendChild(document.createTextNode(src.slice(last, m.index)));
+    }
+    const tex = (m[1] ?? m[2] ?? "").trim();
+    const span = document.createElement("span");
+    span.className = "cm-math-inline";
+    try {
+      katex.render(tex, span, { displayMode: false, throwOnError: false });
+    } catch {
+      span.textContent = m[0];
+    }
+    el.appendChild(span);
+    last = m.index + m[0].length;
+  }
+  if (last < src.length) {
+    el.appendChild(document.createTextNode(src.slice(last)));
+  }
+}
+
 class TableWidget extends WidgetType {
   constructor(readonly src: string) {
     super();
@@ -57,7 +85,7 @@ class TableWidget extends WidgetType {
     const headerTr = document.createElement("tr");
     rows[0].forEach((cell, i) => {
       const th = document.createElement("th");
-      th.textContent = cell;
+      renderCellInto(th, cell);
       if (align[i]) th.style.textAlign = align[i]!;
       headerTr.appendChild(th);
     });
@@ -69,7 +97,7 @@ class TableWidget extends WidgetType {
       const tr = document.createElement("tr");
       rows[i].forEach((cell, j) => {
         const td = document.createElement("td");
-        td.textContent = cell;
+        renderCellInto(td, cell);
         if (align[j]) td.style.textAlign = align[j]!;
         tr.appendChild(td);
       });
@@ -211,6 +239,23 @@ function buildDecorations(state: EditorState): DecorationSet {
             const end = next === " " ? m.to + 1 : m.to;
             if (end > m.from) builder.push(hideDeco.range(m.from, end));
           });
+        }
+        return;
+      }
+
+      // Setext headings: a line of text followed by `===` or `---` on the
+      // next line is a heading in CommonMark. Edit mode used to ignore
+      // these, so accidentally typing `--` silently promoted the line
+      // above to a heading in view mode only. Render it the same way
+      // view mode does so you see the surprise immediately.
+      if (name === "SetextHeading1" || name === "SetextHeading2") {
+        const level = name === "SetextHeading1" ? 1 : 2;
+        const startLine = doc.lineAt(nFrom).number;
+        const endLine = doc.lineAt(nTo).number;
+        for (let ln = startLine; ln < endLine; ln++) {
+          builder.push(
+            Decoration.line({ class: `cm-h cm-h${level}` }).range(doc.line(ln).from),
+          );
         }
         return;
       }
@@ -371,14 +416,32 @@ function buildDecorations(state: EditorState): DecorationSet {
       while ((bm = blockRe.exec(text))) {
         const s = bm.index;
         const e = s + bm[0].length;
+        // remark-math (view mode) renders $$…$$ as display math only when
+        // it stands alone on its own lines. If it's mid-line, view mode
+        // still renders the TeX but as inline math — tiny, squeezed into
+        // the paragraph. Mirror that exactly: display block if standalone,
+        // otherwise inline math, so the editor shows whatever the viewer
+        // will show.
+        const openLine = doc.lineAt(s);
+        const closeLine = doc.lineAt(e);
+        const openLeading = doc.sliceString(openLine.from, s);
+        const closeTrailing = doc.sliceString(e, closeLine.to);
+        const standsAlone =
+          /^\s*$/.test(openLeading) && /^\s*$/.test(closeTrailing);
         if (spanActive(s, e)) {
           applyTexTokens(builder, doc, s, e);
-        } else {
+        } else if (standsAlone) {
           builder.push(
             Decoration.replace({
               widget: new MathWidget(bm[1].trim(), true),
               block: true,
             }).range(s, e)
+          );
+        } else {
+          builder.push(
+            Decoration.replace({
+              widget: new MathWidget(bm[1].trim(), false),
+            }).range(s, e),
           );
         }
       }
