@@ -976,6 +976,205 @@ fn git_show_commit(vault: String, hash: String) -> Result<String, String> {
     Ok(out)
 }
 
+// ----- meta vault -----
+//
+// The meta vault is an app-level folder (OS app-data) that holds the
+// agent's own config as files: system prompt, skills, tools. The user
+// can open it as a regular vault and edit anything. Agent can too.
+// On first launch we seed it with sensible defaults.
+
+const DEFAULT_SYSTEM_MD: &str = include_str!("../defaults/system.md");
+const DEFAULT_META_README: &str = include_str!("../defaults/README.md");
+
+#[derive(Serialize)]
+struct MetaInit {
+    path: String,
+    fresh: bool,
+}
+
+fn meta_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {}", e))?;
+    Ok(base.join("meta"))
+}
+
+/// Create the meta vault on disk with bundled defaults if it doesn't
+/// exist yet. Returns the path and whether this call was the one that
+/// created it.
+#[tauri::command]
+fn meta_vault_init(app: tauri::AppHandle) -> Result<MetaInit, String> {
+    let dir = meta_dir(&app)?;
+    let fresh = !dir.exists();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let system_path = dir.join("system.md");
+    if !system_path.exists() {
+        std::fs::write(&system_path, DEFAULT_SYSTEM_MD).map_err(|e| e.to_string())?;
+    }
+    let readme_path = dir.join("README.md");
+    if !readme_path.exists() {
+        std::fs::write(&readme_path, DEFAULT_META_README).map_err(|e| e.to_string())?;
+    }
+    let skills_dir = dir.join("skills");
+    std::fs::create_dir_all(&skills_dir).map_err(|e| e.to_string())?;
+    let tools_dir = dir.join("tools");
+    std::fs::create_dir_all(&tools_dir).map_err(|e| e.to_string())?;
+
+    let path_str = dir.to_string_lossy().replace('\\', "/");
+    Ok(MetaInit {
+        path: path_str,
+        fresh,
+    })
+}
+
+/// Return the meta vault path (does not create if absent).
+#[tauri::command]
+fn meta_vault_path(app: tauri::AppHandle) -> Result<String, String> {
+    let dir = meta_dir(&app)?;
+    Ok(dir.to_string_lossy().replace('\\', "/"))
+}
+
+// ----- run_script -----
+//
+// Executes a vault-tool script (Python / Node / bash / etc.). The
+// script receives its input on stdin as JSON and is expected to write
+// its output to stdout (JSON or plain text — caller decides).
+
+#[derive(Serialize)]
+struct ScriptResult {
+    stdout: String,
+    stderr: String,
+    code: i32,
+    timed_out: bool,
+}
+
+fn interpreter_for(path: &str) -> Option<(&'static str, Vec<String>)> {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".py") {
+        Some(("python", vec![path.to_string()]))
+    } else if lower.ends_with(".mjs") || lower.ends_with(".js") {
+        Some(("node", vec![path.to_string()]))
+    } else if lower.ends_with(".ts") {
+        Some(("npx", vec!["tsx".to_string(), path.to_string()]))
+    } else if lower.ends_with(".sh") || lower.ends_with(".bash") {
+        #[cfg(windows)]
+        {
+            Some(("bash", vec![path.to_string()]))
+        }
+        #[cfg(not(windows))]
+        {
+            Some(("bash", vec![path.to_string()]))
+        }
+    } else {
+        None
+    }
+}
+
+#[tauri::command]
+fn run_script(
+    script_path: String,
+    stdin_json: Option<String>,
+    cwd: Option<String>,
+    timeout_ms: Option<u64>,
+) -> Result<ScriptResult, String> {
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
+
+    let (program, args) =
+        interpreter_for(&script_path).ok_or_else(|| {
+            format!(
+                "no known interpreter for {} (supported: .py .js .mjs .ts .sh .bash)",
+                script_path
+            )
+        })?;
+
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(60_000));
+
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new(program);
+        c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = Command::new(program);
+
+    cmd.args(&args);
+    if let Some(d) = &cwd {
+        if PathBuf::from(d).is_dir() {
+            cmd.current_dir(d);
+        }
+    }
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+
+    if let (Some(stdin), Some(payload)) = (child.stdin.take(), stdin_json.as_ref()) {
+        let mut stdin = stdin;
+        let _ = stdin.write_all(payload.as_bytes());
+        drop(stdin);
+    }
+
+    let start = Instant::now();
+    let mut timed_out = false;
+    let code;
+    loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) => {
+                code = status.code().unwrap_or(-1);
+                break;
+            }
+            None => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    timed_out = true;
+                    code = -1;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut o) = child.stdout.take() {
+        let _ = o.read_to_string(&mut stdout);
+    }
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut stderr);
+    }
+
+    const MAX_OUT: usize = 50_000;
+    if stdout.len() > MAX_OUT {
+        stdout = format!(
+            "{}\n…[truncated {} bytes]",
+            &stdout[..MAX_OUT],
+            stdout.len() - MAX_OUT
+        );
+    }
+    if stderr.len() > MAX_OUT {
+        stderr = format!(
+            "{}\n…[truncated {} bytes]",
+            &stderr[..MAX_OUT],
+            stderr.len() - MAX_OUT
+        );
+    }
+
+    Ok(ScriptResult {
+        stdout,
+        stderr,
+        code,
+        timed_out,
+    })
+}
+
 #[cfg(windows)]
 fn apply_titlebar_color(window: &tauri::WebviewWindow) {
     use windows_sys::Win32::Foundation::HWND;
@@ -1053,7 +1252,10 @@ pub fn run() {
             git_commit_all,
             git_recent_commits,
             git_revert_head,
-            git_show_commit
+            git_show_commit,
+            meta_vault_init,
+            meta_vault_path,
+            run_script
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
