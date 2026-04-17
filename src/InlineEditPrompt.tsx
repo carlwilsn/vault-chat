@@ -245,8 +245,8 @@ export function InlineEditPrompt({
           placeholder={
             result
               ? mode === "edit"
-                ? "Refine, or leave empty and press Enter to accept…"
-                : "Ask a follow-up…"
+                ? "Refine, or Enter to accept…"
+                : "Follow-up…"
               : mode === "ask"
                 ? request.selection
                   ? "Ask about the selection…"
@@ -287,22 +287,11 @@ export function InlineEditPrompt({
       </div>
       {(streaming || result || error) && (
         <div
-          className={
-            mode === "edit"
-              ? "min-h-0 overflow-auto border-t border-border/60 px-3 py-2 text-[12.5px] font-mono whitespace-pre-wrap text-foreground/90"
-              : "prose-chat min-h-0 overflow-auto border-t border-border/60 px-3 py-2 text-foreground/90"
-          }
+          className="prose-chat min-h-0 overflow-auto border-t border-border/60 px-3 py-2 text-foreground/90"
           style={{ maxHeight: "calc(20 * 1lh + 1rem)" }}
         >
           {error ? (
             <span className="text-destructive">{error}</span>
-          ) : mode === "edit" ? (
-            <>
-              {streaming && (
-                <Loader2 className="inline h-3 w-3 mr-1 animate-spin text-muted-foreground align-[-2px]" />
-              )}
-              {result}
-            </>
           ) : (
             <>
               {thinking && !result && (
