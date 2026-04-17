@@ -95,6 +95,11 @@ export type AskEvent =
 export type InlineAskParams = InlineEditParams & {
   vault: string;
   tavilyKey?: string;
+  // Optional region screenshot (data URL) to attach to the first user
+  // message alongside the text context. Used by the PDF marquee so the
+  // model can see math, tables, and diagrams that text extraction
+  // mangles.
+  imageDataUrl?: string;
 };
 
 export async function* runInlineAsk(
@@ -122,7 +127,22 @@ export async function* runInlineAsk(
   const messages: ModelMessage[] = [];
   const prior = p.priorTurns ?? [];
   const firstPrompt = prior[0]?.prompt ?? p.prompt;
-  messages.push({ role: "user", content: buildContextBody(p, firstPrompt) });
+  const firstContent = buildContextBody(p, firstPrompt);
+
+  // If we have a region screenshot, attach it as an image part on the
+  // first user message — the same turn that carries the file context.
+  // The model then sees text + image together and can cross-reference.
+  if (p.imageDataUrl) {
+    messages.push({
+      role: "user",
+      content: [
+        { type: "text", text: firstContent },
+        { type: "image", image: new URL(p.imageDataUrl) },
+      ],
+    });
+  } else {
+    messages.push({ role: "user", content: firstContent });
+  }
   if (prior.length > 0) {
     messages.push({ role: "assistant", content: prior[0].result });
     for (let i = 1; i < prior.length; i++) {
