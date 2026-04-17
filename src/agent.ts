@@ -104,12 +104,26 @@ export async function runAgent(params: {
     const builtinTools = buildTools(vault, tavilyKey);
     const tools = { ...builtinTools, ...metaTools };
 
+    // Extended thinking for Anthropic: the model gets a dedicated token
+    // budget for internal reasoning before it starts generating the
+    // visible response. Cheap quality bump on Opus/Sonnet; silently
+    // ignored by OpenAI/Google adapters.
+    const providerOptions =
+      spec.provider === "anthropic"
+        ? {
+            anthropic: {
+              thinking: { type: "enabled" as const, budgetTokens: 3000 },
+            },
+          }
+        : undefined;
+
     const result = streamText({
       model,
       messages,
       tools,
       stopWhen: stepCountIs(25),
       abortSignal,
+      ...(providerOptions ? { providerOptions } : {}),
     });
 
     for await (const part of result.fullStream) {
