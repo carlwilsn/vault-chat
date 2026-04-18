@@ -103,7 +103,22 @@ export default function App() {
     <div className="h-full w-full bg-background flex flex-col">
       <Titlebar />
       <div className="flex-1 min-h-0">
-        <Allotment key={layoutKey} proportionalLayout={false}>
+        <Allotment
+          key={layoutKey}
+          proportionalLayout={false}
+          onVisibleChange={(index, visible) => {
+            // Sync snap-drag hides/shows back to the store so the
+            // collapsed flags reflect what the user sees.
+            if (index === 0) {
+              if (visible === leftCollapsed) useStore.setState({ leftCollapsed: !visible });
+            } else if (index === 1) {
+              // Editor is force-visible when chat is hidden — ignore
+              // Allotment's echo in that case.
+              if (chatHidden) return;
+              if (visible === middleCollapsed) useStore.setState({ middleCollapsed: !visible });
+            }
+          }}
+        >
           <Allotment.Pane preferredSize={fitWidth} minSize={160} maxSize={leftMax} visible={!leftCollapsed} snap>
             <FileTree />
           </Allotment.Pane>
