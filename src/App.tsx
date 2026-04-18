@@ -93,28 +93,14 @@ export default function App() {
     <div className="h-full w-full bg-background flex flex-col">
       <Titlebar />
       <div className="flex-1 min-h-0">
-        <Allotment
-          key={layoutKey}
-          proportionalLayout={false}
-          onVisibleChange={(index, visible) => {
-            // Keep the store in sync with drag-snap hides/shows so the
-            // titlebar toggles don't need a throwaway first click to
-            // reconcile.
-            if (index === 0) {
-              if (visible === leftCollapsed) useStore.setState({ leftCollapsed: !visible });
-            } else if (index === 2) {
-              if (popoutOpen) return;
-              if (visible === rightCollapsed) useStore.setState({ rightCollapsed: !visible });
-            }
-          }}
-        >
-          <Allotment.Pane preferredSize={fitWidth} minSize={160} maxSize={leftMax} visible={!leftCollapsed} snap>
+        <Allotment key={layoutKey} proportionalLayout={false}>
+          <Allotment.Pane preferredSize={fitWidth} minSize={160} maxSize={leftMax} visible={!leftCollapsed}>
             <FileTree />
           </Allotment.Pane>
           <Allotment.Pane minSize={340} priority={LayoutPriority.High}>
             {showSettings && chatHidden ? <SettingsPane /> : <MarkdownArea />}
           </Allotment.Pane>
-          <Allotment.Pane preferredSize={440} minSize={320} visible={!rightCollapsed && !popoutOpen} snap>
+          <Allotment.Pane preferredSize={440} minSize={320} visible={!rightCollapsed && !popoutOpen}>
             <ChatPane />
           </Allotment.Pane>
         </Allotment>
