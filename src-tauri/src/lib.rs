@@ -385,18 +385,24 @@ async fn edit_text_file(
     replace_all: Option<bool>,
 ) -> Result<String, String> {
     git_guard(&path)?;
-    let contents = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    // Normalize line endings for matching so agent-provided `old_string`
+    // (usually LF) matches CRLF files on Windows. The file's original
+    // ending style is detected and restored on write so we don't
+    // silently churn EOLs on every edit.
+    let had_crlf = raw.contains("\r\n");
+    let contents = if had_crlf { raw.replace("\r\n", "\n") } else { raw };
+    let needle = old_string.replace("\r\n", "\n");
+    let replacement = new_string.replace("\r\n", "\n");
     let all = replace_all.unwrap_or(false);
-    if all {
-        let count = contents.matches(&old_string).count();
+    let new_contents_lf = if all {
+        let count = contents.matches(&needle).count();
         if count == 0 {
             return Err(format!("old_string not found in {}", path));
         }
-        let new_contents = contents.replace(&old_string, &new_string);
-        std::fs::write(&path, new_contents).map_err(|e| e.to_string())?;
-        Ok(format!("replaced {} occurrence(s) in {}", count, path))
+        (contents.replace(&needle, &replacement), count)
     } else {
-        let count = contents.matches(&old_string).count();
+        let count = contents.matches(&needle).count();
         if count == 0 {
             return Err(format!("old_string not found in {}", path));
         }
@@ -406,8 +412,14 @@ async fn edit_text_file(
                 count, path
             ));
         }
-        let new_contents = contents.replacen(&old_string, &new_string, 1);
-        std::fs::write(&path, new_contents).map_err(|e| e.to_string())?;
+        (contents.replacen(&needle, &replacement, 1), 1)
+    };
+    let (body, count) = new_contents_lf;
+    let out = if had_crlf { body.replace('\n', "\r\n") } else { body };
+    std::fs::write(&path, out).map_err(|e| e.to_string())?;
+    if all {
+        Ok(format!("replaced {} occurrence(s) in {}", count, path))
+    } else {
         Ok(format!("edited {}", path))
     }
 }

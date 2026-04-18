@@ -174,6 +174,7 @@ type State = {
   showSettings: boolean;
   mode: "view" | "edit";
   leftCollapsed: boolean;
+  middleCollapsed: boolean;
   rightCollapsed: boolean;
   popoutOpen: boolean;
   tokenUsage: { prompt: number; completion: number; total: number };
