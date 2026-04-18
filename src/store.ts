@@ -49,6 +49,28 @@ const VAULT_STORAGE = "vault_chat_last_vault";
 
 export type Theme = "graphite" | "light";
 
+// Streaming text from the agent arrives one token at a time — often
+// many per frame. If we flush each delta to the store immediately, the
+// chat pane re-parses the entire growing markdown buffer on every
+// token, which freezes the UI thread ("(Not Responding)"). Buffer here
+// and flush at most once per animation frame.
+let streamBuffer = "";
+let streamFlushRaf: number | null = null;
+function flushStreamBuffer() {
+  streamFlushRaf = null;
+  if (!streamBuffer) return;
+  const chunk = streamBuffer;
+  streamBuffer = "";
+  useStore.setState((prev) => ({ streamingText: prev.streamingText + chunk }));
+}
+function cancelStreamFlush() {
+  streamBuffer = "";
+  if (streamFlushRaf !== null) {
+    cancelAnimationFrame(streamFlushRaf);
+    streamFlushRaf = null;
+  }
+}
+
 function loadTheme(): Theme {
   const raw = localStorage.getItem(THEME_STORAGE);
   return raw === "light" ? "light" : "graphite";
@@ -476,15 +498,26 @@ export const useStore = create<State>((set) => ({
       compactionSummary: summary,
       lastContext: 0,
     })),
-  appendStreamingText: (s) => set((prev) => ({ streamingText: prev.streamingText + s })),
-  setStreamingText: (s) => set({ streamingText: s }),
+  appendStreamingText: (s) => {
+    streamBuffer += s;
+    if (streamFlushRaf === null) {
+      streamFlushRaf = requestAnimationFrame(flushStreamBuffer);
+    }
+  },
+  setStreamingText: (s) => {
+    cancelStreamFlush();
+    set({ streamingText: s });
+  },
   pushLiveTool: (t) => set((prev) => ({ liveTools: [...prev.liveTools, t] })),
   updateLiveToolResult: (id, result) =>
     set((prev) => ({
       liveTools: prev.liveTools.map((t) => (t.id === id ? { ...t, result } : t)),
     })),
   setAgentTodos: (todos) => set({ agentTodos: todos }),
-  resetStreaming: () => set({ streamingText: "", liveTools: [], agentTodos: [] }),
+  resetStreaming: () => {
+    cancelStreamFlush();
+    set({ streamingText: "", liveTools: [], agentTodos: [] });
+  },
   applyChatSnapshot: (s) =>
     set((prev) => ({
       vaultPath: s.vaultPath,
