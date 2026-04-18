@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, RotateCw, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, Undo2, History, FileText } from "lucide-react";
+import { FolderOpen, RotateCw, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, Undo2, History } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded, gitRecentCommits, gitShowCommit, gitRestoreToCommit, type GitCommit } from "./git";
@@ -16,11 +16,9 @@ export function Titlebar() {
     setShowSettings,
     showSettings,
     leftCollapsed,
-    middleCollapsed,
     rightCollapsed,
     popoutOpen,
     toggleLeft,
-    toggleMiddle,
     toggleRight,
   } = useStore();
   const [maximized, setMaximized] = useState(false);
@@ -272,15 +270,6 @@ export function Titlebar() {
             title="Show file tree (Ctrl+B)"
           >
             <PanelLeft className="h-3.5 w-3.5" />
-          </button>
-        )}
-        {middleCollapsed && !rightCollapsed && !popoutOpen && (
-          <button
-            onClick={toggleMiddle}
-            className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1"
-            title="Show editor (Ctrl+Shift+M)"
-          >
-            <FileText className="h-3.5 w-3.5" />
           </button>
         )}
         <button
