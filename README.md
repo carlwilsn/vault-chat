@@ -90,6 +90,8 @@ npm link
 
 That's it. Type `vault-chat` from any terminal on any OS to launch the app. (`npm link` uses npm's global bin folder, which is already on `PATH` because you installed Node.)
 
+The launcher detaches after a successful first compile — your terminal returns immediately, closing it doesn't kill the app, and dev-server logs tail to `%APPDATA%\com.vault-chat.app\dev.log` (same pattern on Mac/Linux). Pass `--foreground` if you want the output inline.
+
 Unlink later with `npm unlink -g vault-chat`.
 
 ## What's in it
