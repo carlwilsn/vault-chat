@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, Check, Key, Cog } from "lucide-react";
+import { ArrowLeft, Check, Key, Cog, Code2 } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { MODELS, PROVIDER_LABEL, type ProviderId } from "./providers";
 import { Button, Input, Select } from "./ui";
@@ -64,6 +64,24 @@ export function SettingsPane() {
       setShowSettings(false);
     } catch (e) {
       console.error("[meta] open failed:", e);
+    }
+  };
+
+  const openAppSource = async () => {
+    try {
+      const src = await invoke<string>("app_source_dir");
+      if (src === vaultPath) {
+        setShowSettings(false);
+        return;
+      }
+      setVault(src);
+      setCurrentFile(null, "");
+      const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: src });
+      setFiles(listed);
+      gitInitIfNeeded(src).catch(() => {});
+      setShowSettings(false);
+    } catch (e) {
+      console.error("[source] open failed:", e);
     }
   };
 
@@ -203,6 +221,27 @@ export function SettingsPane() {
           </div>
           <Button size="sm" onClick={openMetaVault}>
             Open meta vault
+          </Button>
+        </section>
+
+        <div className="h-px bg-border" />
+
+        <section className="space-y-2">
+          <div>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <Code2 className="h-3 w-3" />
+              App source
+            </h3>
+            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5 leading-relaxed">
+              Open the vault-chat source folder as a vault. In dev mode (the
+              standard way to run this app), changes hot-reload live —
+              including changes the agent makes. Git-backed, so mistakes
+              revert cleanly. For development use; not meaningful inside a
+              packaged binary.
+            </p>
+          </div>
+          <Button size="sm" onClick={openAppSource}>
+            Open app source
           </Button>
         </section>
 
