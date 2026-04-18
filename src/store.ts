@@ -50,14 +50,17 @@ const VAULT_STORAGE = "vault_chat_last_vault";
 export type Theme = "graphite" | "light";
 
 // Streaming text from the agent arrives one token at a time — often
-// many per frame. If we flush each delta to the store immediately, the
-// chat pane re-parses the entire growing markdown buffer on every
-// token, which freezes the UI thread ("(Not Responding)"). Buffer here
-// and flush at most once per animation frame.
+// many per frame. Re-rendering the chat pane on every token re-parses
+// a growing markdown buffer through remark/rehype/katex/highlight,
+// which freezes the UI thread ("(Not Responding)"). Buffer here and
+// flush at ~5 Hz so React only repaints a few times per second while
+// streaming. Anything higher than this overwhelms rehypeHighlight for
+// long messages.
+const STREAM_FLUSH_MS = 200;
 let streamBuffer = "";
-let streamFlushRaf: number | null = null;
+let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
 function flushStreamBuffer() {
-  streamFlushRaf = null;
+  streamFlushTimer = null;
   if (!streamBuffer) return;
   const chunk = streamBuffer;
   streamBuffer = "";
@@ -65,9 +68,9 @@ function flushStreamBuffer() {
 }
 function cancelStreamFlush() {
   streamBuffer = "";
-  if (streamFlushRaf !== null) {
-    cancelAnimationFrame(streamFlushRaf);
-    streamFlushRaf = null;
+  if (streamFlushTimer !== null) {
+    clearTimeout(streamFlushTimer);
+    streamFlushTimer = null;
   }
 }
 
@@ -500,8 +503,8 @@ export const useStore = create<State>((set) => ({
     })),
   appendStreamingText: (s) => {
     streamBuffer += s;
-    if (streamFlushRaf === null) {
-      streamFlushRaf = requestAnimationFrame(flushStreamBuffer);
+    if (streamFlushTimer === null) {
+      streamFlushTimer = setTimeout(flushStreamBuffer, STREAM_FLUSH_MS);
     }
   },
   setStreamingText: (s) => {

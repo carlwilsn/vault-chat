@@ -192,9 +192,15 @@ export function ChatPane() {
             {liveTools.length > 0 && <LiveToolTicker tools={liveTools} />}
             {streamingText && (
               <div className="prose-chat text-foreground/95">
+                {/* While streaming, skip rehypeHighlight — re-tokenizing
+                    every code block in the growing buffer on every
+                    flush is the main cause of UI-thread freezes on
+                    long responses. Code blocks render unstyled until
+                    the message finalizes (then the MessageBubble path
+                    re-renders with the full plugin set). */}
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[rehypeKatex, rehypeHighlight]}
+                  rehypePlugins={[rehypeKatex]}
                 >
                   {streamingText}
                 </ReactMarkdown>
