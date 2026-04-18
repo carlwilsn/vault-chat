@@ -137,4 +137,4 @@ vault-chat is opinionated and small on purpose. Not goals, not coming:
 
 ## License
 
-[TODO — pick MIT or leave unlicensed for now.]
+MIT. See [LICENSE](./LICENSE).

@@ -1,8 +1,9 @@
 [package]
 name = "vault-chat"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Minimal desktop viewer + LLM chat for a folder of markdown notes."
+authors = ["Carl Wilson"]
+license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
