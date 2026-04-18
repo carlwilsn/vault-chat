@@ -263,15 +263,6 @@ export function Titlebar() {
       <div data-tauri-drag-region className="flex-1 h-full" />
 
       <div className="flex items-center">
-        {leftCollapsed && (
-          <button
-            onClick={toggleLeft}
-            className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1"
-            title="Show file tree (Ctrl+B)"
-          >
-            <PanelLeft className="h-3.5 w-3.5" />
-          </button>
-        )}
         <button
           onClick={toggleRight}
           className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 mr-1 ${rightCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
