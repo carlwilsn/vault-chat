@@ -76,7 +76,7 @@ npm link
 vault-chat
 ```
 
-The launcher spawns `tauri dev` detached, shows a live status line (compiling, vite ready, …), and exits as soon as the app window boots — your terminal returns, closing it doesn't kill the app, and full output goes to `%APPDATA%\com.vault-chat.app\dev.log` (same pattern on Mac/Linux). The **first run takes ~10–15 min** while Rust compiles everything; subsequent runs are ~2 seconds. Pass `--foreground` to keep output inline instead.
+The launcher just runs `npm run tauri dev` in the foreground under a shorter name — you'll see cargo's output live. **First run takes ~10–15 min** while Rust compiles everything; subsequent runs are ~2 seconds because cargo caches incrementally.
 
 When the app opens: hit the gear icon → paste an API key (Anthropic, OpenAI, or Google) → open a folder as your vault → start asking.
 
