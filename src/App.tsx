@@ -15,6 +15,7 @@ import "./App.css";
 export default function App() {
   const toggleMode = useStore((s) => s.toggleMode);
   const toggleLeft = useStore((s) => s.toggleLeft);
+  const toggleMiddle = useStore((s) => s.toggleMiddle);
   const toggleRight = useStore((s) => s.toggleRight);
   const currentFile = useStore((s) => s.currentFile);
   const theme = useStore((s) => s.theme);
@@ -45,6 +46,7 @@ export default function App() {
     };
   }, [setFiles]);
   const leftCollapsed = useStore((s) => s.leftCollapsed);
+  const middleCollapsed = useStore((s) => s.middleCollapsed);
   const rightCollapsed = useStore((s) => s.rightCollapsed);
   const popoutOpen = useStore((s) => s.popoutOpen);
   const showSettings = useStore((s) => s.showSettings);
@@ -83,11 +85,19 @@ export default function App() {
       } else if (k === "b" && e.shiftKey) {
         e.preventDefault();
         toggleRight();
+      } else if (k === "m" && e.shiftKey) {
+        // Only collapse the editor when chat is visible — otherwise
+        // collapsing it leaves just the file tree.
+        const s = useStore.getState();
+        if (s.middleCollapsed || (!s.rightCollapsed && !s.popoutOpen)) {
+          e.preventDefault();
+          toggleMiddle();
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleMode, toggleLeft, toggleRight, currentFile]);
+  }, [toggleMode, toggleLeft, toggleMiddle, toggleRight, currentFile]);
 
   return (
     <div className="h-full w-full bg-background flex flex-col">
@@ -97,7 +107,7 @@ export default function App() {
           <Allotment.Pane preferredSize={fitWidth} minSize={160} maxSize={leftMax} visible={!leftCollapsed} snap>
             <FileTree />
           </Allotment.Pane>
-          <Allotment.Pane minSize={340} priority={LayoutPriority.High}>
+          <Allotment.Pane minSize={340} priority={LayoutPriority.High} visible={!middleCollapsed || chatHidden} snap>
             {showSettings && chatHidden ? <SettingsPane /> : <MarkdownArea />}
           </Allotment.Pane>
           <Allotment.Pane preferredSize={440} minSize={320} visible={!rightCollapsed && !popoutOpen} snap>

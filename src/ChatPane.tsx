@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
-import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench } from "lucide-react";
+import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, ChevronLeft } from "lucide-react";
 import { dispatchChatAction } from "./sync";
 import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage, type LiveTool, type TodoItem } from "./store";
 import { findModel, MODELS } from "./providers";
@@ -34,6 +34,8 @@ export function ChatPane() {
   const streamingReasoning = useStore((s) => s.streamingReasoning);
   const liveTools = useStore((s) => s.liveTools);
   const agentTodos = useStore((s) => s.agentTodos);
+  const middleCollapsed = useStore((s) => s.middleCollapsed);
+  const toggleMiddle = useStore((s) => s.toggleMiddle);
 
   const [input, setInput] = useState("");
   const [showSkillMenu, setShowSkillMenu] = useState(false);
@@ -161,6 +163,15 @@ export function ChatPane() {
 
   return (
     <div className="h-full flex flex-col bg-card border-l border-border relative">
+      {middleCollapsed && (
+        <button
+          onClick={toggleMiddle}
+          title="Show editor (Ctrl+Shift+M)"
+          className="absolute left-0 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-4 h-14 rounded-r bg-muted/60 hover:bg-muted text-muted-foreground hover:text-foreground border border-l-0 border-border"
+        >
+          <ChevronLeft className="w-3 h-3" />
+        </button>
+      )}
       <div
         className="flex-1 min-h-0 overflow-auto px-3 py-4 pb-8 relative"
         ref={scrollRef}

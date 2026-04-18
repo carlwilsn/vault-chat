@@ -509,6 +509,7 @@ export const useStore = create<State>((set) => ({
   setMode: (m) => set({ mode: m }),
   toggleMode: () => set((s) => ({ mode: s.mode === "view" ? "edit" : "view" })),
   toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
+  toggleMiddle: () => set((s) => ({ middleCollapsed: !s.middleCollapsed })),
   toggleRight: () => set((s) => ({ rightCollapsed: !s.rightCollapsed })),
   setPopoutOpen: (b) => set({ popoutOpen: b }),
   addTokenUsage: (u) =>
