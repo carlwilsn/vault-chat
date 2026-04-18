@@ -16,7 +16,7 @@ import App from "./App";
 import { ChatWindow } from "./ChatWindow";
 import { installMainSync, installPopoutSync } from "./sync";
 import { initMetaVault } from "./meta";
-import { hydrateKeychain } from "./store";
+import { hydrateKeychain, hydratePersistedChat } from "./store";
 
 const savedTheme = localStorage.getItem("vault_chat_theme");
 document.documentElement.dataset.theme = savedTheme === "light" ? "light" : "graphite";
@@ -31,6 +31,8 @@ if (isPopout) {
   // Pull any existing API keys out of the OS keychain into the store,
   // migrating them out of legacy localStorage on the first run.
   hydrateKeychain().catch((e) => console.warn("[keys] hydrate failed:", e));
+  // Restore chat from the previous session (HMR reload, crash, restart).
+  hydratePersistedChat();
   // Seed the meta vault with bundled defaults on first launch, and
   // surface its path for the settings UI + agent.ts. Silent no-op on
   // subsequent launches.

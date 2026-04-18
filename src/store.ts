@@ -46,6 +46,7 @@ export type ServiceKeys = { tavily?: string };
 const MODEL_STORAGE = "vault_chat_model";
 const THEME_STORAGE = "vault_chat_theme";
 const VAULT_STORAGE = "vault_chat_last_vault";
+const CHAT_STORAGE = "vault_chat_history";
 
 export type Theme = "graphite" | "light";
 
@@ -261,6 +262,7 @@ export const useStore = create<State>((set) => ({
   showSettings: false,
   mode: "view",
   leftCollapsed: false,
+  middleCollapsed: false,
   rightCollapsed: true,
   popoutOpen: false,
   tokenUsage: { prompt: 0, completion: 0, total: 0 },
@@ -583,3 +585,65 @@ export const useStore = create<State>((set) => ({
       agentTodos: [],
     }),
 }));
+
+// Persist chat history to localStorage so HMR reloads (or crashes) don't
+// nuke the conversation mid-edit. We only snapshot finalized fields —
+// streaming text, live tools, and todos are mid-turn ephemera that would
+// be stale or misleading if restored across a reload.
+type PersistedChat = {
+  vaultPath: string | null;
+  messages: ChatMessage[];
+  compactionSummary: string | null;
+  lastContext: number;
+  tokenUsage: { prompt: number; completion: number; total: number };
+};
+
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+function schedulePersist() {
+  if (persistTimer !== null) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    try {
+      const s = useStore.getState();
+      const snapshot: PersistedChat = {
+        vaultPath: s.vaultPath,
+        messages: s.messages,
+        compactionSummary: s.compactionSummary,
+        lastContext: s.lastContext,
+        tokenUsage: s.tokenUsage,
+      };
+      localStorage.setItem(CHAT_STORAGE, JSON.stringify(snapshot));
+    } catch (e) {
+      console.warn("[chat] persist failed:", e);
+    }
+  }, 500);
+}
+
+let lastSig = "";
+useStore.subscribe((state) => {
+  const sig = `${state.vaultPath ?? ""}|${state.messages.length}|${state.lastContext}|${state.tokenUsage.total}|${state.compactionSummary ?? ""}`;
+  if (sig === lastSig) return;
+  lastSig = sig;
+  schedulePersist();
+});
+
+/** Restore persisted chat from a previous session. Only restores if the
+ *  persisted vault matches the currently-selected vault — switching
+ *  vaults always starts fresh. Call after hydrateKeychain in main.tsx. */
+export function hydratePersistedChat(): void {
+  try {
+    const raw = localStorage.getItem(CHAT_STORAGE);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as PersistedChat;
+    const current = useStore.getState().vaultPath;
+    if (parsed.vaultPath !== current) return;
+    useStore.setState({
+      messages: parsed.messages ?? [],
+      compactionSummary: parsed.compactionSummary ?? null,
+      lastContext: parsed.lastContext ?? 0,
+      tokenUsage: parsed.tokenUsage ?? { prompt: 0, completion: 0, total: 0 },
+    });
+  } catch (e) {
+    console.warn("[chat] hydrate failed:", e);
+  }
+}
