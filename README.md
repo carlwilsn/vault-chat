@@ -1,6 +1,6 @@
 # vault-chat
 
-A desktop app for your markdown notes with Claude (or GPT, or Gemini) wired into the editor, the PDF viewer, and the chat. Cursor-style inline editing for prose and code. Drag a box on any PDF and ask about the region — it sends the pixels, not just text, so math / handwriting / diagrams actually work.
+A desktop app for your markdown notes with Claude (or GPT, or Gemini) wired into the editor, the PDF viewer, and the chat. Heavily inspired by Obsidian (any folder is a vault), Cursor (inline edit on selections), and Claude Code (a real local-file agent with Read / Write / Bash). Drag a box on any PDF and ask about the region — it sends the pixels, not just text, so math / handwriting / diagrams actually work.
 
 ## Getting started
 
@@ -129,16 +129,6 @@ In dev mode, HMR picks up TS/React changes instantly and Rust changes in ~30s. A
 API keys live in the OS keychain (Windows Credential Manager / Mac Keychain / Linux libsecret), not in localStorage or plaintext files. The agent's file-operation tools (`Read`, `Write`, `Bash`, etc.) cannot reach them.
 
 The agent cannot modify files inside any `.git/` directory — the file-op tools refuse those paths so the undo system stays intact.
-
-## Scope
-
-Opinionated and small on purpose. Not goals, not coming:
-
-- Editor plugins, graph view, backlinks — use Obsidian for those and point vault-chat at the same folder.
-- A browser version — desktop only, Tauri-native.
-- Multi-vault memory — opens one folder at a time.
-- Chat history persistence across restarts — deliberate.
-- Mobile.
 
 ## License
 
