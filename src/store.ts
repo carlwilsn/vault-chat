@@ -26,7 +26,7 @@ export type ChatMessage = {
 
 export const MODEL_CONTEXT_LIMIT = 200_000;
 
-export type LiveTool = { id: string; name: string; input: any; result?: string };
+export type LiveTool = { id: string; name: string; input: any; result?: string; startedAt?: number };
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 export type TodoItem = { content: string; status: TodoStatus; activeForm?: string };
@@ -71,6 +71,23 @@ function cancelStreamFlush() {
   if (streamFlushTimer !== null) {
     clearTimeout(streamFlushTimer);
     streamFlushTimer = null;
+  }
+}
+
+let reasoningBuffer = "";
+let reasoningFlushTimer: ReturnType<typeof setTimeout> | null = null;
+function flushReasoningBuffer() {
+  reasoningFlushTimer = null;
+  if (!reasoningBuffer) return;
+  const chunk = reasoningBuffer;
+  reasoningBuffer = "";
+  useStore.setState((prev) => ({ streamingReasoning: prev.streamingReasoning + chunk }));
+}
+function cancelReasoningFlush() {
+  reasoningBuffer = "";
+  if (reasoningFlushTimer !== null) {
+    clearTimeout(reasoningFlushTimer);
+    reasoningFlushTimer = null;
   }
 }
 
@@ -164,6 +181,7 @@ type State = {
   compactionSummary: string | null;
   compacting: boolean;
   streamingText: string;
+  streamingReasoning: string;
   liveTools: LiveTool[];
   agentTodos: TodoItem[];
 
@@ -200,6 +218,8 @@ type State = {
   applyCompaction: (summary: string, keepCount: number, banner: ChatMessage) => void;
   appendStreamingText: (s: string) => void;
   setStreamingText: (s: string) => void;
+  appendStreamingReasoning: (s: string) => void;
+  clearStreamingReasoning: () => void;
   pushLiveTool: (t: LiveTool) => void;
   updateLiveToolResult: (id: string, result: string) => void;
   setAgentTodos: (todos: TodoItem[]) => void;
@@ -247,6 +267,7 @@ export const useStore = create<State>((set) => ({
   compactionSummary: null,
   compacting: false,
   streamingText: "",
+  streamingReasoning: "",
   liveTools: [],
   agentTodos: [],
 
@@ -266,6 +287,7 @@ export const useStore = create<State>((set) => ({
         lastContext: 0,
         compactionSummary: null,
         streamingText: "",
+        streamingReasoning: "",
         liveTools: [],
         agentTodos: [],
       };
@@ -511,6 +533,16 @@ export const useStore = create<State>((set) => ({
     cancelStreamFlush();
     set({ streamingText: s });
   },
+  appendStreamingReasoning: (s) => {
+    reasoningBuffer += s;
+    if (reasoningFlushTimer === null) {
+      reasoningFlushTimer = setTimeout(flushReasoningBuffer, STREAM_FLUSH_MS);
+    }
+  },
+  clearStreamingReasoning: () => {
+    cancelReasoningFlush();
+    set({ streamingReasoning: "" });
+  },
   pushLiveTool: (t) => set((prev) => ({ liveTools: [...prev.liveTools, t] })),
   updateLiveToolResult: (id, result) =>
     set((prev) => ({
@@ -519,7 +551,8 @@ export const useStore = create<State>((set) => ({
   setAgentTodos: (todos) => set({ agentTodos: todos }),
   resetStreaming: () => {
     cancelStreamFlush();
-    set({ streamingText: "", liveTools: [], agentTodos: [] });
+    cancelReasoningFlush();
+    set({ streamingText: "", streamingReasoning: "", liveTools: [], agentTodos: [] });
   },
   applyChatSnapshot: (s) =>
     set((prev) => ({

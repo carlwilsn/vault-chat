@@ -378,7 +378,7 @@ async fn delete_file(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn edit_text_file(
+async fn edit_text_file(
     path: String,
     old_string: String,
     new_string: String,
@@ -413,7 +413,7 @@ fn edit_text_file(
 }
 
 #[tauri::command]
-fn glob_files(pattern: String, cwd: Option<String>) -> Result<Vec<String>, String> {
+async fn glob_files(pattern: String, cwd: Option<String>) -> Result<Vec<String>, String> {
     let base = cwd
         .as_deref()
         .map(PathBuf::from)
@@ -537,7 +537,17 @@ struct BashResult {
 }
 
 #[tauri::command]
-fn bash_exec(
+async fn bash_exec(
+    command: String,
+    cwd: Option<String>,
+    timeout_ms: Option<u64>,
+) -> Result<BashResult, String> {
+    tauri::async_runtime::spawn_blocking(move || bash_exec_sync(command, cwd, timeout_ms))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn bash_exec_sync(
     command: String,
     cwd: Option<String>,
     timeout_ms: Option<u64>,
@@ -749,7 +759,7 @@ async fn tavily_search(
 }
 
 #[tauri::command]
-fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
+async fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
     let p = PathBuf::from(&path);
     if !p.is_dir() {
         return Err(format!("not a directory: {}", path));
@@ -1355,7 +1365,21 @@ fn interpreter_for(path: &str) -> Option<(&'static str, Vec<String>)> {
 }
 
 #[tauri::command]
-fn run_script(
+async fn run_script(
+    script_path: String,
+    stdin_json: Option<String>,
+    cwd: Option<String>,
+    timeout_ms: Option<u64>,
+    env: Option<std::collections::HashMap<String, String>>,
+) -> Result<ScriptResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_script_sync(script_path, stdin_json, cwd, timeout_ms, env)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn run_script_sync(
     script_path: String,
     stdin_json: Option<String>,
     cwd: Option<String>,

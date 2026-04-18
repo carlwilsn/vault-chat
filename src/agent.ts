@@ -14,6 +14,8 @@ export type TokenUsage = {
 
 export type StreamEvent =
   | { kind: "text"; delta: string }
+  | { kind: "reasoning"; delta: string }
+  | { kind: "reasoning_start" }
   | { kind: "tool_use"; id: string; name: string; input: any }
   | { kind: "tool_result"; id: string; result: string }
   | { kind: "done"; usage?: TokenUsage }
@@ -25,6 +27,13 @@ export type ChatTurn = { role: "user" | "assistant"; content: string };
 // unreadable (missing or permission-denied). The real prompt lives in
 // %APPDATA%/com.vault-chat.app/meta/system.md and is user-editable.
 const FALLBACK_SYSTEM = `You are the runtime for a personal knowledge vault. Tools: Read, Write, Edit, Delete, Glob, Grep, Bash, ListDir, NotebookEdit, PdfExtract, TodoWrite, WebFetch, WebSearch. Use absolute paths. Render math with $$...$$.`;
+
+function detectPlatform(): "windows" | "mac" | "linux" {
+  const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+  if (/windows/i.test(ua)) return "windows";
+  if (/mac/i.test(ua)) return "mac";
+  return "linux";
+}
 
 export async function runAgent(params: {
   modelId: string;
@@ -55,9 +64,18 @@ export async function runAgent(params: {
     const baseSystem = metaSystem.trim() || FALLBACK_SYSTEM;
     const metaToolNames = Object.keys(metaTools);
 
+    const platform = detectPlatform();
+    const shellNote =
+      platform === "windows"
+        ? "Host OS: Windows. The Bash tool runs commands via `cmd /C` — use Windows-compatible syntax. For the current date use `date /T` (plain `date` is interactive and will hang). For the time use `time /T`. Prefer PowerShell one-liners via `powershell -NoProfile -Command \"...\"` when you need Unix-y behavior."
+        : platform === "mac"
+          ? "Host OS: macOS. The Bash tool runs commands via `bash -lc`."
+          : "Host OS: Linux. The Bash tool runs commands via `bash -lc`.";
+
     const system = [
       baseSystem,
       `\nVault root: ${vault}`,
+      `\n${shellNote}`,
       sessionContext ? `\n${sessionContext}` : "",
       skills.length ? `\n${skillPromptIndex(skills)}` : "",
       metaToolNames.length
@@ -133,6 +151,14 @@ export async function runAgent(params: {
             onEvent({ kind: "text", delta: part.text });
           }
           break;
+        case "reasoning-start":
+          onEvent({ kind: "reasoning_start" });
+          break;
+        case "reasoning-delta":
+          if ("text" in part && typeof part.text === "string") {
+            onEvent({ kind: "reasoning", delta: part.text });
+          }
+          break;
         case "tool-call":
           onEvent({
             kind: "tool_use",
@@ -146,6 +172,17 @@ export async function runAgent(params: {
           const text =
             typeof output === "string" ? output : JSON.stringify(output, null, 2);
           onEvent({ kind: "tool_result", id: part.toolCallId, result: text });
+          break;
+        }
+        case "tool-error": {
+          const err = (part as any).error;
+          const msg = err?.message ?? String(err);
+          console.error(`[agent] tool-error id=${part.toolCallId}:`, err);
+          onEvent({
+            kind: "tool_result",
+            id: part.toolCallId,
+            result: `ERROR: ${msg}`,
+          });
           break;
         }
         case "error": {

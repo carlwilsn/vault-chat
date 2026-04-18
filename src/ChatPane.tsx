@@ -31,6 +31,7 @@ export function ChatPane() {
   const setSkills = useStore((s) => s.setSkills);
   const setShowSettings = useStore((s) => s.setShowSettings);
   const streamingText = useStore((s) => s.streamingText);
+  const streamingReasoning = useStore((s) => s.streamingReasoning);
   const liveTools = useStore((s) => s.liveTools);
   const agentTodos = useStore((s) => s.agentTodos);
 
@@ -187,9 +188,12 @@ export function ChatPane() {
 
         {agentTodos.length > 0 && <AgentTodoList todos={agentTodos} />}
 
-        {(streamingText || liveTools.length > 0) && (
+        {(streamingText || streamingReasoning || liveTools.length > 0) && (
           <div className="space-y-2">
             {liveTools.length > 0 && <LiveToolTicker tools={liveTools} />}
+            {streamingReasoning && !streamingText && (
+              <ReasoningStream text={streamingReasoning} />
+            )}
             {streamingText && (
               <div className="prose-chat text-foreground/95">
                 {/* While streaming, skip rehypeHighlight — re-tokenizing
@@ -257,7 +261,7 @@ export function ChatPane() {
               onChange={(e) => onInputChange(e.target.value)}
               onKeyDown={onKey}
               placeholder={ready ? "Ask anything, or / for commands…" : "Open a vault first"}
-              disabled={!ready || busy}
+              disabled={!ready}
               rows={1}
               className="border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pl-3 !pr-11"
             />
@@ -281,6 +285,7 @@ export function ChatPane() {
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
             <ModelPicker modelId={modelId} apiKeys={apiKeys} onSelect={onSelectModel} />
             <div className="flex items-center gap-2">
+              {busy && <ElapsedTimer />}
               {lastContext > 0 && (
                 <div
                   className="flex items-center gap-1.5"
@@ -443,7 +448,11 @@ function AgentTodoList({ todos }: { todos: TodoItem[] }) {
 // between entries as they arrive. A small count in the corner makes it
 // clear more than one tool has run in this turn.
 function LiveToolTicker({ tools }: { tools: LiveTool[] }) {
-  const latest = tools[tools.length - 1];
+  // Prefer showing a still-running tool over the most-recently-added one.
+  // Otherwise a fast-completing tool added late (e.g. a Read) hides a
+  // slow tool that started first (e.g. a Bash subprocess).
+  const latest =
+    tools.find((t) => !t.result) ?? tools[tools.length - 1];
   if (!latest) return null;
   const total = tools.length;
   const done = tools.filter((t) => t.result).length;
@@ -460,6 +469,7 @@ function LiveToolTicker({ tools }: { tools: LiveTool[] }) {
           {toolSummary(latest.input)}
         </span>
       </span>
+      {running && latest.startedAt && <ToolElapsed startedAt={latest.startedAt} />}
       {total > 1 && (
         <span className="shrink-0 opacity-50">
           {done}/{total}
@@ -471,6 +481,65 @@ function LiveToolTicker({ tools }: { tools: LiveTool[] }) {
         <span className="text-emerald-500 shrink-0">✓</span>
       )}
     </div>
+  );
+}
+
+function ToolElapsed({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(id);
+  }, []);
+  const s = Math.floor((now - startedAt) / 1000);
+  if (s < 1) return null;
+  return <span className="shrink-0 tabular-nums opacity-50">{s}s</span>;
+}
+
+function ReasoningStream({ text }: { text: string }) {
+  const [open, setOpen] = useState(true);
+  const tailRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (open && tailRef.current) {
+      tailRef.current.scrollTop = tailRef.current.scrollHeight;
+    }
+  }, [text, open]);
+  return (
+    <div className="rounded-md border border-border/40 bg-muted/30 text-[11.5px]">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1.5 w-full px-2.5 py-1 text-muted-foreground hover:text-foreground"
+      >
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3 rotate-180" />}
+        <span className="italic">Thinking…</span>
+      </button>
+      {open && (
+        <div
+          ref={tailRef}
+          className="px-2.5 pb-2 max-h-40 overflow-auto whitespace-pre-wrap text-muted-foreground/80 leading-relaxed"
+        >
+          {text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ElapsedTimer() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const start = Date.now();
+    const id = setInterval(() => {
+      setSeconds(Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+  const mm = Math.floor(seconds / 60);
+  const ss = seconds % 60;
+  const label = mm > 0 ? `${mm}:${ss.toString().padStart(2, "0")}` : `${ss}s`;
+  return (
+    <span className="tabular-nums opacity-70" title="Agent running">
+      {label}
+    </span>
   );
 }
 

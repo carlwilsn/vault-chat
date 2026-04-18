@@ -102,8 +102,12 @@ export async function sendMessage(text: string) {
       if (e.kind === "text") {
         acc += e.delta;
         store.appendStreamingText(e.delta);
+      } else if (e.kind === "reasoning_start") {
+        store.clearStreamingReasoning();
+      } else if (e.kind === "reasoning") {
+        store.appendStreamingReasoning(e.delta);
       } else if (e.kind === "tool_use") {
-        const t: LiveTool = { id: e.id, name: e.name, input: e.input };
+        const t: LiveTool = { id: e.id, name: e.name, input: e.input, startedAt: Date.now() };
         tools.push(t);
         store.pushLiveTool(t);
       } else if (e.kind === "tool_result") {
@@ -164,6 +168,10 @@ export async function sendMessage(text: string) {
 
 export function stopAgent() {
   abortRef?.abort();
+  abortRef = null;
+  const store = useStore.getState();
+  store.resetStreaming();
+  store.setBusy(false);
 }
 
 export function clearChat() {
