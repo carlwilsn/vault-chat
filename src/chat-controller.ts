@@ -130,7 +130,7 @@ export async function sendMessage(text: string) {
         const mutating = new Set(["Write", "Edit", "Delete", "Bash", "NotebookEdit"]);
         const touched = tools.filter((t) => mutating.has(t.name));
         if (touched.length > 0) {
-          const subject = summarizeTurn(acc, touched);
+          const subject = commitSubject(trimmed, touched);
           const body = touchedFilesBody(touched);
           const msg = body ? `${subject}\n\n${body}` : subject;
           gitCommitAll(vault, msg).catch(() => {});
@@ -176,15 +176,26 @@ export function setModel(id: string) {
   useStore.getState().setModelId(id);
 }
 
-function summarizeTurn(finalText: string, touched: LiveTool[]): string {
-  const firstLine = finalText.split("\n").find((l) => l.trim().length > 0);
-  if (firstLine && firstLine.length <= 80) return firstLine.trim();
-  if (firstLine) return firstLine.slice(0, 77).trim() + "…";
+// Build a commit subject from what the user asked for, not what the
+// agent replied. The agent's replies ("Sure! I'll do that…") make noisy
+// commit logs. User prompts describe the intent and skim as real
+// commit history.
+function commitSubject(userPrompt: string, touched: LiveTool[]): string {
+  const cleaned = userPrompt
+    .replace(/^\/[\w-]+\s*/, "") // strip leading /skill-name
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned) {
+    const oneLine = cleaned.split("\n")[0];
+    if (oneLine.length <= 72) return oneLine;
+    return oneLine.slice(0, 69) + "…";
+  }
   const verbs: Record<string, string> = {
     Write: "wrote",
     Edit: "edited",
     Delete: "deleted",
     Bash: "ran",
+    NotebookEdit: "edited notebook",
   };
   const primary = touched[touched.length - 1];
   return `agent ${verbs[primary.name] ?? "touched"} ${touchedName(primary)}`;

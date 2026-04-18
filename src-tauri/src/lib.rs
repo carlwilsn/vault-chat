@@ -780,6 +780,7 @@ struct GitCommit {
     body: String,
     author: String,
     date: String,
+    is_anchor: bool,
 }
 
 fn run_git(
@@ -813,167 +814,351 @@ fn run_git(
     Ok((stdout, stderr, status.code().unwrap_or(-1)))
 }
 
-/// Ensure the vault has a git repo. If not, create one and make an
-/// initial commit capturing the current state. Idempotent.
+/// Ensure the vault has a git repo AND a `vault-chat-start` tag
+/// anchoring "when vault-chat first saw this vault." Two cases:
+///
+/// 1. Vault had no git history → init, commit current state, tag.
+/// 2. Vault was already a git repo → leave history alone; only create
+///    the tag at the current HEAD (if the tag doesn't exist yet).
+///
+/// Returns true if anything was newly created (repo, tag, or both).
+/// Idempotent — subsequent calls are cheap no-ops.
 #[tauri::command]
-fn git_init_if_needed(vault: String) -> Result<bool, String> {
-    let git_dir = PathBuf::from(&vault).join(".git");
-    if git_dir.is_dir() {
-        return Ok(false);
-    }
-    run_git(&vault, &["init", "-q"])?;
-    // Use a neutral author so it doesn't require user git config.
-    run_git(
-        &vault,
-        &[
-            "-c",
-            "user.email=vault-chat@local",
-            "-c",
-            "user.name=vault-chat",
-            "add",
-            "-A",
-        ],
-    )?;
-    // First commit may be empty; allow that so the repo has HEAD.
-    run_git(
-        &vault,
-        &[
-            "-c",
-            "user.email=vault-chat@local",
-            "-c",
-            "user.name=vault-chat",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "initial state",
-        ],
-    )?;
-    Ok(true)
+async fn git_init_if_needed(vault: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let git_dir = PathBuf::from(&vault).join(".git");
+        let mut did_work = false;
+
+        if !git_dir.is_dir() {
+            run_git(&vault, &["init", "-q"])?;
+            run_git(
+                &vault,
+                &[
+                    "-c",
+                    "user.email=vault-chat@local",
+                    "-c",
+                    "user.name=vault-chat",
+                    "add",
+                    "-A",
+                ],
+            )?;
+            run_git(
+                &vault,
+                &[
+                    "-c",
+                    "user.email=vault-chat@local",
+                    "-c",
+                    "user.name=vault-chat",
+                    "commit",
+                    "--allow-empty",
+                    "-q",
+                    "-m",
+                    "vault-chat: pre-existing vault state",
+                ],
+            )?;
+            did_work = true;
+        }
+
+        // Create the vault-chat-start tag if it doesn't already exist.
+        // The tag marks "vault as it was when vault-chat first opened
+        // it." Never moves once placed.
+        let (_, _, tag_check) =
+            run_git(&vault, &["rev-parse", "--verify", "vault-chat-start"])?;
+        if tag_check != 0 {
+            // Tag absent — create it at current HEAD.
+            run_git(&vault, &["tag", "vault-chat-start"])?;
+            did_work = true;
+        }
+
+        Ok(did_work)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Stage all changes and commit with the given message. Returns the
 /// short hash of the new commit, or None if nothing was staged.
 #[tauri::command]
-fn git_commit_all(
+async fn git_commit_all(
     vault: String,
     message: String,
 ) -> Result<Option<String>, String> {
-    let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
-    if status_out.trim().is_empty() {
-        return Ok(None);
-    }
-    run_git(
-        &vault,
-        &[
-            "-c",
-            "user.email=vault-chat@local",
-            "-c",
-            "user.name=vault-chat",
-            "add",
-            "-A",
-        ],
-    )?;
-    run_git(
-        &vault,
-        &[
-            "-c",
-            "user.email=vault-chat@local",
-            "-c",
-            "user.name=vault-chat",
-            "commit",
-            "-q",
-            "-m",
-            &message,
-        ],
-    )?;
-    let (hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
-    Ok(Some(hash.trim().to_string()))
+    tauri::async_runtime::spawn_blocking(move || {
+        let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
+        if status_out.trim().is_empty() {
+            return Ok(None);
+        }
+        run_git(
+            &vault,
+            &[
+                "-c",
+                "user.email=vault-chat@local",
+                "-c",
+                "user.name=vault-chat",
+                "add",
+                "-A",
+            ],
+        )?;
+        run_git(
+            &vault,
+            &[
+                "-c",
+                "user.email=vault-chat@local",
+                "-c",
+                "user.name=vault-chat",
+                "commit",
+                "-q",
+                "-m",
+                &message,
+            ],
+        )?;
+        let (hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
+        Ok(Some(hash.trim().to_string()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Return the most recent N commits as structured records.
+/// By default stops at the `vault-chat-start` tag (inclusive) — commits
+/// above that are the user's own pre-vault-chat history and we don't
+/// offer them for revert. Pass `include_before_start: true` to see them
+/// anyway.
 #[tauri::command]
-fn git_recent_commits(vault: String, n: Option<usize>) -> Result<Vec<GitCommit>, String> {
-    let n = n.unwrap_or(30).min(500);
-    let fmt = "%H%x1f%h%x1f%s%x1f%an%x1f%ad%x1f%b%x1e";
-    let (out, _, _) = run_git(
-        &vault,
-        &[
-            "log",
-            &format!("-{}", n),
-            &format!("--pretty=format:{}", fmt),
-            "--date=format:%Y-%m-%d %H:%M",
-        ],
-    )?;
-    let mut commits = Vec::new();
-    for record in out.split('\x1e') {
-        let r = record.trim();
-        if r.is_empty() {
-            continue;
+async fn git_recent_commits(
+    vault: String,
+    n: Option<usize>,
+    include_before_start: Option<bool>,
+) -> Result<Vec<GitCommit>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let n = n.unwrap_or(30).min(500);
+        let include_all = include_before_start.unwrap_or(false);
+        let fmt = "%H%x1f%h%x1f%s%x1f%an%x1f%ad%x1f%b%x1e";
+
+        let (tag_hash, _, tag_code) =
+            run_git(&vault, &["rev-parse", "--verify", "vault-chat-start"])?;
+        let tag_hash = if tag_code == 0 {
+            Some(tag_hash.trim().to_string())
+        } else {
+            None
+        };
+
+        let (out, _, _) = run_git(
+            &vault,
+            &[
+                "log",
+                &format!("-{}", n),
+                &format!("--pretty=format:{}", fmt),
+                "--date=format:%Y-%m-%d %H:%M",
+            ],
+        )?;
+
+        let mut commits = Vec::new();
+        for record in out.split('\x1e') {
+            let r = record.trim();
+            if r.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = r.splitn(6, '\x1f').collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            let hash = parts[0].to_string();
+            let is_anchor = tag_hash.as_deref() == Some(hash.as_str());
+            commits.push(GitCommit {
+                hash,
+                short_hash: parts[1].to_string(),
+                subject: parts[2].to_string(),
+                author: parts[3].to_string(),
+                date: parts[4].to_string(),
+                body: parts.get(5).map(|s| s.trim().to_string()).unwrap_or_default(),
+                is_anchor,
+            });
+            if is_anchor && !include_all {
+                break;
+            }
         }
-        let parts: Vec<&str> = r.splitn(6, '\x1f').collect();
-        if parts.len() < 5 {
-            continue;
-        }
-        commits.push(GitCommit {
-            hash: parts[0].to_string(),
-            short_hash: parts[1].to_string(),
-            subject: parts[2].to_string(),
-            author: parts[3].to_string(),
-            date: parts[4].to_string(),
-            body: parts.get(5).map(|s| s.trim().to_string()).unwrap_or_default(),
-        });
-    }
-    Ok(commits)
+        Ok(commits)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Revert the most recent commit (leaves a new commit that undoes it
 /// — safer than reset, keeps history). Errors if HEAD is the initial
 /// commit.
 #[tauri::command]
-fn git_revert_head(vault: String) -> Result<String, String> {
-    // Can we even revert? Need at least 2 commits.
-    let (count_out, _, _) = run_git(&vault, &["rev-list", "--count", "HEAD"])?;
-    let count: usize = count_out.trim().parse().unwrap_or(0);
-    if count < 2 {
-        return Err("nothing to undo yet".to_string());
-    }
-    let (_, stderr, code) = run_git(
-        &vault,
-        &[
-            "-c",
-            "user.email=vault-chat@local",
-            "-c",
-            "user.name=vault-chat",
-            "revert",
-            "--no-edit",
-            "HEAD",
-        ],
-    )?;
-    if code != 0 {
-        return Err(format!("revert failed: {}", stderr.trim()));
-    }
-    let (hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
-    Ok(hash.trim().to_string())
+async fn git_revert_head(vault: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (count_out, _, _) = run_git(&vault, &["rev-list", "--count", "HEAD"])?;
+        let count: usize = count_out.trim().parse().unwrap_or(0);
+        if count < 2 {
+            return Err("nothing to undo yet".to_string());
+        }
+        let (_, stderr, code) = run_git(
+            &vault,
+            &[
+                "-c",
+                "user.email=vault-chat@local",
+                "-c",
+                "user.name=vault-chat",
+                "revert",
+                "--no-edit",
+                "HEAD",
+            ],
+        )?;
+        if code != 0 {
+            return Err(format!("revert failed: {}", stderr.trim()));
+        }
+        let (hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
+        Ok(hash.trim().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
-/// Show the patch for a given commit hash.
+/// Show a commit's diff stats (fast — file list + change counts only).
+/// Pass `patch: true` to include the full patch text, capped at 80k.
+/// Root commits (no parent) have no meaningful diff — for those we
+/// return a short "initial state" message instead of dumping the
+/// entire tree.
 #[tauri::command]
-fn git_show_commit(vault: String, hash: String) -> Result<String, String> {
-    let (out, stderr, code) = run_git(
-        &vault,
-        &[
-            "show",
-            "--stat",
-            "--patch",
-            "--format=%h %s%n%n%b",
-            &hash,
-        ],
-    )?;
-    if code != 0 {
-        return Err(stderr.trim().to_string());
-    }
-    Ok(out)
+async fn git_show_commit(
+    vault: String,
+    hash: String,
+    patch: Option<bool>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Does this commit have a parent? If not, short-circuit — a
+        // "diff" against nothing is just every file, which isn't useful.
+        let (_, _, parent_code) = run_git(&vault, &["rev-parse", "--verify", &format!("{}^", hash)])?;
+        if parent_code != 0 {
+            let (files_out, _, _) = run_git(
+                &vault,
+                &["ls-tree", "-r", "--name-only", &hash],
+            )?;
+            let file_count = files_out.lines().filter(|l| !l.trim().is_empty()).count();
+            let (subject, _, _) = run_git(
+                &vault,
+                &["log", "-1", "--pretty=format:%s", &hash],
+            )?;
+            return Ok(format!(
+                "{}\n\nInitial vault state — {} file{} tracked.\n(No diff; this is the root commit.)",
+                subject.trim(),
+                file_count,
+                if file_count == 1 { "" } else { "s" },
+            ));
+        }
+
+        let want_patch = patch.unwrap_or(false);
+        let args: Vec<&str> = if want_patch {
+            vec!["show", "--stat", "--patch", "--format=%h %s%n%n%b", &hash]
+        } else {
+            vec!["show", "--stat", "--format=%h %s%n%n%b", &hash]
+        };
+        let (out, stderr, code) = run_git(&vault, &args)?;
+        if code != 0 {
+            return Err(stderr.trim().to_string());
+        }
+        const MAX: usize = 80_000;
+        if out.len() > MAX {
+            let truncated: String = out.chars().take(MAX).collect();
+            Ok(format!(
+                "{}\n\n…[truncated — commit is {} chars; showing first {}]",
+                truncated,
+                out.len(),
+                MAX
+            ))
+        } else {
+            Ok(out)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Restore the working tree to the state at the given commit, then
+/// commit the diff. Preserves history (no reset), so this revert is
+/// itself undoable. Refuses if the commit is already HEAD.
+#[tauri::command]
+async fn git_restore_to_commit(vault: String, hash: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (head_hash, _, _) = run_git(&vault, &["rev-parse", "HEAD"])?;
+        let (target_full, _, _) = run_git(&vault, &["rev-parse", &hash])?;
+        if head_hash.trim() == target_full.trim() {
+            return Err("already at this commit".to_string());
+        }
+
+        // Safety rail: refuse to restore above the vault-chat-start
+        // anchor. Those commits are the user's own pre-vault-chat
+        // history — this app doesn't own them. If the user really wants
+        // to rewind that far, they can use the git CLI directly.
+        let (tag_hash, _, tag_code) =
+            run_git(&vault, &["rev-parse", "--verify", "vault-chat-start"])?;
+        if tag_code == 0 {
+            let tag_hash = tag_hash.trim();
+            if tag_hash != target_full.trim() {
+                let (_, _, is_before) = run_git(
+                    &vault,
+                    &["merge-base", "--is-ancestor", &target_full.trim(), tag_hash],
+                )?;
+                if is_before == 0 {
+                    return Err(
+                        "refusing to restore above the vault-chat-start anchor — that's your pre-vault-chat history. Use the git CLI if you really mean to rewind further."
+                            .to_string(),
+                    );
+                }
+            }
+        }
+
+        // Grab the target's subject so the restore commit has a
+        // meaningful name ("Restore: fix typo in hw2" instead of
+        // "restore to a1b2c3d4").
+        let (subject, _, _) = run_git(
+            &vault,
+            &["log", "-1", "--pretty=format:%s", &hash],
+        )?;
+        let subject = subject.trim();
+
+        // read-tree --reset -u atomically replaces the index + working
+        // tree with the target commit's state, keeping HEAD where it
+        // is. Handles additions, deletions, and modifications in one
+        // shot — much cleaner than a `checkout <hash> -- .` followed
+        // by a manual diff-filter removal pass.
+        let (_, stderr, code) =
+            run_git(&vault, &["read-tree", "--reset", "-u", &hash])?;
+        if code != 0 {
+            return Err(format!("read-tree failed: {}", stderr.trim()));
+        }
+
+        let short = hash.chars().take(8).collect::<String>();
+        let msg = if subject.is_empty() {
+            format!("Restore to {}", short)
+        } else {
+            format!("Restore: {} ({})", subject, short)
+        };
+        let (_, stderr2, code2) = run_git(
+            &vault,
+            &[
+                "-c",
+                "user.email=vault-chat@local",
+                "-c",
+                "user.name=vault-chat",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                &msg,
+            ],
+        )?;
+        if code2 != 0 {
+            return Err(format!("commit failed: {}", stderr2.trim()));
+        }
+        let (new_hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
+        Ok(new_hash.trim().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ----- meta vault -----
@@ -1035,6 +1220,22 @@ fn meta_vault_init(app: tauri::AppHandle) -> Result<MetaInit, String> {
 fn meta_vault_path(app: tauri::AppHandle) -> Result<String, String> {
     let dir = meta_dir(&app)?;
     Ok(dir.to_string_lossy().replace('\\', "/"))
+}
+
+/// Return the absolute path to the vault-chat source repo — the
+/// parent of src-tauri, resolved at compile time via
+/// CARGO_MANIFEST_DIR. Only meaningful when running from source
+/// (i.e. `tauri dev` or the "Shape A" terminal-launch flow). In a
+/// packaged binary this still returns the compile-time path, which
+/// may not exist on the end-user's machine; the TS caller handles
+/// that by listing the folder and erroring quietly if it's gone.
+#[tauri::command]
+fn app_source_dir() -> Result<String, String> {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let parent = std::path::Path::new(manifest)
+        .parent()
+        .ok_or_else(|| "manifest dir has no parent".to_string())?;
+    Ok(parent.to_string_lossy().replace('\\', "/"))
 }
 
 // ----- run_script -----
@@ -1253,8 +1454,10 @@ pub fn run() {
             git_recent_commits,
             git_revert_head,
             git_show_commit,
+            git_restore_to_commit,
             meta_vault_init,
             meta_vault_path,
+            app_source_dir,
             run_script
         ])
         .run(tauri::generate_context!())

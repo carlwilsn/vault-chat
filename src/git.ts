@@ -7,6 +7,7 @@ export type GitCommit = {
   body: string;
   author: string;
   date: string;
+  is_anchor: boolean;
 };
 
 export async function gitInitIfNeeded(vault: string): Promise<boolean> {
@@ -33,9 +34,14 @@ export async function gitCommitAll(
 export async function gitRecentCommits(
   vault: string,
   n = 30,
+  includeBeforeStart = false,
 ): Promise<GitCommit[]> {
   try {
-    return await invoke<GitCommit[]>("git_recent_commits", { vault, n });
+    return await invoke<GitCommit[]>("git_recent_commits", {
+      vault,
+      n,
+      includeBeforeStart,
+    });
   } catch (e) {
     console.warn("[git] log failed:", e);
     return [];
@@ -46,6 +52,14 @@ export async function gitRevertHead(vault: string): Promise<string> {
   return await invoke<string>("git_revert_head", { vault });
 }
 
-export async function gitShowCommit(vault: string, hash: string): Promise<string> {
-  return await invoke<string>("git_show_commit", { vault, hash });
+export async function gitShowCommit(
+  vault: string,
+  hash: string,
+  patch = false,
+): Promise<string> {
+  return await invoke<string>("git_show_commit", { vault, hash, patch });
+}
+
+export async function gitRestoreToCommit(vault: string, hash: string): Promise<string> {
+  return await invoke<string>("git_restore_to_commit", { vault, hash });
 }
