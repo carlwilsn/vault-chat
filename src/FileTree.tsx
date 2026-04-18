@@ -71,11 +71,6 @@ export function FileTree() {
 
   const openFile = async (f: FileEntry) => {
     if (f.is_dir) return;
-    // Auto-restore a collapsed editor pane — opening a file with
-    // nowhere to show it would be surprising.
-    if (useStore.getState().middleCollapsed) {
-      useStore.getState().toggleMiddle();
-    }
     if (isBinaryExt(f.path)) {
       setCurrentFile(f.path, "");
       return;

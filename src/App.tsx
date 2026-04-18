@@ -45,7 +45,6 @@ export default function App() {
     };
   }, [setFiles]);
   const leftCollapsed = useStore((s) => s.leftCollapsed);
-  const middleCollapsed = useStore((s) => s.middleCollapsed);
   const rightCollapsed = useStore((s) => s.rightCollapsed);
   const popoutOpen = useStore((s) => s.popoutOpen);
   const showSettings = useStore((s) => s.showSettings);
@@ -94,31 +93,11 @@ export default function App() {
     <div className="h-full w-full bg-background flex flex-col">
       <Titlebar />
       <div className="flex-1 min-h-0">
-        <Allotment
-          key={layoutKey}
-          proportionalLayout={false}
-          onVisibleChange={(index, visible) => {
-            // Sync snap-drag hides/shows back to the store so the
-            // collapsed flags reflect what the user sees.
-            if (index === 0) {
-              if (visible === leftCollapsed) useStore.setState({ leftCollapsed: !visible });
-            } else if (index === 1) {
-              // Editor is force-visible when chat is hidden — ignore
-              // Allotment's echo in that case.
-              if (chatHidden) return;
-              if (visible === middleCollapsed) useStore.setState({ middleCollapsed: !visible });
-            } else if (index === 2) {
-              // Chat is force-hidden while popped out — don't let the
-              // popout state flip rightCollapsed.
-              if (popoutOpen) return;
-              if (visible === rightCollapsed) useStore.setState({ rightCollapsed: !visible });
-            }
-          }}
-        >
+        <Allotment key={layoutKey} proportionalLayout={false}>
           <Allotment.Pane preferredSize={fitWidth} minSize={160} maxSize={leftMax} visible={!leftCollapsed} snap>
             <FileTree />
           </Allotment.Pane>
-          <Allotment.Pane minSize={340} priority={LayoutPriority.High} visible={!middleCollapsed || chatHidden} snap>
+          <Allotment.Pane minSize={340} priority={LayoutPriority.High}>
             {showSettings && chatHidden ? <SettingsPane /> : <MarkdownArea />}
           </Allotment.Pane>
           <Allotment.Pane preferredSize={440} minSize={320} visible={!rightCollapsed && !popoutOpen} snap>

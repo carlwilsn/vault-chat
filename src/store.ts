@@ -175,7 +175,6 @@ type State = {
   showSettings: boolean;
   mode: "view" | "edit";
   leftCollapsed: boolean;
-  middleCollapsed: boolean;
   rightCollapsed: boolean;
   popoutOpen: boolean;
   tokenUsage: { prompt: number; completion: number; total: number };
@@ -212,7 +211,6 @@ type State = {
   setMode: (m: "view" | "edit") => void;
   toggleMode: () => void;
   toggleLeft: () => void;
-  toggleMiddle: () => void;
   toggleRight: () => void;
   setPopoutOpen: (b: boolean) => void;
   addTokenUsage: (u: { prompt: number; completion: number; total: number }) => void;
@@ -263,7 +261,6 @@ export const useStore = create<State>((set) => ({
   showSettings: false,
   mode: "view",
   leftCollapsed: false,
-  middleCollapsed: false,
   rightCollapsed: true,
   popoutOpen: false,
   tokenUsage: { prompt: 0, completion: 0, total: 0 },
@@ -509,7 +506,6 @@ export const useStore = create<State>((set) => ({
   setMode: (m) => set({ mode: m }),
   toggleMode: () => set((s) => ({ mode: s.mode === "view" ? "edit" : "view" })),
   toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
-  toggleMiddle: () => set((s) => ({ middleCollapsed: !s.middleCollapsed })),
   toggleRight: () => set((s) => ({ rightCollapsed: !s.rightCollapsed })),
   setPopoutOpen: (b) => set({ popoutOpen: b }),
   addTokenUsage: (u) =>
