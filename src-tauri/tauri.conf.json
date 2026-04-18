@@ -19,6 +19,7 @@
         "minHeight": 500,
         "theme": "Dark",
         "decorations": false,
+        "titleBarStyle": "Overlay",
         "backgroundColor": "#1f1f23",
         "dragDropEnabled": false
       }

@@ -183,6 +183,8 @@ export function Titlebar() {
   }, [hiddenOpen]);
 
   const vaultName = vaultPath ? vaultPath.split("/").filter(Boolean).pop() : null;
+  const isMac =
+    typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
   const [sourceDir, setSourceDir] = useState<string | null>(null);
   const [metaDir, setMetaDir] = useState<string | null>(null);
   useEffect(() => {
@@ -202,7 +204,10 @@ export function Titlebar() {
       data-tauri-drag-region
       className="h-9 flex items-center bg-card border-b border-border select-none shrink-0"
     >
-      <div className="flex items-center gap-1 px-2">
+      <div
+        className="flex items-center gap-1 px-2"
+        style={isMac ? { paddingLeft: 76 } : undefined}
+      >
         <button
           onClick={toggleLeft}
           className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${leftCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
@@ -291,27 +296,31 @@ export function Titlebar() {
         >
           <Settings className="h-3.5 w-3.5" />
         </button>
-        <button
-          onClick={() => win.minimize()}
-          className="h-9 w-11 flex items-center justify-center hover:bg-accent/60 text-muted-foreground"
-          title="Minimize"
-        >
-          <Minus className="h-3.5 w-3.5" />
-        </button>
-        <button
-          onClick={() => win.toggleMaximize()}
-          className="h-9 w-11 flex items-center justify-center hover:bg-accent/60 text-muted-foreground"
-          title={maximized ? "Restore" : "Maximize"}
-        >
-          {maximized ? <Copy className="h-3 w-3" /> : <Square className="h-3 w-3" />}
-        </button>
-        <button
-          onClick={() => win.close()}
-          className="h-9 w-11 flex items-center justify-center hover:bg-destructive hover:text-destructive-foreground text-muted-foreground"
-          title="Close"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
+        {!isMac && (
+          <>
+            <button
+              onClick={() => win.minimize()}
+              className="h-9 w-11 flex items-center justify-center hover:bg-accent/60 text-muted-foreground"
+              title="Minimize"
+            >
+              <Minus className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={() => win.toggleMaximize()}
+              className="h-9 w-11 flex items-center justify-center hover:bg-accent/60 text-muted-foreground"
+              title={maximized ? "Restore" : "Maximize"}
+            >
+              {maximized ? <Copy className="h-3 w-3" /> : <Square className="h-3 w-3" />}
+            </button>
+            <button
+              onClick={() => win.close()}
+              className="h-9 w-11 flex items-center justify-center hover:bg-destructive hover:text-destructive-foreground text-muted-foreground"
+              title="Close"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </>
+        )}
       </div>
     </div>
     {hiddenOpen && (
