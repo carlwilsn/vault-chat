@@ -2,8 +2,6 @@
 
 A desktop app for your markdown notes with Claude (or GPT, or Gemini) wired into the editor, the PDF viewer, and the chat. Cursor-style inline editing for prose and code. Drag a box on any PDF and ask about the region — it sends the pixels, not just text, so math / handwriting / diagrams actually work.
 
-![screenshot placeholder — add a GIF of the PDF marquee here]
-
 ## Getting started
 
 This is a source-first project. You clone the repo, install the prereqs once, and launch it from your terminal.
@@ -93,16 +91,6 @@ npm link
 That's it. Type `vault-chat` from any terminal on any OS to launch the app. (`npm link` uses npm's global bin folder, which is already on `PATH` because you installed Node.)
 
 Unlink later with `npm unlink -g vault-chat`.
-
-## Updates
-
-```sh
-cd vault-chat
-git pull
-npm install
-```
-
-Next `vault-chat` picks up the changes.
 
 ## What's in it
 
