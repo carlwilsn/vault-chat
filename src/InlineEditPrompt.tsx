@@ -22,12 +22,14 @@ export type InlineEditAnchor = {
   top: number;
   bottom: number;
   // Optional right edge. When present (PDF marquee), placement treats
-  // the anchor as a full rect and avoids overlapping it — popover opens
-  // below / above / right / left of the rect in that priority, picking
-  // whichever side has room. When absent (text-selection Ctrl+K), the
-  // anchor is a zero-width line at `left`, placement falls through to
-  // the line-based logic.
+  // the anchor as a full rect and places the popover on the side the
+  // drag ended — dirX/dirY carry the drag direction.
   right?: number;
+  // Sign of the drag's horizontal motion (+1 right, -1 left). Used only
+  // with `right`. Defaults to +1 if omitted.
+  dirX?: number;
+  // Sign of the drag's vertical motion (+1 down, -1 up). Defaults to +1.
+  dirY?: number;
 };
 
 export type InlineEditRequest = {
@@ -257,13 +259,13 @@ export function InlineEditPrompt({
 
   useLayoutEffect(() => {
     setPlacement(computePlacement(request.anchor));
-  }, [request.anchor.left, request.anchor.top, request.anchor.bottom, request.anchor.right]);
+  }, [request.anchor.left, request.anchor.top, request.anchor.bottom, request.anchor.right, request.anchor.dirX, request.anchor.dirY]);
 
   useEffect(() => {
     const onResize = () => setPlacement(computePlacement(request.anchor));
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [request.anchor.left, request.anchor.top, request.anchor.bottom, request.anchor.right]);
+  }, [request.anchor.left, request.anchor.top, request.anchor.bottom, request.anchor.right, request.anchor.dirX, request.anchor.dirY]);
 
   return createPortal(
     <div
@@ -446,39 +448,56 @@ function computePlacement(anchor: InlineEditAnchor) {
   const gap = 6;
   const maxLeft = Math.max(MARGIN, vw - POPOVER_WIDTH - MARGIN);
 
-  // Marquee / rect mode: avoid overlapping the selection. Priority
-  // below → above → right → left; pick whichever side has space first.
+  // Marquee / rect mode: place the popover on the side of the rect the
+  // drag *ended*, never overlapping the rect. If there's no room on the
+  // requested side, flip to the opposite.
   if (anchor.right !== undefined) {
-    const spaceBelow = vh - anchor.bottom - MARGIN * 2;
-    const spaceAbove = anchor.top - MARGIN * 2;
-    const spaceRight = vw - anchor.right - MARGIN * 2;
-    const spaceLeft = anchor.left - MARGIN * 2;
+    const dirX = anchor.dirX ?? 1;
+    const dirY = anchor.dirY ?? 1;
 
-    const rectCenterX = (anchor.left + anchor.right) / 2;
-    const centeredLeft = Math.max(
-      MARGIN,
-      Math.min(rectCenterX - POPOVER_WIDTH / 2, maxLeft),
-    );
+    const spaceRight = vw - anchor.right - gap - MARGIN;
+    const spaceLeft = anchor.left - gap - MARGIN;
+    const spaceBelow = vh - anchor.bottom - gap - MARGIN;
+    const spaceAbove = anchor.top - gap - MARGIN;
 
-    if (spaceBelow >= MIN_VERTICAL_SPACE) {
-      return { left: centeredLeft, top: anchor.bottom + gap, maxHeight: spaceBelow };
+    // Horizontal: try drag-direction side, else flip, else fall back to
+    // clamping the popover to the viewport edge on that side.
+    let left: number;
+    const wantRight = dirX >= 0;
+    if (wantRight && spaceRight >= POPOVER_WIDTH) {
+      left = anchor.right + gap;
+    } else if (!wantRight && spaceLeft >= POPOVER_WIDTH) {
+      left = anchor.left - POPOVER_WIDTH - gap;
+    } else if (spaceRight >= POPOVER_WIDTH) {
+      left = anchor.right + gap;
+    } else if (spaceLeft >= POPOVER_WIDTH) {
+      left = anchor.left - POPOVER_WIDTH - gap;
+    } else {
+      // Neither side fits — clamp to the drag-direction side of the rect.
+      left = wantRight ? maxLeft : MARGIN;
     }
-    if (spaceAbove >= MIN_VERTICAL_SPACE) {
-      return { left: centeredLeft, bottom: vh - anchor.top + gap, maxHeight: spaceAbove };
+
+    // Vertical: anchor the popover so its near edge sits just past the
+    // rect on the drag-end side. Flip to the opposite side if there's no
+    // room; as a last resort, clamp within the viewport.
+    const wantBelow = dirY >= 0;
+    if (wantBelow && spaceBelow >= MIN_VERTICAL_SPACE) {
+      return { left, top: anchor.bottom + gap, maxHeight: spaceBelow };
     }
-    if (spaceRight >= POPOVER_WIDTH + gap) {
-      const top = Math.max(MARGIN, Math.min(anchor.top, vh - MIN_VERTICAL_SPACE - MARGIN));
-      return { left: anchor.right + gap, top, maxHeight: vh - 2 * MARGIN };
+    if (!wantBelow && spaceAbove >= MIN_VERTICAL_SPACE) {
+      return { left, bottom: vh - anchor.top + gap, maxHeight: spaceAbove };
     }
-    if (spaceLeft >= POPOVER_WIDTH + gap) {
-      const top = Math.max(MARGIN, Math.min(anchor.top, vh - MIN_VERTICAL_SPACE - MARGIN));
-      return { left: anchor.left - POPOVER_WIDTH - gap, top, maxHeight: vh - 2 * MARGIN };
+    if (spaceBelow >= spaceAbove) {
+      return {
+        left,
+        top: Math.min(anchor.bottom + gap, vh - MIN_VERTICAL_SPACE - MARGIN),
+        maxHeight: Math.max(MIN_VERTICAL_SPACE, spaceBelow),
+      };
     }
-    // No side fits cleanly — fall back to below, clamped.
     return {
-      left: centeredLeft,
-      top: Math.min(anchor.bottom + gap, vh - MIN_VERTICAL_SPACE - MARGIN),
-      maxHeight: MIN_VERTICAL_SPACE,
+      left,
+      bottom: Math.min(vh - anchor.top + gap, vh - MIN_VERTICAL_SPACE - MARGIN),
+      maxHeight: Math.max(MIN_VERTICAL_SPACE, spaceAbove),
     };
   }
 

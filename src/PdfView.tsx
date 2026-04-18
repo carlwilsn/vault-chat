@@ -342,12 +342,19 @@ export function PdfView({ path }: { path: string }) {
       }
 
       setMarqueeOn(false);
+      // Drag direction — popover opens on the side the mouse ended.
+      // Treat a pure-vertical or pure-horizontal drag as +1 on the
+      // missing axis so the popover still picks a consistent side.
+      const dirX = e.clientX === start.x ? 1 : Math.sign(e.clientX - start.x);
+      const dirY = e.clientY === start.y ? 1 : Math.sign(e.clientY - start.y);
       setInlineAsk({
         anchor: {
           left: rect.left,
           top: rect.top,
           right: rect.right,
           bottom: rect.bottom,
+          dirX,
+          dirY,
         },
         selection: captured,
         before,
