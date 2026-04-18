@@ -22,4 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-.claude/scheduled_tasks.lock
+
+# Claude Code: ignore everything except the shared launch config
+.claude/*
+!.claude/launch.json
