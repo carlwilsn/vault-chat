@@ -12,7 +12,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -66,19 +66,31 @@ if (process.argv.includes("--foreground")) {
   });
 } else {
   // Truncate log so prior runs' ready-marker doesn't match this session.
-  const logFd = openSync(logPath, "w");
-  // On Windows, invoke cmd.exe directly (no shell: true) so windowsHide
-  // actually suppresses the console window. shell: true routes through
-  // a separate cmd that ignores the hide flag and pops a second window.
-  const [bin, binArgs] = isWindows
-    ? ["cmd.exe", ["/d", "/s", "/c", "npm run tauri dev"]]
-    : [npm, ["run", "tauri", "dev"]];
-  const child = spawn(bin, binArgs, {
-    cwd: repo,
-    detached: true,
-    stdio: ["ignore", logFd, logFd],
-    windowsHide: true,
-  });
+  writeFileSync(logPath, "");
+  let child;
+  if (isWindows) {
+    // Node's `detached: true` on Windows forces a new console that
+    // `windowsHide` can't reliably suppress (libuv sets DETACHED_PROCESS
+    // without SW_HIDE reaching cmd's window). Go through PowerShell's
+    // Start-Process, which writes SW_HIDE into STARTUPINFO before
+    // CreateProcess — this is the only path that truly runs headless.
+    const psCmd =
+      `Start-Process -WindowStyle Hidden -WorkingDirectory '${repo}' ` +
+      `-FilePath 'cmd.exe' ` +
+      `-ArgumentList '/c','npm run tauri dev > "${logPath}" 2>&1'`;
+    child = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-WindowStyle", "Hidden", "-Command", psCmd],
+      { stdio: "ignore", windowsHide: true, detached: true }
+    );
+  } else {
+    const logFd = openSync(logPath, "a");
+    child = spawn(npm, ["run", "tauri", "dev"], {
+      cwd: repo,
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+    });
+  }
   child.unref();
 
   console.log(`vault-chat: starting — logs ${logPath}`);
