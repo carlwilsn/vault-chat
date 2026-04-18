@@ -283,20 +283,37 @@ export function PdfView({ path }: { path: string }) {
     const scroller = scrollRef.current;
     if (!scroller || !marqueeOn) return;
 
-    const onDown = (e: MouseEvent) => {
+    // Track the last known pointer position from move events. If a fast
+    // drag flings the cursor outside the window right before release,
+    // the pointerup event can arrive with stale/clamped coordinates —
+    // so we prefer the most recent pointermove position as the end.
+    let lastMove: { x: number; y: number } | null = null;
+    let capturedPointerId: number | null = null;
+
+    const onDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
       if (loading) return;
-      // Ignore clicks on the toolbar / on popover itself. The overlay
-      // div below catches drags over the content area.
       const target = e.target as HTMLElement;
       if (!scroller.contains(target)) return;
       e.preventDefault();
       marqueeStartRef.current = { x: e.clientX, y: e.clientY };
+      lastMove = { x: e.clientX, y: e.clientY };
       setMarquee({ x1: e.clientX, y1: e.clientY, x2: e.clientX, y2: e.clientY });
+      // Pointer capture — guarantees we keep receiving move/up events
+      // on `scroller` even if the cursor flies off the window during a
+      // fast drag.
+      try {
+        scroller.setPointerCapture(e.pointerId);
+        capturedPointerId = e.pointerId;
+      } catch {
+        // Older platforms without pointer capture — fall back to the
+        // window-level listeners below.
+      }
     };
 
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: PointerEvent) => {
       if (!marqueeStartRef.current) return;
+      lastMove = { x: e.clientX, y: e.clientY };
       setMarquee({
         x1: marqueeStartRef.current.x,
         y1: marqueeStartRef.current.y,
@@ -305,20 +322,34 @@ export function PdfView({ path }: { path: string }) {
       });
     };
 
-    const onUp = (e: MouseEvent) => {
+    const onUp = (e: PointerEvent) => {
       const start = marqueeStartRef.current;
       marqueeStartRef.current = null;
+      if (capturedPointerId !== null) {
+        try {
+          scroller.releasePointerCapture(capturedPointerId);
+        } catch {
+          /* already released */
+        }
+        capturedPointerId = null;
+      }
       if (!start) return;
+      // Prefer the last pointermove position — pointerup sometimes
+      // fires with older/stale coords on fast flings.
+      const endX = lastMove?.x ?? e.clientX;
+      const endY = lastMove?.y ?? e.clientY;
+      lastMove = null;
       const rect = {
-        left: Math.min(start.x, e.clientX),
-        top: Math.min(start.y, e.clientY),
-        right: Math.max(start.x, e.clientX),
-        bottom: Math.max(start.y, e.clientY),
+        left: Math.min(start.x, endX),
+        top: Math.min(start.y, endY),
+        right: Math.max(start.x, endX),
+        bottom: Math.max(start.y, endY),
       };
       setMarquee(null);
 
-      // Ignore tiny boxes (treat as a stray click).
-      if (rect.right - rect.left < 6 || rect.bottom - rect.top < 6) return;
+      // Ignore tiny boxes (treat as a stray click). Fast small drags can
+      // legitimately be a handful of pixels, so keep this lenient.
+      if (rect.right - rect.left < 3 || rect.bottom - rect.top < 3) return;
 
       const captured = textInRect(rect);
       const image = imageOfRect(rect);
@@ -345,8 +376,8 @@ export function PdfView({ path }: { path: string }) {
       // Drag direction — popover opens on the side the mouse ended.
       // Treat a pure-vertical or pure-horizontal drag as +1 on the
       // missing axis so the popover still picks a consistent side.
-      const dirX = e.clientX === start.x ? 1 : Math.sign(e.clientX - start.x);
-      const dirY = e.clientY === start.y ? 1 : Math.sign(e.clientY - start.y);
+      const dirX = endX === start.x ? 1 : Math.sign(endX - start.x);
+      const dirY = endY === start.y ? 1 : Math.sign(endY - start.y);
       setInlineAsk({
         anchor: {
           left: rect.left,
@@ -372,14 +403,16 @@ export function PdfView({ path }: { path: string }) {
       }
     };
 
-    scroller.addEventListener("mousedown", onDown);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    scroller.addEventListener("pointerdown", onDown);
+    scroller.addEventListener("pointermove", onMove);
+    scroller.addEventListener("pointerup", onUp);
+    scroller.addEventListener("pointercancel", onUp);
     window.addEventListener("keydown", onKeyEsc);
     return () => {
-      scroller.removeEventListener("mousedown", onDown);
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      scroller.removeEventListener("pointerdown", onDown);
+      scroller.removeEventListener("pointermove", onMove);
+      scroller.removeEventListener("pointerup", onUp);
+      scroller.removeEventListener("pointercancel", onUp);
       window.removeEventListener("keydown", onKeyEsc);
     };
   }, [marqueeOn, loading]);
