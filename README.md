@@ -64,7 +64,7 @@ WebView2 ships with Windows 10/11 — nothing to install either way.
 ### 2. Clone + install
 
 ```sh
-git clone https://github.com/YOUR_USERNAME/vault-chat
+git clone https://github.com/carlwilsn/vault-chat
 cd vault-chat
 npm install
 ```
