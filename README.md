@@ -70,6 +70,8 @@ npm link
 
 ~1 min. `npm link` puts `vault-chat` on your `PATH` via npm's global bin folder, so the command works from any terminal. Unlink later with `npm unlink -g vault-chat`.
 
+> **Don't move the cloned folder after this step.** `npm link` points the global `vault-chat` command back at `bin/vault-chat.js` inside this folder — move it and the command breaks. If you need to relocate it, `npm unlink -g vault-chat`, move the folder, `cd` in, and re-run `npm link`.
+
 ### 3. Launch
 
 ```sh
