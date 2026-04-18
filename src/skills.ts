@@ -9,57 +9,45 @@ export type Skill = {
   body: string;
 };
 
-export async function loadSkills(vault: string): Promise<Skill[]> {
-  // Two scopes, in priority order:
-  //   1. The current vault's own .claude/skills (vault-specific)
-  //   2. The meta vault's skills (global — available in every vault)
-  // Earlier roots win on name conflict so a vault-specific skill can
-  // shadow a global one with the same name.
-  const roots: string[] = [
-    `${vault}/.claude/skills`,
-    `${vault}/learn/.claude/skills`,
-  ];
+export async function loadSkills(_vault: string): Promise<Skill[]> {
+  // Skills are global — they live in the meta vault and are available
+  // in every vault. No per-vault skill scope.
+  let root: string | null = null;
   try {
     const meta = await getMetaVaultPath();
-    if (meta && meta !== vault) {
-      roots.push(`${meta}/skills`);
-    }
+    if (meta) root = `${meta}/skills`;
   } catch {
-    // meta vault unavailable — fine, keep going with vault-only roots
+    return [];
+  }
+  if (!root) return [];
+
+  let entries: { path: string; name: string; is_dir: boolean }[] = [];
+  try {
+    entries = await invoke("list_dir", { path: root });
+  } catch {
+    return [];
   }
 
-  const byName = new Map<string, Skill>();
-
-  for (const root of roots) {
-    let entries: { path: string; name: string; is_dir: boolean }[] = [];
+  const skills: Skill[] = [];
+  for (const entry of entries) {
+    if (!entry.is_dir) continue;
+    const skillFile = `${entry.path}/SKILL.md`;
     try {
-      entries = await invoke("list_dir", { path: root });
+      const raw = await invoke<string>("read_text_file", { path: skillFile });
+      const parsed = matter(raw);
+      const name = (parsed.data.name as string | undefined) ?? entry.name;
+      const description = (parsed.data.description as string | undefined) ?? "";
+      skills.push({
+        name,
+        description,
+        path: skillFile,
+        body: parsed.content.trim(),
+      });
     } catch {
       continue;
     }
-
-    for (const entry of entries) {
-      if (!entry.is_dir) continue;
-      const skillFile = `${entry.path}/SKILL.md`;
-      try {
-        const raw = await invoke<string>("read_text_file", { path: skillFile });
-        const parsed = matter(raw);
-        const name = (parsed.data.name as string | undefined) ?? entry.name;
-        const description = (parsed.data.description as string | undefined) ?? "";
-        if (byName.has(name)) continue; // earlier root already registered it
-        byName.set(name, {
-          name,
-          description,
-          path: skillFile,
-          body: parsed.content.trim(),
-        });
-      } catch {
-        continue;
-      }
-    }
   }
 
-  const skills = Array.from(byName.values());
   skills.sort((a, b) => a.name.localeCompare(b.name));
   return skills;
 }

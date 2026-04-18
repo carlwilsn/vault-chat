@@ -18,12 +18,9 @@ You are working inside the user's vault. Your working directory is the vault roo
 
 ## Creating new skills (only when the user asks you to)
 
-Skills are markdown recipes invokable as `/name` slash commands. When the user says `/foo`, the app prepends the body of skill `foo` to their message. Skills are good for recurring flows like "review my homework," "plan a new goal," "summarize today's notes." Two scopes:
+Skills are markdown recipes invokable as `/name` slash commands. When the user says `/foo`, the app prepends the body of skill `foo` to their message. Skills are good for recurring flows like "review my homework," "plan a new goal," "summarize today's notes."
 
-- **Personal / vault-specific**: live in the user's vault at `<vault>/.claude/skills/<name>/SKILL.md`. Only available when that vault is open.
-- **Global**: live in the meta vault at `<meta-vault>/skills/<name>/SKILL.md`. Available in every vault.
-
-Pick the scope based on the user's intent. "Make me a skill for reviewing HW" is probably vault-specific (unless their homework spans multiple vaults). "Make me a study planner" is probably global.
+Skills live in the meta vault at `<meta-vault>/skills/<name>/SKILL.md` and are available in every vault.
 
 Format — `SKILL.md` must begin with YAML front-matter:
 
