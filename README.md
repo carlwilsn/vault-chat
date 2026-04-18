@@ -4,63 +4,67 @@ A desktop app for your markdown notes with Claude (or GPT, or Gemini) wired into
 
 ![screenshot placeholder — add a GIF of the PDF marquee here]
 
-## What makes it different
+## Getting started
 
-- **Three editable surfaces, one app.** Your **vault** (notes), the **meta vault** (the agent's own system prompt, skills, and custom tools), and the **app source** itself. The agent can read and write any of them. Every change is auto-committed to git so nothing is destructive.
-- **Ctrl+K inline edit** on any paragraph or code selection. Ctrl+L for an ask mode that answers in the same popover.
-- **PDF marquee to ask.** Drag a rectangle over a PDF region — selected text + the pixel screenshot go to the model. Works for theorems, tables, scanned pages.
-- **Model-agnostic.** Bring an Anthropic, OpenAI, or Google key. Swap mid-session.
-- **Source-first distribution.** Clone the repo, run `vc`. The app is the dev server. You can hack it with the agent itself.
+This is a source-first project. You clone the repo, install the prereqs once, and launch it from your terminal.
 
-## Prerequisites
+### 1. Install prerequisites (one-time)
 
-This is a source-first project — the recommended way to run it is from the repo, in dev mode. You need:
-
-- **Node 20+**
-- **Rust** (via [rustup](https://rustup.rs))
-- **git**
-- Platform build tools for Tauri (per OS, below)
-
-### macOS
+#### macOS
 
 ```sh
-xcode-select --install              # one-time; includes git + cc
+xcode-select --install            # git + cc (if you don't have them)
 brew install node rustup-init
 rustup-init -y
 ```
 
-### Linux (Debian / Ubuntu)
+~5 min total.
+
+#### Linux (Debian / Ubuntu)
 
 ```sh
 sudo apt update
 sudo apt install -y build-essential curl git libssl-dev libgtk-3-dev \
   libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-# Install Node via your preferred method (nvm, fnm, apt, etc.)
+# Install Node 20+ via nvm, fnm, or your distro.
 ```
 
-### Windows
+~5 min total.
+
+#### Windows
 
 1. Install [Node 20+](https://nodejs.org/).
-2. Install [Rust via rustup](https://rustup.rs/). During setup, accept the default (installs MSVC build tools).
-3. WebView2 ships with Windows 10/11; nothing to install.
+2. Install [Rust via rustup](https://rustup.rs/). Accept the default — it installs MSVC build tools (~1.5 GB, ~15 min).
+3. WebView2 ships with Windows 10/11 — nothing to install.
 
-## Install and run
+~20 min total, mostly the MSVC download.
+
+### 2. Clone + install
 
 ```sh
 git clone https://github.com/YOUR_USERNAME/vault-chat
 cd vault-chat
 npm install
+```
+
+~1 min.
+
+### 3. First launch
+
+```sh
 npm run tauri dev
 ```
 
-**First launch takes ~10–15 minutes** while Rust compiles everything. Subsequent launches are near-instant.
+The first launch takes **~10–15 minutes** while Rust compiles everything. Subsequent launches are ~2 seconds.
 
-## Daily use: the `vc` command
+When the app opens: hit the gear icon → paste an API key (Anthropic, OpenAI, or Google) → open a folder as your vault → start asking.
 
-Once the prereqs above are installed, add the repo's `bin/` folder to your `PATH`. After that, `vc` in any terminal launches the app.
+## Daily use: the `vault-chat` command
 
-**macOS / Linux** (in `~/.zshrc` or `~/.bashrc`):
+After the first launch works, add `vault-chat/bin` to your `PATH`. From then on, typing `vault-chat` in any terminal launches the app.
+
+**macOS / Linux** — add to `~/.zshrc` or `~/.bashrc`:
 
 ```sh
 export PATH="$HOME/path/to/vault-chat/bin:$PATH"
@@ -76,7 +80,7 @@ export PATH="$HOME/path/to/vault-chat/bin:$PATH"
 )
 ```
 
-Then anywhere: `vc` launches the app.
+Reopen your terminal. `vault-chat` anywhere → app opens.
 
 ## Updates
 
@@ -86,53 +90,54 @@ git pull
 npm install
 ```
 
-Next `vc` picks up the changes.
+Next `vault-chat` picks up the changes.
+
+## What's in it
+
+- **Ctrl+K inline edit** on any paragraph or code selection. `Ctrl+L` for an ask mode that answers in the same popover without touching the file.
+- **PDF marquee** — drag a rectangle over any region of a PDF. Selected text + the pixel screenshot go to the model together. Works on math, tables, scanned pages, handwriting.
+- **Model-agnostic**. Anthropic, OpenAI, or Google. Swap mid-session via the settings dropdown.
+- **Git-backed**. Every agent turn that touches files auto-commits. One-click restore to any earlier commit. Vault never loses state.
+- **Three editable surfaces** — explained below. The agent can modify its own config, and (in dev mode) the app's own source.
 
 ## The three editable surfaces
 
-Every folder vault-chat operates on is just a folder of files. Three are worth knowing about:
+vault-chat treats every folder as a vault. Three are worth knowing about:
 
-| Surface | Where | What's there | Who edits it |
+| Surface | Where | What's there | Switch from |
 |---|---|---|---|
-| **User vault** | any folder you pick | your notes | you + the agent on request |
-| **Meta vault** | `%APPDATA%/com.vault-chat.app/meta/` (or equivalent) | `system.md`, `skills/`, `tools/` | you or the agent — changes agent behavior |
-| **App source** | the repo you cloned | the app itself | you or the agent — changes hot-reload live |
+| **User vault** | any folder you pick | your notes | titlebar → folder icon |
+| **Meta vault** | `%APPDATA%/com.vault-chat.app/meta/` (Windows) — same pattern Mac/Linux | `system.md`, `skills/`, `tools/` | settings → "Open meta vault" |
+| **App source** | the repo you cloned | the app itself | settings → "Open app source" |
 
-Switch between them from **Settings**:
+Each is git-versioned with auto-commit. The titlebar shows a chip when you're in one of the non-user surfaces so you never forget where you are.
 
-- *Open meta vault* → edit the agent's config
-- *Open app source* → edit the app itself
+### Creating new skills
 
-The titlebar shows a chip when you're in one of the non-user surfaces, so you never forget where you are. Git is the safety net — every change auto-commits, everything is revertable from the **History** button.
-
-### Creating new skills (with the agent's help)
-
-Ask: *"Make me a skill for reviewing math HW."*
-
-The agent writes `<meta>/skills/review-hw/SKILL.md` with YAML front-matter (name + description + body). Next turn it's available as `/review-hw`.
+Ask the agent: *"Make me a skill for reviewing math HW."* It writes `<meta>/skills/review-hw/SKILL.md` with YAML front-matter. Next turn the skill is invokable as `/review-hw` in chat.
 
 ### Creating new tools
 
-Ask: *"Build me a tool that fetches the latest Champions League standings."*
+Ask: *"Build me a tool that fetches the Champions League standings."* The agent writes `<meta>/tools/champions-league/TOOL.md` (JSON Schema input spec) + `run.py` (reads stdin JSON, prints stdout JSON). Available on the next turn.
 
-The agent writes `<meta>/tools/champions-league/TOOL.md` + `run.py`. The manifest uses JSON Schema. The script reads JSON args on stdin and prints JSON to stdout. Available on the next turn.
+### Modifying the app itself
 
-### Editing the app itself
+In dev mode, HMR picks up TS/React changes instantly and Rust changes in ~30s. Asking the agent to *"add a new theme"* or *"add a button to the titlebar"* genuinely works — changes appear in the running window.
 
-In dev mode, HMR picks up TS/React changes instantly and rebuilds Rust in ~30s. So asking the agent to *"add a Bright theme to App.css"* or *"add a reload button to the titlebar"* genuinely works — changes appear in the running window.
+## Security
 
-## Binary install (no toolchain)
+API keys live in the OS keychain (Windows Credential Manager / Mac Keychain / Linux libsecret), not in localStorage or plaintext files. The agent's file-operation tools (`Read`, `Write`, `Bash`, etc.) cannot reach them.
 
-Prefer not to build from source? Prebuilt installers for Windows are attached to each [GitHub Release](https://github.com/YOUR_USERNAME/vault-chat/releases). You lose the "edit the app source with the agent" feature, but everything else works.
+The agent cannot modify files inside any `.git/` directory — the file-op tools refuse those paths so the undo system stays intact.
 
 ## Scope
 
-vault-chat is opinionated and small on purpose. Not goals, not coming:
+Opinionated and small on purpose. Not goals, not coming:
 
-- Editor plugins, graph view, backlinks, or other Obsidian-parity features — use Obsidian for those and point vault-chat at the same folder.
+- Editor plugins, graph view, backlinks — use Obsidian for those and point vault-chat at the same folder.
 - A browser version — desktop only, Tauri-native.
 - Multi-vault memory — opens one folder at a time.
-- Chat history persistence across restarts — deliberate. Close the app, chat clears.
+- Chat history persistence across restarts — deliberate.
 - Mobile.
 
 ## License
