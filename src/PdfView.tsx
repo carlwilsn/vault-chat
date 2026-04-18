@@ -346,9 +346,8 @@ export function PdfView({ path }: { path: string }) {
         anchor: {
           left: rect.left,
           top: rect.top,
+          right: rect.right,
           bottom: rect.bottom,
-          endX: e.clientX,
-          endY: e.clientY,
         },
         selection: captured,
         before,
