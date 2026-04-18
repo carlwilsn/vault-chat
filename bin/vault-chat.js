@@ -67,12 +67,17 @@ if (process.argv.includes("--foreground")) {
 } else {
   // Truncate log so prior runs' ready-marker doesn't match this session.
   const logFd = openSync(logPath, "w");
-  const child = spawn(npm, ["run", "tauri", "dev"], {
+  // On Windows, invoke cmd.exe directly (no shell: true) so windowsHide
+  // actually suppresses the console window. shell: true routes through
+  // a separate cmd that ignores the hide flag and pops a second window.
+  const [bin, binArgs] = isWindows
+    ? ["cmd.exe", ["/d", "/s", "/c", "npm run tauri dev"]]
+    : [npm, ["run", "tauri", "dev"]];
+  const child = spawn(bin, binArgs, {
     cwd: repo,
     detached: true,
     stdio: ["ignore", logFd, logFd],
     windowsHide: true,
-    shell: isWindows,
   });
   child.unref();
 

@@ -19,7 +19,9 @@
     "@ai-sdk/anthropic": "^3.0.69",
     "@ai-sdk/google": "^3.0.63",
     "@ai-sdk/openai": "^3.0.53",
+    "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-markdown": "^6.5.0",
+    "@codemirror/language": "^6.12.3",
     "@codemirror/state": "^6.6.0",
     "@codemirror/view": "^6.41.0",
     "@fontsource/inter": "^5.2.8",
@@ -47,6 +49,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "tailwind-merge": "^3.5.0",
+    "tailwindcss-animate": "^1.0.7",
     "zod": "^4.3.6",
     "zustand": "^5.0.12"
   },
