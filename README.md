@@ -59,40 +59,26 @@ WebView2 ships with Windows 10/11 — nothing to install either way.
 
 ~20 min total, mostly the MSVC download. npm ships with Node — no separate install.
 
-### 2. Clone + install
+### 2. Clone + install + register the command
 
 ```sh
 git clone https://github.com/carlwilsn/vault-chat
 cd vault-chat
 npm install
-```
-
-~1 min.
-
-### 3. First launch
-
-```sh
-npm run tauri dev
-```
-
-The first launch takes **~10–15 minutes** while Rust compiles everything. Subsequent launches are ~2 seconds.
-
-When the app opens: hit the gear icon → paste an API key (Anthropic, OpenAI, or Google) → open a folder as your vault → start asking.
-
-## Daily use: the `vault-chat` command
-
-After the first launch works, register the `vault-chat` command globally with one command:
-
-```sh
-cd vault-chat
 npm link
 ```
 
-That's it. Type `vault-chat` from any terminal on any OS to launch the app. (`npm link` uses npm's global bin folder, which is already on `PATH` because you installed Node.)
+~1 min. `npm link` puts `vault-chat` on your `PATH` via npm's global bin folder, so the command works from any terminal. Unlink later with `npm unlink -g vault-chat`.
 
-The launcher tails `tauri dev` in the background and exits as soon as the app window boots — your terminal returns, closing it doesn't kill the app, and full output goes to `%APPDATA%\com.vault-chat.app\dev.log` (same pattern on Mac/Linux). First launch just takes longer because Rust has to compile (~10-15 min); you'll see a live status line while it works. Pass `--foreground` to keep output inline instead.
+### 3. Launch
 
-Unlink later with `npm unlink -g vault-chat`.
+```sh
+vault-chat
+```
+
+The launcher spawns `tauri dev` detached, shows a live status line (compiling, vite ready, …), and exits as soon as the app window boots — your terminal returns, closing it doesn't kill the app, and full output goes to `%APPDATA%\com.vault-chat.app\dev.log` (same pattern on Mac/Linux). The **first run takes ~10–15 min** while Rust compiles everything; subsequent runs are ~2 seconds. Pass `--foreground` to keep output inline instead.
+
+When the app opens: hit the gear icon → paste an API key (Anthropic, OpenAI, or Google) → open a folder as your vault → start asking.
 
 ## What's in it
 
