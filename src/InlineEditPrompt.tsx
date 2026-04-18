@@ -21,6 +21,13 @@ export type InlineEditAnchor = {
   left: number;
   top: number;
   bottom: number;
+  // Optional drag-end point. When present (PDF marquee), placement is
+  // anchored to this point and flips horizontally/vertically to keep the
+  // popover in the viewport, so the popup feels like it "pops out from
+  // where you let go." When absent (text-selection Ctrl+K), falls back
+  // to the anchor's left/top/bottom rect.
+  endX?: number;
+  endY?: number;
 };
 
 export type InlineEditRequest = {
@@ -250,13 +257,13 @@ export function InlineEditPrompt({
 
   useLayoutEffect(() => {
     setPlacement(computePlacement(request.anchor));
-  }, [request.anchor.left, request.anchor.top, request.anchor.bottom]);
+  }, [request.anchor.left, request.anchor.top, request.anchor.bottom, request.anchor.endX, request.anchor.endY]);
 
   useEffect(() => {
     const onResize = () => setPlacement(computePlacement(request.anchor));
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [request.anchor.left, request.anchor.top, request.anchor.bottom]);
+  }, [request.anchor.left, request.anchor.top, request.anchor.bottom, request.anchor.endX, request.anchor.endY]);
 
   return createPortal(
     <div
@@ -436,6 +443,34 @@ function buildContextPreamble(request: InlineEditRequest): string {
 function computePlacement(anchor: InlineEditAnchor) {
   const vw = typeof window !== "undefined" ? window.innerWidth : 1400;
   const vh = typeof window !== "undefined" ? window.innerHeight : 900;
+  const gap = 6;
+
+  // Marquee mode: anchor the popover to the drag-end point, flipping
+  // horizontally so the popover always extends into the viewport (drag
+  // that ends on the right side of the screen → popover opens to the
+  // left; drag on the left → opens to the right).
+  if (anchor.endX !== undefined && anchor.endY !== undefined) {
+    const midX = vw / 2;
+    const anchorRight = anchor.endX >= midX;
+    const left = anchorRight
+      ? Math.max(MARGIN, anchor.endX - POPOVER_WIDTH - gap)
+      : Math.min(vw - POPOVER_WIDTH - MARGIN, anchor.endX + gap);
+
+    const spaceBelow = vh - anchor.endY - MARGIN * 2;
+    const spaceAbove = anchor.endY - MARGIN * 2;
+    if (spaceBelow >= MIN_VERTICAL_SPACE || spaceBelow >= spaceAbove) {
+      return {
+        left,
+        top: anchor.endY + gap,
+        maxHeight: Math.max(MIN_VERTICAL_SPACE, spaceBelow),
+      };
+    }
+    return {
+      left,
+      bottom: vh - anchor.endY + gap,
+      maxHeight: Math.max(MIN_VERTICAL_SPACE, spaceAbove),
+    };
+  }
 
   const maxLeft = Math.max(MARGIN, vw - POPOVER_WIDTH - MARGIN);
   const left = Math.max(MARGIN, Math.min(anchor.left, maxLeft));
@@ -446,14 +481,14 @@ function computePlacement(anchor: InlineEditAnchor) {
   if (spaceBelow >= MIN_VERTICAL_SPACE || spaceBelow >= spaceAbove) {
     return {
       left,
-      top: anchor.bottom + 6,
+      top: anchor.bottom + gap,
       maxHeight: Math.max(MIN_VERTICAL_SPACE, spaceBelow),
     };
   }
   // Flip above — use `bottom` so the popover's lower edge sits above the line.
   return {
     left,
-    bottom: vh - anchor.top + 6,
+    bottom: vh - anchor.top + gap,
     maxHeight: Math.max(MIN_VERTICAL_SPACE, spaceAbove),
   };
 }
