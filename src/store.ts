@@ -212,6 +212,7 @@ type State = {
   setMode: (m: "view" | "edit") => void;
   toggleMode: () => void;
   toggleLeft: () => void;
+  toggleMiddle: () => void;
   toggleRight: () => void;
   setPopoutOpen: (b: boolean) => void;
   addTokenUsage: (u: { prompt: number; completion: number; total: number }) => void;
