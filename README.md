@@ -2,6 +2,8 @@
 
 A desktop app for your markdown notes with Claude (or GPT, or Gemini) wired into the editor, the PDF viewer, and the chat. Heavily inspired by Obsidian (any folder is a vault), Cursor (inline edit on selections), and Claude Code (a real local-file agent with Read / Write / Bash). Drag a box on any PDF and ask about the region — it sends the pixels, not just text, so math / handwriting / diagrams actually work.
 
+![vault-chat demo](assets/demo.gif)
+
 ## Getting started
 
 This is a source-first project. You clone the repo, install the prereqs once, and launch it from your terminal.
