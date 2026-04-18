@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { runAgent } from "./agent";
 import { findModel } from "./providers";
 import { compactConversation } from "./compactor";
-import { clearSession } from "./session";
+import { gitCommitAll } from "./git";
 import {
   useStore,
   MODEL_CONTEXT_LIMIT,
@@ -122,6 +122,20 @@ export async function sendMessage(text: string) {
         });
         store.resetStreaming();
         store.setBusy(false);
+
+        // If the agent wrote / edited / deleted / ran bash, auto-commit
+        // the result. The commit message is a short summary of the
+        // assistant's final reply (first line, or "agent changes" as
+        // fallback) plus the list of files touched.
+        const mutating = new Set(["Write", "Edit", "Delete", "Bash", "NotebookEdit"]);
+        const touched = tools.filter((t) => mutating.has(t.name));
+        if (touched.length > 0) {
+          const subject = commitSubject(trimmed, touched);
+          const body = touchedFilesBody(touched);
+          const msg = body ? `${subject}\n\n${body}` : subject;
+          gitCommitAll(vault, msg).catch(() => {});
+        }
+
         invoke<FileEntry[]>("list_markdown_files", { vault })
           .then(store.setFiles)
           .catch(() => {});
@@ -156,11 +170,51 @@ export function clearChat() {
   const s = useStore.getState();
   s.clearMessages();
   s.resetStreaming();
-  if (s.vaultPath) {
-    clearSession(s.vaultPath).catch(() => {});
-  }
 }
 
 export function setModel(id: string) {
   useStore.getState().setModelId(id);
+}
+
+// Build a commit subject from what the user asked for, not what the
+// agent replied. The agent's replies ("Sure! I'll do that…") make noisy
+// commit logs. User prompts describe the intent and skim as real
+// commit history.
+function commitSubject(userPrompt: string, touched: LiveTool[]): string {
+  const cleaned = userPrompt
+    .replace(/^\/[\w-]+\s*/, "") // strip leading /skill-name
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned) {
+    const oneLine = cleaned.split("\n")[0];
+    if (oneLine.length <= 72) return oneLine;
+    return oneLine.slice(0, 69) + "…";
+  }
+  const verbs: Record<string, string> = {
+    Write: "wrote",
+    Edit: "edited",
+    Delete: "deleted",
+    Bash: "ran",
+    NotebookEdit: "edited notebook",
+  };
+  const primary = touched[touched.length - 1];
+  return `agent ${verbs[primary.name] ?? "touched"} ${touchedName(primary)}`;
+}
+
+function touchedName(t: LiveTool): string {
+  if (t.name === "Bash") {
+    const cmd = typeof t.input?.command === "string" ? t.input.command : "";
+    return cmd.split(/\s+/)[0] || "shell command";
+  }
+  const p = typeof t.input?.path === "string" ? t.input.path : "";
+  return p.split("/").pop() ?? "file";
+}
+
+function touchedFilesBody(touched: LiveTool[]): string {
+  const lines: string[] = [];
+  for (const t of touched) {
+    const name = touchedName(t);
+    lines.push(`- ${t.name}: ${name}`);
+  }
+  return lines.join("\n");
 }

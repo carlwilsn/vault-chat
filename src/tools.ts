@@ -3,6 +3,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { useStore, type TodoItem } from "./store";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -79,6 +80,16 @@ async function extractPdfText(path: string, pageSpec?: string): Promise<string> 
   } finally {
     doc.destroy();
   }
+}
+
+// Jupyter stores cell source as an array of lines with trailing newlines
+// (except the last one). Match that format so diffs stay minimal.
+function splitSource(text: string): string[] {
+  if (!text) return [];
+  const lines = text.split("\n");
+  return lines.map((line, i) =>
+    i === lines.length - 1 ? line : line + "\n",
+  );
 }
 
 function stripNotebook(raw: string): string {
@@ -227,6 +238,95 @@ export function buildTools(vault: string, tavilyKey?: string) {
       },
     }),
 
+    NotebookEdit: tool({
+      description:
+        "Cell-aware edit of a Jupyter notebook (.ipynb). Use `action` to replace/insert/delete a cell. Cells are 0-indexed in the notebook's top-to-bottom order. For `insert`, the new cell is placed at `cell_index` (pushing the existing cell down); use `cell_index: -1` to append at the end. For `replace`, `source` fully replaces the target cell's source; `cell_type` can switch the cell type too. Much safer than using Write/Edit on raw JSON.",
+      inputSchema: z.object({
+        path: z.string().describe("Absolute path to the .ipynb file."),
+        action: z.enum(["replace", "insert", "delete"]),
+        cell_index: z
+          .number()
+          .int()
+          .describe("0-based cell index. Use -1 with insert to append."),
+        source: z
+          .string()
+          .optional()
+          .describe("New cell source. Required for replace/insert."),
+        cell_type: z
+          .enum(["code", "markdown", "raw"])
+          .optional()
+          .describe("Cell type for insert/replace. Defaults to 'code' on insert; preserves existing type on replace when omitted."),
+      }),
+      execute: async ({ path, action, cell_index, source, cell_type }) => {
+        try {
+          const raw = await invoke<string>("read_text_file", { path });
+          const nb = JSON.parse(raw);
+          if (!nb || !Array.isArray(nb.cells)) {
+            return `not a notebook (missing cells array): ${path}`;
+          }
+          const cells = nb.cells as any[];
+
+          if (action === "delete") {
+            if (cell_index < 0 || cell_index >= cells.length) {
+              return `cell_index ${cell_index} out of range (0..${cells.length - 1})`;
+            }
+            cells.splice(cell_index, 1);
+          } else if (action === "replace") {
+            if (cell_index < 0 || cell_index >= cells.length) {
+              return `cell_index ${cell_index} out of range (0..${cells.length - 1})`;
+            }
+            if (source === undefined) {
+              return "replace requires `source`";
+            }
+            const target = cells[cell_index];
+            target.source = splitSource(source);
+            if (cell_type && target.cell_type !== cell_type) {
+              target.cell_type = cell_type;
+              if (cell_type === "code") {
+                target.outputs = [];
+                target.execution_count = null;
+                delete target.attachments;
+              } else {
+                delete target.outputs;
+                delete target.execution_count;
+              }
+            }
+            if (target.cell_type === "code") {
+              target.outputs = [];
+              target.execution_count = null;
+            }
+          } else if (action === "insert") {
+            if (source === undefined) {
+              return "insert requires `source`";
+            }
+            const type = cell_type ?? "code";
+            const newCell: any = {
+              cell_type: type,
+              metadata: {},
+              source: splitSource(source),
+            };
+            if (type === "code") {
+              newCell.outputs = [];
+              newCell.execution_count = null;
+            }
+            if (cell_index === -1 || cell_index >= cells.length) {
+              cells.push(newCell);
+            } else if (cell_index < 0) {
+              return `negative cell_index not allowed for insert (use -1 for append)`;
+            } else {
+              cells.splice(cell_index, 0, newCell);
+            }
+          }
+
+          const contents = JSON.stringify(nb, null, 1) + "\n";
+          await invoke("write_text_file", { path, contents });
+          return `${action} cell ${cell_index} in ${path} (now ${cells.length} cells)`;
+        } catch (e) {
+          return `NotebookEdit failed: ${(e as Error).message}`;
+        }
+      },
+    }),
+
     PdfExtract: tool({
       description:
         "Extract text from a PDF file. Returns plain text grouped by page. Use `pages` to limit (e.g., '1', '1-5', '1,3,7-9'); omit to extract all. Output is truncated at ~60k chars — prefer page ranges for long PDFs. Useful for reading lecture slides, papers, and other PDF content in the vault.",
@@ -244,6 +344,31 @@ export function buildTools(vault: string, tavilyKey?: string) {
         } catch (e) {
           return `PDF extraction failed: ${(e as Error).message}`;
         }
+      },
+    }),
+
+    TodoWrite: tool({
+      description:
+        "Maintain a live to-do list visible to the user while you work on a multi-step task. Call this at the start of a larger task to lay out the plan, then re-call after each meaningful step to update status (pending → in_progress → completed). The user sees the list update in real time. Use for tasks with 3+ steps or when the user asked for several things. Skip for trivial one-step requests. Each item: `content` (imperative: 'Read the file'), `status`, and optional `activeForm` (present continuous: 'Reading the file') shown while in_progress. Keep to at most one in_progress at a time.",
+      inputSchema: z.object({
+        todos: z.array(
+          z.object({
+            content: z.string(),
+            status: z.enum(["pending", "in_progress", "completed"]),
+            activeForm: z.string().optional(),
+          }),
+        ),
+      }),
+      execute: async ({ todos }) => {
+        useStore.getState().setAgentTodos(todos as TodoItem[]);
+        const counts = todos.reduce(
+          (acc, t) => {
+            acc[t.status] = (acc[t.status] ?? 0) + 1;
+            return acc;
+          },
+          {} as Record<string, number>,
+        );
+        return `updated: ${todos.length} items (${counts.completed ?? 0} done, ${counts.in_progress ?? 0} active, ${counts.pending ?? 0} pending)`;
       },
     }),
 

@@ -9,7 +9,7 @@ import "./monaco-setup";
 import App from "./App";
 import { ChatWindow } from "./ChatWindow";
 import { installMainSync, installPopoutSync } from "./sync";
-import { installSessionPersistence } from "./session";
+import { initMetaVault } from "./meta";
 
 const savedTheme = localStorage.getItem("vault_chat_theme");
 document.documentElement.dataset.theme = savedTheme === "light" ? "light" : "graphite";
@@ -21,7 +21,10 @@ if (isPopout) {
   installPopoutSync();
 } else {
   installMainSync();
-  installSessionPersistence();
+  // Seed the meta vault with bundled defaults on first launch, and
+  // surface its path for the settings UI + agent.ts. Silent no-op on
+  // subsequent launches.
+  initMetaVault().catch((e) => console.warn("[meta] init failed:", e));
 }
 
 const Root = isPopout ? ChatWindow : App;

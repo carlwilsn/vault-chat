@@ -3,6 +3,7 @@ import { buildModel, findModel, DEFAULT_MODEL_ID } from "./providers";
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
+import { loadMetaSystemPrompt, loadMetaTools } from "./meta";
 
 export type TokenUsage = {
   prompt: number;
@@ -20,16 +21,10 @@ export type StreamEvent =
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 
-const BASE_SYSTEM = `You are the runtime for a personal knowledge vault. The user interacts with you through a desktop app that shows a file tree, a markdown viewer, and this chat pane.
-
-You are working inside the user's vault. Your working directory is the vault root. When the user refers to files, they mean files in this vault. Start by understanding the vault's structure before making changes.
-
-Core behaviors:
-- When the vault defines rules (e.g. LEARNING_RULES.md), treat them as binding. They override generic defaults.
-- Render math using $$...$$ display style. Do not use inline $...$ in chat — it will not render.
-- All paths passed to tools must be absolute.
-- Tools available: Read, Write, Edit, Delete, Glob, Grep, Bash, ListDir, PdfExtract, WebFetch, and (if configured) WebSearch. Prefer Edit over Write for small changes. Prefer Grep+Glob over reading many files blindly. Use Delete only when the user has explicitly asked to remove a file — it is irreversible. Use PdfExtract to read PDF slide decks, papers, and lecture notes in the vault — pass a page range for long PDFs. Use WebFetch when you know the URL. Use WebSearch for current information or to find URLs when the user asks a general web question.
-- Bash runs in the vault root by default. Use it for git, pytest, scripts, and anything shell-native.`;
+// Fallback baseline — used only if the meta vault's system.md is
+// unreadable (missing or permission-denied). The real prompt lives in
+// %APPDATA%/com.vault-chat.app/meta/system.md and is user-editable.
+const FALLBACK_SYSTEM = `You are the runtime for a personal knowledge vault. Tools: Read, Write, Edit, Delete, Glob, Grep, Bash, ListDir, NotebookEdit, PdfExtract, TodoWrite, WebFetch, WebSearch. Use absolute paths. Render math with $$...$$.`;
 
 export async function runAgent(params: {
   modelId: string;
@@ -48,36 +43,87 @@ export async function runAgent(params: {
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey);
 
-    const [sessionContext, skills] = await Promise.all([
+    const [sessionContext, skills, metaSystem, metaTools] = await Promise.all([
       loadSessionContext(vault),
       loadSkills(vault),
+      loadMetaSystemPrompt(),
+      loadMetaTools(),
     ]);
 
     const { body: expandedMessage } = expandSkillInvocation(userMessage, skills);
 
+    const baseSystem = metaSystem.trim() || FALLBACK_SYSTEM;
+    const metaToolNames = Object.keys(metaTools);
+
     const system = [
-      BASE_SYSTEM,
+      baseSystem,
       `\nVault root: ${vault}`,
       sessionContext ? `\n${sessionContext}` : "",
       skills.length ? `\n${skillPromptIndex(skills)}` : "",
+      metaToolNames.length
+        ? `\n## Meta-vault tools\n\nThese tools were loaded from the meta vault and are available in addition to the built-in set:\n${metaToolNames.map((n) => `- ${n}`).join("\n")}`
+        : "",
     ]
       .filter(Boolean)
       .join("\n");
 
+    // Prompt caching (Anthropic): mark the system prompt and the prior
+    // conversation prefix as cacheable. The current user turn is never
+    // cached — it changes every call. On a 10-turn conversation this
+    // cuts input-token cost ~10x for cached reads ($0.30/M vs $3/M on
+    // Sonnet), 5-minute TTL while the session is active.
+    //
+    // Up to 4 breakpoints are allowed; we use 2: after the system, and
+    // on the last history message. Other providers (OpenAI, Google)
+    // silently ignore providerOptions.anthropic.
+    const cacheControl = {
+      anthropic: { cacheControl: { type: "ephemeral" as const } },
+    };
+
+    const historyMessages: ModelMessage[] = history.map<ModelMessage>((h, i) => {
+      const isLast = i === history.length - 1;
+      return {
+        role: h.role,
+        content: h.content,
+        ...(isLast ? { providerOptions: cacheControl } : {}),
+      };
+    });
+
+    const systemMessage: ModelMessage = {
+      role: "system",
+      content: system,
+      providerOptions: cacheControl,
+    };
+
     const messages: ModelMessage[] = [
-      ...history.map<ModelMessage>((h) => ({ role: h.role, content: h.content })),
+      systemMessage,
+      ...historyMessages,
       { role: "user", content: expandedMessage },
     ];
 
-    const tools = buildTools(vault, tavilyKey);
+    const builtinTools = buildTools(vault, tavilyKey);
+    const tools = { ...builtinTools, ...metaTools };
+
+    // Extended thinking for Anthropic: the model gets a dedicated token
+    // budget for internal reasoning before it starts generating the
+    // visible response. Cheap quality bump on Opus/Sonnet; silently
+    // ignored by OpenAI/Google adapters.
+    const providerOptions =
+      spec.provider === "anthropic"
+        ? {
+            anthropic: {
+              thinking: { type: "enabled" as const, budgetTokens: 3000 },
+            },
+          }
+        : undefined;
 
     const result = streamText({
       model,
-      system,
       messages,
       tools,
       stopWhen: stepCountIs(25),
       abortSignal,
+      ...(providerOptions ? { providerOptions } : {}),
     });
 
     for await (const part of result.fullStream) {

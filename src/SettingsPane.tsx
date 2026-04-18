@@ -1,8 +1,11 @@
 import { useState } from "react";
-import { ArrowLeft, Check, Key } from "lucide-react";
-import { useStore } from "./store";
+import { invoke } from "@tauri-apps/api/core";
+import { ArrowLeft, Check, Key, Cog, Code2 } from "lucide-react";
+import { useStore, type FileEntry } from "./store";
 import { MODELS, PROVIDER_LABEL, type ProviderId } from "./providers";
 import { Button, Input, Select } from "./ui";
+import { getMetaVaultPath } from "./meta";
+import { gitInitIfNeeded } from "./git";
 
 const PROVIDERS: ProviderId[] = ["anthropic", "openai", "google"];
 
@@ -14,6 +17,10 @@ const KEY_PLACEHOLDER: Record<ProviderId, string> = {
 
 export function SettingsPane() {
   const { apiKeys, serviceKeys, modelId, theme, setApiKey, setServiceKey, setModelId, setTheme, setShowSettings } = useStore();
+  const setVault = useStore((s) => s.setVault);
+  const setFiles = useStore((s) => s.setFiles);
+  const setCurrentFile = useStore((s) => s.setCurrentFile);
+  const vaultPath = useStore((s) => s.vaultPath);
   const [drafts, setDrafts] = useState<Record<ProviderId, string>>({
     anthropic: apiKeys.anthropic ?? "",
     openai: apiKeys.openai ?? "",
@@ -41,6 +48,42 @@ export function SettingsPane() {
   };
 
   const mask = (k?: string) => (k ? `${k.slice(0, 6)}…${k.slice(-4)}` : "not set");
+
+  const openMetaVault = async () => {
+    try {
+      const meta = await getMetaVaultPath();
+      if (meta === vaultPath) {
+        setShowSettings(false);
+        return;
+      }
+      setVault(meta);
+      setCurrentFile(null, "");
+      const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: meta });
+      setFiles(listed);
+      gitInitIfNeeded(meta).catch(() => {});
+      setShowSettings(false);
+    } catch (e) {
+      console.error("[meta] open failed:", e);
+    }
+  };
+
+  const openAppSource = async () => {
+    try {
+      const src = await invoke<string>("app_source_dir");
+      if (src === vaultPath) {
+        setShowSettings(false);
+        return;
+      }
+      setVault(src);
+      setCurrentFile(null, "");
+      const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: src });
+      setFiles(listed);
+      gitInitIfNeeded(src).catch(() => {});
+      setShowSettings(false);
+    } catch (e) {
+      console.error("[source] open failed:", e);
+    }
+  };
 
   return (
     <div className="h-full flex flex-col bg-card border-l border-border">
@@ -160,6 +203,46 @@ export function SettingsPane() {
           <p className="text-[11px] text-muted-foreground/80">
             Enables WebSearch. Get a free key at tavily.com.
           </p>
+        </section>
+
+        <div className="h-px bg-border" />
+
+        <section className="space-y-2">
+          <div>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <Cog className="h-3 w-3" />
+              Agent internals (meta vault)
+            </h3>
+            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5 leading-relaxed">
+              The agent's system prompt, skills, and custom tools live in a
+              folder you can open as a vault and edit. The agent can edit it
+              too. Every change is auto-committed to git so you can revert.
+            </p>
+          </div>
+          <Button size="sm" onClick={openMetaVault}>
+            Open meta vault
+          </Button>
+        </section>
+
+        <div className="h-px bg-border" />
+
+        <section className="space-y-2">
+          <div>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <Code2 className="h-3 w-3" />
+              App source
+            </h3>
+            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5 leading-relaxed">
+              Open the vault-chat source folder as a vault. In dev mode (the
+              standard way to run this app), changes hot-reload live —
+              including changes the agent makes. Git-backed, so mistakes
+              revert cleanly. For development use; not meaningful inside a
+              packaged binary.
+            </p>
+          </div>
+          <Button size="sm" onClick={openAppSource}>
+            Open app source
+          </Button>
         </section>
 
         <div className="h-px bg-border" />
