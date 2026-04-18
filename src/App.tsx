@@ -94,13 +94,13 @@ export default function App() {
       <Titlebar />
       <div className="flex-1 min-h-0">
         <Allotment key={layoutKey} proportionalLayout={false}>
-          <Allotment.Pane preferredSize={fitWidth} minSize={160} maxSize={leftMax} visible={!leftCollapsed}>
+          <Allotment.Pane preferredSize={fitWidth} minSize={160} maxSize={leftMax} visible={!leftCollapsed} snap>
             <FileTree />
           </Allotment.Pane>
           <Allotment.Pane minSize={340} priority={LayoutPriority.High}>
             {showSettings && chatHidden ? <SettingsPane /> : <MarkdownArea />}
           </Allotment.Pane>
-          <Allotment.Pane preferredSize={440} minSize={320} visible={!rightCollapsed && !popoutOpen}>
+          <Allotment.Pane preferredSize={440} minSize={320} visible={!rightCollapsed && !popoutOpen} snap>
             <ChatPane />
           </Allotment.Pane>
         </Allotment>
