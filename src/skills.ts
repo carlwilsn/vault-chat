@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import matter from "gray-matter";
+import { getMetaVaultPath } from "./meta";
 
 export type Skill = {
   name: string;
@@ -9,13 +10,27 @@ export type Skill = {
 };
 
 export async function loadSkills(vault: string): Promise<Skill[]> {
-  const skills: Skill[] = [];
-  const searchRoots = [
+  // Two scopes, in priority order:
+  //   1. The current vault's own .claude/skills (vault-specific)
+  //   2. The meta vault's skills (global — available in every vault)
+  // Earlier roots win on name conflict so a vault-specific skill can
+  // shadow a global one with the same name.
+  const roots: string[] = [
     `${vault}/.claude/skills`,
     `${vault}/learn/.claude/skills`,
   ];
+  try {
+    const meta = await getMetaVaultPath();
+    if (meta && meta !== vault) {
+      roots.push(`${meta}/skills`);
+    }
+  } catch {
+    // meta vault unavailable — fine, keep going with vault-only roots
+  }
 
-  for (const root of searchRoots) {
+  const byName = new Map<string, Skill>();
+
+  for (const root of roots) {
     let entries: { path: string; name: string; is_dir: boolean }[] = [];
     try {
       entries = await invoke("list_dir", { path: root });
@@ -31,7 +46,8 @@ export async function loadSkills(vault: string): Promise<Skill[]> {
         const parsed = matter(raw);
         const name = (parsed.data.name as string | undefined) ?? entry.name;
         const description = (parsed.data.description as string | undefined) ?? "";
-        skills.push({
+        if (byName.has(name)) continue; // earlier root already registered it
+        byName.set(name, {
           name,
           description,
           path: skillFile,
@@ -41,10 +57,9 @@ export async function loadSkills(vault: string): Promise<Skill[]> {
         continue;
       }
     }
-
-    if (skills.length) break;
   }
 
+  const skills = Array.from(byName.values());
   skills.sort((a, b) => a.name.localeCompare(b.name));
   return skills;
 }

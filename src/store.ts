@@ -182,10 +182,26 @@ export const useStore = create<State>((set) => ({
   liveTools: [],
   agentTodos: [],
 
-  setVault: (p) => {
-    localStorage.setItem(VAULT_STORAGE, p);
-    set({ vaultPath: p });
-  },
+  setVault: (p) =>
+    set((s) => {
+      localStorage.setItem(VAULT_STORAGE, p);
+      // Switching vaults drops the chat — the prior conversation's
+      // file context no longer applies. Staying on the same vault
+      // leaves the chat untouched.
+      if (s.vaultPath === p) {
+        return { vaultPath: p };
+      }
+      return {
+        vaultPath: p,
+        messages: [],
+        tokenUsage: { prompt: 0, completion: 0, total: 0 },
+        lastContext: 0,
+        compactionSummary: null,
+        streamingText: "",
+        liveTools: [],
+        agentTodos: [],
+      };
+    }),
   setFiles: (f) => set({ files: f }),
   setCurrentFile: (p, content) =>
     set((s) => {

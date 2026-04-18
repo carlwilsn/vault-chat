@@ -52,11 +52,62 @@ type FieldSpec = {
 type ToolSpec = {
   name: string;
   description: string;
-  input_schema?: Record<string, FieldSpec>;
+  input_schema?: unknown;
 };
 
-function zodFromSchema(schema: Record<string, FieldSpec> | undefined): z.ZodTypeAny {
-  if (!schema) return z.object({});
+// Accept either convention:
+//   1. Flat map: { field_name: { type, description, default, required } }
+//   2. JSON Schema: { type: "object", properties: { field_name: {...} }, required: [...] }
+// Claude models default to the JSON Schema form when asked to write a
+// TOOL.md, so we need to handle both.
+function zodFromSchema(schema: unknown): z.ZodTypeAny {
+  if (!schema || typeof schema !== "object") return z.object({});
+
+  const obj = schema as Record<string, unknown>;
+
+  // JSON Schema shape
+  if (obj.type === "object" && typeof obj.properties === "object" && obj.properties !== null) {
+    const required = new Set(
+      Array.isArray(obj.required) ? (obj.required as string[]) : [],
+    );
+    const flat: Record<string, FieldSpec> = {};
+    for (const [key, prop] of Object.entries(obj.properties as Record<string, unknown>)) {
+      if (!prop || typeof prop !== "object") continue;
+      const p = prop as Record<string, unknown>;
+      flat[key] = {
+        type: normalizeType(p.type),
+        description: typeof p.description === "string" ? p.description : undefined,
+        default: p.default,
+        required: required.has(key),
+      };
+    }
+    return buildZod(flat);
+  }
+
+  // Flat shape — if every value is itself an object that could be a FieldSpec
+  const flat: Record<string, FieldSpec> = {};
+  for (const [key, val] of Object.entries(obj)) {
+    if (val && typeof val === "object" && !Array.isArray(val)) {
+      const v = val as Record<string, unknown>;
+      flat[key] = {
+        type: normalizeType(v.type),
+        description: typeof v.description === "string" ? v.description : undefined,
+        default: v.default,
+        required: v.required === true,
+      };
+    }
+  }
+  return buildZod(flat);
+}
+
+function normalizeType(t: unknown): FieldSpec["type"] {
+  if (t === "integer" || t === "int") return "integer";
+  if (t === "number" || t === "float" || t === "double") return "number";
+  if (t === "boolean" || t === "bool") return "boolean";
+  return "string";
+}
+
+function buildZod(schema: Record<string, FieldSpec>): z.ZodTypeAny {
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const [key, spec] of Object.entries(schema)) {
     let field: z.ZodTypeAny;
@@ -101,22 +152,28 @@ async function findRunFile(toolDir: string): Promise<string | null> {
 // at runtime from TOOL.md, so we can't statically type them.
 export async function loadMetaTools(): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
+  const diag: string[] = [];
   let metaPath: string;
   try {
     metaPath = await getMetaVaultPath();
-  } catch {
+  } catch (e) {
+    console.warn("[meta-tools] no meta path:", e);
     return out;
   }
   const toolsRoot = `${metaPath}/tools`;
   let entries: { path: string; name: string; is_dir: boolean }[] = [];
   try {
     entries = await invoke("list_dir", { path: toolsRoot });
-  } catch {
+  } catch (e) {
+    console.warn("[meta-tools] list_dir failed:", toolsRoot, e);
     return out;
   }
 
   for (const entry of entries) {
-    if (!entry.is_dir) continue;
+    if (!entry.is_dir) {
+      diag.push(`skip ${entry.name}: not a dir`);
+      continue;
+    }
     const toolDir = entry.path;
     let spec: ToolSpec;
     try {
@@ -125,23 +182,31 @@ export async function loadMetaTools(): Promise<Record<string, unknown>> {
       });
       const parsed = matter(raw);
       const data = parsed.data as Partial<ToolSpec>;
-      if (!data.name || !data.description) continue;
+      if (!data.name || !data.description) {
+        diag.push(`skip ${entry.name}: missing name or description`);
+        continue;
+      }
       spec = {
         name: data.name,
         description: data.description,
         input_schema: data.input_schema,
       };
-    } catch {
+    } catch (e) {
+      diag.push(`skip ${entry.name}: ${(e as Error).message}`);
       continue;
     }
     const runPath = await findRunFile(toolDir);
-    if (!runPath) continue;
+    if (!runPath) {
+      diag.push(`skip ${entry.name}: no run.{py,js,mjs,ts,sh,bash}`);
+      continue;
+    }
 
-    const inputSchema = zodFromSchema(spec.input_schema);
-    out[spec.name] = tool({
-      description: spec.description,
-      inputSchema: inputSchema as any,
-      execute: async (args: unknown) => {
+    try {
+      const inputSchema = zodFromSchema(spec.input_schema);
+      out[spec.name] = tool({
+        description: spec.description,
+        inputSchema: inputSchema as any,
+        execute: async (args: unknown) => {
         try {
           const result = await invoke<{
             stdout: string;
@@ -163,8 +228,13 @@ export async function loadMetaTools(): Promise<Record<string, unknown>> {
           return `run_script failed: ${(e as Error).message}`;
         }
       },
-    });
+      });
+      diag.push(`loaded ${spec.name}`);
+    } catch (e) {
+      diag.push(`skip ${entry.name}: schema build failed: ${(e as Error).message}`);
+    }
   }
 
+  console.log("[meta-tools]", diag.join(" | "), "→ registered:", Object.keys(out));
   return out;
 }
