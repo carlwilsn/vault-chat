@@ -327,6 +327,7 @@ async fn read_text_file(path: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    git_guard(&path)?;
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(parent) = std::path::Path::new(&path).parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -339,6 +340,8 @@ async fn write_text_file(path: String, contents: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn rename_path(from: String, to: String) -> Result<(), String> {
+    git_guard(&from)?;
+    git_guard(&to)?;
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(parent) = std::path::Path::new(&to).parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -351,6 +354,7 @@ async fn rename_path(from: String, to: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn create_dir(path: String) -> Result<(), String> {
+    git_guard(&path)?;
     tauri::async_runtime::spawn_blocking(move || {
         std::fs::create_dir_all(&path).map_err(|e| e.to_string())
     })
@@ -360,6 +364,7 @@ async fn create_dir(path: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn delete_file(path: String) -> Result<(), String> {
+    git_guard(&path)?;
     tauri::async_runtime::spawn_blocking(move || {
         let p = std::path::Path::new(&path);
         if p.is_dir() {
@@ -379,6 +384,7 @@ fn edit_text_file(
     new_string: String,
     replace_all: Option<bool>,
 ) -> Result<String, String> {
+    git_guard(&path)?;
     let contents = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let all = replace_all.unwrap_or(false);
     if all {
@@ -1161,6 +1167,80 @@ async fn git_restore_to_commit(vault: String, hash: String) -> Result<String, St
     .map_err(|e| e.to_string())?
 }
 
+// ----- keychain (API key secure storage) -----
+//
+// API keys and service credentials live in the OS keychain instead of
+// localStorage. On Windows this hits Credential Manager, on Mac the
+// Keychain, on Linux libsecret (via dbus). The agent's file-op tools
+// can't reach these — they live outside any vault.
+
+const KEYCHAIN_SERVICE: &str = "com.vault-chat.app";
+
+#[tauri::command]
+async fn keychain_get(key: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
+            .map_err(|e| e.to_string())?;
+        match entry.get_password() {
+            Ok(p) => Ok(Some(p)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn keychain_set(key: String, value: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
+            .map_err(|e| e.to_string())?;
+        entry.set_password(&value).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn keychain_delete(key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
+            .map_err(|e| e.to_string())?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(()),
+            Err(keyring::Error::NoEntry) => Ok(()), // idempotent
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ----- .git/ guard -----
+//
+// The git auto-commit / history / restore system is our only undo
+// mechanism. If the agent deletes a repo's .git folder we're cooked.
+// Guard the file-op tools to refuse any path touching .git/.
+// Not guarding Bash — too fragile to regex, and Bash legitimately
+// runs `git` commands that poke at .git/ internally.
+
+fn path_touches_dot_git(path: &str) -> bool {
+    let p = path.replace('\\', "/");
+    p.contains("/.git/") || p.ends_with("/.git") || p == ".git"
+}
+
+fn git_guard(path: &str) -> Result<(), String> {
+    if path_touches_dot_git(path) {
+        Err(format!(
+            "refusing to touch {} — the .git folder is the undo system and must not be modified directly",
+            path
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 // ----- meta vault -----
 //
 // The meta vault is an app-level folder (OS app-data) that holds the
@@ -1458,7 +1538,10 @@ pub fn run() {
             meta_vault_init,
             meta_vault_path,
             app_source_dir,
-            run_script
+            run_script,
+            keychain_get,
+            keychain_set,
+            keychain_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

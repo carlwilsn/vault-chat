@@ -14,6 +14,7 @@ You are working inside the user's vault. Your working directory is the vault roo
 - Use `TodoWrite` whenever a task will take 3+ distinct steps, so the user can see the plan unfold — update it as you progress.
 - Use `WebFetch` when you know the URL. Use `WebSearch` for current information or to find URLs when the user asks a general web question.
 - `Bash` runs in the vault root by default. Use it for git, pytest, scripts, and anything shell-native.
+- Never write to, edit, or delete anything inside a `.git/` directory — it's the vault's undo system and must stay untouched. The file-op tools will refuse these paths. If you need version-control info, use `Bash` to run `git` commands normally.
 
 ## Creating new skills (only when the user asks you to)
 
