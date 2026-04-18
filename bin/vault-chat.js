@@ -3,14 +3,16 @@
 // npm via package.json's "bin" field so `npm link` exposes it on PATH
 // everywhere.
 //
-// First launch runs foreground so the user sees the ~10-15 min Rust
-// compile. Subsequent launches detach and return the terminal — logs
-// go to the app's config dir.
+// Every launch: spawn `tauri dev` detached with output redirected to
+// the app's dev.log, tail the log, and exit when cargo prints its
+// `Running \`target/…\`` line (the moment the app window boots). The
+// terminal returns, tauri keeps running. Pass --foreground to keep
+// everything inline instead.
 
 import { spawn, spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync, openSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,14 +53,7 @@ const appDataDir = isWindows
 mkdirSync(appDataDir, { recursive: true });
 const logPath = join(appDataDir, "dev.log");
 
-const firstLaunch = !existsSync(join(repo, "src-tauri", "target"));
-const foreground = firstLaunch || process.argv.includes("--foreground");
-
-if (foreground) {
-  if (firstLaunch) {
-    console.log("vault-chat: first launch — Rust will compile (~10-15 min). Running in foreground so you can see progress.");
-    console.log("vault-chat: next launch will detach and return your terminal.");
-  }
+if (process.argv.includes("--foreground")) {
   const child = spawn(npm, ["run", "tauri", "dev"], {
     cwd: repo,
     stdio: "inherit",
@@ -66,11 +61,12 @@ if (foreground) {
   });
   child.on("exit", (code) => process.exit(code ?? 0));
   child.on("error", (err) => {
-    console.error("vault-chat: failed to launch:", err.message);
+    console.error("vault-chat:", err.message);
     process.exit(1);
   });
 } else {
-  const logFd = openSync(logPath, "a");
+  // Truncate log so prior runs' ready-marker doesn't match this session.
+  const logFd = openSync(logPath, "w");
   const child = spawn(npm, ["run", "tauri", "dev"], {
     cwd: repo,
     detached: true,
@@ -79,5 +75,49 @@ if (foreground) {
     shell: isWindows,
   });
   child.unref();
-  console.log(`vault-chat: launching in background. Logs: ${logPath}`);
+
+  console.log(`vault-chat: starting — logs ${logPath}`);
+
+  const start = Date.now();
+  const timeoutMs = 30 * 60 * 1000;
+  const readyMarker = /Running `target[\/\\]/;
+  const spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  let tick = 0;
+  let lastLineLen = 0;
+
+  const iv = setInterval(() => {
+    let log = "";
+    try { log = readFileSync(logPath, "utf8"); } catch {}
+
+    if (readyMarker.test(log)) {
+      clearInterval(iv);
+      process.stdout.write("\r" + " ".repeat(lastLineLen) + "\r");
+      console.log("vault-chat: app launching. Terminal is yours.");
+      process.exit(0);
+    }
+
+    if (Date.now() - start > timeoutMs) {
+      clearInterval(iv);
+      process.stdout.write("\r" + " ".repeat(lastLineLen) + "\r");
+      console.log(`vault-chat: taking >30min, detaching. Check ${logPath}`);
+      process.exit(0);
+    }
+
+    // Most recent informative line drives the status text.
+    const lines = log.split(/\r?\n/);
+    let status = "starting";
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const l = lines[i].trim();
+      const m = l.match(/^Compiling\s+(\S+)/);
+      if (m) { status = `compiling ${m[1]}`; break; }
+      if (l.startsWith("Finished")) { status = "build finished, booting app"; break; }
+      if (l.includes("VITE v")) { status = "vite ready"; break; }
+    }
+
+    const s = Math.floor((Date.now() - start) / 1000);
+    const clock = `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
+    const line = `${spinner[tick++ % spinner.length]} vault-chat: ${status} (${clock})`;
+    process.stdout.write("\r" + line.padEnd(lastLineLen, " "));
+    lastLineLen = line.length;
+  }, 500);
 }

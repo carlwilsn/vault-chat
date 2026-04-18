@@ -90,7 +90,7 @@ npm link
 
 That's it. Type `vault-chat` from any terminal on any OS to launch the app. (`npm link` uses npm's global bin folder, which is already on `PATH` because you installed Node.)
 
-The launcher detaches after a successful first compile — your terminal returns immediately, closing it doesn't kill the app, and dev-server logs tail to `%APPDATA%\com.vault-chat.app\dev.log` (same pattern on Mac/Linux). Pass `--foreground` if you want the output inline.
+The launcher tails `tauri dev` in the background and exits as soon as the app window boots — your terminal returns, closing it doesn't kill the app, and full output goes to `%APPDATA%\com.vault-chat.app\dev.log` (same pattern on Mac/Linux). First launch just takes longer because Rust has to compile (~10-15 min); you'll see a live status line while it works. Pass `--foreground` to keep output inline instead.
 
 Unlink later with `npm unlink -g vault-chat`.
 
