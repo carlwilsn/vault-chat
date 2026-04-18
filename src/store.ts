@@ -3,6 +3,7 @@ import { emit } from "@tauri-apps/api/event";
 import type { ProviderId } from "./providers";
 import { DEFAULT_MODEL_ID } from "./providers";
 import type { Skill } from "./skills";
+import { keychainGet, keychainSet, keychainDelete, KEY } from "./keychain";
 
 export type FileEntry = {
   path: string;
@@ -42,8 +43,6 @@ const newPaneId = () =>
 type ApiKeys = Partial<Record<ProviderId, string>>;
 export type ServiceKeys = { tavily?: string };
 
-const KEYS_STORAGE = "vault_chat_api_keys";
-const SERVICE_KEYS_STORAGE = "vault_chat_service_keys";
 const MODEL_STORAGE = "vault_chat_model";
 const THEME_STORAGE = "vault_chat_theme";
 const VAULT_STORAGE = "vault_chat_last_vault";
@@ -55,22 +54,64 @@ function loadTheme(): Theme {
   return raw === "light" ? "light" : "graphite";
 }
 
-function loadKeys(): ApiKeys {
-  try {
-    const raw = localStorage.getItem(KEYS_STORAGE);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  const legacy = localStorage.getItem("anthropic_api_key");
-  if (legacy) return { anthropic: legacy };
-  return {};
+/** Fetch every known credential from the OS keychain into memory.
+ *  Called once on app boot (see `hydrateKeychain` below). */
+async function fetchAllFromKeychain(): Promise<{
+  apiKeys: ApiKeys;
+  serviceKeys: ServiceKeys;
+}> {
+  const [anthropic, openai, google, tavily] = await Promise.all([
+    keychainGet(KEY.anthropic),
+    keychainGet(KEY.openai),
+    keychainGet(KEY.google),
+    keychainGet(KEY.tavily),
+  ]);
+  const apiKeys: ApiKeys = {};
+  if (anthropic) apiKeys.anthropic = anthropic;
+  if (openai) apiKeys.openai = openai;
+  if (google) apiKeys.google = google;
+  const serviceKeys: ServiceKeys = {};
+  if (tavily) serviceKeys.tavily = tavily;
+  return { apiKeys, serviceKeys };
 }
 
-function loadServiceKeys(): ServiceKeys {
+/** One-time migration: if the previous version stored keys in
+ *  localStorage, copy them to the keychain and clear the localStorage
+ *  entries. Silent — users don't re-enter anything. */
+async function migrateLocalStorageKeys(): Promise<void> {
+  const OLD_API = "vault_chat_api_keys";
+  const OLD_SERVICE = "vault_chat_service_keys";
   try {
-    const raw = localStorage.getItem(SERVICE_KEYS_STORAGE);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return {};
+    const rawApi = localStorage.getItem(OLD_API);
+    if (rawApi) {
+      const parsed = JSON.parse(rawApi) as ApiKeys;
+      if (parsed.anthropic) await keychainSet(KEY.anthropic, parsed.anthropic);
+      if (parsed.openai) await keychainSet(KEY.openai, parsed.openai);
+      if (parsed.google) await keychainSet(KEY.google, parsed.google);
+      localStorage.removeItem(OLD_API);
+    }
+  } catch (e) {
+    console.warn("[keys] api migration failed:", e);
+  }
+  try {
+    const rawService = localStorage.getItem(OLD_SERVICE);
+    if (rawService) {
+      const parsed = JSON.parse(rawService) as ServiceKeys;
+      if (parsed.tavily) await keychainSet(KEY.tavily, parsed.tavily);
+      localStorage.removeItem(OLD_SERVICE);
+    }
+  } catch (e) {
+    console.warn("[keys] service migration failed:", e);
+  }
+}
+
+/** Migrate legacy localStorage state into the keychain (once), then
+ *  load every credential into the store. Call from main.tsx after
+ *  createRoot but before the first user turn. */
+export async function hydrateKeychain(): Promise<void> {
+  await migrateLocalStorageKeys();
+  const { apiKeys, serviceKeys } = await fetchAllFromKeychain();
+  useStore.setState({ apiKeys, serviceKeys });
 }
 
 type State = {
@@ -114,7 +155,9 @@ type State = {
   placeFileAtEdge: (path: string, content: string, side: DropSide) => void;
   appendMessage: (m: ChatMessage) => void;
   setApiKey: (p: ProviderId, k: string) => void;
+  clearApiKey: (p: ProviderId) => void;
   setServiceKey: (name: keyof ServiceKeys, k: string) => void;
+  clearServiceKey: (name: keyof ServiceKeys) => void;
   setModelId: (id: string) => void;
   setTheme: (t: Theme) => void;
   applyThemeFromEvent: (t: Theme) => void;
@@ -163,8 +206,8 @@ export const useStore = create<State>((set) => ({
   splitDirection: null,
   activePaneId: null,
   messages: [],
-  apiKeys: loadKeys(),
-  serviceKeys: loadServiceKeys(),
+  apiKeys: {}, // populated async via hydrateKeychain
+  serviceKeys: {}, // populated async via hydrateKeychain
   modelId: localStorage.getItem(MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
   theme: loadTheme(),
   skills: [],
@@ -358,18 +401,44 @@ export const useStore = create<State>((set) => ({
       };
     }),
   appendMessage: (m) => set((s) => ({ messages: [...s.messages, m] })),
-  setApiKey: (p, k) =>
+  setApiKey: (p, k) => {
+    set((s) => ({ apiKeys: { ...s.apiKeys, [p]: k } }));
+    keychainSet(KEY[p], k).catch((e) =>
+      console.error(`[keys] keychain set ${p} failed:`, e),
+    );
+  },
+  clearApiKey: (p) => {
     set((s) => {
-      const next = { ...s.apiKeys, [p]: k };
-      localStorage.setItem(KEYS_STORAGE, JSON.stringify(next));
+      const next = { ...s.apiKeys };
+      delete next[p];
       return { apiKeys: next };
-    }),
-  setServiceKey: (name, k) =>
+    });
+    keychainDelete(KEY[p]).catch((e) =>
+      console.error(`[keys] keychain delete ${p} failed:`, e),
+    );
+  },
+  setServiceKey: (name, k) => {
+    set((s) => ({ serviceKeys: { ...s.serviceKeys, [name]: k } }));
+    const keyName = name === "tavily" ? KEY.tavily : null;
+    if (keyName) {
+      keychainSet(keyName, k).catch((e) =>
+        console.error(`[keys] keychain set ${name} failed:`, e),
+      );
+    }
+  },
+  clearServiceKey: (name) => {
     set((s) => {
-      const next = { ...s.serviceKeys, [name]: k };
-      localStorage.setItem(SERVICE_KEYS_STORAGE, JSON.stringify(next));
+      const next = { ...s.serviceKeys };
+      delete next[name];
       return { serviceKeys: next };
-    }),
+    });
+    const keyName = name === "tavily" ? KEY.tavily : null;
+    if (keyName) {
+      keychainDelete(keyName).catch((e) =>
+        console.error(`[keys] keychain delete ${name} failed:`, e),
+      );
+    }
+  },
   setModelId: (id) => {
     localStorage.setItem(MODEL_STORAGE, id);
     set({ modelId: id });

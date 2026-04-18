@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, Check, Key, Cog, Code2 } from "lucide-react";
+import { ArrowLeft, Check, Key, Cog, Code2, X } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { MODELS, PROVIDER_LABEL, type ProviderId } from "./providers";
 import { Button, Input, Select } from "./ui";
@@ -16,7 +16,19 @@ const KEY_PLACEHOLDER: Record<ProviderId, string> = {
 };
 
 export function SettingsPane() {
-  const { apiKeys, serviceKeys, modelId, theme, setApiKey, setServiceKey, setModelId, setTheme, setShowSettings } = useStore();
+  const {
+    apiKeys,
+    serviceKeys,
+    modelId,
+    theme,
+    setApiKey,
+    clearApiKey,
+    setServiceKey,
+    clearServiceKey,
+    setModelId,
+    setTheme,
+    setShowSettings,
+  } = useStore();
   const setVault = useStore((s) => s.setVault);
   const setFiles = useStore((s) => s.setFiles);
   const setCurrentFile = useStore((s) => s.setCurrentFile);
@@ -33,18 +45,30 @@ export function SettingsPane() {
     const v = drafts[p].trim();
     if (v) {
       setApiKey(p, v);
+      setDrafts((d) => ({ ...d, [p]: "" }));
       setSavedFlash(p);
       setTimeout(() => setSavedFlash((x) => (x === p ? null : x)), 1500);
     }
+  };
+
+  const remove = (p: ProviderId) => {
+    clearApiKey(p);
+    setDrafts((d) => ({ ...d, [p]: "" }));
   };
 
   const saveTavily = () => {
     const v = tavilyDraft.trim();
     if (v) {
       setServiceKey("tavily", v);
+      setTavilyDraft("");
       setSavedFlash("tavily");
       setTimeout(() => setSavedFlash((x) => (x === "tavily" ? null : x)), 1500);
     }
+  };
+
+  const removeTavily = () => {
+    clearServiceKey("tavily");
+    setTavilyDraft("");
   };
 
   const mask = (k?: string) => (k ? `${k.slice(0, 6)}…${k.slice(-4)}` : "not set");
@@ -163,6 +187,16 @@ export function SettingsPane() {
               <Button size="sm" onClick={() => save(p)} disabled={!drafts[p].trim()}>
                 Save
               </Button>
+              {apiKeys[p] && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => remove(p)}
+                  title="Remove this key from the OS keychain"
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              )}
             </div>
           </section>
         ))}
@@ -199,6 +233,16 @@ export function SettingsPane() {
             <Button size="sm" onClick={saveTavily} disabled={!tavilyDraft.trim()}>
               Save
             </Button>
+            {serviceKeys.tavily && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={removeTavily}
+                title="Remove this key from the OS keychain"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            )}
           </div>
           <p className="text-[11px] text-muted-foreground/80">
             Enables WebSearch. Get a free key at tavily.com.
@@ -252,8 +296,13 @@ export function SettingsPane() {
             Storage
           </h3>
           <p className="text-[11.5px] text-muted-foreground leading-relaxed">
-            Keys and model preference are stored in <code className="font-mono bg-muted px-1 rounded text-[10.5px]">localStorage</code> on this machine.
-            Clear browser storage to remove them. Keychain support is planned.
+            API keys are stored in the OS keychain (Windows Credential Manager
+            / Mac Keychain / Linux libsecret) under the service name{" "}
+            <code className="font-mono bg-muted px-1 rounded text-[10.5px]">
+              com.vault-chat.app
+            </code>
+            . The agent's file-op tools cannot reach them. Model preference and
+            theme live in <code className="font-mono bg-muted px-1 rounded text-[10.5px]">localStorage</code>.
           </p>
         </section>
       </div>
