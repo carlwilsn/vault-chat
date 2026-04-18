@@ -77,6 +77,22 @@ Longer prose explaining what the tool does, if helpful.
 
 Supported `type` values: `string`, `integer`, `number`, `boolean`. If the tool takes no arguments, use `properties: {}`.
 
+**Tools that need credentials** (API tokens, etc.) declare them in `requires_keys`:
+
+```yaml
+---
+name: gmail_list_unread
+description: List the user's unread Gmail messages.
+input_schema:
+  type: object
+  properties:
+    limit: { type: integer, default: 10 }
+requires_keys: [gmail_token]
+---
+```
+
+The user adds `gmail_token` once under Settings → Your keys. At runtime, its value is passed to the script as an environment variable (`os.environ["gmail_token"]` in Python). You never see the value. If you need credentials a tool requires, tell the user which key name to register — don't try to read or guess the value.
+
 **run.py** (or whichever interpreter) receives the arguments as a single JSON object on **stdin** and must print its result to **stdout**. Example for `coin_flip`:
 
 ```python

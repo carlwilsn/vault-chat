@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import matter from "gray-matter";
 import { tool } from "ai";
 import { z } from "zod";
+import { getUserKeysAsEnv } from "./keychain";
 
 export type MetaInit = { path: string; fresh: boolean };
 
@@ -53,6 +54,7 @@ type ToolSpec = {
   name: string;
   description: string;
   input_schema?: unknown;
+  requires_keys?: string[];
 };
 
 // Accept either convention:
@@ -190,6 +192,9 @@ export async function loadMetaTools(): Promise<Record<string, unknown>> {
         name: data.name,
         description: data.description,
         input_schema: data.input_schema,
+        requires_keys: Array.isArray(data.requires_keys)
+          ? (data.requires_keys as string[])
+          : [],
       };
     } catch (e) {
       diag.push(`skip ${entry.name}: ${(e as Error).message}`);
@@ -208,6 +213,15 @@ export async function loadMetaTools(): Promise<Record<string, unknown>> {
         inputSchema: inputSchema as any,
         execute: async (args: unknown) => {
         try {
+          // Pull any user-key values the tool declared it needs and
+          // pass them as environment variables. The values don't flow
+          // through the agent's context — script reads them via
+          // os.environ (or equivalent).
+          const requiredKeys = spec.requires_keys ?? [];
+          const env =
+            requiredKeys.length > 0
+              ? await getUserKeysAsEnv(requiredKeys)
+              : undefined;
           const result = await invoke<{
             stdout: string;
             stderr: string;
@@ -218,6 +232,7 @@ export async function loadMetaTools(): Promise<Record<string, unknown>> {
             stdinJson: JSON.stringify(args),
             cwd: toolDir,
             timeoutMs: 60_000,
+            env,
           });
           if (result.timed_out) return `(timed out)\n${result.stderr}`;
           if (result.code !== 0) {

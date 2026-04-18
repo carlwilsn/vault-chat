@@ -19,9 +19,17 @@ async function tryGlob(pattern: string, cwd: string): Promise<string[]> {
 export async function loadSessionContext(vault: string): Promise<string> {
   const pieces: string[] = [];
 
+  // Load binding-rules files in priority order. First four are neutral /
+  // industry conventions (AGENTS.md is the emerging cross-tool standard
+  // used by Codex CLI, cline, etc.). CLAUDE.md kept for Claude Code
+  // interop. LEARNING_RULES.md is the user-specific convention.
   const rulesPaths = [
     `${vault}/LEARNING_RULES.md`,
     `${vault}/learn/LEARNING_RULES.md`,
+    `${vault}/AGENTS.md`,
+    `${vault}/learn/AGENTS.md`,
+    `${vault}/AGENT.md`,
+    `${vault}/learn/AGENT.md`,
     `${vault}/CLAUDE.md`,
     `${vault}/learn/CLAUDE.md`,
   ];

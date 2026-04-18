@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, Check, Key, Cog, Code2, X } from "lucide-react";
+import { ArrowLeft, Check, Key, Cog, Code2, X, Plus, Lock } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { MODELS, PROVIDER_LABEL, type ProviderId } from "./providers";
 import { Button, Input, Select } from "./ui";
 import { getMetaVaultPath } from "./meta";
 import { gitInitIfNeeded } from "./git";
+import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
 
 const PROVIDERS: ProviderId[] = ["anthropic", "openai", "google"];
 
@@ -69,6 +70,30 @@ export function SettingsPane() {
   const removeTavily = () => {
     clearServiceKey("tavily");
     setTavilyDraft("");
+  };
+
+  // --- your keys (custom user-managed credentials) ---
+  const [userKeyNames, setUserKeyNames] = useState<string[]>(() => listUserKeys());
+  const [userKeyAdd, setUserKeyAdd] = useState<{ name: string; value: string }>({
+    name: "",
+    value: "",
+  });
+  const [adding, setAdding] = useState(false);
+  useEffect(() => {
+    setUserKeyNames(listUserKeys());
+  }, []);
+  const saveUserKey = async () => {
+    const n = userKeyAdd.name.trim().replace(/[^\w-]/g, "_");
+    const v = userKeyAdd.value.trim();
+    if (!n || !v) return;
+    await setUserKey(n, v);
+    setUserKeyNames(listUserKeys());
+    setUserKeyAdd({ name: "", value: "" });
+    setAdding(false);
+  };
+  const removeUserKey = async (n: string) => {
+    await deleteUserKey(n);
+    setUserKeyNames(listUserKeys());
   };
 
   const mask = (k?: string) => (k ? `${k.slice(0, 6)}…${k.slice(-4)}` : "not set");
@@ -247,6 +272,105 @@ export function SettingsPane() {
           <p className="text-[11px] text-muted-foreground/80">
             Enables WebSearch. Get a free key at tavily.com.
           </p>
+        </section>
+
+        <div className="h-px bg-border" />
+
+        <section className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <Lock className="h-3 w-3" />
+                Your keys
+              </h3>
+              <p className="text-[11.5px] text-muted-foreground/80 mt-0.5 leading-relaxed">
+                Custom credentials your vault-tools can request via{" "}
+                <code className="font-mono bg-muted px-1 rounded text-[10.5px]">
+                  requires_keys
+                </code>{" "}
+                in TOOL.md. Stored in the OS keychain, passed to scripts as
+                environment variables at run-time. The agent never sees the
+                values.
+              </p>
+            </div>
+            {!adding && (
+              <Button size="sm" variant="ghost" onClick={() => setAdding(true)}>
+                <Plus className="h-3 w-3" />
+              </Button>
+            )}
+          </div>
+          {adding && (
+            <div className="flex flex-col gap-2 rounded-md border border-border/60 bg-muted/30 p-2">
+              <Input
+                placeholder="name (e.g. gmail_token)"
+                value={userKeyAdd.name}
+                onChange={(e) =>
+                  setUserKeyAdd((s) => ({ ...s, name: e.target.value }))
+                }
+                autoFocus
+              />
+              <Input
+                type="password"
+                placeholder="value"
+                value={userKeyAdd.value}
+                onChange={(e) =>
+                  setUserKeyAdd((s) => ({ ...s, value: e.target.value }))
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveUserKey();
+                }}
+              />
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  onClick={saveUserKey}
+                  disabled={!userKeyAdd.name.trim() || !userKeyAdd.value.trim()}
+                >
+                  Save
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setAdding(false);
+                    setUserKeyAdd({ name: "", value: "" });
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+          {userKeyNames.length > 0 && (
+            <ul className="divide-y divide-border/40 rounded-md border border-border/60">
+              {userKeyNames.map((n) => (
+                <li
+                  key={n}
+                  className="flex items-center justify-between px-3 py-1.5 text-[12.5px]"
+                >
+                  <div className="flex flex-col">
+                    <span className="font-mono text-foreground/90">{n}</span>
+                    <span className="text-[10.5px] text-muted-foreground">
+                      ••••••••
+                    </span>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => removeUserKey(n)}
+                    title="Remove"
+                  >
+                    <X className="h-3 w-3" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {userKeyNames.length === 0 && !adding && (
+            <p className="text-[11px] text-muted-foreground/60 italic">
+              No custom keys yet.
+            </p>
+          )}
         </section>
 
         <div className="h-px bg-border" />
