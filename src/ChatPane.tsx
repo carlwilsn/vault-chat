@@ -131,9 +131,15 @@ export function ChatPane() {
   const onSelectModel = (id: string) => dispatchChatAction({ kind: "setModel", id });
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !showSkillMenu) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       send();
+      return;
+    }
+    if (e.key === "Tab" && showSkillMenu && filteredSkills.length > 0) {
+      e.preventDefault();
+      pickSkill(filteredSkills[0].name);
+      return;
     }
     if (e.key === "Escape") setShowSkillMenu(false);
   };
@@ -549,10 +555,9 @@ function ThinkingIndicator({ activeTool }: { activeTool?: string }) {
     const id = setInterval(() => setPhase((p) => (p + 1) % 3), 400);
     return () => clearInterval(id);
   }, []);
-  const label = activeTool ? `Running ${activeTool}` : "Thinking";
   return (
     <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
-      <span>{label}</span>
+      {activeTool && <span>Running {activeTool}</span>}
       <span className="inline-flex gap-0.5">
         {[0, 1, 2].map((i) => (
           <span

@@ -1,3 +1,9 @@
+import { Buffer } from "buffer";
+// gray-matter (used by skills/tools loaders) expects Node's Buffer global.
+// Polyfill it for the renderer before any module that imports gray-matter
+// runs.
+(globalThis as any).Buffer ??= Buffer;
+
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "@fontsource/inter/400.css";
