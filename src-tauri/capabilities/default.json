@@ -14,8 +14,6 @@
     "core:window:allow-is-maximized",
     "core:window:allow-set-focus",
     "core:webview:allow-create-webview-window",
-    "opener:default",
-    "dialog:allow-open",
-    "fs:default"
+    "dialog:allow-open"
   ]
 }
