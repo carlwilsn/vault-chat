@@ -116,6 +116,11 @@ export default function App() {
               // Allotment's echo in that case.
               if (chatHidden) return;
               if (visible === middleCollapsed) useStore.setState({ middleCollapsed: !visible });
+            } else if (index === 2) {
+              // Chat is force-hidden while popped out — don't let the
+              // popout state flip rightCollapsed.
+              if (popoutOpen) return;
+              if (visible === rightCollapsed) useStore.setState({ rightCollapsed: !visible });
             }
           }}
         >
