@@ -1360,6 +1360,7 @@ fn run_script(
     stdin_json: Option<String>,
     cwd: Option<String>,
     timeout_ms: Option<u64>,
+    env: Option<std::collections::HashMap<String, String>>,
 ) -> Result<ScriptResult, String> {
     use std::io::{Read, Write};
     use std::time::{Duration, Instant};
@@ -1388,6 +1389,11 @@ fn run_script(
     if let Some(d) = &cwd {
         if PathBuf::from(d).is_dir() {
             cmd.current_dir(d);
+        }
+    }
+    if let Some(vars) = env {
+        for (k, v) in vars {
+            cmd.env(k, v);
         }
     }
     cmd.stdin(std::process::Stdio::piped());

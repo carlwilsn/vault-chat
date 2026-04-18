@@ -13,32 +13,53 @@ This is a source-first project. You clone the repo, install the prereqs once, an
 #### macOS
 
 ```sh
-xcode-select --install            # git + cc (if you don't have them)
+# Homebrew (skip if you already have it)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+xcode-select --install            # git + cc (skip if already installed)
 brew install node rustup-init
 rustup-init -y
 ```
 
-~5 min total.
+~5 min total. npm ships with Node — no separate install.
 
 #### Linux (Debian / Ubuntu)
 
 ```sh
+# Build tools + Tauri deps
 sudo apt update
 sudo apt install -y build-essential curl git libssl-dev libgtk-3-dev \
   libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev
+
+# Node 20 via NodeSource
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-# Install Node 20+ via nvm, fnm, or your distro.
 ```
 
-~5 min total.
+~5 min total. npm ships with Node — no separate install.
 
 #### Windows
 
-1. Install [Node 20+](https://nodejs.org/).
-2. Install [Rust via rustup](https://rustup.rs/). Accept the default — it installs MSVC build tools (~1.5 GB, ~15 min).
-3. WebView2 ships with Windows 10/11 — nothing to install.
+**Terminal path** (Windows 11 or any recent Win 10 with winget):
 
-~20 min total, mostly the MSVC download.
+```powershell
+winget install OpenJS.NodeJS.LTS
+winget install Rustlang.Rustup
+# Then run rustup from a fresh shell and accept defaults (installs MSVC build tools, ~1.5 GB)
+rustup-init
+```
+
+**GUI path** (older Windows without winget):
+
+1. Install [Node 20+](https://nodejs.org/).
+2. Install [Rust via rustup](https://rustup.rs/). Accept defaults — installs MSVC build tools.
+
+WebView2 ships with Windows 10/11 — nothing to install either way.
+
+~20 min total, mostly the MSVC download. npm ships with Node — no separate install.
 
 ### 2. Clone + install
 
