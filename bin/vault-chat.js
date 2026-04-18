@@ -95,6 +95,15 @@ if (process.argv.includes("--foreground")) {
 
   console.log(`vault-chat: starting — logs ${logPath}`);
 
+  const statsPath = join(appDataDir, "launch-stats.json");
+  let priorDurationSec = null;
+  try {
+    const stats = JSON.parse(readFileSync(statsPath, "utf8"));
+    if (typeof stats.lastDurationSec === "number" && stats.lastDurationSec > 0) {
+      priorDurationSec = stats.lastDurationSec;
+    }
+  } catch {}
+
   const start = Date.now();
   const timeoutMs = 30 * 60 * 1000;
   const readyMarker = /Running `target[\/\\]/;
@@ -102,14 +111,27 @@ if (process.argv.includes("--foreground")) {
   let tick = 0;
   let lastLineLen = 0;
 
+  const fmtTime = (sec) => {
+    sec = Math.max(0, Math.round(sec));
+    return `${Math.floor(sec / 60)}:${(sec % 60).toString().padStart(2, "0")}`;
+  };
+  const makeBar = (pct, width = 20) => {
+    const filled = Math.round((pct / 100) * width);
+    return "█".repeat(filled) + "░".repeat(width - filled);
+  };
+
   const iv = setInterval(() => {
     let log = "";
     try { log = readFileSync(logPath, "utf8"); } catch {}
 
     if (readyMarker.test(log)) {
       clearInterval(iv);
+      const durationSec = Math.floor((Date.now() - start) / 1000);
+      try {
+        writeFileSync(statsPath, JSON.stringify({ lastDurationSec: durationSec }));
+      } catch {}
       process.stdout.write("\r" + " ".repeat(lastLineLen) + "\r");
-      console.log("vault-chat: app launching. Terminal is yours.");
+      console.log(`vault-chat: app launching (${fmtTime(durationSec)}). Terminal is yours.`);
       process.exit(0);
     }
 
@@ -123,17 +145,30 @@ if (process.argv.includes("--foreground")) {
     // Most recent informative line drives the status text.
     const lines = log.split(/\r?\n/);
     let status = "starting";
+    let finishedBuild = false;
     for (let i = lines.length - 1; i >= 0; i--) {
       const l = lines[i].trim();
       const m = l.match(/^Compiling\s+(\S+)/);
       if (m) { status = `compiling ${m[1]}`; break; }
-      if (l.startsWith("Finished")) { status = "build finished, booting app"; break; }
+      if (l.startsWith("Finished")) { status = "build finished, booting app"; finishedBuild = true; break; }
       if (l.includes("VITE v")) { status = "vite ready"; break; }
     }
 
-    const s = Math.floor((Date.now() - start) / 1000);
-    const clock = `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
-    const line = `${spinner[tick++ % spinner.length]} vault-chat: ${status} (${clock})`;
+    const elapsedSec = (Date.now() - start) / 1000;
+    let pct, etaText;
+    if (priorDurationSec) {
+      pct = Math.min(99, Math.floor((elapsedSec / priorDurationSec) * 100));
+      if (finishedBuild) pct = Math.max(pct, 95);
+      etaText = `${fmtTime(elapsedSec)} / ~${fmtTime(priorDurationSec)}`;
+    } else {
+      // First run — estimate via compiled-crate count against a typical ~150 total.
+      const compileCount = (log.match(/^\s*Compiling\s/gm) ?? []).length;
+      pct = Math.min(finishedBuild ? 95 : 90, Math.floor((compileCount / 150) * 100));
+      etaText = `${fmtTime(elapsedSec)} / ~10-15m (first run)`;
+    }
+
+    const bar = makeBar(pct);
+    const line = `${spinner[tick++ % spinner.length]} ${status}  [${bar}] ${pct.toString().padStart(2)}%  ${etaText}`;
     process.stdout.write("\r" + line.padEnd(lastLineLen, " "));
     lastLineLen = line.length;
   }, 500);
