@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ComponentPropsWithoutRef, MouseEvent as ReactMouseEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -30,6 +31,53 @@ function fileKind(path: string): { kind: FileKind; ext: string } {
   if (ext === "pdf") return { kind: "pdf", ext };
   if (ext === "html" || ext === "htm") return { kind: "html", ext };
   return { kind: "code", ext };
+}
+
+function resolveRelative(baseFile: string, rel: string): string {
+  const sep = baseFile.includes("\\") ? "\\" : "/";
+  const baseParts = baseFile.slice(0, baseFile.lastIndexOf(sep)).split(sep);
+  const relParts = rel.replace(/^\.\/+/, "").split(/[\/\\]/);
+  for (const p of relParts) {
+    if (p === "..") baseParts.pop();
+    else if (p && p !== ".") baseParts.push(p);
+  }
+  return baseParts.join(sep);
+}
+
+function VaultLink({ href, children, ...rest }: ComponentPropsWithoutRef<"a">) {
+  const currentFile = useStore((s) => s.currentFile);
+  const setCurrentFile = useStore((s) => s.setCurrentFile);
+
+  const onClick = async (e: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (!href) return;
+    if (href.startsWith("#")) return; // in-page anchor — let browser scroll
+    if (/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.toLowerCase().startsWith("file:")) {
+      // External scheme (http/https/mailto/…). Prevent webview hijack;
+      // opening in system browser is a follow-up.
+      e.preventDefault();
+      return;
+    }
+    e.preventDefault();
+    if (!currentFile) return;
+    const cleaned = href.replace(/^file:\/\/\/?/, "").split("#")[0].split("?")[0];
+    const resolved = /^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned)
+      ? cleaned
+      : resolveRelative(currentFile, cleaned);
+    try {
+      const { kind } = fileKind(resolved);
+      const content =
+        kind === "pdf" ? "" : await invoke<string>("read_text_file", { path: resolved });
+      setCurrentFile(resolved, content);
+    } catch (err) {
+      console.error("vault-chat: failed to open linked file:", resolved, err);
+    }
+  };
+
+  return (
+    <a href={href} {...rest} onClick={onClick}>
+      {children}
+    </a>
+  );
 }
 
 type Props = { paneId?: string };
@@ -276,6 +324,7 @@ export function MarkdownView({ paneId }: Props) {
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
               rehypePlugins={[rehypeRaw, rehypeKatex, rehypeHighlight]}
+              components={{ a: VaultLink }}
             >
               {content}
             </ReactMarkdown>
