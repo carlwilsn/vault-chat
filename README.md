@@ -83,25 +83,16 @@ When the app opens: hit the gear icon → paste an API key (Anthropic, OpenAI, o
 
 ## Daily use: the `vault-chat` command
 
-After the first launch works, add `vault-chat/bin` to your `PATH`. From then on, typing `vault-chat` in any terminal launches the app.
-
-**macOS / Linux** — add to `~/.zshrc` or `~/.bashrc`:
+After the first launch works, register the `vault-chat` command globally with one command:
 
 ```sh
-export PATH="$HOME/path/to/vault-chat/bin:$PATH"
+cd vault-chat
+npm link
 ```
 
-**Windows** (PowerShell, one-time):
+That's it. Type `vault-chat` from any terminal on any OS to launch the app. (`npm link` uses npm's global bin folder, which is already on `PATH` because you installed Node.)
 
-```powershell
-[Environment]::SetEnvironmentVariable(
-  "Path",
-  "$env:Path;C:\path\to\vault-chat\bin",
-  "User"
-)
-```
-
-Reopen your terminal. `vault-chat` anywhere → app opens.
+Unlink later with `npm unlink -g vault-chat`.
 
 ## Updates
 

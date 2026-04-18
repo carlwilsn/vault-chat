@@ -6,6 +6,9 @@
   "author": "Carl Wilson",
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "vault-chat": "./bin/vault-chat.js"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
