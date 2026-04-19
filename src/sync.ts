@@ -106,10 +106,22 @@ export async function installMainSync() {
 
 export async function installPopoutSync() {
   await installThemeSync();
+  let gotSnapshot = false;
   await listen<Snapshot>("chat:state", (e) => {
+    gotSnapshot = true;
     useStore.getState().applyChatSnapshot(e.payload);
   });
-  await emit("chat:ready");
+  // The chat:ready → broadcastSnapshot handshake is one-shot, so a
+  // single lost event leaves the popout showing an empty chat forever.
+  // Retry with backoff until the first snapshot lands — main's handler
+  // is idempotent (just re-broadcasts current state).
+  const delays = [0, 150, 400, 900, 1800, 3000];
+  for (const d of delays) {
+    if (gotSnapshot) return;
+    if (d > 0) await new Promise((r) => setTimeout(r, d));
+    if (gotSnapshot) return;
+    try { await emit("chat:ready"); } catch {}
+  }
 }
 
 export async function openChatPopout() {
