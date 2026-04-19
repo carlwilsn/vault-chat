@@ -49,6 +49,26 @@ export type LiveTool = { id: string; name: string; input: any; result?: string; 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 export type TodoItem = { content: string; status: TodoStatus; activeForm?: string };
 
+function liveToolsEqual(a: LiveTool[], b: LiveTool[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x.id !== y.id || x.name !== y.name || x.result !== y.result) return false;
+  }
+  return true;
+}
+
+function todosEqual(a: TodoItem[], b: TodoItem[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].content !== b[i].content || a[i].status !== b[i].status) return false;
+  }
+  return true;
+}
+
 export type Pane = { id: string; file: string; content: string };
 export type SplitDirection = "horizontal" | "vertical" | null;
 export type DropSide = "left" | "right" | "top" | "bottom";
@@ -593,12 +613,16 @@ export const useStore = create<State>((set) => ({
       };
     }),
   applyChatStream: (s) =>
-    set({
-      busy: s.busy,
-      streamingText: s.streamingText ?? "",
-      streamingReasoning: s.streamingReasoning ?? "",
-      liveTools: s.liveTools ?? [],
-      agentTodos: s.agentTodos ?? [],
+    set((prev) => {
+      const incomingTools = s.liveTools ?? [];
+      const incomingTodos = s.agentTodos ?? [];
+      return {
+        busy: s.busy,
+        streamingText: s.streamingText ?? "",
+        streamingReasoning: s.streamingReasoning ?? "",
+        liveTools: liveToolsEqual(prev.liveTools, incomingTools) ? prev.liveTools : incomingTools,
+        agentTodos: todosEqual(prev.agentTodos, incomingTodos) ? prev.agentTodos : incomingTodos,
+      };
     }),
   clearMessages: () =>
     set({
