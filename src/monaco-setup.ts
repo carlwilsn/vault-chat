@@ -18,10 +18,39 @@ self.MonacoEnvironment = {
 
 // Graphite: --background = hsl(0 0% 10%) = #1a1a1a
 // Light:    --background = hsl(0 0% 98%) = #fafafa
+// Syntax colors approximate highlight.js's github-dark palette so code
+// looks consistent between the Monaco editor and the rehype-highlight
+// view mode.
+const graphiteRules = [
+  { token: "comment", foreground: "8b949e", fontStyle: "italic" },
+  { token: "keyword", foreground: "ff7b72" },
+  { token: "keyword.flow", foreground: "ff7b72" },
+  { token: "keyword.json", foreground: "79c0ff" },
+  { token: "string", foreground: "a5d6ff" },
+  { token: "string.escape", foreground: "79c0ff" },
+  { token: "string.key.json", foreground: "79c0ff" },
+  { token: "string.value.json", foreground: "a5d6ff" },
+  { token: "number", foreground: "79c0ff" },
+  { token: "regexp", foreground: "a5d6ff" },
+  { token: "type", foreground: "ffa657" },
+  { token: "type.identifier", foreground: "ffa657" },
+  { token: "function", foreground: "d2a8ff" },
+  { token: "identifier", foreground: "ebebeb" },
+  { token: "variable", foreground: "ffa657" },
+  { token: "variable.predefined", foreground: "79c0ff" },
+  { token: "constant", foreground: "79c0ff" },
+  { token: "tag", foreground: "7ee787" },
+  { token: "attribute.name", foreground: "79c0ff" },
+  { token: "attribute.value", foreground: "a5d6ff" },
+  { token: "delimiter", foreground: "ebebeb" },
+  { token: "operator", foreground: "ff7b72" },
+  { token: "metatag", foreground: "7ee787" },
+];
+
 monaco.editor.defineTheme("vault-graphite", {
   base: "vs-dark",
   inherit: true,
-  rules: [],
+  rules: graphiteRules,
   colors: {
     "editor.background": "#1a1a1a",
     "editor.foreground": "#ebebeb",

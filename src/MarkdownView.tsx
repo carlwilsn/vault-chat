@@ -241,8 +241,11 @@ export function MarkdownView({ paneId }: Props) {
   const relPath = file.split("/").slice(-3).join(" › ");
   const showActiveOutline = inSplit && isActive;
   const { kind, ext } = fileKind(file);
-  const editable = kind === "markdown" || kind === "code";
-  const showingEditor = editable && mode === "edit" && isActive;
+  // Code files are edit-only — Monaco renders them fine and the toggle
+  // would just flip to a near-identical view. Only markdown has a
+  // meaningful view/edit split.
+  const showToggle = kind === "markdown";
+  const showingEditor = kind === "code" || (kind === "markdown" && mode === "edit" && isActive);
 
   return (
     <div
@@ -262,7 +265,7 @@ export function MarkdownView({ paneId }: Props) {
           {relPath}
         </div>
         <div className="flex items-center gap-3">
-          {editable && (
+          {showToggle && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
