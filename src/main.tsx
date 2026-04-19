@@ -26,6 +26,10 @@ const isPopout = view === "chat";
 
 if (isPopout) {
   installPopoutSync();
+  // Popouts need their own copy of API keys — the main-window snapshot
+  // broadcast doesn't include them, and without hydrate the chat
+  // textarea stays disabled because activeKey is undefined.
+  hydrateKeychain().catch((e) => console.warn("[keys] hydrate failed:", e));
 } else {
   installMainSync();
   // Pull any existing API keys out of the OS keychain into the store,
