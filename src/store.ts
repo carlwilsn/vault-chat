@@ -24,6 +24,24 @@ export type ChatMessage = {
   hidden?: boolean;
 };
 
+// Shallow content-compare for the chat message list. The popout
+// receives a fresh array from JSON.parse on every chat:state broadcast;
+// if the contents are identical we reuse the existing reference so
+// MessageBubble rows don't re-render.
+function messagesEqual(a: ChatMessage[], b: ChatMessage[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x.role !== y.role || x.content !== y.content || x.hidden !== y.hidden) return false;
+    const xt = x.toolCalls?.length ?? 0;
+    const yt = y.toolCalls?.length ?? 0;
+    if (xt !== yt) return false;
+  }
+  return true;
+}
+
 export const MODEL_CONTEXT_LIMIT = 200_000;
 
 export type LiveTool = { id: string; name: string; input: any; result?: string; startedAt?: number };
@@ -225,15 +243,17 @@ type State = {
   updateLiveToolResult: (id: string, result: string) => void;
   setAgentTodos: (todos: TodoItem[]) => void;
   resetStreaming: () => void;
-  applyChatSnapshot: (s: {
+  applyChatState: (s: {
     vaultPath: string | null;
     messages: ChatMessage[];
-    busy: boolean;
     modelId?: string;
     tokenUsage?: { prompt: number; completion: number; total: number };
     lastContext?: number;
     compactionSummary?: string | null;
     compacting?: boolean;
+  }) => void;
+  applyChatStream: (s: {
+    busy: boolean;
     streamingText?: string;
     streamingReasoning?: string;
     liveTools?: LiveTool[];
@@ -554,21 +574,32 @@ export const useStore = create<State>((set) => ({
     cancelReasoningFlush();
     set({ streamingText: "", streamingReasoning: "", liveTools: [], agentTodos: [] });
   },
-  applyChatSnapshot: (s) =>
-    set((prev) => ({
-      vaultPath: s.vaultPath,
-      messages: s.messages,
+  applyChatState: (s) =>
+    set((prev) => {
+      // Preserve existing messages reference if the incoming list is
+      // content-equal — a fresh array from JSON.parse would otherwise
+      // invalidate the messages selector and re-render every bubble.
+      const nextMessages = messagesEqual(prev.messages, s.messages)
+        ? prev.messages
+        : s.messages;
+      return {
+        vaultPath: s.vaultPath,
+        messages: nextMessages,
+        modelId: s.modelId ?? prev.modelId,
+        tokenUsage: s.tokenUsage ?? prev.tokenUsage,
+        lastContext: s.lastContext ?? prev.lastContext,
+        compactionSummary: s.compactionSummary ?? null,
+        compacting: s.compacting ?? false,
+      };
+    }),
+  applyChatStream: (s) =>
+    set({
       busy: s.busy,
-      modelId: s.modelId ?? prev.modelId,
-      tokenUsage: s.tokenUsage ?? prev.tokenUsage,
-      lastContext: s.lastContext ?? prev.lastContext,
-      compactionSummary: s.compactionSummary ?? null,
-      compacting: s.compacting ?? false,
       streamingText: s.streamingText ?? "",
       streamingReasoning: s.streamingReasoning ?? "",
       liveTools: s.liveTools ?? [],
       agentTodos: s.agentTodos ?? [],
-    })),
+    }),
   clearMessages: () =>
     set({
       messages: [],

@@ -8,19 +8,26 @@ const MAIN_LABEL = "main";
 
 const isPopout = new URLSearchParams(window.location.search).get("view") === "chat";
 
-// Only the fields the popout's ChatPane/ChatWindow actually read. Keeping
-// currentContent/files out of the broadcast matters: during streaming we
-// emit at ~5 Hz, and shipping the whole open file + vault tree through
-// IPC on every chunk causes noticeable lag in long conversations.
-type Snapshot = {
+// Two-tier broadcast:
+// - chat:state carries message list + session metadata, fires only when
+//   those actually change (new turn, model swap, compaction, vault).
+// - chat:stream carries streaming text + live tools + todos, fires at
+//   streaming cadence (~5 Hz) during agent responses.
+// Keeping them on separate channels means streaming chunks don't churn
+// the messages array reference in the popout, so MessageBubble rows
+// don't re-render on every token.
+type StateSnapshot = {
   vaultPath: string | null;
   messages: ChatMessage[];
-  busy: boolean;
   modelId: string;
   tokenUsage: { prompt: number; completion: number; total: number };
   lastContext: number;
   compactionSummary: string | null;
   compacting: boolean;
+};
+
+type StreamSnapshot = {
+  busy: boolean;
   streamingText: string;
   streamingReasoning: string;
   liveTools: LiveTool[];
@@ -33,17 +40,23 @@ export type ChatAction =
   | { kind: "clear" }
   | { kind: "setModel"; id: string };
 
-function takeSnapshot(): Snapshot {
+function takeStateSnapshot(): StateSnapshot {
   const s = useStore.getState();
   return {
     vaultPath: s.vaultPath,
     messages: s.messages,
-    busy: s.busy,
     modelId: s.modelId,
     tokenUsage: s.tokenUsage,
     lastContext: s.lastContext,
     compactionSummary: s.compactionSummary,
     compacting: s.compacting,
+  };
+}
+
+function takeStreamSnapshot(): StreamSnapshot {
+  const s = useStore.getState();
+  return {
+    busy: s.busy,
     streamingText: s.streamingText,
     streamingReasoning: s.streamingReasoning,
     liveTools: s.liveTools,
@@ -74,48 +87,62 @@ async function installThemeSync() {
   });
 }
 
-async function broadcastSnapshot() {
-  await emitTo(POPOUT_LABEL, "chat:state", takeSnapshot()).catch(() => {});
+async function broadcastState() {
+  await emitTo(POPOUT_LABEL, "chat:state", takeStateSnapshot()).catch(() => {});
+}
+
+async function broadcastStream() {
+  await emitTo(POPOUT_LABEL, "chat:stream", takeStreamSnapshot()).catch(() => {});
+}
+
+async function broadcastFull() {
+  await broadcastState();
+  await broadcastStream();
 }
 
 export async function installMainSync() {
   await installThemeSync();
   await listen<ChatAction>("chat:action", (e) => applyActionLocal(e.payload));
   await listen("chat:ready", () => {
-    broadcastSnapshot();
+    broadcastFull();
   });
   useStore.subscribe((state, prev) => {
     if (!state.popoutOpen) return;
-    if (
+
+    const stateChanged =
       state.messages !== prev.messages ||
-      state.busy !== prev.busy ||
-      state.streamingText !== prev.streamingText ||
-      state.streamingReasoning !== prev.streamingReasoning ||
-      state.liveTools !== prev.liveTools ||
-      state.agentTodos !== prev.agentTodos ||
       state.modelId !== prev.modelId ||
       state.tokenUsage !== prev.tokenUsage ||
       state.lastContext !== prev.lastContext ||
       state.compactionSummary !== prev.compactionSummary ||
       state.compacting !== prev.compacting ||
-      state.vaultPath !== prev.vaultPath
-    ) {
-      broadcastSnapshot();
-    }
+      state.vaultPath !== prev.vaultPath;
+    if (stateChanged) broadcastState();
+
+    const streamChanged =
+      state.busy !== prev.busy ||
+      state.streamingText !== prev.streamingText ||
+      state.streamingReasoning !== prev.streamingReasoning ||
+      state.liveTools !== prev.liveTools ||
+      state.agentTodos !== prev.agentTodos;
+    if (streamChanged) broadcastStream();
   });
 }
 
 export async function installPopoutSync() {
   await installThemeSync();
   let gotSnapshot = false;
-  await listen<Snapshot>("chat:state", (e) => {
+  await listen<StateSnapshot>("chat:state", (e) => {
     gotSnapshot = true;
-    useStore.getState().applyChatSnapshot(e.payload);
+    useStore.getState().applyChatState(e.payload);
   });
-  // The chat:ready → broadcastSnapshot handshake is one-shot, so a
-  // single lost event leaves the popout showing an empty chat forever.
-  // Retry with backoff until the first snapshot lands — main's handler
-  // is idempotent (just re-broadcasts current state).
+  await listen<StreamSnapshot>("chat:stream", (e) => {
+    useStore.getState().applyChatStream(e.payload);
+  });
+  // The chat:ready → broadcast handshake is one-shot, so a single lost
+  // event leaves the popout showing an empty chat forever. Retry with
+  // backoff until the first snapshot lands — main's handler is
+  // idempotent (just re-broadcasts current state).
   const delays = [0, 150, 400, 900, 1800, 3000];
   for (const d of delays) {
     if (gotSnapshot) return;
@@ -134,7 +161,7 @@ export async function openChatPopout() {
         await existing.unminimize();
         await existing.setFocus();
         useStore.getState().setPopoutOpen(true);
-        broadcastSnapshot();
+        broadcastFull();
         return;
       } catch (e) {
         console.warn("[popout] failed to reuse existing, closing it:", e);
