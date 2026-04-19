@@ -1,6 +1,6 @@
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme } from "./store";
+import { useStore, type ChatMessage, type LiveTool, type Theme, type TodoItem } from "./store";
 import { sendMessage, stopAgent, clearChat, setModel } from "./chat-controller";
 
 const POPOUT_LABEL = "chat-popout";
@@ -8,11 +8,12 @@ const MAIN_LABEL = "main";
 
 const isPopout = new URLSearchParams(window.location.search).get("view") === "chat";
 
+// Only the fields the popout's ChatPane/ChatWindow actually read. Keeping
+// currentContent/files out of the broadcast matters: during streaming we
+// emit at ~5 Hz, and shipping the whole open file + vault tree through
+// IPC on every chunk causes noticeable lag in long conversations.
 type Snapshot = {
   vaultPath: string | null;
-  currentFile: string | null;
-  currentContent: string;
-  files: FileEntry[];
   messages: ChatMessage[];
   busy: boolean;
   modelId: string;
@@ -21,7 +22,9 @@ type Snapshot = {
   compactionSummary: string | null;
   compacting: boolean;
   streamingText: string;
+  streamingReasoning: string;
   liveTools: LiveTool[];
+  agentTodos: TodoItem[];
 };
 
 export type ChatAction =
@@ -34,9 +37,6 @@ function takeSnapshot(): Snapshot {
   const s = useStore.getState();
   return {
     vaultPath: s.vaultPath,
-    currentFile: s.currentFile,
-    currentContent: s.currentContent,
-    files: s.files,
     messages: s.messages,
     busy: s.busy,
     modelId: s.modelId,
@@ -45,7 +45,9 @@ function takeSnapshot(): Snapshot {
     compactionSummary: s.compactionSummary,
     compacting: s.compacting,
     streamingText: s.streamingText,
+    streamingReasoning: s.streamingReasoning,
     liveTools: s.liveTools,
+    agentTodos: s.agentTodos,
   };
 }
 
@@ -88,16 +90,15 @@ export async function installMainSync() {
       state.messages !== prev.messages ||
       state.busy !== prev.busy ||
       state.streamingText !== prev.streamingText ||
+      state.streamingReasoning !== prev.streamingReasoning ||
       state.liveTools !== prev.liveTools ||
+      state.agentTodos !== prev.agentTodos ||
       state.modelId !== prev.modelId ||
       state.tokenUsage !== prev.tokenUsage ||
       state.lastContext !== prev.lastContext ||
       state.compactionSummary !== prev.compactionSummary ||
       state.compacting !== prev.compacting ||
-      state.vaultPath !== prev.vaultPath ||
-      state.currentFile !== prev.currentFile ||
-      state.currentContent !== prev.currentContent ||
-      state.files !== prev.files
+      state.vaultPath !== prev.vaultPath
     ) {
       broadcastSnapshot();
     }

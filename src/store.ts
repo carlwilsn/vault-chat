@@ -227,9 +227,6 @@ type State = {
   resetStreaming: () => void;
   applyChatSnapshot: (s: {
     vaultPath: string | null;
-    currentFile: string | null;
-    currentContent: string;
-    files: FileEntry[];
     messages: ChatMessage[];
     busy: boolean;
     modelId?: string;
@@ -238,7 +235,9 @@ type State = {
     compactionSummary?: string | null;
     compacting?: boolean;
     streamingText?: string;
+    streamingReasoning?: string;
     liveTools?: LiveTool[];
+    agentTodos?: TodoItem[];
   }) => void;
   clearMessages: () => void;
 };
@@ -558,12 +557,6 @@ export const useStore = create<State>((set) => ({
   applyChatSnapshot: (s) =>
     set((prev) => ({
       vaultPath: s.vaultPath,
-      currentFile: s.currentFile,
-      currentContent: s.currentContent,
-      panes: [],
-      splitDirection: null,
-      activePaneId: null,
-      files: s.files,
       messages: s.messages,
       busy: s.busy,
       modelId: s.modelId ?? prev.modelId,
@@ -572,7 +565,9 @@ export const useStore = create<State>((set) => ({
       compactionSummary: s.compactionSummary ?? null,
       compacting: s.compacting ?? false,
       streamingText: s.streamingText ?? "",
+      streamingReasoning: s.streamingReasoning ?? "",
       liveTools: s.liveTools ?? [],
+      agentTodos: s.agentTodos ?? [],
     })),
   clearMessages: () =>
     set({
