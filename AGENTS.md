@@ -54,7 +54,7 @@ Defined in `agent.ts`:
 - `write_file(path, contents)` → wraps `write_text_file`
 - `list_files()` → wraps `list_markdown_files`, returns paths joined by newlines
 
-All paths are absolute inside the vault. Model is `claude-opus-4-6` (constant at top of `agent.ts`).
+All paths are absolute inside the vault. The model is user-selectable from `providers.ts`; `DEFAULT_MODEL_ID` is the fallback.
 
 ### State (zustand)
 

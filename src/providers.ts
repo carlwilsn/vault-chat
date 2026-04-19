@@ -12,16 +12,18 @@ export type ModelSpec = {
 };
 
 export const MODELS: ModelSpec[] = [
+  { provider: "anthropic", id: "claude-opus-4-7", label: "Claude Opus 4.7" },
   { provider: "anthropic", id: "claude-opus-4-6", label: "Claude Opus 4.6" },
   { provider: "anthropic", id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
   { provider: "anthropic", id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
-  { provider: "openai", id: "gpt-4o", label: "GPT-4o" },
-  { provider: "openai", id: "gpt-4o-mini", label: "GPT-4o mini" },
-  { provider: "google", id: "gemini-1.5-pro-latest", label: "Gemini 1.5 Pro" },
-  { provider: "google", id: "gemini-1.5-flash-latest", label: "Gemini 1.5 Flash" },
+  { provider: "openai", id: "gpt-4.1", label: "GPT-4.1" },
+  { provider: "openai", id: "gpt-4.1-mini", label: "GPT-4.1 mini" },
+  { provider: "google", id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  { provider: "google", id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+  { provider: "google", id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
 ];
 
-export const DEFAULT_MODEL_ID = "claude-opus-4-6";
+export const DEFAULT_MODEL_ID = "claude-opus-4-7";
 
 export const PROVIDER_LABEL: Record<ProviderId, string> = {
   anthropic: "Anthropic",
