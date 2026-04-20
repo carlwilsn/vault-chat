@@ -1,26 +1,38 @@
 import { Eye } from "lucide-react";
 
-function buildScrollbarCss(): string {
-  const styles = getComputedStyle(document.documentElement);
-  const border = styles.getPropertyValue("--border").trim() || "0 0% 22%";
-  const mutedFg = styles.getPropertyValue("--muted-foreground").trim() || "0 0% 60%";
-  const thumb = `hsl(${border})`;
-  const thumbHover = `hsla(${mutedFg} / 0.55)`;
-  return `<style>
+const SCROLLBAR_INJECT = `<style id="__vc_scrollbar_base">
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: ${thumb}; border-radius: 9999px; }
-  ::-webkit-scrollbar-thumb:hover { background: ${thumbHover}; }
-  html { scrollbar-width: thin; scrollbar-color: ${thumb} transparent; }
-</style>`;
-}
+  ::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.3); border-radius: 9999px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,0.5); }
+  html { scrollbar-width: thin; scrollbar-color: rgba(128,128,128,0.3) transparent; }
+</style>
+<script>(function(){
+  function apply(){
+    var bg = getComputedStyle(document.body).backgroundColor;
+    var m = bg && bg.match(/\\d+(?:\\.\\d+)?/g);
+    if (!m || m.length < 3) return;
+    var lum = (+m[0]*0.299 + +m[1]*0.587 + +m[2]*0.114);
+    var dark = lum < 128;
+    var thumb = dark ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.22)';
+    var hover = dark ? 'rgba(255,255,255,0.32)' : 'rgba(0,0,0,0.38)';
+    var s = document.getElementById('__vc_scrollbar_tint') || document.createElement('style');
+    s.id = '__vc_scrollbar_tint';
+    s.textContent = '::-webkit-scrollbar-thumb{background:'+thumb+'}'
+      + '::-webkit-scrollbar-thumb:hover{background:'+hover+'}'
+      + 'html{scrollbar-color:'+thumb+' transparent}';
+    document.head.appendChild(s);
+  }
+  function run(){ apply(); setTimeout(apply, 100); setTimeout(apply, 500); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);
+  else run();
+})();</script>`;
 
 function injectScrollbarStyles(html: string): string {
-  const css = buildScrollbarCss();
   if (/<head[^>]*>/i.test(html)) {
-    return html.replace(/<head[^>]*>/i, (m) => m + css);
+    return html.replace(/<head[^>]*>/i, (m) => m + SCROLLBAR_INJECT);
   }
-  return css + html;
+  return SCROLLBAR_INJECT + html;
 }
 
 export function HtmlView({ content }: { content: string }) {
