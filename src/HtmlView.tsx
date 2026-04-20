@@ -8,7 +8,7 @@ export function HtmlView({ content }: { content: string }) {
         <span>Read-only HTML (sandboxed)</span>
       </div>
       <iframe
-        sandbox=""
+        sandbox="allow-scripts"
         srcDoc={content}
         className="flex-1 w-full bg-white"
         title="HTML preview"
