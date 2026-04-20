@@ -1,18 +1,26 @@
 import { Eye } from "lucide-react";
 
-const SCROLLBAR_CSS = `<style>
+function buildScrollbarCss(): string {
+  const styles = getComputedStyle(document.documentElement);
+  const border = styles.getPropertyValue("--border").trim() || "0 0% 22%";
+  const mutedFg = styles.getPropertyValue("--muted-foreground").trim() || "0 0% 60%";
+  const thumb = `hsl(${border})`;
+  const thumbHover = `hsla(${mutedFg} / 0.55)`;
+  return `<style>
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.35); border-radius: 9999px; }
-  ::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,0.55); }
-  html { scrollbar-width: thin; scrollbar-color: rgba(128,128,128,0.35) transparent; }
+  ::-webkit-scrollbar-thumb { background: ${thumb}; border-radius: 9999px; }
+  ::-webkit-scrollbar-thumb:hover { background: ${thumbHover}; }
+  html { scrollbar-width: thin; scrollbar-color: ${thumb} transparent; }
 </style>`;
+}
 
 function injectScrollbarStyles(html: string): string {
+  const css = buildScrollbarCss();
   if (/<head[^>]*>/i.test(html)) {
-    return html.replace(/<head[^>]*>/i, (m) => m + SCROLLBAR_CSS);
+    return html.replace(/<head[^>]*>/i, (m) => m + css);
   }
-  return SCROLLBAR_CSS + html;
+  return css + html;
 }
 
 export function HtmlView({ content }: { content: string }) {
