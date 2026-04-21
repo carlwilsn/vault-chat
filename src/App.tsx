@@ -151,7 +151,6 @@ export default function App() {
       const href = anchor.getAttribute("data-href") ?? anchor.getAttribute("href");
       if (!href) return;
       if (href.startsWith("#")) return;
-      console.log("[App capture] click href=", href);
       e.preventDefault();
       e.stopPropagation();
       tryOpenLink(href).catch((err) => console.error("[link] failed:", err));
@@ -160,16 +159,53 @@ export default function App() {
       if (e.button === 1) onClick(e);
     };
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      console.warn("[App] beforeunload fired — something is trying to navigate");
       e.preventDefault();
     };
     window.addEventListener("click", onClick, true);
     window.addEventListener("auxclick", onAuxClick, true);
     window.addEventListener("beforeunload", onBeforeUnload);
+
+    // Nuclear option: walk the DOM and strip `href` from every anchor
+    // whose target is an internal link (vault:// / relative path / file:).
+    // External http/https/mailto keep their href so hover tooltips work.
+    // Runs once on mount and again whenever the DOM mutates, so links
+    // from chat messages, tool results, and agent-rendered HTML all get
+    // sanitized — no matter which component emitted them.
+    const isExternal = (h: string) =>
+      /^(https?:|mailto:|tel:)/i.test(h) || h.startsWith("#");
+    const sanitize = (root: ParentNode) => {
+      const anchors = root.querySelectorAll?.("a[href]");
+      if (!anchors) return;
+      anchors.forEach((a) => {
+        const h = a.getAttribute("href");
+        if (!h || isExternal(h)) return;
+        if (!a.getAttribute("data-href")) a.setAttribute("data-href", h);
+        a.removeAttribute("href");
+      });
+    };
+    sanitize(document);
+    const observer = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        for (const n of m.addedNodes) {
+          if (n.nodeType === 1) sanitize(n as ParentNode);
+        }
+        if (m.type === "attributes" && m.target.nodeType === 1) {
+          sanitize((m.target as ParentNode).parentNode as ParentNode);
+        }
+      }
+    });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["href"],
+    });
+
     return () => {
       window.removeEventListener("click", onClick, true);
       window.removeEventListener("auxclick", onAuxClick, true);
       window.removeEventListener("beforeunload", onBeforeUnload);
+      observer.disconnect();
     };
   }, []);
 
