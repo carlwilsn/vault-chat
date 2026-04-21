@@ -3,29 +3,23 @@ export type FileKind =
   | "notebook"
   | "pdf"
   | "html"
+  | "image"
   | "unsupported"
   | "code";
 
-// Extensions we refuse to load as text — they're binary formats where the
-// app has no built-in viewer, so the fallback is to hand the file off to
-// the user's OS via "reveal in file explorer" / "open with default app".
-const UNSUPPORTED_EXTS = new Set([
-  // images
+const IMAGE_EXTS = new Set([
   "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "tif", "tiff", "heic",
-  "svg", // svg is technically text but we don't render it inline today
-  // video
+]);
+
+// Binary formats we don't display inline (video, audio, archives, office,
+// etc.). Falls through to UnsupportedView + "open with default app".
+const UNSUPPORTED_EXTS = new Set([
   "mp4", "mov", "mkv", "avi", "webm", "m4v", "wmv", "flv",
-  // audio
   "mp3", "wav", "flac", "ogg", "m4a", "aac", "wma",
-  // archives
   "zip", "rar", "7z", "tar", "gz", "xz", "bz2", "tgz",
-  // office / design
   "docx", "doc", "xlsx", "xls", "pptx", "ppt", "odt", "ods", "odp",
   "psd", "ai", "sketch", "fig",
-  // executables / binaries
-  "exe", "dll", "dylib", "so", "app", "dmg", "msi", "deb", "rpm",
-  "bin", "iso", "class", "jar",
-  // db
+  "dmg", "msi", "deb", "rpm", "iso", "jar", "app",
   "db", "sqlite", "sqlite3",
 ]);
 
@@ -36,6 +30,7 @@ export function fileKind(path: string): { kind: FileKind; ext: string } {
   if (ext === "ipynb") return { kind: "notebook", ext };
   if (ext === "pdf") return { kind: "pdf", ext };
   if (ext === "html" || ext === "htm") return { kind: "html", ext };
+  if (IMAGE_EXTS.has(ext)) return { kind: "image", ext };
   if (UNSUPPORTED_EXTS.has(ext)) return { kind: "unsupported", ext };
   return { kind: "code", ext };
 }
@@ -44,5 +39,5 @@ export function fileKind(path: string): { kind: FileKind; ext: string } {
 // file opener to short-circuit the read and let the viewer show a stub.
 export function isUnreadableAsText(path: string): boolean {
   const { kind } = fileKind(path);
-  return kind === "pdf" || kind === "unsupported";
+  return kind === "pdf" || kind === "image" || kind === "unsupported";
 }

@@ -1,5 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { BoxSelect } from "lucide-react";
 import { openUrl, isExternalHref } from "./opener";
+import { cn } from "./lib/utils";
+import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 
 const LINK_INTERCEPT = `<script>(function(){
   function isExternal(href){ return /^(https?:|mailto:)/i.test(href); }
@@ -17,6 +20,75 @@ const LINK_INTERCEPT = `<script>(function(){
   }
   document.addEventListener('click', handle, true);
   document.addEventListener('auxclick', handle, true);
+})();</script>`;
+
+// Injected into the iframe so the parent can request text inside a
+// rectangle (in iframe-local client coords). The script walks text
+// nodes, collects any whose range intersects the rect in reading order,
+// and posts the result back. We also return a rough "before" and "after"
+// slice of the full body text around the captured span so the ask has
+// the same kind of context the PDF marquee provides.
+const MARQUEE_BRIDGE = `<script>(function(){
+  function collectText(root, rect){
+    var hits = [];
+    function walk(node){
+      if (node.nodeType === 3) {
+        var txt = node.nodeValue;
+        if (!txt || !txt.trim()) return;
+        var r = document.createRange();
+        r.selectNodeContents(node);
+        var br = r.getBoundingClientRect();
+        if (br.width === 0 && br.height === 0) return;
+        if (br.left < rect.right && br.right > rect.left && br.top < rect.bottom && br.bottom > rect.top) {
+          hits.push({ text: txt.replace(/\\s+/g, ' ').trim(), top: br.top, bottom: br.bottom });
+        }
+        return;
+      }
+      if (node.nodeType !== 1) return;
+      var tag = node.tagName;
+      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') return;
+      for (var c = node.firstChild; c; c = c.nextSibling) walk(c);
+    }
+    walk(root);
+    hits.sort(function(a,b){ return a.top - b.top; });
+    var out = '';
+    var prevBottom = null;
+    for (var i = 0; i < hits.length; i++) {
+      var h = hits[i];
+      if (!h.text) continue;
+      if (prevBottom !== null && h.top > prevBottom + 4) out += '\\n';
+      else if (out && !out.endsWith(' ') && !out.endsWith('\\n')) out += ' ';
+      out += h.text;
+      prevBottom = h.bottom;
+    }
+    return out.trim();
+  }
+  window.addEventListener('message', function(e){
+    var data = e.data;
+    if (!data) return;
+    if (data.__vc_marquee_capture) {
+      try {
+        var captured = collectText(document.body, data.__vc_marquee_capture);
+        var full = (document.body.innerText || '').replace(/\\s+\\n/g, '\\n');
+        var before = '';
+        var after = '';
+        if (captured) {
+          var idx = full.indexOf(captured.slice(0, Math.min(80, captured.length)));
+          if (idx >= 0) {
+            before = full.slice(Math.max(0, idx - 3000), idx);
+            after = full.slice(idx + captured.length, Math.min(full.length, idx + captured.length + 3000));
+          } else {
+            before = full.slice(-3000);
+          }
+        } else {
+          before = full.slice(-3000);
+        }
+        parent.postMessage({ __vc_marquee_result: { text: captured, before: before, after: after } }, '*');
+      } catch(_) {
+        parent.postMessage({ __vc_marquee_result: { text: '', before: '', after: '' } }, '*');
+      }
+    }
+  });
 })();</script>`;
 
 const SCROLLBAR_INJECT = `<style id="__vc_scrollbar_base">
@@ -52,7 +124,7 @@ const SCROLLBAR_INJECT = `<style id="__vc_scrollbar_base">
 })();</script>`;
 
 function injectHeadScripts(html: string): string {
-  const payload = SCROLLBAR_INJECT + LINK_INTERCEPT;
+  const payload = SCROLLBAR_INJECT + LINK_INTERCEPT + MARQUEE_BRIDGE;
   if (/<head[^>]*>/i.test(html)) {
     return html.replace(/<head[^>]*>/i, (m) => m + payload);
   }
@@ -61,26 +133,226 @@ function injectHeadScripts(html: string): string {
 
 export function HtmlView({ content }: { content: string }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const [marqueeOn, setMarqueeOn] = useState(false);
+  const [marquee, setMarquee] = useState<{
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+  } | null>(null);
+  const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const pendingCaptureRef = useRef<{
+    anchor: InlineEditRequest["anchor"];
+  } | null>(null);
+  const [inlineAsk, setInlineAsk] = useState<InlineEditRequest | null>(null);
+
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       if (e.source !== iframeRef.current?.contentWindow) return;
-      const data = e.data as { __vc_open_url?: unknown } | null;
-      const href = data?.__vc_open_url;
-      if (typeof href !== "string" || !isExternalHref(href)) return;
-      openUrl(href).catch((err) => console.error("[opener] failed:", err));
+      const data = e.data as {
+        __vc_open_url?: unknown;
+        __vc_marquee_result?: { text?: unknown; before?: unknown; after?: unknown };
+      } | null;
+      if (typeof data?.__vc_open_url === "string" && isExternalHref(data.__vc_open_url)) {
+        openUrl(data.__vc_open_url).catch((err) =>
+          console.error("[opener] failed:", err),
+        );
+        return;
+      }
+      const mr = data?.__vc_marquee_result;
+      if (mr && typeof mr.text !== "undefined") {
+        const pending = pendingCaptureRef.current;
+        pendingCaptureRef.current = null;
+        if (!pending) return;
+        setInlineAsk({
+          anchor: pending.anchor,
+          selection: typeof mr.text === "string" ? mr.text : "",
+          before: typeof mr.before === "string" ? mr.before : "",
+          after: typeof mr.after === "string" ? mr.after : "",
+          language: "html",
+        });
+      }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, []);
+
+  // Marquee drag over the iframe. The overlay div sits on top of the
+  // iframe while marqueeOn is true and eats pointer events so the drag
+  // stays in our code rather than reaching page content.
+  useEffect(() => {
+    if (!marqueeOn) return;
+    const host = hostRef.current;
+    if (!host) return;
+
+    let lastMove: { x: number; y: number } | null = null;
+    let capturedPointerId: number | null = null;
+
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      marqueeStartRef.current = { x: e.clientX, y: e.clientY };
+      lastMove = { x: e.clientX, y: e.clientY };
+      setMarquee({ x1: e.clientX, y1: e.clientY, x2: e.clientX, y2: e.clientY });
+      try {
+        host.setPointerCapture(e.pointerId);
+        capturedPointerId = e.pointerId;
+      } catch {
+        /* older platforms — fall back to window-level listeners */
+      }
+    };
+
+    const onMove = (e: PointerEvent) => {
+      if (!marqueeStartRef.current) return;
+      lastMove = { x: e.clientX, y: e.clientY };
+      setMarquee({
+        x1: marqueeStartRef.current.x,
+        y1: marqueeStartRef.current.y,
+        x2: e.clientX,
+        y2: e.clientY,
+      });
+    };
+
+    const onUp = (e: PointerEvent) => {
+      const start = marqueeStartRef.current;
+      marqueeStartRef.current = null;
+      if (capturedPointerId !== null) {
+        try {
+          host.releasePointerCapture(capturedPointerId);
+        } catch {
+          /* already released */
+        }
+        capturedPointerId = null;
+      }
+      if (!start) return;
+      const endX = lastMove?.x ?? e.clientX;
+      const endY = lastMove?.y ?? e.clientY;
+      lastMove = null;
+      const clientRect = {
+        left: Math.min(start.x, endX),
+        top: Math.min(start.y, endY),
+        right: Math.max(start.x, endX),
+        bottom: Math.max(start.y, endY),
+      };
+      setMarquee(null);
+      if (clientRect.right - clientRect.left < 3 || clientRect.bottom - clientRect.top < 3) return;
+
+      const iframe = iframeRef.current;
+      if (!iframe) return;
+      const ifr = iframe.getBoundingClientRect();
+      // Convert viewport-client rect to iframe-local client rect.
+      const iframeRect = {
+        left: clientRect.left - ifr.left,
+        top: clientRect.top - ifr.top,
+        right: clientRect.right - ifr.left,
+        bottom: clientRect.bottom - ifr.top,
+      };
+
+      const dirX = endX === start.x ? 1 : Math.sign(endX - start.x);
+      const dirY = endY === start.y ? 1 : Math.sign(endY - start.y);
+      pendingCaptureRef.current = {
+        anchor: {
+          left: clientRect.left,
+          top: clientRect.top,
+          right: clientRect.right,
+          bottom: clientRect.bottom,
+          dirX,
+          dirY,
+        },
+      };
+      setMarqueeOn(false);
+      try {
+        iframe.contentWindow?.postMessage(
+          { __vc_marquee_capture: iframeRect },
+          "*",
+        );
+      } catch (err) {
+        console.error("[marquee] postMessage failed:", err);
+        pendingCaptureRef.current = null;
+      }
+    };
+
+    const onKeyEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        marqueeStartRef.current = null;
+        setMarquee(null);
+        setMarqueeOn(false);
+      }
+    };
+
+    host.addEventListener("pointerdown", onDown);
+    host.addEventListener("pointermove", onMove);
+    host.addEventListener("pointerup", onUp);
+    host.addEventListener("pointercancel", onUp);
+    window.addEventListener("keydown", onKeyEsc);
+    return () => {
+      host.removeEventListener("pointerdown", onDown);
+      host.removeEventListener("pointermove", onMove);
+      host.removeEventListener("pointerup", onUp);
+      host.removeEventListener("pointercancel", onUp);
+      window.removeEventListener("keydown", onKeyEsc);
+    };
+  }, [marqueeOn]);
+
   return (
-    <div className="flex-1 flex flex-col overflow-hidden bg-background">
-      <iframe
-        ref={iframeRef}
-        sandbox="allow-scripts"
-        srcDoc={injectHeadScripts(content)}
-        className="flex-1 w-full bg-background"
-        title="HTML preview"
-      />
+    <div className="flex-1 flex flex-col overflow-hidden bg-background relative">
+      <div className="sticky top-0 z-10 bg-muted/80 backdrop-blur border-b border-border/60 px-6 py-1.5 flex items-center justify-end gap-2 text-[11px] text-muted-foreground shrink-0">
+        <button
+          onClick={() => setMarqueeOn((v) => !v)}
+          className={cn(
+            "h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground",
+            marqueeOn && "bg-primary/20 text-foreground",
+          )}
+          title={
+            marqueeOn
+              ? "Marquee ask: drag a box (Esc to cancel)"
+              : "Marquee ask: click, then drag a box to ask about a region"
+          }
+        >
+          <BoxSelect className="h-3 w-3" />
+        </button>
+      </div>
+      <div className="flex-1 relative">
+        <iframe
+          ref={iframeRef}
+          sandbox="allow-scripts"
+          srcDoc={injectHeadScripts(content)}
+          className="absolute inset-0 w-full h-full bg-background"
+          title="HTML preview"
+        />
+        {marqueeOn && (
+          <div
+            ref={hostRef}
+            className="absolute inset-0 z-20 cursor-crosshair select-none"
+          />
+        )}
+        {marqueeOn && (
+          <div className="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 z-30 rounded-full bg-card border border-border shadow px-3 py-1 text-[10.5px] text-muted-foreground">
+            drag a box over content · Esc to cancel
+          </div>
+        )}
+      </div>
+      {marquee && (
+        <div
+          className="pointer-events-none fixed z-40 border border-primary/80 bg-primary/15 rounded-sm"
+          style={{
+            left: Math.min(marquee.x1, marquee.x2),
+            top: Math.min(marquee.y1, marquee.y2),
+            width: Math.abs(marquee.x2 - marquee.x1),
+            height: Math.abs(marquee.y2 - marquee.y1),
+          }}
+        />
+      )}
+      {inlineAsk && (
+        <InlineEditPrompt
+          request={inlineAsk}
+          initialMode="ask"
+          askOnly
+          onAccept={() => setInlineAsk(null)}
+          onCancel={() => setInlineAsk(null)}
+        />
+      )}
     </div>
   );
 }

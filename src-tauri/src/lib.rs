@@ -15,65 +15,28 @@ struct FileEntry {
     hidden: bool,
 }
 
-fn is_viewable_ext(ext: &str) -> bool {
+// Extensions we hide from the file tree even though they exist on disk —
+// compiler/runtime droppings and opaque binaries that a user is never
+// going to open intentionally. Everything else is listed; unknown types
+// show up and the UI offers "open in file explorer" as a fallback.
+fn is_hidden_ext(ext: &str) -> bool {
     matches!(
         ext,
-        "md"
-            | "markdown"
-            | "txt"
-            | "log"
-            | "py"
-            | "ipynb"
-            | "pdf"
-            | "json"
-            | "jsonl"
-            | "yaml"
-            | "yml"
-            | "toml"
-            | "xml"
-            | "ts"
-            | "tsx"
-            | "js"
-            | "jsx"
-            | "mjs"
-            | "cjs"
-            | "rs"
-            | "go"
-            | "java"
-            | "c"
-            | "h"
-            | "cpp"
-            | "hpp"
-            | "cs"
-            | "rb"
-            | "php"
-            | "swift"
-            | "kt"
-            | "sh"
-            | "bash"
-            | "zsh"
-            | "ps1"
-            | "bat"
-            | "cmd"
-            | "css"
-            | "scss"
-            | "sass"
-            | "less"
-            | "html"
-            | "htm"
-            | "svg"
-            | "tex"
-            | "bib"
-            | "sql"
-            | "r"
-            | "jl"
-            | "lua"
-            | "ini"
-            | "cfg"
-            | "env"
-            | "dockerfile"
-            | "makefile"
-            | "lark"
+        "pyc"
+            | "pyo"
+            | "class"
+            | "o"
+            | "obj"
+            | "a"
+            | "lib"
+            | "rlib"
+            | "rmeta"
+            | "dll"
+            | "so"
+            | "dylib"
+            | "exe"
+            | "bin"
+            | "out"
     )
 }
 
@@ -151,7 +114,7 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
                 .extension()
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_lowercase());
-            if !ext.map(|e| is_viewable_ext(&e)).unwrap_or(false) {
+            if ext.as_deref().map(is_hidden_ext).unwrap_or(false) {
                 continue;
             }
         }

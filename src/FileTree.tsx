@@ -465,7 +465,7 @@ export function FileTree() {
                   setMenu(null);
                 }}
               >
-                <FolderOpen className="h-3.5 w-3.5 opacity-70" /> Reveal in file explorer
+                <FolderOpen className="h-3.5 w-3.5 opacity-70" /> File Explorer
               </button>
               <button
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
@@ -516,7 +516,7 @@ export function FileTree() {
                     setMenu(null);
                   }}
                 >
-                  <FolderOpen className="h-3.5 w-3.5 opacity-70" /> Reveal vault in file explorer
+                  <FolderOpen className="h-3.5 w-3.5 opacity-70" /> File Explorer
                 </button>
               )}
             </>

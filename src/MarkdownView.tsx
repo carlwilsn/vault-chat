@@ -18,6 +18,7 @@ import { CodeView } from "./CodeView";
 import { NotebookView } from "./NotebookView";
 import { PdfView } from "./PdfView";
 import { HtmlView } from "./HtmlView";
+import { ImageView } from "./ImageView";
 import { UnsupportedView } from "./UnsupportedView";
 import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
@@ -217,6 +218,35 @@ export function MarkdownView({ paneId }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [mode, file, isActive, content]);
 
+  // Ctrl+L ask (no context) for PDF, HTML, and image viewers. These don't
+  // have a meaningful source-text window to slice like markdown does, so
+  // we open the prompt with empty before/after — the user's question
+  // stands on its own.
+  useEffect(() => {
+    if (!file || !isActive) return;
+    const { kind: k, ext: e2 } = fileKind(file);
+    if (k !== "pdf" && k !== "html" && k !== "image") return;
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod || e.key.toLowerCase() !== "l") return;
+      e.preventDefault();
+      const anchor: InlineEditRequest["anchor"] = {
+        left: window.innerWidth * 0.5,
+        top: window.innerHeight * 0.4,
+        bottom: window.innerHeight * 0.4 + 20,
+      };
+      setInlineAsk({
+        anchor,
+        selection: "",
+        before: "",
+        after: "",
+        language: e2,
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [file, isActive]);
+
   if (!file) {
     return (
       <div className="h-full flex items-center justify-center bg-background">
@@ -329,6 +359,8 @@ export function MarkdownView({ paneId }: Props) {
         <PdfView path={file} />
       ) : kind === "html" ? (
         <HtmlView content={content} />
+      ) : kind === "image" ? (
+        <ImageView path={file} />
       ) : kind === "unsupported" ? (
         <UnsupportedView path={file} />
       ) : (

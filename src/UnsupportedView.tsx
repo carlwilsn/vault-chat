@@ -47,7 +47,7 @@ export function UnsupportedView({ path }: { path: string }) {
             onClick={reveal}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-border bg-card hover:bg-accent/60 text-[12px] text-foreground"
           >
-            <FolderOpen className="h-3.5 w-3.5" /> Show in file explorer
+            <FolderOpen className="h-3.5 w-3.5" /> File Explorer
           </button>
         </div>
       </div>
