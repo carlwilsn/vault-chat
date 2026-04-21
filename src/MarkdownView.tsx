@@ -85,6 +85,32 @@ function resolveRelative(baseFile: string, rel: string): string {
   return baseParts.join(sep);
 }
 
+// Render anchors safely: for internal links (vault://, relative paths)
+// we strip the real href attribute so the webview cannot navigate under
+// any circumstance — the global click handler in App reads the original
+// href from `data-href`. External links keep their href so the default
+// browser tooltip shows the URL on hover.
+function SafeAnchor({ href, children, ...rest }: ComponentPropsWithoutRef<"a">) {
+  if (!href || href.startsWith("#")) {
+    return <a href={href} {...rest}>{children}</a>;
+  }
+  const isExternal = /^(https?:|mailto:)/i.test(href);
+  if (isExternal) {
+    return <a href={href} {...rest}>{children}</a>;
+  }
+  return (
+    <a
+      role="link"
+      data-href={href}
+      className="cursor-pointer text-primary underline underline-offset-2 hover:opacity-80"
+      title={href.startsWith("vault://") ? href.slice("vault://".length) : href}
+      {...rest}
+    >
+      {children}
+    </a>
+  );
+}
+
 // Renders an <img> whose src has been resolved relative to the current
 // vault file and read off disk into a blob URL. The webview can't load
 // local file:// URLs directly, so we always go through read_binary_file.
@@ -474,7 +500,7 @@ export function MarkdownView({ paneId }: Props) {
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath, remarkBreaks, remarkWikiLinks]}
               rehypePlugins={[rehypeRaw, rehypeKatex, rehypeHighlight]}
-              components={{ img: VaultImage, input: renderInput }}
+              components={{ a: SafeAnchor, img: VaultImage, input: renderInput }}
             >
               {content}
             </ReactMarkdown>

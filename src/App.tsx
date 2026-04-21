@@ -90,6 +90,36 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [toggleMode, toggleLeft, toggleRight, currentFile]);
 
+  // Suppress webview defaults that bleed through and make the app feel
+  // like a browser tab: Ctrl+F (find bar), Ctrl+G (find-next), Ctrl+R /
+  // F5 (reload), Ctrl+P (print), Ctrl+S (save-page), and the native
+  // right-click context menu. Custom menus (file tree, PDF) install
+  // their own contextmenu handlers that preventDefault locally.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      const k = e.key.toLowerCase();
+      if (mod && (k === "f" || k === "g" || k === "r" || k === "p" || k === "s")) {
+        e.preventDefault();
+        return;
+      }
+      if (e.key === "F5") {
+        e.preventDefault();
+        return;
+      }
+    };
+    const onContext = (e: MouseEvent) => {
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("contextmenu", onContext);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("contextmenu", onContext);
+    };
+  }, []);
+
   // Block stray file drops that miss our handlers — otherwise the webview
   // navigates to the dropped file's URL.
   useEffect(() => {
@@ -118,7 +148,7 @@ export default function App() {
       const target = e.target as HTMLElement | null;
       const anchor = target?.closest?.("a") as HTMLAnchorElement | null;
       if (!anchor) return;
-      const href = anchor.getAttribute("href");
+      const href = anchor.getAttribute("data-href") ?? anchor.getAttribute("href");
       if (!href) return;
       if (href.startsWith("#")) return;
       e.preventDefault();
