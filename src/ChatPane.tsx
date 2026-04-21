@@ -591,7 +591,8 @@ const MessageBubble = memo(function MessageBubble({
       {isUser ? (
         <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed break-words overflow-hidden prose-user">
           <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkBreaks]}
+            remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+            rehypePlugins={[rehypeKatex]}
             urlTransform={allowImageDataUrls}
           >
             {message.content}
