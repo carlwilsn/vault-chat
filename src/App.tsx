@@ -10,6 +10,7 @@ import { SettingsPane } from "./SettingsPane";
 import { Titlebar } from "./Titlebar";
 import { useStore } from "./store";
 import { gitInitIfNeeded } from "./git";
+import { openUrl, isExternalHref } from "./opener";
 import "./App.css";
 
 export default function App() {
@@ -88,6 +89,34 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [toggleMode, toggleLeft, toggleRight, currentFile]);
+
+  // Intercept clicks on external links anywhere in the app — open them in
+  // the user's default browser instead of navigating the webview away.
+  // Also handles middle-click and Ctrl/Cmd+click (browser "open in new tab"
+  // muscle memory).
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented) return;
+      if (e.button !== 0 && e.button !== 1) return;
+      const target = e.target as HTMLElement | null;
+      const anchor = target?.closest?.("a") as HTMLAnchorElement | null;
+      if (!anchor) return;
+      const href = anchor.getAttribute("href");
+      if (!href || !isExternalHref(href)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openUrl(href).catch((err) => console.error("[opener] failed:", err));
+    };
+    const onAuxClick = (e: MouseEvent) => {
+      if (e.button === 1) onClick(e);
+    };
+    window.addEventListener("click", onClick, true);
+    window.addEventListener("auxclick", onAuxClick, true);
+    return () => {
+      window.removeEventListener("click", onClick, true);
+      window.removeEventListener("auxclick", onAuxClick, true);
+    };
+  }, []);
 
   return (
     <div className="h-full w-full bg-background flex flex-col">

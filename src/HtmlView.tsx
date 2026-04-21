@@ -1,3 +1,24 @@
+import { useEffect, useRef } from "react";
+import { openUrl, isExternalHref } from "./opener";
+
+const LINK_INTERCEPT = `<script>(function(){
+  function isExternal(href){ return /^(https?:|mailto:)/i.test(href); }
+  function handle(e){
+    var btn = e.button || 0;
+    if (btn !== 0 && btn !== 1) return;
+    var el = e.target;
+    while (el && el.tagName !== 'A') el = el.parentElement;
+    if (!el) return;
+    var href = el.getAttribute('href');
+    if (!href || !isExternal(href)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try { parent.postMessage({ __vc_open_url: href }, '*'); } catch(_) {}
+  }
+  document.addEventListener('click', handle, true);
+  document.addEventListener('auxclick', handle, true);
+})();</script>`;
+
 const SCROLLBAR_INJECT = `<style id="__vc_scrollbar_base">
   ::-webkit-scrollbar { width: 5px; height: 5px; background: transparent; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -30,19 +51,33 @@ const SCROLLBAR_INJECT = `<style id="__vc_scrollbar_base">
   else run();
 })();</script>`;
 
-function injectScrollbarStyles(html: string): string {
+function injectHeadScripts(html: string): string {
+  const payload = SCROLLBAR_INJECT + LINK_INTERCEPT;
   if (/<head[^>]*>/i.test(html)) {
-    return html.replace(/<head[^>]*>/i, (m) => m + SCROLLBAR_INJECT);
+    return html.replace(/<head[^>]*>/i, (m) => m + payload);
   }
-  return SCROLLBAR_INJECT + html;
+  return payload + html;
 }
 
 export function HtmlView({ content }: { content: string }) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.source !== iframeRef.current?.contentWindow) return;
+      const data = e.data as { __vc_open_url?: unknown } | null;
+      const href = data?.__vc_open_url;
+      if (typeof href !== "string" || !isExternalHref(href)) return;
+      openUrl(href).catch((err) => console.error("[opener] failed:", err));
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-background">
       <iframe
+        ref={iframeRef}
         sandbox="allow-scripts"
-        srcDoc={injectScrollbarStyles(content)}
+        srcDoc={injectHeadScripts(content)}
         className="flex-1 w-full bg-background"
         title="HTML preview"
       />

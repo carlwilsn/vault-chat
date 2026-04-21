@@ -14,6 +14,18 @@
     "core:window:allow-is-maximized",
     "core:window:allow-set-focus",
     "core:webview:allow-create-webview-window",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "http://**" }, { "url": "https://**" }, { "url": "mailto:*" }]
+    },
+    {
+      "identifier": "opener:allow-reveal-item-in-dir",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "**" }]
+    }
   ]
 }
