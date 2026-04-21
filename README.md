@@ -92,17 +92,16 @@ When the app opens: hit the gear icon → paste an API key (Anthropic, OpenAI, o
 - **Git-backed**. Every agent turn that touches files auto-commits. One-click restore to any earlier commit. Vault never loses state.
 - **Three editable surfaces** — explained below. The agent can modify its own config, and (in dev mode) the app's own source.
 
-## The three editable surfaces
+## The two editable surfaces
 
-vault-chat treats every folder as a vault. Three are worth knowing about:
+vault-chat treats every folder as a vault. Two are worth knowing about:
 
 | Surface | Where | What's there | Switch from |
 |---|---|---|---|
 | **User vault** | any folder you pick | your notes | titlebar → folder icon |
 | **Meta vault** | `%APPDATA%/com.vault-chat.app/meta/` (Windows) — same pattern Mac/Linux | `system.md`, `skills/`, `tools/` | settings → "Open meta vault" |
-| **App source** | the repo you cloned | the app itself | settings → "Open app source" |
 
-Each is git-versioned with auto-commit. The titlebar shows a chip when you're in one of the non-user surfaces so you never forget where you are.
+Each is git-versioned with auto-commit. The titlebar shows a chip when you're in the meta vault so you never forget where you are.
 
 ### Creating new skills
 

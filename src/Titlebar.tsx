@@ -185,17 +185,12 @@ export function Titlebar() {
   const vaultName = vaultPath ? vaultPath.split("/").filter(Boolean).pop() : null;
   const isMac =
     typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
-  const [sourceDir, setSourceDir] = useState<string | null>(null);
   const [metaDir, setMetaDir] = useState<string | null>(null);
   useEffect(() => {
-    invoke<string>("app_source_dir")
-      .then((p) => setSourceDir(p))
-      .catch(() => {});
     invoke<string>("meta_vault_path")
       .then((p) => setMetaDir(p))
       .catch(() => {});
   }, []);
-  const inSource = !!vaultPath && vaultPath === sourceDir;
   const inMeta = !!vaultPath && vaultPath === metaDir;
 
   return (
@@ -222,11 +217,6 @@ export function Titlebar() {
         >
           <FolderOpen className="h-3.5 w-3.5 opacity-80" />
           <span className="max-w-[220px] truncate">{vaultName ?? "Open vault"}</span>
-          {inSource && (
-            <span className="rounded px-1.5 py-px text-[10px] bg-destructive/20 text-destructive font-mono">
-              app source
-            </span>
-          )}
           {inMeta && (
             <span className="rounded px-1.5 py-px text-[10px] bg-primary/20 text-primary font-mono">
               meta

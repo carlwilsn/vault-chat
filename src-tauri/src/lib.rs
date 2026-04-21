@@ -1324,22 +1324,6 @@ fn meta_vault_path(app: tauri::AppHandle) -> Result<String, String> {
     Ok(dir.to_string_lossy().replace('\\', "/"))
 }
 
-/// Return the absolute path to the vault-chat source repo — the
-/// parent of src-tauri, resolved at compile time via
-/// CARGO_MANIFEST_DIR. Only meaningful when running from source
-/// (i.e. `tauri dev` or the "Shape A" terminal-launch flow). In a
-/// packaged binary this still returns the compile-time path, which
-/// may not exist on the end-user's machine; the TS caller handles
-/// that by listing the folder and erroring quietly if it's gone.
-#[tauri::command]
-fn app_source_dir() -> Result<String, String> {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let parent = std::path::Path::new(manifest)
-        .parent()
-        .ok_or_else(|| "manifest dir has no parent".to_string())?;
-    Ok(parent.to_string_lossy().replace('\\', "/"))
-}
-
 // ----- run_script -----
 //
 // Executes a vault-tool script (Python / Node / bash / etc.). The
@@ -1577,7 +1561,6 @@ pub fn run() {
             git_restore_to_commit,
             meta_vault_init,
             meta_vault_path,
-            app_source_dir,
             run_script,
             keychain_get,
             keychain_set,
