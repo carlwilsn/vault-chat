@@ -293,24 +293,41 @@ export function InlineEditPrompt({
     return () => window.removeEventListener("resize", onResize);
   }, [request.anchor.left, request.anchor.top, request.anchor.bottom, request.anchor.right, request.anchor.dirX, request.anchor.dirY]);
 
-  // Begin a drag. Only fires when the pointerdown lands on a non-
-  // interactive surface (the outer wrapper padding, the bottom status
-  // strip, etc.) — we bail out if the target is inside an input, button,
-  // or the result content so those stay clickable/selectable.
+  const [dragging, setDragging] = useState(false);
+
+  // Begin a drag from anywhere on the popup that isn't an interactive
+  // control. A 6px threshold lets short clicks pass through as normal
+  // text selection / link clicks inside the rendered result; once the
+  // pointer has moved past that, we take over, clear any selection that
+  // started, and move the popup.
   const onDragPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     const t = e.target as HTMLElement;
-    if (t.closest("textarea, input, button, a, pre, code, .prose-chat")) return;
+    if (t.closest("textarea, input, button, a")) return;
     if (e.button !== 0) return;
-    e.preventDefault();
+    const originX = e.clientX;
+    const originY = e.clientY;
     const startX = e.clientX - drag.x;
     const startY = e.clientY - drag.y;
+    let active = false;
     const onMove = (ev: PointerEvent) => {
+      if (!active) {
+        const dx = ev.clientX - originX;
+        const dy = ev.clientY - originY;
+        if (dx * dx + dy * dy < 36) return; // 6px threshold
+        active = true;
+        setDragging(true);
+        // Cancel any in-progress text selection that the initial
+        // mousedown may have started.
+        window.getSelection()?.removeAllRanges();
+      }
+      ev.preventDefault();
       setDrag({ x: ev.clientX - startX, y: ev.clientY - startY });
       dragged.current = true;
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      setDragging(false);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -318,12 +335,15 @@ export function InlineEditPrompt({
 
   return createPortal(
     <div
-      className="fixed z-50 w-[416px] max-w-[90vw] rounded-md border border-border bg-card shadow-xl flex flex-col cursor-move"
+      className="fixed z-50 w-[416px] max-w-[90vw] rounded-md border border-border bg-card shadow-xl flex flex-col"
       style={{
         left: placement.left + drag.x,
         top: placement.top != null ? placement.top + drag.y : undefined,
         bottom: placement.bottom != null ? placement.bottom - drag.y : undefined,
         maxHeight: placement.maxHeight,
+        userSelect: dragging ? "none" : undefined,
+        WebkitUserSelect: dragging ? "none" : undefined,
+        cursor: dragging ? "grabbing" : undefined,
       }}
       onKeyDown={onKeyDown}
       onMouseDown={(e) => e.stopPropagation()}
