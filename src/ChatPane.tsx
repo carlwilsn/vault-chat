@@ -214,6 +214,7 @@ export function ChatPane() {
             activeTool={liveTools.find((t) => !t.result)?.name}
             streaming={!!streamingText}
             reasoning={!!streamingReasoning && !streamingText}
+            liveChars={streamingText.length + streamingReasoning.length}
           />
         )}
         </div>
@@ -389,16 +390,6 @@ const MessageBubble = memo(function MessageBubble({
               </div>
             </details>
           )}
-          {message.usage && (
-            <div
-              className="text-[10.5px] font-mono text-muted-foreground/70 flex items-center gap-2"
-              title={`prompt: ${message.usage.prompt.toLocaleString()} · completion: ${message.usage.completion.toLocaleString()} · context: ${message.usage.context.toLocaleString()}`}
-            >
-              <span>↑ {formatTokens(message.usage.prompt)}</span>
-              <span>↓ {formatTokens(message.usage.completion)}</span>
-              <span className="opacity-60">· {formatTokens(message.usage.total)} total</span>
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -553,18 +544,30 @@ function ElapsedTimer() {
   );
 }
 
-function ThinkingIndicator(_: {
+function ThinkingIndicator({
+  liveChars,
+}: {
   activeTool?: string;
   streaming?: boolean;
   reasoning?: boolean;
+  liveChars?: number;
 }) {
+  // Live token estimate while streaming. Per-turn usage isn't available
+  // until the "done" event fires, so we approximate from character count
+  // — Claude / GPT tokenizers average roughly 4 chars/token on English.
+  const liveTokens = liveChars ? Math.max(1, Math.round(liveChars / 4)) : 0;
   return (
-    <div className="flex items-center py-1 text-foreground/80">
+    <div className="flex items-center gap-2 py-1 text-foreground/80">
       <span className="relative inline-flex h-3 w-3 vc-pulse-drift">
         <span className="absolute inset-0 rounded-full bg-current vc-pulse-ring-a" />
         <span className="absolute inset-0 rounded-full bg-current vc-pulse-ring-b" />
         <span className="relative inline-flex h-3 w-3 rounded-full bg-current vc-pulse-core" />
       </span>
+      {liveTokens > 0 && (
+        <span className="text-[10.5px] font-mono tabular-nums text-muted-foreground">
+          {formatTokens(liveTokens)} tokens
+        </span>
+      )}
     </div>
   );
 }
