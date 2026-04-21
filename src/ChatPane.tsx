@@ -550,12 +550,9 @@ function ThinkingIndicator(_: {
 }) {
   return (
     <div className="flex items-center py-1 text-foreground/80">
-      <span className="relative inline-flex h-3 w-3">
-        <span className="absolute inset-0 rounded-full bg-current vc-pulse-ring" />
-        <span
-          className="absolute inset-0 rounded-full bg-current vc-pulse-ring"
-          style={{ animationDelay: "0.42s" }}
-        />
+      <span className="relative inline-flex h-3 w-3 vc-pulse-drift">
+        <span className="absolute inset-0 rounded-full bg-current vc-pulse-ring-a" />
+        <span className="absolute inset-0 rounded-full bg-current vc-pulse-ring-b" />
         <span className="relative inline-flex h-3 w-3 rounded-full bg-current vc-pulse-core" />
       </span>
     </div>
