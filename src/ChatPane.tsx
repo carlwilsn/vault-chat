@@ -49,38 +49,25 @@ function filterFilesForMention(
   return hits.map(({ score: _s, ...h }) => h);
 }
 
-// Expand `@path` markers in the outgoing message into prepended context
-// blocks with the file's content. Unreadable-as-text files (images, pdfs,
-// unsupported) are mentioned by path only — the agent can fetch them
-// explicitly via Read / PdfExtract if needed.
-async function expandMentions(
+// Expand the chip-attached mentions into prepended context blocks with
+// the file's content. Unreadable-as-text files (images, pdfs, unsupported)
+// are mentioned by path only so the agent knows to fetch them explicitly.
+async function expandAttachedMentions(
   text: string,
-  vaultPath: string | null,
-  files: FileEntry[],
+  mentions: Array<{ rel: string; path: string }>,
 ): Promise<string> {
-  if (!vaultPath) return text;
-  const re = /(^|\s)@([^\s]+)/g;
-  const mentions: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    mentions.push(m[2]);
-  }
   if (mentions.length === 0) return text;
-  const uniq = Array.from(new Set(mentions));
   const blocks: string[] = [];
-  for (const rel of uniq) {
-    const abs = `${vaultPath}/${rel}`;
-    const hit = files.find((f) => f.path === abs) ?? files.find((f) => !f.is_dir && f.name === rel);
-    if (!hit) continue;
-    if (isUnreadableAsText(hit.path)) {
-      blocks.push(`@${rel} → ${hit.path} (binary; ask to open explicitly)`);
+  for (const { rel, path } of mentions) {
+    if (isUnreadableAsText(path)) {
+      blocks.push(`@${rel} → ${path} (binary; ask to open explicitly)`);
       continue;
     }
     try {
-      const content = await invoke<string>("read_text_file", { path: hit.path });
-      blocks.push(`--- @${rel} (${hit.path}) ---\n${content}\n--- end ${rel} ---`);
+      const content = await invoke<string>("read_text_file", { path });
+      blocks.push(`--- @${rel} (${path}) ---\n${content}\n--- end ${rel} ---`);
     } catch (err) {
-      blocks.push(`@${rel} → ${hit.path} (failed to read: ${String(err)})`);
+      blocks.push(`@${rel} → ${path} (failed to read: ${String(err)})`);
     }
   }
   if (blocks.length === 0) return text;
@@ -113,6 +100,12 @@ export function ChatPane() {
   const [showSkillMenu, setShowSkillMenu] = useState(false);
   const [fileMention, setFileMention] = useState<{ query: string; start: number } | null>(null);
   const [fileMentionIdx, setFileMentionIdx] = useState(0);
+  // Mentions live outside the textarea once picked: chips above the
+  // input own them. Each entry remembers the original "@query" raw
+  // text so backspacing on empty input can restore it for edits.
+  const [mentions, setMentions] = useState<
+    Array<{ rel: string; path: string; name: string; raw: string }>
+  >([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Track whether the user is pinned near the bottom. If they scroll up
@@ -195,13 +188,17 @@ export function ChatPane() {
   }
 
   const send = async () => {
-    if (!input.trim() || busy || !ready) return;
+    if (busy || !ready) return;
     const text = input.trim();
-    // Expand @mentions: for each @path matching a file in the vault,
-    // prepend the file's content as a context block so the agent sees
-    // it inline instead of having to Read-tool the file after the fact.
-    const expanded = await expandMentions(text, vaultPath, files);
+    if (!text && mentions.length === 0) return;
+    // Expand attached mentions into prepended context blocks so the
+    // agent sees the files inline rather than having to Read each one.
+    const expanded = await expandAttachedMentions(
+      text,
+      mentions.map((m) => ({ rel: m.rel, path: m.path })),
+    );
     setInput("");
+    setMentions([]);
     setShowSkillMenu(false);
     setFileMention(null);
     dispatchChatAction({ kind: "send", text: expanded });
@@ -226,7 +223,7 @@ export function ChatPane() {
       if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
         e.preventDefault();
         const hit = matchedFiles[fileMentionIdx] ?? matchedFiles[0];
-        pickMention(hit.rel);
+        pickMention(hit);
         return;
       }
       if (e.key === "Escape") {
@@ -243,6 +240,13 @@ export function ChatPane() {
     if (e.key === "Tab" && showSkillMenu && filteredSkills.length > 0) {
       e.preventDefault();
       pickSkill(filteredSkills[0].name);
+      return;
+    }
+    // Backspace on empty input pops the most recent mention back into
+    // the textarea as editable text — Gmail-style chip correction.
+    if (e.key === "Backspace" && input === "" && mentions.length > 0) {
+      e.preventDefault();
+      restoreLastMention();
       return;
     }
     if (e.key === "Escape") setShowSkillMenu(false);
@@ -282,20 +286,55 @@ export function ChatPane() {
     ? filterFilesForMention(files, vaultPath, fileMention.query).slice(0, 8)
     : [];
 
-  const pickMention = (relPath: string) => {
+  const pickMention = (hit: MentionHit) => {
     if (!fileMention) return;
+    const rawAt = input.slice(fileMention.start, fileMention.start + 1 + fileMention.query.length);
     const before = input.slice(0, fileMention.start);
     const after = input.slice(fileMention.start + 1 + fileMention.query.length);
-    const inserted = `@${relPath}`;
-    const next = `${before}${inserted}${after.startsWith(" ") ? "" : " "}${after}`;
+    // Strip the @query from the textarea — the chip above carries it now.
+    const next = `${before}${after.replace(/^\s+/, "")}`.trimStart();
     setInput(next);
+    setMentions((prev) => {
+      if (prev.some((m) => m.path === hit.path)) return prev;
+      return [...prev, { rel: hit.rel, path: hit.path, name: hit.name, raw: rawAt }];
+    });
     setFileMention(null);
-    // Move caret past the insertion on next tick.
     requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el) return;
-      const pos = before.length + inserted.length + 1;
+      const pos = before.length;
       el.setSelectionRange(pos, pos);
+      el.focus();
+    });
+  };
+
+  const removeMention = (path: string) => {
+    setMentions((prev) => prev.filter((m) => m.path !== path));
+  };
+
+  const openMentionInViewer = async (path: string) => {
+    try {
+      const content = isUnreadableAsText(path)
+        ? ""
+        : await invoke<string>("read_text_file", { path });
+      useStore.getState().setCurrentFile(path, content);
+    } catch (err) {
+      console.error("[mention] open failed:", err);
+    }
+  };
+
+  // Backspace on empty input restores the most recent mention as
+  // editable text. Mirrors the Gmail chip-input pattern: deleting a
+  // token brings the raw characters back for a correction.
+  const restoreLastMention = () => {
+    if (mentions.length === 0) return;
+    const last = mentions[mentions.length - 1];
+    setMentions((prev) => prev.slice(0, -1));
+    setInput(last.raw);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.setSelectionRange(last.raw.length, last.raw.length);
       el.focus();
     });
   };
@@ -416,7 +455,7 @@ export function ChatPane() {
                 )}
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  pickMention(f.rel);
+                  pickMention(f);
                 }}
                 onMouseEnter={() => setFileMentionIdx(i)}
               >
@@ -433,7 +472,11 @@ export function ChatPane() {
 
         <div className="p-3 max-w-[820px] mx-auto w-full">
           <div className="relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors">
-            <MentionChips input={input} files={files} vaultPath={vaultPath} setInput={setInput} />
+            <MentionChips
+              mentions={mentions}
+              onOpen={openMentionInViewer}
+              onRemove={removeMention}
+            />
             <div className="relative flex items-end">
               <Textarea
                 ref={inputRef}
@@ -724,75 +767,36 @@ function ElapsedTimer() {
   );
 }
 
-// Row of chips above the input showing each @mention that resolves to a
-// real file. Click the chip to open the file; click X to remove it from
-// the input. Chips that don't resolve to a file (typo, stale reference)
-// aren't shown — the raw @text stays in the textarea as plain text.
+// Attached-file chips above the input. Each chip represents a file the
+// user summoned with @. Click opens it in the viewer; × detaches it.
 function MentionChips({
-  input,
-  files,
-  vaultPath,
-  setInput,
+  mentions,
+  onOpen,
+  onRemove,
 }: {
-  input: string;
-  files: FileEntry[];
-  vaultPath: string | null;
-  setInput: (s: string) => void;
+  mentions: Array<{ rel: string; path: string; name: string }>;
+  onOpen: (path: string) => void;
+  onRemove: (path: string) => void;
 }) {
-  if (!vaultPath || !input.includes("@")) return null;
-  const re = /(^|\s)@([^\s]+)/g;
-  const hits: Array<{ rel: string; path: string; match: string }> = [];
-  const seen = new Set<string>();
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(input)) !== null) {
-    const rel = m[2];
-    if (seen.has(rel)) continue;
-    seen.add(rel);
-    const abs = `${vaultPath}/${rel}`;
-    const hit = files.find((f) => f.path === abs) ?? files.find((f) => !f.is_dir && f.name === rel);
-    if (!hit) continue;
-    hits.push({ rel, path: hit.path, match: `${m[1]}@${rel}` });
-  }
-  if (hits.length === 0) return null;
-
-  const openInViewer = async (path: string) => {
-    try {
-      const content = isUnreadableAsText(path)
-        ? ""
-        : await invoke<string>("read_text_file", { path });
-      useStore.getState().setCurrentFile(path, content);
-    } catch (err) {
-      console.error("[mention] open failed:", err);
-    }
-  };
-
-  const remove = (rel: string) => {
-    // Remove every occurrence of `@rel` with its preceding space (if any),
-    // collapsing whitespace. Uses a regex because the same mention can
-    // appear multiple times.
-    const pattern = new RegExp(`(^|\\s)@${rel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "g");
-    const next = input.replace(pattern, "$1").replace(/\s{2,}/g, " ").trimStart();
-    setInput(next);
-  };
-
+  if (mentions.length === 0) return null;
   return (
     <div className="flex flex-wrap gap-1 px-2 pt-2">
-      {hits.map((h) => (
+      {mentions.map((m) => (
         <div
-          key={h.rel}
-          className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-full bg-primary/15 border border-primary/30 text-[11px] text-foreground group"
+          key={m.path}
+          className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-full bg-primary/15 border border-primary/30 text-[11px] text-foreground"
         >
           <button
-            onClick={() => openInViewer(h.path)}
+            onClick={() => onOpen(m.path)}
             className="font-mono max-w-[240px] truncate hover:underline underline-offset-2"
-            title={h.path}
+            title={m.path}
           >
-            @{h.rel}
+            @{m.rel}
           </button>
           <button
-            onClick={() => remove(h.rel)}
+            onClick={() => onRemove(m.path)}
             className="h-4 w-4 flex items-center justify-center rounded-full hover:bg-primary/25 text-muted-foreground hover:text-foreground"
-            title="Remove"
+            title="Remove (or backspace on empty input to edit)"
           >
             <svg width="10" height="10" viewBox="0 0 10 10" className="pointer-events-none">
               <path d="M2 2 L8 8 M8 2 L2 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
