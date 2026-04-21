@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, RotateCw, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, Undo2, History } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, Undo2, History } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded, gitRecentCommits, gitShowCommit, gitRestoreToCommit, type GitCommit } from "./git";
@@ -62,12 +62,6 @@ export function Titlebar() {
       // Silent no-op if already one.
       gitInitIfNeeded(normalized).catch(() => {});
     }
-  };
-
-  const refresh = async () => {
-    if (!vaultPath) return;
-    const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: vaultPath });
-    setFiles(listed);
   };
 
   const openHidden = async () => {
@@ -231,13 +225,6 @@ export function Titlebar() {
               title="Hidden files"
             >
               <Eye className="h-3.5 w-3.5" />
-            </button>
-            <button
-              onClick={refresh}
-              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
-              title="Refresh"
-            >
-              <RotateCw className="h-3.5 w-3.5" />
             </button>
             <button
               onClick={openHistory}

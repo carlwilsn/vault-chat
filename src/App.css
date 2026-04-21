@@ -156,6 +156,67 @@
   .prose-md .katex-display { @apply my-4; }
   .prose-md img { @apply rounded-md my-3 max-w-full; }
 
+  /* GFM task list — remark-gfm wraps the <li> with class
+     `task-list-item` and inserts a leading <input type="checkbox">.
+     We remove the default bullet on those <li>s, tighten the spacing,
+     and theme the checkbox to match the app's surface/border palette. */
+  .prose-md ul li.task-list-item,
+  .prose-md ol li.task-list-item {
+    list-style: none;
+    margin-left: -1.25rem;
+    padding-left: 0;
+  }
+  .prose-md li.task-list-item > input[type="checkbox"],
+  .prose-md input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    border: 1px solid hsl(var(--border));
+    border-radius: 3px;
+    background: hsl(var(--muted));
+    cursor: pointer;
+    margin: 0 8px 0 0;
+    padding: 0;
+    vertical-align: -2px;
+    box-sizing: border-box;
+    transition: background-color 120ms, border-color 120ms;
+  }
+  .prose-md li.task-list-item > input[type="checkbox"]:hover,
+  .prose-md input[type="checkbox"]:hover {
+    border-color: hsl(var(--muted-foreground) / 0.6);
+  }
+  .prose-md li.task-list-item > input[type="checkbox"]:checked,
+  .prose-md input[type="checkbox"]:checked {
+    background: hsl(var(--primary));
+    border-color: hsl(var(--primary));
+  }
+  .prose-md li.task-list-item > input[type="checkbox"]::after,
+  .prose-md input[type="checkbox"]::after {
+    content: "";
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 3px;
+    height: 7px;
+    border: solid hsl(var(--primary-foreground));
+    border-width: 0 1.5px 1.5px 0;
+    transform: rotate(45deg);
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+  .prose-md li.task-list-item > input[type="checkbox"]:checked::after,
+  .prose-md input[type="checkbox"]:checked::after {
+    opacity: 1;
+  }
+  .prose-md li.task-list-item > input[type="checkbox"]:focus-visible,
+  .prose-md input[type="checkbox"]:focus-visible {
+    outline: 2px solid hsl(var(--ring) / 0.6);
+    outline-offset: 2px;
+  }
+
   /* Live-tool ticker: whenever a new tool arrives its key changes,
      React re-mounts the span, and this animation plays — the previous
      entry is replaced by a short slide+fade so it "flows" rather than

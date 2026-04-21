@@ -8,7 +8,7 @@ export type FileKind =
   | "code";
 
 const IMAGE_EXTS = new Set([
-  "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "tif", "tiff", "heic",
+  "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "tif", "tiff", "heic", "svg",
 ]);
 
 // Binary formats we don't display inline (video, audio, archives, office,

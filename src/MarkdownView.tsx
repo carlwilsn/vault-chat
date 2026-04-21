@@ -7,6 +7,9 @@ import remarkBreaks from "remark-breaks";
 import rehypeRaw from "rehype-raw";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
+import { visit } from "unist-util-visit";
+import type { Plugin } from "unified";
+import type { Root } from "mdast";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
 import { invoke } from "@tauri-apps/api/core";
@@ -24,6 +27,53 @@ import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { fileKind, isUnreadableAsText } from "./fileKind";
 
+// Obsidian-style wikilinks: `[[Target]]`, `[[Target|Display]]`, and
+// `[[Target#Section]]`. We rewrite them to plain markdown links with a
+// `vault://` scheme so VaultLink can tell them apart from file-relative
+// paths and resolve against the vault root. If Target has no extension,
+// `.md` is appended so `[[goals/foo]]` opens the corresponding note.
+const wikiLinkRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+
+const remarkWikiLinks: Plugin<[], Root> = () => {
+  return (tree) => {
+    visit(tree, "text", (node, index, parent) => {
+      if (!parent || typeof index !== "number") return;
+      const value = node.value;
+      if (!value.includes("[[")) return;
+      wikiLinkRe.lastIndex = 0;
+      const pieces: Array<Root["children"][number] | { type: "text"; value: string }> = [];
+      let last = 0;
+      let match: RegExpExecArray | null;
+      while ((match = wikiLinkRe.exec(value)) !== null) {
+        if (match.index > last) {
+          pieces.push({ type: "text", value: value.slice(last, match.index) });
+        }
+        const rawTarget = match[1].trim();
+        const display = (match[2] ?? rawTarget).trim();
+        // Split out #anchor if present.
+        const hashAt = rawTarget.indexOf("#");
+        const pathPart = hashAt >= 0 ? rawTarget.slice(0, hashAt) : rawTarget;
+        const anchor = hashAt >= 0 ? rawTarget.slice(hashAt) : "";
+        const hasExt = /\.[^./\\]+$/.test(pathPart);
+        const url = `vault://${hasExt ? pathPart : pathPart + ".md"}${anchor}`;
+        pieces.push({
+          type: "link",
+          url,
+          title: null,
+          children: [{ type: "text", value: display }],
+        } as Root["children"][number]);
+        last = wikiLinkRe.lastIndex;
+      }
+      if (pieces.length === 0) return;
+      if (last < value.length) {
+        pieces.push({ type: "text", value: value.slice(last) });
+      }
+      parent.children.splice(index, 1, ...(pieces as Root["children"]));
+      return index + pieces.length;
+    });
+  };
+};
+
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
   const baseParts = baseFile.slice(0, baseFile.lastIndexOf(sep)).split(sep);
@@ -37,11 +87,44 @@ function resolveRelative(baseFile: string, rel: string): string {
 
 function VaultLink({ href, children, ...rest }: ComponentPropsWithoutRef<"a">) {
   const currentFile = useStore((s) => s.currentFile);
+  const vaultPath = useStore((s) => s.vaultPath);
+  const files = useStore((s) => s.files);
   const setCurrentFile = useStore((s) => s.setCurrentFile);
 
   const onClick = async (e: ReactMouseEvent<HTMLAnchorElement>) => {
     if (!href) return;
-    if (href.startsWith("#")) return; // in-page anchor — let browser scroll
+    if (href.startsWith("#")) return;
+
+    // Wiki-style link emitted by remarkWikiLinks. Resolve against the
+    // vault root; if the exact path doesn't exist, fall back to a
+    // basename search across the vault (Obsidian-ish).
+    if (href.startsWith("vault://")) {
+      e.preventDefault();
+      if (!vaultPath) return;
+      const raw = href.slice("vault://".length).split("#")[0].split("?")[0];
+      const primary = `${vaultPath}/${raw}`;
+      let target = primary;
+      if (!files.some((f) => f.path === primary)) {
+        // Search by full suffix, then by basename.
+        const suffixHit = files.find((f) => !f.is_dir && f.path.endsWith("/" + raw));
+        if (suffixHit) target = suffixHit.path;
+        else {
+          const wantedName = raw.split("/").pop() ?? raw;
+          const nameHit = files.find((f) => !f.is_dir && f.name === wantedName);
+          if (nameHit) target = nameHit.path;
+        }
+      }
+      try {
+        const content = isUnreadableAsText(target)
+          ? ""
+          : await invoke<string>("read_text_file", { path: target });
+        setCurrentFile(target, content);
+      } catch (err) {
+        console.error("vault-chat: failed to open wiki link:", target, err);
+      }
+      return;
+    }
+
     if (/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.toLowerCase().startsWith("file:")) {
       // External scheme (http/https/mailto/…). The global handler in
       // App.tsx dispatches to the system browser via the opener plugin;
@@ -130,6 +213,26 @@ function VaultImage({ src, alt, ...rest }: ComponentPropsWithoutRef<"img">) {
   return <img src={url} alt={alt} {...rest} />;
 }
 
+// Flip the Nth GFM task-list checkbox in `content`. A task-list item is a
+// list item (- / * / + / "1.") whose first inline content is "[ ]", "[x]",
+// or "[X]". Matches must start on a new line; "[x]" buried inside a
+// paragraph is not a task checkbox.
+function flipNthTaskCheckbox(content: string, n: number): string | null {
+  const re = /^(\s*(?:[-*+]|\d+\.)\s+)\[([ xX])\]/gm;
+  let i = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(content)) !== null) {
+    if (i === n) {
+      const cur = match[2];
+      const flipped = cur === " " ? "x" : " ";
+      const charIdx = match.index + match[1].length + 1; // position between the brackets
+      return content.slice(0, charIdx) + flipped + content.slice(charIdx + 1);
+    }
+    i++;
+  }
+  return null;
+}
+
 type Props = { paneId?: string };
 
 export function MarkdownView({ paneId }: Props) {
@@ -208,6 +311,39 @@ export function MarkdownView({ paneId }: Props) {
     if (!paneId) return;
     e.dataTransfer.setData(VAULT_PANE_MIME, paneId);
     e.dataTransfer.effectAllowed = "move";
+  };
+
+  // GFM task checkboxes render as <input type="checkbox" disabled> via
+  // remark-gfm. We override the input component to make them interactive:
+  // on toggle, locate the clicked checkbox's index among all rendered
+  // checkboxes, flip the Nth task-list token in the source, and save.
+  const renderInput = (props: ComponentPropsWithoutRef<"input"> & { node?: unknown }) => {
+    const { node: _node, type, disabled: _disabled, checked, onChange: _oc, ...rest } = props;
+    if (type !== "checkbox") {
+      return <input type={type} disabled={_disabled} {...rest} />;
+    }
+    const onFlip = (e: ReactMouseEvent<HTMLInputElement>) => {
+      const scope = viewScrollRef.current;
+      if (!scope) return;
+      const all = Array.from(
+        scope.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+      );
+      const idx = all.indexOf(e.currentTarget);
+      if (idx < 0) return;
+      const next = flipNthTaskCheckbox(content, idx);
+      if (next == null) return;
+      onChange(next);
+    };
+    return (
+      <input
+        type="checkbox"
+        checked={!!checked}
+        onChange={() => {}}
+        onClick={onFlip}
+        style={{ cursor: "pointer" }}
+        {...rest}
+      />
+    );
   };
 
   // Ctrl+L in view mode opens the inline ask popover, using any text
@@ -404,9 +540,9 @@ export function MarkdownView({ paneId }: Props) {
         >
           <div className="prose-md mx-auto">
             <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
+              remarkPlugins={[remarkGfm, remarkMath, remarkBreaks, remarkWikiLinks]}
               rehypePlugins={[rehypeRaw, rehypeKatex, rehypeHighlight]}
-              components={{ a: VaultLink, img: VaultImage }}
+              components={{ a: VaultLink, img: VaultImage, input: renderInput }}
             >
               {content}
             </ReactMarkdown>
