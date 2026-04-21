@@ -16,11 +16,12 @@ let abortRef: AbortController | null = null;
 const COMPACT_THRESHOLD = 0.85;
 const KEEP_RECENT = 4;
 
-export async function sendMessage(text: string) {
+export async function sendMessage(text: string, contextPreamble?: string) {
   const s = useStore.getState();
   if (s.busy) return;
   const trimmed = text.trim();
-  if (!trimmed) return;
+  const preamble = contextPreamble?.trim() ?? "";
+  if (!trimmed && !preamble) return;
   const spec = findModel(s.modelId);
   const apiKey = spec ? s.apiKeys[spec.provider] : undefined;
   if (!s.vaultPath || !apiKey || !spec) return;
@@ -58,7 +59,15 @@ export async function sendMessage(text: string) {
   }
 
   const cur = useStore.getState();
-  cur.appendMessage({ role: "user", content: trimmed });
+  // Context preamble (e.g. @mention file contents) goes in as a hidden
+  // user message — present in the history sent to the agent, but not
+  // rendered in the UI so the visible bubble is just what the user typed.
+  if (preamble) {
+    cur.appendMessage({ role: "user", content: preamble, hidden: true });
+  }
+  if (trimmed) {
+    cur.appendMessage({ role: "user", content: trimmed });
+  }
   cur.setBusy(true);
   cur.resetStreaming();
 

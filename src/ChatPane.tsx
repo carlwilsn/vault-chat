@@ -49,14 +49,14 @@ function filterFilesForMention(
   return hits.map(({ score: _s, ...h }) => h);
 }
 
-// Expand the chip-attached mentions into prepended context blocks with
-// the file's content. Unreadable-as-text files (images, pdfs, unsupported)
-// are mentioned by path only so the agent knows to fetch them explicitly.
-async function expandAttachedMentions(
-  text: string,
+// Build a context preamble out of attached mentions. Returns an empty
+// string when there's nothing to attach. Unreadable-as-text files
+// (images, pdfs, unsupported) are listed by path only so the agent knows
+// to fetch them explicitly via Read / PdfExtract.
+async function buildMentionPreamble(
   mentions: Array<{ rel: string; path: string }>,
 ): Promise<string> {
-  if (mentions.length === 0) return text;
+  if (mentions.length === 0) return "";
   const blocks: string[] = [];
   for (const { rel, path } of mentions) {
     if (isUnreadableAsText(path)) {
@@ -70,8 +70,9 @@ async function expandAttachedMentions(
       blocks.push(`@${rel} → ${path} (failed to read: ${String(err)})`);
     }
   }
-  if (blocks.length === 0) return text;
-  return `${blocks.join("\n\n")}\n\n${text}`;
+  return blocks.length === 0
+    ? ""
+    : `[Files attached by the user via @mention]\n\n${blocks.join("\n\n")}`;
 }
 
 export function ChatPane() {
@@ -191,17 +192,22 @@ export function ChatPane() {
     if (busy || !ready) return;
     const text = input.trim();
     if (!text && mentions.length === 0) return;
-    // Expand attached mentions into prepended context blocks so the
-    // agent sees the files inline rather than having to Read each one.
-    const expanded = await expandAttachedMentions(
-      text,
+    // Build a hidden context preamble from the attached mentions so the
+    // agent sees the files inline. The user's visible message stays as
+    // what they typed — the attachment content doesn't clutter their
+    // own bubble.
+    const contextPreamble = await buildMentionPreamble(
       mentions.map((m) => ({ rel: m.rel, path: m.path })),
     );
     setInput("");
     setMentions([]);
     setShowSkillMenu(false);
     setFileMention(null);
-    dispatchChatAction({ kind: "send", text: expanded });
+    dispatchChatAction({
+      kind: "send",
+      text,
+      contextPreamble: contextPreamble || undefined,
+    });
   };
 
   const stop = () => dispatchChatAction({ kind: "stop" });

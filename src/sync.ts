@@ -35,7 +35,7 @@ type StreamSnapshot = {
 };
 
 export type ChatAction =
-  | { kind: "send"; text: string }
+  | { kind: "send"; text: string; contextPreamble?: string }
   | { kind: "stop" }
   | { kind: "clear" }
   | { kind: "setModel"; id: string };
@@ -65,7 +65,7 @@ function takeStreamSnapshot(): StreamSnapshot {
 }
 
 function applyActionLocal(a: ChatAction) {
-  if (a.kind === "send") sendMessage(a.text);
+  if (a.kind === "send") sendMessage(a.text, a.contextPreamble);
   else if (a.kind === "stop") stopAgent();
   else if (a.kind === "clear") clearChat();
   else if (a.kind === "setModel") setModel(a.id);
