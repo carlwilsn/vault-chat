@@ -432,32 +432,35 @@ export function ChatPane() {
         )}
 
         <div className="p-3 max-w-[820px] mx-auto w-full">
-          <div className="relative flex items-end rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors">
-            <Textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => onInputChange(e.target.value)}
-              onKeyDown={onKey}
-              placeholder={ready ? "Ask anything, or / for commands…" : "Open a vault first"}
-              disabled={!ready}
-              rows={1}
-              className="border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pl-3 !pr-11"
-            />
-            <div className="absolute right-3 bottom-2">
-              {busy ? (
-                <Button size="icon" variant="secondary" onClick={stop} className="h-7 w-7 rounded-lg">
-                  <Square className="h-3 w-3 fill-current" />
-                </Button>
-              ) : (
-                <Button
-                  size="icon"
-                  onClick={send}
-                  disabled={!ready || !input.trim()}
-                  className="h-7 w-7 rounded-lg"
-                >
-                  <ArrowUp className="h-3.5 w-3.5" />
-                </Button>
-              )}
+          <div className="relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors">
+            <MentionChips input={input} files={files} vaultPath={vaultPath} setInput={setInput} />
+            <div className="relative flex items-end">
+              <Textarea
+                ref={inputRef}
+                value={input}
+                onChange={(e) => onInputChange(e.target.value)}
+                onKeyDown={onKey}
+                placeholder={ready ? "Ask anything, or / for commands…" : "Open a vault first"}
+                disabled={!ready}
+                rows={1}
+                className="border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pl-3 !pr-11"
+              />
+              <div className="absolute right-3 bottom-2">
+                {busy ? (
+                  <Button size="icon" variant="secondary" onClick={stop} className="h-7 w-7 rounded-lg">
+                    <Square className="h-3 w-3 fill-current" />
+                  </Button>
+                ) : (
+                  <Button
+                    size="icon"
+                    onClick={send}
+                    disabled={!ready || !input.trim()}
+                    className="h-7 w-7 rounded-lg"
+                  >
+                    <ArrowUp className="h-3.5 w-3.5" />
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
@@ -718,6 +721,86 @@ function ElapsedTimer() {
     <span className="tabular-nums opacity-70" title="Agent running">
       {label}
     </span>
+  );
+}
+
+// Row of chips above the input showing each @mention that resolves to a
+// real file. Click the chip to open the file; click X to remove it from
+// the input. Chips that don't resolve to a file (typo, stale reference)
+// aren't shown — the raw @text stays in the textarea as plain text.
+function MentionChips({
+  input,
+  files,
+  vaultPath,
+  setInput,
+}: {
+  input: string;
+  files: FileEntry[];
+  vaultPath: string | null;
+  setInput: (s: string) => void;
+}) {
+  if (!vaultPath || !input.includes("@")) return null;
+  const re = /(^|\s)@([^\s]+)/g;
+  const hits: Array<{ rel: string; path: string; match: string }> = [];
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(input)) !== null) {
+    const rel = m[2];
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    const abs = `${vaultPath}/${rel}`;
+    const hit = files.find((f) => f.path === abs) ?? files.find((f) => !f.is_dir && f.name === rel);
+    if (!hit) continue;
+    hits.push({ rel, path: hit.path, match: `${m[1]}@${rel}` });
+  }
+  if (hits.length === 0) return null;
+
+  const openInViewer = async (path: string) => {
+    try {
+      const content = isUnreadableAsText(path)
+        ? ""
+        : await invoke<string>("read_text_file", { path });
+      useStore.getState().setCurrentFile(path, content);
+    } catch (err) {
+      console.error("[mention] open failed:", err);
+    }
+  };
+
+  const remove = (rel: string) => {
+    // Remove every occurrence of `@rel` with its preceding space (if any),
+    // collapsing whitespace. Uses a regex because the same mention can
+    // appear multiple times.
+    const pattern = new RegExp(`(^|\\s)@${rel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "g");
+    const next = input.replace(pattern, "$1").replace(/\s{2,}/g, " ").trimStart();
+    setInput(next);
+  };
+
+  return (
+    <div className="flex flex-wrap gap-1 px-2 pt-2">
+      {hits.map((h) => (
+        <div
+          key={h.rel}
+          className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-full bg-primary/15 border border-primary/30 text-[11px] text-foreground group"
+        >
+          <button
+            onClick={() => openInViewer(h.path)}
+            className="font-mono max-w-[240px] truncate hover:underline underline-offset-2"
+            title={h.path}
+          >
+            @{h.rel}
+          </button>
+          <button
+            onClick={() => remove(h.rel)}
+            className="h-4 w-4 flex items-center justify-center rounded-full hover:bg-primary/25 text-muted-foreground hover:text-foreground"
+            title="Remove"
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" className="pointer-events-none">
+              <path d="M2 2 L8 8 M8 2 L2 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+      ))}
+    </div>
   );
 }
 
