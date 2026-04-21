@@ -16,8 +16,21 @@
     "core:webview:allow-create-webview-window",
     "dialog:allow-open",
     "opener:default",
-    "opener:allow-open-url",
-    "opener:allow-reveal-item-in-dir",
-    "opener:allow-open-path"
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "http://**" },
+        { "url": "https://**" },
+        { "url": "mailto:*" }
+      ]
+    },
+    {
+      "identifier": "opener:allow-reveal-item-in-dir",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "**" }]
+    }
   ]
 }
