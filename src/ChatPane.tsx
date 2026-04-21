@@ -209,8 +209,12 @@ export function ChatPane() {
           </div>
         )}
 
-        {busy && !streamingText && (
-          <ThinkingIndicator activeTool={liveTools.find((t) => !t.result)?.name} />
+        {busy && (
+          <ThinkingIndicator
+            activeTool={liveTools.find((t) => !t.result)?.name}
+            streaming={!!streamingText}
+            reasoning={!!streamingReasoning && !streamingText}
+          />
         )}
         </div>
       </div>
@@ -539,26 +543,29 @@ function ElapsedTimer() {
   );
 }
 
-function ThinkingIndicator({ activeTool }: { activeTool?: string }) {
-  const [phase, setPhase] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setPhase((p) => (p + 1) % 3), 400);
-    return () => clearInterval(id);
-  }, []);
+function ThinkingIndicator({
+  activeTool,
+  streaming,
+  reasoning,
+}: {
+  activeTool?: string;
+  streaming?: boolean;
+  reasoning?: boolean;
+}) {
+  const label = activeTool
+    ? `Running ${activeTool}`
+    : reasoning
+      ? "Thinking"
+      : streaming
+        ? "Generating"
+        : "Working";
   return (
     <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
-      {activeTool && <span>Running {activeTool}</span>}
-      <span className="inline-flex gap-0.5">
-        {[0, 1, 2].map((i) => (
-          <span
-            key={i}
-            className={cn(
-              "h-1 w-1 rounded-full bg-current transition-opacity",
-              phase === i ? "opacity-100" : "opacity-30"
-            )}
-          />
-        ))}
+      <span className="relative inline-flex h-1.5 w-1.5">
+        <span className="absolute inset-0 rounded-full bg-current opacity-40 animate-ping" />
+        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current opacity-80" />
       </span>
+      <span>{label}</span>
     </div>
   );
 }
