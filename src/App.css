@@ -217,6 +217,16 @@
     outline-offset: 2px;
   }
 
+  /* Agent pulse core: subtle breathing on the filled dot so the
+     indicator looks "alive" between the outward ping waves. */
+  .vc-pulse-core {
+    animation: vc-pulse-breathe 1.4s ease-in-out infinite;
+  }
+  @keyframes vc-pulse-breathe {
+    0%, 100% { transform: scale(0.8); opacity: 0.75; }
+    50%      { transform: scale(1.05); opacity: 1; }
+  }
+
   /* Live-tool ticker: whenever a new tool arrives its key changes,
      React re-mounts the span, and this animation plays — the previous
      entry is replaced by a short slide+fade so it "flows" rather than

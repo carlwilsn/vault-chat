@@ -549,10 +549,14 @@ function ThinkingIndicator(_: {
   reasoning?: boolean;
 }) {
   return (
-    <div className="flex items-center text-muted-foreground">
-      <span className="relative inline-flex h-1.5 w-1.5">
-        <span className="absolute inset-0 rounded-full bg-current opacity-40 animate-ping" />
-        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current opacity-80" />
+    <div className="flex items-center py-1 text-foreground/80">
+      <span className="relative inline-flex h-3 w-3">
+        <span className="absolute -inset-1 rounded-full bg-current opacity-25 animate-ping" />
+        <span
+          className="absolute -inset-1 rounded-full bg-current opacity-20 animate-ping"
+          style={{ animationDelay: "0.5s" }}
+        />
+        <span className="relative inline-flex h-3 w-3 rounded-full bg-current vc-pulse-core" />
       </span>
     </div>
   );
