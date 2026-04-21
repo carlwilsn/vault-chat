@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { Eye, FileText, ZoomIn, ZoomOut, BoxSelect } from "lucide-react";
+import { FileText, ZoomIn, ZoomOut, BoxSelect } from "lucide-react";
 import { cn } from "./lib/utils";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 
@@ -420,13 +420,8 @@ export function PdfView({ path }: { path: string }) {
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-muted/20">
       <div className="sticky top-0 z-10 bg-muted/80 backdrop-blur border-b border-border/60 px-6 py-1.5 flex items-center gap-2 text-[11px] text-muted-foreground shrink-0">
-        <Eye className="h-3 w-3" />
-        <span>Read-only PDF</span>
         {pages > 0 && (
-          <>
-            <span className="opacity-60">·</span>
-            <span className="font-mono">{pages} page{pages === 1 ? "" : "s"}</span>
-          </>
+          <span className="font-mono">{pages} page{pages === 1 ? "" : "s"}</span>
         )}
         <div className="ml-auto flex items-center gap-1">
           <button
