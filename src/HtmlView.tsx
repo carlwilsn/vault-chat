@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { BoxSelect } from "lucide-react";
 import { openUrl, isExternalHref } from "./opener";
-import { cn } from "./lib/utils";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 
 const LINK_INTERCEPT = `<script>(function(){
@@ -303,22 +301,6 @@ export function HtmlView({ content }: { content: string }) {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-background relative">
-      <div className="sticky top-0 z-10 bg-muted/80 backdrop-blur border-b border-border/60 px-6 py-1.5 flex items-center justify-end gap-2 text-[11px] text-muted-foreground shrink-0">
-        <button
-          onClick={() => setMarqueeOn((v) => !v)}
-          className={cn(
-            "h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground",
-            marqueeOn && "bg-primary/20 text-foreground",
-          )}
-          title={
-            marqueeOn
-              ? "Marquee ask: drag a box (Esc to cancel)"
-              : "Marquee ask: click, then drag a box to ask about a region"
-          }
-        >
-          <BoxSelect className="h-3 w-3" />
-        </button>
-      </div>
       <div className="flex-1 relative">
         <iframe
           ref={iframeRef}
