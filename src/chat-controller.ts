@@ -123,6 +123,7 @@ export async function sendMessage(text: string) {
           role: "assistant",
           content: acc,
           toolCalls: tools.length ? tools : undefined,
+          usage: e.usage,
         });
         store.resetStreaming();
         store.setBusy(false);

@@ -389,6 +389,16 @@ const MessageBubble = memo(function MessageBubble({
               </div>
             </details>
           )}
+          {message.usage && (
+            <div
+              className="text-[10.5px] font-mono text-muted-foreground/70 flex items-center gap-2"
+              title={`prompt: ${message.usage.prompt.toLocaleString()} · completion: ${message.usage.completion.toLocaleString()} · context: ${message.usage.context.toLocaleString()}`}
+            >
+              <span>↑ {formatTokens(message.usage.prompt)}</span>
+              <span>↓ {formatTokens(message.usage.completion)}</span>
+              <span className="opacity-60">· {formatTokens(message.usage.total)} total</span>
+            </div>
+          )}
         </div>
       )}
     </div>

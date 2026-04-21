@@ -22,6 +22,8 @@ export type ChatMessage = {
   // Excluded from the UI but still sent to the agent. Used for inline-ask
   // context preambles that the user didn't type.
   hidden?: boolean;
+  // Token usage reported by the model for this turn (assistant only).
+  usage?: { prompt: number; completion: number; total: number; context: number };
 };
 
 // Shallow content-compare for the chat message list. The popout
