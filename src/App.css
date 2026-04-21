@@ -217,23 +217,31 @@
     outline-offset: 2px;
   }
 
-  /* Agent pulse core: slow breathe on the filled dot. Two offset
-     `vc-pulse-ring` halos ripple outward on a longer cycle. Total
-     cadence stays calm — ~3s per full breath. */
+  /* Agent pulse: heartbeat-style cadence. Two quick expansions close
+     together (lub-dub) followed by a rest, so the eye registers it as
+     "alive" without a metronomic loop. Core breathes in sync; rings
+     ripple outward on each beat. */
   .vc-pulse-core {
-    animation: vc-pulse-breathe 2.8s ease-in-out infinite;
+    animation: vc-pulse-breathe 1.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    transform-origin: center;
   }
   @keyframes vc-pulse-breathe {
-    0%, 100% { transform: scale(0.85); opacity: 0.8; }
-    50%      { transform: scale(1);    opacity: 1; }
+    0%   { transform: scale(0.85); opacity: 0.75; }
+    12%  { transform: scale(1.15); opacity: 1;    }
+    22%  { transform: scale(0.92); opacity: 0.9;  }
+    34%  { transform: scale(1.1);  opacity: 1;    }
+    50%  { transform: scale(0.85); opacity: 0.75; }
+    100% { transform: scale(0.85); opacity: 0.75; }
   }
   .vc-pulse-ring {
-    animation: vc-pulse-ring 2.8s ease-out infinite;
+    animation: vc-pulse-ring 1.9s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+    transform-origin: center;
   }
   @keyframes vc-pulse-ring {
-    0%   { transform: scale(1);    opacity: 0.35; }
-    80%  { transform: scale(1.6);  opacity: 0; }
-    100% { transform: scale(1.6);  opacity: 0; }
+    0%   { transform: scale(1);   opacity: 0;    }
+    5%   { transform: scale(1);   opacity: 0.45; }
+    40%  { transform: scale(1.7); opacity: 0;    }
+    100% { transform: scale(1.7); opacity: 0;    }
   }
 
   /* Live-tool ticker: whenever a new tool arrives its key changes,

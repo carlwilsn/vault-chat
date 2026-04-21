@@ -554,7 +554,7 @@ function ThinkingIndicator(_: {
         <span className="absolute inset-0 rounded-full bg-current vc-pulse-ring" />
         <span
           className="absolute inset-0 rounded-full bg-current vc-pulse-ring"
-          style={{ animationDelay: "1.4s" }}
+          style={{ animationDelay: "0.42s" }}
         />
         <span className="relative inline-flex h-3 w-3 rounded-full bg-current vc-pulse-core" />
       </span>
