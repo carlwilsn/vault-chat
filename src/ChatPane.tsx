@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkBreaks from "remark-breaks";
@@ -17,6 +17,12 @@ import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
 
 type MentionHit = { path: string; name: string; rel: string };
+
+// Pass data:image/… URLs through; everything else falls back to the
+// built-in sanitizer. react-markdown's default strips data: URLs as
+// unsafe, which kills images promoted from marquee asks into chat.
+const allowImageDataUrls = (url: string): string =>
+  url.startsWith("data:image/") ? url : defaultUrlTransform(url);
 
 // Fuzzy-ish file picker for @mentions. Query matches against file name
 // first (startsWith > contains), then against the relative path as a
@@ -584,7 +590,10 @@ const MessageBubble = memo(function MessageBubble({
     <div className={cn("flex flex-col gap-1.5", isUser && "items-end")}>
       {isUser ? (
         <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed break-words overflow-hidden prose-user">
-          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkBreaks]}
+            urlTransform={allowImageDataUrls}
+          >
             {message.content}
           </ReactMarkdown>
         </div>
