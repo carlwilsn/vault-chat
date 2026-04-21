@@ -158,13 +158,20 @@
 
   /* GFM task list — remark-gfm wraps the <li> with class
      `task-list-item` and inserts a leading <input type="checkbox">.
-     We remove the default bullet on those <li>s, tighten the spacing,
-     and theme the checkbox to match the app's surface/border palette. */
+     We remove the default bullet on those <li>s but keep a real
+     indent on nested lists so the tree still reads as a hierarchy.
+     Nested task <ul> / <ol> get a tab-sized left padding. */
   .prose-md ul li.task-list-item,
   .prose-md ol li.task-list-item {
     list-style: none;
     margin-left: -1.25rem;
     padding-left: 0;
+  }
+  .prose-md li.task-list-item ul,
+  .prose-md li.task-list-item ol {
+    padding-left: 1.5rem;
+    margin-top: 0.25rem;
+    margin-bottom: 0.25rem;
   }
   .prose-md li.task-list-item > input[type="checkbox"],
   .prose-md input[type="checkbox"] {

@@ -6,7 +6,7 @@ import type { DecorationSet } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { Table } from "@lezer/markdown";
 import { syntaxTree } from "@codemirror/language";
-import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
+import { history, historyKeymap, defaultKeymap, indentWithTab } from "@codemirror/commands";
 import katex from "katex";
 import {
   InlineEditPrompt,
@@ -619,6 +619,7 @@ export function LiveEditor({
         },
         ...defaultKeymap,
         ...historyKeymap,
+        indentWithTab,
       ]),
       markdown({ extensions: [Table] }),
       livePreviewField,
