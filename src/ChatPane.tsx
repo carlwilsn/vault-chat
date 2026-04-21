@@ -543,29 +543,17 @@ function ElapsedTimer() {
   );
 }
 
-function ThinkingIndicator({
-  activeTool,
-  streaming,
-  reasoning,
-}: {
+function ThinkingIndicator(_: {
   activeTool?: string;
   streaming?: boolean;
   reasoning?: boolean;
 }) {
-  const label = activeTool
-    ? `Running ${activeTool}`
-    : reasoning
-      ? "Thinking"
-      : streaming
-        ? "Generating"
-        : "Working";
   return (
-    <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
+    <div className="flex items-center text-muted-foreground">
       <span className="relative inline-flex h-1.5 w-1.5">
         <span className="absolute inset-0 rounded-full bg-current opacity-40 animate-ping" />
         <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current opacity-80" />
       </span>
-      <span>{label}</span>
     </div>
   );
 }
