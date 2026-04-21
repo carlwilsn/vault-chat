@@ -5,13 +5,87 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction } from "./sync";
-import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage, type LiveTool, type TodoItem } from "./store";
+import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
 import { findModel, MODELS } from "./providers";
 import { loadSkills } from "./skills";
+import { isUnreadableAsText } from "./fileKind";
 import { SettingsPane } from "./SettingsPane";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
+
+type MentionHit = { path: string; name: string; rel: string };
+
+// Fuzzy-ish file picker for @mentions. Query matches against file name
+// first (startsWith > contains), then against the relative path as a
+// fallback. Folders are excluded — attaching a whole folder isn't a
+// well-defined action (use grep / list instead via the agent).
+function filterFilesForMention(
+  files: FileEntry[],
+  vaultPath: string | null,
+  query: string,
+): MentionHit[] {
+  if (!vaultPath) return [];
+  const q = query.toLowerCase();
+  const hits: Array<MentionHit & { score: number }> = [];
+  for (const f of files) {
+    if (f.is_dir) continue;
+    if (f.hidden) continue;
+    const rel = f.path.startsWith(vaultPath + "/")
+      ? f.path.slice(vaultPath.length + 1)
+      : f.path;
+    const nameLower = f.name.toLowerCase();
+    const relLower = rel.toLowerCase();
+    let score: number;
+    if (!q) score = 10;
+    else if (nameLower.startsWith(q)) score = 100 - Math.abs(nameLower.length - q.length);
+    else if (nameLower.includes(q)) score = 60 - nameLower.indexOf(q);
+    else if (relLower.includes(q)) score = 30 - relLower.indexOf(q);
+    else continue;
+    hits.push({ path: f.path, name: f.name, rel, score });
+  }
+  hits.sort((a, b) => b.score - a.score);
+  return hits.map(({ score: _s, ...h }) => h);
+}
+
+// Expand `@path` markers in the outgoing message into prepended context
+// blocks with the file's content. Unreadable-as-text files (images, pdfs,
+// unsupported) are mentioned by path only — the agent can fetch them
+// explicitly via Read / PdfExtract if needed.
+async function expandMentions(
+  text: string,
+  vaultPath: string | null,
+  files: FileEntry[],
+): Promise<string> {
+  if (!vaultPath) return text;
+  const re = /(^|\s)@([^\s]+)/g;
+  const mentions: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    mentions.push(m[2]);
+  }
+  if (mentions.length === 0) return text;
+  const uniq = Array.from(new Set(mentions));
+  const blocks: string[] = [];
+  for (const rel of uniq) {
+    const abs = `${vaultPath}/${rel}`;
+    const hit = files.find((f) => f.path === abs) ?? files.find((f) => !f.is_dir && f.name === rel);
+    if (!hit) continue;
+    if (isUnreadableAsText(hit.path)) {
+      blocks.push(`@${rel} → ${hit.path} (binary; ask to open explicitly)`);
+      continue;
+    }
+    try {
+      const content = await invoke<string>("read_text_file", { path: hit.path });
+      blocks.push(`--- @${rel} (${hit.path}) ---\n${content}\n--- end ${rel} ---`);
+    } catch (err) {
+      blocks.push(`@${rel} → ${hit.path} (failed to read: ${String(err)})`);
+    }
+  }
+  if (blocks.length === 0) return text;
+  return `${blocks.join("\n\n")}\n\n${text}`;
+}
 
 export function ChatPane() {
   // Per-field selectors so the pane only re-renders when the field it
@@ -34,8 +108,11 @@ export function ChatPane() {
   const streamingReasoning = useStore((s) => s.streamingReasoning);
   const liveTools = useStore((s) => s.liveTools);
   const agentTodos = useStore((s) => s.agentTodos);
+  const files = useStore((s) => s.files);
   const [input, setInput] = useState("");
   const [showSkillMenu, setShowSkillMenu] = useState(false);
+  const [fileMention, setFileMention] = useState<{ query: string; start: number } | null>(null);
+  const [fileMentionIdx, setFileMentionIdx] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Track whether the user is pinned near the bottom. If they scroll up
@@ -117,12 +194,17 @@ export function ChatPane() {
     );
   }
 
-  const send = () => {
+  const send = async () => {
     if (!input.trim() || busy || !ready) return;
     const text = input.trim();
+    // Expand @mentions: for each @path matching a file in the vault,
+    // prepend the file's content as a context block so the agent sees
+    // it inline instead of having to Read-tool the file after the fact.
+    const expanded = await expandMentions(text, vaultPath, files);
     setInput("");
     setShowSkillMenu(false);
-    dispatchChatAction({ kind: "send", text });
+    setFileMention(null);
+    dispatchChatAction({ kind: "send", text: expanded });
   };
 
   const stop = () => dispatchChatAction({ kind: "stop" });
@@ -130,6 +212,29 @@ export function ChatPane() {
   const onSelectModel = (id: string) => dispatchChatAction({ kind: "setModel", id });
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (fileMention && matchedFiles.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setFileMentionIdx((i) => Math.min(i + 1, matchedFiles.length - 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setFileMentionIdx((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        const hit = matchedFiles[fileMentionIdx] ?? matchedFiles[0];
+        pickMention(hit.rel);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setFileMention(null);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       send();
@@ -146,6 +251,21 @@ export function ChatPane() {
   const onInputChange = (v: string) => {
     setInput(v);
     setShowSkillMenu(v.startsWith("/") && !v.includes(" "));
+    // Detect an active @mention at the caret. Looking backwards for the
+    // most recent @ that's either at the start or preceded by whitespace,
+    // with no whitespace between @ and caret.
+    const caret = inputRef.current?.selectionStart ?? v.length;
+    const upToCaret = v.slice(0, caret);
+    const atMatch = upToCaret.match(/(^|\s)@([^\s]*)$/);
+    if (atMatch) {
+      setFileMention({
+        query: atMatch[2],
+        start: caret - atMatch[2].length - 1, // index of '@'
+      });
+      setFileMentionIdx(0);
+    } else {
+      setFileMention(null);
+    }
   };
 
   const pickSkill = (name: string) => {
@@ -157,6 +277,28 @@ export function ChatPane() {
   const filteredSkills = input.startsWith("/")
     ? skills.filter((s) => s.name.startsWith(input.slice(1).split(" ")[0]))
     : [];
+
+  const matchedFiles = fileMention
+    ? filterFilesForMention(files, vaultPath, fileMention.query).slice(0, 8)
+    : [];
+
+  const pickMention = (relPath: string) => {
+    if (!fileMention) return;
+    const before = input.slice(0, fileMention.start);
+    const after = input.slice(fileMention.start + 1 + fileMention.query.length);
+    const inserted = `@${relPath}`;
+    const next = `${before}${inserted}${after.startsWith(" ") ? "" : " "}${after}`;
+    setInput(next);
+    setFileMention(null);
+    // Move caret past the insertion on next tick.
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      const pos = before.length + inserted.length + 1;
+      el.setSelectionRange(pos, pos);
+      el.focus();
+    });
+  };
 
   return (
     <div className="h-full flex flex-col bg-card border-l border-border relative">
@@ -259,6 +401,31 @@ export function ChatPane() {
                     {s.description}
                   </span>
                 )}
+              </div>
+            ))}
+          </div>
+        )}
+        {fileMention && matchedFiles.length > 0 && (
+          <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg">
+            {matchedFiles.map((f, i) => (
+              <div
+                key={f.path}
+                className={cn(
+                  "flex items-baseline gap-3 px-3 py-2 cursor-pointer border-b border-border/40 last:border-b-0",
+                  i === fileMentionIdx ? "bg-accent" : "hover:bg-accent/60",
+                )}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pickMention(f.rel);
+                }}
+                onMouseEnter={() => setFileMentionIdx(i)}
+              >
+                <span className="text-primary font-mono text-[12.5px] font-medium shrink-0 max-w-[50%] truncate">
+                  {f.name}
+                </span>
+                <span className="text-muted-foreground text-[11px] truncate font-mono">
+                  {f.rel}
+                </span>
               </div>
             ))}
           </div>
