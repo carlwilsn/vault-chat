@@ -26,6 +26,7 @@ import { UnsupportedView } from "./UnsupportedView";
 import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { fileKind } from "./fileKind";
+import { tryOpenLink } from "./linkNav";
 
 // Obsidian-style wikilinks: `[[Target]]`, `[[Target|Display]]`, and
 // `[[Target#Section]]`. We rewrite them to plain markdown links with a
@@ -94,14 +95,20 @@ function SafeAnchor({ href, children, ...rest }: ComponentPropsWithoutRef<"a">) 
   if (!href || href.startsWith("#")) {
     return <a href={href} {...rest}>{children}</a>;
   }
+  const onClick = (e: ReactMouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    tryOpenLink(href).catch((err) => console.error("[link] failed:", err));
+  };
   const isExternal = /^(https?:|mailto:)/i.test(href);
   if (isExternal) {
-    return <a href={href} {...rest}>{children}</a>;
+    return <a href={href} onClick={onClick} {...rest}>{children}</a>;
   }
   return (
     <a
       role="link"
       data-href={href}
+      onClick={onClick}
       className="cursor-pointer text-primary underline underline-offset-2 hover:opacity-80"
       title={href.startsWith("vault://") ? href.slice("vault://".length) : href}
       {...rest}
