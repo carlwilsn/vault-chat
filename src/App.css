@@ -217,14 +217,23 @@
     outline-offset: 2px;
   }
 
-  /* Agent pulse core: subtle breathing on the filled dot so the
-     indicator looks "alive" between the outward ping waves. */
+  /* Agent pulse core: slow breathe on the filled dot. Two offset
+     `vc-pulse-ring` halos ripple outward on a longer cycle. Total
+     cadence stays calm — ~3s per full breath. */
   .vc-pulse-core {
-    animation: vc-pulse-breathe 1.4s ease-in-out infinite;
+    animation: vc-pulse-breathe 2.8s ease-in-out infinite;
   }
   @keyframes vc-pulse-breathe {
-    0%, 100% { transform: scale(0.8); opacity: 0.75; }
-    50%      { transform: scale(1.05); opacity: 1; }
+    0%, 100% { transform: scale(0.85); opacity: 0.8; }
+    50%      { transform: scale(1);    opacity: 1; }
+  }
+  .vc-pulse-ring {
+    animation: vc-pulse-ring 2.8s ease-out infinite;
+  }
+  @keyframes vc-pulse-ring {
+    0%   { transform: scale(1);    opacity: 0.35; }
+    80%  { transform: scale(1.6);  opacity: 0; }
+    100% { transform: scale(1.6);  opacity: 0; }
   }
 
   /* Live-tool ticker: whenever a new tool arrives its key changes,
