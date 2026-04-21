@@ -90,6 +90,22 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [toggleMode, toggleLeft, toggleRight, currentFile]);
 
+  // Block stray file drops that miss our handlers — otherwise the webview
+  // navigates to the dropped file's URL.
+  useEffect(() => {
+    const block = (e: DragEvent) => {
+      if (!e.dataTransfer) return;
+      if (!e.dataTransfer.types.includes("Files")) return;
+      e.preventDefault();
+    };
+    window.addEventListener("dragover", block);
+    window.addEventListener("drop", block);
+    return () => {
+      window.removeEventListener("dragover", block);
+      window.removeEventListener("drop", block);
+    };
+  }, []);
+
   // Intercept clicks on external links anywhere in the app — open them in
   // the user's default browser instead of navigating the webview away.
   // Also handles middle-click and Ctrl/Cmd+click (browser "open in new tab"

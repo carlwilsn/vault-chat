@@ -338,6 +338,45 @@ async fn write_text_file(path: String, contents: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Write raw bytes to a path (creating parent dirs). Used by external
+/// drag-drop: the dropped File is read into an ArrayBuffer on the JS side
+/// and handed to us as Vec<u8>. If a file with the same name already
+/// exists we append " (1)", " (2)", ... to the stem and return the actual
+/// path we wrote to.
+#[tauri::command]
+async fn write_binary_file_unique(
+    dir: String,
+    name: String,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
+    git_guard(&dir)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir_path = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir_path).map_err(|e| e.to_string())?;
+
+        let name_path = std::path::Path::new(&name);
+        let stem = name_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| name.clone());
+        let ext = name_path
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_default();
+
+        let mut target = dir_path.join(&name);
+        let mut n = 1;
+        while target.exists() {
+            target = dir_path.join(format!("{} ({}){}", stem, n, ext));
+            n += 1;
+        }
+        std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
+        Ok(target.to_string_lossy().replace('\\', "/"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn rename_path(from: String, to: String) -> Result<(), String> {
     git_guard(&from)?;
@@ -1540,6 +1579,7 @@ pub fn run() {
             read_text_file,
             read_binary_file,
             write_text_file,
+            write_binary_file_unique,
             delete_file,
             create_dir,
             rename_path,

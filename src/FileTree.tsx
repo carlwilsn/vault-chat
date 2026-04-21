@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
-import { VAULT_PATH_MIME } from "./dnd";
+import { VAULT_PATH_MIME, isExternalFileDrop, copyExternalFilesInto } from "./dnd";
 import { cn } from "./lib/utils";
 
 const isBinaryExt = (path: string): boolean => {
@@ -22,6 +22,9 @@ export function FileTree() {
   const [menu, setMenu] = useState<Menu>(null);
   const [confirmDelete, setConfirmDelete] = useState<FileEntry | null>(null);
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
+  // Drop target is either a specific folder path or null for the tree root
+  // (vault root). undefined means no drop in progress.
+  const [dropTarget, setDropTarget] = useState<string | null | undefined>(undefined);
   const lastVaultRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const renameRef = useRef<HTMLInputElement | null>(null);
@@ -99,6 +102,24 @@ export function FileTree() {
     if (!vaultPath) return;
     const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: vaultPath });
     setFiles(listed);
+  };
+
+  const handleExternalDrop = async (
+    e: React.DragEvent<HTMLElement>,
+    targetDir: string,
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDropTarget(undefined);
+    if (!vaultPath) return;
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    try {
+      await copyExternalFilesInto(targetDir, files);
+      await refreshFiles();
+    } catch (err) {
+      console.error("[drop] copy failed:", err);
+    }
   };
 
   const beginCreate = (kind: PendingKind, parentOverride?: string) => {
@@ -232,11 +253,33 @@ export function FileTree() {
         </div>
       )}
       <div
-        className="flex-1 overflow-auto py-1"
+        className={cn(
+          "flex-1 overflow-auto py-1",
+          dropTarget === null && "ring-2 ring-inset ring-primary/50 bg-primary/5",
+        )}
         onContextMenu={(e) => {
           if (!vaultPath) return;
           e.preventDefault();
           setMenu({ x: e.clientX, y: e.clientY, entry: null });
+        }}
+        onDragEnter={(e) => {
+          if (!vaultPath || !isExternalFileDrop(e.dataTransfer)) return;
+          e.preventDefault();
+          if (dropTarget === undefined) setDropTarget(null);
+        }}
+        onDragOver={(e) => {
+          if (!vaultPath || !isExternalFileDrop(e.dataTransfer)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={(e) => {
+          if (!vaultPath) return;
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          setDropTarget(undefined);
+        }}
+        onDrop={(e) => {
+          if (!vaultPath || !isExternalFileDrop(e.dataTransfer)) return;
+          handleExternalDrop(e, vaultPath);
         }}
       >
         {!vaultPath && (
@@ -284,7 +327,8 @@ export function FileTree() {
                       ? "text-muted-foreground hover:text-foreground/90"
                       : "hover:bg-accent/60",
                     isActive && "bg-accent text-accent-foreground",
-                    isSelectedDir && "bg-accent/40"
+                    isSelectedDir && "bg-accent/40",
+                    f.is_dir && dropTarget === f.path && "ring-2 ring-primary/60 bg-primary/10",
                   )}
                   style={{ paddingLeft: 8 + f.depth * 12 }}
                   draggable={!f.is_dir}
@@ -293,6 +337,30 @@ export function FileTree() {
                     e.dataTransfer.setData(VAULT_PATH_MIME, f.path);
                     e.dataTransfer.setData("text/plain", f.path);
                     e.dataTransfer.effectAllowed = "copy";
+                  }}
+                  onDragEnter={(e) => {
+                    if (!f.is_dir) return;
+                    if (!isExternalFileDrop(e.dataTransfer)) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setDropTarget(f.path);
+                  }}
+                  onDragOver={(e) => {
+                    if (!f.is_dir) return;
+                    if (!isExternalFileDrop(e.dataTransfer)) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.dataTransfer.dropEffect = "copy";
+                  }}
+                  onDragLeave={(e) => {
+                    if (!f.is_dir) return;
+                    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                    if (dropTarget === f.path) setDropTarget(null);
+                  }}
+                  onDrop={(e) => {
+                    if (!f.is_dir) return;
+                    if (!isExternalFileDrop(e.dataTransfer)) return;
+                    handleExternalDrop(e, f.path);
                   }}
                   onClick={() => {
                     if (f.is_dir) {
