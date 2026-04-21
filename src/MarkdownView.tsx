@@ -51,11 +51,27 @@ const remarkWikiLinks: Plugin<[], Root> = () => {
         }
         const rawTarget = match[1].trim();
         const display = (match[2] ?? rawTarget).trim();
+
+        // URL inside [[...]] — emit a normal external link.
+        if (/^(https?:\/\/|mailto:)/i.test(rawTarget)) {
+          pieces.push({
+            type: "link",
+            url: rawTarget,
+            title: null,
+            children: [{ type: "text", value: display }],
+          } as Root["children"][number]);
+          last = wikiLinkRe.lastIndex;
+          continue;
+        }
+
         // Split out #anchor if present.
         const hashAt = rawTarget.indexOf("#");
         const pathPart = hashAt >= 0 ? rawTarget.slice(0, hashAt) : rawTarget;
         const anchor = hashAt >= 0 ? rawTarget.slice(hashAt) : "";
-        const hasExt = /\.[^./\\]+$/.test(pathPart);
+        // "has extension" only if the trailing segment looks like a file
+        // extension (1–5 alnum chars). Prevents "[[google.com]]" from
+        // being treated as a .com-extension file.
+        const hasExt = /\.[A-Za-z0-9]{1,5}$/.test(pathPart);
         const url = `vault://${hasExt ? pathPart : pathPart + ".md"}${anchor}`;
         pieces.push({
           type: "link",
