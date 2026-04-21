@@ -207,20 +207,19 @@ export function InlineEditPrompt({
     ];
     if (turns.length === 0) return;
 
-    // Selection and image are visible to the user — the thing they
-    // highlighted or marquee'd is part of "what they asked about", so
-    // it belongs in their own bubble. Surrounding file excerpt stays
-    // hidden so long before/after context doesn't clutter the UI.
+    // Marquee asks carry imageDataUrl — show only the image in the
+    // bubble (any text the marquee scraped is incidental, not what the
+    // user pointed at). Text-selection asks show the quoted selection.
+    // Surrounding file excerpt always stays hidden.
     const visiblePrefixParts: string[] = [];
-    if (request.selection) {
+    if (request.imageDataUrl) {
+      visiblePrefixParts.push(`![captured region](${request.imageDataUrl})`);
+    } else if (request.selection) {
       const quoted = request.selection
         .split("\n")
         .map((line) => `> ${line}`)
         .join("\n");
       visiblePrefixParts.push(quoted);
-    }
-    if (request.imageDataUrl) {
-      visiblePrefixParts.push(`![captured region](${request.imageDataUrl})`);
     }
     const visiblePrefix = visiblePrefixParts.length
       ? visiblePrefixParts.join("\n\n") + "\n\n"
