@@ -151,6 +151,7 @@ export default function App() {
       const href = anchor.getAttribute("data-href") ?? anchor.getAttribute("href");
       if (!href) return;
       if (href.startsWith("#")) return;
+      console.log("[App capture] click href=", href);
       e.preventDefault();
       e.stopPropagation();
       tryOpenLink(href).catch((err) => console.error("[link] failed:", err));
@@ -158,11 +159,17 @@ export default function App() {
     const onAuxClick = (e: MouseEvent) => {
       if (e.button === 1) onClick(e);
     };
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      console.warn("[App] beforeunload fired — something is trying to navigate");
+      e.preventDefault();
+    };
     window.addEventListener("click", onClick, true);
     window.addEventListener("auxclick", onAuxClick, true);
+    window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       window.removeEventListener("click", onClick, true);
       window.removeEventListener("auxclick", onAuxClick, true);
+      window.removeEventListener("beforeunload", onBeforeUnload);
     };
   }, []);
 

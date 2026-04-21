@@ -51,19 +51,6 @@ const remarkWikiLinks: Plugin<[], Root> = () => {
         }
         const rawTarget = match[1].trim();
         const display = (match[2] ?? rawTarget).trim();
-
-        // URL inside [[...]] — emit a normal external link.
-        if (/^(https?:\/\/|mailto:)/i.test(rawTarget)) {
-          pieces.push({
-            type: "link",
-            url: rawTarget,
-            title: null,
-            children: [{ type: "text", value: display }],
-          } as Root["children"][number]);
-          last = wikiLinkRe.lastIndex;
-          continue;
-        }
-
         // Split out #anchor if present.
         const hashAt = rawTarget.indexOf("#");
         const pathPart = hashAt >= 0 ? rawTarget.slice(0, hashAt) : rawTarget;
@@ -107,27 +94,29 @@ function resolveRelative(baseFile: string, rel: string): string {
 // any circumstance — the global click handler in App reads the original
 // href from `data-href`. External links keep their href so the default
 // browser tooltip shows the URL on hover.
-function SafeAnchor({ href, children, ...rest }: ComponentPropsWithoutRef<"a">) {
+function SafeAnchor(props: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
+  const { href, children, node: _node, onClick: _oc, ...rest } = props;
   if (!href || href.startsWith("#")) {
     return <a href={href} {...rest}>{children}</a>;
   }
   const onClick = (e: ReactMouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
     e.stopPropagation();
+    console.log("[SafeAnchor] click href=", href);
     tryOpenLink(href).catch((err) => console.error("[link] failed:", err));
   };
   const isExternal = /^(https?:|mailto:)/i.test(href);
   if (isExternal) {
-    return <a href={href} onClick={onClick} {...rest}>{children}</a>;
+    return <a href={href} {...rest} onClick={onClick}>{children}</a>;
   }
   return (
     <a
       role="link"
       data-href={href}
-      onClick={onClick}
       className="cursor-pointer text-primary underline underline-offset-2 hover:opacity-80"
       title={href.startsWith("vault://") ? href.slice("vault://".length) : href}
       {...rest}
+      onClick={onClick}
     >
       {children}
     </a>
