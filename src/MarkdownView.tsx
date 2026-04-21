@@ -22,8 +22,6 @@ import { UnsupportedView } from "./UnsupportedView";
 import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { fileKind } from "./fileKind";
-import { FindBar } from "./FindBar";
-import { useDomFind } from "./useDomFind";
 
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
@@ -96,7 +94,6 @@ export function MarkdownView({ paneId }: Props) {
   const lastSaved = useRef<string>(content);
   const scrollRatioRef = useRef(0);
   const viewScrollRef = useRef<HTMLDivElement | null>(null);
-  const findScopeRef = useRef<HTMLDivElement | null>(null);
   const [inlineAsk, setInlineAsk] = useState<InlineEditRequest | null>(null);
 
   useEffect(() => {
@@ -239,16 +236,6 @@ export function MarkdownView({ paneId }: Props) {
   // meaningful view/edit split.
   const showToggle = kind === "markdown";
   const showingEditor = kind === "code" || (kind === "markdown" && mode === "edit" && isActive);
-  // Ctrl+F routing:
-  //   - markdown (edit) → CodeMirror's own search panel (LiveEditor)
-  //   - code → Monaco's built-in find
-  //   - html → punted (iframe isolates DOM)
-  //   - unsupported → no content to search
-  //   - everything else (markdown view, notebook, pdf) → shared DOM find
-  const findCapable =
-    !showingEditor &&
-    (kind === "markdown" || kind === "notebook" || kind === "pdf");
-  const find = useDomFind(findScopeRef, isActive && findCapable);
 
   return (
     <div
@@ -305,62 +292,48 @@ export function MarkdownView({ paneId }: Props) {
           )}
         </div>
       </div>
-      <div ref={findScopeRef} className="flex-1 min-h-0 flex flex-col relative">
-        {showingEditor && kind === "markdown" ? (
-          <div className="flex-1 min-h-0">
-            <LiveEditor
-              value={content}
-              onChange={onChange}
-              initialScrollRatio={scrollRatioRef.current}
-              onScrollRatio={(r) => {
-                scrollRatioRef.current = r;
-              }}
-            />
-          </div>
-        ) : showingEditor ? (
-          <div className="flex-1 min-h-0">
-            <MonacoEditor value={content} onChange={onChange} ext={ext} />
-          </div>
-        ) : kind === "markdown" ? (
-          <div
-            ref={viewScrollRef}
-            onScroll={onViewScroll}
-            className="flex-1 overflow-auto py-10 px-8"
-          >
-            <div className="prose-md mx-auto">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
-                rehypePlugins={[rehypeRaw, rehypeKatex, rehypeHighlight]}
-                components={{ a: VaultLink }}
-              >
-                {content}
-              </ReactMarkdown>
-            </div>
-          </div>
-        ) : kind === "notebook" ? (
-          <NotebookView content={content} />
-        ) : kind === "pdf" ? (
-          <PdfView path={file} />
-        ) : kind === "html" ? (
-          <HtmlView content={content} />
-        ) : kind === "unsupported" ? (
-          <UnsupportedView path={file} />
-        ) : (
-          <CodeView content={content} ext={ext} />
-        )}
-        {findCapable && find.open && (
-          <FindBar
-            query={find.query}
-            onQueryChange={find.setQuery}
-            matchCount={find.matchCount}
-            currentIndex={find.currentIndex}
-            onNext={find.next}
-            onPrev={find.prev}
-            onClose={find.close}
-            autoFocus
+      {showingEditor && kind === "markdown" ? (
+        <div className="flex-1 min-h-0">
+          <LiveEditor
+            value={content}
+            onChange={onChange}
+            initialScrollRatio={scrollRatioRef.current}
+            onScrollRatio={(r) => {
+              scrollRatioRef.current = r;
+            }}
           />
-        )}
-      </div>
+        </div>
+      ) : showingEditor ? (
+        <div className="flex-1 min-h-0">
+          <MonacoEditor value={content} onChange={onChange} ext={ext} />
+        </div>
+      ) : kind === "markdown" ? (
+        <div
+          ref={viewScrollRef}
+          onScroll={onViewScroll}
+          className="flex-1 overflow-auto py-10 px-8"
+        >
+          <div className="prose-md mx-auto">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
+              rehypePlugins={[rehypeRaw, rehypeKatex, rehypeHighlight]}
+              components={{ a: VaultLink }}
+            >
+              {content}
+            </ReactMarkdown>
+          </div>
+        </div>
+      ) : kind === "notebook" ? (
+        <NotebookView content={content} />
+      ) : kind === "pdf" ? (
+        <PdfView path={file} />
+      ) : kind === "html" ? (
+        <HtmlView content={content} />
+      ) : kind === "unsupported" ? (
+        <UnsupportedView path={file} />
+      ) : (
+        <CodeView content={content} ext={ext} />
+      )}
       {inlineAsk && (
         <InlineEditPrompt
           request={inlineAsk}
