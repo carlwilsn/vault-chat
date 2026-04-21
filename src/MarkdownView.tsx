@@ -7,6 +7,7 @@ import remarkBreaks from "remark-breaks";
 import rehypeRaw from "rehype-raw";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
+import rehypeSlug from "rehype-slug";
 import { visit } from "unist-util-visit";
 import type { Plugin } from "unified";
 import type { Root } from "mdast";
@@ -96,8 +97,19 @@ function resolveRelative(baseFile: string, rel: string): string {
 // browser tooltip shows the URL on hover.
 function SafeAnchor(props: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
   const { href, children, node: _node, onClick: _oc, ...rest } = props;
-  if (!href || href.startsWith("#")) {
-    return <a href={href} {...rest}>{children}</a>;
+  if (!href) return <a {...rest}>{children}</a>;
+  if (href.startsWith("#")) {
+    // In-page anchor. The viewer has its own scroll container, so
+    // the browser's default hash-nav doesn't work — scroll the target
+    // element into view manually.
+    const onHash = (e: ReactMouseEvent<HTMLAnchorElement>) => {
+      e.preventDefault();
+      const id = decodeURIComponent(href.slice(1));
+      if (!id) return;
+      const el = document.getElementById(id);
+      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    return <a href={href} {...rest} onClick={onHash}>{children}</a>;
   }
   const onClick = (e: ReactMouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
@@ -511,7 +523,7 @@ export function MarkdownView({ paneId }: Props) {
           <div className="prose-md mx-auto">
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath, remarkBreaks, remarkWikiLinks]}
-              rehypePlugins={[rehypeRaw, rehypeKatex, rehypeHighlight]}
+              rehypePlugins={[rehypeRaw, rehypeSlug, rehypeKatex, rehypeHighlight]}
               components={{ a: SafeAnchor, img: VaultImage, input: renderInput }}
             >
               {content}
