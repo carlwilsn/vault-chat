@@ -214,7 +214,17 @@ export function ChatPane() {
             activeTool={liveTools.find((t) => !t.result)?.name}
             streaming={!!streamingText}
             reasoning={!!streamingReasoning && !streamingText}
-            liveChars={streamingText.length + streamingReasoning.length}
+            liveChars={
+              streamingText.length +
+              streamingReasoning.length +
+              liveTools.reduce(
+                (n, t) =>
+                  n +
+                  (t.input ? JSON.stringify(t.input).length : 0) +
+                  (t.result ? t.result.length : 0),
+                0,
+              )
+            }
           />
         )}
         </div>
