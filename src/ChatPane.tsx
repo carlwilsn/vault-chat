@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import remarkBreaks from "remark-breaks";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench } from "lucide-react";
@@ -582,8 +583,10 @@ const MessageBubble = memo(function MessageBubble({
   return (
     <div className={cn("flex flex-col gap-1.5", isUser && "items-end")}>
       {isUser ? (
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap break-words overflow-hidden">
-          {message.content}
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed break-words overflow-hidden prose-user">
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+            {message.content}
+          </ReactMarkdown>
         </div>
       ) : (
         <div className="w-full space-y-2">

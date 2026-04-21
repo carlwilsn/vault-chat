@@ -224,6 +224,26 @@
     outline-offset: 2px;
   }
 
+  /* User chat bubble. Normally plain text with line-breaks preserved,
+     but can hold a quoted selection (blockquote) or a captured image
+     from an inline ask that the user promoted to chat. */
+  .prose-user p { margin: 0; }
+  .prose-user p + p { margin-top: 0.5rem; }
+  .prose-user blockquote {
+    @apply border-l-2 border-primary-foreground/40 pl-3 opacity-80 my-2;
+  }
+  .prose-user img {
+    @apply rounded-md my-1.5 max-w-full max-h-[240px] object-contain;
+  }
+  .prose-user code {
+    @apply bg-primary-foreground/20 px-1 rounded text-[0.85em] font-mono;
+  }
+  .prose-user pre {
+    @apply bg-primary-foreground/15 rounded p-2 my-2 overflow-auto text-[12px] font-mono;
+  }
+  .prose-user ul, .prose-user ol { @apply pl-5 my-1; }
+  .prose-user li { @apply my-0.5; }
+
   /* Agent pulse: three animations with coprime periods (1.7s / 2.3s /
      2.9s) plus a slow drift on the wrapper (4.3s) produce a non-
      repeating pattern for ~8 minutes at a time. The eye never locks

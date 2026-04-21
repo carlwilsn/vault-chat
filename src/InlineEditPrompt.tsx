@@ -207,22 +207,39 @@ export function InlineEditPrompt({
     ];
     if (turns.length === 0) return;
 
-    // Prepend the inline-ask context to the first user message so the
-    // main agent has everything this popover saw (selection + file
-    // excerpt). Subsequent turns are pasted as-is.
-    const preamble = buildContextPreamble(request);
-    // The preamble goes in as a hidden user message so the agent sees
-    // the selection + file context, but the chat UI only shows what the
-    // user actually typed.
-    store.appendMessage({ role: "user", content: preamble, hidden: true });
-    turns.forEach((t) => {
+    // Selection and image are visible to the user — the thing they
+    // highlighted or marquee'd is part of "what they asked about", so
+    // it belongs in their own bubble. Surrounding file excerpt stays
+    // hidden so long before/after context doesn't clutter the UI.
+    const visiblePrefixParts: string[] = [];
+    if (request.selection) {
+      const quoted = request.selection
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n");
+      visiblePrefixParts.push(quoted);
+    }
+    if (request.imageDataUrl) {
+      visiblePrefixParts.push(`![captured region](${request.imageDataUrl})`);
+    }
+    const visiblePrefix = visiblePrefixParts.length
+      ? visiblePrefixParts.join("\n\n") + "\n\n"
+      : "";
+
+    const hiddenPreamble = buildHiddenFilePreamble(request);
+    if (hiddenPreamble) {
+      store.appendMessage({ role: "user", content: hiddenPreamble, hidden: true });
+    }
+
+    const [first, ...rest] = turns;
+    store.appendMessage({ role: "user", content: visiblePrefix + first.prompt });
+    store.appendMessage({ role: "assistant", content: first.result });
+    rest.forEach((t) => {
       store.appendMessage({ role: "user", content: t.prompt });
       store.appendMessage({ role: "assistant", content: t.result });
     });
 
-    // Reveal the chat pane if it was collapsed.
     if (store.rightCollapsed) store.toggleRight();
-
     onCancel();
   };
 
@@ -256,28 +273,61 @@ export function InlineEditPrompt({
     bottom?: number;
     maxHeight: number;
   }>(() => computePlacement(request.anchor));
+  // Drag offset applied on top of the computed placement. Once the user
+  // has dragged, stop re-applying placement from anchor changes or
+  // window resize — the user's manual position wins.
+  const [drag, setDrag] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const dragged = useRef(false);
 
   useLayoutEffect(() => {
+    if (dragged.current) return;
     setPlacement(computePlacement(request.anchor));
   }, [request.anchor.left, request.anchor.top, request.anchor.bottom, request.anchor.right, request.anchor.dirX, request.anchor.dirY]);
 
   useEffect(() => {
-    const onResize = () => setPlacement(computePlacement(request.anchor));
+    const onResize = () => {
+      if (dragged.current) return;
+      setPlacement(computePlacement(request.anchor));
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, [request.anchor.left, request.anchor.top, request.anchor.bottom, request.anchor.right, request.anchor.dirX, request.anchor.dirY]);
 
+  // Begin a drag. Only fires when the pointerdown lands on a non-
+  // interactive surface (the outer wrapper padding, the bottom status
+  // strip, etc.) — we bail out if the target is inside an input, button,
+  // or the result content so those stay clickable/selectable.
+  const onDragPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const t = e.target as HTMLElement;
+    if (t.closest("textarea, input, button, a, pre, code, .prose-chat")) return;
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX - drag.x;
+    const startY = e.clientY - drag.y;
+    const onMove = (ev: PointerEvent) => {
+      setDrag({ x: ev.clientX - startX, y: ev.clientY - startY });
+      dragged.current = true;
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
   return createPortal(
     <div
-      className="fixed z-50 w-[416px] max-w-[90vw] rounded-md border border-border bg-card shadow-xl flex flex-col"
+      className="fixed z-50 w-[416px] max-w-[90vw] rounded-md border border-border bg-card shadow-xl flex flex-col cursor-move"
       style={{
-        left: placement.left,
-        top: placement.top,
-        bottom: placement.bottom,
+        left: placement.left + drag.x,
+        top: placement.top != null ? placement.top + drag.y : undefined,
+        bottom: placement.bottom != null ? placement.bottom - drag.y : undefined,
         maxHeight: placement.maxHeight,
       }}
       onKeyDown={onKeyDown}
       onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={onDragPointerDown}
     >
       <div className="flex items-start gap-1 p-2 shrink-0">
         <textarea
@@ -417,28 +467,29 @@ export function InlineEditPrompt({
   );
 }
 
-function buildContextPreamble(request: InlineEditRequest): string {
-  const parts: string[] = [];
-  parts.push(
-    "Context from an inline Ctrl+L ask in the editor — continuing the conversation in the chat pane.",
-  );
-  if (request.selection) {
-    parts.push(`Selection:\n\n\`\`\`\n${request.selection}\n\`\`\``);
-  } else {
-    parts.push("(no selection — the question was about the surrounding file)");
-  }
+// Build the hidden-only portion of the chat preamble — surrounding
+// file context (before/after). The user's selection and any captured
+// image go in the visible user bubble instead, so the chat shows "what
+// you asked about" without piping the full file excerpt into the UI.
+function buildHiddenFilePreamble(request: InlineEditRequest): string {
   const BEFORE_KEEP = 1500;
   const AFTER_KEEP = 1500;
-  const before =
-    request.before.length > BEFORE_KEEP
+  const before = request.before
+    ? request.before.length > BEFORE_KEEP
       ? "…" + request.before.slice(-BEFORE_KEEP)
-      : request.before;
-  const after =
-    request.after.length > AFTER_KEEP
+      : request.before
+    : "";
+  const after = request.after
+    ? request.after.length > AFTER_KEEP
       ? request.after.slice(0, AFTER_KEEP) + "…"
-      : request.after;
-  parts.push(`Before:\n\n\`\`\`\n${before}\n\`\`\``);
-  parts.push(`After:\n\n\`\`\`\n${after}\n\`\`\``);
+      : request.after
+    : "";
+  if (!before && !after) return "";
+  const parts: string[] = [
+    "[Hidden file-context preamble from an inline ask — surrounding text around the user's selection.]",
+  ];
+  if (before) parts.push(`Before:\n\n\`\`\`\n${before}\n\`\`\``);
+  if (after) parts.push(`After:\n\n\`\`\`\n${after}\n\`\`\``);
   return parts.join("\n\n");
 }
 
