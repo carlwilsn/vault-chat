@@ -1,18 +1,24 @@
-import { invoke } from "@tauri-apps/api/core";
+import {
+  openUrl as pluginOpenUrl,
+  openPath as pluginOpenPath,
+  revealItemInDir as pluginRevealItemInDir,
+} from "@tauri-apps/plugin-opener";
 
-// Thin wrapper around tauri-plugin-opener. Using raw invoke avoids pulling
-// in @tauri-apps/plugin-opener as a separate npm package.
+// Thin wrappers around @tauri-apps/plugin-opener. Using the typed JS
+// bindings rather than raw invoke() because the raw invoke name changed
+// between plugin versions and the JS package tracks whichever one the
+// installed Rust crate ships.
 
 export async function openUrl(url: string): Promise<void> {
-  await invoke("plugin:opener|open_url", { url });
+  await pluginOpenUrl(url);
 }
 
 export async function revealInFileExplorer(path: string): Promise<void> {
-  await invoke("plugin:opener|reveal_item_in_dir", { path });
+  await pluginRevealItemInDir(path);
 }
 
 export async function openPathWithDefaultApp(path: string): Promise<void> {
-  await invoke("plugin:opener|open_path", { path });
+  await pluginOpenPath(path);
 }
 
 export function isExternalHref(href: string): boolean {
