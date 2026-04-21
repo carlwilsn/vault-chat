@@ -194,4 +194,23 @@
   .pdf-text-layer .endOfContent {
     display: none;
   }
+
+  /* Find-in-viewer highlights. PDF text-layer spans are transparent by
+     default (they sit above the canvas for selection), so we only color
+     the background of the <mark> — never the text — to avoid tinting the
+     rendered glyphs. */
+  mark.vc-find-match {
+    background: hsl(45 100% 55% / 0.45);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0;
+  }
+  mark.vc-find-match.vc-find-current {
+    background: hsl(30 100% 55% / 0.8);
+    outline: 2px solid hsl(30 100% 55%);
+    outline-offset: 0;
+  }
+  .pdf-text-layer mark.vc-find-match {
+    color: transparent;
+  }
 }

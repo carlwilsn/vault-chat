@@ -7,6 +7,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { Table } from "@lezer/markdown";
 import { syntaxTree } from "@codemirror/language";
 import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
+import { search, searchKeymap } from "@codemirror/search";
 import katex from "katex";
 import {
   InlineEditPrompt,
@@ -619,7 +620,9 @@ export function LiveEditor({
         },
         ...defaultKeymap,
         ...historyKeymap,
+        ...searchKeymap,
       ]),
+      search({ top: true }),
       markdown({ extensions: [Table] }),
       livePreviewField,
       liveTheme,
