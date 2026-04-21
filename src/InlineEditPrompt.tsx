@@ -232,7 +232,16 @@ export function InlineEditPrompt({
     }
 
     const [first, ...rest] = turns;
-    store.appendMessage({ role: "user", content: visiblePrefix + first.prompt });
+    const firstContent = visiblePrefix + first.prompt;
+    if (request.imageDataUrl) {
+      console.log(
+        "[sendToChat] image mention — prefix length",
+        visiblePrefix.length,
+        "; first 60 chars:",
+        firstContent.slice(0, 60),
+      );
+    }
+    store.appendMessage({ role: "user", content: firstContent });
     store.appendMessage({ role: "assistant", content: first.result });
     rest.forEach((t) => {
       store.appendMessage({ role: "user", content: t.prompt });
