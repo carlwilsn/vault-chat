@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { BoxSelect } from "lucide-react";
-import { cn } from "./lib/utils";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 
 function mimeFor(ext: string): string {
@@ -226,18 +224,6 @@ export function ImageView({ path }: { path: string }) {
   }
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-muted/20 relative">
-      <div className="sticky top-0 z-10 bg-muted/80 backdrop-blur border-b border-border/60 px-6 py-1.5 flex items-center justify-end gap-2 text-[11px] text-muted-foreground shrink-0">
-        <button
-          onClick={() => setMarqueeOn((v) => !v)}
-          className={cn(
-            "h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground",
-            marqueeOn && "bg-primary/20 text-foreground",
-          )}
-          title={marqueeOn ? "Marquee ask: drag a box (Esc to cancel)" : "Marquee ask (Ctrl+M)"}
-        >
-          <BoxSelect className="h-3 w-3" />
-        </button>
-      </div>
       <div className="flex-1 overflow-auto flex items-center justify-center p-4 relative">
         <img
           ref={imgRef}
