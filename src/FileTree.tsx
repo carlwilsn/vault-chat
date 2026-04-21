@@ -1,14 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff } from "lucide-react";
+import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff, FolderOpen } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { VAULT_PATH_MIME, isExternalFileDrop, copyExternalFilesInto } from "./dnd";
 import { cn } from "./lib/utils";
-
-const isBinaryExt = (path: string): boolean => {
-  const ext = path.split(".").pop()?.toLowerCase();
-  return ext === "pdf";
-};
+import { isUnreadableAsText } from "./fileKind";
+import { revealInFileExplorer } from "./opener";
 
 type PendingKind = "file" | "folder";
 type Menu = { x: number; y: number; entry: FileEntry | null } | null;
@@ -74,7 +71,7 @@ export function FileTree() {
 
   const openFile = async (f: FileEntry) => {
     if (f.is_dir) return;
-    if (isBinaryExt(f.path)) {
+    if (isUnreadableAsText(f.path)) {
       setCurrentFile(f.path, "");
       return;
     }
@@ -462,6 +459,17 @@ export function FileTree() {
               <button
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
+                  revealInFileExplorer(menu.entry!.path).catch((e) =>
+                    console.error("[opener] reveal failed:", e),
+                  );
+                  setMenu(null);
+                }}
+              >
+                <FolderOpen className="h-3.5 w-3.5 opacity-70" /> Reveal in file explorer
+              </button>
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                onClick={() => {
                   hideEntry(menu.entry!);
                   setMenu(null);
                 }}
@@ -498,6 +506,19 @@ export function FileTree() {
               >
                 <FolderPlus className="h-3.5 w-3.5 opacity-70" /> New folder
               </button>
+              {vaultPath && (
+                <button
+                  className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                  onClick={() => {
+                    revealInFileExplorer(vaultPath).catch((e) =>
+                      console.error("[opener] reveal failed:", e),
+                    );
+                    setMenu(null);
+                  }}
+                >
+                  <FolderOpen className="h-3.5 w-3.5 opacity-70" /> Reveal vault in file explorer
+                </button>
+              )}
             </>
           )}
         </div>

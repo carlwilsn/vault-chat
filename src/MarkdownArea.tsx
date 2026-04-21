@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore, type DropSide } from "./store";
 import { MarkdownView } from "./MarkdownView";
 import { VAULT_PATH_MIME, VAULT_PANE_MIME } from "./dnd";
+import { isUnreadableAsText } from "./fileKind";
 
 type DropMode = { kind: "edge"; side: DropSide } | { kind: "fill" } | null;
 
@@ -84,9 +85,10 @@ export function MarkdownArea() {
 
     const path = e.dataTransfer.getData(VAULT_PATH_MIME);
     if (!path) return;
-    const binary = path.toLowerCase().endsWith(".pdf");
     try {
-      const text = binary ? "" : await invoke<string>("read_text_file", { path });
+      const text = isUnreadableAsText(path)
+        ? ""
+        : await invoke<string>("read_text_file", { path });
       s.placeFileAtEdge(path, text, side);
     } catch (err) {
       console.error("[drop] failed:", err);

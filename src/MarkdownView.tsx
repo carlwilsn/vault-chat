@@ -18,20 +18,10 @@ import { CodeView } from "./CodeView";
 import { NotebookView } from "./NotebookView";
 import { PdfView } from "./PdfView";
 import { HtmlView } from "./HtmlView";
+import { UnsupportedView } from "./UnsupportedView";
 import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
-
-type FileKind = "markdown" | "notebook" | "pdf" | "html" | "code";
-
-function fileKind(path: string): { kind: FileKind; ext: string } {
-  const dot = path.lastIndexOf(".");
-  const ext = dot > 0 ? path.slice(dot + 1).toLowerCase() : "";
-  if (ext === "md" || ext === "markdown") return { kind: "markdown", ext };
-  if (ext === "ipynb") return { kind: "notebook", ext };
-  if (ext === "pdf") return { kind: "pdf", ext };
-  if (ext === "html" || ext === "htm") return { kind: "html", ext };
-  return { kind: "code", ext };
-}
+import { fileKind } from "./fileKind";
 
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
@@ -339,6 +329,8 @@ export function MarkdownView({ paneId }: Props) {
         <PdfView path={file} />
       ) : kind === "html" ? (
         <HtmlView content={content} />
+      ) : kind === "unsupported" ? (
+        <UnsupportedView path={file} />
       ) : (
         <CodeView content={content} ext={ext} />
       )}
