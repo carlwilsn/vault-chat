@@ -22,7 +22,7 @@ import { ImageView } from "./ImageView";
 import { UnsupportedView } from "./UnsupportedView";
 import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
-import { fileKind } from "./fileKind";
+import { fileKind, isUnreadableAsText } from "./fileKind";
 
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
@@ -43,9 +43,9 @@ function VaultLink({ href, children, ...rest }: ComponentPropsWithoutRef<"a">) {
     if (!href) return;
     if (href.startsWith("#")) return; // in-page anchor — let browser scroll
     if (/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.toLowerCase().startsWith("file:")) {
-      // External scheme (http/https/mailto/…). Prevent webview hijack;
-      // opening in system browser is a follow-up.
-      e.preventDefault();
+      // External scheme (http/https/mailto/…). The global handler in
+      // App.tsx dispatches to the system browser via the opener plugin;
+      // we just need to keep the webview from navigating.
       return;
     }
     e.preventDefault();
@@ -55,9 +55,9 @@ function VaultLink({ href, children, ...rest }: ComponentPropsWithoutRef<"a">) {
       ? cleaned
       : resolveRelative(currentFile, cleaned);
     try {
-      const { kind } = fileKind(resolved);
-      const content =
-        kind === "pdf" ? "" : await invoke<string>("read_text_file", { path: resolved });
+      const content = isUnreadableAsText(resolved)
+        ? ""
+        : await invoke<string>("read_text_file", { path: resolved });
       setCurrentFile(resolved, content);
     } catch (err) {
       console.error("vault-chat: failed to open linked file:", resolved, err);
@@ -69,6 +69,65 @@ function VaultLink({ href, children, ...rest }: ComponentPropsWithoutRef<"a">) {
       {children}
     </a>
   );
+}
+
+// Renders an <img> whose src has been resolved relative to the current
+// vault file and read off disk into a blob URL. The webview can't load
+// local file:// URLs directly, so we always go through read_binary_file.
+function VaultImage({ src, alt, ...rest }: ComponentPropsWithoutRef<"img">) {
+  const currentFile = useStore((s) => s.currentFile);
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!src || !currentFile) return;
+    // External / data / blob URLs — leave alone.
+    if (/^(https?:|data:|blob:)/i.test(src)) {
+      setUrl(src);
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    const cleaned = src.replace(/^file:\/\/\/?/, "").split("#")[0].split("?")[0];
+    const resolved = /^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned)
+      ? cleaned
+      : resolveRelative(currentFile, cleaned);
+    (async () => {
+      try {
+        const bytes = await invoke<number[]>("read_binary_file", { path: resolved });
+        if (cancelled) return;
+        const dot = resolved.lastIndexOf(".");
+        const ext = dot > 0 ? resolved.slice(dot + 1).toLowerCase() : "";
+        const mime =
+          ext === "svg"
+            ? "image/svg+xml"
+            : ext === "jpg" || ext === "jpeg"
+              ? "image/jpeg"
+              : ext === "png"
+                ? "image/png"
+                : ext === "gif"
+                  ? "image/gif"
+                  : ext === "webp"
+                    ? "image/webp"
+                    : ext === "bmp"
+                      ? "image/bmp"
+                      : ext === "ico"
+                        ? "image/x-icon"
+                        : `image/${ext || "png"}`;
+        const blob = new Blob([new Uint8Array(bytes)], { type: mime });
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      } catch (err) {
+        console.error("vault-chat: failed to load image:", resolved, err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [src, currentFile]);
+
+  if (!url) return <span className="text-muted-foreground italic">[{alt || src}]</span>;
+  return <img src={url} alt={alt} {...rest} />;
 }
 
 type Props = { paneId?: string };
@@ -347,7 +406,7 @@ export function MarkdownView({ paneId }: Props) {
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
               rehypePlugins={[rehypeRaw, rehypeKatex, rehypeHighlight]}
-              components={{ a: VaultLink }}
+              components={{ a: VaultLink, img: VaultImage }}
             >
               {content}
             </ReactMarkdown>
