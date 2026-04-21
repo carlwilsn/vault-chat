@@ -8,9 +8,6 @@ import rehypeRaw from "rehype-raw";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import rehypeSlug from "rehype-slug";
-import { visit } from "unist-util-visit";
-import type { Plugin } from "unified";
-import type { Root } from "mdast";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
 import { invoke } from "@tauri-apps/api/core";
@@ -28,56 +25,6 @@ import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { fileKind } from "./fileKind";
 import { tryOpenLink } from "./linkNav";
-
-// Obsidian-style wikilinks: `[[Target]]`, `[[Target|Display]]`, and
-// `[[Target#Section]]`. We rewrite them to plain markdown links with a
-// `vault://` scheme so VaultLink can tell them apart from file-relative
-// paths and resolve against the vault root. If Target has no extension,
-// `.md` is appended so `[[goals/foo]]` opens the corresponding note.
-const wikiLinkRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
-
-const remarkWikiLinks: Plugin<[], Root> = () => {
-  return (tree) => {
-    visit(tree, "text", (node, index, parent) => {
-      if (!parent || typeof index !== "number") return;
-      const value = node.value;
-      if (!value.includes("[[")) return;
-      wikiLinkRe.lastIndex = 0;
-      const pieces: Array<Root["children"][number] | { type: "text"; value: string }> = [];
-      let last = 0;
-      let match: RegExpExecArray | null;
-      while ((match = wikiLinkRe.exec(value)) !== null) {
-        if (match.index > last) {
-          pieces.push({ type: "text", value: value.slice(last, match.index) });
-        }
-        const rawTarget = match[1].trim();
-        const display = (match[2] ?? rawTarget).trim();
-        // Split out #anchor if present.
-        const hashAt = rawTarget.indexOf("#");
-        const pathPart = hashAt >= 0 ? rawTarget.slice(0, hashAt) : rawTarget;
-        const anchor = hashAt >= 0 ? rawTarget.slice(hashAt) : "";
-        // "has extension" only if the trailing segment looks like a file
-        // extension (1–5 alnum chars). Prevents "[[google.com]]" from
-        // being treated as a .com-extension file.
-        const hasExt = /\.[A-Za-z0-9]{1,5}$/.test(pathPart);
-        const url = `vault://${hasExt ? pathPart : pathPart + ".md"}${anchor}`;
-        pieces.push({
-          type: "link",
-          url,
-          title: null,
-          children: [{ type: "text", value: display }],
-        } as Root["children"][number]);
-        last = wikiLinkRe.lastIndex;
-      }
-      if (pieces.length === 0) return;
-      if (last < value.length) {
-        pieces.push({ type: "text", value: value.slice(last) });
-      }
-      parent.children.splice(index, 1, ...(pieces as Root["children"]));
-      return index + pieces.length;
-    });
-  };
-};
 
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
@@ -126,7 +73,7 @@ function SafeAnchor(props: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
       role="link"
       data-href={href}
       className="cursor-pointer text-primary underline underline-offset-2 hover:opacity-80"
-      title={href.startsWith("vault://") ? href.slice("vault://".length) : href}
+      title={href}
       {...rest}
       onClick={onClick}
     >
@@ -522,7 +469,7 @@ export function MarkdownView({ paneId }: Props) {
         >
           <div className="prose-md mx-auto">
             <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath, remarkBreaks, remarkWikiLinks]}
+              remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
               rehypePlugins={[rehypeRaw, rehypeSlug, rehypeKatex, rehypeHighlight]}
               components={{ a: SafeAnchor, img: VaultImage, input: renderInput }}
             >

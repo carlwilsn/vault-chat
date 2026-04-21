@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useStore, type FileEntry } from "./store";
+import { useStore } from "./store";
 import { isUnreadableAsText } from "./fileKind";
 import { openUrl, isExternalHref } from "./opener";
 
@@ -12,21 +12,6 @@ function resolveRelative(baseFile: string, rel: string): string {
     else if (p && p !== ".") baseParts.push(p);
   }
   return baseParts.join(sep);
-}
-
-function resolveVaultPath(
-  raw: string,
-  vaultPath: string,
-  files: FileEntry[],
-): string {
-  const primary = `${vaultPath}/${raw}`;
-  if (files.some((f) => f.path === primary)) return primary;
-  const suffixHit = files.find((f) => !f.is_dir && f.path.endsWith("/" + raw));
-  if (suffixHit) return suffixHit.path;
-  const wantedName = raw.split("/").pop() ?? raw;
-  const nameHit = files.find((f) => !f.is_dir && f.name === wantedName);
-  if (nameHit) return nameHit.path;
-  return primary;
 }
 
 // Resolve a link href and open it in the viewer. Returns true if the
@@ -46,32 +31,22 @@ export async function tryOpenLink(href: string | null | undefined): Promise<bool
     return true;
   }
 
-  // Other non-file schemes (tel:, ftp:, etc.) — leave to the webview
-  // default so it can decide, but still preventDefault to avoid an
-  // accidental refresh into nowhere.
-  if (/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.toLowerCase().startsWith("file:") && !href.toLowerCase().startsWith("vault:")) {
+  // Other non-file schemes (tel:, ftp:, etc.) — preventDefault without
+  // doing anything so the webview doesn't refresh.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.toLowerCase().startsWith("file:")) {
     return true;
   }
 
-  const { vaultPath, files, currentFile, setCurrentFile } = useStore.getState();
+  const { vaultPath, currentFile, setCurrentFile } = useStore.getState();
 
+  const cleaned = href.replace(/^file:\/\/\/?/, "").split("#")[0].split("?")[0];
   let target: string | null = null;
-
-  if (href.startsWith("vault://")) {
-    if (!vaultPath) return true;
-    const raw = href.slice("vault://".length).split("#")[0].split("?")[0];
-    target = resolveVaultPath(raw, vaultPath, files);
-  } else {
-    const cleaned = href.replace(/^file:\/\/\/?/, "").split("#")[0].split("?")[0];
-    if (/^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned)) {
-      target = cleaned;
-    } else if (currentFile) {
-      target = resolveRelative(currentFile, cleaned);
-    } else if (vaultPath) {
-      // No active file (link from chat/tool output) — try vault-root
-      // relative with a basename-search fallback.
-      target = resolveVaultPath(cleaned, vaultPath, files);
-    }
+  if (/^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned)) {
+    target = cleaned;
+  } else if (currentFile) {
+    target = resolveRelative(currentFile, cleaned);
+  } else if (vaultPath) {
+    target = `${vaultPath}/${cleaned}`;
   }
 
   if (!target) return true;
