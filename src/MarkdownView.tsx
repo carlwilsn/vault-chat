@@ -349,18 +349,26 @@ export function MarkdownView({ paneId }: Props) {
   useEffect(() => {
     if (!file || !isActive) return;
     const { kind: k, ext: e2 } = fileKind(file);
-    if (k !== "pdf" && k !== "html" && k !== "image") return;
+    const hasMarquee = k === "pdf" || k === "html" || k === "image";
+    const hasNoContextAsk = hasMarquee || k === "notebook";
+    if (!hasNoContextAsk) return;
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
-      if (!mod || e.key.toLowerCase() !== "l") return;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key === "m" && hasMarquee) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
+        return;
+      }
+      if (key !== "l") return;
       e.preventDefault();
-      const anchor: InlineEditRequest["anchor"] = {
-        left: window.innerWidth * 0.5,
-        top: window.innerHeight * 0.4,
-        bottom: window.innerHeight * 0.4 + 20,
-      };
       setInlineAsk({
-        anchor,
+        anchor: {
+          left: window.innerWidth * 0.5,
+          top: window.innerHeight * 0.4,
+          bottom: window.innerHeight * 0.4 + 20,
+        },
         selection: "",
         before: "",
         after: "",

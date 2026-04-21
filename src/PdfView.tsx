@@ -39,6 +39,15 @@ export function PdfView({ path }: { path: string }) {
   } | null>(null);
   const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
 
+  // Ctrl+M fires a `vc-marquee-toggle` window event from the top-level
+  // keydown handler; each marquee-capable viewer listens and flips its
+  // local state.
+  useEffect(() => {
+    const onToggle = () => setMarqueeOn((v) => !v);
+    window.addEventListener("vc-marquee-toggle", onToggle);
+    return () => window.removeEventListener("vc-marquee-toggle", onToggle);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const host = hostRef.current;

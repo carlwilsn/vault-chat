@@ -148,6 +148,12 @@ export function HtmlView({ content }: { content: string }) {
   const [inlineAsk, setInlineAsk] = useState<InlineEditRequest | null>(null);
 
   useEffect(() => {
+    const onToggle = () => setMarqueeOn((v) => !v);
+    window.addEventListener("vc-marquee-toggle", onToggle);
+    return () => window.removeEventListener("vc-marquee-toggle", onToggle);
+  }, []);
+
+  useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       if (e.source !== iframeRef.current?.contentWindow) return;
       const data = e.data as {
