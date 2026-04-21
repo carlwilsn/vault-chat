@@ -10,7 +10,7 @@ import { SettingsPane } from "./SettingsPane";
 import { Titlebar } from "./Titlebar";
 import { useStore } from "./store";
 import { gitInitIfNeeded } from "./git";
-import { openUrl, isExternalHref } from "./opener";
+import { tryOpenLink } from "./linkNav";
 import "./App.css";
 
 export default function App() {
@@ -106,10 +106,11 @@ export default function App() {
     };
   }, []);
 
-  // Intercept clicks on external links anywhere in the app — open them in
-  // the user's default browser instead of navigating the webview away.
-  // Also handles middle-click and Ctrl/Cmd+click (browser "open in new tab"
-  // muscle memory).
+  // Centralized anchor-click handler. Any click on an <a> anywhere in
+  // the app runs through tryOpenLink: external URLs dispatch to the OS
+  // browser, vault-relative / wiki / relative paths load into the
+  // viewer, in-page anchors pass through. The webview never navigates
+  // from under us (which would look like an app refresh).
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
       if (e.defaultPrevented) return;
@@ -118,10 +119,11 @@ export default function App() {
       const anchor = target?.closest?.("a") as HTMLAnchorElement | null;
       if (!anchor) return;
       const href = anchor.getAttribute("href");
-      if (!href || !isExternalHref(href)) return;
+      if (!href) return;
+      if (href.startsWith("#")) return;
       e.preventDefault();
       e.stopPropagation();
-      openUrl(href).catch((err) => console.error("[opener] failed:", err));
+      tryOpenLink(href).catch((err) => console.error("[link] failed:", err));
     };
     const onAuxClick = (e: MouseEvent) => {
       if (e.button === 1) onClick(e);

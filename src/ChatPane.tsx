@@ -168,16 +168,7 @@ export function ChatPane() {
         <div className="max-w-[820px] mx-auto space-y-4">
         {messages.length === 0 && !streamingText && (
           <div className="flex flex-col items-center justify-center h-full text-center px-4 space-y-3">
-            <div className="space-y-1">
-              <p className="text-[13px] text-foreground/90">Ready.</p>
-              {skills.length > 0 ? (
-                <p className="text-[11.5px] text-muted-foreground">
-                  Type <kbd className="inline-flex items-center rounded border border-border bg-muted px-1 py-0 text-[10px] font-mono">/</kbd> to see {skills.length} skill{skills.length === 1 ? "" : "s"}
-                </p>
-              ) : (
-                <p className="text-[11.5px] text-muted-foreground">Ask anything about this vault.</p>
-              )}
-            </div>
+            <p className="text-[13px] text-foreground/90">Ready.</p>
           </div>
         )}
 

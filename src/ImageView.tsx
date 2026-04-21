@@ -13,6 +13,7 @@ function mimeFor(ext: string): string {
   if (e === "ico") return "image/x-icon";
   if (e === "tif" || e === "tiff") return "image/tiff";
   if (e === "heic") return "image/heic";
+  if (e === "svg") return "image/svg+xml";
   return "application/octet-stream";
 }
 

@@ -25,7 +25,7 @@ import { ImageView } from "./ImageView";
 import { UnsupportedView } from "./UnsupportedView";
 import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
-import { fileKind, isUnreadableAsText } from "./fileKind";
+import { fileKind } from "./fileKind";
 
 // Obsidian-style wikilinks: `[[Target]]`, `[[Target|Display]]`, and
 // `[[Target#Section]]`. We rewrite them to plain markdown links with a
@@ -83,75 +83,6 @@ function resolveRelative(baseFile: string, rel: string): string {
     else if (p && p !== ".") baseParts.push(p);
   }
   return baseParts.join(sep);
-}
-
-function VaultLink({ href, children, ...rest }: ComponentPropsWithoutRef<"a">) {
-  const currentFile = useStore((s) => s.currentFile);
-  const vaultPath = useStore((s) => s.vaultPath);
-  const files = useStore((s) => s.files);
-  const setCurrentFile = useStore((s) => s.setCurrentFile);
-
-  const onClick = async (e: ReactMouseEvent<HTMLAnchorElement>) => {
-    if (!href) return;
-    if (href.startsWith("#")) return;
-
-    // Wiki-style link emitted by remarkWikiLinks. Resolve against the
-    // vault root; if the exact path doesn't exist, fall back to a
-    // basename search across the vault (Obsidian-ish).
-    if (href.startsWith("vault://")) {
-      e.preventDefault();
-      if (!vaultPath) return;
-      const raw = href.slice("vault://".length).split("#")[0].split("?")[0];
-      const primary = `${vaultPath}/${raw}`;
-      let target = primary;
-      if (!files.some((f) => f.path === primary)) {
-        // Search by full suffix, then by basename.
-        const suffixHit = files.find((f) => !f.is_dir && f.path.endsWith("/" + raw));
-        if (suffixHit) target = suffixHit.path;
-        else {
-          const wantedName = raw.split("/").pop() ?? raw;
-          const nameHit = files.find((f) => !f.is_dir && f.name === wantedName);
-          if (nameHit) target = nameHit.path;
-        }
-      }
-      try {
-        const content = isUnreadableAsText(target)
-          ? ""
-          : await invoke<string>("read_text_file", { path: target });
-        setCurrentFile(target, content);
-      } catch (err) {
-        console.error("vault-chat: failed to open wiki link:", target, err);
-      }
-      return;
-    }
-
-    if (/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.toLowerCase().startsWith("file:")) {
-      // External scheme (http/https/mailto/…). The global handler in
-      // App.tsx dispatches to the system browser via the opener plugin;
-      // we just need to keep the webview from navigating.
-      return;
-    }
-    e.preventDefault();
-    if (!currentFile) return;
-    const cleaned = href.replace(/^file:\/\/\/?/, "").split("#")[0].split("?")[0];
-    const resolved = /^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned)
-      ? cleaned
-      : resolveRelative(currentFile, cleaned);
-    try {
-      const content = isUnreadableAsText(resolved)
-        ? ""
-        : await invoke<string>("read_text_file", { path: resolved });
-      setCurrentFile(resolved, content);
-    } catch (err) {
-      console.error("vault-chat: failed to open linked file:", resolved, err);
-    }
-  };
-
-  return (
-    <a href={href} {...rest} onClick={onClick}>
-      {children}
-    </a>
-  );
 }
 
 // Renders an <img> whose src has been resolved relative to the current
@@ -216,9 +147,10 @@ function VaultImage({ src, alt, ...rest }: ComponentPropsWithoutRef<"img">) {
 // Flip the Nth GFM task-list checkbox in `content`. A task-list item is a
 // list item (- / * / + / "1.") whose first inline content is "[ ]", "[x]",
 // or "[X]". Matches must start on a new line; "[x]" buried inside a
-// paragraph is not a task checkbox.
+// paragraph is not a task checkbox. Blockquote-prefixed items (`> - [ ]`
+// and nested `> > - [ ]`) are matched too.
 function flipNthTaskCheckbox(content: string, n: number): string | null {
-  const re = /^(\s*(?:[-*+]|\d+\.)\s+)\[([ xX])\]/gm;
+  const re = /^([ \t]*(?:>[ \t]*)*(?:[-*+]|\d+\.)[ \t]+)\[([ xX])\]/gm;
   let i = 0;
   let match: RegExpExecArray | null;
   while ((match = re.exec(content)) !== null) {
@@ -542,7 +474,7 @@ export function MarkdownView({ paneId }: Props) {
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath, remarkBreaks, remarkWikiLinks]}
               rehypePlugins={[rehypeRaw, rehypeKatex, rehypeHighlight]}
-              components={{ a: VaultLink, img: VaultImage, input: renderInput }}
+              components={{ img: VaultImage, input: renderInput }}
             >
               {content}
             </ReactMarkdown>
