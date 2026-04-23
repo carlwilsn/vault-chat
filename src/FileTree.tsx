@@ -429,8 +429,14 @@ export function FileTree() {
         {files.map((f) => {
           if (f.hidden) return null;
           if (isHidden(f)) return null;
-          const isActive = currentFile === f.path;
-          const isSelectedDir = f.is_dir && selectedDir === f.path;
+          const multiSelecting = selected.size > 1;
+          // When the user is shift-building a multi-selection, the only
+          // row visual that should read as "selected" is the clicked
+          // set. Hide the open-file highlight and the folder-context
+          // highlight so they don't bleed into the selection.
+          const isActive = !multiSelecting && currentFile === f.path;
+          const isSelectedDir = !multiSelecting && f.is_dir && selectedDir === f.path;
+          const isMultiSelected = multiSelecting && selected.has(f.path);
           const isOpen = f.is_dir && !collapsed.has(f.path);
           const isRenaming = renaming?.path === f.path;
           return (
@@ -467,7 +473,7 @@ export function FileTree() {
                       : "hover:bg-accent/60",
                     isActive && "bg-accent text-accent-foreground",
                     isSelectedDir && "bg-accent/40",
-                    selected.has(f.path) && selected.size > 1 && "bg-primary/15 text-foreground",
+                    isMultiSelected && "bg-primary/15 text-foreground",
                     f.is_dir && dropTarget === f.path && "ring-2 ring-primary/60 bg-primary/10",
                   )}
                   style={{ paddingLeft: 8 + f.depth * 12 }}
