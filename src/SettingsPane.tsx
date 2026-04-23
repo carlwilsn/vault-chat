@@ -39,6 +39,16 @@ export function SettingsPane() {
   const setFiles = useStore((s) => s.setFiles);
   const setCurrentFile = useStore((s) => s.setCurrentFile);
   const vaultPath = useStore((s) => s.vaultPath);
+  const [modelSearch, setModelSearch] = useState("");
+  const filteredCatalog = (() => {
+    const q = modelSearch.trim().toLowerCase();
+    if (!q) return catalog;
+    const terms = q.split(/\s+/);
+    return catalog.filter((m) => {
+      const hay = `${m.provider} ${m.id} ${m.label}`.toLowerCase();
+      return terms.every((t) => hay.includes(t));
+    });
+  })();
   const [drafts, setDrafts] = useState<Record<ProviderId, string>>({
     anthropic: apiKeys.anthropic ?? "",
     openai: apiKeys.openai ?? "",
@@ -151,13 +161,30 @@ export function SettingsPane() {
               {catalogRefreshing ? "Refreshing…" : `Refresh (${catalog.length})`}
             </Button>
           </div>
+          <Input
+            type="search"
+            placeholder="Search models (name, id, or provider)…"
+            value={modelSearch}
+            onChange={(e) => setModelSearch(e.target.value)}
+          />
           <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
-            {catalog.map((m) => (
-              <option key={`${m.provider}:${m.id}`} value={m.id}>
-                [{PROVIDER_LABEL[m.provider]}] {m.label}
+            {filteredCatalog.length === 0 ? (
+              <option value={modelId} disabled>
+                No models match "{modelSearch}"
               </option>
-            ))}
+            ) : (
+              filteredCatalog.map((m) => (
+                <option key={`${m.provider}:${m.id}`} value={m.id}>
+                  [{PROVIDER_LABEL[m.provider]}] {m.label}
+                </option>
+              ))
+            )}
           </Select>
+          {modelSearch && (
+            <p className="text-[11px] text-muted-foreground/80">
+              {filteredCatalog.length} of {catalog.length} match
+            </p>
+          )}
           {Object.entries(catalogErrors).length > 0 && (
             <p className="text-[11px] text-amber-500/90">
               {Object.entries(catalogErrors)
