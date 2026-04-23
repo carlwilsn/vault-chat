@@ -202,25 +202,17 @@ export function FileTree() {
   const isInternalDrag = (dt: DataTransfer | null): boolean =>
     !!dt && dt.types.includes(VAULT_PATH_MIME);
 
-  // Flat list of visible entries in render order — the order a user
-  // sees, which is what Shift+Click range-select should span.
-  const visibleEntries = files.filter((f) => !f.hidden && !isHidden(f));
-
-  const extendSelection = (path: string) => {
-    if (!anchor) {
-      setSelected(new Set([path]));
-      setAnchor(path);
-      return;
-    }
-    const a = visibleEntries.findIndex((f) => f.path === anchor);
-    const b = visibleEntries.findIndex((f) => f.path === path);
-    if (a === -1 || b === -1) {
-      setSelected(new Set([path]));
-      setAnchor(path);
-      return;
-    }
-    const [lo, hi] = a <= b ? [a, b] : [b, a];
-    setSelected(new Set(visibleEntries.slice(lo, hi + 1).map((f) => f.path)));
+  // Shift+Click toggles the clicked row in/out of the selection — one
+  // at a time, not a range. Includes the previous anchor so the user's
+  // starting row stays in the selection until they deselect it.
+  const toggleSelection = (path: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (anchor && !next.has(anchor)) next.add(anchor);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
   };
 
   const beginCreate = (kind: PendingKind, parentOverride?: string) => {
@@ -497,9 +489,9 @@ export function FileTree() {
                     }
                   }}
                   onClick={(ev) => {
-                    if (ev.shiftKey && anchor) {
+                    if (ev.shiftKey) {
                       ev.preventDefault();
-                      extendSelection(f.path);
+                      toggleSelection(f.path);
                       return;
                     }
                     // Plain click — reset multi-selection to just this
