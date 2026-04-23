@@ -56,6 +56,10 @@ function filterFilesForMention(
   return hits.map(({ score: _s, ...h }) => h);
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // Build a context preamble out of attached mentions. Returns an empty
 // string when there's nothing to attach. Unreadable-as-text files
 // (images, pdfs, unsupported) are listed by path only so the agent knows
@@ -201,15 +205,11 @@ export function ChatPane() {
 
   const send = async () => {
     if (busy || !ready) return;
-    const typed = input.trim();
-    if (!typed && mentions.length === 0) return;
-    // Inline @name tokens (last segment only) in the visible message
-    // so the bubble reads cleanly. The hidden preamble carries the
-    // absolute path + contents, so the agent still has the full
-    // disambiguating info even when two referenced files share a
-    // basename.
-    const refPrefix = mentions.map((m) => `@${m.name}`).join(" ");
-    const text = refPrefix ? (typed ? `${refPrefix} ${typed}` : refPrefix) : typed;
+    const text = input.trim();
+    if (!text) return;
+    // @name tokens are already inline in `text`. The hidden preamble
+    // carries absolute paths + contents so the agent can resolve
+    // ambiguous basenames if two referenced files share a name.
     const contextPreamble = await buildMentionPreamble(
       mentions.map((m) => ({ rel: m.rel, path: m.path })),
     );
@@ -280,13 +280,6 @@ export function ChatPane() {
       send();
       return;
     }
-    // Backspace on empty input pops the most recent mention back into
-    // the textarea as editable text — Gmail-style chip correction.
-    if (e.key === "Backspace" && input === "" && mentions.length > 0) {
-      e.preventDefault();
-      restoreLastMention();
-      return;
-    }
   };
 
   const onInputChange = (v: string) => {
@@ -318,6 +311,10 @@ export function ChatPane() {
     } else {
       setFileMention(null);
     }
+
+    // Drop any tracked mention whose @name no longer appears in the
+    // text — the user deleted it inline.
+    setMentions((prev) => prev.filter((m) => new RegExp(`(^|\\s)@${escapeRegExp(m.name)}(\\s|$)`).test(v)));
   };
 
   const pickSkill = (name: string) => {
@@ -354,53 +351,24 @@ export function ChatPane() {
 
   const pickMention = (hit: MentionHit) => {
     if (!fileMention) return;
-    const rawAt = input.slice(fileMention.start, fileMention.start + 1 + fileMention.query.length);
     const before = input.slice(0, fileMention.start);
     const after = input.slice(fileMention.start + 1 + fileMention.query.length);
-    // Strip the @query from the textarea — the chip above carries it now.
-    const next = `${before}${after.replace(/^\s+/, "")}`.trimStart();
+    // Keep the @name inline in the textarea — no chip. The mentions
+    // array still tracks the exact path so send() can resolve basenames
+    // to their source even when two files share a name.
+    const insertion = `@${hit.name} `;
+    const next = `${before}${insertion}${after.replace(/^\s+/, "")}`;
     setInput(next);
     setMentions((prev) => {
       if (prev.some((m) => m.path === hit.path)) return prev;
-      return [...prev, { rel: hit.rel, path: hit.path, name: hit.name, raw: rawAt }];
+      return [...prev, { rel: hit.rel, path: hit.path, name: hit.name, raw: `@${hit.name}` }];
     });
     setFileMention(null);
     requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el) return;
-      const pos = before.length;
+      const pos = before.length + insertion.length;
       el.setSelectionRange(pos, pos);
-      el.focus();
-    });
-  };
-
-  const removeMention = (path: string) => {
-    setMentions((prev) => prev.filter((m) => m.path !== path));
-  };
-
-  const openMentionInViewer = async (path: string) => {
-    try {
-      const content = isUnreadableAsText(path)
-        ? ""
-        : await invoke<string>("read_text_file", { path });
-      useStore.getState().setCurrentFile(path, content);
-    } catch (err) {
-      console.error("[mention] open failed:", err);
-    }
-  };
-
-  // Backspace on empty input restores the most recent mention as
-  // editable text. Mirrors the Gmail chip-input pattern: deleting a
-  // token brings the raw characters back for a correction.
-  const restoreLastMention = () => {
-    if (mentions.length === 0) return;
-    const last = mentions[mentions.length - 1];
-    setMentions((prev) => prev.slice(0, -1));
-    setInput(last.raw);
-    requestAnimationFrame(() => {
-      const el = inputRef.current;
-      if (!el) return;
-      el.setSelectionRange(last.raw.length, last.raw.length);
       el.focus();
     });
   };
@@ -542,11 +510,6 @@ export function ChatPane() {
 
         <div className="p-3 max-w-[820px] mx-auto w-full">
           <div className="relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors">
-            <MentionChips
-              mentions={mentions}
-              onOpen={openMentionInViewer}
-              onRemove={removeMention}
-            />
             <div className="relative flex items-end">
               <Textarea
                 ref={inputRef}
@@ -855,47 +818,6 @@ function ElapsedTimer() {
     <span className="tabular-nums opacity-70" title="Agent running">
       {label}
     </span>
-  );
-}
-
-// Attached-file chips above the input. Each chip represents a file the
-// user summoned with @. Click opens it in the viewer; × detaches it.
-function MentionChips({
-  mentions,
-  onOpen,
-  onRemove,
-}: {
-  mentions: Array<{ rel: string; path: string; name: string }>;
-  onOpen: (path: string) => void;
-  onRemove: (path: string) => void;
-}) {
-  if (mentions.length === 0) return null;
-  return (
-    <div className="flex flex-wrap gap-1 px-2 pt-2">
-      {mentions.map((m) => (
-        <div
-          key={m.path}
-          className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-full bg-primary/15 border border-primary/30 text-[11px] text-foreground"
-        >
-          <button
-            onClick={() => onOpen(m.path)}
-            className="font-mono max-w-[240px] truncate hover:underline underline-offset-2"
-            title={m.path}
-          >
-            @{m.rel}
-          </button>
-          <button
-            onClick={() => onRemove(m.path)}
-            className="h-4 w-4 flex items-center justify-center rounded-full hover:bg-primary/25 text-muted-foreground hover:text-foreground"
-            title="Remove (or backspace on empty input to edit)"
-          >
-            <svg width="10" height="10" viewBox="0 0 10 10" className="pointer-events-none">
-              <path d="M2 2 L8 8 M8 2 L2 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-      ))}
-    </div>
   );
 }
 
