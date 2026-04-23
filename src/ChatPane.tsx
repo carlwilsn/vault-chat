@@ -203,12 +203,12 @@ export function ChatPane() {
     if (busy || !ready) return;
     const typed = input.trim();
     if (!typed && mentions.length === 0) return;
-    // Inline the @rel tokens in the visible message so the agent (and
-    // the user's own bubble) shows which files were referenced, not
-    // just disembodied attachments. File contents still ride along in
-    // the hidden preamble so the agent sees them without the user's
-    // bubble getting cluttered.
-    const refPrefix = mentions.map((m) => `@${m.rel}`).join(" ");
+    // Inline @name tokens (last segment only) in the visible message
+    // so the bubble reads cleanly. The hidden preamble carries the
+    // absolute path + contents, so the agent still has the full
+    // disambiguating info even when two referenced files share a
+    // basename.
+    const refPrefix = mentions.map((m) => `@${m.name}`).join(" ");
     const text = refPrefix ? (typed ? `${refPrefix} ${typed}` : refPrefix) : typed;
     const contextPreamble = await buildMentionPreamble(
       mentions.map((m) => ({ rel: m.rel, path: m.path })),
@@ -628,6 +628,21 @@ function toolSummary(input: any): string {
   return typeof first === "object" || first == null ? "" : String(first);
 }
 
+// Bold @ref tokens inline in the user bubble so file references pop
+// visually. Gates on word boundary + at least one non-punctuation
+// char after @ so things like email addresses ("@gmail") still get
+// highlighted but a stray "@" doesn't. Skips @ inside backtick-code
+// spans (naive split on `` ` ``) so literal code doesn't get reformatted.
+function boldAtRefs(src: string): string {
+  const parts = src.split(/(`+[^`]+?`+)/g);
+  return parts
+    .map((part, i) => {
+      if (i % 2 === 1) return part; // inside a code span
+      return part.replace(/(^|[^\w])@([\w][\w./-]*)/g, "$1**@$2**");
+    })
+    .join("");
+}
+
 const MessageBubble = memo(function MessageBubble({
   message,
 }: {
@@ -652,7 +667,7 @@ const MessageBubble = memo(function MessageBubble({
             rehypePlugins={[rehypeKatex]}
             urlTransform={allowImageDataUrls}
           >
-            {message.content}
+            {boldAtRefs(message.content)}
           </ReactMarkdown>
         </div>
       ) : (
