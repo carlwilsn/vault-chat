@@ -213,16 +213,20 @@ export default function App() {
     <div className="h-full w-full bg-background flex flex-col">
       <Titlebar />
       <div className="flex-1 min-h-0">
-        <Allotment key={layoutKey} proportionalLayout={false}>
+        <Allotment key={`${layoutKey}:${popoutOpen ? "pop" : "dock"}`} proportionalLayout={false}>
           <Allotment.Pane preferredSize={fitWidth} minSize={160} maxSize={leftMax} visible={!leftCollapsed} snap>
             <FileTree />
           </Allotment.Pane>
           <Allotment.Pane minSize={340} priority={LayoutPriority.High}>
             {showSettings && chatHidden ? <SettingsPane /> : <MarkdownArea />}
           </Allotment.Pane>
-          <Allotment.Pane preferredSize={440} minSize={320} visible={!rightCollapsed && !popoutOpen} snap>
-            <ChatPane />
-          </Allotment.Pane>
+          {/* Dropping the pane entirely while popped out — visible=false
+              still leaves a sash the user can grab at the screen edge. */}
+          {!popoutOpen && (
+            <Allotment.Pane preferredSize={440} minSize={320} visible={!rightCollapsed} snap>
+              <ChatPane />
+            </Allotment.Pane>
+          )}
         </Allotment>
       </div>
     </div>
