@@ -223,8 +223,15 @@ export function ChatPane() {
     const byPath = new Map<string, { rel: string; path: string }>();
     for (const m of mentions) byPath.set(m.path, { rel: m.rel, path: m.path });
     for (const tok of tokens) {
-      if (mentions.some((m) => m.name === tok)) continue;
-      const hits = files.filter((f) => !f.is_dir && !f.hidden && f.name === tok);
+      const lower = tok.toLowerCase();
+      if (mentions.some((m) => m.name.toLowerCase() === lower)) continue;
+      // Case-insensitive basename match — users type however they type.
+      const hits = files.filter(
+        (f) => !f.is_dir && !f.hidden && f.name.toLowerCase() === lower,
+      );
+      if (hits.length === 0) {
+        console.warn(`[@ref] no vault file matched "${tok}" — agent will see only the literal token`);
+      }
       for (const h of hits) {
         if (!byPath.has(h.path)) {
           const rel = vaultPath && h.path.startsWith(vaultPath + "/")
