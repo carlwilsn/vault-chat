@@ -71,24 +71,25 @@ async function buildMentionPreamble(
   const blocks: string[] = [];
   for (const { rel, path } of mentions) {
     if (isUnreadableAsText(path)) {
-      // Give the path as fact so the agent doesn't re-search with Glob
-      // when the user just asks where a file lives.
       const ext = (path.split(".").pop() ?? "").toLowerCase();
-      blocks.push(
-        `@${rel}\n  path: ${path}\n  type: binary (${ext}) — contents not inlined; read with a format-appropriate tool only if the user wants the contents`,
-      );
+      blocks.push(`@${rel} — absolute path: ${path} (binary ${ext}, contents not inlined)`);
       continue;
     }
     try {
       const content = await invoke<string>("read_text_file", { path });
-      blocks.push(`--- @${rel} ---\npath: ${path}\n\n${content}\n--- end ${rel} ---`);
+      blocks.push(`@${rel} — absolute path: ${path}\n\n${content}`);
     } catch (err) {
-      blocks.push(`@${rel}\n  path: ${path}\n  (failed to read: ${String(err)})`);
+      blocks.push(`@${rel} — absolute path: ${path} (read failed: ${String(err)})`);
     }
   }
-  return blocks.length === 0
-    ? ""
-    : `[Files the user attached via @mention — paths below are authoritative; no need to search for them]\n\n${blocks.join("\n\n")}`;
+  const preamble = [
+    "FILE ATTACHMENTS",
+    "The user attached the following files with @-mentions. The absolute paths below are the ground truth — you already know where each file is. DO NOT run Glob, Grep, or any other tool to search for these files. If the user's question can be answered from the path or the inlined content, answer directly.",
+    "",
+    blocks.join("\n\n"),
+  ].join("\n");
+  console.info(`[@ref] attaching ${mentions.length} file(s):\n${preamble}`);
+  return preamble;
 }
 
 export function ChatPane() {
