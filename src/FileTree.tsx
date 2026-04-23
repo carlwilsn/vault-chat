@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff, FolderOpen } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
-import { VAULT_PATH_MIME, isExternalFileDrop, copyExternalFilesInto } from "./dnd";
+import { VAULT_PATH_MIME, VAULT_PATHS_MIME, isExternalFileDrop, copyExternalFilesInto } from "./dnd";
 import { cn } from "./lib/utils";
 import { isUnreadableAsText } from "./fileKind";
 import { revealInFileExplorer } from "./opener";
@@ -19,6 +19,10 @@ export function FileTree() {
   const [menu, setMenu] = useState<Menu>(null);
   const [confirmDelete, setConfirmDelete] = useState<FileEntry | null>(null);
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
+  // Multi-select (Shift+Click). Holds absolute paths. `anchor` is the
+  // last plain-click, used as the range start for shift-extend.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [anchor, setAnchor] = useState<string | null>(null);
   // Drop target is either a specific folder path or null for the tree root
   // (vault root). undefined means no drop in progress.
   const [dropTarget, setDropTarget] = useState<string | null | undefined>(undefined);
@@ -119,55 +123,105 @@ export function FileTree() {
     }
   };
 
-  // Move a vault entry into a folder. Source is the full absolute path
-  // from VAULT_PATH_MIME; dst is the destination directory (vaultPath
-  // itself for the tree root). Filters out no-op and self-parent moves
-  // so the backend never sees them.
+  // Move vault entries into a folder. Each source is an absolute vault
+  // path; dst is the destination directory (vaultPath itself for the
+  // tree root). Filters out no-op, self-parent, and into-descendant
+  // moves so the backend never sees them. Accepts a list so Shift-
+  // click multi-selections drag as a group.
   const handleInternalMove = async (
     e: React.DragEvent<HTMLElement>,
-    src: string,
+    sources: string[],
     dstDir: string,
   ) => {
     e.preventDefault();
     e.stopPropagation();
     setDropTarget(undefined);
     if (!vaultPath) return;
-    if (!src.startsWith(vaultPath + "/")) return;
-    if (src === dstDir) return; // dropping a folder onto itself
-    if (dstDir.startsWith(src + "/")) return; // into a descendant
-    const base = src.split("/").pop();
-    if (!base) return;
-    const to = `${dstDir.replace(/\/$/, "")}/${base}`;
-    if (to === src) return; // already a direct child
+    const dstClean = dstDir.replace(/\/$/, "");
+    const moves: { from: string; to: string }[] = [];
+    for (const src of sources) {
+      if (!src.startsWith(vaultPath + "/")) continue;
+      if (src === dstDir) continue;
+      if (dstDir.startsWith(src + "/")) continue;
+      const base = src.split("/").pop();
+      if (!base) continue;
+      const to = `${dstClean}/${base}`;
+      if (to === src) continue;
+      moves.push({ from: src, to });
+    }
+    if (moves.length === 0) return;
+    let currentFileMove: { from: string; to: string } | null = null;
     try {
-      await invoke("rename_path", { from: src, to });
-      // Rewrite state that references the old path so the UI doesn't
-      // flicker into "file not found" during refresh.
-      if (currentFile === src) {
-        const content = await invoke<string>("read_text_file", { path: to });
-        setCurrentFile(to, content);
-      } else if (currentFile && currentFile.startsWith(src + "/")) {
-        const moved = to + currentFile.slice(src.length);
-        const content = await invoke<string>("read_text_file", { path: moved });
-        setCurrentFile(moved, content);
+      for (const m of moves) {
+        await invoke("rename_path", { from: m.from, to: m.to });
+        if (currentFile === m.from) {
+          currentFileMove = m;
+        } else if (currentFile && currentFile.startsWith(m.from + "/")) {
+          currentFileMove = { from: currentFile, to: m.to + currentFile.slice(m.from.length) };
+        }
+      }
+      if (currentFileMove) {
+        const content = await invoke<string>("read_text_file", { path: currentFileMove.to });
+        setCurrentFile(currentFileMove.to, content);
       }
       setCollapsed((prev) => {
         const next = new Set<string>();
         for (const p of prev) {
-          if (p === src) next.add(to);
-          else if (p.startsWith(src + "/")) next.add(to + p.slice(src.length));
-          else next.add(p);
+          let rewritten = p;
+          for (const m of moves) {
+            if (rewritten === m.from) rewritten = m.to;
+            else if (rewritten.startsWith(m.from + "/"))
+              rewritten = m.to + rewritten.slice(m.from.length);
+          }
+          next.add(rewritten);
         }
         return next;
       });
+      setSelected(new Set(moves.map((m) => m.to)));
+      setAnchor(moves[moves.length - 1].to);
       await refreshFiles();
     } catch (err) {
       console.error("[dnd] move failed:", err);
     }
   };
 
+  const readDropSources = (dt: DataTransfer): string[] => {
+    const multi = dt.getData(VAULT_PATHS_MIME);
+    if (multi) {
+      try {
+        const parsed = JSON.parse(multi);
+        if (Array.isArray(parsed)) return parsed.filter((p) => typeof p === "string");
+      } catch {
+        /* fall through to single */
+      }
+    }
+    const one = dt.getData(VAULT_PATH_MIME);
+    return one ? [one] : [];
+  };
+
   const isInternalDrag = (dt: DataTransfer | null): boolean =>
     !!dt && dt.types.includes(VAULT_PATH_MIME);
+
+  // Flat list of visible entries in render order — the order a user
+  // sees, which is what Shift+Click range-select should span.
+  const visibleEntries = files.filter((f) => !f.hidden && !isHidden(f));
+
+  const extendSelection = (path: string) => {
+    if (!anchor) {
+      setSelected(new Set([path]));
+      setAnchor(path);
+      return;
+    }
+    const a = visibleEntries.findIndex((f) => f.path === anchor);
+    const b = visibleEntries.findIndex((f) => f.path === path);
+    if (a === -1 || b === -1) {
+      setSelected(new Set([path]));
+      setAnchor(path);
+      return;
+    }
+    const [lo, hi] = a <= b ? [a, b] : [b, a];
+    setSelected(new Set(visibleEntries.slice(lo, hi + 1).map((f) => f.path)));
+  };
 
   const beginCreate = (kind: PendingKind, parentOverride?: string) => {
     if (!vaultPath) return;
@@ -333,8 +387,7 @@ export function FileTree() {
         onDrop={(e) => {
           if (!vaultPath) return;
           if (isInternalDrag(e.dataTransfer)) {
-            const src = e.dataTransfer.getData(VAULT_PATH_MIME);
-            handleInternalMove(e, src, vaultPath);
+            handleInternalMove(e, readDropSources(e.dataTransfer), vaultPath);
           } else if (isExternalFileDrop(e.dataTransfer)) {
             handleExternalDrop(e, vaultPath);
           }
@@ -386,13 +439,23 @@ export function FileTree() {
                       : "hover:bg-accent/60",
                     isActive && "bg-accent text-accent-foreground",
                     isSelectedDir && "bg-accent/40",
+                    selected.has(f.path) && selected.size > 1 && "bg-primary/15 text-foreground",
                     f.is_dir && dropTarget === f.path && "ring-2 ring-primary/60 bg-primary/10",
                   )}
                   style={{ paddingLeft: 8 + f.depth * 12 }}
                   draggable
                   onDragStart={(e) => {
+                    // If the dragged row is part of a multi-selection,
+                    // ship the whole set; otherwise just this row.
+                    const group =
+                      selected.has(f.path) && selected.size > 1
+                        ? Array.from(selected)
+                        : [f.path];
                     e.dataTransfer.setData(VAULT_PATH_MIME, f.path);
                     e.dataTransfer.setData("text/plain", f.path);
+                    if (group.length > 1) {
+                      e.dataTransfer.setData(VAULT_PATHS_MIME, JSON.stringify(group));
+                    }
                     // copyMove — ChatPane treats it as copy (attach),
                     // folder targets treat it as move.
                     e.dataTransfer.effectAllowed = "copyMove";
@@ -428,13 +491,21 @@ export function FileTree() {
                   onDrop={(e) => {
                     if (!f.is_dir) return;
                     if (isInternalDrag(e.dataTransfer)) {
-                      const src = e.dataTransfer.getData(VAULT_PATH_MIME);
-                      handleInternalMove(e, src, f.path);
+                      handleInternalMove(e, readDropSources(e.dataTransfer), f.path);
                     } else if (isExternalFileDrop(e.dataTransfer)) {
                       handleExternalDrop(e, f.path);
                     }
                   }}
-                  onClick={() => {
+                  onClick={(ev) => {
+                    if (ev.shiftKey && anchor) {
+                      ev.preventDefault();
+                      extendSelection(f.path);
+                      return;
+                    }
+                    // Plain click — reset multi-selection to just this
+                    // row (acts as the anchor for a subsequent shift).
+                    setSelected(new Set([f.path]));
+                    setAnchor(f.path);
                     if (f.is_dir) {
                       setSelectedDir((prev) => (prev === f.path ? null : f.path));
                       toggleFolder(f.path);

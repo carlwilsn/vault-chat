@@ -583,7 +583,11 @@ export const useStore = create<State>((set) => ({
   setMode: (m) => set({ mode: m }),
   toggleMode: () => set((s) => ({ mode: s.mode === "view" ? "edit" : "view" })),
   toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
-  toggleRight: () => set((s) => ({ rightCollapsed: !s.rightCollapsed })),
+  toggleRight: () =>
+    // No-op while the chat is popped out — the right pane doesn't
+    // render in that state, so flipping the collapsed flag would just
+    // cause the chat to jump back in when the popout closes.
+    set((s) => (s.popoutOpen ? s : { rightCollapsed: !s.rightCollapsed })),
   setPopoutOpen: (b) => set({ popoutOpen: b }),
   addTokenUsage: (u) =>
     set((s) => ({

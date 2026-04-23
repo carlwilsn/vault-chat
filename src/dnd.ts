@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export const VAULT_PATH_MIME = "application/x-vault-path";
+// Multi-path payload for drags from a Shift-click selection. Value is
+// a JSON-encoded string[] of absolute vault paths. VAULT_PATH_MIME is
+// also set (to the drag source) so single-path consumers still work.
+export const VAULT_PATHS_MIME = "application/x-vault-paths";
 export const VAULT_PANE_MIME = "application/x-vault-pane";
 
 // True if the DataTransfer carries external OS files (i.e. an external

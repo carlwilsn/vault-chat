@@ -265,8 +265,13 @@ export function Titlebar() {
       <div className="flex items-center">
         <button
           onClick={toggleRight}
-          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 mr-1 ${rightCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
-          title={`${rightCollapsed ? "Show" : "Hide"} chat panel (Ctrl+Shift+B)`}
+          disabled={popoutOpen}
+          className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 mr-1 disabled:opacity-40 disabled:cursor-not-allowed ${rightCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
+          title={
+            popoutOpen
+              ? "Chat is popped out — close the popout window to dock"
+              : `${rightCollapsed ? "Show" : "Hide"} chat panel (Ctrl+Shift+B)`
+          }
         >
           <PanelRight className="h-3.5 w-3.5" />
         </button>
