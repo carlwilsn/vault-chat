@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, Check, Key, Cog, X, Plus, Lock } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
-import { MODELS, PROVIDER_LABEL, type ProviderId } from "./providers";
+import { PROVIDER_LABEL, type ProviderId } from "./providers";
 import { Button, Input, Select } from "./ui";
 import { getMetaVaultPath } from "./meta";
 import { gitInitIfNeeded } from "./git";
@@ -30,6 +30,10 @@ export function SettingsPane() {
     setModelId,
     setTheme,
     setShowSettings,
+    catalog,
+    catalogRefreshing,
+    catalogErrors,
+    refreshCatalog,
   } = useStore();
   const setVault = useStore((s) => s.setVault);
   const setFiles = useStore((s) => s.setFiles);
@@ -129,21 +133,38 @@ export function SettingsPane() {
 
       <div className="flex-1 overflow-auto p-5 space-y-6">
         <section className="space-y-2">
-          <div>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Model
-            </h3>
-            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
-              The model used for chat. Requires a matching provider key.
-            </p>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Model
+              </h3>
+              <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
+                Fetched live from each provider. Refresh to pick up new releases.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => refreshCatalog()}
+              disabled={catalogRefreshing}
+            >
+              {catalogRefreshing ? "Refreshing…" : `Refresh (${catalog.length})`}
+            </Button>
           </div>
           <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
-            {MODELS.map((m) => (
-              <option key={m.id} value={m.id}>
+            {catalog.map((m) => (
+              <option key={`${m.provider}:${m.id}`} value={m.id}>
                 [{PROVIDER_LABEL[m.provider]}] {m.label}
               </option>
             ))}
           </Select>
+          {Object.entries(catalogErrors).length > 0 && (
+            <p className="text-[11px] text-amber-500/90">
+              {Object.entries(catalogErrors)
+                .map(([p, msg]) => `${p}: ${msg}`)
+                .join(" · ")}
+            </p>
+          )}
         </section>
 
         <div className="h-px bg-border" />

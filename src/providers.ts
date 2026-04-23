@@ -63,6 +63,21 @@ export function buildModel(spec: ModelSpec, apiKey: string): LanguageModel {
   }
 }
 
+// `MODELS` is the fallback seed list. At runtime the store hydrates a
+// live catalog (fetched from each provider's /models endpoint) via
+// `setLiveCatalog`. `findModel` searches the live list first, falling
+// back to the seeds so core paths (agent / inlineEdit / compactor) keep
+// working even if the fetch hasn't happened yet.
+let _liveCatalog: ModelSpec[] | null = null;
+
+export function setLiveCatalog(models: ModelSpec[] | null): void {
+  _liveCatalog = models && models.length > 0 ? models : null;
+}
+
+export function getLiveCatalog(): ModelSpec[] {
+  return _liveCatalog ?? MODELS;
+}
+
 export function findModel(id: string): ModelSpec | undefined {
-  return MODELS.find((m) => m.id === id);
+  return (_liveCatalog ?? MODELS).find((m) => m.id === id) ?? MODELS.find((m) => m.id === id);
 }

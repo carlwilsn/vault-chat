@@ -9,7 +9,7 @@ import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench } from "lucide-
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction } from "./sync";
 import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
-import { findModel, MODELS } from "./providers";
+import { findModel } from "./providers";
 import { loadSkills } from "./skills";
 import { isUnreadableAsText } from "./fileKind";
 import { SettingsPane } from "./SettingsPane";
@@ -890,7 +890,8 @@ function ModelPicker({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const available = MODELS.filter((m) => apiKeys[m.provider]);
+  const catalog = useStore((s) => s.catalog);
+  const available = catalog.filter((m) => apiKeys[m.provider]);
   const current = findModel(modelId);
 
   useEffect(() => {

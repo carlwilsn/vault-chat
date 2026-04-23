@@ -1,9 +1,14 @@
 import { create } from "zustand";
 import { emit } from "@tauri-apps/api/event";
-import type { ProviderId } from "./providers";
-import { DEFAULT_MODEL_ID } from "./providers";
+import type { ModelSpec, ProviderId } from "./providers";
+import { DEFAULT_MODEL_ID, MODELS as SEED_MODELS, setLiveCatalog } from "./providers";
 import type { Skill } from "./skills";
 import { keychainGet, keychainSet, keychainDelete, KEY } from "./keychain";
+import {
+  fetchAllCatalog,
+  loadCatalogFromLocalStorage,
+  saveCatalogToLocalStorage,
+} from "./modelCatalog";
 
 export type FileEntry = {
   path: string;
@@ -198,6 +203,14 @@ export async function hydrateKeychain(): Promise<void> {
   await migrateLocalStorageKeys();
   const { apiKeys, serviceKeys } = await fetchAllFromKeychain();
   useStore.setState({ apiKeys, serviceKeys });
+  // Seed the live model catalog from last session's cache so the
+  // dropdown isn't empty on boot. The actual refresh happens on demand
+  // (Settings button) or in the background via refreshCatalog().
+  const cached = loadCatalogFromLocalStorage();
+  if (cached && cached.length > 0) {
+    setLiveCatalog(cached);
+    useStore.setState({ catalog: cached });
+  }
 }
 
 type State = {
@@ -211,6 +224,9 @@ type State = {
   messages: ChatMessage[];
   apiKeys: ApiKeys;
   serviceKeys: ServiceKeys;
+  catalog: ModelSpec[];
+  catalogRefreshing: boolean;
+  catalogErrors: Partial<Record<ProviderId, string>>;
   modelId: string;
   theme: Theme;
   skills: Skill[];
@@ -245,6 +261,7 @@ type State = {
   clearApiKey: (p: ProviderId) => void;
   setServiceKey: (name: keyof ServiceKeys, k: string) => void;
   clearServiceKey: (name: keyof ServiceKeys) => void;
+  refreshCatalog: () => Promise<void>;
   setModelId: (id: string) => void;
   setTheme: (t: Theme) => void;
   applyThemeFromEvent: (t: Theme) => void;
@@ -298,6 +315,9 @@ export const useStore = create<State>((set) => ({
   messages: [],
   apiKeys: {}, // populated async via hydrateKeychain
   serviceKeys: {}, // populated async via hydrateKeychain
+  catalog: loadCatalogFromLocalStorage() ?? SEED_MODELS,
+  catalogRefreshing: false,
+  catalogErrors: {},
   modelId: localStorage.getItem(MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
   theme: loadTheme(),
   skills: [],
@@ -529,6 +549,19 @@ export const useStore = create<State>((set) => ({
       keychainDelete(keyName).catch((e) =>
         console.error(`[keys] keychain delete ${name} failed:`, e),
       );
+    }
+  },
+  refreshCatalog: async () => {
+    const apiKeys = useStore.getState().apiKeys;
+    set({ catalogRefreshing: true });
+    try {
+      const { models, errors } = await fetchAllCatalog(apiKeys);
+      setLiveCatalog(models);
+      saveCatalogToLocalStorage(models);
+      set({ catalog: models, catalogErrors: errors, catalogRefreshing: false });
+    } catch (e) {
+      console.error("[catalog] refresh failed:", e);
+      set({ catalogRefreshing: false });
     }
   },
   setModelId: (id) => {
