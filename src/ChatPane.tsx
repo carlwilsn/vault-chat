@@ -919,9 +919,18 @@ function ModelPicker({
   onSelect: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const catalog = useStore((s) => s.catalog);
   const available = catalog.filter((m) => apiKeys[m.provider]);
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? available.filter((m) => {
+        const hay = `${m.provider} ${m.id} ${m.label}`.toLowerCase();
+        return q.split(/\s+/).every((t) => hay.includes(t));
+      })
+    : available;
   const current = findModel(modelId);
 
   useEffect(() => {
@@ -930,7 +939,13 @@ function ModelPicker({
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     document.addEventListener("mousedown", onClick);
+    // Auto-focus the search when the menu opens.
+    requestAnimationFrame(() => searchRef.current?.focus());
     return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) setQuery("");
   }, [open]);
 
   return (
@@ -944,21 +959,50 @@ function ModelPicker({
       </button>
       {open && (
         <div
-          className="absolute bottom-full left-0 mb-1 rounded-lg border border-border shadow-lg py-1 z-50 whitespace-nowrap"
+          className="absolute bottom-full left-0 mb-1 w-64 rounded-lg border border-border shadow-lg z-50 flex flex-col"
           style={{ background: "hsl(var(--card))" }}
         >
-          {available.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => { onSelect(m.id); setOpen(false); }}
-              className={cn(
-                "block w-full text-left px-3 py-1.5 text-[11px] hover:bg-accent transition-colors",
-                m.id === modelId ? "text-foreground font-medium" : "text-muted-foreground"
-              )}
-            >
-              {m.label}
-            </button>
-          ))}
+          <div className="p-1.5 border-b border-border/60">
+            <input
+              ref={searchRef}
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setOpen(false);
+                } else if (e.key === "Enter" && filtered.length > 0) {
+                  e.preventDefault();
+                  onSelect(filtered[0].id);
+                  setOpen(false);
+                }
+              }}
+              placeholder="Search models…"
+              className="w-full bg-transparent outline-none text-[11px] px-2 py-1 rounded border border-transparent focus:border-border placeholder:text-muted-foreground/60"
+            />
+          </div>
+          <div className="py-1 max-h-64 overflow-auto">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-2 text-[11px] text-muted-foreground italic">
+                No matches
+              </div>
+            ) : (
+              filtered.map((m) => (
+                <button
+                  key={`${m.provider}:${m.id}`}
+                  onClick={() => { onSelect(m.id); setOpen(false); }}
+                  className={cn(
+                    "block w-full text-left px-3 py-1.5 text-[11px] hover:bg-accent transition-colors truncate",
+                    m.id === modelId ? "text-foreground font-medium" : "text-muted-foreground"
+                  )}
+                  title={`${m.provider} · ${m.id}`}
+                >
+                  {m.label}
+                </button>
+              ))
+            )}
+          </div>
         </div>
       )}
     </div>
