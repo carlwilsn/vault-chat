@@ -50,6 +50,10 @@ export function buildModel(spec: ModelSpec, apiKey: string): LanguageModel {
       return g(spec.id);
     }
     case "openrouter": {
+      // OpenRouter speaks the classic Chat Completions API, not
+      // OpenAI's newer Responses API. Calling the factory as a function
+      // (r(id)) would pick Responses and break for every non-OpenAI
+      // upstream — use r.chat(id) to pin it to Chat Completions.
       const r = createOpenAI({
         apiKey,
         baseURL: "https://openrouter.ai/api/v1",
@@ -58,7 +62,7 @@ export function buildModel(spec: ModelSpec, apiKey: string): LanguageModel {
           "X-Title": "vault-chat",
         },
       });
-      return r(spec.id);
+      return r.chat(spec.id);
     }
   }
 }
