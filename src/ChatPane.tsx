@@ -591,21 +591,6 @@ function toolSummary(input: any): string {
   return typeof first === "object" || first == null ? "" : String(first);
 }
 
-// Bold @ref tokens inline in the user bubble so file references pop
-// visually. Gates on word boundary + at least one non-punctuation
-// char after @ so things like email addresses ("@gmail") still get
-// highlighted but a stray "@" doesn't. Skips @ inside backtick-code
-// spans (naive split on `` ` ``) so literal code doesn't get reformatted.
-function boldAtRefs(src: string): string {
-  const parts = src.split(/(`+[^`]+?`+)/g);
-  return parts
-    .map((part, i) => {
-      if (i % 2 === 1) return part; // inside a code span
-      return part.replace(/(^|[^\w])@([\w][\w./-]*)/g, "$1**@$2**");
-    })
-    .join("");
-}
-
 const MessageBubble = memo(function MessageBubble({
   message,
 }: {
@@ -630,7 +615,7 @@ const MessageBubble = memo(function MessageBubble({
             rehypePlugins={[rehypeKatex]}
             urlTransform={allowImageDataUrls}
           >
-            {boldAtRefs(message.content)}
+            {message.content}
           </ReactMarkdown>
         </div>
       ) : (
