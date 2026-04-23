@@ -72,9 +72,16 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      // Alt+L — theme toggle. No mod requirement so it fires even
+      // without Ctrl/Cmd.
+      if (k === "l" && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        e.preventDefault();
+        setTheme(useStore.getState().theme === "light" ? "graphite" : "light");
+        return;
+      }
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
-      const k = e.key.toLowerCase();
       if (k === "e") {
         if (!currentFile) return;
         e.preventDefault();
@@ -85,9 +92,6 @@ export default function App() {
       } else if (k === "b" && e.shiftKey) {
         e.preventDefault();
         toggleRight();
-      } else if (k === "l" && e.altKey) {
-        e.preventDefault();
-        setTheme(useStore.getState().theme === "light" ? "graphite" : "light");
       }
     };
     window.addEventListener("keydown", onKey);
