@@ -596,7 +596,29 @@ export function FileTree() {
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
-          {menu.entry ? (
+          {selected.size > 1 ? (
+            <>
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                onClick={() => {
+                  const paths = Array.from(selected);
+                  setMenu(null);
+                  hidePaths(paths);
+                }}
+              >
+                <EyeOff className="h-3.5 w-3.5 opacity-70" /> Hide {selected.size} selected
+              </button>
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-destructive whitespace-nowrap"
+                onClick={() => {
+                  setConfirmDeleteMulti(Array.from(selected));
+                  setMenu(null);
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5 opacity-70" /> Delete {selected.size} selected
+              </button>
+            </>
+          ) : menu.entry ? (
             <>
               {menu.entry.is_dir && (
                 <>
@@ -662,30 +684,6 @@ export function FileTree() {
             </>
           ) : (
             <>
-              {selected.size > 0 && (
-                <>
-                  <button
-                    className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                    onClick={() => {
-                      const paths = Array.from(selected);
-                      setMenu(null);
-                      hidePaths(paths);
-                    }}
-                  >
-                    <EyeOff className="h-3.5 w-3.5 opacity-70" /> Hide {selected.size} selected
-                  </button>
-                  <button
-                    className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-destructive whitespace-nowrap"
-                    onClick={() => {
-                      setConfirmDeleteMulti(Array.from(selected));
-                      setMenu(null);
-                    }}
-                  >
-                    <Trash2 className="h-3.5 w-3.5 opacity-70" /> Delete {selected.size} selected
-                  </button>
-                  <div className="my-1 h-px bg-border/60" />
-                </>
-              )}
               <button
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
