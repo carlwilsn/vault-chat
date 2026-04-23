@@ -55,21 +55,43 @@ export async function loadSkills(_vault: string): Promise<Skill[]> {
 export function skillPromptIndex(skills: Skill[]): string {
   if (!skills.length) return "";
   const lines = skills.map((s) => `- /${s.name} — ${s.description || "(no description)"}`);
-  return `## Available skills (slash commands)\n\nThe user can invoke these as /<name>. When they do, their message will be prefixed with the skill's full instructions. You can also suggest a skill when appropriate.\n\n${lines.join("\n")}`;
+  return `## Available skills (slash commands)\n\nThe user can invoke these as /<name> anywhere in their message (at the start or mid-text — multiple skills can be invoked in one message). When they do, the skill's full instructions are injected as <skill> blocks before their message. You can also suggest a skill when appropriate.\n\n${lines.join("\n")}`;
 }
 
+// Scan text for every /skill-name token (at the start or after
+// whitespace, terminated by whitespace or EOL) and return the unique
+// skills invoked in source order. Used by expandSkillInvocation below.
+function matchInvokedSkills(text: string, skills: Skill[]): Skill[] {
+  if (!skills.length || !text) return [];
+  const byName = new Map(skills.map((s) => [s.name, s]));
+  const out: Skill[] = [];
+  const seen = new Set<string>();
+  const re = /(?:^|\s)\/([\w-]+)(?=\s|$)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const s = byName.get(m[1]);
+    if (!s || seen.has(s.name)) continue;
+    seen.add(s.name);
+    out.push(s);
+  }
+  return out;
+}
+
+// Expand /skill invocations anywhere in the user's message. Each
+// invoked skill's body is prepended as a <skill> block; the user's
+// original text is kept intact (including the /name tokens), so the
+// agent can see which skill the user was pointing at and what they
+// actually asked. `skill` and `rest` in the return value are kept for
+// backward compatibility with older single-skill call sites.
 export function expandSkillInvocation(
   text: string,
   skills: Skill[]
 ): { body: string; skill: Skill | null; rest: string } {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("/")) return { body: text, skill: null, rest: text };
-  const match = trimmed.match(/^\/([\w-]+)(?:\s+([\s\S]*))?$/);
-  if (!match) return { body: text, skill: null, rest: text };
-  const [, cmd, rest] = match;
-  const skill = skills.find((s) => s.name === cmd);
-  if (!skill) return { body: text, skill: null, rest: text };
-  const args = rest ?? "";
-  const body = `<skill name="${skill.name}">\n${skill.body}\n</skill>\n\n${args ? `User arguments: ${args}` : "(no additional arguments)"}`;
-  return { body, skill, rest: args };
+  const invoked = matchInvokedSkills(text, skills);
+  if (invoked.length === 0) return { body: text, skill: null, rest: text };
+  const blocks = invoked
+    .map((s) => `<skill name="${s.name}">\n${s.body}\n</skill>`)
+    .join("\n\n");
+  const body = `${blocks}\n\n${text}`;
+  return { body, skill: invoked[0], rest: text };
 }

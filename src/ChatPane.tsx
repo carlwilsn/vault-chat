@@ -105,7 +105,11 @@ export function ChatPane() {
   const agentTodos = useStore((s) => s.agentTodos);
   const files = useStore((s) => s.files);
   const [input, setInput] = useState("");
-  const [showSkillMenu, setShowSkillMenu] = useState(false);
+  // Skill menu opens on a /word-boundary token at the caret — same
+  // shape as fileMention so it can appear mid-message, not just at
+  // input start. start is the index of the "/".
+  const [skillMention, setSkillMention] = useState<{ query: string; start: number } | null>(null);
+  const [skillMentionIdx, setSkillMentionIdx] = useState(0);
   const [fileMention, setFileMention] = useState<{ query: string; start: number } | null>(null);
   const [fileMentionIdx, setFileMentionIdx] = useState(0);
   // Mentions live outside the textarea once picked: chips above the
@@ -197,18 +201,21 @@ export function ChatPane() {
 
   const send = async () => {
     if (busy || !ready) return;
-    const text = input.trim();
-    if (!text && mentions.length === 0) return;
-    // Build a hidden context preamble from the attached mentions so the
-    // agent sees the files inline. The user's visible message stays as
-    // what they typed — the attachment content doesn't clutter their
-    // own bubble.
+    const typed = input.trim();
+    if (!typed && mentions.length === 0) return;
+    // Inline the @rel tokens in the visible message so the agent (and
+    // the user's own bubble) shows which files were referenced, not
+    // just disembodied attachments. File contents still ride along in
+    // the hidden preamble so the agent sees them without the user's
+    // bubble getting cluttered.
+    const refPrefix = mentions.map((m) => `@${m.rel}`).join(" ");
+    const text = refPrefix ? (typed ? `${refPrefix} ${typed}` : refPrefix) : typed;
     const contextPreamble = await buildMentionPreamble(
       mentions.map((m) => ({ rel: m.rel, path: m.path })),
     );
     setInput("");
     setMentions([]);
-    setShowSkillMenu(false);
+    setSkillMention(null);
     setFileMention(null);
     dispatchChatAction({
       kind: "send",
@@ -222,6 +229,29 @@ export function ChatPane() {
   const onSelectModel = (id: string) => dispatchChatAction({ kind: "setModel", id });
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (skillMention && filteredSkills.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSkillMentionIdx((i) => Math.min(i + 1, filteredSkills.length - 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSkillMentionIdx((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        const hit = filteredSkills[skillMentionIdx] ?? filteredSkills[0];
+        pickSkill(hit.name);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSkillMention(null);
+        return;
+      }
+    }
     if (fileMention && matchedFiles.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -250,11 +280,6 @@ export function ChatPane() {
       send();
       return;
     }
-    if (e.key === "Tab" && showSkillMenu && filteredSkills.length > 0) {
-      e.preventDefault();
-      pickSkill(filteredSkills[0].name);
-      return;
-    }
     // Backspace on empty input pops the most recent mention back into
     // the textarea as editable text — Gmail-style chip correction.
     if (e.key === "Backspace" && input === "" && mentions.length > 0) {
@@ -262,22 +287,32 @@ export function ChatPane() {
       restoreLastMention();
       return;
     }
-    if (e.key === "Escape") setShowSkillMenu(false);
   };
 
   const onInputChange = (v: string) => {
     setInput(v);
-    setShowSkillMenu(v.startsWith("/") && !v.includes(" "));
-    // Detect an active @mention at the caret. Looking backwards for the
-    // most recent @ that's either at the start or preceded by whitespace,
-    // with no whitespace between @ and caret.
     const caret = inputRef.current?.selectionStart ?? v.length;
     const upToCaret = v.slice(0, caret);
+
+    // /skill tokens at caret — same shape as @mentions so skills can
+    // be invoked anywhere in the message, not only at input start.
+    const slashMatch = upToCaret.match(/(^|\s)\/([\w-]*)$/);
+    if (slashMatch) {
+      setSkillMention({
+        query: slashMatch[2],
+        start: caret - slashMatch[2].length - 1,
+      });
+      setSkillMentionIdx(0);
+    } else {
+      setSkillMention(null);
+    }
+
+    // @file tokens at caret.
     const atMatch = upToCaret.match(/(^|\s)@([^\s]*)$/);
     if (atMatch) {
       setFileMention({
         query: atMatch[2],
-        start: caret - atMatch[2].length - 1, // index of '@'
+        start: caret - atMatch[2].length - 1,
       });
       setFileMentionIdx(0);
     } else {
@@ -286,13 +321,31 @@ export function ChatPane() {
   };
 
   const pickSkill = (name: string) => {
-    setInput(`/${name} `);
-    setShowSkillMenu(false);
-    inputRef.current?.focus();
+    if (!skillMention) {
+      // Fallback: no caret ref (programmatic invoke). Insert at end.
+      const next = input.length ? `${input.replace(/\s+$/, "")} /${name} ` : `/${name} `;
+      setInput(next);
+      setSkillMention(null);
+      requestAnimationFrame(() => inputRef.current?.focus());
+      return;
+    }
+    const before = input.slice(0, skillMention.start);
+    const after = input.slice(skillMention.start + 1 + skillMention.query.length);
+    const insertion = `/${name} `;
+    const next = `${before}${insertion}${after.replace(/^\s+/, "")}`;
+    setInput(next);
+    setSkillMention(null);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      const pos = before.length + insertion.length;
+      el.setSelectionRange(pos, pos);
+      el.focus();
+    });
   };
 
-  const filteredSkills = input.startsWith("/")
-    ? skills.filter((s) => s.name.startsWith(input.slice(1).split(" ")[0]))
+  const filteredSkills = skillMention
+    ? skills.filter((s) => s.name.startsWith(skillMention.query))
     : [];
 
   const matchedFiles = fileMention
@@ -436,16 +489,20 @@ export function ChatPane() {
             new messages
           </button>
         )}
-        {showSkillMenu && filteredSkills.length > 0 && (
+        {skillMention && filteredSkills.length > 0 && (
           <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg">
-            {filteredSkills.slice(0, 8).map((s) => (
+            {filteredSkills.slice(0, 8).map((s, i) => (
               <div
                 key={s.name}
-                className="flex items-baseline gap-3 px-3 py-2 cursor-pointer hover:bg-accent border-b border-border/40 last:border-b-0"
+                className={cn(
+                  "flex items-baseline gap-3 px-3 py-2 cursor-pointer border-b border-border/40 last:border-b-0",
+                  i === skillMentionIdx ? "bg-accent" : "hover:bg-accent/60",
+                )}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   pickSkill(s.name);
                 }}
+                onMouseEnter={() => setSkillMentionIdx(i)}
               >
                 <span className="text-primary font-mono text-[12.5px] font-medium shrink-0">/{s.name}</span>
                 {s.description && (
