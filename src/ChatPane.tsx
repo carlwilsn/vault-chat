@@ -71,19 +71,24 @@ async function buildMentionPreamble(
   const blocks: string[] = [];
   for (const { rel, path } of mentions) {
     if (isUnreadableAsText(path)) {
-      blocks.push(`@${rel} → ${path} (binary; ask to open explicitly)`);
+      // Give the path as fact so the agent doesn't re-search with Glob
+      // when the user just asks where a file lives.
+      const ext = (path.split(".").pop() ?? "").toLowerCase();
+      blocks.push(
+        `@${rel}\n  path: ${path}\n  type: binary (${ext}) — contents not inlined; read with a format-appropriate tool only if the user wants the contents`,
+      );
       continue;
     }
     try {
       const content = await invoke<string>("read_text_file", { path });
-      blocks.push(`--- @${rel} (${path}) ---\n${content}\n--- end ${rel} ---`);
+      blocks.push(`--- @${rel} ---\npath: ${path}\n\n${content}\n--- end ${rel} ---`);
     } catch (err) {
-      blocks.push(`@${rel} → ${path} (failed to read: ${String(err)})`);
+      blocks.push(`@${rel}\n  path: ${path}\n  (failed to read: ${String(err)})`);
     }
   }
   return blocks.length === 0
     ? ""
-    : `[Files attached by the user via @mention]\n\n${blocks.join("\n\n")}`;
+    : `[Files the user attached via @mention — paths below are authoritative; no need to search for them]\n\n${blocks.join("\n\n")}`;
 }
 
 export function ChatPane() {
