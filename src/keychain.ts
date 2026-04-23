@@ -32,6 +32,7 @@ export const KEY = {
   anthropic: "api.anthropic",
   openai: "api.openai",
   google: "api.google",
+  openrouter: "api.openrouter",
   tavily: "service.tavily",
 } as const;
 

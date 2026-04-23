@@ -8,12 +8,13 @@ import { getMetaVaultPath } from "./meta";
 import { gitInitIfNeeded } from "./git";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
 
-const PROVIDERS: ProviderId[] = ["anthropic", "openai", "google"];
+const PROVIDERS: ProviderId[] = ["anthropic", "openai", "google", "openrouter"];
 
 const KEY_PLACEHOLDER: Record<ProviderId, string> = {
   anthropic: "sk-ant-…",
   openai: "sk-…",
   google: "AIza…",
+  openrouter: "sk-or-…",
 };
 
 export function SettingsPane() {
@@ -38,6 +39,7 @@ export function SettingsPane() {
     anthropic: apiKeys.anthropic ?? "",
     openai: apiKeys.openai ?? "",
     google: apiKeys.google ?? "",
+    openrouter: apiKeys.openrouter ?? "",
   });
   const [tavilyDraft, setTavilyDraft] = useState(serviceKeys.tavily ?? "");
   const [savedFlash, setSavedFlash] = useState<ProviderId | "tavily" | null>(null);

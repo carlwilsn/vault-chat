@@ -143,16 +143,18 @@ async function fetchAllFromKeychain(): Promise<{
   apiKeys: ApiKeys;
   serviceKeys: ServiceKeys;
 }> {
-  const [anthropic, openai, google, tavily] = await Promise.all([
+  const [anthropic, openai, google, openrouter, tavily] = await Promise.all([
     keychainGet(KEY.anthropic),
     keychainGet(KEY.openai),
     keychainGet(KEY.google),
+    keychainGet(KEY.openrouter),
     keychainGet(KEY.tavily),
   ]);
   const apiKeys: ApiKeys = {};
   if (anthropic) apiKeys.anthropic = anthropic;
   if (openai) apiKeys.openai = openai;
   if (google) apiKeys.google = google;
+  if (openrouter) apiKeys.openrouter = openrouter;
   const serviceKeys: ServiceKeys = {};
   if (tavily) serviceKeys.tavily = tavily;
   return { apiKeys, serviceKeys };
@@ -171,6 +173,7 @@ async function migrateLocalStorageKeys(): Promise<void> {
       if (parsed.anthropic) await keychainSet(KEY.anthropic, parsed.anthropic);
       if (parsed.openai) await keychainSet(KEY.openai, parsed.openai);
       if (parsed.google) await keychainSet(KEY.google, parsed.google);
+      if (parsed.openrouter) await keychainSet(KEY.openrouter, parsed.openrouter);
       localStorage.removeItem(OLD_API);
     }
   } catch (e) {
