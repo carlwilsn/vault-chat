@@ -207,12 +207,30 @@ export function ChatPane() {
     if (busy || !ready) return;
     const text = input.trim();
     if (!text) return;
-    // @name tokens are already inline in `text`. The hidden preamble
-    // carries absolute paths + contents so the agent can resolve
-    // ambiguous basenames if two referenced files share a name.
-    const contextPreamble = await buildMentionPreamble(
-      mentions.map((m) => ({ rel: m.rel, path: m.path })),
-    );
+    // Resolve every @name token in the text — not just the ones picked
+    // from the dropdown. Users type @name manually all the time, and
+    // without resolution the agent just sees a literal "@foo.md" and
+    // has to go hunting for the file. Start from the already-tracked
+    // mentions (which carry the exact picked path for disambiguation)
+    // and backfill anything else by basename match against the files
+    // list.
+    const tokens = Array.from(text.matchAll(/(?:^|\s)@([\w][\w./-]*)/g)).map((m) => m[1]);
+    const byPath = new Map<string, { rel: string; path: string }>();
+    for (const m of mentions) byPath.set(m.path, { rel: m.rel, path: m.path });
+    for (const tok of tokens) {
+      if (mentions.some((m) => m.name === tok)) continue;
+      const hits = files.filter((f) => !f.is_dir && !f.hidden && f.name === tok);
+      for (const h of hits) {
+        if (!byPath.has(h.path)) {
+          const rel = vaultPath && h.path.startsWith(vaultPath + "/")
+            ? h.path.slice(vaultPath.length + 1)
+            : h.path;
+          byPath.set(h.path, { rel, path: h.path });
+        }
+      }
+    }
+    const resolved = Array.from(byPath.values());
+    const contextPreamble = await buildMentionPreamble(resolved);
     setInput("");
     setMentions([]);
     setSkillMention(null);
@@ -313,8 +331,13 @@ export function ChatPane() {
     }
 
     // Drop any tracked mention whose @name no longer appears in the
-    // text — the user deleted it inline.
-    setMentions((prev) => prev.filter((m) => new RegExp(`(^|\\s)@${escapeRegExp(m.name)}(\\s|$)`).test(v)));
+    // text — the user deleted it inline. Lookahead-based terminator so
+    // "@foo.pdf?" / "@foo.md," still count as a mention.
+    setMentions((prev) =>
+      prev.filter((m) =>
+        new RegExp(`(^|\\s)@${escapeRegExp(m.name)}(?![\\w./-])`).test(v),
+      ),
+    );
   };
 
   const pickSkill = (name: string) => {
