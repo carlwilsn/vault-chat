@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, Undo2, History } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, Undo2, History, RefreshCw } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded, gitRecentCommits, gitShowCommit, gitRestoreToCommit, type GitCommit } from "./git";
@@ -34,7 +34,22 @@ export function Titlebar() {
   const [showEarlier, setShowEarlier] = useState(false);
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [undoError, setUndoError] = useState<string | null>(null);
+  const [refreshSpin, setRefreshSpin] = useState(false);
   const win = getCurrentWindow();
+
+  const refreshTree = async () => {
+    if (!vaultPath || refreshSpin) return;
+    setRefreshSpin(true);
+    try {
+      const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: vaultPath });
+      setFiles(listed);
+    } catch (e) {
+      console.error("[tree] refresh failed:", e);
+    } finally {
+      // Keep the spin visible briefly so a fast refresh still reads as feedback.
+      setTimeout(() => setRefreshSpin(false), 250);
+    }
+  };
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -219,6 +234,14 @@ export function Titlebar() {
         </button>
         {vaultPath && (
           <>
+            <button
+              onClick={refreshTree}
+              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground disabled:opacity-50"
+              title="Refresh file tree"
+              disabled={refreshSpin}
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${refreshSpin ? "animate-spin" : ""}`} />
+            </button>
             <button
               onClick={openHidden}
               className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"

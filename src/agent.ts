@@ -1,4 +1,5 @@
 import { streamText, stepCountIs, type ModelMessage } from "ai";
+import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { buildModel, findModel, DEFAULT_MODEL_ID } from "./providers";
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
@@ -122,18 +123,24 @@ export async function runAgent(params: {
     const builtinTools = buildTools(vault, tavilyKey);
     const tools = { ...builtinTools, ...metaTools };
 
-    // Extended thinking for Anthropic: the model gets a dedicated token
-    // budget for internal reasoning before it starts generating the
-    // visible response. Cheap quality bump on Opus/Sonnet; silently
-    // ignored by OpenAI/Google adapters.
-    const providerOptions =
-      spec.provider === "anthropic"
-        ? {
-            anthropic: {
-              thinking: { type: "enabled" as const, budgetTokens: 3000 },
-            },
-          }
-        : undefined;
+    // Reasoning hints per provider. Each SDK takes a different shape,
+    // so we branch on spec.provider and construct just the block the
+    // active adapter understands. Extra keys are ignored by adapters
+    // that don't recognize them, but we keep the object minimal anyway.
+    // Reasoning / thinking hints. Each adapter takes a different shape.
+    // Extended thinking on Claude 4.x, reasoningEffort on OpenAI's
+    // reasoning families, thinkingConfig on Gemini 2.5. OpenRouter has
+    // no universal flag — left off by default.
+    let providerOptions: ProviderOptions | undefined;
+    if (spec.provider === "anthropic") {
+      providerOptions = {
+        anthropic: { thinking: { type: "enabled", budgetTokens: 3000 } },
+      };
+    } else if (spec.provider === "openai" && /^(o1|o3|o4|gpt-5)/i.test(spec.id)) {
+      providerOptions = { openai: { reasoningEffort: "medium" } };
+    } else if (spec.provider === "google" && /^gemini-2\.5/i.test(spec.id)) {
+      providerOptions = { google: { thinkingConfig: { thinkingBudget: 3000 } } };
+    }
 
     const result = streamText({
       model,
