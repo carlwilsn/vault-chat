@@ -119,6 +119,56 @@ export function FileTree() {
     }
   };
 
+  // Move a vault entry into a folder. Source is the full absolute path
+  // from VAULT_PATH_MIME; dst is the destination directory (vaultPath
+  // itself for the tree root). Filters out no-op and self-parent moves
+  // so the backend never sees them.
+  const handleInternalMove = async (
+    e: React.DragEvent<HTMLElement>,
+    src: string,
+    dstDir: string,
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDropTarget(undefined);
+    if (!vaultPath) return;
+    if (!src.startsWith(vaultPath + "/")) return;
+    if (src === dstDir) return; // dropping a folder onto itself
+    if (dstDir.startsWith(src + "/")) return; // into a descendant
+    const base = src.split("/").pop();
+    if (!base) return;
+    const to = `${dstDir.replace(/\/$/, "")}/${base}`;
+    if (to === src) return; // already a direct child
+    try {
+      await invoke("rename_path", { from: src, to });
+      // Rewrite state that references the old path so the UI doesn't
+      // flicker into "file not found" during refresh.
+      if (currentFile === src) {
+        const content = await invoke<string>("read_text_file", { path: to });
+        setCurrentFile(to, content);
+      } else if (currentFile && currentFile.startsWith(src + "/")) {
+        const moved = to + currentFile.slice(src.length);
+        const content = await invoke<string>("read_text_file", { path: moved });
+        setCurrentFile(moved, content);
+      }
+      setCollapsed((prev) => {
+        const next = new Set<string>();
+        for (const p of prev) {
+          if (p === src) next.add(to);
+          else if (p.startsWith(src + "/")) next.add(to + p.slice(src.length));
+          else next.add(p);
+        }
+        return next;
+      });
+      await refreshFiles();
+    } catch (err) {
+      console.error("[dnd] move failed:", err);
+    }
+  };
+
+  const isInternalDrag = (dt: DataTransfer | null): boolean =>
+    !!dt && dt.types.includes(VAULT_PATH_MIME);
+
   const beginCreate = (kind: PendingKind, parentOverride?: string) => {
     if (!vaultPath) return;
     const parent = parentOverride ?? selectedDir ?? vaultPath;
@@ -260,14 +310,20 @@ export function FileTree() {
           setMenu({ x: e.clientX, y: e.clientY, entry: null });
         }}
         onDragEnter={(e) => {
-          if (!vaultPath || !isExternalFileDrop(e.dataTransfer)) return;
+          if (!vaultPath) return;
+          const internal = isInternalDrag(e.dataTransfer);
+          const external = isExternalFileDrop(e.dataTransfer);
+          if (!internal && !external) return;
           e.preventDefault();
           if (dropTarget === undefined) setDropTarget(null);
         }}
         onDragOver={(e) => {
-          if (!vaultPath || !isExternalFileDrop(e.dataTransfer)) return;
+          if (!vaultPath) return;
+          const internal = isInternalDrag(e.dataTransfer);
+          const external = isExternalFileDrop(e.dataTransfer);
+          if (!internal && !external) return;
           e.preventDefault();
-          e.dataTransfer.dropEffect = "copy";
+          e.dataTransfer.dropEffect = internal ? "move" : "copy";
         }}
         onDragLeave={(e) => {
           if (!vaultPath) return;
@@ -275,8 +331,13 @@ export function FileTree() {
           setDropTarget(undefined);
         }}
         onDrop={(e) => {
-          if (!vaultPath || !isExternalFileDrop(e.dataTransfer)) return;
-          handleExternalDrop(e, vaultPath);
+          if (!vaultPath) return;
+          if (isInternalDrag(e.dataTransfer)) {
+            const src = e.dataTransfer.getData(VAULT_PATH_MIME);
+            handleInternalMove(e, src, vaultPath);
+          } else if (isExternalFileDrop(e.dataTransfer)) {
+            handleExternalDrop(e, vaultPath);
+          }
         }}
       >
         {!vaultPath && (
@@ -328,26 +389,36 @@ export function FileTree() {
                     f.is_dir && dropTarget === f.path && "ring-2 ring-primary/60 bg-primary/10",
                   )}
                   style={{ paddingLeft: 8 + f.depth * 12 }}
-                  draggable={!f.is_dir}
+                  draggable
                   onDragStart={(e) => {
-                    if (f.is_dir) return;
                     e.dataTransfer.setData(VAULT_PATH_MIME, f.path);
                     e.dataTransfer.setData("text/plain", f.path);
-                    e.dataTransfer.effectAllowed = "copy";
+                    // copyMove — ChatPane treats it as copy (attach),
+                    // folder targets treat it as move.
+                    e.dataTransfer.effectAllowed = "copyMove";
                   }}
                   onDragEnter={(e) => {
                     if (!f.is_dir) return;
-                    if (!isExternalFileDrop(e.dataTransfer)) return;
+                    const internal = isInternalDrag(e.dataTransfer);
+                    const external = isExternalFileDrop(e.dataTransfer);
+                    if (!internal && !external) return;
+                    // Can't drop a folder into itself or a descendant.
+                    if (internal) {
+                      const src = e.dataTransfer.getData(VAULT_PATH_MIME);
+                      if (src === f.path || f.path.startsWith(src + "/")) return;
+                    }
                     e.preventDefault();
                     e.stopPropagation();
                     setDropTarget(f.path);
                   }}
                   onDragOver={(e) => {
                     if (!f.is_dir) return;
-                    if (!isExternalFileDrop(e.dataTransfer)) return;
+                    const internal = isInternalDrag(e.dataTransfer);
+                    const external = isExternalFileDrop(e.dataTransfer);
+                    if (!internal && !external) return;
                     e.preventDefault();
                     e.stopPropagation();
-                    e.dataTransfer.dropEffect = "copy";
+                    e.dataTransfer.dropEffect = internal ? "move" : "copy";
                   }}
                   onDragLeave={(e) => {
                     if (!f.is_dir) return;
@@ -356,8 +427,12 @@ export function FileTree() {
                   }}
                   onDrop={(e) => {
                     if (!f.is_dir) return;
-                    if (!isExternalFileDrop(e.dataTransfer)) return;
-                    handleExternalDrop(e, f.path);
+                    if (isInternalDrag(e.dataTransfer)) {
+                      const src = e.dataTransfer.getData(VAULT_PATH_MIME);
+                      handleInternalMove(e, src, f.path);
+                    } else if (isExternalFileDrop(e.dataTransfer)) {
+                      handleExternalDrop(e, f.path);
+                    }
                   }}
                   onClick={() => {
                     if (f.is_dir) {
