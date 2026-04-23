@@ -19,6 +19,7 @@ export default function App() {
   const toggleRight = useStore((s) => s.toggleRight);
   const currentFile = useStore((s) => s.currentFile);
   const theme = useStore((s) => s.theme);
+  const setTheme = useStore((s) => s.setTheme);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -84,11 +85,14 @@ export default function App() {
       } else if (k === "b" && e.shiftKey) {
         e.preventDefault();
         toggleRight();
+      } else if (k === "l" && e.altKey) {
+        e.preventDefault();
+        setTheme(useStore.getState().theme === "light" ? "graphite" : "light");
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleMode, toggleLeft, toggleRight, currentFile]);
+  }, [toggleMode, toggleLeft, toggleRight, currentFile, setTheme]);
 
   // Suppress webview defaults that bleed through and make the app feel
   // like a browser tab: Ctrl+F (find bar), Ctrl+G (find-next), Ctrl+R /
