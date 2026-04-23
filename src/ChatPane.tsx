@@ -244,13 +244,21 @@ export function ChatPane() {
     }
     const resolved = Array.from(byPath.values());
     const contextPreamble = await buildMentionPreamble(resolved);
+    // Belt-and-suspenders: append the resolved paths as a footer on
+    // the user turn too. Hidden preamble alone wasn't enough — some
+    // models re-search with Glob even when the path is in context.
+    // Footer is stripped from the bubble render below.
+    const pathFooter =
+      resolved.length > 0
+        ? `\n\n[attached: ${resolved.map((r) => `@${r.rel.split("/").pop()} → ${r.path}`).join(", ")}]`
+        : "";
     setInput("");
     setMentions([]);
     setSkillMention(null);
     setFileMention(null);
     dispatchChatAction({
       kind: "send",
-      text,
+      text: text + pathFooter,
       contextPreamble: contextPreamble || undefined,
     });
   };
@@ -627,6 +635,13 @@ function toolSummary(input: any): string {
   return typeof first === "object" || first == null ? "" : String(first);
 }
 
+// Strip the trailing "[attached: ...]" footer that ChatPane appends to
+// user turns so the agent sees resolved @-ref paths. The footer is
+// meant for the model, not the user's own bubble.
+function stripAttachedFooter(src: string): string {
+  return src.replace(/\n*\[attached:[^\]]*\]\s*$/, "");
+}
+
 const MessageBubble = memo(function MessageBubble({
   message,
 }: {
@@ -651,7 +666,7 @@ const MessageBubble = memo(function MessageBubble({
             rehypePlugins={[rehypeKatex]}
             urlTransform={allowImageDataUrls}
           >
-            {message.content}
+            {stripAttachedFooter(message.content)}
           </ReactMarkdown>
         </div>
       ) : (
