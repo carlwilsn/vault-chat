@@ -18,6 +18,7 @@ export function FileTree() {
   const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null);
   const [menu, setMenu] = useState<Menu>(null);
   const [confirmDelete, setConfirmDelete] = useState<FileEntry | null>(null);
+  const [confirmDeleteMulti, setConfirmDeleteMulti] = useState<string[] | null>(null);
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
   // Multi-select (Shift+Click). Holds absolute paths. `anchor` is the
   // last plain-click, used as the range start for shift-extend.
@@ -65,13 +66,16 @@ export function FileTree() {
   }, [menu]);
 
   useEffect(() => {
-    if (!confirmDelete) return;
+    if (!confirmDelete && !confirmDeleteMulti) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setConfirmDelete(null);
+      if (e.key === "Escape") {
+        setConfirmDelete(null);
+        setConfirmDeleteMulti(null);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [confirmDelete]);
+  }, [confirmDelete, confirmDeleteMulti]);
 
   const openFile = async (f: FileEntry) => {
     if (f.is_dir) return;
@@ -293,6 +297,38 @@ export function FileTree() {
   };
 
   const cancelRename = () => setRenaming(null);
+
+  const hidePaths = async (paths: string[]) => {
+    if (!vaultPath) return;
+    for (const p of paths) {
+      if (!p.startsWith(vaultPath + "/")) continue;
+      const rel = p.slice(vaultPath.length + 1);
+      try {
+        await invoke("add_to_ignore", { vault: vaultPath, relativePath: rel });
+      } catch (e) {
+        console.error("[hide]", p, e);
+      }
+    }
+    await refreshFiles();
+    setSelected(new Set());
+    setAnchor(null);
+  };
+
+  const deletePaths = async (paths: string[]) => {
+    for (const p of paths) {
+      try {
+        await invoke("delete_file", { path: p });
+        if (currentFile === p || (currentFile && currentFile.startsWith(p + "/"))) {
+          setCurrentFile(null, "");
+        }
+      } catch (e) {
+        console.error("[delete]", p, e);
+      }
+    }
+    await refreshFiles();
+    setSelected(new Set());
+    setAnchor(null);
+  };
 
   const hideEntry = async (f: FileEntry) => {
     if (!vaultPath || !f.path.startsWith(vaultPath + "/")) return;
@@ -626,6 +662,30 @@ export function FileTree() {
             </>
           ) : (
             <>
+              {selected.size > 0 && (
+                <>
+                  <button
+                    className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                    onClick={() => {
+                      const paths = Array.from(selected);
+                      setMenu(null);
+                      hidePaths(paths);
+                    }}
+                  >
+                    <EyeOff className="h-3.5 w-3.5 opacity-70" /> Hide {selected.size} selected
+                  </button>
+                  <button
+                    className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-destructive whitespace-nowrap"
+                    onClick={() => {
+                      setConfirmDeleteMulti(Array.from(selected));
+                      setMenu(null);
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 opacity-70" /> Delete {selected.size} selected
+                  </button>
+                  <div className="my-1 h-px bg-border/60" />
+                </>
+              )}
               <button
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
@@ -659,6 +719,52 @@ export function FileTree() {
               )}
             </>
           )}
+        </div>
+      )}
+      {confirmDeleteMulti && confirmDeleteMulti.length > 0 && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setConfirmDeleteMulti(null);
+          }}
+        >
+          <div
+            className="w-[360px] rounded-md border border-border bg-card shadow-xl p-4"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="text-[13px] font-semibold text-foreground">
+              Delete {confirmDeleteMulti.length} items?
+            </div>
+            <div className="text-[12px] text-muted-foreground mt-1 max-h-[180px] overflow-auto">
+              {confirmDeleteMulti.map((p) => (
+                <div key={p} className="break-all font-mono">
+                  {p.split("/").pop()}
+                </div>
+              ))}
+            </div>
+            <div className="mt-2 text-[12px] text-destructive/90">
+              Folders will be removed with everything inside. This cannot be undone.
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                className="px-3 py-1 rounded text-[12px] hover:bg-accent/60 text-foreground"
+                onClick={() => setConfirmDeleteMulti(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-3 py-1 rounded text-[12px] bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                autoFocus
+                onClick={() => {
+                  const paths = confirmDeleteMulti;
+                  setConfirmDeleteMulti(null);
+                  deletePaths(paths);
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
         </div>
       )}
       {confirmDelete && (
