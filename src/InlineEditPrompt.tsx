@@ -404,13 +404,40 @@ export function InlineEditPrompt({
         : `@${fileName}`
       : null;
 
+    // Collect every image attached to this popover thread: the
+    // original marquee (request.imageDataUrl) plus any mid-
+    // conversation captures (extraImages). They ride along as
+    // proper ChatMessage attachments so the chat bubble renders
+    // thumbnails and future agent turns see them as image content
+    // parts, not just markdown-embedded data URLs.
+    const attachments: Array<{
+      imageDataUrl: string;
+      sourcePath?: string;
+      sourceAnchor?: string | null;
+    }> = [];
+    if (request.imageDataUrl) {
+      attachments.push({
+        imageDataUrl: request.imageDataUrl,
+        sourcePath: currentFile ?? undefined,
+        sourceAnchor: request.sourceAnchor ?? null,
+      });
+    }
+    for (const img of extraImages) {
+      attachments.push({
+        imageDataUrl: img.imageDataUrl,
+        sourcePath: img.sourcePath,
+        sourceAnchor: img.sourceAnchor ?? null,
+      });
+    }
+
     const visiblePrefixParts: string[] = [];
     if (locationLabel) {
       visiblePrefixParts.push(`*from ${locationLabel}*`);
     }
-    if (request.imageDataUrl) {
-      visiblePrefixParts.push(`![captured region](${request.imageDataUrl})`);
-    } else if (request.selection) {
+    // Show a quoted selection in text (still useful for text-ask).
+    // Images come through the attachments list now, so we no longer
+    // embed a data URL in the content markdown.
+    if (!request.imageDataUrl && request.selection) {
       const quoted = request.selection
         .split("\n")
         .map((line) => `> ${line}`)
@@ -427,7 +454,11 @@ export function InlineEditPrompt({
     }
 
     const [first, ...rest] = turns;
-    store.appendMessage({ role: "user", content: visiblePrefix + first.prompt });
+    store.appendMessage({
+      role: "user",
+      content: visiblePrefix + first.prompt,
+      attachments: attachments.length > 0 ? attachments : undefined,
+    });
     store.appendMessage({ role: "assistant", content: first.result });
     rest.forEach((t) => {
       store.appendMessage({ role: "user", content: t.prompt });

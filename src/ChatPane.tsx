@@ -123,6 +123,7 @@ export function ChatPane() {
   const agentTodos = useStore((s) => s.agentTodos);
   const files = useStore((s) => s.files);
   const currentFile = useStore((s) => s.currentFile);
+  const panes = useStore((s) => s.panes);
   const chatPaneLastCapture = useStore((s) => s.chatPaneLastCapture);
   const setChatPaneLastCapture = useStore((s) => s.setChatPaneLastCapture);
   const setChatPaneCapturePending = useStore((s) => s.setChatPaneCapturePending);
@@ -628,27 +629,41 @@ export function ChatPane() {
                 className="border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pl-3 !pr-20"
               />
               <div className="absolute right-3 bottom-2 flex items-center gap-1">
-                {!busy && !isPopout && currentFile && (() => {
-                  const k = fileKind(currentFile).kind;
-                  return k === "pdf" || k === "html" || k === "image";
-                })() && (
-                  <button
-                    onClick={() => {
-                      // Clear rival capture reservations first so a
-                      // stale popup / note flag doesn't eat this.
-                      const s = useStore.getState();
-                      s.setEditPromptCapturePending(false);
-                      s.setNoteCapturePending(false);
-                      setChatPaneCapturePending(true);
-                      window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
-                    }}
-                    disabled={!ready}
-                    className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-40"
-                    title="Capture region from the current viewer"
-                  >
-                    <Camera className="h-3.5 w-3.5" />
-                  </button>
-                )}
+                {!busy && !isPopout && (() => {
+                  // Consider every path currently rendered in a pane
+                  // (including the fallback currentFile when there
+                  // are no splits). If any is marquee-capable, show
+                  // Capture enabled; otherwise show it disabled with
+                  // a hint so the user knows the feature exists.
+                  const paths: string[] = [];
+                  if (currentFile) paths.push(currentFile);
+                  for (const p of panes) if (p.file) paths.push(p.file);
+                  const canMarquee = paths.some((p) => {
+                    const k = fileKind(p).kind;
+                    return k === "pdf" || k === "html" || k === "image";
+                  });
+                  return (
+                    <button
+                      onClick={() => {
+                        if (!canMarquee) return;
+                        const s = useStore.getState();
+                        s.setEditPromptCapturePending(false);
+                        s.setNoteCapturePending(false);
+                        setChatPaneCapturePending(true);
+                        window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
+                      }}
+                      disabled={!ready || !canMarquee}
+                      className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                      title={
+                        canMarquee
+                          ? "Capture region from the current viewer"
+                          : "Open a PDF, HTML file, or image to capture a region"
+                      }
+                    >
+                      <Camera className="h-3.5 w-3.5" />
+                    </button>
+                  );
+                })()}
                 {busy ? (
                   <Button size="icon" variant="secondary" onClick={stop} className="h-7 w-7 rounded-lg">
                     <Square className="h-3 w-3 fill-current" />
