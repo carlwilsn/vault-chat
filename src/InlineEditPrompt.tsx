@@ -701,18 +701,18 @@ export function InlineEditPrompt({
             <StickyNote className="h-3 w-3" />
           </button>
         )}
-        {!streaming && currentFile && (() => {
-          const k = fileKind(currentFile).kind;
-          return k === "pdf" || k === "html" || k === "image";
-        })() && (
-          <button
-            onClick={captureRegion}
-            className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-            title="Capture region — hides this popup, draw a marquee, then resume with the image attached"
-          >
-            <Camera className="h-3 w-3" />
-          </button>
-        )}
+        {!streaming &&
+          (request.language === "pdf" ||
+            request.language === "html" ||
+            request.language === "image") && (
+            <button
+              onClick={captureRegion}
+              className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+              title="Capture region — hides this popup, draw a marquee, then resume with the image attached"
+            >
+              <Camera className="h-3 w-3" />
+            </button>
+          )}
         <button
           onClick={cancel}
           className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
