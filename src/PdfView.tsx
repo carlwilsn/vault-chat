@@ -449,6 +449,15 @@ export function PdfView({ path }: { path: string }) {
       // If the NotePopup asked us for a region, route this capture
       // back into the composer instead of opening InlineEditPrompt.
       const store = useStore.getState();
+      if (store.chatPaneCapturePending && image) {
+        store.setChatPaneLastCapture({
+          imageDataUrl: image,
+          sourcePath: path,
+          sourceAnchor: sourceAnchor,
+        });
+        store.setChatPaneCapturePending(false);
+        return;
+      }
       if (store.editPromptCapturePending && image) {
         store.setEditPromptLastCapture({
           imageDataUrl: image,

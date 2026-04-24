@@ -23,6 +23,12 @@ export type FileEntry = {
 };
 
 export type ChatRole = "user" | "assistant";
+export type ChatAttachment = {
+  imageDataUrl: string;
+  sourcePath?: string;
+  sourceAnchor?: string | null;
+};
+
 export type ChatMessage = {
   role: ChatRole;
   content: string;
@@ -33,6 +39,10 @@ export type ChatMessage = {
   hidden?: boolean;
   // Token usage reported by the model for this turn (assistant only).
   usage?: { prompt: number; completion: number; total: number; context: number };
+  // Images attached to this turn via the chat pane's Capture button.
+  // Render as thumbnails under the bubble; sent to the agent as
+  // structured image parts on that turn.
+  attachments?: ChatAttachment[];
 };
 
 // Shallow content-compare for the chat message list. The popout
@@ -280,6 +290,13 @@ type State = {
     sourcePath: string;
     sourceAnchor: string | null;
   } | null;
+  // Same pattern for the main chat pane's Capture button.
+  chatPaneCapturePending: boolean;
+  chatPaneLastCapture: {
+    imageDataUrl: string;
+    sourcePath: string;
+    sourceAnchor: string | null;
+  } | null;
   // Current selection inside any code / monaco editor in the app.
   // Ctrl+N prefers this over window.getSelection() because
   // Monaco's selection lives outside the native browser selection
@@ -356,6 +373,8 @@ type State = {
   setNoteCapturePending: (b: boolean) => void;
   setEditPromptCapturePending: (b: boolean) => void;
   setEditPromptLastCapture: (cap: State["editPromptLastCapture"]) => void;
+  setChatPaneCapturePending: (b: boolean) => void;
+  setChatPaneLastCapture: (cap: State["chatPaneLastCapture"]) => void;
   setEditorSelection: (sel: State["editorSelection"]) => void;
   openNoteComposer: (payload?: {
     initialDraft?: string;
@@ -422,6 +441,8 @@ export const useStore = create<State>((set) => ({
   noteCapturePending: false,
   editPromptCapturePending: false,
   editPromptLastCapture: null,
+  chatPaneCapturePending: false,
+  chatPaneLastCapture: null,
   editorSelection: null,
   noteComposer: { open: false },
 
@@ -829,6 +850,8 @@ export const useStore = create<State>((set) => ({
   setNoteCapturePending: (b) => set({ noteCapturePending: b }),
   setEditPromptCapturePending: (b) => set({ editPromptCapturePending: b }),
   setEditPromptLastCapture: (cap) => set({ editPromptLastCapture: cap }),
+  setChatPaneCapturePending: (b) => set({ chatPaneCapturePending: b }),
+  setChatPaneLastCapture: (cap) => set({ chatPaneLastCapture: cap }),
   setEditorSelection: (sel) => set({ editorSelection: sel }),
   openNoteComposer: (payload) =>
     set({

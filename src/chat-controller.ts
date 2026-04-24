@@ -16,7 +16,11 @@ let abortRef: AbortController | null = null;
 const COMPACT_THRESHOLD = 0.85;
 const KEEP_RECENT = 4;
 
-export async function sendMessage(text: string, contextPreamble?: string) {
+export async function sendMessage(
+  text: string,
+  contextPreamble?: string,
+  attachments?: import("./store").ChatAttachment[],
+) {
   const s = useStore.getState();
   if (s.busy) return;
   const trimmed = text.trim();
@@ -65,8 +69,12 @@ export async function sendMessage(text: string, contextPreamble?: string) {
   if (preamble) {
     cur.appendMessage({ role: "user", content: preamble, hidden: true });
   }
-  if (trimmed) {
-    cur.appendMessage({ role: "user", content: trimmed });
+  if (trimmed || (attachments && attachments.length > 0)) {
+    cur.appendMessage({
+      role: "user",
+      content: trimmed,
+      attachments: attachments && attachments.length > 0 ? attachments : undefined,
+    });
   }
   cur.setBusy(true);
   cur.resetStreaming();
@@ -104,6 +112,7 @@ export async function sendMessage(text: string, contextPreamble?: string) {
     vault,
     history,
     userMessage: trimmed,
+    userAttachments: attachments,
     abortSignal: signal,
     tavilyKey,
     onEvent: (e) => {

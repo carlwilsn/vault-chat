@@ -178,6 +178,15 @@ export function ImageView({ path }: { path: string }) {
         timestamp: Date.now(),
       });
       const store = useStore.getState();
+      if (store.chatPaneCapturePending) {
+        store.setChatPaneLastCapture({
+          imageDataUrl: image,
+          sourcePath: path,
+          sourceAnchor: null,
+        });
+        store.setChatPaneCapturePending(false);
+        return;
+      }
       if (store.editPromptCapturePending) {
         store.setEditPromptLastCapture({
           imageDataUrl: image,

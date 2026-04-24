@@ -5,7 +5,8 @@ import remarkMath from "remark-math";
 import remarkBreaks from "remark-breaks";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
-import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench } from "lucide-react";
+import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X } from "lucide-react";
+import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction } from "./sync";
 import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
@@ -121,6 +122,25 @@ export function ChatPane() {
   const liveTools = useStore((s) => s.liveTools);
   const agentTodos = useStore((s) => s.agentTodos);
   const files = useStore((s) => s.files);
+  const currentFile = useStore((s) => s.currentFile);
+  const chatPaneLastCapture = useStore((s) => s.chatPaneLastCapture);
+  const setChatPaneLastCapture = useStore((s) => s.setChatPaneLastCapture);
+  const setChatPaneCapturePending = useStore((s) => s.setChatPaneCapturePending);
+  const [pendingImages, setPendingImages] = useState<
+    Array<{ imageDataUrl: string; sourcePath?: string; sourceAnchor?: string | null }>
+  >([]);
+  useEffect(() => {
+    if (!chatPaneLastCapture) return;
+    setPendingImages((prev) => [
+      ...prev,
+      {
+        imageDataUrl: chatPaneLastCapture.imageDataUrl,
+        sourcePath: chatPaneLastCapture.sourcePath,
+        sourceAnchor: chatPaneLastCapture.sourceAnchor,
+      },
+    ]);
+    setChatPaneLastCapture(null);
+  }, [chatPaneLastCapture, setChatPaneLastCapture]);
   const [input, setInput] = useState("");
   // Skill menu opens on a /word-boundary token at the caret — same
   // shape as fileMention so it can appear mid-message, not just at
@@ -219,7 +239,7 @@ export function ChatPane() {
   const send = async () => {
     if (busy || !ready) return;
     const text = input.trim();
-    if (!text) return;
+    if (!text && pendingImages.length === 0) return;
     // Resolve every @name token in the text — not just the ones picked
     // from the dropdown. Users type @name manually all the time, and
     // without resolution the agent just sees a literal "@foo.md" and
@@ -260,14 +280,17 @@ export function ChatPane() {
       resolved.length > 0
         ? `\n\n[attached: ${resolved.map((r) => `@${r.rel.split("/").pop()} → ${r.path}`).join(", ")}]`
         : "";
+    const imagesToSend = pendingImages;
     setInput("");
     setMentions([]);
     setSkillMention(null);
     setFileMention(null);
+    setPendingImages([]);
     dispatchChatAction({
       kind: "send",
       text: text + pathFooter,
       contextPreamble: contextPreamble || undefined,
+      attachments: imagesToSend.length > 0 ? imagesToSend : undefined,
     });
   };
 
@@ -562,6 +585,37 @@ export function ChatPane() {
 
         <div className="p-3 max-w-[820px] mx-auto w-full">
           <div className="relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors">
+            {pendingImages.length > 0 && (
+              <div className="flex flex-wrap gap-2 px-3 pt-2">
+                {pendingImages.map((img, i) => {
+                  const name = img.sourcePath?.split("/").pop();
+                  return (
+                    <div key={i} className="relative group flex flex-col items-start gap-0.5">
+                      <img
+                        src={img.imageDataUrl}
+                        alt={`captured ${i + 1}`}
+                        className="max-h-[72px] rounded border border-border/60"
+                      />
+                      {name && (
+                        <span className="text-[9.5px] text-muted-foreground font-mono">
+                          {name}
+                          {img.sourceAnchor ? ` · ${img.sourceAnchor}` : ""}
+                        </span>
+                      )}
+                      <button
+                        onClick={() =>
+                          setPendingImages((prev) => prev.filter((_, j) => j !== i))
+                        }
+                        className="absolute -top-1.5 -right-1.5 h-4 w-4 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
+                        title="Remove"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             <div className="relative flex items-end">
               <Textarea
                 ref={inputRef}
@@ -571,9 +625,25 @@ export function ChatPane() {
                 placeholder={ready ? "Ask anything, or / for commands…" : "Open a vault first"}
                 disabled={!ready}
                 rows={1}
-                className="border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pl-3 !pr-11"
+                className="border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pl-3 !pr-20"
               />
-              <div className="absolute right-3 bottom-2">
+              <div className="absolute right-3 bottom-2 flex items-center gap-1">
+                {!busy && currentFile && (() => {
+                  const k = fileKind(currentFile).kind;
+                  return k === "pdf" || k === "html" || k === "image";
+                })() && (
+                  <button
+                    onClick={() => {
+                      setChatPaneCapturePending(true);
+                      window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
+                    }}
+                    disabled={!ready}
+                    className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-40"
+                    title="Capture region from the current viewer"
+                  >
+                    <Camera className="h-3.5 w-3.5" />
+                  </button>
+                )}
                 {busy ? (
                   <Button size="icon" variant="secondary" onClick={stop} className="h-7 w-7 rounded-lg">
                     <Square className="h-3 w-3 fill-current" />
@@ -582,7 +652,7 @@ export function ChatPane() {
                   <Button
                     size="icon"
                     onClick={send}
-                    disabled={!ready || !input.trim()}
+                    disabled={!ready || (!input.trim() && pendingImages.length === 0)}
                     className="h-7 w-7 rounded-lg"
                   >
                     <ArrowUp className="h-3.5 w-3.5" />
@@ -669,6 +739,28 @@ const MessageBubble = memo(function MessageBubble({
     <div className={cn("flex flex-col gap-1.5", isUser && "items-end")}>
       {isUser ? (
         <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed break-words overflow-hidden prose-user">
+          {message.attachments && message.attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-1.5">
+              {message.attachments.map((a, i) => {
+                const name = a.sourcePath?.split("/").pop();
+                return (
+                  <div key={i} className="flex flex-col items-start gap-0.5">
+                    <img
+                      src={a.imageDataUrl}
+                      alt={`captured ${i + 1}`}
+                      className="max-h-[160px] rounded"
+                    />
+                    {name && (
+                      <span className="text-[9.5px] opacity-80 font-mono">
+                        {name}
+                        {a.sourceAnchor ? ` · ${a.sourceAnchor}` : ""}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <ReactMarkdown
             remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
             rehypePlugins={[rehypeKatex]}

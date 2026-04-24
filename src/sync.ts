@@ -35,7 +35,12 @@ type StreamSnapshot = {
 };
 
 export type ChatAction =
-  | { kind: "send"; text: string; contextPreamble?: string }
+  | {
+      kind: "send";
+      text: string;
+      contextPreamble?: string;
+      attachments?: import("./store").ChatAttachment[];
+    }
   | { kind: "stop" }
   | { kind: "clear" }
   | { kind: "setModel"; id: string };
@@ -65,7 +70,7 @@ function takeStreamSnapshot(): StreamSnapshot {
 }
 
 function applyActionLocal(a: ChatAction) {
-  if (a.kind === "send") sendMessage(a.text, a.contextPreamble);
+  if (a.kind === "send") sendMessage(a.text, a.contextPreamble, a.attachments);
   else if (a.kind === "stop") stopAgent();
   else if (a.kind === "clear") clearChat();
   else if (a.kind === "setModel") setModel(a.id);

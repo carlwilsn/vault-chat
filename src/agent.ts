@@ -44,11 +44,12 @@ export async function runAgent(params: {
   vault: string;
   history: ChatTurn[];
   userMessage: string;
+  userAttachments?: import("./store").ChatAttachment[];
   onEvent: (e: StreamEvent) => void;
   abortSignal?: AbortSignal;
   tavilyKey?: string;
 }) {
-  const { modelId, apiKey, vault, history, userMessage, onEvent, abortSignal, tavilyKey } = params;
+  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey } = params;
 
   try {
     const spec = findModel(modelId) ?? findModel(DEFAULT_MODEL_ID);
@@ -129,10 +130,36 @@ export async function runAgent(params: {
       providerOptions: cacheControl,
     };
 
+    // Attach captured images to the final user turn as structured
+    // content so vision-capable models see them. Non-vision models
+    // would have the images stripped upstream by the scrub pass, but
+    // these are IMAGE parts not markdown — we gate by supportsVision.
+    const finalUserText = scrub(expandedMessage);
+    const attachableImages = vision ? userAttachments ?? [] : [];
+    const finalUserMessage: ModelMessage =
+      attachableImages.length > 0
+        ? {
+            role: "user",
+            content: [
+              { type: "text", text: finalUserText },
+              ...attachableImages.flatMap((a) => {
+                const src = a.sourcePath ? a.sourcePath.split("/").pop() : null;
+                const caption = src
+                  ? `Captured region from ${src}${a.sourceAnchor ? ` (${a.sourceAnchor})` : ""}:`
+                  : "Captured region:";
+                return [
+                  { type: "text" as const, text: caption },
+                  { type: "image" as const, image: new URL(a.imageDataUrl) },
+                ];
+              }),
+            ],
+          }
+        : { role: "user", content: finalUserText };
+
     const messages: ModelMessage[] = [
       systemMessage,
       ...historyMessages,
-      { role: "user", content: scrub(expandedMessage) },
+      finalUserMessage,
     ];
 
     const builtinTools = buildTools(vault, tavilyKey);
