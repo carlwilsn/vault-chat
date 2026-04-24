@@ -381,7 +381,21 @@ export function InlineEditPrompt({
     // bubble (any text the marquee scraped is incidental, not what the
     // user pointed at). Text-selection asks show the quoted selection.
     // Surrounding file excerpt always stays hidden.
+    //
+    // Always lead with a small "@file:anchor" badge so the chat
+    // history records where this thread came from — without it the
+    // transplanted turns are context-less.
+    const fileName = currentFile ? currentFile.split("/").pop() : null;
+    const locationLabel = fileName
+      ? request.sourceAnchor
+        ? `@${fileName}:${request.sourceAnchor}`
+        : `@${fileName}`
+      : null;
+
     const visiblePrefixParts: string[] = [];
+    if (locationLabel) {
+      visiblePrefixParts.push(`*from ${locationLabel}*`);
+    }
     if (request.imageDataUrl) {
       visiblePrefixParts.push(`![captured region](${request.imageDataUrl})`);
     } else if (request.selection) {
@@ -395,7 +409,7 @@ export function InlineEditPrompt({
       ? visiblePrefixParts.join("\n\n") + "\n\n"
       : "";
 
-    const hiddenPreamble = buildHiddenFilePreamble(request);
+    const hiddenPreamble = buildHiddenFilePreamble(request, currentFile);
     if (hiddenPreamble) {
       store.appendMessage({ role: "user", content: hiddenPreamble, hidden: true });
     }
@@ -812,7 +826,10 @@ export function InlineEditPrompt({
 // file context (before/after). The user's selection and any captured
 // image go in the visible user bubble instead, so the chat shows "what
 // you asked about" without piping the full file excerpt into the UI.
-function buildHiddenFilePreamble(request: InlineEditRequest): string {
+function buildHiddenFilePreamble(
+  request: InlineEditRequest,
+  currentFile: string | null,
+): string {
   const BEFORE_KEEP = 1500;
   const AFTER_KEEP = 1500;
   const before = request.before
@@ -825,10 +842,19 @@ function buildHiddenFilePreamble(request: InlineEditRequest): string {
       ? request.after.slice(0, AFTER_KEEP) + "…"
       : request.after
     : "";
-  if (!before && !after) return "";
+  const hasAny =
+    before || after || request.selection || currentFile || request.sourceAnchor;
+  if (!hasAny) return "";
   const parts: string[] = [
-    "[Hidden file-context preamble from an inline ask — surrounding text around the user's selection.]",
+    "[Hidden context preamble from an inline ask transplanted into this thread.]",
   ];
+  if (currentFile) {
+    const anchor = request.sourceAnchor ? ` (${request.sourceAnchor})` : "";
+    parts.push(`Source file: ${currentFile}${anchor}`);
+  }
+  if (request.selection) {
+    parts.push(`Selection at that location:\n\n\`\`\`\n${request.selection}\n\`\`\``);
+  }
   if (before) parts.push(`Before:\n\n\`\`\`\n${before}\n\`\`\``);
   if (after) parts.push(`After:\n\n\`\`\`\n${after}\n\`\`\``);
   return parts.join("\n\n");
