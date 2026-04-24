@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
+import { useStore } from "./store";
 
 function mimeFor(ext: string): string {
   const e = ext.toLowerCase();
@@ -169,6 +170,13 @@ export function ImageView({ path }: { path: string }) {
       const dirX = endX === start.x ? 1 : Math.sign(endX - start.x);
       const dirY = endY === start.y ? 1 : Math.sign(endY - start.y);
       setMarqueeOn(false);
+      useStore.getState().setLastCapture({
+        path,
+        source_anchor: null,
+        selection: null,
+        imageDataUrl: image,
+        timestamp: Date.now(),
+      });
       setInlineAsk({
         anchor: {
           left: rect.left,

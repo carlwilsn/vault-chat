@@ -444,6 +444,16 @@ export function PdfView({ path }: { path: string }) {
           }
         }
       }
+      const sourceAnchor = bestPage ? `page=${bestPage}` : null;
+      // Stash the capture so Ctrl+N picks it up if the user dismisses
+      // the popover without saving.
+      useStore.getState().setLastCapture({
+        path,
+        source_anchor: sourceAnchor,
+        selection: captured || null,
+        imageDataUrl: image ?? null,
+        timestamp: Date.now(),
+      });
       setInlineAsk({
         anchor: {
           left: rect.left,
@@ -458,7 +468,7 @@ export function PdfView({ path }: { path: string }) {
         after,
         language: "pdf",
         imageDataUrl: image ?? undefined,
-        sourceAnchor: bestPage ? `page=${bestPage}` : undefined,
+        sourceAnchor: sourceAnchor ?? undefined,
       });
     };
 

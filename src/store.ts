@@ -254,6 +254,16 @@ type State = {
   // When set, a viewer should scroll to this anchor inside the
   // given path once it's ready. Consumed + cleared by the viewer.
   pendingScrollAnchor: { path: string; anchor: string } | null;
+  // Most recent marquee / selection captured by any viewer. Ctrl+N
+  // reads this to pre-seed a note with the last region the user
+  // pointed at. Cleared on use or after a short idle window.
+  lastCapture: {
+    path: string;
+    source_anchor: string | null;
+    selection: string | null;
+    imageDataUrl: string | null;
+    timestamp: number;
+  } | null;
   noteComposer: {
     open: boolean;
     initialDraft?: string;
@@ -309,6 +319,8 @@ type State = {
   setShowNotesPanel: (b: boolean) => void;
   requestScrollAnchor: (path: string, anchor: string) => void;
   clearScrollAnchor: () => void;
+  setLastCapture: (cap: State["lastCapture"]) => void;
+  clearLastCapture: () => void;
   openNoteComposer: (payload?: {
     initialDraft?: string;
     initialAnchors?: import("./notes").NoteAnchor[];
@@ -370,6 +382,7 @@ export const useStore = create<State>((set) => ({
   notesLoaded: false,
   showNotesPanel: false,
   pendingScrollAnchor: null,
+  lastCapture: null,
   noteComposer: { open: false },
 
   setVault: (p) =>
@@ -761,6 +774,8 @@ export const useStore = create<State>((set) => ({
   setShowNotesPanel: (b) => set({ showNotesPanel: b }),
   requestScrollAnchor: (path, anchor) => set({ pendingScrollAnchor: { path, anchor } }),
   clearScrollAnchor: () => set({ pendingScrollAnchor: null }),
+  setLastCapture: (cap) => set({ lastCapture: cap }),
+  clearLastCapture: () => set({ lastCapture: null }),
   openNoteComposer: (payload) =>
     set({
       noteComposer: {

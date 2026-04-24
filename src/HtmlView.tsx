@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { openUrl, isExternalHref } from "./opener";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
+import { useStore } from "./store";
 
 const LINK_INTERCEPT = `<script>(function(){
   function isExternal(href){ return /^(https?:|mailto:)/i.test(href); }
@@ -169,9 +170,20 @@ export function HtmlView({ content }: { content: string }) {
         const pending = pendingCaptureRef.current;
         pendingCaptureRef.current = null;
         if (!pending) return;
+        const selection = typeof mr.text === "string" ? mr.text : "";
+        const curPath = useStore.getState().currentFile;
+        if (curPath) {
+          useStore.getState().setLastCapture({
+            path: curPath,
+            source_anchor: null,
+            selection: selection || null,
+            imageDataUrl: null,
+            timestamp: Date.now(),
+          });
+        }
         setInlineAsk({
           anchor: pending.anchor,
-          selection: typeof mr.text === "string" ? mr.text : "",
+          selection,
           before: typeof mr.before === "string" ? mr.before : "",
           after: typeof mr.after === "string" ? mr.after : "",
           language: "html",

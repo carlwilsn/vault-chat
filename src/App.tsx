@@ -10,6 +10,8 @@ import { SettingsPane } from "./SettingsPane";
 import { Titlebar } from "./Titlebar";
 import { NotePopup } from "./NotePopup";
 import { NotesPanel } from "./NotesPanel";
+import { fileKind } from "./fileKind";
+import type { NoteAnchor } from "./notes";
 import { useStore } from "./store";
 import { gitInitIfNeeded } from "./git";
 import { tryOpenLink } from "./linkNav";
@@ -98,9 +100,39 @@ export default function App() {
         const tgt = e.target as HTMLElement | null;
         const tag = tgt?.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || tgt?.isContentEditable) return;
-        if (!useStore.getState().vaultPath) return;
+        const s = useStore.getState();
+        if (!s.vaultPath) return;
         e.preventDefault();
-        openNoteComposer();
+
+        // Capture current context into the initial anchor:
+        //   - window.getSelection() for any selected text (works
+        //     across markdown/pdf text-layer/html/notebook viewers)
+        //   - lastCapture (marquee image + anchor) if still fresh for
+        //     the current file — carried from the viewer even if the
+        //     marquee popover was dismissed
+        const selection = (window.getSelection?.()?.toString() ?? "").trim();
+        const cf = s.currentFile;
+        const cap = s.lastCapture;
+        const capFresh = cap && Date.now() - cap.timestamp < 2 * 60_000 && cap.path === cf;
+        if (cf) {
+          const k = fileKind(cf).kind;
+          const sourceKind: NoteAnchor["source_kind"] =
+            k === "markdown" || k === "pdf" || k === "html" || k === "image" || k === "notebook"
+              ? k
+              : "code";
+          const anchor: NoteAnchor = {
+            source_path: cf,
+            source_kind: sourceKind,
+            source_anchor: capFresh ? cap!.source_anchor : null,
+            source_selection: selection || (capFresh ? cap!.selection : null) || null,
+            image_data_url: capFresh ? cap!.imageDataUrl : null,
+            primary: true,
+          };
+          openNoteComposer({ initialAnchors: [anchor] });
+          if (capFresh) s.clearLastCapture();
+        } else {
+          openNoteComposer();
+        }
         return;
       }
       if (k === "e") {
