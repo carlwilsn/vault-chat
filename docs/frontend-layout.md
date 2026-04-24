@@ -54,6 +54,36 @@ Layout key remounts Allotment when the vault path changes ([App.tsx:59](../src/A
 
 **Browser defaults suppressed** ([App.tsx:99](../src/App.tsx)): Ctrl+F, Ctrl+G, Ctrl+R, F5, Ctrl+P, Ctrl+S. Right-click contextmenu is blocked globally; each custom menu re-enables it locally via `preventDefault`.
 
+**Safe anchor links** ([App.tsx:147](../src/App.tsx)): a global click handler plus MutationObserver strips `<a href>` attributes on every new DOM node, moving the URL to `data-href`. External `http(s)`/`mailto` links keep the visible URL for hover tooltips but open via the handler, not the webview. Prevents markdown in chat or viewers from navigating the app away.
+
+## Titlebar ([Titlebar.tsx](../src/Titlebar.tsx))
+
+Custom title bar (Tauri `decorations: false`). Left cluster, centered drag region, right cluster.
+
+**Left cluster:**
+- **Toggle left pane** — PanelLeft icon (Ctrl+B).
+- **Open vault** — folder icon. Picks a directory, calls `setVault`, `list_markdown_files`, initializes git if needed. Shows the vault's basename; adds a `meta` badge if the current vault *is* the meta vault.
+- **Refresh file tree** — RefreshCw icon (minimum 250 ms spin for feedback). Re-runs `list_markdown_files`.
+- **Hidden files modal** — Eye icon. Lists entries from `.vault-chat-ignore`; checkbox-select to unhide.
+- **History modal** — History icon. See "History & rewind" below.
+
+**Right cluster:**
+- **Toggle right pane** — PanelRight icon (Ctrl+Shift+B). Disabled when chat is popped out.
+- **Popout chat** — ExternalLink icon. Spawns a separate webview; disabled while one is open.
+- **Open terminal** — Terminal icon. Invokes `open_terminal` which spawns an OS-native shell rooted at the vault (`cmd` on Windows, `open -a Terminal` on macOS, `x-terminal-emulator`/`gnome-terminal`/`konsole`/`xterm` on Linux).
+- **Settings** — Settings icon. Routes the center pane to `SettingsPane`.
+- **Window controls** — Minimize / Maximize / Close (hidden on macOS which uses native traffic lights).
+
+### History & rewind
+
+Opens a git log of the vault. Left list: recent commits (30 by default, toggle "show earlier history" for 100 including pre-vault-chat commits). Click a commit → right side shows the diff. "Show file contents" toggles between a file + line-count summary and the full unified diff.
+
+**"Go back to this commit"** runs `git reset --hard <hash>` on the vault. Destructive; the click is the confirmation. After restore, the file tree is refreshed, the current file closes if it was deleted, and the history re-fetches.
+
+### Hidden files modal
+
+`.vault-chat-ignore` is a plain text file in the vault root listing files or patterns the tree shouldn't show. The agent still sees hidden files (they're only hidden from the UI). The modal renders the current lines as checkboxes — selecting any and clicking Unhide removes those lines. To add entries, right-click in the tree → Hide. Or edit `.vault-chat-ignore` by hand — it's a convention, not a walled garden.
+
 ## File tree ([FileTree.tsx](../src/FileTree.tsx))
 
 ### Features
@@ -96,6 +126,11 @@ Layout key remounts Allotment when the vault path changes ([App.tsx:59](../src/A
 
 Split-pane inside `MarkdownArea`: drop a file on one of the four edges of an open pane to split horizontally or vertically. Drag a pane handle to rearrange. Allotment handles the geometry.
 
+**Markdown-specific behaviors:**
+- **Task checkbox toggle** — clicking a rendered `- [ ]` / `- [x]` checkbox in view mode flips the source. Done by DOM-counting the Nth checkbox, then a regex pass (`flipNthTaskCheckbox`) on the raw file text.
+- **Scroll restoration** — when toggling view ↔ edit, the previous scroll position is saved as a ratio of scroll height and re-applied after the layout lands. Keeps your place when switching modes mid-read.
+- **Markdown anchor nav** — intra-document links (`[foo](#heading)`) scroll the target into view within the viewer's scroll container, not the document body.
+
 ## Marquee ask (PdfView / HtmlView / ImageView)
 
 - **Ctrl+M** toggles marquee mode. Mouse-drag draws a rect.
@@ -110,6 +145,16 @@ Split-pane inside `MarkdownArea`: drop a file on one of the four edges of an ope
 - Two modes: `edit` (Ctrl+K — rewrites selected text) and `ask` (Ctrl+L — read-only Q&A).
 - Positioning: computed rect-aware. Drag the popover 6+ pixels to detach it from the source anchor; after that, its position is sticky.
 - Prior turns feed into the next request as conversational history so refinement works.
+
+### Accept / Send-to-chat from an ask
+
+At the bottom of an `ask` result, two buttons:
+- **Accept** — for `edit` mode only, replaces the source selection with the result (via the file's underlying `onAccept` callback).
+- **Send to chat** (MessageSquare icon) — transplants the ask's entire turn history into the main chat pane. What shows in each user bubble depends on what triggered the ask:
+  - **Marquee ask** — visible bubble gets `![captured region](data:image/...)` (the image only; any scraped text is incidental). Surrounding file excerpts ride in a hidden preamble so the model sees context without cluttering the bubble.
+  - **Text-selection ask** — visible bubble gets the selection as a `>` blockquote; before/after file slices go in a hidden preamble.
+  - **Freeform ask** (no selection, no marquee) — no visible prefix; hidden preamble still carries before/after slices for context.
+  - The right chat pane opens automatically if it was collapsed.
 
 ## Chat popout ([sync.ts](../src/sync.ts))
 
@@ -133,8 +178,19 @@ Split-pane inside `MarkdownArea`: drop a file on one of the four edges of an ope
 
 ## Rendering conventions
 
-- **User bubble**: markdown via `remark-gfm + remark-breaks + remark-math + rehype-katex`. Data-URL images allowed via `allowImageDataUrls`. The `[attached: ...]` footer is stripped before render.
-- **Assistant bubble**: markdown via `remark-gfm + remark-math + rehype-katex + rehype-highlight`.
-- **Tool calls** under a `<details>` element: name + JSON input + optional result preview (capped at 1200 chars).
-- **AgentTodoList**: live view of the agent's TodoWrite plan (pending / in_progress / completed with icons).
-- **ThinkingIndicator**: pulsing dot + elapsed timer + approximate live token count while streaming.
+- **User bubble**: markdown via `remark-gfm + remark-breaks + remark-math + rehype-katex`. Math inside `$...$` / `$$...$$` renders as KaTeX (added recently in `b4ac95a` — users asking questions about equations can paste LaTeX and have it render in their own bubble). Data-URL images allowed via `allowImageDataUrls`. The `[attached: ...]` footer is stripped before render.
+- **Assistant bubble**: markdown via `remark-gfm + remark-math + rehype-katex + rehype-highlight`. Syntax-highlighted code fences and rendered math by default.
+- **Tool calls** under a `<details>` element inside each assistant turn: name + JSON input + optional result preview (capped at 1200 chars). Collapsed by default.
+
+## Live feedback while streaming
+
+- **ThinkingIndicator** — pulsing dot, elapsed-time counter (`1s`, `2s`, …, `mm:ss`), and a live approximate token count (characters ÷ 4 during stream). Anchors at the top of the in-progress assistant bubble.
+- **AgentTodoList** — when the agent calls `TodoWrite`, this card appears in the bubble with one row per todo. Glyphs per status: `○` pending / `◐` in_progress (pulsing) / `✓` completed. Counter `done / total` at the top.
+- **Jump-to-latest button** — ChatPane watches scroll position. If the user scrolls up during a stream, auto-scroll pauses and a "new messages" pill appears at the bottom right; clicking re-pins and scrolls to the latest. Re-pins automatically when the user scrolls back to the bottom.
+- **Context usage ring** — small SVG ring near the model picker showing `lastContext / MODEL_CONTEXT_LIMIT`. Color transitions at 50 % (gray → amber) and 80 % (amber → red) so the user sees compaction coming.
+
+## Chat actions
+
+- **Clear conversation** — trash/Reset button in the chat footer. Wipes `messages`, `tokenUsage`, `lastContext`, `compactionSummary`, and the streaming buffers for the current vault. Does **not** touch `.vault-chat-history` localStorage immediately — it's rewritten on the next debounce cycle (~500 ms later).
+- **Stop** — interrupts an in-flight stream via `AbortController` on `abortRef`.
+- **Model switcher** — searchable popover; see `docs/chat-pipeline.md` for what changes per provider.

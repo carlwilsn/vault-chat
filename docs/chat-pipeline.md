@@ -135,6 +135,24 @@ UI side ([ChatPane.tsx](../src/ChatPane.tsx)):
 - `STREAM_FLUSH_MS = 200` on a debounced flush avoids rebuilding the whole message markdown tree (remark + rehype + katex + highlight) 60 times per second.
 - Live-tool rows render separately from the message body so they don't re-trigger the markdown pipeline.
 
+## Live UI during a stream
+
+Three pieces of feedback render while a turn is in progress — see `docs/frontend-layout.md` for the visual details.
+
+- `streamingText` drives the in-progress assistant bubble.
+- `streamingReasoning` drives a separate "Thinking..." collapsible above the main bubble (only for models that emit reasoning deltas — Anthropic Opus thinking, OpenAI o-series, Gemini 2.5).
+- `liveTools` is an array of `{id, name, input, result?, startedAt}` objects that renders as one row per tool call. Updated via `pushLiveTool` on `tool_use` events and `updateLiveToolResult` on `tool_result`.
+- `agentTodos` is populated by the built-in `TodoWrite` tool (which is **client-side** — see `docs/tools-and-meta.md`). Its execute step writes straight to the store via `useStore.getState().setAgentTodos`.
+
+On the `done` event, all three are snapshot-copied into a single final assistant `ChatMessage` and the streaming buffers are cleared.
+
+## Chat-pane actions
+
+- **Send** (Enter) — see above.
+- **Stop** — calls `dispatchChatAction({kind: "stop"})`, which fires `abortRef.current?.abort()` in `chat-controller.ts`. The `streamText` promise rejects with an abort error, the agent turn ends cleanly, partial text is preserved in the bubble.
+- **Clear** — `dispatchChatAction({kind: "clear"})` resets `messages`, `tokenUsage`, `lastContext`, `compactionSummary`, streaming buffers, `liveTools`, `agentTodos` for the current vault. The 500 ms localStorage debounce picks it up on the next cycle, so the persisted history is also wiped.
+- **setModel** — persists to `localStorage["vault_chat_model"]` and updates the store. Popout mirrors it.
+
 ## Known edge cases
 
 - **Skills don't see the hidden preamble** — `expandSkillInvocation` receives only the user's trimmed text. If user does `/skill @file.md`, the skill body doesn't know about the file's contents. Workaround: skill has access via tools, or user pastes content.

@@ -34,7 +34,17 @@ Grouped by concern. See [store.ts:203](../src/store.ts) for the `State` type.
 - `%APPDATA%/com.vault-chat.app/meta/system.md` — user system prompt
 - `%APPDATA%/com.vault-chat.app/meta/skills/<n>/SKILL.md`
 - `%APPDATA%/com.vault-chat.app/meta/tools/<n>/TOOL.md` + `run.*`
-- `<vault>/.vault-chat-ignore` — hidden-file list
+- `<vault>/.vault-chat-ignore` — hidden-file list (see below)
+
+## `.vault-chat-ignore`
+
+Plain text file at the vault root. Each non-empty, non-comment line is a path or pattern the UI should hide from the file tree. The agent still sees hidden files — this is UI sugar only, not access control. Add entries via:
+- Right-click a file in the tree → Hide
+- Edit `.vault-chat-ignore` directly — it's a convention file, not a walled API.
+
+Unhide via the Titlebar's Eye-icon modal (check the lines to remove, click Unhide).
+
+Rust commands: `read_ignore_lines`, `add_to_ignore`, `remove_from_ignore`.
 
 ## Boot sequence ([main.tsx](../src/main.tsx))
 
