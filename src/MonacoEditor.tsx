@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
 import { useStore } from "./store";
@@ -18,10 +18,12 @@ export function MonacoEditor({
   value,
   onChange,
   ext,
+  path,
 }: {
   value: string;
   onChange: (next: string) => void;
   ext: string;
+  path?: string;
 }) {
   const theme = useStore((s) => s.theme);
   const monacoTheme = theme === "light" ? "vault-light" : "vault-graphite";
@@ -29,6 +31,28 @@ export function MonacoEditor({
 
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const [inlineEdit, setInlineEdit] = useState<MonacoInlineEdit | null>(null);
+
+  // Scroll-to-anchor on "Open anchor" from the Notes panel. Matches
+  // "L42" or "L42-L58"; scrolls to the first line and reveals it in
+  // the center of the viewport.
+  const pendingScrollAnchor = useStore((s) => s.pendingScrollAnchor);
+  const clearScrollAnchor = useStore((s) => s.clearScrollAnchor);
+  useEffect(() => {
+    if (!pendingScrollAnchor) return;
+    if (!path || pendingScrollAnchor.path !== path) return;
+    const m = pendingScrollAnchor.anchor.match(/L(\d+)/);
+    if (!m) return;
+    const line = parseInt(m[1], 10);
+    const id = requestAnimationFrame(() => {
+      const ed = editorRef.current;
+      if (ed) {
+        ed.revealLineInCenter(line);
+        ed.setPosition({ lineNumber: line, column: 1 });
+      }
+      clearScrollAnchor();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [pendingScrollAnchor, path, clearScrollAnchor]);
 
   const onMount = (
     editor: monaco.editor.IStandaloneCodeEditor,

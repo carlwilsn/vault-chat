@@ -467,7 +467,7 @@ export function MarkdownView({ paneId }: Props) {
         </div>
       ) : showingEditor ? (
         <div className="flex-1 min-h-0">
-          <MonacoEditor value={content} onChange={onChange} ext={ext} />
+          <MonacoEditor value={content} onChange={onChange} ext={ext} path={file} />
         </div>
       ) : kind === "markdown" ? (
         <div
@@ -496,7 +496,7 @@ export function MarkdownView({ paneId }: Props) {
       ) : kind === "unsupported" ? (
         <UnsupportedView path={file} />
       ) : (
-        <CodeView content={content} ext={ext} />
+        <CodeView content={content} ext={ext} path={file} />
       )}
       {inlineAsk && (
         <InlineEditPrompt
