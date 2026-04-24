@@ -110,18 +110,83 @@ export async function fetchAllCatalog(
     if (!gotProvider.has(seed.provider)) merged.push(seed);
   }
 
-  // Stable order: provider group, then label.
-  const order: Record<ProviderId, number> = {
-    anthropic: 0,
-    openai: 1,
-    google: 2,
-    openrouter: 3,
-  };
-  merged.sort(
-    (a, b) => order[a.provider] - order[b.provider] || a.label.localeCompare(b.label),
-  );
+  // Rank roughly by capability so the strongest frontier models show
+  // up at the top of the dropdown. Ties fall back to label for a
+  // stable alphabetic secondary sort.
+  merged.sort((a, b) => modelPowerRank(b) - modelPowerRank(a) || a.label.localeCompare(b.label));
 
   return { models: merged, errors };
+}
+
+// Heuristic "how powerful is this model" score. Not benchmarks — id-
+// pattern rules keyed to the naming conventions each provider uses in
+// April 2026. Higher is more capable. Used only for dropdown ordering;
+// updates as new model families ship are an id-pattern edit below.
+function modelPowerRank(spec: ModelSpec): number {
+  const id = spec.id.toLowerCase();
+
+  if (spec.provider === "anthropic") {
+    const v = versionScore(id); // e.g. 4.7 → 407
+    if (id.includes("opus")) return 10_000 + v;
+    if (id.includes("sonnet")) return 9_000 + v;
+    if (id.includes("haiku")) return 8_000 + v;
+    return 7_000 + v;
+  }
+
+  if (spec.provider === "openai") {
+    if (/^gpt-5/.test(id) && /thinking|max|xhigh/.test(id)) return 9_700;
+    if (/^gpt-5/.test(id)) return 9_500;
+    if (/^o3.*pro/.test(id)) return 9_400;
+    if (/^o3/.test(id)) return 9_200;
+    if (/^o4/.test(id)) return 9_100;
+    if (/^o1/.test(id)) return 8_800;
+    if (/^gpt-4\.5/.test(id)) return 8_700;
+    if (/^gpt-4\.1/.test(id) && !/mini/.test(id)) return 8_500;
+    if (/^gpt-4o/.test(id) && !/mini/.test(id)) return 8_300;
+    if (/^gpt-4/.test(id) && !/mini/.test(id)) return 8_000;
+    if (/mini/.test(id)) return 7_500;
+    return 7_000;
+  }
+
+  if (spec.provider === "google") {
+    const v = versionScore(id); // e.g. 3.1 → 301
+    if (/pro/.test(id)) return 9_000 + v;
+    if (/flash/.test(id)) return 7_500 + v;
+    return 7_000 + v;
+  }
+
+  if (spec.provider === "openrouter") {
+    // Frontier models routed through OR inherit their native rank.
+    if (/anthropic\/claude-opus/i.test(id)) return 10_000 + versionScore(id);
+    if (/anthropic\/claude-sonnet/i.test(id)) return 9_000 + versionScore(id);
+    if (/anthropic\/claude-haiku/i.test(id)) return 8_000 + versionScore(id);
+    if (/openai\/gpt-5/i.test(id)) return 9_500;
+    if (/openai\/gpt-4\.1/i.test(id)) return 8_500;
+    if (/google\/gemini-.*-pro/i.test(id)) return 9_000 + versionScore(id);
+    if (/google\/gemini-.*-flash/i.test(id)) return 7_500 + versionScore(id);
+    // Best-in-class open weights (April 2026).
+    if (/qwen3\.6/i.test(id)) return 7_400;
+    if (/qwen3.*235b/i.test(id)) return 7_200;
+    if (/qwen3-coder/i.test(id)) return 7_100;
+    if (/deepseek.*r1/i.test(id)) return 7_000;
+    if (/deepseek.*v3/i.test(id) || /deepseek.*chat/i.test(id)) return 6_800;
+    if (/glm-5/i.test(id)) return 7_000;
+    if (/llama-4/i.test(id)) return 6_500;
+    if (/llama-3\.3/i.test(id)) return 6_000;
+    // Fall back to parsed parameter count, capped.
+    const sizeMatch = id.match(/(\d+(?:\.\d+)?)b(?!\w)/);
+    if (sizeMatch) return 4_000 + Math.min(parseFloat(sizeMatch[1]), 500);
+    return 4_000;
+  }
+
+  return 0;
+}
+
+// Extract "major.minor" from anywhere in the id; 0 if absent.
+function versionScore(id: string): number {
+  const m = id.match(/(\d+)[.\-](\d+)/);
+  if (!m) return 0;
+  return parseInt(m[1], 10) * 100 + parseInt(m[2], 10);
 }
 
 export function loadCatalogFromLocalStorage(): ModelSpec[] | null {
