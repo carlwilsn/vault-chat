@@ -624,7 +624,7 @@ export function InlineEditPrompt({
             <MessageSquare className="h-3 w-3" />
           </button>
         )}
-        {!streaming && (
+        {!streaming && mode === "ask" && (
           <button
             onClick={saveAsNote}
             className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
