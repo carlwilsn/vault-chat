@@ -5,6 +5,8 @@ import { DEFAULT_MODEL_ID, MODELS as SEED_MODELS, setLiveCatalog } from "./provi
 import type { Skill } from "./skills";
 import type { Note } from "./notes";
 import { readNotes, appendNote, writeAllNotes } from "./notes";
+import { formatNote } from "./notes-format";
+import { findModel } from "./providers";
 import { keychainGet, keychainSet, keychainDelete, KEY } from "./keychain";
 import {
   fetchAllCatalog,
@@ -300,6 +302,7 @@ type State = {
   deleteNote: (id: string) => Promise<void>;
   setNoteStatus: (id: string, status: "open" | "resolved") => Promise<void>;
   clearResolvedNotes: () => Promise<void>;
+  reformatNote: (id: string) => Promise<void>;
   setShowNotesPanel: (b: boolean) => void;
   openNoteComposer: (payload?: {
     initialDraft?: string;
@@ -717,6 +720,33 @@ export const useStore = create<State>((set) => ({
       await writeAllNotes(vault, next);
     } catch (e) {
       console.error("[notes] clear-resolved failed:", e);
+    }
+  },
+  reformatNote: async (id) => {
+    const state = useStore.getState();
+    const vault = state.vaultPath;
+    if (!vault) return;
+    const note = state.notes.find((n) => n.id === id);
+    if (!note) return;
+    const spec = findModel(state.modelId);
+    const apiKey = spec ? state.apiKeys[spec.provider] : undefined;
+    if (!spec || !apiKey) {
+      console.warn("[notes] reformat skipped: no model + key");
+      return;
+    }
+    try {
+      const formatted = await formatNote(note, spec, apiKey);
+      const updated = useStore
+        .getState()
+        .notes.map((n) =>
+          n.id === id
+            ? { ...n, formatted, last_updated: new Date().toISOString() }
+            : n,
+        );
+      set({ notes: updated });
+      await writeAllNotes(vault, updated);
+    } catch (e) {
+      console.error("[notes] reformat failed:", e);
     }
   },
   setShowNotesPanel: (b) => set({ showNotesPanel: b }),

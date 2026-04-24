@@ -25,6 +25,9 @@ export type Note = {
   turns: NoteTurn[]; // empty for pure captures; populated when promoted from ask
   user_draft: string | null; // typed text not yet sent as a turn
   status: "open" | "resolved";
+  /** Cached AI-written summary of the note — generated lazily on first
+   *  expand in the panel and persisted so we don't re-spend tokens. */
+  formatted?: string | null;
 };
 
 function newId(): string {
