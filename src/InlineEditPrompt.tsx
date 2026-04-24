@@ -5,9 +5,14 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
-import { Check, X, Loader2, CornerDownLeft, MessageSquare } from "lucide-react";
+import { Check, X, Loader2, CornerDownLeft, MessageSquare, StickyNote } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
 import { findModel } from "./providers";
+import { isUnreadableAsText } from "./fileKind";
+import { fileKind } from "./fileKind";
+import { cn } from "./lib/utils";
+import type { NoteAnchor } from "./notes";
 import {
   runInlineEdit,
   runInlineAsk,
@@ -64,6 +69,9 @@ export function InlineEditPrompt({
   const apiKeys = useStore((s) => s.apiKeys);
   const vaultPath = useStore((s) => s.vaultPath);
   const serviceKeys = useStore((s) => s.serviceKeys);
+  const files = useStore((s) => s.files);
+  const currentFile = useStore((s) => s.currentFile);
+  const openNoteComposer = useStore((s) => s.openNoteComposer);
   const [mode, setMode] = useState<InlineEditMode>(initialMode);
   const [prompt, setPrompt] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -72,6 +80,12 @@ export function InlineEditPrompt({
   const [error, setError] = useState<string | null>(null);
   const [priorTurns, setPriorTurns] = useState<InlineTurn[]>([]);
   const [lastPrompt, setLastPrompt] = useState<string | null>(null);
+  // @mention autocomplete (ask mode only — edit mode stays surgical).
+  const [fileMention, setFileMention] = useState<{ query: string; start: number } | null>(null);
+  const [fileMentionIdx, setFileMentionIdx] = useState(0);
+  const [attachedMentions, setAttachedMentions] = useState<
+    Array<{ rel: string; path: string; name: string }>
+  >([]);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -97,6 +111,111 @@ export function InlineEditPrompt({
       abortRef.current?.abort();
     };
   }, []);
+
+  const filterFilesForMention = (query: string) => {
+    if (!vaultPath) return [] as Array<{ path: string; name: string; rel: string }>;
+    const q = query.toLowerCase();
+    const hits: Array<{ path: string; name: string; rel: string; score: number }> = [];
+    for (const f of files) {
+      if (f.is_dir || f.hidden) continue;
+      const rel = f.path.startsWith(vaultPath + "/")
+        ? f.path.slice(vaultPath.length + 1)
+        : f.path;
+      const nameLower = f.name.toLowerCase();
+      const relLower = rel.toLowerCase();
+      let score: number;
+      if (!q) score = 10;
+      else if (nameLower.startsWith(q)) score = 100 - Math.abs(nameLower.length - q.length);
+      else if (nameLower.includes(q)) score = 60 - nameLower.indexOf(q);
+      else if (relLower.includes(q)) score = 30 - relLower.indexOf(q);
+      else continue;
+      hits.push({ path: f.path, name: f.name, rel, score });
+    }
+    hits.sort((a, b) => b.score - a.score);
+    return hits.slice(0, 8).map(({ score: _s, ...h }) => h);
+  };
+
+  const matchedFiles = fileMention ? filterFilesForMention(fileMention.query) : [];
+
+  const onPromptChange = (v: string) => {
+    setPrompt(v);
+    if (mode !== "ask") {
+      setFileMention(null);
+      return;
+    }
+    const el = inputRef.current;
+    const caret = el?.selectionStart ?? v.length;
+    const upToCaret = v.slice(0, caret);
+    const atMatch = upToCaret.match(/(^|\s)@([^\s]*)$/);
+    if (atMatch) {
+      setFileMention({ query: atMatch[2], start: caret - atMatch[2].length - 1 });
+      setFileMentionIdx(0);
+    } else {
+      setFileMention(null);
+    }
+  };
+
+  const pickMention = (hit: { rel: string; path: string; name: string }) => {
+    if (!fileMention) return;
+    const before = prompt.slice(0, fileMention.start);
+    const after = prompt.slice(fileMention.start + 1 + fileMention.query.length);
+    const insertion = `@${hit.name} `;
+    const next = `${before}${insertion}${after.replace(/^\s+/, "")}`;
+    setPrompt(next);
+    setAttachedMentions((prev) => {
+      if (prev.some((m) => m.path === hit.path)) return prev;
+      return [...prev, hit];
+    });
+    setFileMention(null);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      const pos = before.length + insertion.length;
+      el.setSelectionRange(pos, pos);
+      el.focus();
+    });
+  };
+
+  // Resolve all @tokens in the prompt to their file contents. Covers
+  // both picked-from-dropdown mentions and manually-typed @name that
+  // matches a vault basename (case-insensitive). Binaries have null
+  // content; the agent can still see the path.
+  const resolveAttachedFiles = async (
+    text: string,
+  ): Promise<Array<{ rel: string; path: string; content: string | null }>> => {
+    const tokens = Array.from(text.matchAll(/(?:^|\s)@([\w][\w./-]*)/g)).map((m) => m[1]);
+    const byPath = new Map<string, { rel: string; path: string }>();
+    for (const m of attachedMentions) byPath.set(m.path, { rel: m.rel, path: m.path });
+    for (const tok of tokens) {
+      const lower = tok.toLowerCase();
+      if (attachedMentions.some((m) => m.name.toLowerCase() === lower)) continue;
+      const hits = files.filter(
+        (f) => !f.is_dir && !f.hidden && f.name.toLowerCase() === lower,
+      );
+      for (const h of hits) {
+        if (!byPath.has(h.path)) {
+          const rel = vaultPath && h.path.startsWith(vaultPath + "/")
+            ? h.path.slice(vaultPath.length + 1)
+            : h.path;
+          byPath.set(h.path, { rel, path: h.path });
+        }
+      }
+    }
+    const out: Array<{ rel: string; path: string; content: string | null }> = [];
+    for (const r of byPath.values()) {
+      if (isUnreadableAsText(r.path)) {
+        out.push({ rel: r.rel, path: r.path, content: null });
+      } else {
+        try {
+          const content = await invoke<string>("read_text_file", { path: r.path });
+          out.push({ rel: r.rel, path: r.path, content });
+        } catch {
+          out.push({ rel: r.rel, path: r.path, content: null });
+        }
+      }
+    }
+    return out;
+  };
 
   const submit = async () => {
     if (!prompt.trim() || streaming) return;
@@ -148,6 +267,7 @@ export function InlineEditPrompt({
         }
       } else {
         let acc = "";
+        const attachedFiles = await resolveAttachedFiles(currentPrompt);
         for await (const ev of runInlineAsk({
           modelId,
           apiKey: key,
@@ -159,6 +279,7 @@ export function InlineEditPrompt({
           after: request.after,
           language: request.language,
           imageDataUrl: request.imageDataUrl,
+          attachedFiles,
           priorTurns: nextPrior,
           abortSignal: ac.signal,
         })) {
@@ -248,6 +369,29 @@ export function InlineEditPrompt({
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    // Let the @mention menu consume navigation keys first.
+    if (fileMention && matchedFiles.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setFileMentionIdx((i) => Math.min(i + 1, matchedFiles.length - 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setFileMentionIdx((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        pickMention(matchedFiles[fileMentionIdx] ?? matchedFiles[0]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setFileMention(null);
+        return;
+      }
+    }
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
@@ -261,6 +405,56 @@ export function InlineEditPrompt({
       if (prompt.trim()) submit();
       else if (result) accept();
     }
+  };
+
+  // Snapshot the current popover state into a note. Carries the
+  // user's ask conversation (if any), their current draft, the
+  // selection as the primary anchor's selection field, and any
+  // marquee image. Agent clarity is preserved in the thread.
+  const saveAsNote = () => {
+    if (!currentFile && !request.selection && !request.imageDataUrl) return;
+    const fk = currentFile ? fileKind(currentFile).kind : "code";
+    const primaryAnchor: NoteAnchor = {
+      source_path: currentFile ?? "",
+      source_kind: (fk === "markdown" || fk === "pdf" || fk === "html" || fk === "image" || fk === "notebook"
+        ? fk
+        : "code") as NoteAnchor["source_kind"],
+      source_anchor: null,
+      source_before: request.before || null,
+      source_after: request.after || null,
+      source_selection: request.selection || null,
+      image_data_url: request.imageDataUrl || null,
+      primary: true,
+    };
+    const anchors: NoteAnchor[] = currentFile ? [primaryAnchor] : [];
+    // Also add every attached @mention as a secondary anchor.
+    for (const m of attachedMentions) {
+      if (m.path === currentFile) continue;
+      anchors.push({
+        source_path: m.path,
+        source_kind: (fileKind(m.path).kind === "markdown" || fileKind(m.path).kind === "pdf" || fileKind(m.path).kind === "html" || fileKind(m.path).kind === "image" || fileKind(m.path).kind === "notebook"
+          ? fileKind(m.path).kind
+          : "code") as NoteAnchor["source_kind"],
+        source_anchor: null,
+        primary: false,
+      });
+    }
+    // Reconstruct turns from priorTurns (pairs of prompt/result) plus
+    // the current exchange if present.
+    const turns: { role: "user" | "assistant"; content: string }[] = [];
+    for (const t of priorTurns) {
+      turns.push({ role: "user", content: t.prompt });
+      turns.push({ role: "assistant", content: t.result });
+    }
+    if (lastPrompt !== null && result) {
+      turns.push({ role: "user", content: lastPrompt });
+      turns.push({ role: "assistant", content: result });
+    }
+    openNoteComposer({
+      initialDraft: prompt,
+      initialAnchors: anchors,
+      initialTurns: turns,
+    });
   };
 
   // Pick side (below vs above) based on where there's more room, and cap
@@ -348,12 +542,37 @@ export function InlineEditPrompt({
       onMouseDown={(e) => e.stopPropagation()}
       onPointerDown={onDragPointerDown}
     >
+      {fileMention && matchedFiles.length > 0 && (
+        <div className="max-h-[180px] overflow-auto border-b border-border/60">
+          {matchedFiles.map((f, i) => (
+            <div
+              key={f.path}
+              className={cn(
+                "flex items-baseline gap-2 px-3 py-1.5 cursor-pointer border-b border-border/30 last:border-b-0",
+                i === fileMentionIdx ? "bg-accent" : "hover:bg-accent/60",
+              )}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                pickMention(f);
+              }}
+              onMouseEnter={() => setFileMentionIdx(i)}
+            >
+              <span className="text-primary font-mono text-[11.5px] font-medium shrink-0 max-w-[50%] truncate">
+                {f.name}
+              </span>
+              <span className="text-muted-foreground text-[10.5px] truncate font-mono">
+                {f.rel}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex items-start gap-1 p-2 shrink-0">
         <textarea
           ref={inputRef}
           rows={1}
           value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
+          onChange={(e) => onPromptChange(e.target.value)}
           placeholder={
             result
               ? mode === "edit"
@@ -396,6 +615,15 @@ export function InlineEditPrompt({
             title="Send conversation to chat panel"
           >
             <MessageSquare className="h-3 w-3" />
+          </button>
+        )}
+        {!streaming && (
+          <button
+            onClick={saveAsNote}
+            className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+            title="Save as note — keeps selection, conversation, and source anchor"
+          >
+            <StickyNote className="h-3 w-3" />
           </button>
         )}
         <button

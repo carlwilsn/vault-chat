@@ -61,7 +61,11 @@ export async function* runInlineEdit(
   }
 }
 
-function buildContextBody(p: InlineEditParams, instruction: string): string {
+function buildContextBody(
+  p: InlineEditParams,
+  instruction: string,
+  attached?: Array<{ rel: string; path: string; content?: string | null }>,
+): string {
   const MAX_CTX = 4000;
   const before =
     p.before.length > MAX_CTX ? "…" + p.before.slice(-MAX_CTX) : p.before;
@@ -78,6 +82,17 @@ function buildContextBody(p: InlineEditParams, instruction: string): string {
   }
   parts.push(`BEFORE (file content before selection/cursor):\n${before}`);
   parts.push(`AFTER (file content after selection/cursor):\n${after}`);
+  if (attached && attached.length > 0) {
+    const blocks = attached.map((a) => {
+      if (a.content == null) {
+        return `@${a.rel} — absolute path: ${a.path} (binary or unreadable; call Read if you need contents)`;
+      }
+      return `@${a.rel} — absolute path: ${a.path}\n${a.content}`;
+    });
+    parts.push(
+      `ATTACHED FILES (the user referenced these with @mention; paths are authoritative, do not search for them):\n${blocks.join("\n\n")}`,
+    );
+  }
   return parts.join("\n\n");
 }
 
@@ -100,6 +115,9 @@ export type InlineAskParams = InlineEditParams & {
   // model can see math, tables, and diagrams that text extraction
   // mangles.
   imageDataUrl?: string;
+  // User-attached files via @mention. Content is pre-loaded by the
+  // caller (null for binaries) so we don't re-read here.
+  attachedFiles?: Array<{ rel: string; path: string; content: string | null }>;
 };
 
 export async function* runInlineAsk(
@@ -127,7 +145,7 @@ export async function* runInlineAsk(
   const messages: ModelMessage[] = [];
   const prior = p.priorTurns ?? [];
   const firstPrompt = prior[0]?.prompt ?? p.prompt;
-  const firstContent = buildContextBody(p, firstPrompt);
+  const firstContent = buildContextBody(p, firstPrompt, p.attachedFiles);
 
   // If we have a region screenshot, attach it as an image part on the
   // first user message — the same turn that carries the file context.

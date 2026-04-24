@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, Undo2, History, RefreshCw } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, Undo2, History, RefreshCw, StickyNote } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded, gitRecentCommits, gitShowCommit, gitRestoreToCommit, type GitCommit } from "./git";
@@ -20,6 +20,8 @@ export function Titlebar() {
     popoutOpen,
     toggleLeft,
     toggleRight,
+    setShowNotesPanel,
+    notes,
   } = useStore();
   const [maximized, setMaximized] = useState(false);
   const [hiddenOpen, setHiddenOpen] = useState(false);
@@ -255,6 +257,16 @@ export function Titlebar() {
               title="History"
             >
               <History className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={() => setShowNotesPanel(true)}
+              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground relative"
+              title="Notes (Ctrl+N to create)"
+            >
+              <StickyNote className="h-3.5 w-3.5" />
+              {notes.filter((n) => n.status === "open").length > 0 && (
+                <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
+              )}
             </button>
           </>
         )}

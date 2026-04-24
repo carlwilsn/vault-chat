@@ -8,6 +8,8 @@ import { MarkdownArea } from "./MarkdownArea";
 import { ChatPane } from "./ChatPane";
 import { SettingsPane } from "./SettingsPane";
 import { Titlebar } from "./Titlebar";
+import { NotePopup } from "./NotePopup";
+import { NotesPanel } from "./NotesPanel";
 import { useStore } from "./store";
 import { gitInitIfNeeded } from "./git";
 import { tryOpenLink } from "./linkNav";
@@ -20,6 +22,13 @@ export default function App() {
   const currentFile = useStore((s) => s.currentFile);
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
+  const openNoteComposer = useStore((s) => s.openNoteComposer);
+  const closeNoteComposer = useStore((s) => s.closeNoteComposer);
+  const noteComposer = useStore((s) => s.noteComposer);
+  const showNotesPanel = useStore((s) => s.showNotesPanel);
+  const setShowNotesPanel = useStore((s) => s.setShowNotesPanel);
+  const loadNotes = useStore((s) => s.loadNotes);
+  const notesLoaded = useStore((s) => s.notesLoaded);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -82,6 +91,18 @@ export default function App() {
       }
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
+      if (k === "n" && !e.shiftKey && !e.altKey) {
+        // Ctrl+N — open a fresh note composer for the current vault.
+        // Suppressed in inputs/textareas so it doesn't fight Cmd+N in
+        // the textarea (though browsers may still capture that).
+        const tgt = e.target as HTMLElement | null;
+        const tag = tgt?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tgt?.isContentEditable) return;
+        if (!useStore.getState().vaultPath) return;
+        e.preventDefault();
+        openNoteComposer();
+        return;
+      }
       if (k === "e") {
         if (!currentFile) return;
         e.preventDefault();
@@ -96,7 +117,15 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleMode, toggleLeft, toggleRight, currentFile, setTheme]);
+  }, [toggleMode, toggleLeft, toggleRight, currentFile, setTheme, openNoteComposer]);
+
+  // Lazy-load notes the first time a vault is active (or after a vault
+  // switch, which resets notesLoaded).
+  useEffect(() => {
+    if (vaultPath && !notesLoaded) {
+      loadNotes();
+    }
+  }, [vaultPath, notesLoaded, loadNotes]);
 
   // Suppress webview defaults that bleed through and make the app feel
   // like a browser tab: Ctrl+F (find bar), Ctrl+G (find-next), Ctrl+R /
@@ -237,6 +266,14 @@ export default function App() {
           )}
         </Allotment>
       </div>
+      <NotePopup
+        open={noteComposer.open}
+        initialDraft={noteComposer.initialDraft}
+        initialAnchors={noteComposer.initialAnchors}
+        initialTurns={noteComposer.initialTurns}
+        onClose={closeNoteComposer}
+      />
+      <NotesPanel open={showNotesPanel} onClose={() => setShowNotesPanel(false)} />
     </div>
   );
 }

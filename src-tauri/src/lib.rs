@@ -5,6 +5,8 @@ use std::process::Command;
 use walkdir::WalkDir;
 
 const IGNORE_FILE: &str = ".vaultchatignore";
+const NOTES_DIR: &str = ".vault-chat";
+const NOTES_FILE: &str = "notes.jsonl";
 
 #[derive(Serialize)]
 struct FileEntry {
@@ -224,6 +226,71 @@ async fn remove_from_ignore(vault: String, relative_paths: Vec<String>) -> Resul
             s
         };
         std::fs::write(&path, new_contents).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------- notes.jsonl (scratchpad) ----------
+//
+// Append-only capture of ephemeral thoughts the user leaves while
+// reading / editing. Each line is one JSON-encoded note object.
+// The front-end owns the schema; Rust just persists lines.
+
+#[tauri::command]
+async fn notes_read(vault: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = std::path::Path::new(&vault).join(NOTES_DIR).join(NOTES_FILE);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let contents = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        Ok(contents
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(String::from)
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn notes_append(vault: String, line: String) -> Result<(), String> {
+    use std::io::Write;
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = std::path::Path::new(&vault).join(NOTES_DIR);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
+        let path = dir.join(NOTES_FILE);
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("open {}: {}", path.display(), e))?;
+        let mut bytes = line.into_bytes();
+        if !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
+        }
+        f.write_all(&bytes).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn notes_write_all(vault: String, lines: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = std::path::Path::new(&vault).join(NOTES_DIR);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
+        let path = dir.join(NOTES_FILE);
+        let mut body = lines.join("\n");
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        std::fs::write(&path, body).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1556,6 +1623,9 @@ pub fn run() {
             read_ignore_lines,
             add_to_ignore,
             remove_from_ignore,
+            notes_read,
+            notes_append,
+            notes_write_all,
             open_terminal,
             git_init_if_needed,
             git_commit_all,

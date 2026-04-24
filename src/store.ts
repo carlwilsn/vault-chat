@@ -3,6 +3,8 @@ import { emit } from "@tauri-apps/api/event";
 import type { ModelSpec, ProviderId } from "./providers";
 import { DEFAULT_MODEL_ID, MODELS as SEED_MODELS, setLiveCatalog } from "./providers";
 import type { Skill } from "./skills";
+import type { Note } from "./notes";
+import { readNotes, appendNote, writeAllNotes } from "./notes";
 import { keychainGet, keychainSet, keychainDelete, KEY } from "./keychain";
 import {
   fetchAllCatalog,
@@ -244,6 +246,15 @@ type State = {
   streamingReasoning: string;
   liveTools: LiveTool[];
   agentTodos: TodoItem[];
+  notes: Note[];
+  notesLoaded: boolean;
+  showNotesPanel: boolean;
+  noteComposer: {
+    open: boolean;
+    initialDraft?: string;
+    initialAnchors?: import("./notes").NoteAnchor[];
+    initialTurns?: import("./notes").NoteTurn[];
+  };
 
   setVault: (p: string) => void;
   setFiles: (f: FileEntry[]) => void;
@@ -284,6 +295,18 @@ type State = {
   pushLiveTool: (t: LiveTool) => void;
   updateLiveToolResult: (id: string, result: string) => void;
   setAgentTodos: (todos: TodoItem[]) => void;
+  loadNotes: () => Promise<void>;
+  addNote: (note: Note) => Promise<void>;
+  deleteNote: (id: string) => Promise<void>;
+  setNoteStatus: (id: string, status: "open" | "resolved") => Promise<void>;
+  clearResolvedNotes: () => Promise<void>;
+  setShowNotesPanel: (b: boolean) => void;
+  openNoteComposer: (payload?: {
+    initialDraft?: string;
+    initialAnchors?: import("./notes").NoteAnchor[];
+    initialTurns?: import("./notes").NoteTurn[];
+  }) => void;
+  closeNoteComposer: () => void;
   resetStreaming: () => void;
   applyChatState: (s: {
     vaultPath: string | null;
@@ -335,6 +358,10 @@ export const useStore = create<State>((set) => ({
   streamingReasoning: "",
   liveTools: [],
   agentTodos: [],
+  notes: [],
+  notesLoaded: false,
+  showNotesPanel: false,
+  noteComposer: { open: false },
 
   setVault: (p) =>
     set((s) => {
@@ -355,6 +382,8 @@ export const useStore = create<State>((set) => ({
         streamingReasoning: "",
         liveTools: [],
         agentTodos: [],
+        notes: [],
+        notesLoaded: false,
       };
     }),
   setFiles: (f) => set({ files: f }),
@@ -631,6 +660,76 @@ export const useStore = create<State>((set) => ({
       liveTools: prev.liveTools.map((t) => (t.id === id ? { ...t, result } : t)),
     })),
   setAgentTodos: (todos) => set({ agentTodos: todos }),
+  loadNotes: async () => {
+    const vault = useStore.getState().vaultPath;
+    if (!vault) return;
+    try {
+      const notes = await readNotes(vault);
+      // Reverse-chron so newest is first in the panel.
+      notes.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+      set({ notes, notesLoaded: true });
+    } catch (e) {
+      console.error("[notes] load failed:", e);
+      set({ notes: [], notesLoaded: true });
+    }
+  },
+  addNote: async (note) => {
+    const vault = useStore.getState().vaultPath;
+    if (!vault) return;
+    try {
+      await appendNote(vault, note);
+      set((s) => ({ notes: [note, ...s.notes], notesLoaded: true }));
+    } catch (e) {
+      console.error("[notes] append failed:", e);
+    }
+  },
+  deleteNote: async (id) => {
+    const vault = useStore.getState().vaultPath;
+    if (!vault) return;
+    const next = useStore.getState().notes.filter((n) => n.id !== id);
+    set({ notes: next });
+    try {
+      await writeAllNotes(vault, next);
+    } catch (e) {
+      console.error("[notes] delete failed:", e);
+    }
+  },
+  setNoteStatus: async (id, status) => {
+    const vault = useStore.getState().vaultPath;
+    if (!vault) return;
+    const now = new Date().toISOString();
+    const next = useStore.getState().notes.map((n) =>
+      n.id === id ? { ...n, status, last_updated: now } : n,
+    );
+    set({ notes: next });
+    try {
+      await writeAllNotes(vault, next);
+    } catch (e) {
+      console.error("[notes] status-update failed:", e);
+    }
+  },
+  clearResolvedNotes: async () => {
+    const vault = useStore.getState().vaultPath;
+    if (!vault) return;
+    const next = useStore.getState().notes.filter((n) => n.status !== "resolved");
+    set({ notes: next });
+    try {
+      await writeAllNotes(vault, next);
+    } catch (e) {
+      console.error("[notes] clear-resolved failed:", e);
+    }
+  },
+  setShowNotesPanel: (b) => set({ showNotesPanel: b }),
+  openNoteComposer: (payload) =>
+    set({
+      noteComposer: {
+        open: true,
+        initialDraft: payload?.initialDraft,
+        initialAnchors: payload?.initialAnchors,
+        initialTurns: payload?.initialTurns,
+      },
+    }),
+  closeNoteComposer: () => set({ noteComposer: { open: false } }),
   resetStreaming: () => {
     cancelStreamFlush();
     cancelReasoningFlush();
