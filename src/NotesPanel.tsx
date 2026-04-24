@@ -20,7 +20,6 @@ import { noteIsSummarizable } from "./notes";
 type NoteAnchorLike = Pick<NoteAnchor, "source_path" | "source_anchor">;
 import { cn } from "./lib/utils";
 import { isUnreadableAsText } from "./fileKind";
-import { dispatchChatAction } from "./sync";
 import { MessageSquare } from "lucide-react";
 
 // Slide-in review panel for vault notes. Shows active by default;
@@ -78,16 +77,28 @@ export function NotesPanel({
   const resolvedCount = notes.filter((n) => n.status === "resolved").length;
 
   const discussInChat = (note: Note) => {
-    // Build a focused chat turn that loads the note's full context
-    // into a hidden preamble, then asks the agent to help address it.
-    // The user can follow up normally from there.
+    // Prime the chat with the note's context without actually firing
+    // an agent turn. The user asked for "idle, ready" — they don't
+    // want a big response dumped on them; they want to walk in with
+    // everything loaded and drive the conversation from there.
+    //
+    // What lands in the history:
+    //   1. Hidden preamble with the full note context — the agent
+    //      sees it on the next real turn the user sends.
+    //   2. A visible user bubble recapping what the note was about
+    //      (nice-looking markdown — summary, image, quoted draft).
+    //   3. A scripted assistant bubble confirming context is loaded.
+    //      No API call; just a canned acknowledgement.
     const primary = note.anchors.find((a) => a.primary) ?? note.anchors[0];
     const anchorLine = primary
       ? `Primary source: ${primary.source_path}${primary.source_anchor ? ` (${primary.source_anchor})` : ""}`
       : "No file anchor.";
     const secondaryLines = note.anchors
       .filter((a) => a !== primary)
-      .map((a) => `Secondary source: ${a.source_path}${a.source_anchor ? ` (${a.source_anchor})` : ""}`);
+      .map(
+        (a) =>
+          `Secondary source: ${a.source_path}${a.source_anchor ? ` (${a.source_anchor})` : ""}`,
+      );
     const draftBlock = note.user_draft ? `The user's note:\n${note.user_draft}` : "";
     const selectionBlock = primary?.source_selection
       ? `Highlighted text:\n${primary.source_selection}`
@@ -97,8 +108,12 @@ export function NotesPanel({
         ? "Prior conversation:\n" +
           note.turns.map((t) => `${t.role}: ${t.content}`).join("\n---\n")
         : "";
-    const beforeBlock = primary?.source_before ? `Context before:\n${primary.source_before.slice(-1500)}` : "";
-    const afterBlock = primary?.source_after ? `Context after:\n${primary.source_after.slice(0, 1500)}` : "";
+    const beforeBlock = primary?.source_before
+      ? `Context before:\n${primary.source_before.slice(-1500)}`
+      : "";
+    const afterBlock = primary?.source_after
+      ? `Context after:\n${primary.source_after.slice(0, 1500)}`
+      : "";
     const preamble = [
       `[Note ${note.id} — captured ${prettyTime(note.timestamp)}]`,
       anchorLine,
@@ -112,26 +127,30 @@ export function NotesPanel({
       .filter(Boolean)
       .join("\n\n");
     const summaryLine = note.formatted ? note.formatted : note.user_draft || "(no note text)";
-    const images = note.anchors
-      .map((a) => a.image_data_url)
-      .filter((u): u is string => !!u);
+    const images = note.anchors.map((a) => a.image_data_url).filter((u): u is string => !!u);
     const imageMarkdown = images
       .map((u, i) => `![captured region ${i + 1}](${u})`)
       .join("\n\n");
-    const userMessage = [
-      `I'd like to address this note (id ${note.id}):`,
+    const anchorBadge = primary
+      ? `📎 ${primary.source_path.split("/").pop()}${primary.source_anchor ? ` · ${primary.source_anchor}` : ""}`
+      : "";
+    const userBubble = [
+      `Loading note \`${note.id}\` for discussion.`,
+      anchorBadge,
       "",
       `> ${summaryLine}`,
       imageMarkdown,
-      "",
-      "Help me think about it — and if we resolve it, mark it complete.",
     ]
-      .filter((l) => l !== undefined && l !== null)
+      .filter((l) => l !== null && l !== undefined && l !== "")
       .join("\n");
-    dispatchChatAction({ kind: "send", text: userMessage, contextPreamble: preamble });
-    // Ensure the chat pane is visible.
-    const s = useStore.getState();
-    if (s.rightCollapsed) s.toggleRight();
+    const primaryName = primary?.source_path.split("/").pop();
+    const assistantBubble = `Context loaded${primaryName ? ` from **${primaryName}**` : ""}. Ready when you are — what would you like to work through?`;
+
+    const store = useStore.getState();
+    store.appendMessage({ role: "user", content: preamble, hidden: true });
+    store.appendMessage({ role: "user", content: userBubble });
+    store.appendMessage({ role: "assistant", content: assistantBubble });
+    if (store.rightCollapsed) store.toggleRight();
     onClose();
   };
 
