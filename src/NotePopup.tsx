@@ -171,11 +171,12 @@ export function NotePopup({
     );
   };
 
-  const primary = anchors.find((a) => a.primary);
-  const primaryCanMarquee = (() => {
-    const p = primary?.source_path;
-    if (!p) return false;
-    const k = p ? fileKind(p).kind : null;
+  // Gate the Capture button on what's currently in the viewer, not
+  // on the note's primary anchor — the user might be anchored to a
+  // markdown note but viewing a PDF they want to clip from.
+  const currentCanMarquee = (() => {
+    if (!currentFile) return false;
+    const k = fileKind(currentFile).kind;
     return k === "pdf" || k === "html" || k === "image";
   })();
 
@@ -320,7 +321,7 @@ export function NotePopup({
                 <Plus className="h-3 w-3" />
                 Link another file or folder
               </button>
-              {primaryCanMarquee && (
+              {currentCanMarquee && (
                 <button
                   onClick={captureRegion}
                   className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
