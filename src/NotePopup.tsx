@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, X as XIcon, Camera } from "lucide-react";
 import { useStore } from "./store";
-import { buildNote, type NoteAnchor } from "./notes";
+import { buildNote, anchorImages, type NoteAnchor } from "./notes";
 import { fileKind } from "./fileKind";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
@@ -165,9 +165,18 @@ export function NotePopup({
     window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
   };
 
-  const removeImage = (path: string) => {
+  const removeImage = (path: string, index: number) => {
     setAnchors((prev) =>
-      prev.map((a) => (a.source_path === path ? { ...a, image_data_url: null } : a)),
+      prev.map((a) => {
+        if (a.source_path !== path) return a;
+        const list = anchorImages(a);
+        const next = list.filter((_, i) => i !== index);
+        return {
+          ...a,
+          image_data_url: next[0] ?? null,
+          images: next,
+        };
+      }),
     );
   };
 
@@ -334,27 +343,29 @@ export function NotePopup({
             </div>
           )}
 
-          {/* Image thumbnails per anchor, with a remove button. */}
-          {anchors.some((a) => a.image_data_url) && (
+          {/* Image thumbnails — every image on every anchor, each
+              with its own remove. Captures accumulate so multiple
+              marquees add up instead of replacing each other. */}
+          {anchors.some((a) => anchorImages(a).length > 0) && (
             <div className="flex flex-wrap gap-2 pt-1">
-              {anchors
-                .filter((a) => a.image_data_url)
-                .map((a) => (
-                  <div key={a.source_path} className="relative group">
+              {anchors.flatMap((a) =>
+                anchorImages(a).map((url, i) => (
+                  <div key={`${a.source_path}:${i}`} className="relative group">
                     <img
-                      src={a.image_data_url!}
-                      alt="captured region"
+                      src={url}
+                      alt={`captured region ${i + 1}`}
                       className="max-h-[90px] rounded border border-border/60"
                     />
                     <button
-                      onClick={() => removeImage(a.source_path)}
+                      onClick={() => removeImage(a.source_path, i)}
                       className="absolute -top-1.5 -right-1.5 h-5 w-5 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
                       title="Remove image"
                     >
                       <XIcon className="h-3 w-3" />
                     </button>
                   </div>
-                ))}
+                )),
+              )}
             </div>
           )}
 

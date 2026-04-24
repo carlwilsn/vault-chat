@@ -1,6 +1,6 @@
 import { generateText, type ModelMessage } from "ai";
 import { buildModel, supportsVision, type ModelSpec } from "./providers";
-import type { Note } from "./notes";
+import { anchorImages, type Note } from "./notes";
 
 // Build a one-paragraph orienter that reminds the user later what
 // they were stuck on, what they were looking at, and (if the note
@@ -56,9 +56,7 @@ export async function formatNote(
   // If the note has an image and the active model supports vision,
   // attach the image so the scribe can describe what the marquee
   // actually captured. Otherwise fall back to text-only.
-  const imageUrls = note.anchors
-    .map((a) => a.image_data_url)
-    .filter((u): u is string => !!u);
+  const imageUrls = note.anchors.flatMap((a) => anchorImages(a));
   const canSeeImages = imageUrls.length > 0 && supportsVision(spec);
 
   let messages: ModelMessage[];

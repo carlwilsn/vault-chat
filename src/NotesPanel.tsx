@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { useStore } from "./store";
 import type { Note, NoteAnchor } from "./notes";
-import { noteIsSummarizable } from "./notes";
+import { noteIsSummarizable, anchorImages } from "./notes";
 
 type NoteAnchorLike = Pick<NoteAnchor, "source_path" | "source_anchor">;
 import { cn } from "./lib/utils";
@@ -127,7 +127,7 @@ export function NotesPanel({
       .filter(Boolean)
       .join("\n\n");
     const summaryLine = note.formatted ? note.formatted : note.user_draft || "(no note text)";
-    const images = note.anchors.map((a) => a.image_data_url).filter((u): u is string => !!u);
+    const images = note.anchors.flatMap((a) => anchorImages(a));
     const imageMarkdown = images
       .map((u, i) => `![captured region ${i + 1}](${u})`)
       .join("\n\n");
@@ -323,7 +323,7 @@ function NoteCard({
         (note.turns[0].content.length > 240 ? "…" : "")
       : "(no text)");
   const timeAgo = prettyTime(note.timestamp);
-  const images = note.anchors.map((a) => a.image_data_url).filter((u): u is string => !!u);
+  const images = note.anchors.flatMap((a) => anchorImages(a));
   const StatusIcon = note.status === "resolved" ? CheckCircle2 : Circle;
   const ExpandIcon = expanded ? ChevronDown : ChevronRight;
   const turnPairs = Math.floor(note.turns.length / 2);
