@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, X as XIcon } from "lucide-react";
+import { Plus, X as XIcon, Camera } from "lucide-react";
 import { useStore } from "./store";
 import { buildNote, type NoteAnchor } from "./notes";
 import { fileKind } from "./fileKind";
@@ -152,6 +152,33 @@ export function NotePopup({
     });
   };
 
+  // Hide the popup, trigger marquee on the current viewer, then let
+  // the viewer reopen the popup with the captured image attached.
+  const captureRegion = () => {
+    const draft = textareaRef.current?.value ?? "";
+    useStore.getState().stashNoteForCapture({
+      draft,
+      anchors,
+      turns: initialTurns,
+    });
+    // Toggle marquee on whichever viewer is currently mounted.
+    window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
+  };
+
+  const removeImage = (path: string) => {
+    setAnchors((prev) =>
+      prev.map((a) => (a.source_path === path ? { ...a, image_data_url: null } : a)),
+    );
+  };
+
+  const primary = anchors.find((a) => a.primary);
+  const primaryCanMarquee = (() => {
+    const p = primary?.source_path;
+    if (!p) return false;
+    const k = p ? fileKind(p).kind : null;
+    return k === "pdf" || k === "html" || k === "image";
+  })();
+
   if (!open) return null;
 
   const save = async () => {
@@ -285,13 +312,49 @@ export function NotePopup({
               )}
             </div>
           ) : (
-            <button
-              onClick={() => setPickerOpen(true)}
-              className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-            >
-              <Plus className="h-3 w-3" />
-              Link another file or folder
-            </button>
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => setPickerOpen(true)}
+                className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                <Plus className="h-3 w-3" />
+                Link another file or folder
+              </button>
+              {primaryCanMarquee && (
+                <button
+                  onClick={captureRegion}
+                  className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                  title="Hide this popup, draw a region in the current viewer, then come back with the image attached"
+                >
+                  <Camera className="h-3 w-3" />
+                  Capture region
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Image thumbnails per anchor, with a remove button. */}
+          {anchors.some((a) => a.image_data_url) && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {anchors
+                .filter((a) => a.image_data_url)
+                .map((a) => (
+                  <div key={a.source_path} className="relative group">
+                    <img
+                      src={a.image_data_url!}
+                      alt="captured region"
+                      className="max-h-[90px] rounded border border-border/60"
+                    />
+                    <button
+                      onClick={() => removeImage(a.source_path)}
+                      className="absolute -top-1.5 -right-1.5 h-5 w-5 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
+                      title="Remove image"
+                    >
+                      <XIcon className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+            </div>
           )}
 
           {anchors.length === 0 && (

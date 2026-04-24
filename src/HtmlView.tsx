@@ -181,6 +181,38 @@ export function HtmlView({ content }: { content: string }) {
             timestamp: Date.now(),
           });
         }
+        const store = useStore.getState();
+        if (store.noteCapturePending && curPath) {
+          // HTML doesn't snapshot pixels — just pipe the selection text
+          // into the note's primary anchor and come back.
+          const stashed = store.noteComposer;
+          const prev = stashed.initialAnchors ?? [];
+          const hasPrimary = prev.some((a) => a.primary);
+          const updated = prev.length > 0
+            ? prev.map((a) =>
+                a.primary ? { ...a, source_selection: selection || a.source_selection } : a,
+              )
+            : [];
+          const anchors = hasPrimary
+            ? updated
+            : [
+                ...updated,
+                {
+                  source_path: curPath,
+                  source_kind: "html" as const,
+                  source_anchor: null,
+                  source_selection: selection || null,
+                  primary: true,
+                },
+              ];
+          store.openNoteComposer({
+            initialDraft: stashed.initialDraft,
+            initialAnchors: anchors,
+            initialTurns: stashed.initialTurns,
+          });
+          store.setNoteCapturePending(false);
+          return;
+        }
         setInlineAsk({
           anchor: pending.anchor,
           selection,

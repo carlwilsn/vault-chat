@@ -446,6 +446,45 @@ export function PdfView({ path }: { path: string }) {
         imageDataUrl: image ?? null,
         timestamp: Date.now(),
       });
+      // If the NotePopup asked us for a region, route this capture
+      // back into the composer instead of opening InlineEditPrompt.
+      const store = useStore.getState();
+      if (store.noteCapturePending) {
+        const stashed = store.noteComposer;
+        const prev = stashed.initialAnchors ?? [];
+        const hasPrimary = prev.some((a) => a.primary);
+        const updated = prev.length > 0
+          ? prev.map((a) =>
+              a.primary
+                ? {
+                    ...a,
+                    image_data_url: image ?? a.image_data_url ?? null,
+                    source_anchor: sourceAnchor ?? a.source_anchor,
+                  }
+                : a,
+            )
+          : [];
+        const anchors = hasPrimary
+          ? updated
+          : [
+              ...updated,
+              {
+                source_path: path,
+                source_kind: "pdf" as const,
+                source_anchor: sourceAnchor,
+                image_data_url: image ?? null,
+                source_selection: captured || null,
+                primary: true,
+              },
+            ];
+        store.openNoteComposer({
+          initialDraft: stashed.initialDraft,
+          initialAnchors: anchors,
+          initialTurns: stashed.initialTurns,
+        });
+        store.setNoteCapturePending(false);
+        return;
+      }
       setInlineAsk({
         anchor: {
           left: rect.left,

@@ -177,6 +177,36 @@ export function ImageView({ path }: { path: string }) {
         imageDataUrl: image,
         timestamp: Date.now(),
       });
+      const store = useStore.getState();
+      if (store.noteCapturePending) {
+        const stashed = store.noteComposer;
+        const prev = stashed.initialAnchors ?? [];
+        const hasPrimary = prev.some((a) => a.primary);
+        const updated = prev.length > 0
+          ? prev.map((a) =>
+              a.primary ? { ...a, image_data_url: image } : a,
+            )
+          : [];
+        const anchors = hasPrimary
+          ? updated
+          : [
+              ...updated,
+              {
+                source_path: path,
+                source_kind: "image" as const,
+                source_anchor: null,
+                image_data_url: image,
+                primary: true,
+              },
+            ];
+        store.openNoteComposer({
+          initialDraft: stashed.initialDraft,
+          initialAnchors: anchors,
+          initialTurns: stashed.initialTurns,
+        });
+        store.setNoteCapturePending(false);
+        return;
+      }
       setInlineAsk({
         anchor: {
           left: rect.left,

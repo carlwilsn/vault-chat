@@ -264,6 +264,11 @@ type State = {
     imageDataUrl: string | null;
     timestamp: number;
   } | null;
+  // When the NotePopup's "Capture region" button is clicked we hide
+  // the popup, let the user draw a marquee, then reopen with the
+  // image attached. This flag tells viewers to divert their marquee
+  // output into the composer instead of opening InlineEditPrompt.
+  noteCapturePending: boolean;
   noteComposer: {
     open: boolean;
     initialDraft?: string;
@@ -321,6 +326,12 @@ type State = {
   clearScrollAnchor: () => void;
   setLastCapture: (cap: State["lastCapture"]) => void;
   clearLastCapture: () => void;
+  stashNoteForCapture: (payload: {
+    draft: string;
+    anchors: import("./notes").NoteAnchor[];
+    turns: import("./notes").NoteTurn[];
+  }) => void;
+  setNoteCapturePending: (b: boolean) => void;
   openNoteComposer: (payload?: {
     initialDraft?: string;
     initialAnchors?: import("./notes").NoteAnchor[];
@@ -383,6 +394,7 @@ export const useStore = create<State>((set) => ({
   showNotesPanel: false,
   pendingScrollAnchor: null,
   lastCapture: null,
+  noteCapturePending: false,
   noteComposer: { open: false },
 
   setVault: (p) =>
@@ -776,6 +788,17 @@ export const useStore = create<State>((set) => ({
   clearScrollAnchor: () => set({ pendingScrollAnchor: null }),
   setLastCapture: (cap) => set({ lastCapture: cap }),
   clearLastCapture: () => set({ lastCapture: null }),
+  stashNoteForCapture: (payload) =>
+    set({
+      noteComposer: {
+        open: false,
+        initialDraft: payload.draft,
+        initialAnchors: payload.anchors,
+        initialTurns: payload.turns,
+      },
+      noteCapturePending: true,
+    }),
+  setNoteCapturePending: (b) => set({ noteCapturePending: b }),
   openNoteComposer: (payload) =>
     set({
       noteComposer: {
