@@ -50,40 +50,32 @@ export function PdfView({ path }: { path: string }) {
   }, []);
 
   // Watch for a pending scroll request (e.g. "open anchor" from the
-  // Notes panel). Retry until the target canvas has rendered or we
-  // give up — pdf.js renders pages async, so the canvas may not exist
-  // at the moment the request lands.
+  // Notes panel). Gated on !loading so we only fire once pdf.js has
+  // finished rendering every page — otherwise scrollIntoView lands
+  // on a canvas that hasn't laid out yet and the position is wrong
+  // after the final render.
   const pendingScrollAnchor = useStore((s) => s.pendingScrollAnchor);
   const clearScrollAnchor = useStore((s) => s.clearScrollAnchor);
   useEffect(() => {
+    if (loading) return;
     if (!pendingScrollAnchor) return;
     if (pendingScrollAnchor.path !== path) return;
     const pageMatch = pendingScrollAnchor.anchor.match(/page=(\d+)/);
     if (!pageMatch) return;
     const target = pageMatch[1];
-    let attempts = 0;
-    let timer: number | null = null;
-    const tryScroll = () => {
+    // One rAF after loading flips false so layout fully settles
+    // before we compute the destination.
+    const id = requestAnimationFrame(() => {
       const canvas = hostRef.current?.querySelector<HTMLCanvasElement>(
         `canvas.pdf-page[data-page="${target}"]`,
       );
       if (canvas) {
         canvas.scrollIntoView({ behavior: "smooth", block: "start" });
-        clearScrollAnchor();
-        return;
       }
-      attempts += 1;
-      if (attempts < 30) {
-        timer = window.setTimeout(tryScroll, 150);
-      } else {
-        clearScrollAnchor();
-      }
-    };
-    tryScroll();
-    return () => {
-      if (timer !== null) clearTimeout(timer);
-    };
-  }, [pendingScrollAnchor, path, clearScrollAnchor]);
+      clearScrollAnchor();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [pendingScrollAnchor, path, loading, clearScrollAnchor]);
 
   useEffect(() => {
     let cancelled = false;
