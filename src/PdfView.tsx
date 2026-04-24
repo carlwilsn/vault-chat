@@ -449,20 +449,32 @@ export function PdfView({ path }: { path: string }) {
       // If the NotePopup asked us for a region, route this capture
       // back into the composer instead of opening InlineEditPrompt.
       const store = useStore.getState();
+      if (store.editPromptCapturePending && image) {
+        store.setEditPromptLastImage(image);
+        store.setEditPromptCapturePending(false);
+        return;
+      }
       if (store.noteCapturePending) {
         const stashed = store.noteComposer;
         const prev = stashed.initialAnchors ?? [];
         const hasPrimary = prev.some((a) => a.primary);
+        const appendImage = (a: typeof prev[number]) => {
+          const existing =
+            a.images && a.images.length > 0
+              ? a.images
+              : a.image_data_url
+                ? [a.image_data_url]
+                : [];
+          const next = image ? [...existing, image] : existing;
+          return {
+            ...a,
+            image_data_url: next[0] ?? null,
+            images: next,
+            source_anchor: a.source_anchor ?? sourceAnchor ?? null,
+          };
+        };
         const updated = prev.length > 0
-          ? prev.map((a) =>
-              a.primary
-                ? {
-                    ...a,
-                    image_data_url: image ?? a.image_data_url ?? null,
-                    source_anchor: sourceAnchor ?? a.source_anchor,
-                  }
-                : a,
-            )
+          ? prev.map((a) => (a.primary ? appendImage(a) : a))
           : [];
         const anchors = hasPrimary
           ? updated
@@ -473,6 +485,7 @@ export function PdfView({ path }: { path: string }) {
                 source_kind: "pdf" as const,
                 source_anchor: sourceAnchor,
                 image_data_url: image ?? null,
+                images: image ? [image] : [],
                 source_selection: captured || null,
                 primary: true,
               },

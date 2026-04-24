@@ -26,8 +26,24 @@ export type InlineEditParams = {
   after: string;
   language?: string;
   priorTurns?: InlineTurn[];
+  /** Images captured via the in-popover marquee injection. Attached to
+   *  the LATEST user turn so the model uses them for the response it's
+   *  about to generate (not prior-turn context). */
+  extraImages?: string[];
   abortSignal?: AbortSignal;
 };
+
+// Note: `as any` because the AI SDK's UserContent type is narrow and
+// the inferred union from our helper broadens through ModelMessage.
+// We only emit text + image parts, both valid for user turns.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function makeUserContent(text: string, images: string[]): any {
+  if (images.length === 0) return text;
+  return [
+    { type: "text", text },
+    ...images.map((u) => ({ type: "image", image: new URL(u) })),
+  ];
+}
 
 export async function* runInlineEdit(
   p: InlineEditParams,
@@ -38,15 +54,22 @@ export async function* runInlineEdit(
 
   const messages: ModelMessage[] = [];
   const prior = p.priorTurns ?? [];
+  const extras = p.extraImages ?? [];
   const firstPrompt = prior[0]?.prompt ?? p.prompt;
-  messages.push({ role: "user", content: buildContextBody(p, firstPrompt) });
+  const firstContent = buildContextBody(p, firstPrompt);
   if (prior.length > 0) {
+    messages.push({ role: "user", content: firstContent });
     messages.push({ role: "assistant", content: prior[0].result });
     for (let i = 1; i < prior.length; i++) {
       messages.push({ role: "user", content: prior[i].prompt });
       messages.push({ role: "assistant", content: prior[i].result });
     }
-    messages.push({ role: "user", content: p.prompt });
+    // Latest user turn — the one the model is about to respond to —
+    // carries any freshly captured marquee images.
+    messages.push({ role: "user", content: makeUserContent(p.prompt, extras) });
+  } else {
+    // Single-turn case; attach extras to the only user message.
+    messages.push({ role: "user", content: makeUserContent(firstContent, extras) });
   }
 
   const result = streamText({
@@ -118,6 +141,9 @@ export type InlineAskParams = InlineEditParams & {
   // User-attached files via @mention. Content is pre-loaded by the
   // caller (null for binaries) so we don't re-read here.
   attachedFiles?: Array<{ rel: string; path: string; content: string | null }>;
+  // Images captured mid-conversation via the popover's Capture button.
+  // Attached to the LATEST user turn only.
+  extraImages?: string[];
 };
 
 export async function* runInlineAsk(
@@ -150,24 +176,26 @@ export async function* runInlineAsk(
   // If we have a region screenshot, attach it as an image part on the
   // first user message — the same turn that carries the file context.
   // The model then sees text + image together and can cross-reference.
-  if (p.imageDataUrl) {
-    messages.push({
-      role: "user",
-      content: [
-        { type: "text", text: firstContent },
-        { type: "image", image: new URL(p.imageDataUrl) },
-      ],
-    });
-  } else {
-    messages.push({ role: "user", content: firstContent });
-  }
+  const extras = p.extraImages ?? [];
+  const firstTurnImages: string[] = [];
+  if (p.imageDataUrl) firstTurnImages.push(p.imageDataUrl);
+
   if (prior.length > 0) {
+    messages.push({ role: "user", content: makeUserContent(firstContent, firstTurnImages) });
     messages.push({ role: "assistant", content: prior[0].result });
     for (let i = 1; i < prior.length; i++) {
       messages.push({ role: "user", content: prior[i].prompt });
       messages.push({ role: "assistant", content: prior[i].result });
     }
-    messages.push({ role: "user", content: p.prompt });
+    // Latest turn — extras go here so the model uses them for the
+    // response it's about to generate.
+    messages.push({ role: "user", content: makeUserContent(p.prompt, extras) });
+  } else {
+    // Single-turn: both firstTurn image (if any) AND extras land here.
+    messages.push({
+      role: "user",
+      content: makeUserContent(firstContent, [...firstTurnImages, ...extras]),
+    });
   }
 
   const result = streamText({

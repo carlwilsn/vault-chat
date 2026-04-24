@@ -178,14 +178,27 @@ export function ImageView({ path }: { path: string }) {
         timestamp: Date.now(),
       });
       const store = useStore.getState();
+      if (store.editPromptCapturePending) {
+        store.setEditPromptLastImage(image);
+        store.setEditPromptCapturePending(false);
+        return;
+      }
       if (store.noteCapturePending) {
         const stashed = store.noteComposer;
         const prev = stashed.initialAnchors ?? [];
         const hasPrimary = prev.some((a) => a.primary);
+        const appendImage = (a: typeof prev[number]) => {
+          const existing =
+            a.images && a.images.length > 0
+              ? a.images
+              : a.image_data_url
+                ? [a.image_data_url]
+                : [];
+          const next = [...existing, image];
+          return { ...a, image_data_url: next[0], images: next };
+        };
         const updated = prev.length > 0
-          ? prev.map((a) =>
-              a.primary ? { ...a, image_data_url: image } : a,
-            )
+          ? prev.map((a) => (a.primary ? appendImage(a) : a))
           : [];
         const anchors = hasPrimary
           ? updated
@@ -196,6 +209,7 @@ export function ImageView({ path }: { path: string }) {
                 source_kind: "image" as const,
                 source_anchor: null,
                 image_data_url: image,
+                images: [image],
                 primary: true,
               },
             ];

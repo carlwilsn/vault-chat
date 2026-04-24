@@ -95,11 +95,10 @@ export default function App() {
       if (!mod) return;
       if (k === "n" && !e.shiftKey && !e.altKey) {
         // Ctrl+N — open a fresh note composer for the current vault.
-        // Suppressed in inputs/textareas so it doesn't fight Cmd+N in
-        // the textarea (though browsers may still capture that).
-        const tgt = e.target as HTMLElement | null;
-        const tag = tgt?.tagName;
-        if (tag === "INPUT" || tag === "TEXTAREA" || tgt?.isContentEditable) return;
+        // Intentionally also fires while focused in a Monaco editor
+        // or a textarea — the user often wants to capture a thought
+        // about what they're currently writing. Browser's native
+        // "new window" was already suppressed by Tauri.
         const s = useStore.getState();
         if (!s.vaultPath) return;
         e.preventDefault();

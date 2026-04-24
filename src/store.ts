@@ -269,6 +269,10 @@ type State = {
   // image attached. This flag tells viewers to divert their marquee
   // output into the composer instead of opening InlineEditPrompt.
   noteCapturePending: boolean;
+  // Same pattern for the InlineEditPrompt ask/edit modes when the
+  // user wants to inject a marquee as extra context mid-conversation.
+  editPromptCapturePending: boolean;
+  editPromptLastImage: string | null;
   noteComposer: {
     open: boolean;
     initialDraft?: string;
@@ -332,6 +336,8 @@ type State = {
     turns: import("./notes").NoteTurn[];
   }) => void;
   setNoteCapturePending: (b: boolean) => void;
+  setEditPromptCapturePending: (b: boolean) => void;
+  setEditPromptLastImage: (u: string | null) => void;
   openNoteComposer: (payload?: {
     initialDraft?: string;
     initialAnchors?: import("./notes").NoteAnchor[];
@@ -395,6 +401,8 @@ export const useStore = create<State>((set) => ({
   pendingScrollAnchor: null,
   lastCapture: null,
   noteCapturePending: false,
+  editPromptCapturePending: false,
+  editPromptLastImage: null,
   noteComposer: { open: false },
 
   setVault: (p) =>
@@ -799,6 +807,8 @@ export const useStore = create<State>((set) => ({
       noteCapturePending: true,
     }),
   setNoteCapturePending: (b) => set({ noteCapturePending: b }),
+  setEditPromptCapturePending: (b) => set({ editPromptCapturePending: b }),
+  setEditPromptLastImage: (u) => set({ editPromptLastImage: u }),
   openNoteComposer: (payload) =>
     set({
       noteComposer: {

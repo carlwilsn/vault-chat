@@ -11,9 +11,22 @@ export type NoteAnchor = {
   source_before?: string | null;
   source_after?: string | null;
   source_selection?: string | null;
+  /** @deprecated Kept for back-compat with older notes. New code should
+   *  use `images`. On read we normalize into `images`; on write we also
+   *  set this to images[0] so old readers keep working. */
   image_data_url?: string | null;
+  /** Every marquee image attached to this anchor, in capture order. */
+  images?: string[];
   primary: boolean;
 };
+
+/** Return every image attached to an anchor, normalizing the legacy
+ *  single-image shape. Always safe — never throws. */
+export function anchorImages(a: NoteAnchor): string[] {
+  if (a.images && a.images.length > 0) return a.images;
+  if (a.image_data_url) return [a.image_data_url];
+  return [];
+}
 
 export type NoteTurn = { role: "user" | "assistant"; content: string };
 
