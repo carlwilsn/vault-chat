@@ -326,6 +326,10 @@ export function HtmlView({ content }: { content: string }) {
         marqueeStartRef.current = null;
         setMarquee(null);
         setMarqueeOn(false);
+        const s = useStore.getState();
+        s.setChatPaneCapturePending(false);
+        s.setEditPromptCapturePending(false);
+        s.setNoteCapturePending(false);
       }
     };
 

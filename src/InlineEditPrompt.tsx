@@ -119,7 +119,12 @@ export function InlineEditPrompt({
 
   const captureRegion = () => {
     setCapturing(true);
-    setEditPromptCapturePending(true);
+    // Clear any rival pending capture reservations so a stale chat-
+    // or note-pending flag doesn't steal this marquee.
+    const s = useStore.getState();
+    s.setChatPaneCapturePending(false);
+    s.setNoteCapturePending(false);
+    s.setEditPromptCapturePending(true);
     window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
   };
   const removeExtraImage = (idx: number) => {

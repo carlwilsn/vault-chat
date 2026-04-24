@@ -156,7 +156,12 @@ export function NotePopup({
   // the viewer reopen the popup with the captured image attached.
   const captureRegion = () => {
     const draft = textareaRef.current?.value ?? "";
-    useStore.getState().stashNoteForCapture({
+    const s = useStore.getState();
+    // Clear rival pending capture flags so they don't steal the
+    // marquee meant for this note.
+    s.setChatPaneCapturePending(false);
+    s.setEditPromptCapturePending(false);
+    s.stashNoteForCapture({
       draft,
       anchors,
       turns: initialTurns,

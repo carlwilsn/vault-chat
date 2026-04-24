@@ -534,6 +534,13 @@ export function PdfView({ path }: { path: string }) {
         marqueeStartRef.current = null;
         setMarquee(null);
         setMarqueeOn(false);
+        // Cancel any pending capture reservations so the next
+        // marquee, wherever it's launched from, isn't claimed by a
+        // destination the user already gave up on.
+        const s = useStore.getState();
+        s.setChatPaneCapturePending(false);
+        s.setEditPromptCapturePending(false);
+        s.setNoteCapturePending(false);
       }
     };
 

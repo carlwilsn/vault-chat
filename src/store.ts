@@ -59,6 +59,9 @@ function messagesEqual(a: ChatMessage[], b: ChatMessage[]): boolean {
     const xt = x.toolCalls?.length ?? 0;
     const yt = y.toolCalls?.length ?? 0;
     if (xt !== yt) return false;
+    const xa = x.attachments?.length ?? 0;
+    const ya = y.attachments?.length ?? 0;
+    if (xa !== ya) return false;
   }
   return true;
 }

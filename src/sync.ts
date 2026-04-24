@@ -6,7 +6,7 @@ import { sendMessage, stopAgent, clearChat, setModel } from "./chat-controller";
 const POPOUT_LABEL = "chat-popout";
 const MAIN_LABEL = "main";
 
-const isPopout = new URLSearchParams(window.location.search).get("view") === "chat";
+export const isPopout = new URLSearchParams(window.location.search).get("view") === "chat";
 
 // Two-tier broadcast:
 // - chat:state carries message list + session metadata, fires only when

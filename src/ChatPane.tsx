@@ -8,7 +8,7 @@ import rehypeHighlight from "rehype-highlight";
 import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X } from "lucide-react";
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
-import { dispatchChatAction } from "./sync";
+import { dispatchChatAction, isPopout } from "./sync";
 import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
 import { findModel } from "./providers";
 import { loadSkills } from "./skills";
@@ -628,12 +628,17 @@ export function ChatPane() {
                 className="border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pl-3 !pr-20"
               />
               <div className="absolute right-3 bottom-2 flex items-center gap-1">
-                {!busy && currentFile && (() => {
+                {!busy && !isPopout && currentFile && (() => {
                   const k = fileKind(currentFile).kind;
                   return k === "pdf" || k === "html" || k === "image";
                 })() && (
                   <button
                     onClick={() => {
+                      // Clear rival capture reservations first so a
+                      // stale popup / note flag doesn't eat this.
+                      const s = useStore.getState();
+                      s.setEditPromptCapturePending(false);
+                      s.setNoteCapturePending(false);
                       setChatPaneCapturePending(true);
                       window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
                     }}
