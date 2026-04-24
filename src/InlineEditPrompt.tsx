@@ -102,7 +102,6 @@ export function InlineEditPrompt({
   const [capturing, setCapturing] = useState(false);
   const editPromptLastCapture = useStore((s) => s.editPromptLastCapture);
   const setEditPromptLastCapture = useStore((s) => s.setEditPromptLastCapture);
-  const setEditPromptCapturePending = useStore((s) => s.setEditPromptCapturePending);
   useEffect(() => {
     if (!editPromptLastCapture) return;
     setExtraImages((prev) => [
