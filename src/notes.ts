@@ -80,3 +80,14 @@ export function buildNote(payload: {
     status: "open",
   };
 }
+
+// True if the note is rich enough to be worth re-summarizing. Trivial
+// pure-text dumps with no context are shown as-is; summarizing them
+// would just paraphrase a sentence the user already wrote.
+export function noteIsSummarizable(n: Note): boolean {
+  if (n.turns.length > 0) return true;
+  if (n.anchors.some((a) => a.image_data_url)) return true;
+  if (n.anchors.some((a) => a.source_selection && a.source_selection.length > 0)) return true;
+  if (n.anchors.length > 1) return true;
+  return false;
+}

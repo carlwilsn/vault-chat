@@ -251,6 +251,9 @@ type State = {
   notes: Note[];
   notesLoaded: boolean;
   showNotesPanel: boolean;
+  // When set, a viewer should scroll to this anchor inside the
+  // given path once it's ready. Consumed + cleared by the viewer.
+  pendingScrollAnchor: { path: string; anchor: string } | null;
   noteComposer: {
     open: boolean;
     initialDraft?: string;
@@ -304,6 +307,8 @@ type State = {
   clearResolvedNotes: () => Promise<void>;
   reformatNote: (id: string) => Promise<void>;
   setShowNotesPanel: (b: boolean) => void;
+  requestScrollAnchor: (path: string, anchor: string) => void;
+  clearScrollAnchor: () => void;
   openNoteComposer: (payload?: {
     initialDraft?: string;
     initialAnchors?: import("./notes").NoteAnchor[];
@@ -364,6 +369,7 @@ export const useStore = create<State>((set) => ({
   notes: [],
   notesLoaded: false,
   showNotesPanel: false,
+  pendingScrollAnchor: null,
   noteComposer: { open: false },
 
   setVault: (p) =>
@@ -736,6 +742,9 @@ export const useStore = create<State>((set) => ({
     }
     try {
       const formatted = await formatNote(note, spec, apiKey);
+      // Write-first, then commit to memory, so a crash between steps
+      // leaves either both (disk + memory) or neither — not a "memory
+      // has summary, disk doesn't, restart nukes it" state.
       const updated = useStore
         .getState()
         .notes.map((n) =>
@@ -743,13 +752,15 @@ export const useStore = create<State>((set) => ({
             ? { ...n, formatted, last_updated: new Date().toISOString() }
             : n,
         );
-      set({ notes: updated });
       await writeAllNotes(vault, updated);
+      set({ notes: updated });
     } catch (e) {
       console.error("[notes] reformat failed:", e);
     }
   },
   setShowNotesPanel: (b) => set({ showNotesPanel: b }),
+  requestScrollAnchor: (path, anchor) => set({ pendingScrollAnchor: { path, anchor } }),
+  clearScrollAnchor: () => set({ pendingScrollAnchor: null }),
   openNoteComposer: (payload) =>
     set({
       noteComposer: {

@@ -46,6 +46,9 @@ export type InlineEditRequest = {
   // Optional screenshot (data URL) sent to the agent alongside the
   // text context in ask mode. Not shown to the user.
   imageDataUrl?: string;
+  // Optional source-location hint for when this request later becomes
+  // a note — e.g. "page=3" for a PDF marquee, "L42" for a code cursor.
+  sourceAnchor?: string;
 };
 
 const POPOVER_WIDTH = 416;
@@ -117,7 +120,7 @@ export function InlineEditPrompt({
     const q = query.toLowerCase();
     const hits: Array<{ path: string; name: string; rel: string; score: number }> = [];
     for (const f of files) {
-      if (f.is_dir || f.hidden) continue;
+      if (f.hidden) continue;
       const rel = f.path.startsWith(vaultPath + "/")
         ? f.path.slice(vaultPath.length + 1)
         : f.path;
@@ -184,26 +187,30 @@ export function InlineEditPrompt({
     text: string,
   ): Promise<Array<{ rel: string; path: string; content: string | null }>> => {
     const tokens = Array.from(text.matchAll(/(?:^|\s)@([\w][\w./-]*)/g)).map((m) => m[1]);
-    const byPath = new Map<string, { rel: string; path: string }>();
-    for (const m of attachedMentions) byPath.set(m.path, { rel: m.rel, path: m.path });
+    const byPath = new Map<string, { rel: string; path: string; isDir?: boolean }>();
+    for (const m of attachedMentions) {
+      const f = files.find((f) => f.path === m.path);
+      byPath.set(m.path, { rel: m.rel, path: m.path, isDir: f?.is_dir ?? false });
+    }
     for (const tok of tokens) {
       const lower = tok.toLowerCase();
       if (attachedMentions.some((m) => m.name.toLowerCase() === lower)) continue;
-      const hits = files.filter(
-        (f) => !f.is_dir && !f.hidden && f.name.toLowerCase() === lower,
-      );
+      const hits = files.filter((f) => !f.hidden && f.name.toLowerCase() === lower);
       for (const h of hits) {
         if (!byPath.has(h.path)) {
           const rel = vaultPath && h.path.startsWith(vaultPath + "/")
             ? h.path.slice(vaultPath.length + 1)
             : h.path;
-          byPath.set(h.path, { rel, path: h.path });
+          byPath.set(h.path, { rel, path: h.path, isDir: h.is_dir });
         }
       }
     }
     const out: Array<{ rel: string; path: string; content: string | null }> = [];
     for (const r of byPath.values()) {
-      if (isUnreadableAsText(r.path)) {
+      if (r.isDir) {
+        // Agent is told the path; it can ListDir/Glob/Grep if it wants.
+        out.push({ rel: r.rel + "/", path: r.path, content: null });
+      } else if (isUnreadableAsText(r.path)) {
         out.push({ rel: r.rel, path: r.path, content: null });
       } else {
         try {
@@ -419,7 +426,7 @@ export function InlineEditPrompt({
       source_kind: (fk === "markdown" || fk === "pdf" || fk === "html" || fk === "image" || fk === "notebook"
         ? fk
         : "code") as NoteAnchor["source_kind"],
-      source_anchor: null,
+      source_anchor: request.sourceAnchor ?? null,
       source_before: request.before || null,
       source_after: request.after || null,
       source_selection: request.selection || null,

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Plus, X as XIcon } from "lucide-react";
 import { useStore } from "./store";
 import { buildNote, type NoteAnchor } from "./notes";
 import { fileKind } from "./fileKind";
@@ -43,8 +44,39 @@ export function NotePopup({
   onSaved,
 }: NotePopupProps) {
   const currentFile = useStore((s) => s.currentFile);
+  const files = useStore((s) => s.files);
+  const vaultPath = useStore((s) => s.vaultPath);
   const addNote = useStore((s) => s.addNote);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const pickerRef = useRef<HTMLInputElement | null>(null);
+  const [anchors, setAnchors] = useState<NoteAnchor[]>([]);
+  const [pickerQuery, setPickerQuery] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerIdx, setPickerIdx] = useState(0);
+
+  // Seed anchors when the popup opens — from initialAnchors if the
+  // caller supplied them (e.g. InlineEditPrompt save-as-note), else
+  // from the currently open file. Re-seed on each open so reopening
+  // after a save starts fresh.
+  useEffect(() => {
+    if (!open) return;
+    if (initialAnchors && initialAnchors.length > 0) {
+      setAnchors(initialAnchors);
+    } else if (currentFile) {
+      setAnchors([
+        {
+          source_path: currentFile,
+          source_kind: kindOf(currentFile),
+          source_anchor: null,
+          primary: true,
+        },
+      ]);
+    } else {
+      setAnchors([]);
+    }
+    setPickerOpen(false);
+    setPickerQuery("");
+  }, [open, initialAnchors, currentFile]);
 
   useEffect(() => {
     if (!open) return;
@@ -55,36 +87,79 @@ export function NotePopup({
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // Give the picker a chance to consume Escape first.
+        if (pickerOpen) return;
         e.preventDefault();
         onClose();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, onClose, pickerOpen]);
+
+  // Build matches for the "link another file" picker. Includes dirs.
+  const pickerMatches = useMemo(() => {
+    if (!pickerOpen || !vaultPath) return [] as Array<{ path: string; name: string; rel: string; is_dir: boolean }>;
+    const q = pickerQuery.trim().toLowerCase();
+    const taken = new Set(anchors.map((a) => a.source_path));
+    const hits: Array<{ path: string; name: string; rel: string; is_dir: boolean; score: number }> = [];
+    for (const f of files) {
+      if (f.hidden) continue;
+      if (taken.has(f.path)) continue;
+      const rel = f.path.startsWith(vaultPath + "/")
+        ? f.path.slice(vaultPath.length + 1)
+        : f.path;
+      const nameLower = f.name.toLowerCase();
+      const relLower = rel.toLowerCase();
+      let score: number;
+      if (!q) score = 10;
+      else if (nameLower.startsWith(q)) score = 100 - Math.abs(nameLower.length - q.length);
+      else if (nameLower.includes(q)) score = 60 - nameLower.indexOf(q);
+      else if (relLower.includes(q)) score = 30 - relLower.indexOf(q);
+      else continue;
+      hits.push({ path: f.path, name: f.name, rel, is_dir: f.is_dir, score });
+    }
+    hits.sort((a, b) => b.score - a.score);
+    return hits.slice(0, 6).map(({ score: _s, ...h }) => h);
+  }, [pickerOpen, pickerQuery, files, vaultPath, anchors]);
+
+  const addAnchor = (hit: { path: string; name: string; rel: string; is_dir: boolean }) => {
+    const kind: NoteAnchor["source_kind"] = hit.is_dir
+      ? "code" /* dirs don't have their own kind; reuse */
+      : kindOf(hit.path);
+    const isPrimary = anchors.length === 0;
+    setAnchors([
+      ...anchors,
+      {
+        source_path: hit.path,
+        source_kind: kind,
+        source_anchor: null,
+        primary: isPrimary,
+      },
+    ]);
+    setPickerOpen(false);
+    setPickerQuery("");
+  };
+
+  const removeAnchor = (path: string) => {
+    setAnchors((prev) => {
+      const next = prev.filter((a) => a.source_path !== path);
+      // If we removed the primary, promote the first remaining.
+      if (next.length > 0 && !next.some((a) => a.primary)) {
+        next[0] = { ...next[0], primary: true };
+      }
+      return next;
+    });
+  };
 
   if (!open) return null;
-
-  const resolvedAnchors: NoteAnchor[] =
-    initialAnchors && initialAnchors.length > 0
-      ? initialAnchors
-      : currentFile
-        ? [
-            {
-              source_path: currentFile,
-              source_kind: kindOf(currentFile),
-              source_anchor: null,
-              primary: true,
-            },
-          ]
-        : [];
 
   const save = async () => {
     const ref = textareaRef.current;
     const draft = ref?.value.trim() ?? "";
     // Allow empty-text saves — anchor-only "bookmark" notes are valid.
     const note = buildNote({
-      anchors: resolvedAnchors,
+      anchors,
       turns: initialTurns,
       userDraft: draft || null,
     });
@@ -120,31 +195,111 @@ export function NotePopup({
           </div>
         </div>
 
-        {resolvedAnchors.length > 0 ? (
-          <div className="space-y-1">
-            {resolvedAnchors.map((a, i) => (
-              <div
-                key={`${a.source_path}:${i}`}
-                className={cn(
-                  "flex items-center gap-2 text-[11.5px] rounded border px-2 py-1 font-mono",
-                  "border-primary/30 bg-primary/10 text-foreground/90",
-                )}
-              >
-                <span>📎</span>
-                <span className="truncate" title={a.source_path}>
-                  {a.source_path.split("/").pop()}
+        <div className="space-y-1">
+          {anchors.map((a, i) => (
+            <div
+              key={`${a.source_path}:${i}`}
+              className={cn(
+                "flex items-center gap-2 text-[11.5px] rounded border px-2 py-1 font-mono group",
+                "border-primary/30 bg-primary/10 text-foreground/90",
+              )}
+            >
+              <span>📎</span>
+              <span className="truncate flex-1 min-w-0" title={a.source_path}>
+                {a.source_path.split("/").pop() || a.source_path}
+              </span>
+              {a.source_anchor && (
+                <span className="text-muted-foreground/90 shrink-0">· {a.source_anchor}</span>
+              )}
+              {a.primary && anchors.length > 1 && (
+                <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground/80">
+                  primary
                 </span>
-                {a.source_anchor && (
-                  <span className="text-muted-foreground/90">· {a.source_anchor}</span>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="text-[11.5px] text-muted-foreground italic">
-            No file anchored — this note will have no source.
-          </div>
-        )}
+              )}
+              <button
+                onClick={() => removeAnchor(a.source_path)}
+                className="shrink-0 h-4 w-4 flex items-center justify-center rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive opacity-60 group-hover:opacity-100"
+                title="Remove anchor"
+              >
+                <XIcon className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
+
+          {pickerOpen ? (
+            <div className="rounded border border-border bg-background p-1.5 space-y-1">
+              <input
+                ref={pickerRef}
+                type="search"
+                autoFocus
+                value={pickerQuery}
+                onChange={(e) => {
+                  setPickerQuery(e.target.value);
+                  setPickerIdx(0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setPickerOpen(false);
+                    setPickerQuery("");
+                  } else if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setPickerIdx((i) => Math.min(i + 1, pickerMatches.length - 1));
+                  } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setPickerIdx((i) => Math.max(i - 1, 0));
+                  } else if (e.key === "Enter" || e.key === "Tab") {
+                    e.preventDefault();
+                    const hit = pickerMatches[pickerIdx] ?? pickerMatches[0];
+                    if (hit) addAnchor(hit);
+                  }
+                }}
+                placeholder="Search files or folders…"
+                className="w-full h-6 px-2 rounded bg-background text-[11.5px] outline-none placeholder:text-muted-foreground/60"
+              />
+              {pickerMatches.length > 0 && (
+                <div className="max-h-[160px] overflow-auto">
+                  {pickerMatches.map((m, i) => (
+                    <div
+                      key={m.path}
+                      className={cn(
+                        "flex items-baseline gap-2 px-2 py-1 cursor-pointer rounded",
+                        i === pickerIdx ? "bg-accent" : "hover:bg-accent/60",
+                      )}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        addAnchor(m);
+                      }}
+                      onMouseEnter={() => setPickerIdx(i)}
+                    >
+                      <span className="text-primary font-mono text-[11.5px] font-medium shrink-0 truncate max-w-[50%]">
+                        {m.is_dir ? `${m.name}/` : m.name}
+                      </span>
+                      <span className="text-muted-foreground text-[10.5px] truncate font-mono">
+                        {m.rel}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={() => setPickerOpen(true)}
+              className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+            >
+              <Plus className="h-3 w-3" />
+              Link another file or folder
+            </button>
+          )}
+
+          {anchors.length === 0 && (
+            <div className="text-[11.5px] text-muted-foreground italic">
+              No file anchored — this note will have no source.
+            </div>
+          )}
+        </div>
 
         <Textarea
           ref={textareaRef}

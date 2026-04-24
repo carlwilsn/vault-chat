@@ -14,9 +14,14 @@ import {
   ExternalLink as ExternalLinkIcon,
 } from "lucide-react";
 import { useStore } from "./store";
-import type { Note } from "./notes";
+import type { Note, NoteAnchor } from "./notes";
+import { noteIsSummarizable } from "./notes";
+
+type NoteAnchorLike = Pick<NoteAnchor, "source_path" | "source_anchor">;
 import { cn } from "./lib/utils";
 import { isUnreadableAsText } from "./fileKind";
+import { dispatchChatAction } from "./sync";
+import { MessageSquare } from "lucide-react";
 
 // Slide-in review panel for vault notes. Shows active by default;
 // toggle pill flips to resolved. Click a card → opens the note's
@@ -72,20 +77,85 @@ export function NotesPanel({
 
   const resolvedCount = notes.filter((n) => n.status === "resolved").length;
 
-  const openAnchor = async (note: Note) => {
+  const discussInChat = (note: Note) => {
+    // Build a focused chat turn that loads the note's full context
+    // into a hidden preamble, then asks the agent to help address it.
+    // The user can follow up normally from there.
     const primary = note.anchors.find((a) => a.primary) ?? note.anchors[0];
-    if (!primary || !primary.source_path) return;
+    const anchorLine = primary
+      ? `Primary source: ${primary.source_path}${primary.source_anchor ? ` (${primary.source_anchor})` : ""}`
+      : "No file anchor.";
+    const secondaryLines = note.anchors
+      .filter((a) => a !== primary)
+      .map((a) => `Secondary source: ${a.source_path}${a.source_anchor ? ` (${a.source_anchor})` : ""}`);
+    const draftBlock = note.user_draft ? `The user's note:\n${note.user_draft}` : "";
+    const selectionBlock = primary?.source_selection
+      ? `Highlighted text:\n${primary.source_selection}`
+      : "";
+    const turnsBlock =
+      note.turns.length > 0
+        ? "Prior conversation:\n" +
+          note.turns.map((t) => `${t.role}: ${t.content}`).join("\n---\n")
+        : "";
+    const beforeBlock = primary?.source_before ? `Context before:\n${primary.source_before.slice(-1500)}` : "";
+    const afterBlock = primary?.source_after ? `Context after:\n${primary.source_after.slice(0, 1500)}` : "";
+    const preamble = [
+      `[Note ${note.id} — captured ${prettyTime(note.timestamp)}]`,
+      anchorLine,
+      ...secondaryLines,
+      draftBlock,
+      selectionBlock,
+      beforeBlock,
+      afterBlock,
+      turnsBlock,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const summaryLine = note.formatted ? note.formatted : note.user_draft || "(no note text)";
+    const images = note.anchors
+      .map((a) => a.image_data_url)
+      .filter((u): u is string => !!u);
+    const imageMarkdown = images
+      .map((u, i) => `![captured region ${i + 1}](${u})`)
+      .join("\n\n");
+    const userMessage = [
+      `I'd like to address this note (id ${note.id}):`,
+      "",
+      `> ${summaryLine}`,
+      imageMarkdown,
+      "",
+      "Help me think about it — and if we resolve it, mark it complete.",
+    ]
+      .filter((l) => l !== undefined && l !== null)
+      .join("\n");
+    dispatchChatAction({ kind: "send", text: userMessage, contextPreamble: preamble });
+    // Ensure the chat pane is visible.
+    const s = useStore.getState();
+    if (s.rightCollapsed) s.toggleRight();
+    onClose();
+  };
+
+  const openAnchorAt = async (anchor: NoteAnchorLike) => {
+    if (!anchor || !anchor.source_path) return;
     try {
-      if (isUnreadableAsText(primary.source_path)) {
-        setCurrentFile(primary.source_path, "");
+      if (isUnreadableAsText(anchor.source_path)) {
+        setCurrentFile(anchor.source_path, "");
       } else {
-        const content = await invoke<string>("read_text_file", { path: primary.source_path });
-        setCurrentFile(primary.source_path, content);
+        const content = await invoke<string>("read_text_file", { path: anchor.source_path });
+        setCurrentFile(anchor.source_path, content);
       }
-      onClose();
+      if (anchor.source_anchor) {
+        useStore
+          .getState()
+          .requestScrollAnchor(anchor.source_path, anchor.source_anchor);
+      }
     } catch (e) {
       console.error("[notes] open anchor failed:", e);
     }
+  };
+  const openAnchor = (note: Note) => {
+    const primary = note.anchors.find((a) => a.primary) ?? note.anchors[0];
+    if (primary) openAnchorAt(primary);
   };
 
   return (
@@ -163,17 +233,23 @@ export function NotesPanel({
                 onToggleExpand={() => {
                   const next = expandedId === n.id ? null : n.id;
                   setExpandedId(next);
-                  if (next && !n.formatted) reformatNote(n.id);
+                  // Only auto-summarize when the note has non-trivial
+                  // context. Pure text dumps don't need paraphrase.
+                  if (next && !n.formatted && noteIsSummarizable(n)) {
+                    reformatNote(n.id);
+                  }
                 }}
                 onToggleRaw={() =>
                   setShowRawId(showRawId === n.id ? null : n.id)
                 }
                 onReformat={() => reformatNote(n.id)}
                 onOpen={() => openAnchor(n)}
+                onOpenSpecific={(a) => openAnchorAt(a)}
                 onToggleStatus={() =>
                   setNoteStatus(n.id, n.status === "open" ? "resolved" : "open")
                 }
                 onDelete={() => deleteNote(n.id)}
+                onChat={() => discussInChat(n)}
               />
             ))
           )}
@@ -202,8 +278,10 @@ function NoteCard({
   onToggleRaw,
   onReformat,
   onOpen,
+  onOpenSpecific,
   onToggleStatus,
   onDelete,
+  onChat,
 }: {
   note: Note;
   expanded: boolean;
@@ -212,8 +290,10 @@ function NoteCard({
   onToggleRaw: () => void;
   onReformat: () => void;
   onOpen: () => void;
+  onOpenSpecific: (a: NoteAnchor) => void;
   onToggleStatus: () => void;
   onDelete: () => void;
+  onChat: () => void;
 }) {
   const primary = note.anchors.find((a) => a.primary) ?? note.anchors[0];
   const secondaries = note.anchors.filter((a) => a !== primary);
@@ -228,6 +308,7 @@ function NoteCard({
   const StatusIcon = note.status === "resolved" ? CheckCircle2 : Circle;
   const ExpandIcon = expanded ? ChevronDown : ChevronRight;
   const turnPairs = Math.floor(note.turns.length / 2);
+  const summarizable = noteIsSummarizable(note);
 
   return (
     <div className="border-b border-border/40">
@@ -278,12 +359,6 @@ function NoteCard({
                   </span>
                 </>
               )}
-              {images.length > 0 && (
-                <>
-                  <span>·</span>
-                  <span>📷</span>
-                </>
-              )}
             </div>
             {!expanded && (
               <div className="text-[12.5px] text-foreground/90 whitespace-pre-wrap break-words line-clamp-2">
@@ -291,47 +366,67 @@ function NoteCard({
               </div>
             )}
           </div>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete();
-            }}
-            className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-opacity"
-            title="Delete"
-          >
-            <Trash2 className="h-3 w-3" />
-          </button>
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onChat();
+              }}
+              className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+              title="Discuss in chat"
+            >
+              <MessageSquare className="h-3 w-3" />
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete();
+              }}
+              className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+              title="Delete"
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          </div>
         </div>
       </div>
 
       {expanded && (
         <div className="px-3 pb-3 pl-[34px] space-y-3 bg-accent/5">
-          {/* AI-formatted summary */}
-          <div className="rounded-md border border-border/50 bg-card p-3 space-y-2">
-            <div className="flex items-center justify-between text-[10.5px] text-muted-foreground">
-              <span className="flex items-center gap-1.5">
-                <Sparkles className="h-3 w-3" />
-                Summary
-              </span>
-              <button
-                onClick={onReformat}
-                className="h-5 px-1.5 flex items-center gap-1 rounded hover:bg-accent/60 hover:text-foreground"
-                title="Regenerate"
-              >
-                <RefreshCw className="h-3 w-3" />
-              </button>
+          {/* AI-formatted summary — only for notes with non-trivial
+              context (has turns / image / selection / multi-anchor).
+              Pure text dumps are shown verbatim instead. */}
+          {summarizable ? (
+            <div className="rounded-md border border-border/50 bg-card p-3 space-y-2">
+              <div className="flex items-center justify-between text-[10.5px] text-muted-foreground">
+                <span className="flex items-center gap-1.5">
+                  <Sparkles className="h-3 w-3" />
+                  Summary
+                </span>
+                <button
+                  onClick={onReformat}
+                  className="h-5 px-1.5 flex items-center gap-1 rounded hover:bg-accent/60 hover:text-foreground"
+                  title="Regenerate"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                </button>
+              </div>
+              {note.formatted ? (
+                <div className="text-[12.5px] text-foreground/90 leading-relaxed whitespace-pre-wrap">
+                  {note.formatted}
+                </div>
+              ) : (
+                <div className="text-[11.5px] text-muted-foreground italic flex items-center gap-1.5">
+                  <RefreshCw className="h-3 w-3 animate-spin" />
+                  Summarizing…
+                </div>
+              )}
             </div>
-            {note.formatted ? (
-              <div className="text-[12.5px] text-foreground/90 leading-relaxed whitespace-pre-wrap">
-                {note.formatted}
-              </div>
-            ) : (
-              <div className="text-[11.5px] text-muted-foreground italic flex items-center gap-1.5">
-                <RefreshCw className="h-3 w-3 animate-spin" />
-                Summarizing…
-              </div>
-            )}
-          </div>
+          ) : note.user_draft ? (
+            <div className="text-[12.5px] text-foreground/90 leading-relaxed whitespace-pre-wrap">
+              {note.user_draft}
+            </div>
+          ) : null}
 
           {/* Images */}
           {images.length > 0 && (
@@ -347,32 +442,45 @@ function NoteCard({
             </div>
           )}
 
-          {/* Anchors list */}
+          {/* Anchors list — each row opens that specific file */}
           <div className="space-y-1">
-            {[primary, ...secondaries].filter((a): a is typeof primary => !!a).map((a, i) => (
-              <div
-                key={`${a.source_path}:${i}`}
-                className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground"
-              >
-                <span>📎</span>
-                <span className="truncate" title={a.source_path}>
-                  {a.source_path.split("/").pop()}
-                </span>
-                {a.source_anchor && <span>· {a.source_anchor}</span>}
-                {!a.primary && <span className="opacity-70">(secondary)</span>}
-              </div>
-            ))}
+            {[primary, ...secondaries]
+              .filter((a): a is NoteAnchor => !!a)
+              .map((a, i) => (
+                <button
+                  key={`${a.source_path}:${i}`}
+                  onClick={() => onOpenSpecific(a)}
+                  className="w-full flex items-center gap-2 text-[11px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/30 rounded px-1 py-0.5 text-left"
+                  title={a.source_path}
+                >
+                  <ExternalLinkIcon className="h-3 w-3 shrink-0 opacity-60" />
+                  <span className="truncate">
+                    {a.source_path.split("/").pop() || a.source_path}
+                  </span>
+                  {a.source_anchor && <span className="shrink-0">· {a.source_anchor}</span>}
+                  {!a.primary && <span className="shrink-0 opacity-70">(secondary)</span>}
+                </button>
+              ))}
           </div>
 
           {/* Action row */}
           <div className="flex items-center gap-2 text-[11px]">
             <button
-              onClick={onOpen}
-              className="flex items-center gap-1 h-6 px-2 rounded border border-border/60 text-foreground/80 hover:bg-accent/40"
+              onClick={onChat}
+              className="flex items-center gap-1 h-6 px-2 rounded border border-primary/40 bg-primary/10 text-foreground hover:bg-primary/20"
             >
-              <ExternalLinkIcon className="h-3 w-3" />
-              Open anchor
+              <MessageSquare className="h-3 w-3" />
+              Discuss with agent
             </button>
+            {note.anchors.length === 1 && (
+              <button
+                onClick={onOpen}
+                className="flex items-center gap-1 h-6 px-2 rounded border border-border/60 text-foreground/80 hover:bg-accent/40"
+              >
+                <ExternalLinkIcon className="h-3 w-3" />
+                Open anchor
+              </button>
+            )}
             <button
               onClick={onToggleRaw}
               className="flex items-center gap-1 h-6 px-2 rounded border border-border/60 text-foreground/80 hover:bg-accent/40"

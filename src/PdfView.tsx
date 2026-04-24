@@ -5,6 +5,7 @@ import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { FileText, ZoomIn, ZoomOut, BoxSelect } from "lucide-react";
 import { cn } from "./lib/utils";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
+import { useStore } from "./store";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -47,6 +48,42 @@ export function PdfView({ path }: { path: string }) {
     window.addEventListener("vc-marquee-toggle", onToggle);
     return () => window.removeEventListener("vc-marquee-toggle", onToggle);
   }, []);
+
+  // Watch for a pending scroll request (e.g. "open anchor" from the
+  // Notes panel). Retry until the target canvas has rendered or we
+  // give up — pdf.js renders pages async, so the canvas may not exist
+  // at the moment the request lands.
+  const pendingScrollAnchor = useStore((s) => s.pendingScrollAnchor);
+  const clearScrollAnchor = useStore((s) => s.clearScrollAnchor);
+  useEffect(() => {
+    if (!pendingScrollAnchor) return;
+    if (pendingScrollAnchor.path !== path) return;
+    const pageMatch = pendingScrollAnchor.anchor.match(/page=(\d+)/);
+    if (!pageMatch) return;
+    const target = pageMatch[1];
+    let attempts = 0;
+    let timer: number | null = null;
+    const tryScroll = () => {
+      const canvas = hostRef.current?.querySelector<HTMLCanvasElement>(
+        `canvas.pdf-page[data-page="${target}"]`,
+      );
+      if (canvas) {
+        canvas.scrollIntoView({ behavior: "smooth", block: "start" });
+        clearScrollAnchor();
+        return;
+      }
+      attempts += 1;
+      if (attempts < 30) {
+        timer = window.setTimeout(tryScroll, 150);
+      } else {
+        clearScrollAnchor();
+      }
+    };
+    tryScroll();
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [pendingScrollAnchor, path, clearScrollAnchor]);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +136,7 @@ export function PdfView({ path }: { path: string }) {
           canvas.style.width = `${cssWidth}px`;
           canvas.style.height = `${cssHeight}px`;
           canvas.className = "pdf-page shadow-md rounded";
+          canvas.dataset.page = String(i);
           const transform: [number, number, number, number, number, number] =
             dpr === 1 ? [1, 0, 0, 1, 0, 0] : [dpr, 0, 0, dpr, 0, 0];
 
@@ -387,6 +425,25 @@ export function PdfView({ path }: { path: string }) {
       // missing axis so the popover still picks a consistent side.
       const dirX = endX === start.x ? 1 : Math.sign(endX - start.x);
       const dirY = endY === start.y ? 1 : Math.sign(endY - start.y);
+      // Which PDF page does this marquee land on? Pick the canvas
+      // whose rect overlaps the selection most (by area) and read
+      // its data-page attribute.
+      const pageCanvases =
+        hostRef.current?.querySelectorAll<HTMLCanvasElement>("canvas.pdf-page[data-page]");
+      let bestPage: string | null = null;
+      let bestArea = 0;
+      if (pageCanvases) {
+        for (const c of pageCanvases) {
+          const cr = c.getBoundingClientRect();
+          const ix = Math.max(0, Math.min(cr.right, rect.right) - Math.max(cr.left, rect.left));
+          const iy = Math.max(0, Math.min(cr.bottom, rect.bottom) - Math.max(cr.top, rect.top));
+          const area = ix * iy;
+          if (area > bestArea) {
+            bestArea = area;
+            bestPage = c.dataset.page ?? null;
+          }
+        }
+      }
       setInlineAsk({
         anchor: {
           left: rect.left,
@@ -401,6 +458,7 @@ export function PdfView({ path }: { path: string }) {
         after,
         language: "pdf",
         imageDataUrl: image ?? undefined,
+        sourceAnchor: bestPage ? `page=${bestPage}` : undefined,
       });
     };
 

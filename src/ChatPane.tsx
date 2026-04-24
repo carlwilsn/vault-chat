@@ -37,7 +37,8 @@ function filterFilesForMention(
   const q = query.toLowerCase();
   const hits: Array<MentionHit & { score: number }> = [];
   for (const f of files) {
-    if (f.is_dir) continue;
+    // Folders are selectable now so the agent can ListDir/Glob into
+    // them — they land as path-only mentions.
     if (f.hidden) continue;
     const rel = f.path.startsWith(vaultPath + "/")
       ? f.path.slice(vaultPath.length + 1)
@@ -65,11 +66,17 @@ function escapeRegExp(s: string): string {
 // (images, pdfs, unsupported) are listed by path only so the agent knows
 // to fetch them explicitly via Read / PdfExtract.
 async function buildMentionPreamble(
-  mentions: Array<{ rel: string; path: string }>,
+  mentions: Array<{ rel: string; path: string; isDir?: boolean }>,
 ): Promise<string> {
   if (mentions.length === 0) return "";
   const blocks: string[] = [];
-  for (const { rel, path } of mentions) {
+  for (const { rel, path, isDir } of mentions) {
+    if (isDir) {
+      blocks.push(
+        `@${rel}/ — absolute path: ${path} (directory — use ListDir/Glob/Grep to inspect contents)`,
+      );
+      continue;
+    }
     if (isUnreadableAsText(path)) {
       const ext = (path.split(".").pop() ?? "").toLowerCase();
       blocks.push(`@${rel} — absolute path: ${path} (binary ${ext}, contents not inlined)`);
@@ -221,24 +228,25 @@ export function ChatPane() {
     // and backfill anything else by basename match against the files
     // list.
     const tokens = Array.from(text.matchAll(/(?:^|\s)@([\w][\w./-]*)/g)).map((m) => m[1]);
-    const byPath = new Map<string, { rel: string; path: string }>();
-    for (const m of mentions) byPath.set(m.path, { rel: m.rel, path: m.path });
+    const byPath = new Map<string, { rel: string; path: string; isDir?: boolean }>();
+    for (const m of mentions) {
+      const f = files.find((f) => f.path === m.path);
+      byPath.set(m.path, { rel: m.rel, path: m.path, isDir: f?.is_dir ?? false });
+    }
     for (const tok of tokens) {
       const lower = tok.toLowerCase();
       if (mentions.some((m) => m.name.toLowerCase() === lower)) continue;
       // Case-insensitive basename match — users type however they type.
-      const hits = files.filter(
-        (f) => !f.is_dir && !f.hidden && f.name.toLowerCase() === lower,
-      );
+      const hits = files.filter((f) => !f.hidden && f.name.toLowerCase() === lower);
       if (hits.length === 0) {
-        console.warn(`[@ref] no vault file matched "${tok}" — agent will see only the literal token`);
+        console.warn(`[@ref] no vault entry matched "${tok}" — agent will see only the literal token`);
       }
       for (const h of hits) {
         if (!byPath.has(h.path)) {
           const rel = vaultPath && h.path.startsWith(vaultPath + "/")
             ? h.path.slice(vaultPath.length + 1)
             : h.path;
-          byPath.set(h.path, { rel, path: h.path });
+          byPath.set(h.path, { rel, path: h.path, isDir: h.is_dir });
         }
       }
     }

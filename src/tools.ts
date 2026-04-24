@@ -4,6 +4,7 @@ import { z } from "zod";
 import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useStore, type TodoItem } from "./store";
+import { buildNote } from "./notes";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -344,6 +345,86 @@ export function buildTools(vault: string, tavilyKey?: string) {
         } catch (e) {
           return `PDF extraction failed: ${(e as Error).message}`;
         }
+      },
+    }),
+
+    ListNotes: tool({
+      description:
+        "List the user's saved notes (their scratchpad) for the current vault. Each note has an id, timestamp, status (open|resolved), anchored file path(s), optional text + conversation turns, and an optional AI summary. Use when the user asks about 'my notes', 'what did I flag', 'what's in my slop', or similar. Default returns open notes; pass status='resolved' for the archive or status='all' for everything.",
+      inputSchema: z.object({
+        status: z.enum(["open", "resolved", "all"]).optional(),
+        limit: z.number().int().optional(),
+      }),
+      execute: async ({ status = "open", limit = 50 }) => {
+        const notes = useStore.getState().notes;
+        const filtered = notes.filter((n) => status === "all" || n.status === status);
+        const sliced = filtered.slice(0, limit);
+        if (sliced.length === 0) return `No ${status === "all" ? "" : status + " "}notes.`;
+        const lines = sliced.map((n) => {
+          const primary = n.anchors.find((a) => a.primary) ?? n.anchors[0];
+          const anchor = primary
+            ? `${primary.source_path.split("/").pop()}${primary.source_anchor ? ` (${primary.source_anchor})` : ""}`
+            : "(no anchor)";
+          const body = n.formatted ?? n.user_draft ?? (n.turns[0]?.content ?? "").slice(0, 160);
+          return `[${n.id}] ${n.status} · ${anchor} · ${n.timestamp.slice(0, 16)}\n  ${body.replace(/\n+/g, " ")}`;
+        });
+        return `${filtered.length} note${filtered.length === 1 ? "" : "s"} (showing ${sliced.length}):\n\n${lines.join("\n\n")}`;
+      },
+    }),
+
+    ResolveNote: tool({
+      description:
+        "Mark a note as resolved. Call this when the user confirms an open note has been addressed (by the conversation, by a code change, or otherwise). The note stays in history but drops out of the default 'Active' panel view.",
+      inputSchema: z.object({
+        id: z.string(),
+      }),
+      execute: async ({ id }) => {
+        const n = useStore.getState().notes.find((n) => n.id === id);
+        if (!n) return `No note with id "${id}".`;
+        if (n.status === "resolved") return `Note ${id} was already resolved.`;
+        await useStore.getState().setNoteStatus(id, "resolved");
+        return `Resolved note ${id}.`;
+      },
+    }),
+
+    ReopenNote: tool({
+      description: "Mark a previously resolved note as open again. Use when the user realises an issue isn't actually solved.",
+      inputSchema: z.object({
+        id: z.string(),
+      }),
+      execute: async ({ id }) => {
+        const n = useStore.getState().notes.find((n) => n.id === id);
+        if (!n) return `No note with id "${id}".`;
+        if (n.status === "open") return `Note ${id} is already open.`;
+        await useStore.getState().setNoteStatus(id, "open");
+        return `Reopened note ${id}.`;
+      },
+    }),
+
+    CreateNote: tool({
+      description:
+        "Save a new entry to the user's scratchpad — use when the user says 'remember this', 'save a note', 'add a TODO to my notes', or when you notice something worth flagging for them to come back to. Provide `text` with what they'd want to see on review. Optionally anchor to a source file with `source_path` + optional `source_anchor` (e.g. 'page=3', 'L42'). Keep notes short — these are reminders, not essays.",
+      inputSchema: z.object({
+        text: z.string(),
+        source_path: z.string().optional(),
+        source_anchor: z.string().optional(),
+      }),
+      execute: async ({ text, source_path, source_anchor }) => {
+        const vault = useStore.getState().vaultPath;
+        if (!vault) return "No vault open.";
+        const anchors = source_path
+          ? [
+              {
+                source_path,
+                source_kind: "code" as const,
+                source_anchor: source_anchor ?? null,
+                primary: true,
+              },
+            ]
+          : [];
+        const note = buildNote({ anchors, userDraft: text });
+        await useStore.getState().addNote(note);
+        return `Saved note ${note.id}.`;
       },
     }),
 
