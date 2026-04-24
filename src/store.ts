@@ -394,6 +394,8 @@ type State = {
     lastContext?: number;
     compactionSummary?: string | null;
     compacting?: boolean;
+    currentFile?: string | null;
+    panePaths?: string[];
   }) => void;
   applyChatStream: (s: {
     busy: boolean;
@@ -879,6 +881,16 @@ export const useStore = create<State>((set) => ({
       const nextMessages = messagesEqual(prev.messages, s.messages)
         ? prev.messages
         : s.messages;
+      // Sync file / pane mirror so the popout's Capture gate can
+      // decide whether marquee is possible in main's view.
+      const nextPanes =
+        s.panePaths !== undefined
+          ? s.panePaths.map((p, i) => ({
+              id: prev.panes[i]?.id ?? `popout-${i}`,
+              file: p,
+              content: "",
+            }))
+          : prev.panes;
       return {
         vaultPath: s.vaultPath,
         messages: nextMessages,
@@ -887,6 +899,8 @@ export const useStore = create<State>((set) => ({
         lastContext: s.lastContext ?? prev.lastContext,
         compactionSummary: s.compactionSummary ?? null,
         compacting: s.compacting ?? false,
+        currentFile: s.currentFile !== undefined ? s.currentFile : prev.currentFile,
+        panes: nextPanes,
       };
     }),
   applyChatStream: (s) =>

@@ -629,12 +629,10 @@ export function ChatPane() {
                 className="border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pl-3 !pr-20"
               />
               <div className="absolute right-3 bottom-2 flex items-center gap-1">
-                {!busy && !isPopout && (() => {
-                  // Consider every path currently rendered in a pane
-                  // (including the fallback currentFile when there
-                  // are no splits). If any is marquee-capable, show
-                  // Capture enabled; otherwise show it disabled with
-                  // a hint so the user knows the feature exists.
+                {!busy && (() => {
+                  // Union of what's open in main's panes — synced to
+                  // the popout via state broadcast. If any visible
+                  // file is marquee-capable, enable Capture.
                   const paths: string[] = [];
                   if (currentFile) paths.push(currentFile);
                   for (const p of panes) if (p.file) paths.push(p.file);
@@ -646,6 +644,13 @@ export function ChatPane() {
                     <button
                       onClick={() => {
                         if (!canMarquee) return;
+                        // In popout: route via chat:action; main
+                        // fires the marquee on its own window and
+                        // bounces the resulting image back.
+                        if (isPopout) {
+                          dispatchChatAction({ kind: "startCapture" });
+                          return;
+                        }
                         const s = useStore.getState();
                         s.setEditPromptCapturePending(false);
                         s.setNoteCapturePending(false);
@@ -656,7 +661,9 @@ export function ChatPane() {
                       className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                       title={
                         canMarquee
-                          ? "Capture region from the current viewer"
+                          ? isPopout
+                            ? "Capture region from main window's current viewer"
+                            : "Capture region from the current viewer"
                           : "Open a PDF, HTML file, or image to capture a region"
                       }
                     >

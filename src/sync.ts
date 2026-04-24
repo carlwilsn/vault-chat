@@ -24,6 +24,10 @@ type StateSnapshot = {
   lastContext: number;
   compactionSummary: string | null;
   compacting: boolean;
+  // Mirrored so the popout can reason about what's open in main —
+  // used to gate the Capture button's enabled state.
+  currentFile: string | null;
+  panePaths: string[];
 };
 
 type StreamSnapshot = {
@@ -43,7 +47,8 @@ export type ChatAction =
     }
   | { kind: "stop" }
   | { kind: "clear" }
-  | { kind: "setModel"; id: string };
+  | { kind: "setModel"; id: string }
+  | { kind: "startCapture" };
 
 function takeStateSnapshot(): StateSnapshot {
   const s = useStore.getState();
@@ -55,6 +60,8 @@ function takeStateSnapshot(): StateSnapshot {
     lastContext: s.lastContext,
     compactionSummary: s.compactionSummary,
     compacting: s.compacting,
+    currentFile: s.currentFile,
+    panePaths: s.panes.map((p) => p.file),
   };
 }
 
@@ -74,6 +81,17 @@ function applyActionLocal(a: ChatAction) {
   else if (a.kind === "stop") stopAgent();
   else if (a.kind === "clear") clearChat();
   else if (a.kind === "setModel") setModel(a.id);
+  else if (a.kind === "startCapture") {
+    // Triggered by popout's Camera button. Main sets the pending
+    // flag and fires marquee-toggle on main's window — the user
+    // draws in main's viewer, the resulting image is then emitted
+    // back to popout via chat:captured.
+    const s = useStore.getState();
+    s.setEditPromptCapturePending(false);
+    s.setNoteCapturePending(false);
+    s.setChatPaneCapturePending(true);
+    window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
+  }
 }
 
 export function dispatchChatAction(a: ChatAction) {
@@ -121,7 +139,9 @@ export async function installMainSync() {
       state.lastContext !== prev.lastContext ||
       state.compactionSummary !== prev.compactionSummary ||
       state.compacting !== prev.compacting ||
-      state.vaultPath !== prev.vaultPath;
+      state.vaultPath !== prev.vaultPath ||
+      state.currentFile !== prev.currentFile ||
+      state.panes !== prev.panes;
     if (stateChanged) broadcastState();
 
     const streamChanged =
@@ -131,6 +151,20 @@ export async function installMainSync() {
       state.liveTools !== prev.liveTools ||
       state.agentTodos !== prev.agentTodos;
     if (streamChanged) broadcastStream();
+
+    // Chat-pane Capture bridge: when a viewer divert lands an image
+    // in chatPaneLastCapture on main while the popout is open,
+    // forward it to the popout as a one-shot chat:captured event and
+    // clear main's so it doesn't linger (main's ChatPane isn't
+    // mounted while popped out, so nothing else consumes it).
+    if (
+      state.chatPaneLastCapture &&
+      state.chatPaneLastCapture !== prev.chatPaneLastCapture
+    ) {
+      const payload = state.chatPaneLastCapture;
+      emitTo(POPOUT_LABEL, "chat:captured", payload).catch(() => {});
+      useStore.getState().setChatPaneLastCapture(null);
+    }
   });
 }
 
@@ -143,6 +177,16 @@ export async function installPopoutSync() {
   });
   await listen<StreamSnapshot>("chat:stream", (e) => {
     useStore.getState().applyChatStream(e.payload);
+  });
+  // Image-capture relay: main bounces the Capture result back here;
+  // popout's ChatPane useEffect picks it up and appends to its
+  // pendingImages.
+  await listen<{
+    imageDataUrl: string;
+    sourcePath: string;
+    sourceAnchor: string | null;
+  }>("chat:captured", (e) => {
+    useStore.getState().setChatPaneLastCapture(e.payload);
   });
   // The chat:ready → broadcast handshake is one-shot, so a single lost
   // event leaves the popout showing an empty chat forever. Retry with
