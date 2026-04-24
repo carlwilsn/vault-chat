@@ -178,15 +178,12 @@ export function NotesPanel({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-40 flex justify-end bg-black/30"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
+    // pointer-events-none on the outer so the PDF/viewer behind stays
+    // interactive (and scroll-into-anchor is visible). The drawer
+    // itself re-enables pointer events. Close via Esc or the X button.
+    <div className="fixed inset-0 z-40 flex justify-end pointer-events-none">
       <div
-        className="h-full w-[420px] max-w-[92vw] bg-card border-l border-border shadow-xl flex flex-col"
-        onMouseDown={(e) => e.stopPropagation()}
+        className="h-full w-[420px] max-w-[92vw] bg-card border-l border-border shadow-xl flex flex-col pointer-events-auto"
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-border/60">
           <div className="flex items-center gap-2">
