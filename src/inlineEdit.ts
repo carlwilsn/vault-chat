@@ -159,6 +159,10 @@ export type InlineAskParams = InlineEditParams & {
   // Images captured mid-conversation via the popover's Capture button.
   // Attached to the LATEST user turn only.
   extraImages?: CapturedExtra[];
+  // Recent chat-pane transcript. If provided, gets folded into the
+  // hidden context on the first turn so the popover agent knows
+  // what the user was just working on in the main chat.
+  chatPaneHistory?: Array<{ role: "user" | "assistant"; content: string }>;
 };
 
 export async function* runInlineAsk(
@@ -186,7 +190,24 @@ export async function* runInlineAsk(
   const messages: ModelMessage[] = [];
   const prior = p.priorTurns ?? [];
   const firstPrompt = prior[0]?.prompt ?? p.prompt;
-  const firstContent = buildContextBody(p, firstPrompt, p.attachedFiles);
+  let firstContent = buildContextBody(p, firstPrompt, p.attachedFiles);
+
+  // If the caller supplied recent chat-pane history, prepend it to
+  // the first turn's context body as a labelled transcript. The
+  // popover agent then has the last few turns from the main chat as
+  // context on what the user is working on.
+  const chat = p.chatPaneHistory ?? [];
+  if (chat.length > 0) {
+    const transcript = chat
+      .map((m) => {
+        const who = m.role === "user" ? "User" : "Assistant";
+        return `${who}: ${m.content}`;
+      })
+      .join("\n\n---\n\n");
+    const header =
+      "[Recent chat-pane conversation — context for what the user is working on right now. Do not respond to it directly; it's reference material for the question that follows.]";
+    firstContent = `${header}\n\n${transcript}\n\n[End of chat-pane history]\n\n${firstContent}`;
+  }
 
   // If we have a region screenshot, attach it as an image part on the
   // first user message — the same turn that carries the file context.

@@ -313,6 +313,13 @@ export function InlineEditPrompt({
       } else {
         let acc = "";
         const attachedFiles = await resolveAttachedFiles(currentPrompt);
+        // Only on the first popover turn, pull the last few chat-pane
+        // turns as context. Keeps subsequent popover turns focused on
+        // the in-popover thread without re-sending the chat history.
+        const isFirstTurn = nextPrior.length === 0;
+        const chatPaneHistory = isFirstTurn
+          ? recentChatPaneHistory(useStore.getState().messages, 6)
+          : undefined;
         for await (const ev of runInlineAsk({
           modelId,
           apiKey: key,
@@ -327,6 +334,7 @@ export function InlineEditPrompt({
           attachedFiles,
           priorTurns: nextPrior,
           extraImages,
+          chatPaneHistory,
           abortSignal: ac.signal,
         })) {
           if (ev.kind === "text") {
@@ -826,6 +834,30 @@ export function InlineEditPrompt({
 // file context (before/after). The user's selection and any captured
 // image go in the visible user bubble instead, so the chat shows "what
 // you asked about" without piping the full file excerpt into the UI.
+/** Last N non-system / non-hidden messages from the chat pane, in
+ *  chronological order, clipped to a reasonable per-turn length so a
+ *  chatty session doesn't balloon the popover prompt. */
+function recentChatPaneHistory(
+  messages: Array<{
+    role: "user" | "assistant";
+    content: string;
+    system?: boolean;
+    hidden?: boolean;
+  }>,
+  n: number,
+): Array<{ role: "user" | "assistant"; content: string }> {
+  const visible = messages.filter((m) => !m.system && !m.hidden);
+  const tail = visible.slice(-n);
+  const MAX_PER_TURN = 1200;
+  return tail.map((m) => ({
+    role: m.role,
+    content:
+      m.content.length > MAX_PER_TURN
+        ? m.content.slice(0, MAX_PER_TURN) + "…"
+        : m.content,
+  }));
+}
+
 function buildHiddenFilePreamble(
   request: InlineEditRequest,
   currentFile: string | null,
