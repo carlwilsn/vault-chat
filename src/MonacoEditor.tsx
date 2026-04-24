@@ -91,6 +91,35 @@ export function MonacoEditor({
       monacoNs.KeyMod.CtrlCmd | monacoNs.KeyCode.KeyL,
       () => openInline("ask"),
     );
+
+    // Push the Monaco selection into the store so Ctrl+N can pick it
+    // up as the note's source_selection. window.getSelection() doesn't
+    // see Monaco's internal selection, so we mirror it here.
+    const pushSelection = () => {
+      const model = editor.getModel();
+      const sel = editor.getSelection();
+      const path = useStore.getState().currentFile;
+      if (!model || !sel || !path) {
+        useStore.getState().setEditorSelection(null);
+        return;
+      }
+      const text = model.getValueInRange(sel);
+      if (!text || !text.trim()) {
+        useStore.getState().setEditorSelection(null);
+        return;
+      }
+      useStore.getState().setEditorSelection({
+        path,
+        text,
+        lineStart: sel.startLineNumber,
+        lineEnd: sel.endLineNumber,
+      });
+    };
+    editor.onDidChangeCursorSelection(pushSelection);
+    editor.onDidBlurEditorText(() => {
+      // Keep the last selection so Ctrl+N right after a click-away
+      // still picks it up. Cleared on next selection change.
+    });
   };
 
   const acceptInlineEdit = (result: string) => {

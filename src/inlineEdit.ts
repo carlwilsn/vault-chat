@@ -26,23 +26,38 @@ export type InlineEditParams = {
   after: string;
   language?: string;
   priorTurns?: InlineTurn[];
-  /** Images captured via the in-popover marquee injection. Attached to
-   *  the LATEST user turn so the model uses them for the response it's
-   *  about to generate (not prior-turn context). */
-  extraImages?: string[];
+  /** Images captured via the in-popover marquee injection. Each
+   *  carries optional sourcePath / sourceAnchor so we can caption the
+   *  image with "from <file> (<page=N>)" when handing it to the model
+   *  — prevents the agent from asking where a loose image came from. */
+  extraImages?: CapturedExtra[];
   abortSignal?: AbortSignal;
 };
 
-// Note: `as any` because the AI SDK's UserContent type is narrow and
-// the inferred union from our helper broadens through ModelMessage.
-// We only emit text + image parts, both valid for user turns.
+export type CapturedExtra = {
+  imageDataUrl: string;
+  sourcePath?: string;
+  sourceAnchor?: string | null;
+};
+
+// Emit a user-turn content array with text + captioned image parts.
+// AI SDK's UserContent type is narrow, so we cast to any — we only
+// produce text / image parts, both valid. Images with source metadata
+// get a short caption preceding them so the model knows the region's
+// origin without asking.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function makeUserContent(text: string, images: string[]): any {
+function makeUserContent(text: string, images: CapturedExtra[]): any {
   if (images.length === 0) return text;
-  return [
-    { type: "text", text },
-    ...images.map((u) => ({ type: "image", image: new URL(u) })),
-  ];
+  const parts: unknown[] = [{ type: "text", text }];
+  for (const img of images) {
+    const src = img.sourcePath ? img.sourcePath.split("/").pop() : null;
+    const caption = src
+      ? `Captured region from ${src}${img.sourceAnchor ? ` (${img.sourceAnchor})` : ""}:`
+      : "Captured region:";
+    parts.push({ type: "text", text: caption });
+    parts.push({ type: "image", image: new URL(img.imageDataUrl) });
+  }
+  return parts;
 }
 
 export async function* runInlineEdit(
@@ -54,7 +69,7 @@ export async function* runInlineEdit(
 
   const messages: ModelMessage[] = [];
   const prior = p.priorTurns ?? [];
-  const extras = p.extraImages ?? [];
+  const extras: CapturedExtra[] = p.extraImages ?? [];
   const firstPrompt = prior[0]?.prompt ?? p.prompt;
   const firstContent = buildContextBody(p, firstPrompt);
   if (prior.length > 0) {
@@ -143,7 +158,7 @@ export type InlineAskParams = InlineEditParams & {
   attachedFiles?: Array<{ rel: string; path: string; content: string | null }>;
   // Images captured mid-conversation via the popover's Capture button.
   // Attached to the LATEST user turn only.
-  extraImages?: string[];
+  extraImages?: CapturedExtra[];
 };
 
 export async function* runInlineAsk(
@@ -176,9 +191,11 @@ export async function* runInlineAsk(
   // If we have a region screenshot, attach it as an image part on the
   // first user message — the same turn that carries the file context.
   // The model then sees text + image together and can cross-reference.
-  const extras = p.extraImages ?? [];
-  const firstTurnImages: string[] = [];
-  if (p.imageDataUrl) firstTurnImages.push(p.imageDataUrl);
+  const extras: CapturedExtra[] = p.extraImages ?? [];
+  const firstTurnImages: CapturedExtra[] = [];
+  if (p.imageDataUrl) {
+    firstTurnImages.push({ imageDataUrl: p.imageDataUrl });
+  }
 
   if (prior.length > 0) {
     messages.push({ role: "user", content: makeUserContent(firstContent, firstTurnImages) });

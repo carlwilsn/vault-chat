@@ -450,7 +450,11 @@ export function PdfView({ path }: { path: string }) {
       // back into the composer instead of opening InlineEditPrompt.
       const store = useStore.getState();
       if (store.editPromptCapturePending && image) {
-        store.setEditPromptLastImage(image);
+        store.setEditPromptLastCapture({
+          imageDataUrl: image,
+          sourcePath: path,
+          sourceAnchor: sourceAnchor,
+        });
         store.setEditPromptCapturePending(false);
         return;
       }

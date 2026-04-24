@@ -179,7 +179,11 @@ export function ImageView({ path }: { path: string }) {
       });
       const store = useStore.getState();
       if (store.editPromptCapturePending) {
-        store.setEditPromptLastImage(image);
+        store.setEditPromptLastCapture({
+          imageDataUrl: image,
+          sourcePath: path,
+          sourceAnchor: null,
+        });
         store.setEditPromptCapturePending(false);
         return;
       }

@@ -104,15 +104,27 @@ export default function App() {
         e.preventDefault();
 
         // Capture current context into the initial anchor:
-        //   - window.getSelection() for any selected text (works
-        //     across markdown/pdf text-layer/html/notebook viewers)
-        //   - lastCapture (marquee image + anchor) if still fresh for
-        //     the current file — carried from the viewer even if the
-        //     marquee popover was dismissed
-        const selection = (window.getSelection?.()?.toString() ?? "").trim();
+        //   - Monaco editor selection (preferred when in edit mode —
+        //     window.getSelection() doesn't see Monaco's selection)
+        //   - window.getSelection() for text-layer viewers (markdown
+        //     view, pdf text layer, html iframe where accessible)
+        //   - lastCapture (marquee image + page anchor) if still fresh
+        //     for the current file
         const cf = s.currentFile;
         const cap = s.lastCapture;
         const capFresh = cap && Date.now() - cap.timestamp < 2 * 60_000 && cap.path === cf;
+        const editorSel = s.editorSelection;
+        const editorSelActive =
+          editorSel && cf && editorSel.path === cf && editorSel.text.trim().length > 0;
+        const winSel = (window.getSelection?.()?.toString() ?? "").trim();
+        const selection = editorSelActive ? editorSel!.text : winSel;
+        // When the selection came from Monaco we can add a precise
+        // line anchor "L42" or "L42-L58" to the note.
+        const selectionAnchor = editorSelActive
+          ? editorSel!.lineStart === editorSel!.lineEnd
+            ? `L${editorSel!.lineStart}`
+            : `L${editorSel!.lineStart}-L${editorSel!.lineEnd}`
+          : null;
         if (cf) {
           const k = fileKind(cf).kind;
           const sourceKind: NoteAnchor["source_kind"] =
@@ -122,7 +134,8 @@ export default function App() {
           const anchor: NoteAnchor = {
             source_path: cf,
             source_kind: sourceKind,
-            source_anchor: capFresh ? cap!.source_anchor : null,
+            source_anchor:
+              selectionAnchor ?? (capFresh ? cap!.source_anchor : null),
             source_selection: selection || (capFresh ? cap!.selection : null) || null,
             image_data_url: capFresh ? cap!.imageDataUrl : null,
             primary: true,

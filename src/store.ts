@@ -272,7 +272,25 @@ type State = {
   // Same pattern for the InlineEditPrompt ask/edit modes when the
   // user wants to inject a marquee as extra context mid-conversation.
   editPromptCapturePending: boolean;
-  editPromptLastImage: string | null;
+  // Result of a Capture inside the popover. Carries the image and
+  // the source location so the agent turn can cite it ("image from
+  // paper.pdf page 3") rather than receiving a naked image.
+  editPromptLastCapture: {
+    imageDataUrl: string;
+    sourcePath: string;
+    sourceAnchor: string | null;
+  } | null;
+  // Current selection inside any code / monaco editor in the app.
+  // Ctrl+N prefers this over window.getSelection() because
+  // Monaco's selection lives outside the native browser selection
+  // API, so window.getSelection() returns empty when the editor
+  // has focus.
+  editorSelection: {
+    path: string;
+    text: string;
+    lineStart: number;
+    lineEnd: number;
+  } | null;
   noteComposer: {
     open: boolean;
     initialDraft?: string;
@@ -337,7 +355,8 @@ type State = {
   }) => void;
   setNoteCapturePending: (b: boolean) => void;
   setEditPromptCapturePending: (b: boolean) => void;
-  setEditPromptLastImage: (u: string | null) => void;
+  setEditPromptLastCapture: (cap: State["editPromptLastCapture"]) => void;
+  setEditorSelection: (sel: State["editorSelection"]) => void;
   openNoteComposer: (payload?: {
     initialDraft?: string;
     initialAnchors?: import("./notes").NoteAnchor[];
@@ -402,7 +421,8 @@ export const useStore = create<State>((set) => ({
   lastCapture: null,
   noteCapturePending: false,
   editPromptCapturePending: false,
-  editPromptLastImage: null,
+  editPromptLastCapture: null,
+  editorSelection: null,
   noteComposer: { open: false },
 
   setVault: (p) =>
@@ -808,7 +828,8 @@ export const useStore = create<State>((set) => ({
     }),
   setNoteCapturePending: (b) => set({ noteCapturePending: b }),
   setEditPromptCapturePending: (b) => set({ editPromptCapturePending: b }),
-  setEditPromptLastImage: (u) => set({ editPromptLastImage: u }),
+  setEditPromptLastCapture: (cap) => set({ editPromptLastCapture: cap }),
+  setEditorSelection: (sel) => set({ editorSelection: sel }),
   openNoteComposer: (payload) =>
     set({
       noteComposer: {

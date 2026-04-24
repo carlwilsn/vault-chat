@@ -93,17 +93,29 @@ export function InlineEditPrompt({
   // popover, fires a marquee, and the viewer pipes the image back via
   // store.editPromptLastImage → appended to extraImages → included
   // on the next agent turn.
-  const [extraImages, setExtraImages] = useState<string[]>([]);
+  type CapturedImage = {
+    imageDataUrl: string;
+    sourcePath?: string;
+    sourceAnchor?: string | null;
+  };
+  const [extraImages, setExtraImages] = useState<CapturedImage[]>([]);
   const [capturing, setCapturing] = useState(false);
-  const editPromptLastImage = useStore((s) => s.editPromptLastImage);
-  const setEditPromptLastImage = useStore((s) => s.setEditPromptLastImage);
+  const editPromptLastCapture = useStore((s) => s.editPromptLastCapture);
+  const setEditPromptLastCapture = useStore((s) => s.setEditPromptLastCapture);
   const setEditPromptCapturePending = useStore((s) => s.setEditPromptCapturePending);
   useEffect(() => {
-    if (!editPromptLastImage) return;
-    setExtraImages((prev) => [...prev, editPromptLastImage]);
-    setEditPromptLastImage(null);
+    if (!editPromptLastCapture) return;
+    setExtraImages((prev) => [
+      ...prev,
+      {
+        imageDataUrl: editPromptLastCapture.imageDataUrl,
+        sourcePath: editPromptLastCapture.sourcePath,
+        sourceAnchor: editPromptLastCapture.sourceAnchor ?? null,
+      },
+    ]);
+    setEditPromptLastCapture(null);
     setCapturing(false);
-  }, [editPromptLastImage, setEditPromptLastImage]);
+  }, [editPromptLastCapture, setEditPromptLastCapture]);
 
   const captureRegion = () => {
     setCapturing(true);
@@ -688,23 +700,32 @@ export function InlineEditPrompt({
         </button>
       </div>
       {extraImages.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 px-3 pb-2 border-t border-border/40 pt-2">
-          {extraImages.map((u, i) => (
-            <div key={i} className="relative group">
-              <img
-                src={u}
-                alt={`captured ${i + 1}`}
-                className="max-h-[64px] rounded border border-border/60"
-              />
-              <button
-                onClick={() => removeExtraImage(i)}
-                className="absolute -top-1.5 -right-1.5 h-4 w-4 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
-                title="Remove"
-              >
-                <X className="h-2.5 w-2.5" />
-              </button>
-            </div>
-          ))}
+        <div className="flex flex-wrap gap-2 px-3 pb-2 border-t border-border/40 pt-2">
+          {extraImages.map((img, i) => {
+            const name = img.sourcePath?.split("/").pop();
+            return (
+              <div key={i} className="relative group flex flex-col items-start gap-0.5">
+                <img
+                  src={img.imageDataUrl}
+                  alt={`captured ${i + 1}`}
+                  className="max-h-[64px] rounded border border-border/60"
+                />
+                {name && (
+                  <span className="text-[9.5px] text-muted-foreground font-mono">
+                    {name}
+                    {img.sourceAnchor ? ` · ${img.sourceAnchor}` : ""}
+                  </span>
+                )}
+                <button
+                  onClick={() => removeExtraImage(i)}
+                  className="absolute -top-1.5 -right-1.5 h-4 w-4 flex items-center justify-center rounded-full bg-card border border-border text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100"
+                  title="Remove"
+                >
+                  <X className="h-2.5 w-2.5" />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
       {(streaming || result || error) && (
