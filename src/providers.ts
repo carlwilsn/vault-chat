@@ -82,6 +82,18 @@ export function getLiveCatalog(): ModelSpec[] {
   return _liveCatalog ?? MODELS;
 }
 
+// True if the model accepts image input. Anthropic/OpenAI/Google
+// families are vision-capable across the board in their current
+// catalogs; OpenRouter varies per upstream, so we allow-list the
+// common vision families by id pattern.
+export function supportsVision(spec: ModelSpec): boolean {
+  if (spec.provider === "anthropic") return true;
+  if (spec.provider === "openai") return true;
+  if (spec.provider === "google") return true;
+  // OpenRouter: opt-in by id substring.
+  return /(-vl|vision|pixtral|llava|gpt-4|claude|gemini|llama-4|qwen.*2\.5|qwen3-vl)/i.test(spec.id);
+}
+
 export function findModel(id: string): ModelSpec | undefined {
   return (_liveCatalog ?? MODELS).find((m) => m.id === id) ?? MODELS.find((m) => m.id === id);
 }

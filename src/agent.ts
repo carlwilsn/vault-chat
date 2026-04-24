@@ -1,6 +1,6 @@
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
-import { buildModel, findModel, DEFAULT_MODEL_ID } from "./providers";
+import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./providers";
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
@@ -99,11 +99,24 @@ export async function runAgent(params: {
       anthropic: { cacheControl: { type: "ephemeral" as const } },
     };
 
+    // If the active model can't take images, scrub markdown data:image
+    // embeds from every turn before they hit the adapter — OpenRouter
+    // otherwise bounces the request with "No endpoints found that
+    // support image input" for text-only upstreams like Qwen3-235B.
+    const vision = supportsVision(spec);
+    const scrub = (s: string) =>
+      vision
+        ? s
+        : s.replace(
+            /!\[[^\]]*\]\(data:image\/[^)]+\)/g,
+            "[image omitted — current model does not support vision]",
+          );
+
     const historyMessages: ModelMessage[] = history.map<ModelMessage>((h, i) => {
       const isLast = i === history.length - 1;
       return {
         role: h.role,
-        content: h.content,
+        content: scrub(h.content),
         ...(isLast ? { providerOptions: cacheControl } : {}),
       };
     });
@@ -117,7 +130,7 @@ export async function runAgent(params: {
     const messages: ModelMessage[] = [
       systemMessage,
       ...historyMessages,
-      { role: "user", content: expandedMessage },
+      { role: "user", content: scrub(expandedMessage) },
     ];
 
     const builtinTools = buildTools(vault, tavilyKey);
@@ -133,9 +146,22 @@ export async function runAgent(params: {
     // no universal flag — left off by default.
     let providerOptions: ProviderOptions | undefined;
     if (spec.provider === "anthropic") {
-      providerOptions = {
-        anthropic: { thinking: { type: "enabled", budgetTokens: 3000 } },
-      };
+      // Opus 4.7+ uses the new adaptive reasoning API: thinking.type
+      // is "adaptive" and the budget is controlled via output_config.
+      // effort instead of a raw token budget. Older models (Opus 4.6,
+      // Sonnet 4.6, Haiku 4.5) still accept the enabled+budgetTokens
+      // shape, and sending the new keys to them fails — so branch.
+      const isAdaptive = /^claude-opus-4-7/i.test(spec.id);
+      providerOptions = isAdaptive
+        ? {
+            anthropic: {
+              thinking: { type: "adaptive" },
+              output_config: { effort: "medium" },
+            },
+          }
+        : {
+            anthropic: { thinking: { type: "enabled", budgetTokens: 3000 } },
+          };
     } else if (spec.provider === "openai" && /^(o1|o3|o4|gpt-5)/i.test(spec.id)) {
       providerOptions = { openai: { reasoningEffort: "medium" } };
     } else if (spec.provider === "google" && /^gemini-2\.5/i.test(spec.id)) {
