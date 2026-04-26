@@ -17,6 +17,7 @@ import { ChatWindow } from "./ChatWindow";
 import { installMainSync, installPopoutSync } from "./sync";
 import { initMetaVault } from "./meta";
 import { hydrateKeychain, hydratePersistedChat } from "./store";
+import { installPhoneBridge } from "./phone-bridge";
 
 const savedTheme = localStorage.getItem("vault_chat_theme");
 document.documentElement.dataset.theme = savedTheme === "light" ? "light" : "graphite";
@@ -41,6 +42,10 @@ if (isPopout) {
   // surface its path for the settings UI + agent.ts. Silent no-op on
   // subsequent launches.
   initMetaVault().catch((e) => console.warn("[meta] init failed:", e));
+  // Phone bridge: listen for incoming voice requests from the Rust
+  // server and run them through the agent. Main window only — popouts
+  // would otherwise duplicate every request.
+  installPhoneBridge();
 }
 
 const Root = isPopout ? ChatWindow : App;

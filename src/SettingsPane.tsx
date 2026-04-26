@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, Check, Key, Cog, X, Plus, Lock } from "lucide-react";
+import { ArrowLeft, Check, Key, Cog, X, Plus, Lock, Smartphone } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { PROVIDER_LABEL, type ProviderId } from "./providers";
 import { Button, Input, Select } from "./ui";
@@ -57,6 +57,40 @@ export function SettingsPane() {
   });
   const [tavilyDraft, setTavilyDraft] = useState(serviceKeys.tavily ?? "");
   const [savedFlash, setSavedFlash] = useState<ProviderId | "tavily" | null>(null);
+  const [phoneInfo, setPhoneInfo] = useState<{
+    port: number;
+    token: string;
+    tailscale_ip: string | null;
+    dns_name: string | null;
+  } | null>(null);
+  const [phoneCopied, setPhoneCopied] = useState(false);
+
+  useEffect(() => {
+    invoke<{ port: number; token: string; tailscale_ip: string | null }>(
+      "phone_server_info",
+    )
+      .then((info) => setPhoneInfo(info))
+      .catch(() => setPhoneInfo(null));
+  }, []);
+
+  // Prefer the Tailscale Serve HTTPS URL (hostname-based, port 443)
+  // so the cert matches. Fall back to direct HTTP on the raw IP.
+  const phoneUrl = phoneInfo
+    ? phoneInfo.dns_name
+      ? `https://${phoneInfo.dns_name}/mobile/${phoneInfo.token}`
+      : `http://${phoneInfo.tailscale_ip ?? "<tailscale-ip>"}:${phoneInfo.port}/mobile/${phoneInfo.token}`
+    : null;
+
+  const copyPhoneUrl = async () => {
+    if (!phoneUrl) return;
+    try {
+      await navigator.clipboard.writeText(phoneUrl);
+      setPhoneCopied(true);
+      setTimeout(() => setPhoneCopied(false), 1500);
+    } catch (e) {
+      console.warn("[phone] copy failed:", e);
+    }
+  };
 
   const save = (p: ProviderId) => {
     const v = drafts[p].trim();
@@ -303,6 +337,51 @@ export function SettingsPane() {
           </div>
           <p className="text-[11px] text-muted-foreground/80">
             Enables WebSearch. Get a free key at tavily.com.
+          </p>
+        </section>
+
+        <div className="h-px bg-border" />
+
+        <section className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <Smartphone className="h-3 w-3" />
+                Phone (voice over Tailscale)
+              </h3>
+              <p className="text-[11px] text-muted-foreground/70 mt-0.5">
+                Open this URL in Safari on a device on your tailnet — talk
+                to the vault by voice, hear it speak back.
+              </p>
+            </div>
+            {phoneCopied && (
+              <span className="text-[11px] text-emerald-500 flex items-center gap-1">
+                <Check className="h-3 w-3" /> copied
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2 items-center">
+            <code className="flex-1 font-mono text-[11px] bg-muted px-2 py-1.5 rounded break-all">
+              {phoneUrl ?? "loading…"}
+            </code>
+            <Button
+              size="sm"
+              onClick={copyPhoneUrl}
+              disabled={!phoneUrl}
+              title="Copy URL to clipboard"
+            >
+              Copy
+            </Button>
+          </div>
+          {phoneInfo && !phoneInfo.dns_name && (
+            <p className="text-[11px] text-amber-500/80">
+              Tailscale not detected — make sure it's running, then reopen
+              Settings to refresh the URL.
+            </p>
+          )}
+          <p className="text-[11px] text-muted-foreground/80">
+            The desktop app must be running. Windows Firewall will prompt
+            once on first connection — allow it.
           </p>
         </section>
 

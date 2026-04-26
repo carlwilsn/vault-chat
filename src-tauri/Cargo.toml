@@ -29,6 +29,11 @@ glob = "0.3"
 regex = "1"
 reqwest = { version = "0.12", features = ["blocking", "gzip", "rustls-tls"], default-features = false }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+# Phone bridge — small HTTP + WebSocket server for iOS voice client.
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+futures-util = "0.3"
+uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
