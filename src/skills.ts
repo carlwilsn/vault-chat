@@ -6,6 +6,7 @@ export type Skill = {
   name: string;
   description: string;
   path: string;
+  dir: string;
   body: string;
 };
 
@@ -41,6 +42,7 @@ export async function loadSkills(_vault: string): Promise<Skill[]> {
         name,
         description,
         path: skillFile,
+        dir: entry.path,
         body: parsed.content.trim(),
       });
     } catch {
@@ -90,7 +92,10 @@ export function expandSkillInvocation(
   const invoked = matchInvokedSkills(text, skills);
   if (invoked.length === 0) return { body: text, skill: null, rest: text };
   const blocks = invoked
-    .map((s) => `<skill name="${s.name}">\n${s.body}\n</skill>`)
+    .map(
+      (s) =>
+        `<skill name="${s.name}" dir="${s.dir}">\nSkill files (SKILL.md, scripts, references) live under the dir above. To use any companion file the body references, resolve it relative to that dir.\n\n${s.body}\n</skill>`
+    )
     .join("\n\n");
   const body = `${blocks}\n\n${text}`;
   return { body, skill: invoked[0], rest: text };
