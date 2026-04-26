@@ -17,6 +17,8 @@ export type StreamEvent =
   | { kind: "text"; delta: string }
   | { kind: "reasoning"; delta: string }
   | { kind: "reasoning_start" }
+  | { kind: "tool_input_start"; id: string; name: string }
+  | { kind: "tool_input_delta"; id: string; delta: string }
   | { kind: "tool_use"; id: string; name: string; input: any }
   | { kind: "tool_result"; id: string; result: string }
   | { kind: "done"; usage?: TokenUsage }
@@ -221,6 +223,20 @@ export async function runAgent(params: {
             onEvent({ kind: "reasoning", delta: part.text });
           }
           break;
+        case "tool-input-start":
+          onEvent({
+            kind: "tool_input_start",
+            id: part.id,
+            name: (part as any).toolName,
+          });
+          break;
+        case "tool-input-delta": {
+          const delta = (part as any).delta;
+          if (typeof delta === "string" && delta.length > 0) {
+            onEvent({ kind: "tool_input_delta", id: (part as any).id, delta });
+          }
+          break;
+        }
         case "tool-call":
           onEvent({
             kind: "tool_use",

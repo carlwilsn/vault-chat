@@ -511,7 +511,14 @@ export function ChatPane() {
               liveTools.reduce(
                 (n, t) =>
                   n +
-                  (t.input ? JSON.stringify(t.input).length : 0) +
+                  // Prefer the live char count from streaming tool-input
+                  // deltas; fall back to the finalized input size once
+                  // the tool-call resolves (and inputChars is 0/undefined).
+                  (t.inputChars && t.inputChars > 0
+                    ? t.inputChars
+                    : t.input
+                      ? JSON.stringify(t.input).length
+                      : 0) +
                   (t.result ? t.result.length : 0),
                 0,
               )

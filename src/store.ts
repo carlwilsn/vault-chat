@@ -68,7 +68,7 @@ function messagesEqual(a: ChatMessage[], b: ChatMessage[]): boolean {
 
 export const MODEL_CONTEXT_LIMIT = 200_000;
 
-export type LiveTool = { id: string; name: string; input: any; result?: string; startedAt?: number };
+export type LiveTool = { id: string; name: string; input: any; result?: string; startedAt?: number; inputChars?: number };
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 export type TodoItem = { content: string; status: TodoStatus; activeForm?: string };
@@ -355,6 +355,8 @@ type State = {
   appendStreamingReasoning: (s: string) => void;
   clearStreamingReasoning: () => void;
   pushLiveTool: (t: LiveTool) => void;
+  startLiveToolInput: (id: string, name: string) => void;
+  appendLiveToolInputDelta: (id: string, delta: string) => void;
   updateLiveToolResult: (id: string, result: string) => void;
   setAgentTodos: (todos: TodoItem[]) => void;
   loadNotes: () => Promise<void>;
@@ -742,7 +744,36 @@ export const useStore = create<State>((set) => ({
     cancelReasoningFlush();
     set({ streamingReasoning: "" });
   },
-  pushLiveTool: (t) => set((prev) => ({ liveTools: [...prev.liveTools, t] })),
+  pushLiveTool: (t) =>
+    set((prev) => {
+      // If we already created a placeholder via startLiveToolInput,
+      // upgrade it in place rather than pushing a duplicate.
+      const i = prev.liveTools.findIndex((x) => x.id === t.id);
+      if (i >= 0) {
+        const next = prev.liveTools.slice();
+        next[i] = { ...next[i], ...t };
+        return { liveTools: next };
+      }
+      return { liveTools: [...prev.liveTools, t] };
+    }),
+  startLiveToolInput: (id, name) =>
+    set((prev) => {
+      if (prev.liveTools.some((t) => t.id === id)) return prev;
+      const placeholder: LiveTool = {
+        id,
+        name,
+        input: undefined,
+        startedAt: Date.now(),
+        inputChars: 0,
+      };
+      return { liveTools: [...prev.liveTools, placeholder] };
+    }),
+  appendLiveToolInputDelta: (id, delta) =>
+    set((prev) => ({
+      liveTools: prev.liveTools.map((t) =>
+        t.id === id ? { ...t, inputChars: (t.inputChars ?? 0) + delta.length } : t,
+      ),
+    })),
   updateLiveToolResult: (id, result) =>
     set((prev) => ({
       liveTools: prev.liveTools.map((t) => (t.id === id ? { ...t, result } : t)),

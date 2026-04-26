@@ -124,6 +124,10 @@ export async function sendMessage(
         store.clearStreamingReasoning();
       } else if (e.kind === "reasoning") {
         store.appendStreamingReasoning(e.delta);
+      } else if (e.kind === "tool_input_start") {
+        store.startLiveToolInput(e.id, e.name);
+      } else if (e.kind === "tool_input_delta") {
+        store.appendLiveToolInputDelta(e.id, e.delta);
       } else if (e.kind === "tool_use") {
         const t: LiveTool = { id: e.id, name: e.name, input: e.input, startedAt: Date.now() };
         tools.push(t);
