@@ -79,7 +79,13 @@ function liveToolsEqual(a: LiveTool[], b: LiveTool[]): boolean {
   for (let i = 0; i < a.length; i++) {
     const x = a[i];
     const y = b[i];
-    if (x.id !== y.id || x.name !== y.name || x.result !== y.result) return false;
+    if (
+      x.id !== y.id ||
+      x.name !== y.name ||
+      x.result !== y.result ||
+      (x.inputChars ?? 0) !== (y.inputChars ?? 0)
+    )
+      return false;
   }
   return true;
 }
