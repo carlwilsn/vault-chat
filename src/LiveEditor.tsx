@@ -426,19 +426,8 @@ function buildDecorations(state: EditorState): DecorationSet {
         const closeLine = doc.lineAt(e);
         const openLeading = doc.sliceString(openLine.from, s);
         const closeTrailing = doc.sliceString(e, closeLine.to);
-        // remark-math only renders display block when the $$…$$ is its
-        // own paragraph — blank line (or BOF/EOF) before and after, not
-        // just alone on its own line.
-        const prevBlank =
-          openLine.number === 1 || /^\s*$/.test(doc.line(openLine.number - 1).text);
-        const nextBlank =
-          closeLine.number === doc.lines ||
-          /^\s*$/.test(doc.line(closeLine.number + 1).text);
         const standsAlone =
-          /^\s*$/.test(openLeading) &&
-          /^\s*$/.test(closeTrailing) &&
-          prevBlank &&
-          nextBlank;
+          /^\s*$/.test(openLeading) && /^\s*$/.test(closeTrailing);
         if (spanActive(s, e)) {
           applyTexTokens(builder, doc, s, e);
         } else if (standsAlone) {

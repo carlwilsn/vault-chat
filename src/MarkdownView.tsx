@@ -26,6 +26,14 @@ import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { fileKind } from "./fileKind";
 import { tryOpenLink } from "./linkNav";
 
+// remark-math only treats $$…$$ as block (centered/large) display math
+// when it's its own paragraph. Force every $$…$$ run into block form by
+// padding it with blank lines so the user always gets centered display
+// math regardless of surrounding text.
+function isolateDisplayMath(src: string): string {
+  return src.replace(/\$\$([\s\S]+?)\$\$/g, (_m, body) => `\n\n$$${body}$$\n\n`);
+}
+
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
   const baseParts = baseFile.slice(0, baseFile.lastIndexOf(sep)).split(sep);
@@ -481,7 +489,7 @@ export function MarkdownView({ paneId }: Props) {
               rehypePlugins={[rehypeRaw, rehypeSlug, rehypeKatex, rehypeHighlight]}
               components={{ a: SafeAnchor, img: VaultImage, input: renderInput }}
             >
-              {content}
+              {isolateDisplayMath(content)}
             </ReactMarkdown>
           </div>
         </div>
