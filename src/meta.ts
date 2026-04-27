@@ -55,6 +55,9 @@ type ToolSpec = {
   description: string;
   input_schema?: unknown;
   requires_keys?: string[];
+  // Optional per-tool timeout in milliseconds. Defaults to 60s. Long-running
+  // tools (download/transcribe pipelines) declare e.g. 600000 (10 min).
+  timeout_ms?: number;
 };
 
 // Accept either convention:
@@ -195,6 +198,10 @@ export async function loadMetaTools(): Promise<Record<string, unknown>> {
         requires_keys: Array.isArray(data.requires_keys)
           ? (data.requires_keys as string[])
           : [],
+        timeout_ms:
+          typeof data.timeout_ms === "number" && data.timeout_ms > 0
+            ? data.timeout_ms
+            : undefined,
       };
     } catch (e) {
       diag.push(`skip ${entry.name}: ${(e as Error).message}`);
@@ -231,7 +238,7 @@ export async function loadMetaTools(): Promise<Record<string, unknown>> {
             scriptPath: runPath,
             stdinJson: JSON.stringify(args),
             cwd: toolDir,
-            timeoutMs: 60_000,
+            timeoutMs: spec.timeout_ms ?? 60_000,
             env,
           });
           if (result.timed_out) return `(timed out)\n${result.stderr}`;
