@@ -165,8 +165,12 @@ export function FileTree() {
         }
       }
       if (currentFileMove) {
-        const content = await invoke<string>("read_text_file", { path: currentFileMove.to });
-        setCurrentFile(currentFileMove.to, content);
+        if (isUnreadableAsText(currentFileMove.to)) {
+          setCurrentFile(currentFileMove.to, "");
+        } else {
+          const content = await invoke<string>("read_text_file", { path: currentFileMove.to });
+          setCurrentFile(currentFileMove.to, content);
+        }
       }
       setCollapsed((prev) => {
         const next = new Set<string>();
@@ -859,7 +863,7 @@ function PendingRow({
           else if (e.key === "Escape") onCancel();
         }}
         onBlur={onCommit}
-        placeholder={kind === "file" ? "filename.md" : "folder"}
+        placeholder={kind === "file" ? "filename" : "folder"}
         className="flex-1 min-w-0 bg-transparent outline-none text-foreground placeholder:text-muted-foreground/60 p-0"
       />
     </div>
