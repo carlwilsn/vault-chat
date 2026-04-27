@@ -26,12 +26,16 @@ import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { fileKind } from "./fileKind";
 import { tryOpenLink } from "./linkNav";
 
-// remark-math only treats $$…$$ as block (centered/large) display math
-// when it's its own paragraph. Force every $$…$$ run into block form by
-// padding it with blank lines so the user always gets centered display
-// math regardless of surrounding text.
+// remark-math renders $$…$$ as block (centered/large) display math only
+// when the $$ delimiters sit on their own lines with the body between
+// them. A single-line $$x^2$$ — even surrounded by blank lines — parses
+// as inline math. Reshape every $$…$$ run into the multi-line form so
+// the user always gets centered display math.
 function isolateDisplayMath(src: string): string {
-  return src.replace(/\$\$([\s\S]+?)\$\$/g, (_m, body) => `\n\n$$${body}$$\n\n`);
+  return src.replace(
+    /\$\$([\s\S]+?)\$\$/g,
+    (_m, body) => `\n\n$$\n${body.trim()}\n$$\n\n`,
+  );
 }
 
 function resolveRelative(baseFile: string, rel: string): string {
