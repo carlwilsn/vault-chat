@@ -173,6 +173,14 @@ export async function loadMetaTools(): Promise<Record<string, unknown>> {
     console.warn("[meta-tools] list_dir failed:", toolsRoot, e);
     return out;
   }
+  console.log(
+    "[meta-tools] toolsRoot:",
+    toolsRoot,
+    "entry count:",
+    entries.length,
+    "names:",
+    entries.map((e) => e.name).join(","),
+  );
 
   for (const entry of entries) {
     if (!entry.is_dir) {
