@@ -8,6 +8,8 @@ import { Eye } from "lucide-react";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
 
+const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
+
 type NbCell =
   | { cell_type: "markdown"; source: string | string[] }
   | {
@@ -91,7 +93,7 @@ function Cell({ cell, lang }: { cell: NbCell; lang: string }) {
       <div className="prose-md">
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[rehypeKatex, rehypeHighlight]}
+          rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
         >
           {joinSource(cell.source)}
         </ReactMarkdown>
@@ -176,7 +178,7 @@ function renderMime(mime: string, value: string) {
       <div className="prose-md">
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[rehypeKatex, rehypeHighlight]}
+          rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
         >
           {value}
         </ReactMarkdown>

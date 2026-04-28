@@ -31,12 +31,31 @@ import { tryOpenLink } from "./linkNav";
 // them. A single-line $$x^2$$ — even surrounded by blank lines — parses
 // as inline math. Reshape every $$…$$ run into the multi-line form so
 // the user always gets centered display math.
+//
+// Skip code fences (``` … ``` and ~~~ … ~~~) so a `$$` inside a code
+// block isn't mistaken for math and paired with a later real `$$`,
+// which would mangle both regions.
 function isolateDisplayMath(src: string): string {
-  return src.replace(
+  const fenceRe = /(^|\n)(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g;
+  const placeholders: string[] = [];
+  const masked = src.replace(fenceRe, (m) => {
+    const token = `\u0000FENCE${placeholders.length}\u0000`;
+    placeholders.push(m);
+    return token;
+  });
+  const transformed = masked.replace(
     /\$\$([\s\S]+?)\$\$/g,
     (_m, body) => `\n\n$$\n${body.trim()}\n$$\n\n`,
   );
+  return transformed.replace(/\u0000FENCE(\d+)\u0000/g, (_m, i) => placeholders[Number(i)]);
 }
+
+// Lenient KaTeX options shared across every renderer in the app:
+// `strict: "ignore"` silences "unicode in math mode" and similar
+// pedantic warnings that otherwise spam the console; `errorColor`
+// uses the foreground color so the rare unrecoverable parse error
+// reads as ordinary muted text instead of bright red.
+const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
 
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
@@ -490,7 +509,7 @@ export function MarkdownView({ paneId }: Props) {
           <div className="prose-md mx-auto">
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
-              rehypePlugins={[rehypeRaw, rehypeSlug, rehypeKatex, rehypeHighlight]}
+              rehypePlugins={[rehypeRaw, rehypeSlug, [rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
               components={{ a: SafeAnchor, img: VaultImage, input: renderInput }}
             >
               {isolateDisplayMath(content)}

@@ -19,6 +19,13 @@ import { cn } from "./lib/utils";
 
 type MentionHit = { path: string; name: string; rel: string };
 
+// Lenient KaTeX options shared across every renderer in the app:
+// `strict: "ignore"` silences unicode-in-math-mode and similar
+// pedantic warnings; `errorColor: currentColor` makes rare
+// unrecoverable parse errors blend in with body text instead of
+// glaring red.
+const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
+
 // Pass data:image/… URLs through; everything else falls back to the
 // built-in sanitizer. react-markdown's default strips data: URLs as
 // unsafe, which kills images promoted from marquee asks into chat.
@@ -491,7 +498,7 @@ export function ChatPane() {
                     re-renders with the full plugin set). */}
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[rehypeKatex]}
+                  rehypePlugins={[[rehypeKatex, KATEX_OPTIONS]]}
                 >
                   {streamingText}
                 </ReactMarkdown>
@@ -797,7 +804,7 @@ const MessageBubble = memo(function MessageBubble({
           )}
           <ReactMarkdown
             remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
-            rehypePlugins={[rehypeKatex]}
+            rehypePlugins={[[rehypeKatex, KATEX_OPTIONS]]}
             urlTransform={allowImageDataUrls}
           >
             {stripAttachedFooter(message.content)}
@@ -808,7 +815,7 @@ const MessageBubble = memo(function MessageBubble({
           <div className="prose-chat text-foreground/95">
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[rehypeKatex, rehypeHighlight]}
+              rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
             >
               {message.content}
             </ReactMarkdown>

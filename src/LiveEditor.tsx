@@ -50,7 +50,7 @@ function renderCellInto(el: HTMLElement, src: string) {
     const span = document.createElement("span");
     span.className = "cm-math-inline";
     try {
-      katex.render(tex, span, { displayMode: false, throwOnError: false });
+      katex.render(tex, span, { displayMode: false, throwOnError: false, strict: "ignore" });
     } catch {
       span.textContent = m[0];
     }
@@ -155,7 +155,7 @@ class MathWidget extends WidgetType {
     const el = document.createElement(this.display ? "div" : "span");
     el.className = this.display ? "cm-math-block" : "cm-math-inline";
     try {
-      katex.render(this.src, el, { displayMode: this.display, throwOnError: false });
+      katex.render(this.src, el, { displayMode: this.display, throwOnError: false, strict: "ignore" });
     } catch {
       el.textContent = this.src;
     }

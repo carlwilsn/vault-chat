@@ -20,6 +20,8 @@ import {
   type InlineTurn,
 } from "./inlineEdit";
 
+const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
+
 export type InlineEditMode = "edit" | "ask";
 
 export type InlineEditAnchor = {
@@ -803,7 +805,7 @@ export function InlineEditPrompt({
               {result && (
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[rehypeKatex, rehypeHighlight]}
+                  rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
                 >
                   {result}
                 </ReactMarkdown>
