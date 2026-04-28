@@ -452,10 +452,27 @@ function buildDecorations(state: EditorState): DecorationSet {
   return Decoration.set(builder, true);
 }
 
+// Two cheap-to-compare keys for deciding whether the decoration set
+// can be reused. `eqLineSet` does a Set equality check; `tr.docChanged`
+// already short-circuits the doc case. The remaining costly path is a
+// selection update — but on large files most cursor moves stay inside
+// the same active line, so the set is identical and we can keep the
+// previous DecorationSet without re-walking the syntax tree.
+function eqLineSet(a: Set<number>, b: Set<number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
 const livePreviewField = StateField.define<DecorationSet>({
   create: (state) => buildDecorations(state),
   update: (deco, tr) => {
-    if (tr.docChanged || tr.selection) return buildDecorations(tr.state);
+    if (tr.docChanged) return buildDecorations(tr.state);
+    if (tr.selection) {
+      const prev = activeLineSet(tr.startState);
+      const next = activeLineSet(tr.state);
+      if (!eqLineSet(prev, next)) return buildDecorations(tr.state);
+    }
     return deco;
   },
   provide: (f) => EditorView.decorations.from(f),

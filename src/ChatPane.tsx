@@ -179,7 +179,11 @@ export function ChatPane() {
     const el = scrollRef.current;
     if (!el) return;
     if (pinnedToBottomRef.current) {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      // streamingText flushes ~5 Hz. Smooth-scrolling on top of every
+      // flush stacks animations and fights the layout grow, which reads
+      // as stutter. Snap instantly during stream — the eye sees a
+      // smooth flow because tokens land in quick succession.
+      el.scrollTop = el.scrollHeight;
     }
   }, [messages, streamingText, liveTools]);
 

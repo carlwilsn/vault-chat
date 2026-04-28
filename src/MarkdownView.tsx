@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ComponentPropsWithoutRef, MouseEvent as ReactMouseEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -116,7 +116,10 @@ function SafeAnchor(props: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
 // Renders an <img> whose src has been resolved relative to the current
 // vault file and read off disk into a blob URL. The webview can't load
 // local file:// URLs directly, so we always go through read_binary_file.
-function VaultImage({ src, alt, ...rest }: ComponentPropsWithoutRef<"img">) {
+// Wrapped in memo so a parent re-render (mode toggle, scroll ratio
+// update, sibling state change) doesn't re-fire the disk-read effect
+// for every image in the document.
+const VaultImage = memo(function VaultImage({ src, alt, ...rest }: ComponentPropsWithoutRef<"img">) {
   const currentFile = useStore((s) => s.currentFile);
   const [url, setUrl] = useState<string | null>(null);
 
@@ -170,7 +173,7 @@ function VaultImage({ src, alt, ...rest }: ComponentPropsWithoutRef<"img">) {
 
   if (!url) return <span className="text-muted-foreground italic">[{alt || src}]</span>;
   return <img src={url} alt={alt} {...rest} />;
-}
+});
 
 // Flip the Nth GFM task-list checkbox in `content`. A task-list item is a
 // list item (- / * / + / "1.") whose first inline content is "[ ]", "[x]",
@@ -277,38 +280,54 @@ export function MarkdownView({ paneId }: Props) {
   // remark-gfm. We override the input component to make them interactive:
   // on toggle, locate the clicked checkbox's index among all rendered
   // checkboxes, flip the Nth task-list token in the source, and save.
-  const renderInput = (props: ComponentPropsWithoutRef<"input"> & { node?: unknown }) => {
-    const { node: _node, type, disabled: _disabled, checked, onChange: _oc, ...rest } = props;
-    if (type !== "checkbox") {
-      return <input type={type} disabled={_disabled} {...rest} />;
-    }
-    const onFlip = (e: ReactMouseEvent<HTMLInputElement>) => {
-      const scope = viewScrollRef.current;
-      if (!scope) return;
-      const all = Array.from(
-        scope.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+  //
+  // Read content + onChange via refs so the renderer function itself
+  // stays referentially stable. ReactMarkdown's `components` prop is
+  // memoized below — handing it a fresh function each render would
+  // tear down and rebuild the entire rendered subtree.
+  const contentRef = useRef(content);
+  contentRef.current = content;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const renderInput = useCallback(
+    (props: ComponentPropsWithoutRef<"input"> & { node?: unknown }) => {
+      const { node: _node, type, disabled: _disabled, checked, onChange: _oc, ...rest } = props;
+      if (type !== "checkbox") {
+        return <input type={type} disabled={_disabled} {...rest} />;
+      }
+      const onFlip = (e: ReactMouseEvent<HTMLInputElement>) => {
+        const scope = viewScrollRef.current;
+        if (!scope) return;
+        const all = Array.from(
+          scope.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+        );
+        const idx = all.indexOf(e.currentTarget);
+        if (idx < 0) return;
+        const next = flipNthTaskCheckbox(contentRef.current, idx);
+        if (next == null) return;
+        // Flip the visual immediately so the click feels instant; the
+        // expensive markdown re-render that follows runs as a transition,
+        // off the input-handling path, so the cursor never lags.
+        e.currentTarget.checked = !e.currentTarget.checked;
+        startTransition(() => onChangeRef.current(next));
+      };
+      return (
+        <input
+          type="checkbox"
+          checked={!!checked}
+          onChange={() => {}}
+          onClick={onFlip}
+          style={{ cursor: "pointer" }}
+          {...rest}
+        />
       );
-      const idx = all.indexOf(e.currentTarget);
-      if (idx < 0) return;
-      const next = flipNthTaskCheckbox(content, idx);
-      if (next == null) return;
-      // Flip the visual immediately so the click feels instant; the
-      // expensive markdown re-render that follows runs as a transition,
-      // off the input-handling path, so the cursor never lags.
-      e.currentTarget.checked = !e.currentTarget.checked;
-      startTransition(() => onChange(next));
-    };
-    return (
-      <input
-        type="checkbox"
-        checked={!!checked}
-        onChange={() => {}}
-        onClick={onFlip}
-        style={{ cursor: "pointer" }}
-        {...rest}
-      />
-    );
-  };
+    },
+    [],
+  );
+  const markdownComponents = useMemo(
+    () => ({ a: SafeAnchor, img: VaultImage, input: renderInput }),
+    [renderInput],
+  );
 
   // Ctrl+L in view mode opens the inline ask popover, using any text
   // the user has highlighted in the rendered markdown as the selection.
@@ -520,7 +539,7 @@ export function MarkdownView({ paneId }: Props) {
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
               rehypePlugins={[rehypeRaw, rehypeSlug, [rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
-              components={{ a: SafeAnchor, img: VaultImage, input: renderInput }}
+              components={markdownComponents}
             >
               {processedMarkdown}
             </ReactMarkdown>
