@@ -44,7 +44,7 @@ Plain text file at the vault root. Each non-empty, non-comment line is a path or
 
 Unhide via the Titlebar's Eye-icon modal (check the lines to remove, click Unhide).
 
-Rust commands: `read_ignore_lines`, `add_to_ignore`, `remove_from_ignore`.
+Rust commands: `read_ignore_lines`, `add_to_ignore`, `rename_in_ignore`, `remove_from_ignore`.
 
 ## Boot sequence ([main.tsx](../src/main.tsx))
 

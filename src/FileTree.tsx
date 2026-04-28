@@ -158,6 +158,22 @@ export function FileTree() {
     try {
       for (const m of moves) {
         await invoke("rename_path", { from: m.from, to: m.to });
+        // Keep hidden-file entries in sync — the move just shifted any
+        // ignored descendants to a new prefix on disk, so the ignore
+        // file's stored relative paths need the same shift.
+        if (m.from.startsWith(vaultPath + "/") && m.to.startsWith(vaultPath + "/")) {
+          const oldRel = m.from.slice(vaultPath.length + 1);
+          const newRel = m.to.slice(vaultPath.length + 1);
+          try {
+            await invoke("rename_in_ignore", {
+              vault: vaultPath,
+              oldRelative: oldRel,
+              newRelative: newRel,
+            });
+          } catch (e) {
+            console.error("[move] update ignore failed:", e);
+          }
+        }
         if (currentFile === m.from) {
           currentFileMove = m;
         } else if (currentFile && currentFile.startsWith(m.from + "/")) {
@@ -289,6 +305,24 @@ export function FileTree() {
     const to = `${parent}/${next}`;
     try {
       await invoke("rename_path", { from: renaming.path, to });
+      // Hidden-file paths in the ignore list are stored relative to the
+      // vault. When the renamed entry (or any descendant) is on that
+      // list, the entry survives the move on disk but the ignore entry
+      // would dangle. Patch every matching prefix so previously-hidden
+      // items stay hidden under the new name.
+      if (vaultPath && renaming.path.startsWith(vaultPath + "/")) {
+        const oldRel = renaming.path.slice(vaultPath.length + 1);
+        const newRel = to.slice(vaultPath.length + 1);
+        try {
+          await invoke("rename_in_ignore", {
+            vault: vaultPath,
+            oldRelative: oldRel,
+            newRelative: newRel,
+          });
+        } catch (e) {
+          console.error("[rename] update ignore failed:", e);
+        }
+      }
       if (currentFile === renaming.path) {
         const content = await invoke<string>("read_text_file", { path: to });
         setCurrentFile(to, content);

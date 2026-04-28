@@ -197,6 +197,57 @@ async fn add_to_ignore(vault: String, relative_path: String) -> Result<(), Strin
 }
 
 #[tauri::command]
+async fn rename_in_ignore(
+    vault: String,
+    old_relative: String,
+    new_relative: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let normalize = |p: &str| -> String {
+            p.trim_start_matches('/')
+                .trim_end_matches('/')
+                .replace('\\', "/")
+        };
+        let old_n = normalize(&old_relative);
+        let new_n = normalize(&new_relative);
+        if old_n.is_empty() || new_n.is_empty() || old_n == new_n {
+            return Ok(());
+        }
+        let path = std::path::Path::new(&vault).join(IGNORE_FILE);
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Ok(()),
+        };
+        let mut changed = false;
+        let prefix = format!("{}/", old_n);
+        let mut out_lines: Vec<String> = Vec::with_capacity(existing.lines().count());
+        for line in existing.lines() {
+            let trimmed = line.trim();
+            if trimmed == old_n {
+                changed = true;
+                out_lines.push(new_n.clone());
+            } else if trimmed.starts_with(&prefix) {
+                changed = true;
+                let suffix = &trimmed[prefix.len()..];
+                out_lines.push(format!("{}/{}", new_n, suffix));
+            } else {
+                out_lines.push(line.to_string());
+            }
+        }
+        if !changed {
+            return Ok(());
+        }
+        let mut new_contents = out_lines.join("\n");
+        if !new_contents.is_empty() && !new_contents.ends_with('\n') {
+            new_contents.push('\n');
+        }
+        std::fs::write(&path, new_contents).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn remove_from_ignore(vault: String, relative_paths: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let targets: HashSet<String> = relative_paths
@@ -1701,6 +1752,7 @@ pub fn run() {
             tavily_search,
             read_ignore_lines,
             add_to_ignore,
+            rename_in_ignore,
             remove_from_ignore,
             notes_read,
             notes_append,
