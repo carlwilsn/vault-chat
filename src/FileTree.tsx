@@ -503,10 +503,16 @@ export function FileTree() {
                     const internal = isInternalDrag(e.dataTransfer);
                     const external = isExternalFileDrop(e.dataTransfer);
                     if (!internal && !external) return;
-                    // Can't drop a folder into itself or a descendant.
+                    // Can't drop into self or a descendant. For multi-
+                    // drags, reject the whole gesture if ANY source
+                    // would be invalid — otherwise the visual lights up
+                    // for moves that won't happen on drop.
                     if (internal) {
-                      const src = e.dataTransfer.getData(VAULT_PATH_MIME);
-                      if (src === f.path || f.path.startsWith(src + "/")) return;
+                      const sources = readDropSources(e.dataTransfer);
+                      const blocked = sources.some(
+                        (s) => s === f.path || f.path.startsWith(s + "/"),
+                      );
+                      if (blocked) return;
                     }
                     e.preventDefault();
                     e.stopPropagation();
