@@ -17,6 +17,7 @@ export function FileTree() {
     currentFile,
     setCurrentFile,
     setFiles,
+    setMode,
     applyDeleteCascade,
     applyRenameCascade,
   } = useStore();
@@ -290,6 +291,10 @@ export function FileTree() {
         await refreshFiles();
         const content = await invoke<string>("read_text_file", { path });
         setCurrentFile(path, content);
+        // A brand-new file is empty — there's nothing to *view*, so
+        // landing in view mode just shows a blank pane and forces an
+        // extra Ctrl+E. Drop straight into the editor.
+        setMode("edit");
       } catch (e) {
         console.error(e);
       }
