@@ -326,6 +326,8 @@ type State = {
 
   setVault: (p: string) => void;
   setFiles: (f: FileEntry[]) => void;
+  applyDeleteCascade: (paths: string[]) => Promise<void>;
+  applyRenameCascade: (moves: { from: string; to: string }[]) => Promise<void>;
   setCurrentFile: (p: string | null, content: string) => void;
   reloadCurrent: (content: string) => void;
   splitWith: (path: string, content: string, side: DropSide) => void;
@@ -468,6 +470,9 @@ export const useStore = create<State>((set) => ({
       if (s.vaultPath === p) {
         return { vaultPath: p };
       }
+      // Open files / panes are tied to the prior vault. Leaving them
+      // up after the switch would point at paths that don't exist in
+      // the new vault, breaking save and reload.
       return {
         vaultPath: p,
         messages: [],
@@ -480,9 +485,148 @@ export const useStore = create<State>((set) => ({
         agentTodos: [],
         notes: [],
         notesLoaded: false,
+        currentFile: null,
+        currentContent: "",
+        panes: [],
+        splitDirection: null,
+        activePaneId: null,
       };
     }),
   setFiles: (f) => set({ files: f }),
+  // Cascade store cleanup after a filesystem delete. Closes panes
+  // pointing at the removed paths, clears currentFile if it dies,
+  // strips note anchors that reference deleted paths, and drops
+  // notes that become empty (no surviving anchors, draft, or turns).
+  // Caller is responsible for the on-disk delete and for pruning the
+  // ignore file via remove_prefix_from_ignore.
+  applyDeleteCascade: async (paths) => {
+    if (paths.length === 0) return;
+    const isUnder = (p: string): boolean => {
+      for (const d of paths) {
+        if (p === d || p.startsWith(d + "/")) return true;
+      }
+      return false;
+    };
+    const state = useStore.getState();
+    const panesAfter = state.panes.filter((pn) => !isUnder(pn.file));
+    const panesChanged = panesAfter.length !== state.panes.length;
+    let updatedNotes = state.notes;
+    let notesChanged = false;
+    if (state.notes.length > 0) {
+      const next: Note[] = [];
+      for (const n of state.notes) {
+        const filtered = n.anchors.filter((a) => !isUnder(a.source_path));
+        if (filtered.length === n.anchors.length) {
+          next.push(n);
+          continue;
+        }
+        notesChanged = true;
+        const isEmpty =
+          filtered.length === 0 &&
+          n.turns.length === 0 &&
+          (!n.user_draft || n.user_draft.trim() === "");
+        if (isEmpty) continue;
+        const promoted = filtered.map((a, i) => ({ ...a, primary: i === 0 }));
+        next.push({
+          ...n,
+          anchors: promoted,
+          last_updated: new Date().toISOString(),
+        });
+      }
+      if (notesChanged) updatedNotes = next;
+    }
+    const patch: Partial<State> = {};
+    if (panesChanged) {
+      if (panesAfter.length === 0) {
+        patch.panes = [];
+        patch.splitDirection = null;
+        patch.activePaneId = null;
+      } else {
+        patch.panes = panesAfter;
+        const stillActive = panesAfter.some((p) => p.id === state.activePaneId);
+        patch.activePaneId = stillActive ? state.activePaneId : panesAfter[0].id;
+      }
+    }
+    if (state.currentFile && isUnder(state.currentFile)) {
+      const survivor = panesChanged ? panesAfter[0] : state.panes[0];
+      if (survivor) {
+        patch.currentFile = survivor.file;
+        patch.currentContent = survivor.content;
+      } else {
+        patch.currentFile = null;
+        patch.currentContent = "";
+      }
+    }
+    if (notesChanged) patch.notes = updatedNotes;
+    if (Object.keys(patch).length > 0) set(patch);
+    if (notesChanged && state.vaultPath) {
+      try {
+        await writeAllNotes(state.vaultPath, updatedNotes);
+      } catch (e) {
+        console.error("[delete-cascade] persist notes failed:", e);
+      }
+    }
+  },
+  // Cascade store cleanup after a rename or move. Rewrites pane file
+  // paths, currentFile, and note anchor source_paths whose value
+  // matches m.from exactly or sits beneath it. Caller handles the
+  // on-disk rename and ignore-file rewrite.
+  applyRenameCascade: async (moves) => {
+    if (moves.length === 0) return;
+    const rewrite = (p: string): string => {
+      for (const m of moves) {
+        if (p === m.from) return m.to;
+        if (p.startsWith(m.from + "/")) return m.to + p.slice(m.from.length);
+      }
+      return p;
+    };
+    const state = useStore.getState();
+    let panesChanged = false;
+    const panesAfter = state.panes.map((pn) => {
+      const next = rewrite(pn.file);
+      if (next === pn.file) return pn;
+      panesChanged = true;
+      return { ...pn, file: next };
+    });
+    let currentChanged = false;
+    let nextCurrent = state.currentFile;
+    if (nextCurrent) {
+      const r = rewrite(nextCurrent);
+      if (r !== nextCurrent) {
+        nextCurrent = r;
+        currentChanged = true;
+      }
+    }
+    let notesChanged = false;
+    const updatedNotes = state.notes.map((n) => {
+      let anchorsChanged = false;
+      const newAnchors = n.anchors.map((a) => {
+        const r = rewrite(a.source_path);
+        if (r === a.source_path) return a;
+        anchorsChanged = true;
+        return { ...a, source_path: r };
+      });
+      if (!anchorsChanged) return n;
+      notesChanged = true;
+      return {
+        ...n,
+        anchors: newAnchors,
+        last_updated: new Date().toISOString(),
+      };
+    });
+    const patch: Partial<State> = {};
+    if (panesChanged) patch.panes = panesAfter;
+    if (currentChanged) patch.currentFile = nextCurrent;
+    if (notesChanged) patch.notes = updatedNotes;
+    if (Object.keys(patch).length > 0) set(patch);
+    if (notesChanged && state.vaultPath) {
+      try {
+        await writeAllNotes(state.vaultPath, updatedNotes);
+      } catch (e) {
+        console.error("[rename-cascade] persist notes failed:", e);
+      }
+    }
+  },
   setCurrentFile: (p, content) =>
     set((s) => {
       if (s.panes.length > 0 && s.activePaneId && p) {

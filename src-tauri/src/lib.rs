@@ -247,6 +247,63 @@ async fn rename_in_ignore(
     .map_err(|e| e.to_string())?
 }
 
+// Prune every ignore entry that matches one of `prefixes` exactly OR
+// sits beneath one of them. Used after a delete or move so the ignore
+// list never points at paths that have stopped existing under that
+// name. Idempotent: a no-op if no line matches.
+#[tauri::command]
+async fn remove_prefix_from_ignore(
+    vault: String,
+    relative_prefixes: Vec<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let prefixes: Vec<String> = relative_prefixes
+            .into_iter()
+            .map(|p| {
+                p.trim_start_matches('/')
+                    .trim_end_matches('/')
+                    .replace('\\', "/")
+            })
+            .filter(|p| !p.is_empty())
+            .collect();
+        if prefixes.is_empty() {
+            return Ok(());
+        }
+        let path = std::path::Path::new(&vault).join(IGNORE_FILE);
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Ok(()),
+        };
+        let mut changed = false;
+        let kept: Vec<&str> = existing
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                let drop = prefixes
+                    .iter()
+                    .any(|p| t == p || t.starts_with(&format!("{}/", p)));
+                if drop {
+                    changed = true;
+                }
+                !drop
+            })
+            .collect();
+        if !changed {
+            return Ok(());
+        }
+        let new_contents = if kept.iter().all(|l| l.trim().is_empty()) {
+            String::new()
+        } else {
+            let mut s = kept.join("\n");
+            s.push('\n');
+            s
+        };
+        std::fs::write(&path, new_contents).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn remove_from_ignore(vault: String, relative_paths: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1753,6 +1810,7 @@ pub fn run() {
             read_ignore_lines,
             add_to_ignore,
             rename_in_ignore,
+            remove_prefix_from_ignore,
             remove_from_ignore,
             notes_read,
             notes_append,

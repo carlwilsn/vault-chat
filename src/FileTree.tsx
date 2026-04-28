@@ -11,7 +11,15 @@ type PendingKind = "file" | "folder";
 type Menu = { x: number; y: number; entry: FileEntry | null } | null;
 
 export function FileTree() {
-  const { vaultPath, files, currentFile, setCurrentFile, setFiles } = useStore();
+  const {
+    vaultPath,
+    files,
+    currentFile,
+    setCurrentFile,
+    setFiles,
+    applyDeleteCascade,
+    applyRenameCascade,
+  } = useStore();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [pending, setPending] = useState<{ kind: PendingKind; parent: string } | null>(null);
   const [pendingName, setPendingName] = useState("");
@@ -154,10 +162,16 @@ export function FileTree() {
       moves.push({ from: src, to });
     }
     if (moves.length === 0) return;
-    let currentFileMove: { from: string; to: string } | null = null;
     try {
+      const succeeded: { from: string; to: string }[] = [];
       for (const m of moves) {
-        await invoke("rename_path", { from: m.from, to: m.to });
+        try {
+          await invoke("rename_path", { from: m.from, to: m.to });
+          succeeded.push(m);
+        } catch (e) {
+          console.error("[move] rename failed:", m, e);
+          continue;
+        }
         // Keep hidden-file entries in sync — the move just shifted any
         // ignored descendants to a new prefix on disk, so the ignore
         // file's stored relative paths need the same shift.
@@ -174,18 +188,26 @@ export function FileTree() {
             console.error("[move] update ignore failed:", e);
           }
         }
-        if (currentFile === m.from) {
-          currentFileMove = m;
-        } else if (currentFile && currentFile.startsWith(m.from + "/")) {
-          currentFileMove = { from: currentFile, to: m.to + currentFile.slice(m.from.length) };
-        }
       }
-      if (currentFileMove) {
-        if (isUnreadableAsText(currentFileMove.to)) {
-          setCurrentFile(currentFileMove.to, "");
-        } else {
-          const content = await invoke<string>("read_text_file", { path: currentFileMove.to });
-          setCurrentFile(currentFileMove.to, content);
+      if (succeeded.length > 0) {
+        // Rewrite panes / currentFile / note anchors. After cascade,
+        // re-read the current file's contents so the editor reflects
+        // its new path.
+        await applyRenameCascade(succeeded);
+        const after = useStore.getState();
+        if (after.currentFile && succeeded.some((m) => after.currentFile === m.to)) {
+          if (isUnreadableAsText(after.currentFile)) {
+            setCurrentFile(after.currentFile, "");
+          } else {
+            try {
+              const content = await invoke<string>("read_text_file", {
+                path: after.currentFile,
+              });
+              setCurrentFile(after.currentFile, content);
+            } catch (e) {
+              console.error("[move] reread current failed:", e);
+            }
+          }
         }
       }
       setCollapsed((prev) => {
@@ -323,9 +345,18 @@ export function FileTree() {
           console.error("[rename] update ignore failed:", e);
         }
       }
-      if (currentFile === renaming.path) {
-        const content = await invoke<string>("read_text_file", { path: to });
-        setCurrentFile(to, content);
+      // Rewrite panes, currentFile, and note anchors that pointed at
+      // the renamed path or any descendant. Re-read currentFile from
+      // disk afterward so the editor sees the just-written contents.
+      await applyRenameCascade([{ from: renaming.path, to }]);
+      const stateAfter = useStore.getState();
+      if (stateAfter.currentFile === to) {
+        try {
+          const content = await invoke<string>("read_text_file", { path: to });
+          setCurrentFile(to, content);
+        } catch (e) {
+          console.error("[rename] reread current failed:", e);
+        }
       }
       await refreshFiles();
     } catch (e) {
@@ -353,15 +384,32 @@ export function FileTree() {
   };
 
   const deletePaths = async (paths: string[]) => {
+    const deletedOk: string[] = [];
     for (const p of paths) {
       try {
         await invoke("delete_file", { path: p });
-        if (currentFile === p || (currentFile && currentFile.startsWith(p + "/"))) {
-          setCurrentFile(null, "");
-        }
+        deletedOk.push(p);
       } catch (e) {
         console.error("[delete]", p, e);
       }
+    }
+    if (deletedOk.length > 0) {
+      if (vaultPath) {
+        const rels = deletedOk
+          .filter((p) => p.startsWith(vaultPath + "/"))
+          .map((p) => p.slice(vaultPath.length + 1));
+        if (rels.length > 0) {
+          try {
+            await invoke("remove_prefix_from_ignore", {
+              vault: vaultPath,
+              relativePrefixes: rels,
+            });
+          } catch (e) {
+            console.error("[delete] prune ignore failed:", e);
+          }
+        }
+      }
+      await applyDeleteCascade(deletedOk);
     }
     await refreshFiles();
     setSelected(new Set());
@@ -382,9 +430,18 @@ export function FileTree() {
   const doDelete = async (f: FileEntry) => {
     try {
       await invoke("delete_file", { path: f.path });
-      if (currentFile === f.path || (f.is_dir && currentFile && currentFile.startsWith(f.path + "/"))) {
-        setCurrentFile(null, "");
+      if (vaultPath && f.path.startsWith(vaultPath + "/")) {
+        const rel = f.path.slice(vaultPath.length + 1);
+        try {
+          await invoke("remove_prefix_from_ignore", {
+            vault: vaultPath,
+            relativePrefixes: [rel],
+          });
+        } catch (e) {
+          console.error("[delete] prune ignore failed:", e);
+        }
       }
+      await applyDeleteCascade([f.path]);
       await refreshFiles();
     } catch (e) {
       console.error(e);
