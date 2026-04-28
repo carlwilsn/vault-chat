@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ComponentPropsWithoutRef, MouseEvent as ReactMouseEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -292,7 +292,11 @@ export function MarkdownView({ paneId }: Props) {
       if (idx < 0) return;
       const next = flipNthTaskCheckbox(content, idx);
       if (next == null) return;
-      onChange(next);
+      // Flip the visual immediately so the click feels instant; the
+      // expensive markdown re-render that follows runs as a transition,
+      // off the input-handling path, so the cursor never lags.
+      e.currentTarget.checked = !e.currentTarget.checked;
+      startTransition(() => onChange(next));
     };
     return (
       <input
@@ -410,6 +414,12 @@ export function MarkdownView({ paneId }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [file, isActive]);
 
+  // Cache the math-rewrite output so a checkbox flip — which only
+  // changes one byte of `content` — doesn't reparse fence regions and
+  // re-run the $$ regex on every keystroke. Cheap to keep this even
+  // when not in markdown view; the memo just no-ops.
+  const processedMarkdown = useMemo(() => isolateDisplayMath(content), [content]);
+
   if (!file) {
     return (
       <div className="h-full flex items-center justify-center bg-background">
@@ -512,7 +522,7 @@ export function MarkdownView({ paneId }: Props) {
               rehypePlugins={[rehypeRaw, rehypeSlug, [rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
               components={{ a: SafeAnchor, img: VaultImage, input: renderInput }}
             >
-              {isolateDisplayMath(content)}
+              {processedMarkdown}
             </ReactMarkdown>
           </div>
         </div>
