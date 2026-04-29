@@ -117,19 +117,26 @@ export async function runAgent(params: {
             "[image omitted — current model does not support vision]",
           );
 
+    // Anthropic rejects cache_control on empty text blocks ("cannot be
+    // set for empty text blocks"). A cancelled stream can leave an
+    // empty assistant turn at the tail of history; an unconfigured
+    // system prompt can also be "". Only stamp the cacheControl
+    // breakpoint on a content block that actually has text.
     const historyMessages: ModelMessage[] = history.map<ModelMessage>((h, i) => {
       const isLast = i === history.length - 1;
+      const scrubbed = scrub(h.content);
+      const cacheable = isLast && scrubbed.trim().length > 0;
       return {
         role: h.role,
-        content: scrub(h.content),
-        ...(isLast ? { providerOptions: cacheControl } : {}),
+        content: scrubbed,
+        ...(cacheable ? { providerOptions: cacheControl } : {}),
       };
     });
 
     const systemMessage: ModelMessage = {
       role: "system",
       content: system,
-      providerOptions: cacheControl,
+      ...(system.trim().length > 0 ? { providerOptions: cacheControl } : {}),
     };
 
     // Attach captured images to the final user turn as structured
