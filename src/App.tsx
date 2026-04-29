@@ -105,6 +105,10 @@ export default function App() {
       }
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
+      // Holding a Ctrl-shortcut auto-repeats the keydown at the OS rate
+      // (~30 Hz). Without this guard, Ctrl+B flickers the pane on/off,
+      // Ctrl+J spawns a terminal per repeat, etc. One press = one fire.
+      if (e.repeat) return;
       if (k === "n" && !e.shiftKey && !e.altKey) {
         // Ctrl+N — open a fresh note composer for the current vault.
         // Intentionally also fires while focused in a Monaco editor
