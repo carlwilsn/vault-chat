@@ -196,7 +196,8 @@
     margin-bottom: 0.25rem;
   }
   .prose-md li.task-list-item > input[type="checkbox"],
-  .prose-md input[type="checkbox"] {
+  .prose-md input[type="checkbox"],
+  .vc-checkbox {
     appearance: none;
     -webkit-appearance: none;
     position: relative;
@@ -214,16 +215,19 @@
     transition: background-color 120ms, border-color 120ms;
   }
   .prose-md li.task-list-item > input[type="checkbox"]:hover,
-  .prose-md input[type="checkbox"]:hover {
+  .prose-md input[type="checkbox"]:hover,
+  .vc-checkbox:hover {
     border-color: hsl(var(--muted-foreground) / 0.6);
   }
   .prose-md li.task-list-item > input[type="checkbox"]:checked,
-  .prose-md input[type="checkbox"]:checked {
+  .prose-md input[type="checkbox"]:checked,
+  .vc-checkbox:checked {
     background: hsl(var(--primary));
     border-color: hsl(var(--primary));
   }
   .prose-md li.task-list-item > input[type="checkbox"]::after,
-  .prose-md input[type="checkbox"]::after {
+  .prose-md input[type="checkbox"]::after,
+  .vc-checkbox::after {
     content: "";
     position: absolute;
     left: 4px;
@@ -237,11 +241,13 @@
     transition: opacity 120ms;
   }
   .prose-md li.task-list-item > input[type="checkbox"]:checked::after,
-  .prose-md input[type="checkbox"]:checked::after {
+  .prose-md input[type="checkbox"]:checked::after,
+  .vc-checkbox:checked::after {
     opacity: 1;
   }
   .prose-md li.task-list-item > input[type="checkbox"]:focus-visible,
-  .prose-md input[type="checkbox"]:focus-visible {
+  .prose-md input[type="checkbox"]:focus-visible,
+  .vc-checkbox:focus-visible {
     outline: 2px solid hsl(var(--ring) / 0.6);
     outline-offset: 2px;
   }

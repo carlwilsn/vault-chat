@@ -369,7 +369,7 @@ export function Titlebar() {
                   type="checkbox"
                   checked={selected.has(line)}
                   onChange={() => toggleSel(line)}
-                  className="shrink-0"
+                  className="vc-checkbox shrink-0"
                 />
                 <span className="truncate font-mono text-[11.5px] text-foreground/90">{line}</span>
               </label>
