@@ -134,7 +134,7 @@ The agent cannot modify files inside any `.git/` directory — the file-op tools
 
 ## Got an idea for the app?
 
-Reach out to me (Carl) at [carwilson0929@gmail.com](mailto:carwilson0929@gmail.com). I'll help you cleanly clone the repo so you can make your own version — either with Claude Code driving the changes or by hand if you'd rather code it yourself.
+Reach out to me (Carl) at [carlwilson2027@u.northwestern.edu](mailto:carlwilson2027@u.northwestern.edu). I'll help you cleanly clone the repo so you can make your own version — either with Claude Code driving the changes or by hand if you'd rather code it yourself.
 
 ## License
 
