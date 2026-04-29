@@ -82,7 +82,7 @@ Just type `vault-chat` anywhere from your terminal and the app will open.
 
 The launcher just runs `npm run tauri dev` in the foreground under a shorter name — you'll see cargo's output live. **First run takes ~10–15 min** while Rust compiles everything; subsequent runs are ~2 seconds because cargo caches incrementally.
 
-When the app opens: hit the gear icon → paste an API key (Anthropic, OpenAI, or Google) → open a folder as your vault → start asking.
+When the app opens: hit the gear icon → paste an API key (Anthropic, OpenAI, Google, or OpenRouter) → open a folder as your vault → start asking.
 
 ### Try it free (no credit card)
 
@@ -101,7 +101,7 @@ That's it — Read / Write / Edit / Bash / PDF marquee / inline edit all work on
 
 - **Ctrl+K inline edit** on any paragraph or code selection. `Ctrl+L` for an ask mode that answers in the same popover without touching the file.
 - **PDF marquee** — drag a rectangle over any region of a PDF. Selected text + the pixel screenshot go to the model together. Works on math, tables, scanned pages, handwriting.
-- **Model-agnostic**. Anthropic, OpenAI, or Google. Swap mid-session via the settings dropdown.
+- **Model-agnostic**. Anthropic, OpenAI, Google, or OpenRouter (one key, hundreds of models). Swap mid-session via the settings dropdown.
 - **Git-backed**. Every agent turn that touches files auto-commits. `Ctrl+H` opens a history modal with per-file timeline + one-click restore to any earlier commit. Vault never loses state.
 - **Phone bridge**. Run the desktop app on your laptop, talk to it from your phone over Tailscale — voice in, agent answer back, with its own conversation thread separate from whatever you've got on screen.
 - **`Alt+L`** flips the whole UI between light and dark.
