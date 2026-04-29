@@ -35,19 +35,29 @@ import { noteEditedFile } from "./commit-controller";
 // Skip code fences (``` … ``` and ~~~ … ~~~) so a `$$` inside a code
 // block isn't mistaken for math and paired with a later real `$$`,
 // which would mangle both regions.
+//
+// Also skip GFM table rows: a row must stay on one line, so injecting
+// newlines breaks the table. Inside cells, $$…$$ falls back to remark-
+// math's single-line behavior (inline-style display math), which is the
+// only thing that fits in a cell anyway.
 function isolateDisplayMath(src: string): string {
   const fenceRe = /(^|\n)(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g;
   const placeholders: string[] = [];
-  const masked = src.replace(fenceRe, (m) => {
-    const token = `\u0000FENCE${placeholders.length}\u0000`;
+  const mask = (m: string, prefix: string) => {
+    const token = `\u0000MASK${placeholders.length}\u0000`;
     placeholders.push(m);
-    return token;
-  });
+    return prefix + token;
+  };
+  let masked = src.replace(fenceRe, (m) => mask(m, ""));
+  // Mask table rows (lines starting with optional whitespace then `|`).
+  // The GFM separator row is just another line that starts with `|`, so
+  // this single rule catches header, separator, and body rows alike.
+  masked = masked.replace(/(^|\n)([ \t]*\|[^\n]*)/g, (_m, nl, line) => mask(line, nl));
   const transformed = masked.replace(
     /\$\$([\s\S]+?)\$\$/g,
     (_m, body) => `\n\n$$\n${body.trim()}\n$$\n\n`,
   );
-  return transformed.replace(/\u0000FENCE(\d+)\u0000/g, (_m, i) => placeholders[Number(i)]);
+  return transformed.replace(/\u0000MASK(\d+)\u0000/g, (_m, i) => placeholders[Number(i)]);
 }
 
 // Lenient KaTeX options shared across every renderer in the app:
