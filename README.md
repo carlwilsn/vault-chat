@@ -84,15 +84,30 @@ The launcher just runs `npm run tauri dev` in the foreground under a shorter nam
 
 When the app opens: hit the gear icon → paste an API key (Anthropic, OpenAI, or Google) → open a folder as your vault → start asking.
 
+### Try it free (no credit card)
+
+You don't need to spend a cent to try the app — Google's Gemini API has a generous free tier that's enough to kick the tires.
+
+1. Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey), sign in with a Google account, click **Create API key**, copy the value.
+2. In vault-chat: gear icon → paste it into the **Google** field → **Save**.
+3. In the model dropdown (top of the chat pane) pick a Gemini model — `gemini-2.5-flash` is fine for everyday use.
+4. Open any folder as a vault and start chatting.
+
+That's it — Read / Write / Edit / Bash / PDF marquee / inline edit all work on the free tier. Anthropic and OpenAI require prepaid credits and are worth adding once you know you like the app; the same gear-icon flow applies.
+
+**Optional: WebSearch.** The agent's `WebSearch` tool is powered by [Tavily](https://app.tavily.com/), which also has a free tier (1000 searches/month). Grab a key from your Tavily dashboard, then in vault-chat: gear icon → **Tavily (web search)** field → paste → **Save**. `WebFetch` (loading a specific URL) needs no key and works out of the box.
+
 ## What's in it
 
 - **Ctrl+K inline edit** on any paragraph or code selection. `Ctrl+L` for an ask mode that answers in the same popover without touching the file.
 - **PDF marquee** — drag a rectangle over any region of a PDF. Selected text + the pixel screenshot go to the model together. Works on math, tables, scanned pages, handwriting.
 - **Model-agnostic**. Anthropic, OpenAI, or Google. Swap mid-session via the settings dropdown.
-- **Git-backed**. Every agent turn that touches files auto-commits. One-click restore to any earlier commit. Vault never loses state.
-- **Three editable surfaces** — explained below. The agent can modify its own config, and (in dev mode) the app's own source.
+- **Git-backed**. Every agent turn that touches files auto-commits. `Ctrl+H` opens a history modal with per-file timeline + one-click restore to any earlier commit. Vault never loses state.
+- **Phone bridge**. Run the desktop app on your laptop, talk to it from your phone over Tailscale — voice in, agent answer back, with its own conversation thread separate from whatever you've got on screen.
+- **`Alt+L`** flips the whole UI between light and dark.
+- **Editable everywhere** — explained below. The agent can modify its own config, and (in dev mode) the app's own source.
 
-## The two editable surfaces
+## The editable surfaces
 
 vault-chat treats every folder as a vault. Two are worth knowing about:
 
