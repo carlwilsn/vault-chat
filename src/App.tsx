@@ -172,6 +172,11 @@ export default function App() {
       } else if (k === "h" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         setShowHistory(true);
+      } else if (k === "j" && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        invoke("open_terminal", {
+          cwd: useStore.getState().vaultPath ?? undefined,
+        }).catch((err) => console.error("[terminal] failed:", err));
       }
     };
     window.addEventListener("keydown", onKey);

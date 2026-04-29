@@ -231,7 +231,7 @@ export function Titlebar() {
             )
           }
           className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1"
-          title={vaultPath ? `Open terminal in ${vaultPath}` : "Open terminal"}
+          title={vaultPath ? `Open terminal in ${vaultPath} (Ctrl+J)` : "Open terminal (Ctrl+J)"}
         >
           <Terminal className="h-3.5 w-3.5" />
         </button>
