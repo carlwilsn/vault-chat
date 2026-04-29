@@ -11,15 +11,16 @@ import { History as HistoryIcon, Undo2, FileText, FilePlus, FileX, Pencil } from
 import { useStore, type FileEntry } from "./store";
 import {
   gitRecentCommits,
-  gitShowCommit,
   gitRestoreToCommit,
   gitAllTouchedFiles,
+  gitCommitFiles,
   gitFileHistory,
   gitFileAt,
   gitDiffVsCurrent,
   gitRestoreFileTo,
   type GitCommit,
   type TouchedFile,
+  type CommitFile,
 } from "./git";
 import { fileKind } from "./fileKind";
 import { cn } from "./lib/utils";
@@ -33,45 +34,7 @@ type FileTab = "preview" | "diff";
 
 // --- shared utilities ----------------------------------------------------
 
-// Parse `git show --stat` / patch output to extract the list of files
-// touched by the commit, with status (A / D / M). Used to drive the
-// clickable file list in the Commits tab.
-function parseTouchedFromShow(out: string): { path: string; status: "A" | "D" | "M" }[] {
-  // The `--stat` block looks like:
-  //   path/to/file.md | 4 +-
-  //   another.md      | 1 -
-  //  N files changed, X insertions(+), Y deletions(-)
-  // For status (A/D/M) we look at the `--patch` part:
-  //   diff --git a/path b/path
-  //   new file mode 100644   ← A
-  //   deleted file mode 100644   ← D
-  //   (otherwise) → M
-  const patches = out.split(/^diff --git /m).slice(1);
-  const found = new Map<string, "A" | "D" | "M">();
-  for (const p of patches) {
-    // header line: a/<path> b/<path>
-    const headerMatch = p.match(/^a\/(.+?) b\//);
-    if (!headerMatch) continue;
-    const path = headerMatch[1];
-    let status: "A" | "D" | "M" = "M";
-    if (/^new file mode/m.test(p)) status = "A";
-    else if (/^deleted file mode/m.test(p)) status = "D";
-    found.set(path, status);
-  }
-  if (found.size > 0) {
-    return Array.from(found.entries()).map(([path, status]) => ({ path, status }));
-  }
-  // Fall back to the --stat lines when there's no patch (e.g. binary).
-  const lines = out.split("\n");
-  const out2: { path: string; status: "A" | "D" | "M" }[] = [];
-  for (const l of lines) {
-    const m = l.match(/^\s*(.+?)\s+\|\s+\d+/);
-    if (m) out2.push({ path: m[1].trim(), status: "M" });
-  }
-  return out2;
-}
-
-function StatusGlyph({ status }: { status: "A" | "D" | "M" | "exists" | "deleted" }) {
+function StatusGlyph({ status }: { status: string }) {
   if (status === "A") {
     return <FilePlus className="h-3 w-3 text-emerald-500 shrink-0" />;
   }
@@ -185,17 +148,14 @@ export function HistoryModal({ open, onClose }: Props) {
   const vaultPath = useStore((s) => s.vaultPath);
   const setFiles = useStore((s) => s.setFiles);
 
-  const [tab, setTab] = useState<Tab>("commits");
+  const [tab, setTab] = useState<Tab>("files");
   const [showEarlier, setShowEarlier] = useState(false);
 
   // --- commits tab state ---
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
-  const [patch, setPatch] = useState<string>("");
-  const [patchLoading, setPatchLoading] = useState(false);
-  const [touchedInCommit, setTouchedInCommit] = useState<
-    { path: string; status: "A" | "D" | "M" }[]
-  >([]);
+  const [commitFiles, setCommitFiles] = useState<CommitFile[]>([]);
+  const [commitFilesLoading, setCommitFilesLoading] = useState(false);
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [undoError, setUndoError] = useState<string | null>(null);
 
@@ -212,6 +172,11 @@ export function HistoryModal({ open, onClose }: Props) {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [fileRestoreBusy, setFileRestoreBusy] = useState(false);
   const [fileToast, setFileToast] = useState<string | null>(null);
+  // When the user lands on the Files tab via "click file in commit",
+  // remember the originating commit so we can show a breadcrumb back
+  // to the same commit row. Cleared when the user picks a file
+  // directly from the Files-tab list.
+  const [cameFromCommit, setCameFromCommit] = useState<GitCommit | null>(null);
   const toastTimer = useRef<number | null>(null);
 
   const reloadCommits = async () => {
@@ -235,30 +200,28 @@ export function HistoryModal({ open, onClose }: Props) {
     reloadTouched();
     // Reset transient selections so reopening doesn't show stale state.
     setSelectedHash(null);
-    setPatch("");
-    setTouchedInCommit([]);
+    setCommitFiles([]);
     setSelectedFile(null);
     setSelectedFileHash(null);
     setFileCommits([]);
     setPreviewContent("");
     setFileDiff("");
+    setCameFromCommit(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, showEarlier]);
 
   const selectCommit = async (hash: string) => {
     if (!vaultPath || selectedHash === hash) return;
     setSelectedHash(hash);
-    setPatch("");
-    setTouchedInCommit([]);
-    setPatchLoading(true);
+    setCommitFiles([]);
+    setCommitFilesLoading(true);
     try {
-      const out = await gitShowCommit(vaultPath, hash, true);
-      setPatch(out);
-      setTouchedInCommit(parseTouchedFromShow(out));
+      const files = await gitCommitFiles(vaultPath, hash);
+      setCommitFiles(files);
     } catch (e) {
-      setPatch(`Failed to load: ${String(e)}`);
+      console.error("[history] commit files failed:", e);
     }
-    setPatchLoading(false);
+    setCommitFilesLoading(false);
   };
 
   const restoreToSelected = async () => {
@@ -273,8 +236,7 @@ export function HistoryModal({ open, onClose }: Props) {
       await reloadCommits();
       await reloadTouched();
       setSelectedHash(null);
-      setPatch("");
-      setTouchedInCommit([]);
+      setCommitFiles([]);
     } catch (e) {
       setUndoError(String(e));
     }
@@ -283,7 +245,10 @@ export function HistoryModal({ open, onClose }: Props) {
 
   // --- file tab actions ---
 
-  const openFile = async (path: string) => {
+  // Open a file in the per-file pane. If `pinHash` is provided, that
+  // version is selected (used for "click a file in a commit" jumps);
+  // otherwise the most recent version that touched the file is shown.
+  const openFile = async (path: string, pinHash?: string) => {
     if (!vaultPath) return;
     setSelectedFile(path);
     setSelectedFileHash(null);
@@ -291,7 +256,8 @@ export function HistoryModal({ open, onClose }: Props) {
     setFileDiff("");
     const c = await gitFileHistory(vaultPath, path, 50, showEarlier);
     setFileCommits(c);
-    if (c.length > 0) await selectFileVersion(path, c[0].hash);
+    const target = pinHash && c.some((v) => v.hash === pinHash) ? pinHash : c[0]?.hash;
+    if (target) await selectFileVersion(path, target);
   };
 
   const selectFileVersion = async (path: string, hash: string) => {
@@ -336,8 +302,28 @@ export function HistoryModal({ open, onClose }: Props) {
 
   // --- cross-tab navigation: commit-files → files tab ---
 
-  const jumpToFile = async (path: string) => {
+  // From the Commits tab: click a file in a commit's file list. We
+  // jump to the Files tab and pin the timeline to *that* commit's
+  // version of the file, with a breadcrumb so the user can return.
+  const jumpToFile = async (path: string, fromCommit: GitCommit) => {
     setTab("files");
+    setCameFromCommit(fromCommit);
+    await openFile(path, fromCommit.hash);
+  };
+
+  const backToCommit = () => {
+    if (!cameFromCommit) return;
+    setTab("commits");
+    if (selectedHash !== cameFromCommit.hash) {
+      selectCommit(cameFromCommit.hash);
+    }
+  };
+
+  // Picking a file directly from the Files-tab list breaks the
+  // breadcrumb chain — we're no longer "viewing this from a commit",
+  // we're browsing the file's own history.
+  const openFileDirect = async (path: string) => {
+    setCameFromCommit(null);
     await openFile(path);
   };
 
@@ -368,17 +354,6 @@ export function HistoryModal({ open, onClose }: Props) {
             <HistoryIcon className="h-4 w-4 text-muted-foreground" />
             <div className="flex">
               <button
-                onClick={() => setTab("commits")}
-                className={cn(
-                  "px-3 py-1.5 text-[12px] border-b-2 -mb-px transition-colors",
-                  tab === "commits"
-                    ? "border-primary text-foreground"
-                    : "border-transparent text-muted-foreground hover:text-foreground",
-                )}
-              >
-                Commits
-              </button>
-              <button
                 onClick={() => setTab("files")}
                 className={cn(
                   "px-3 py-1.5 text-[12px] border-b-2 -mb-px transition-colors",
@@ -388,6 +363,17 @@ export function HistoryModal({ open, onClose }: Props) {
                 )}
               >
                 Files
+              </button>
+              <button
+                onClick={() => setTab("commits")}
+                className={cn(
+                  "px-3 py-1.5 text-[12px] border-b-2 -mb-px transition-colors",
+                  tab === "commits"
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Commits
               </button>
             </div>
           </div>
@@ -406,9 +392,8 @@ export function HistoryModal({ open, onClose }: Props) {
             <CommitsTab
               commits={commits}
               selectedHash={selectedHash}
-              patch={patch}
-              patchLoading={patchLoading}
-              touched={touchedInCommit}
+              commitFiles={commitFiles}
+              commitFilesLoading={commitFilesLoading}
               restoreBusy={restoreBusy}
               undoError={undoError}
               onSelect={selectCommit}
@@ -431,9 +416,11 @@ export function HistoryModal({ open, onClose }: Props) {
               previewLoading={previewLoading}
               fileRestoreBusy={fileRestoreBusy}
               fileToast={fileToast}
-              onOpenFile={openFile}
+              cameFromCommit={cameFromCommit}
+              onOpenFile={openFileDirect}
               onSelectVersion={selectFileVersion}
               onRestoreFile={restoreThisFile}
+              onBackToCommit={backToCommit}
             />
           )}
         </div>
@@ -447,9 +434,8 @@ export function HistoryModal({ open, onClose }: Props) {
 function CommitsTab({
   commits,
   selectedHash,
-  patch,
-  patchLoading,
-  touched,
+  commitFiles,
+  commitFilesLoading,
   restoreBusy,
   undoError,
   onSelect,
@@ -458,18 +444,18 @@ function CommitsTab({
 }: {
   commits: GitCommit[];
   selectedHash: string | null;
-  patch: string;
-  patchLoading: boolean;
-  touched: { path: string; status: "A" | "D" | "M" }[];
+  commitFiles: CommitFile[];
+  commitFilesLoading: boolean;
   restoreBusy: boolean;
   undoError: string | null;
   onSelect: (hash: string) => void;
   onRestore: () => void;
-  onJumpToFile: (path: string) => void;
+  onJumpToFile: (path: string, fromCommit: GitCommit) => void;
 }) {
+  const selectedCommit = commits.find((c) => c.hash === selectedHash) ?? null;
   return (
     <>
-      <div className="w-[280px] border-r border-border/60 overflow-auto shrink-0">
+      <div className="w-[300px] border-r border-border/60 overflow-auto shrink-0">
         {commits.length === 0 && (
           <div className="p-4 text-[12px] text-muted-foreground">No commits yet.</div>
         )}
@@ -509,54 +495,81 @@ function CommitsTab({
           );
         })}
       </div>
+
       <div className="flex-1 flex flex-col min-h-0">
-        {/* touched-file list (clickable, jumps to Files tab) */}
-        {selectedHash && touched.length > 0 && (
-          <div className="border-b border-border/60 px-3 py-2 max-h-[140px] overflow-auto">
-            <div className="text-[10.5px] text-muted-foreground mb-1 uppercase tracking-wide">
-              Files in this commit ({touched.length})
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {touched.map((t) => (
-                <button
-                  key={t.path}
-                  onClick={() => onJumpToFile(t.path)}
-                  className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-muted/50 hover:bg-accent/60 text-[11px] font-mono"
-                  title="See full history of this file"
-                >
-                  <StatusGlyph status={t.status} />
-                  <span className="truncate max-w-[260px]">{t.path}</span>
-                </button>
-              ))}
-            </div>
+        {!selectedCommit ? (
+          <div className="flex-1 flex items-center justify-center text-[12px] text-muted-foreground">
+            Pick a commit on the left to see the files it touched.
           </div>
-        )}
-        {/* diff body */}
-        <div className="flex-1 overflow-auto">
-          {patchLoading ? (
-            <div className="text-[12px] text-muted-foreground p-4">Loading…</div>
-          ) : patch ? (
-            <DiffView diff={patch} />
-          ) : (
-            <div className="text-[12px] text-muted-foreground p-4">
-              Pick a commit to view what changed.
+        ) : (
+          <>
+            <div className="px-4 py-3 border-b border-border/60 shrink-0">
+              <div className="text-[12.5px] text-foreground">{selectedCommit.subject}</div>
+              <div className="text-[10.5px] text-muted-foreground font-mono mt-0.5">
+                {selectedCommit.short_hash} · {selectedCommit.date}
+              </div>
             </div>
-          )}
-        </div>
-        {/* restore footer */}
-        <div className="border-t border-border/60 px-4 py-2.5 flex items-center justify-between shrink-0">
-          <span className="text-[11px] text-muted-foreground">
-            {undoError ? <span className="text-destructive">{undoError}</span> : null}
-          </span>
-          <button
-            onClick={onRestore}
-            disabled={!selectedHash || restoreBusy || commits[0]?.hash === selectedHash}
-            className="h-7 px-3 rounded text-[12px] border border-border hover:bg-accent/60 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <Undo2 className="h-3 w-3" />
-            {restoreBusy ? "Restoring…" : "Go back to this commit"}
-          </button>
-        </div>
+            <div className="flex-1 overflow-auto">
+              {commitFilesLoading ? (
+                <div className="p-4 text-[12px] text-muted-foreground">Loading…</div>
+              ) : commitFiles.length === 0 ? (
+                <div className="p-4 text-[12px] text-muted-foreground">
+                  This commit didn't touch any files (probably a restore marker).
+                </div>
+              ) : (
+                <ul className="divide-y divide-border/40">
+                  {commitFiles.map((f) => {
+                    const leaf = f.path.split("/").pop() ?? f.path;
+                    return (
+                      <li key={f.path}>
+                        <button
+                          onClick={() => onJumpToFile(f.path, selectedCommit)}
+                          className="w-full text-left px-4 py-2 flex items-center gap-3 hover:bg-accent/40"
+                          title="Open this file at this commit's version"
+                        >
+                          <StatusGlyph status={f.status} />
+                          <span className="min-w-0 flex-1">
+                            <div className="text-[12px] text-foreground truncate">
+                              {leaf}
+                            </div>
+                            <div className="text-[10.5px] text-muted-foreground font-mono truncate">
+                              {f.path}
+                            </div>
+                          </span>
+                          <span className="text-[10.5px] font-mono shrink-0 flex items-center gap-2">
+                            {f.additions > 0 && (
+                              <span className="text-emerald-500">+{f.additions}</span>
+                            )}
+                            {f.deletions > 0 && (
+                              <span className="text-destructive">-{f.deletions}</span>
+                            )}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+            <div className="border-t border-border/60 px-4 py-2.5 flex items-center justify-between shrink-0">
+              <span className="text-[11px] text-muted-foreground">
+                {undoError ? (
+                  <span className="text-destructive">{undoError}</span>
+                ) : (
+                  "Click any file above to inspect it at this commit."
+                )}
+              </span>
+              <button
+                onClick={onRestore}
+                disabled={!selectedHash || restoreBusy || commits[0]?.hash === selectedHash}
+                className="h-7 px-3 rounded text-[12px] border border-border hover:bg-accent/60 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Undo2 className="h-3 w-3" />
+                {restoreBusy ? "Restoring…" : "Go back to this commit"}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </>
   );
@@ -579,9 +592,11 @@ function FilesTab({
   previewLoading,
   fileRestoreBusy,
   fileToast,
+  cameFromCommit,
   onOpenFile,
   onSelectVersion,
   onRestoreFile,
+  onBackToCommit,
 }: {
   touched: TouchedFile[];
   loaded: boolean;
@@ -597,9 +612,11 @@ function FilesTab({
   previewLoading: boolean;
   fileRestoreBusy: boolean;
   fileToast: string | null;
+  cameFromCommit: GitCommit | null;
   onOpenFile: (path: string) => void;
   onSelectVersion: (path: string, hash: string) => void;
   onRestoreFile: () => void;
+  onBackToCommit: () => void;
 }) {
   return (
     <>
@@ -663,6 +680,19 @@ function FilesTab({
           </div>
         ) : (
           <>
+            {cameFromCommit && (
+              <div className="border-b border-border/60 px-3 py-1.5 shrink-0 bg-muted/30">
+                <button
+                  onClick={onBackToCommit}
+                  className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                >
+                  <span aria-hidden>←</span>
+                  <span>Back to commit</span>
+                  <span className="font-mono">{cameFromCommit.short_hash}</span>
+                  <span className="truncate max-w-[400px]">· {cameFromCommit.subject}</span>
+                </button>
+              </div>
+            )}
             {/* version timeline (horizontal pills, scroll if long) */}
             <div className="border-b border-border/60 px-3 py-2 overflow-x-auto shrink-0">
               <div className="text-[10.5px] text-muted-foreground mb-1 uppercase tracking-wide">

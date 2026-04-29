@@ -1368,6 +1368,120 @@ async fn git_restore_to_commit(vault: String, hash: String) -> Result<String, St
     .map_err(|e| e.to_string())?
 }
 
+/// One file affected by a single commit. Drives the per-commit
+/// summary list — status (A/M/D) plus line-count delta. No raw patch
+/// text; the per-file diff lives in `git_diff_vs_current` once the
+/// user picks a file to inspect.
+#[derive(serde::Serialize)]
+struct CommitFile {
+    path: String,
+    status: String,
+    additions: u32,
+    deletions: u32,
+}
+
+#[tauri::command]
+async fn git_commit_files(vault: String, hash: String) -> Result<Vec<CommitFile>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Root commits have no parent — diff-tree against the empty
+        // tree so initial-commit users still see their files.
+        let (_, _, parent_code) =
+            run_git(&vault, &["rev-parse", "--verify", &format!("{}^", hash)])?;
+        let has_parent = parent_code == 0;
+        let stat_args: Vec<String> = if has_parent {
+            vec![
+                "diff-tree".into(),
+                "-r".into(),
+                "--no-renames".into(),
+                "--numstat".into(),
+                hash.clone(),
+            ]
+        } else {
+            vec![
+                "diff-tree".into(),
+                "-r".into(),
+                "--no-renames".into(),
+                "--numstat".into(),
+                "--root".into(),
+                hash.clone(),
+            ]
+        };
+        let stat_args_ref: Vec<&str> = stat_args.iter().map(|s| s.as_str()).collect();
+        let (numstat_out, _, _) = run_git(&vault, &stat_args_ref)?;
+
+        let status_args: Vec<String> = if has_parent {
+            vec![
+                "diff-tree".into(),
+                "-r".into(),
+                "--no-renames".into(),
+                "--name-status".into(),
+                hash.clone(),
+            ]
+        } else {
+            vec![
+                "diff-tree".into(),
+                "-r".into(),
+                "--no-renames".into(),
+                "--name-status".into(),
+                "--root".into(),
+                hash.clone(),
+            ]
+        };
+        let status_args_ref: Vec<&str> = status_args.iter().map(|s| s.as_str()).collect();
+        let (status_out, _, _) = run_git(&vault, &status_args_ref)?;
+
+        let mut status_by_path: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for line in status_out.lines() {
+            let mut parts = line.splitn(2, '\t');
+            let s = parts.next().unwrap_or("").trim();
+            let p = parts.next().unwrap_or("").trim();
+            if !p.is_empty() {
+                status_by_path.insert(p.to_string(), s.chars().next().unwrap_or('M').to_string());
+            }
+        }
+
+        let mut out = Vec::new();
+        for line in numstat_out.lines() {
+            // numstat: <adds>\t<dels>\t<path>. Binary files emit "-\t-".
+            let mut parts = line.splitn(3, '\t');
+            let adds_raw = parts.next().unwrap_or("");
+            let dels_raw = parts.next().unwrap_or("");
+            let path = parts.next().unwrap_or("").trim().to_string();
+            if path.is_empty() {
+                continue;
+            }
+            let additions: u32 = adds_raw.parse().unwrap_or(0);
+            let deletions: u32 = dels_raw.parse().unwrap_or(0);
+            let status = status_by_path
+                .get(&path)
+                .cloned()
+                .unwrap_or_else(|| "M".to_string());
+            out.push(CommitFile {
+                path,
+                status,
+                additions,
+                deletions,
+            });
+        }
+        // Stable order: status (A, M, D) then path.
+        let order = |s: &str| match s {
+            "A" => 0,
+            "M" => 1,
+            "D" => 2,
+            _ => 3,
+        };
+        out.sort_by(|a, b| {
+            order(&a.status)
+                .cmp(&order(&b.status))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Row in the per-vault "touched files" index. One per unique path
 /// that has ever been added / modified / deleted in the vault's git
 /// history (within the configured range — see `include_before_start`).
@@ -2104,6 +2218,7 @@ pub fn run() {
             git_show_commit,
             git_restore_to_commit,
             git_all_touched_files,
+            git_commit_files,
             git_file_history,
             git_file_at,
             git_diff_vs_current,

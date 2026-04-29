@@ -89,6 +89,25 @@ export async function gitAllTouchedFiles(
   }
 }
 
+export type CommitFile = {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+};
+
+export async function gitCommitFiles(
+  vault: string,
+  hash: string,
+): Promise<CommitFile[]> {
+  try {
+    return await invoke<CommitFile[]>("git_commit_files", { vault, hash });
+  } catch (e) {
+    console.warn("[git] commit files failed:", e);
+    return [];
+  }
+}
+
 export async function gitFileHistory(
   vault: string,
   relativePath: string,
