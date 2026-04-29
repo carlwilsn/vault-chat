@@ -76,9 +76,9 @@ npm link
 
 ### 3. Launch
 
-```sh
-vault-chat
-```
+Just type `vault-chat` anywhere from your terminal and the app will open.
+
+![vault-chat command in terminal](assets/vault-command.png)
 
 The launcher just runs `npm run tauri dev` in the foreground under a shorter name — you'll see cargo's output live. **First run takes ~10–15 min** while Rust compiles everything; subsequent runs are ~2 seconds because cargo caches incrementally.
 
