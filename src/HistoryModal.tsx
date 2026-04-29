@@ -60,9 +60,14 @@ function HistoricalPreview({ path, content }: { path: string; content: string })
     );
   }
   const { kind, ext } = fileKind(path);
+  // The preview has to live inside a narrow modal pane, so we use the
+  // chat-bubble prose scale (smaller headings, tighter padding) rather
+  // than the main-view prose. The wrapper's max-width is capped to
+  // the parent, never the 780px main-view ceiling, so long lines wrap
+  // instead of forcing horizontal scroll.
   if (kind === "markdown") {
     return (
-      <div className="prose-md mx-auto p-4">
+      <div className="prose-chat px-4 py-3 max-w-full break-words">
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
           rehypePlugins={[rehypeRaw, [rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
@@ -75,14 +80,11 @@ function HistoricalPreview({ path, content }: { path: string; content: string })
   if (kind === "code") {
     const fenced = "```" + (ext || "") + "\n" + content + "\n```";
     return (
-      <div className="prose-md mx-auto p-4">
+      <div className="prose-chat px-4 py-3 max-w-full break-words">
         <ReactMarkdown rehypePlugins={[rehypeHighlight]}>{fenced}</ReactMarkdown>
       </div>
     );
   }
-  // Image / pdf / html / notebook / unsupported — show the path and a
-  // hint. Re-rendering binaries from history needs a separate read path
-  // we haven't wired up; the diff view still works for these.
   return (
     <div className="text-[12px] text-muted-foreground p-4">
       Preview not available for {kind}. Use the Diff vs current tab to see what
@@ -345,7 +347,7 @@ export function HistoryModal({ open, onClose }: Props) {
       }}
     >
       <div
-        className="w-[920px] max-h-[85vh] flex flex-col rounded-md border border-border bg-card shadow-xl"
+        className="w-[920px] max-w-[92vw] max-h-[85vh] flex flex-col rounded-md border border-border bg-card shadow-xl overflow-hidden"
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* header + tabs */}
@@ -551,21 +553,21 @@ function CommitsTab({
                 </ul>
               )}
             </div>
-            <div className="border-t border-border/60 px-4 py-2.5 flex items-center justify-between shrink-0">
-              <span className="text-[11px] text-muted-foreground">
+            <div className="border-t border-border/60 px-4 py-2.5 flex items-center gap-3 shrink-0">
+              <span className="text-[11px] min-w-0 flex-1 truncate text-muted-foreground">
                 {undoError ? (
                   <span className="text-destructive">{undoError}</span>
                 ) : (
-                  "Click any file above to inspect it at this commit."
+                  "Click any file to inspect it at this commit."
                 )}
               </span>
               <button
                 onClick={onRestore}
                 disabled={!selectedHash || restoreBusy || commits[0]?.hash === selectedHash}
-                className="h-7 px-3 rounded text-[12px] border border-border hover:bg-accent/60 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                className="h-7 px-3 rounded text-[12px] border border-border hover:bg-accent/60 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed shrink-0 whitespace-nowrap"
               >
                 <Undo2 className="h-3 w-3" />
-                {restoreBusy ? "Restoring…" : "Go back to this commit"}
+                {restoreBusy ? "Restoring…" : "Restore to this commit"}
               </button>
             </div>
           </>
@@ -777,8 +779,8 @@ function FilesTab({
             </div>
 
             {/* restore footer */}
-            <div className="border-t border-border/60 px-4 py-2.5 flex items-center justify-between shrink-0">
-              <span className="text-[11px]">
+            <div className="border-t border-border/60 px-4 py-2.5 flex items-center gap-3 shrink-0">
+              <span className="text-[11px] min-w-0 flex-1 truncate">
                 {fileToast ? (
                   <span className="text-emerald-600">{fileToast}</span>
                 ) : (
@@ -796,10 +798,10 @@ function FilesTab({
                   fileRestoreBusy ||
                   fileCommits[0]?.hash === selectedFileHash
                 }
-                className="h-7 px-3 rounded text-[12px] border border-border hover:bg-accent/60 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                className="h-7 px-3 rounded text-[12px] border border-border hover:bg-accent/60 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed shrink-0 whitespace-nowrap"
               >
                 <Undo2 className="h-3 w-3" />
-                {fileRestoreBusy ? "Restoring…" : "Restore just this file"}
+                {fileRestoreBusy ? "Restoring…" : "Restore this file"}
               </button>
             </div>
           </>
