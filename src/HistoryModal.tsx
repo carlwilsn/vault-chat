@@ -67,7 +67,7 @@ function HistoricalPreview({ path, content }: { path: string; content: string })
   // instead of forcing horizontal scroll.
   if (kind === "markdown") {
     return (
-      <div className="prose-chat px-4 py-3 max-w-full break-words">
+      <div className="prose-chat px-4 py-3">
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
           rehypePlugins={[rehypeRaw, [rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
@@ -80,7 +80,7 @@ function HistoricalPreview({ path, content }: { path: string; content: string })
   if (kind === "code") {
     const fenced = "```" + (ext || "") + "\n" + content + "\n```";
     return (
-      <div className="prose-chat px-4 py-3 max-w-full break-words">
+      <div className="prose-chat px-4 py-3">
         <ReactMarkdown rehypePlugins={[rehypeHighlight]}>{fenced}</ReactMarkdown>
       </div>
     );
