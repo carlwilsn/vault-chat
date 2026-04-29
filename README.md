@@ -105,7 +105,7 @@ That's it — Read / Write / Edit / Bash / PDF marquee / inline edit all work on
 - **Git-backed**. Every agent turn that touches files auto-commits. `Ctrl+H` opens a history modal with per-file timeline + one-click restore to any earlier commit. Vault never loses state.
 - **Phone bridge**. Run the desktop app on your laptop, talk to it from your phone over Tailscale — voice in, agent answer back, with its own conversation thread separate from whatever you've got on screen.
 - **`Alt+L`** flips the whole UI between light and dark.
-- **Editable everywhere** — explained below. The agent can modify its own config, and (in dev mode) the app's own source.
+- **Editable everywhere** — explained below. The agent can write its own skills and tools right inside the meta vault.
 
 ## The editable surfaces
 
@@ -126,15 +126,15 @@ Ask the agent: *"Make me a skill for reviewing math HW."* It writes `<meta>/skil
 
 Ask: *"Build me a tool that fetches the Champions League standings."* The agent writes `<meta>/tools/champions-league/TOOL.md` (JSON Schema input spec) + `run.py` (reads stdin JSON, prints stdout JSON). Available on the next turn.
 
-### Modifying the app itself
-
-In dev mode, HMR picks up TS/React changes instantly and Rust changes in ~30s. Asking the agent to *"add a new theme"* or *"add a button to the titlebar"* genuinely works — changes appear in the running window.
-
 ## Security
 
 API keys live in the OS keychain (Windows Credential Manager / Mac Keychain / Linux libsecret), not in localStorage or plaintext files. The agent's file-operation tools (`Read`, `Write`, `Bash`, etc.) cannot reach them.
 
 The agent cannot modify files inside any `.git/` directory — the file-op tools refuse those paths so the undo system stays intact.
+
+## Got an idea for the app?
+
+Reach out to me (Carl) at [carwilson0929@gmail.com](mailto:carwilson0929@gmail.com). I'll help you cleanly clone the repo so you can make your own version — either with Claude Code driving the changes or by hand if you'd rather code it yourself.
 
 ## License
 
