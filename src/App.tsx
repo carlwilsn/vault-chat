@@ -87,8 +87,14 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
       // Alt+L — theme toggle. No mod requirement so it fires even
-      // without Ctrl/Cmd.
+      // without Ctrl/Cmd. Skip auto-repeats so holding the chord
+      // for a beat doesn't flip the theme back and forth before the
+      // user lifts their fingers.
       if (k === "l" && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        if (e.repeat) {
+          e.preventDefault();
+          return;
+        }
         e.preventDefault();
         setTheme(useStore.getState().theme === "light" ? "graphite" : "light");
         return;
