@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, Undo2, History, RefreshCw, StickyNote } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, History, RefreshCw, StickyNote } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
-import { gitInitIfNeeded, gitRecentCommits, gitShowCommit, gitRestoreToCommit, type GitCommit } from "./git";
+import { gitInitIfNeeded } from "./git";
+import { HistoryModal } from "./HistoryModal";
 
 export function Titlebar() {
   const {
@@ -28,14 +29,6 @@ export function Titlebar() {
   const [hiddenLines, setHiddenLines] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [commits, setCommits] = useState<GitCommit[]>([]);
-  const [selectedHash, setSelectedHash] = useState<string | null>(null);
-  const [patch, setPatch] = useState<string>("");
-  const [patchLoading, setPatchLoading] = useState(false);
-  const [fullDiff, setFullDiff] = useState(false);
-  const [showEarlier, setShowEarlier] = useState(false);
-  const [restoreBusy, setRestoreBusy] = useState(false);
-  const [undoError, setUndoError] = useState<string | null>(null);
   const [refreshSpin, setRefreshSpin] = useState(false);
   const win = getCurrentWindow();
 
@@ -92,71 +85,6 @@ export function Titlebar() {
       console.error(e);
     }
   };
-
-  const openHistory = async () => {
-    if (!vaultPath) return;
-    const c = await gitRecentCommits(vaultPath, 30, showEarlier);
-    setCommits(c);
-    setSelectedHash(null);
-    setPatch("");
-    setUndoError(null);
-    setHistoryOpen(true);
-  };
-
-  const toggleShowEarlier = async () => {
-    const next = !showEarlier;
-    setShowEarlier(next);
-    if (vaultPath) {
-      const c = await gitRecentCommits(vaultPath, 100, next);
-      setCommits(c);
-    }
-  };
-
-  const loadPatch = async (hash: string, withFull: boolean) => {
-    if (!vaultPath) return;
-    setPatchLoading(true);
-    try {
-      const p = await gitShowCommit(vaultPath, hash, withFull);
-      setPatch(p);
-    } catch (e) {
-      setPatch(`Failed to load: ${String(e)}`);
-    }
-    setPatchLoading(false);
-  };
-
-  const selectCommit = async (hash: string) => {
-    if (!vaultPath) return;
-    if (selectedHash === hash) return;
-    setSelectedHash(hash);
-    setPatch("");
-    await loadPatch(hash, fullDiff);
-  };
-
-  const toggleFullDiff = async () => {
-    const next = !fullDiff;
-    setFullDiff(next);
-    if (selectedHash) await loadPatch(selectedHash, next);
-  };
-
-  const restoreToSelected = async () => {
-    if (!vaultPath || !selectedHash || restoreBusy) return;
-    if (commits[0]?.hash === selectedHash) return; // already at this commit
-    setRestoreBusy(true);
-    setUndoError(null);
-    try {
-      await gitRestoreToCommit(vaultPath, selectedHash);
-      const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: vaultPath });
-      setFiles(listed);
-      const c = await gitRecentCommits(vaultPath, 30, showEarlier);
-      setCommits(c);
-      setSelectedHash(null);
-      setPatch("");
-    } catch (e) {
-      setUndoError(String(e));
-    }
-    setRestoreBusy(false);
-  };
-
 
   const toggleSel = (line: string) =>
     setSelected((prev) => {
@@ -252,7 +180,7 @@ export function Titlebar() {
               <Eye className="h-3.5 w-3.5" />
             </button>
             <button
-              onClick={openHistory}
+              onClick={() => setHistoryOpen(true)}
               className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
               title="History"
             >
@@ -398,136 +326,7 @@ export function Titlebar() {
         </div>
       </div>
     )}
-    {historyOpen && (
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-        onMouseDown={(e) => {
-          if (e.target === e.currentTarget) setHistoryOpen(false);
-        }}
-      >
-        <div
-          className="w-[720px] max-h-[80vh] flex flex-col rounded-md border border-border bg-card shadow-xl"
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <div className="px-4 pt-4 pb-2 flex items-center justify-between">
-            <div>
-              <div className="text-[13px] font-semibold text-foreground">History</div>
-              <div className="text-[11.5px] text-muted-foreground mt-0.5">
-                Pick a commit to view the diff. Nothing is reverted until you
-                click the button below.
-              </div>
-            </div>
-            <button
-              onClick={restoreToSelected}
-              disabled={
-                !selectedHash ||
-                restoreBusy ||
-                (commits[0]?.hash === selectedHash)
-              }
-              className="h-7 px-3 rounded text-[12px] border border-border hover:bg-accent/60 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-              title={
-                !selectedHash
-                  ? "Select a commit first"
-                  : commits[0]?.hash === selectedHash
-                    ? "Already at this commit"
-                    : "Rewind the vault to this commit state"
-              }
-            >
-              <Undo2 className="h-3 w-3" />
-              {restoreBusy ? "Restoring…" : "Go back to this commit"}
-            </button>
-          </div>
-          <div className="flex-1 min-h-0 flex">
-            <div className="w-[280px] border-r border-border/60 overflow-auto">
-              {commits.length === 0 && (
-                <div className="p-4 text-[12px] text-muted-foreground">
-                  No commits yet.
-                </div>
-              )}
-              {commits.map((c, idx) => {
-                const isSelected = selectedHash === c.hash;
-                const isHead = idx === 0;
-                return (
-                  <button
-                    key={c.hash}
-                    onClick={() => selectCommit(c.hash)}
-                    className={`w-full text-left px-3 py-2 border-b border-border/40 flex items-start gap-2 hover:bg-accent/40 ${
-                      isSelected ? "bg-accent/60" : ""
-                    }`}
-                  >
-                    <span
-                      className={`mt-[3px] h-3 w-3 shrink-0 rounded-full border ${
-                        isSelected
-                          ? "border-primary bg-primary"
-                          : "border-muted-foreground/50"
-                      }`}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <div className="text-[12px] text-foreground truncate">
-                        {c.subject}
-                      </div>
-                      <div className="text-[10.5px] text-muted-foreground font-mono mt-0.5 flex items-center gap-2 flex-wrap">
-                        <span>{c.short_hash} · {c.date}</span>
-                        {isHead && <span className="text-primary">HEAD</span>}
-                        {c.is_anchor && (
-                          <span className="rounded px-1.5 py-px text-[9.5px] bg-primary/15 text-primary">
-                            vault-chat start
-                          </span>
-                        )}
-                      </div>
-                    </span>
-                  </button>
-                );
-              })}
-              <button
-                onClick={toggleShowEarlier}
-                className="w-full text-center px-3 py-2 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/30"
-              >
-                {showEarlier
-                  ? "hide earlier history"
-                  : "show earlier history (before vault-chat)"}
-              </button>
-            </div>
-            <div className="flex-1 flex flex-col min-h-0">
-              {selectedHash && (
-                <div className="px-3 py-1.5 border-b border-border/60 flex items-center justify-between shrink-0">
-                  <span className="text-[10.5px] text-muted-foreground">
-                    {fullDiff ? "Full diff" : "Summary (files + line counts)"}
-                  </span>
-                  <button
-                    onClick={toggleFullDiff}
-                    disabled={patchLoading}
-                    className="text-[10.5px] text-muted-foreground hover:text-foreground underline underline-offset-2 disabled:opacity-50"
-                  >
-                    {fullDiff ? "hide file contents" : "show file contents"}
-                  </button>
-                </div>
-              )}
-              <div className="flex-1 overflow-auto p-3">
-                {patchLoading ? (
-                  <div className="text-[12px] text-muted-foreground p-2">
-                    Loading…
-                  </div>
-                ) : patch ? (
-                  <pre className="text-[11.5px] font-mono whitespace-pre-wrap text-foreground/90">
-                    {patch}
-                  </pre>
-                ) : (
-                  <div className="text-[12px] text-muted-foreground p-2">
-                    Pick a commit to view what changed.
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-          {undoError && (
-            <div className="px-4 py-2 border-t border-border/60 text-[11.5px] text-destructive">
-              {undoError}
-            </div>
-          )}
-        </div>
-      </div>
-    )}
+    <HistoryModal open={historyOpen} onClose={() => setHistoryOpen(false)} />
     </>
   );
 }

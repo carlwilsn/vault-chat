@@ -1368,6 +1368,287 @@ async fn git_restore_to_commit(vault: String, hash: String) -> Result<String, St
     .map_err(|e| e.to_string())?
 }
 
+/// Row in the per-vault "touched files" index. One per unique path
+/// that has ever been added / modified / deleted in the vault's git
+/// history (within the configured range — see `include_before_start`).
+#[derive(serde::Serialize)]
+struct TouchedFile {
+    path: String,
+    last_hash: String,
+    last_short_hash: String,
+    last_subject: String,
+    last_date: String,
+    edits: u32,
+    /// "exists" if currently tracked in HEAD, "deleted" otherwise.
+    status: String,
+}
+
+/// Every path that has been added/edited/deleted in the visible
+/// history. Sorted by most-recent activity. Renames are recorded as
+/// add+delete so both names appear (avoids the user losing track of a
+/// renamed file). Deleted files keep their entry with status="deleted".
+#[tauri::command]
+async fn git_all_touched_files(
+    vault: String,
+    include_before_start: Option<bool>,
+) -> Result<Vec<TouchedFile>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let include_all = include_before_start.unwrap_or(false);
+        let (tag_hash, _, tag_code) =
+            run_git(&vault, &["rev-parse", "--verify", "vault-chat-start"])?;
+        let tag_hash = if tag_code == 0 {
+            Some(tag_hash.trim().to_string())
+        } else {
+            None
+        };
+        let range = match (&tag_hash, include_all) {
+            (Some(t), false) => format!("{}..HEAD", t),
+            _ => "HEAD".to_string(),
+        };
+        let (out, _, _) = run_git(
+            &vault,
+            &[
+                "log",
+                &range,
+                "--name-status",
+                "--no-renames",
+                "--pretty=format:COMMIT\x1f%H\x1f%h\x1f%s\x1f%ad",
+                "--date=format:%Y-%m-%d %H:%M",
+            ],
+        )?;
+
+        let mut by_path: std::collections::HashMap<String, TouchedFile> =
+            std::collections::HashMap::new();
+        let (mut cur_hash, mut cur_short, mut cur_subject, mut cur_date) =
+            (String::new(), String::new(), String::new(), String::new());
+        for line in out.lines() {
+            if let Some(rest) = line.strip_prefix("COMMIT\x1f") {
+                let parts: Vec<&str> = rest.splitn(4, '\x1f').collect();
+                if parts.len() == 4 {
+                    cur_hash = parts[0].to_string();
+                    cur_short = parts[1].to_string();
+                    cur_subject = parts[2].to_string();
+                    cur_date = parts[3].to_string();
+                }
+                continue;
+            }
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // Format: <status>\t<path>. Skip anything we don't understand.
+            let mut parts = line.splitn(2, '\t');
+            let _status = parts.next().unwrap_or("");
+            let path = parts.next().unwrap_or("").trim().to_string();
+            if path.is_empty() {
+                continue;
+            }
+            let entry = by_path
+                .entry(path.clone())
+                .or_insert_with(|| TouchedFile {
+                    path: path.clone(),
+                    last_hash: cur_hash.clone(),
+                    last_short_hash: cur_short.clone(),
+                    last_subject: cur_subject.clone(),
+                    last_date: cur_date.clone(),
+                    edits: 0,
+                    status: "exists".to_string(),
+                });
+            entry.edits += 1;
+        }
+
+        // status: in HEAD? exists. otherwise: deleted.
+        let (ls_out, _, _) = run_git(&vault, &["ls-files"])?;
+        let existing: std::collections::HashSet<String> =
+            ls_out.lines().map(|l| l.trim().to_string()).collect();
+        for tf in by_path.values_mut() {
+            if !existing.contains(&tf.path) {
+                tf.status = "deleted".to_string();
+            }
+        }
+
+        let mut result: Vec<TouchedFile> = by_path.into_values().collect();
+        result.sort_by(|a, b| b.last_date.cmp(&a.last_date));
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Commits that touched a single path (relative to vault root). Same
+/// shape as git_recent_commits so the UI can reuse the same row
+/// component. `--follow` so file renames don't truncate history.
+#[tauri::command]
+async fn git_file_history(
+    vault: String,
+    relative_path: String,
+    n: Option<usize>,
+    include_before_start: Option<bool>,
+) -> Result<Vec<GitCommit>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let n = n.unwrap_or(50).min(500);
+        let include_all = include_before_start.unwrap_or(false);
+        let fmt = "%H%x1f%h%x1f%s%x1f%an%x1f%ad%x1f%b%x1e";
+
+        let (tag_hash, _, tag_code) =
+            run_git(&vault, &["rev-parse", "--verify", "vault-chat-start"])?;
+        let tag_hash = if tag_code == 0 {
+            Some(tag_hash.trim().to_string())
+        } else {
+            None
+        };
+
+        let (out, _, _) = run_git(
+            &vault,
+            &[
+                "log",
+                &format!("-{}", n),
+                "--follow",
+                &format!("--pretty=format:{}", fmt),
+                "--date=format:%Y-%m-%d %H:%M",
+                "--",
+                &relative_path,
+            ],
+        )?;
+
+        let mut commits = Vec::new();
+        for record in out.split('\x1e') {
+            let r = record.trim();
+            if r.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = r.splitn(6, '\x1f').collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            let hash = parts[0].to_string();
+            let is_anchor = tag_hash.as_deref() == Some(hash.as_str());
+            commits.push(GitCommit {
+                hash,
+                short_hash: parts[1].to_string(),
+                subject: parts[2].to_string(),
+                author: parts[3].to_string(),
+                date: parts[4].to_string(),
+                body: parts.get(5).map(|s| s.trim().to_string()).unwrap_or_default(),
+                is_anchor,
+            });
+            if is_anchor && !include_all {
+                break;
+            }
+        }
+        Ok(commits)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Read a path's contents at a given commit. Empty string if the path
+/// didn't exist there. Caller decides how to render (markdown / code /
+/// image / etc.) based on the path extension.
+#[tauri::command]
+async fn git_file_at(
+    vault: String,
+    hash: String,
+    relative_path: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let spec = format!("{}:{}", hash, relative_path);
+        let (out, _stderr, code) = run_git(&vault, &["show", &spec])?;
+        if code != 0 {
+            // Path didn't exist in this commit. Surface as empty rather
+            // than an error so the UI can show "(file did not exist
+            // here)" without a try/catch.
+            return Ok(String::new());
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Diff for a single path framed as "what would change if I rolled
+/// back?". Green = lines that come back, red = lines that disappear.
+/// Implemented as `git diff HEAD..hash -- path` so the *target* version
+/// is the "+" side. Empty string if no difference.
+#[tauri::command]
+async fn git_diff_vs_current(
+    vault: String,
+    hash: String,
+    relative_path: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let range = format!("HEAD..{}", hash);
+        let (out, stderr, code) = run_git(
+            &vault,
+            &["diff", &range, "--", &relative_path],
+        )?;
+        if code != 0 {
+            return Err(stderr.trim().to_string());
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Restore a single path to its content at `hash`, then commit so the
+/// rollback is itself an undoable step. Adds creates, applies edits,
+/// and removes paths that didn't exist at `hash`.
+#[tauri::command]
+async fn git_restore_file_to(
+    vault: String,
+    hash: String,
+    relative_path: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Did this path exist in the target commit?
+        let spec = format!("{}:{}", hash, relative_path);
+        let (_, _, ls_code) = run_git(&vault, &["cat-file", "-e", &spec])?;
+        if ls_code == 0 {
+            // Yes — checkout that version into both index and worktree.
+            let (_, stderr, code) = run_git(
+                &vault,
+                &["checkout", &hash, "--", &relative_path],
+            )?;
+            if code != 0 {
+                return Err(format!("checkout failed: {}", stderr.trim()));
+            }
+        } else {
+            // No — the path didn't exist there, so restoring means
+            // removing the current file. `git rm` will fail loudly if
+            // the path is also untracked; ignore that case.
+            let (_, _, _) = run_git(&vault, &["rm", "-f", "--", &relative_path])?;
+        }
+        let short = hash.chars().take(8).collect::<String>();
+        let leaf = relative_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&relative_path);
+        let msg = format!("Restore {} to {}", leaf, short);
+        let (_, stderr, code) = run_git(
+            &vault,
+            &[
+                "-c",
+                "user.email=vault-chat@local",
+                "-c",
+                "user.name=vault-chat",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                &msg,
+            ],
+        )?;
+        if code != 0 {
+            return Err(format!("commit failed: {}", stderr.trim()));
+        }
+        let (new_hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
+        Ok(new_hash.trim().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ----- keychain (API key secure storage) -----
 //
 // API keys and service credentials live in the OS keychain instead of
@@ -1822,6 +2103,11 @@ pub fn run() {
             git_revert_head,
             git_show_commit,
             git_restore_to_commit,
+            git_all_touched_files,
+            git_file_history,
+            git_file_at,
+            git_diff_vs_current,
+            git_restore_file_to,
             meta_vault_init,
             meta_vault_path,
             run_script,
