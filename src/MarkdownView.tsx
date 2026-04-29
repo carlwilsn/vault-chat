@@ -24,6 +24,7 @@ import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { fileKind } from "./fileKind";
 import { tryOpenLink } from "./linkNav";
+import { noteEditedFile } from "./commit-controller";
 
 // remark-math renders $$…$$ as block (centered/large) display math only
 // when the $$ delimiters sit on their own lines with the body between
@@ -259,6 +260,11 @@ export function MarkdownView({ paneId }: Props) {
       try {
         await invoke("write_text_file", { path: file, contents: value });
         lastSaved.current = value;
+        // Tell the commit-controller this file is dirty; once the
+        // user pauses for ~10 s, all the edits in the burst land as
+        // a single "edit foo.md" commit. Lets users see their own
+        // typing in History, not just the agent's writes.
+        noteEditedFile(file);
       } catch (e) {
         console.error("autosave failed", e);
       }

@@ -3,6 +3,7 @@ import { runAgent } from "./agent";
 import { findModel } from "./providers";
 import { compactConversation } from "./compactor";
 import { gitCommitAll } from "./git";
+import { flushEditCommit } from "./commit-controller";
 import {
   useStore,
   MODEL_CONTEXT_LIMIT,
@@ -78,6 +79,11 @@ export async function sendMessage(
   }
   cur.setBusy(true);
   cur.resetStreaming();
+
+  // Flush any pending user-edit-debounce commit before we hand off to
+  // the agent. Otherwise stray uncommitted keystrokes get rolled into
+  // the agent's end-of-turn commit with the agent's message.
+  await flushEditCommit();
 
   const filtered = cur.messages.filter((m) => !m.system);
   const baseHistory = filtered.map((m) => ({ role: m.role, content: m.content }));
@@ -160,7 +166,11 @@ export async function sendMessage(
           const subject = commitSubject(trimmed, touched);
           const body = touchedFilesBody(touched);
           const msg = body ? `${subject}\n\n${body}` : subject;
-          gitCommitAll(vault, msg).catch(() => {});
+          // Second flush for edits the user made WHILE the agent was
+          // running — they'd otherwise sneak into the agent commit.
+          flushEditCommit()
+            .then(() => gitCommitAll(vault, msg))
+            .catch(() => {});
         }
 
         invoke<FileEntry[]>("list_markdown_files", { vault })

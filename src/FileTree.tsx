@@ -6,6 +6,7 @@ import { VAULT_PATH_MIME, VAULT_PATHS_MIME, isExternalFileDrop, copyExternalFile
 import { cn } from "./lib/utils";
 import { isUnreadableAsText } from "./fileKind";
 import { revealInFileExplorer } from "./opener";
+import { commitFsAction } from "./commit-controller";
 
 type PendingKind = "file" | "folder";
 type Menu = { x: number; y: number; entry: FileEntry | null } | null;
@@ -227,6 +228,15 @@ export function FileTree() {
       setSelected(new Set(moves.map((m) => m.to)));
       setAnchor(moves[moves.length - 1].to);
       await refreshFiles();
+      if (succeeded.length > 0 && vaultPath) {
+        const rel = (p: string) =>
+          p.startsWith(vaultPath + "/") ? p.slice(vaultPath.length + 1) : p;
+        const msg =
+          succeeded.length === 1
+            ? `move ${rel(succeeded[0].from)} → ${rel(succeeded[0].to)}`
+            : `move ${succeeded.length} items`;
+        commitFsAction(vaultPath, msg).catch(() => {});
+      }
     } catch (err) {
       console.error("[dnd] move failed:", err);
     }
@@ -295,6 +305,12 @@ export function FileTree() {
         // landing in view mode just shows a blank pane and forces an
         // extra Ctrl+E. Drop straight into the editor.
         setMode("edit");
+        if (vaultPath) {
+          const rel = path.startsWith(vaultPath + "/")
+            ? path.slice(vaultPath.length + 1)
+            : path;
+          commitFsAction(vaultPath, `create ${rel}`).catch(() => {});
+        }
       } catch (e) {
         console.error(e);
       }
@@ -303,6 +319,8 @@ export function FileTree() {
       try {
         await invoke("create_dir", { path });
         await refreshFiles();
+        // git only tracks files, not empty dirs — no commit until the
+        // first file lands inside. Skip commitFsAction here.
       } catch (e) {
         console.error(e);
       }
@@ -364,6 +382,11 @@ export function FileTree() {
         }
       }
       await refreshFiles();
+      if (vaultPath && renaming.path.startsWith(vaultPath + "/")) {
+        const oldRel = renaming.path.slice(vaultPath.length + 1);
+        const newRel = to.slice(vaultPath.length + 1);
+        commitFsAction(vaultPath, `rename ${oldRel} → ${newRel}`).catch(() => {});
+      }
     } catch (e) {
       console.error(e);
     }
@@ -419,6 +442,15 @@ export function FileTree() {
     await refreshFiles();
     setSelected(new Set());
     setAnchor(null);
+    if (deletedOk.length > 0 && vaultPath) {
+      const rel = (p: string) =>
+        p.startsWith(vaultPath + "/") ? p.slice(vaultPath.length + 1) : p;
+      const msg =
+        deletedOk.length === 1
+          ? `delete ${rel(deletedOk[0])}`
+          : `delete ${deletedOk.length} items`;
+      commitFsAction(vaultPath, msg).catch(() => {});
+    }
   };
 
   const hideEntry = async (f: FileEntry) => {
@@ -448,6 +480,10 @@ export function FileTree() {
       }
       await applyDeleteCascade([f.path]);
       await refreshFiles();
+      if (vaultPath && f.path.startsWith(vaultPath + "/")) {
+        const rel = f.path.slice(vaultPath.length + 1);
+        commitFsAction(vaultPath, `delete ${rel}`).catch(() => {});
+      }
     } catch (e) {
       console.error(e);
     }
