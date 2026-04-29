@@ -879,7 +879,7 @@ function AgentTodoList({ todos }: { todos: TodoItem[] }) {
               <span
                 className={cn(
                   "mt-[5px] h-2 w-2 shrink-0 rounded-full",
-                  t.status === "completed" && "bg-emerald-500",
+                  t.status === "completed" && "bg-emerald-600",
                   t.status === "in_progress" && "bg-primary animate-pulse",
                   t.status === "pending" && "bg-muted-foreground/40",
                 )}
@@ -1103,10 +1103,7 @@ function ModelPicker({
         <ChevronUp className="h-3 w-3" />
       </button>
       {open && (
-        <div
-          className="absolute bottom-full left-0 mb-1 w-64 rounded-lg border border-border shadow-lg z-50 flex flex-col"
-          style={{ background: "hsl(var(--card))" }}
-        >
+        <div className="absolute bottom-full left-0 mb-1 w-64 rounded-lg border border-border bg-card shadow-lg z-50 flex flex-col">
           <div className="p-1.5 border-b border-border/60">
             <input
               ref={searchRef}

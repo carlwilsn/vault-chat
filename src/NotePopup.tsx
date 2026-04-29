@@ -219,7 +219,7 @@ export function NotePopup({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[22vh] bg-black/40"
+      className="fixed inset-0 z-50 flex items-start justify-center pt-[22vh] bg-black/40 backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

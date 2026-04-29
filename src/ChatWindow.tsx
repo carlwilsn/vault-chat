@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { ChatPane } from "./ChatPane";
 import { SettingsPane } from "./SettingsPane";
 import { useStore } from "./store";
+import { applyHljsTheme } from "./main";
 
 export function ChatWindow() {
   const win = getCurrentWindow();
@@ -14,6 +15,7 @@ export function ChatWindow() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    applyHljsTheme(theme);
   }, [theme]);
 
   useEffect(() => {

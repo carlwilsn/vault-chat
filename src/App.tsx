@@ -15,6 +15,7 @@ import type { NoteAnchor } from "./notes";
 import { useStore } from "./store";
 import { gitInitIfNeeded } from "./git";
 import { tryOpenLink } from "./linkNav";
+import { applyHljsTheme } from "./main";
 import "./App.css";
 
 export default function App() {
@@ -34,6 +35,7 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    applyHljsTheme(theme);
   }, [theme]);
 
   const setFiles = useStore((s) => s.setFiles);

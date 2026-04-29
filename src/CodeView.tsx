@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
-import "highlight.js/styles/github-dark.css";
 import { useStore } from "./store";
 
 const EXT_TO_LANG: Record<string, string> = {

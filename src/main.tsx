@@ -12,6 +12,11 @@ import "@fontsource/inter/600.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "./monaco-setup";
+// highlight.js theme stylesheets — loaded as URLs and swapped at runtime
+// based on the active theme. Importing one as a side effect (the way it
+// used to be) painted code blocks dark even in light mode.
+import hljsDarkUrl from "highlight.js/styles/github-dark.css?url";
+import hljsLightUrl from "highlight.js/styles/github.css?url";
 import App from "./App";
 import { ChatWindow } from "./ChatWindow";
 import { installMainSync, installPopoutSync } from "./sync";
@@ -19,8 +24,20 @@ import { initMetaVault } from "./meta";
 import { hydrateKeychain, hydratePersistedChat } from "./store";
 import { installPhoneBridge } from "./phone-bridge";
 
+export function applyHljsTheme(theme: string) {
+  let link = document.getElementById("vault-chat-hljs") as HTMLLinkElement | null;
+  if (!link) {
+    link = document.createElement("link");
+    link.id = "vault-chat-hljs";
+    link.rel = "stylesheet";
+    document.head.appendChild(link);
+  }
+  link.href = theme === "light" ? hljsLightUrl : hljsDarkUrl;
+}
+
 const savedTheme = localStorage.getItem("vault_chat_theme");
 document.documentElement.dataset.theme = savedTheme === "light" ? "light" : "graphite";
+applyHljsTheme(savedTheme === "light" ? "light" : "graphite");
 
 const view = new URLSearchParams(window.location.search).get("view");
 const isPopout = view === "chat";

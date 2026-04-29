@@ -6,7 +6,6 @@ import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import { Eye } from "lucide-react";
 import "katex/dist/katex.min.css";
-import "highlight.js/styles/github-dark.css";
 
 const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
 
