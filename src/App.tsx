@@ -84,19 +84,22 @@ export default function App() {
     }
   }, [vaultPath, files]);
 
+  const lastThemeToggleRef = useRef(0);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
-      // Alt+L — theme toggle. No mod requirement so it fires even
-      // without Ctrl/Cmd. Skip auto-repeats so holding the chord
-      // for a beat doesn't flip the theme back and forth before the
-      // user lifts their fingers.
+      // Alt+L — theme toggle. We have to guard against three different
+      // ways the same chord can fire twice: keyboard auto-repeat, a
+      // synthetic re-emit from the OS menu-activation that Alt sometimes
+      // triggers on Windows, and rapid back-to-back keydowns from the
+      // user mashing the chord. e.repeat catches auto-repeat; the time
+      // lockout absorbs the other two without affecting normal toggles.
       if (k === "l" && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        if (e.repeat) {
-          e.preventDefault();
-          return;
-        }
         e.preventDefault();
+        if (e.repeat) return;
+        const now = Date.now();
+        if (now - lastThemeToggleRef.current < 250) return;
+        lastThemeToggleRef.current = now;
         setTheme(useStore.getState().theme === "light" ? "graphite" : "light");
         return;
       }
