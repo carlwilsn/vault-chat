@@ -30,6 +30,7 @@ export default function App() {
   const noteComposer = useStore((s) => s.noteComposer);
   const showNotesPanel = useStore((s) => s.showNotesPanel);
   const setShowNotesPanel = useStore((s) => s.setShowNotesPanel);
+  const setShowHistory = useStore((s) => s.setShowHistory);
   const loadNotes = useStore((s) => s.loadNotes);
   const notesLoaded = useStore((s) => s.notesLoaded);
 
@@ -165,11 +166,14 @@ export default function App() {
       } else if (k === "b" && e.shiftKey) {
         e.preventDefault();
         toggleRight();
+      } else if (k === "h" && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        setShowHistory(true);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleMode, toggleLeft, toggleRight, currentFile, setTheme, openNoteComposer]);
+  }, [toggleMode, toggleLeft, toggleRight, currentFile, setTheme, openNoteComposer, setShowHistory]);
 
   // Lazy-load notes the first time a vault is active (or after a vault
   // switch, which resets notesLoaded).

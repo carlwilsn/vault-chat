@@ -498,7 +498,7 @@ function CommitsTab({
         })}
       </div>
 
-      <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex-1 flex flex-col min-h-0 min-w-0">
         {!selectedCommit ? (
           <div className="flex-1 flex items-center justify-center text-[12px] text-muted-foreground">
             Pick a commit on the left to see the files it touched.
@@ -675,7 +675,7 @@ function FilesTab({
       </div>
 
       {/* per-file pane */}
-      <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex-1 flex flex-col min-h-0 min-w-0">
         {!selectedFile ? (
           <div className="flex-1 flex items-center justify-center text-[12px] text-muted-foreground">
             Pick a file to see its history.

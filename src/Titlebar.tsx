@@ -23,12 +23,13 @@ export function Titlebar() {
     toggleRight,
     setShowNotesPanel,
     notes,
+    showHistory,
+    setShowHistory,
   } = useStore();
   const [maximized, setMaximized] = useState(false);
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const [hiddenLines, setHiddenLines] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [refreshSpin, setRefreshSpin] = useState(false);
   const win = getCurrentWindow();
 
@@ -180,9 +181,9 @@ export function Titlebar() {
               <Eye className="h-3.5 w-3.5" />
             </button>
             <button
-              onClick={() => setHistoryOpen(true)}
+              onClick={() => setShowHistory(true)}
               className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
-              title="History"
+              title="History (Ctrl+H)"
             >
               <History className="h-3.5 w-3.5" />
             </button>
@@ -326,7 +327,7 @@ export function Titlebar() {
         </div>
       </div>
     )}
-    <HistoryModal open={historyOpen} onClose={() => setHistoryOpen(false)} />
+    <HistoryModal open={showHistory} onClose={() => setShowHistory(false)} />
     </>
   );
 }
