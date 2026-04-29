@@ -50,10 +50,12 @@ export function PdfView({ path }: { path: string }) {
   }, []);
 
   // Watch for a pending scroll request (e.g. "open anchor" from the
-  // Notes panel). Gated on !loading so we only fire once pdf.js has
-  // finished rendering every page — otherwise scrollIntoView lands
-  // on a canvas that hasn't laid out yet and the position is wrong
-  // after the final render.
+  // Notes panel). Gated on !loading so the page wrappers are in the
+  // DOM with their final heights — otherwise scrollIntoView lands on
+  // a position that shifts as later wrappers append. Targets the
+  // pdf-page-wrap (always present after load, even before the canvas
+  // for that page has rendered under virtualization) rather than the
+  // canvas itself.
   const pendingScrollAnchor = useStore((s) => s.pendingScrollAnchor);
   const clearScrollAnchor = useStore((s) => s.clearScrollAnchor);
   useEffect(() => {
@@ -63,14 +65,12 @@ export function PdfView({ path }: { path: string }) {
     const pageMatch = pendingScrollAnchor.anchor.match(/page=(\d+)/);
     if (!pageMatch) return;
     const target = pageMatch[1];
-    // One rAF after loading flips false so layout fully settles
-    // before we compute the destination.
     const id = requestAnimationFrame(() => {
-      const canvas = hostRef.current?.querySelector<HTMLCanvasElement>(
-        `canvas.pdf-page[data-page="${target}"]`,
+      const wrap = hostRef.current?.querySelector<HTMLDivElement>(
+        `.pdf-page-wrap[data-page="${target}"]`,
       );
-      if (canvas) {
-        canvas.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (wrap) {
+        wrap.scrollIntoView({ behavior: "smooth", block: "start" });
       }
       clearScrollAnchor();
     });
@@ -88,123 +88,262 @@ export function PdfView({ path }: { path: string }) {
     setPages(0);
     setZoom(1);
 
+    // Virtualized rendering: build empty page wrappers up front so the
+    // scroll height is correct, then lazily render canvas + text-layer
+    // for pages near the viewport via IntersectionObserver. Pages that
+    // scroll far away get torn down to free GPU/RAM. Without this, a
+    // 350-page book would render every canvas at startup (~6 GB on
+    // hi-DPI screens) and lock the UI for tens of seconds.
+    type PageProxy = {
+      getViewport: (opts: { scale: number }) => { width: number; height: number };
+      render: (opts: {
+        canvas: HTMLCanvasElement;
+        viewport: { width: number; height: number };
+        transform: [number, number, number, number, number, number];
+      }) => { promise: Promise<void>; cancel(): void };
+      getTextContent: () => Promise<{ items: Array<{ str?: string; hasEOL?: boolean }> }>;
+      cleanup: () => void;
+    };
+    type PageState = {
+      page: PageProxy;
+      fitScale: number;
+      displayViewport: { width: number; height: number };
+      renderViewport: { width: number; height: number };
+      rendered: boolean;
+      renderTask: { promise: Promise<void>; cancel(): void } | null;
+    };
+
+    let doc: { destroy: () => void; numPages: number; getPage(n: number): Promise<PageProxy> } | null = null;
+    const wrappers: HTMLDivElement[] = [];
+    const pageStates: PageState[] = [];
+    let renderObserver: IntersectionObserver | null = null;
+    let teardownObserver: IntersectionObserver | null = null;
+
+    const renderPage = async (idx: number) => {
+      if (cancelled) return;
+      const state = pageStates[idx];
+      const wrap = wrappers[idx];
+      if (!state || !wrap || state.rendered || state.renderTask) return;
+
+      const dpr = window.devicePixelRatio || 1;
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.floor(state.renderViewport.width * dpr);
+      canvas.height = Math.floor(state.renderViewport.height * dpr);
+      canvas.style.width = `${state.displayViewport.width}px`;
+      canvas.style.height = `${state.displayViewport.height}px`;
+      canvas.className = "pdf-page shadow-md rounded";
+      canvas.dataset.page = String(idx + 1);
+      wrap.appendChild(canvas);
+
+      const transform: [number, number, number, number, number, number] =
+        dpr === 1 ? [1, 0, 0, 1, 0, 0] : [dpr, 0, 0, dpr, 0, 0];
+      const task = state.page.render({
+        canvas,
+        viewport: state.renderViewport,
+        transform,
+      });
+      state.renderTask = task;
+      try {
+        await task.promise;
+      } catch {
+        // RenderingCancelledException — page was torn down mid-render.
+        state.renderTask = null;
+        return;
+      }
+      state.renderTask = null;
+      if (cancelled) return;
+
+      const textLayerDiv = document.createElement("div");
+      textLayerDiv.className = "pdf-text-layer";
+      textLayerDiv.style.setProperty("--scale-factor", String(state.fitScale));
+      wrap.appendChild(textLayerDiv);
+
+      const textContent = await state.page.getTextContent();
+      if (cancelled) return;
+
+      const TL = (pdfjs as unknown as {
+        TextLayer?: new (o: {
+          textContentSource: typeof textContent;
+          container: HTMLElement;
+          viewport: typeof state.displayViewport;
+        }) => { render: () => Promise<void> };
+      }).TextLayer;
+      if (TL) {
+        const layer = new TL({
+          textContentSource: textContent,
+          container: textLayerDiv,
+          viewport: state.displayViewport,
+        });
+        try {
+          await layer.render();
+        } catch {
+          /* layer cancelled — ignore */
+        }
+      } else {
+        const legacy = (pdfjs as unknown as {
+          renderTextLayer?: (o: {
+            textContentSource: typeof textContent;
+            container: HTMLElement;
+            viewport: typeof state.displayViewport;
+          }) => { promise: Promise<void> };
+        }).renderTextLayer;
+        if (legacy) {
+          try {
+            await legacy({
+              textContentSource: textContent,
+              container: textLayerDiv,
+              viewport: state.displayViewport,
+            }).promise;
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+
+      state.rendered = true;
+    };
+
+    const tearDownPage = (idx: number) => {
+      const state = pageStates[idx];
+      const wrap = wrappers[idx];
+      if (!state || !wrap || !state.rendered) return;
+      if (state.renderTask) {
+        try {
+          state.renderTask.cancel();
+        } catch {
+          /* ignore */
+        }
+        state.renderTask = null;
+      }
+      wrap.innerHTML = "";
+      try {
+        state.page.cleanup();
+      } catch {
+        /* ignore */
+      }
+      state.rendered = false;
+    };
+
     (async () => {
       try {
         const bytes = await invoke<number[]>("read_binary_file", { path });
         const data = new Uint8Array(bytes);
         if (cancelled) return;
-        const task = pdfjs.getDocument({ data });
-        const doc = await task.promise;
+        doc = (await pdfjs.getDocument({ data }).promise) as unknown as typeof doc;
         if (cancelled) {
-          doc.destroy();
+          doc!.destroy();
           return;
         }
-        setPages(doc.numPages);
-        const allPageText: string[] = [];
-        for (let i = 1; i <= doc.numPages; i++) {
-          if (cancelled) {
-            doc.destroy();
-            return;
-          }
-          const page = await doc.getPage(i);
+        setPages(doc!.numPages);
+
+        const containerWidth = host.clientWidth - 32;
+
+        // Fetch all PageProxy in parallel — pdf.js queues internally,
+        // and parallel `getPage` is dramatically faster than serial.
+        const proxies: PageProxy[] = await Promise.all(
+          Array.from({ length: doc!.numPages }, (_, i) => doc!.getPage(i + 1)),
+        );
+        if (cancelled) {
+          doc!.destroy();
+          return;
+        }
+
+        // Build empty wrappers at correct dimensions so the document
+        // has its true scroll height immediately.
+        for (let i = 0; i < proxies.length; i++) {
+          const page = proxies[i];
           const unscaled = page.getViewport({ scale: 1 });
-          const containerWidth = host.clientWidth - 32;
           const fitScale = Math.max(0.8, containerWidth / unscaled.width);
-          // Render canvas at a higher internal scale for crispness, then
-          // display via CSS at `fitScale`. The text layer MUST use the
-          // same CSS dimensions (unrounded) as the canvas for glyph
-          // spans to align — any floor/round here creates drift.
           const displayViewport = page.getViewport({ scale: fitScale });
           const renderViewport = page.getViewport({
             scale: fitScale * BASE_RENDER_SCALE,
           });
-          const cssWidth = displayViewport.width;
-          const cssHeight = displayViewport.height;
 
-          const canvas = document.createElement("canvas");
-          const dpr = window.devicePixelRatio || 1;
-          canvas.width = Math.floor(renderViewport.width * dpr);
-          canvas.height = Math.floor(renderViewport.height * dpr);
-          canvas.style.width = `${cssWidth}px`;
-          canvas.style.height = `${cssHeight}px`;
-          canvas.className = "pdf-page shadow-md rounded";
-          canvas.dataset.page = String(i);
-          const transform: [number, number, number, number, number, number] =
-            dpr === 1 ? [1, 0, 0, 1, 0, 0] : [dpr, 0, 0, dpr, 0, 0];
-
-          // Page wrapper is `position: relative` so the text layer can
-          // overlay the canvas at the exact same pixel dimensions. The
-          // text layer holds invisible spans positioned to match
-          // rendered glyphs, so window.getSelection() picks up real
-          // text.
           const pageWrap = document.createElement("div");
           pageWrap.className = "pdf-page-wrap";
           pageWrap.style.position = "relative";
-          pageWrap.style.width = `${cssWidth}px`;
-          pageWrap.style.height = `${cssHeight}px`;
-          pageWrap.appendChild(canvas);
-
-          const textLayerDiv = document.createElement("div");
-          textLayerDiv.className = "pdf-text-layer";
-          // Recent pdf.js (>= 3.x) TextLayer reads --scale-factor from
-          // CSS and builds font-size: calc(var(--scale-factor) * Xpx)
-          // for each glyph. Without this var, spans misalign on zoom.
-          textLayerDiv.style.setProperty("--scale-factor", String(fitScale));
-          pageWrap.appendChild(textLayerDiv);
+          pageWrap.style.width = `${displayViewport.width}px`;
+          pageWrap.style.height = `${displayViewport.height}px`;
+          pageWrap.dataset.page = String(i + 1);
 
           const outerWrap = document.createElement("div");
           outerWrap.className = "flex justify-center";
           outerWrap.appendChild(pageWrap);
           host.appendChild(outerWrap);
 
-          await page.render({ canvas, viewport: renderViewport, transform }).promise;
-
-          // Build the text layer. pdfjs-dist >= 4 exposes a TextLayer
-          // class; older versions used renderTextLayer. Support both.
-          const textContent = await page.getTextContent();
-
-          // Stash plain text for ask context.
-          const pageText = (textContent.items as Array<{ str?: string; hasEOL?: boolean }>)
-            .map((it) => (typeof it.str === "string" ? it.str : ""))
-            .join(" ");
-          allPageText.push(`--- page ${i} ---\n${pageText}`);
-
-          // Text layer viewport MUST exactly match the display
-          // viewport the canvas is showing — same object, not a fresh
-          // one with a recomputed scale, to avoid float-rounding drift.
-          const TL = (pdfjs as unknown as { TextLayer?: new (o: {
-            textContentSource: typeof textContent;
-            container: HTMLElement;
-            viewport: ReturnType<typeof page.getViewport>;
-          }) => { render: () => Promise<void> } }).TextLayer;
-          if (TL) {
-            const layer = new TL({
-              textContentSource: textContent,
-              container: textLayerDiv,
-              viewport: displayViewport,
-            });
-            await layer.render();
-          } else {
-            const legacy = (pdfjs as unknown as {
-              renderTextLayer?: (o: {
-                textContentSource: typeof textContent;
-                container: HTMLElement;
-                viewport: ReturnType<typeof page.getViewport>;
-              }) => { promise: Promise<void> };
-            }).renderTextLayer;
-            if (legacy) {
-              await legacy({
-                textContentSource: textContent,
-                container: textLayerDiv,
-                viewport: displayViewport,
-              }).promise;
-            }
-          }
-          page.cleanup();
+          wrappers.push(pageWrap);
+          pageStates.push({
+            page,
+            fitScale,
+            displayViewport,
+            renderViewport,
+            rendered: false,
+            renderTask: null,
+          });
         }
-        fullTextRef.current = allPageText.join("\n\n");
+
+        // Background: pull all pages' text content for ask-mode context.
+        // Cheap relative to rendering (no rasterization); doesn't block
+        // the UI. Marquee captures still work for visible pages even if
+        // this hasn't completed yet — `textInRect` reads from the live
+        // text-layer DOM, not from `fullTextRef`.
+        void (async () => {
+          const allText: string[] = new Array(proxies.length).fill("");
+          await Promise.all(
+            proxies.map(async (page, i) => {
+              if (cancelled) return;
+              try {
+                const tc = await page.getTextContent();
+                const text = tc.items
+                  .map((it) => (typeof it.str === "string" ? it.str : ""))
+                  .join(" ");
+                allText[i] = `--- page ${i + 1} ---\n${text}`;
+              } catch {
+                /* ignore */
+              }
+            }),
+          );
+          if (!cancelled) fullTextRef.current = allText.join("\n\n");
+        })();
+
+        const scroller = scrollRef.current;
+        if (!scroller || cancelled) {
+          if (cancelled) doc!.destroy();
+          return;
+        }
+
+        // Render zone: ~1.2 viewports above + below trigger render.
+        renderObserver = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (!entry.isIntersecting) continue;
+              const idx = Number((entry.target as HTMLElement).dataset.page) - 1;
+              if (idx >= 0 && idx < pageStates.length) void renderPage(idx);
+            }
+          },
+          { root: scroller, rootMargin: "1200px 0px 1200px 0px" },
+        );
+
+        // Keep-alive zone: wider margin. Pages outside it get torn down
+        // to free canvas memory. Hysteresis between the two zones means
+        // small scrolls don't churn the recently-rendered set.
+        teardownObserver = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (entry.isIntersecting) continue;
+              const idx = Number((entry.target as HTMLElement).dataset.page) - 1;
+              if (idx >= 0 && idx < pageStates.length) tearDownPage(idx);
+            }
+          },
+          { root: scroller, rootMargin: "5000px 0px 5000px 0px" },
+        );
+
+        for (const wrap of wrappers) {
+          renderObserver.observe(wrap);
+          teardownObserver.observe(wrap);
+        }
+
         setLoading(false);
-        doc.destroy();
       } catch (e) {
         if (!cancelled) {
           setError((e as Error).message);
@@ -215,6 +354,23 @@ export function PdfView({ path }: { path: string }) {
 
     return () => {
       cancelled = true;
+      if (renderObserver) renderObserver.disconnect();
+      if (teardownObserver) teardownObserver.disconnect();
+      for (const state of pageStates) {
+        if (state.renderTask) {
+          try {
+            state.renderTask.cancel();
+          } catch {
+            /* ignore */
+          }
+        }
+        try {
+          state.page.cleanup();
+        } catch {
+          /* ignore */
+        }
+      }
+      if (doc) doc.destroy();
     };
   }, [path]);
 
