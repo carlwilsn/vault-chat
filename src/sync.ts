@@ -1,6 +1,6 @@
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { useStore, type ChatMessage, type LiveTool, type Theme, type TodoItem } from "./store";
+import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme, type TodoItem } from "./store";
 import { sendMessage, stopAgent, clearChat, setModel } from "./chat-controller";
 
 const POPOUT_LABEL = "chat-popout";
@@ -28,6 +28,10 @@ type StateSnapshot = {
   // used to gate the Capture button's enabled state.
   currentFile: string | null;
   panePaths: string[];
+  // Mirrored so the popout's @-mention picker and the resolver in
+  // ChatPane.send() can see the vault file list — without this the
+  // popout's `files` is always [] and @-refs silently drop.
+  files: FileEntry[];
 };
 
 type StreamSnapshot = {
@@ -62,6 +66,7 @@ function takeStateSnapshot(): StateSnapshot {
     compacting: s.compacting,
     currentFile: s.currentFile,
     panePaths: s.panes.map((p) => p.file),
+    files: s.files,
   };
 }
 
@@ -141,7 +146,8 @@ export async function installMainSync() {
       state.compacting !== prev.compacting ||
       state.vaultPath !== prev.vaultPath ||
       state.currentFile !== prev.currentFile ||
-      state.panes !== prev.panes;
+      state.panes !== prev.panes ||
+      state.files !== prev.files;
     if (stateChanged) broadcastState();
 
     const streamChanged =

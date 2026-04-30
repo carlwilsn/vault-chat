@@ -431,6 +431,7 @@ type State = {
     compacting?: boolean;
     currentFile?: string | null;
     panePaths?: string[];
+    files?: FileEntry[];
   }) => void;
   applyChatStream: (s: {
     busy: boolean;
@@ -1132,6 +1133,7 @@ export const useStore = create<State>((set) => ({
         compacting: s.compacting ?? false,
         currentFile: s.currentFile !== undefined ? s.currentFile : prev.currentFile,
         panes: nextPanes,
+        files: s.files ?? prev.files,
       };
     }),
   applyChatStream: (s) =>
