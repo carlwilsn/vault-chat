@@ -622,7 +622,14 @@ export function FileTree() {
                         ? Array.from(selected)
                         : [f.path];
                     e.dataTransfer.setData(VAULT_PATH_MIME, f.path);
-                    e.dataTransfer.setData("text/plain", f.path);
+                    // Intentionally NOT setting text/plain. Nothing in
+                    // this app consumes it, and Monaco / CodeMirror
+                    // grab text/plain off any drop and insert it into
+                    // the editor — so dragging a tree row over an open
+                    // file in edit mode used to paste its path into
+                    // the buffer instead of opening the split-screen
+                    // pane the MarkdownArea drop handler is wired up
+                    // for.
                     if (group.length > 1) {
                       e.dataTransfer.setData(VAULT_PATHS_MIME, JSON.stringify(group));
                     }
