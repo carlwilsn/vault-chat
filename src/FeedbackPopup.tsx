@@ -9,12 +9,17 @@ import {
   Check,
   RotateCw,
   X,
+  Play,
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import { useStore } from "./store";
 import { anchorImages, type NoteAnchor } from "./notes";
 import { fileKind } from "./fileKind";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
+import { openUrl } from "./opener";
 import {
   submitFeedback,
   listFeedbackIssues,
@@ -28,6 +33,13 @@ import {
   type IssueSummary,
   type IssueComment,
 } from "./feedback";
+
+// Manually triggering the cloud auto-fix routine just opens the
+// routine page in the user's browser; from there they click "Run now"
+// in the Anthropic UI. Avoids needing an Anthropic API token in the
+// desktop app — auth is handled by the user's existing claude.ai
+// session in the browser.
+const ROUTINE_URL = "https://claude.ai/code/routines/trig_01Qi59s8Cqj1gf6PvcpmrH8j";
 
 // "Send feedback" composer + Issues tab. Visually mirrors NotePopup
 // but with an indigo accent so it's unmistakably not a note. New tab
@@ -742,15 +754,25 @@ function IssuesTab({
               ? "No feedback issues yet — file your first one in the New tab."
               : `${issues.length} issue${issues.length === 1 ? "" : "s"}`}
         </div>
-        <button
-          onClick={onRefresh}
-          disabled={loading}
-          className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
-          title="Refresh"
-        >
-          <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
-          {loading ? "refreshing…" : "refresh"}
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => openUrl(ROUTINE_URL).catch((e) => console.error("[feedback] openUrl:", e))}
+            className="flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300"
+            title="Open the routine page; click Run now there to trigger the agent immediately"
+          >
+            <Play className="h-3 w-3" />
+            run agent now
+          </button>
+          <button
+            onClick={onRefresh}
+            disabled={loading}
+            className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+            title="Refresh"
+          >
+            <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
+            {loading ? "refreshing…" : "refresh"}
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -793,8 +815,10 @@ function IssuesTab({
               {isExpanded && (
                 <div className="border-t border-border/60 bg-muted/30 px-3 py-2 space-y-2 text-[12px]">
                   {iss.body && (
-                    <div className="whitespace-pre-wrap text-foreground/85 leading-relaxed">
-                      {trimBody(iss.body)}
+                    <div className="prose-chat text-foreground/85">
+                      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                        {trimBody(iss.body)}
+                      </ReactMarkdown>
                     </div>
                   )}
                   <div className="border-t border-border/40 pt-2">
@@ -817,8 +841,10 @@ function IssuesTab({
                             <div className="text-[10.5px] text-muted-foreground/90 mb-1 font-mono">
                               {c.author} · {relativeTime(c.created_at)}
                             </div>
-                            <div className="whitespace-pre-wrap text-[12px] text-foreground/90 leading-relaxed">
-                              {trimBody(c.body)}
+                            <div className="prose-chat text-[12px] text-foreground/90">
+                              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                                {trimBody(c.body)}
+                              </ReactMarkdown>
                             </div>
                           </div>
                         ))}
