@@ -109,7 +109,7 @@ const newPaneId = () =>
     : `p_${Math.random().toString(36).slice(2)}`);
 
 type ApiKeys = Partial<Record<ProviderId, string>>;
-export type ServiceKeys = { tavily?: string };
+export type ServiceKeys = { tavily?: string; github_pat?: string };
 
 const MODEL_STORAGE = "vault_chat_model";
 const THEME_STORAGE = "vault_chat_theme";
@@ -171,12 +171,13 @@ async function fetchAllFromKeychain(): Promise<{
   apiKeys: ApiKeys;
   serviceKeys: ServiceKeys;
 }> {
-  const [anthropic, openai, google, openrouter, tavily] = await Promise.all([
+  const [anthropic, openai, google, openrouter, tavily, github_pat] = await Promise.all([
     keychainGet(KEY.anthropic),
     keychainGet(KEY.openai),
     keychainGet(KEY.google),
     keychainGet(KEY.openrouter),
     keychainGet(KEY.tavily),
+    keychainGet(KEY.github_pat),
   ]);
   const apiKeys: ApiKeys = {};
   if (anthropic) apiKeys.anthropic = anthropic;
@@ -185,6 +186,7 @@ async function fetchAllFromKeychain(): Promise<{
   if (openrouter) apiKeys.openrouter = openrouter;
   const serviceKeys: ServiceKeys = {};
   if (tavily) serviceKeys.tavily = tavily;
+  if (github_pat) serviceKeys.github_pat = github_pat;
   return { apiKeys, serviceKeys };
 }
 
@@ -212,6 +214,7 @@ async function migrateLocalStorageKeys(): Promise<void> {
     if (rawService) {
       const parsed = JSON.parse(rawService) as ServiceKeys;
       if (parsed.tavily) await keychainSet(KEY.tavily, parsed.tavily);
+      if (parsed.github_pat) await keychainSet(KEY.github_pat, parsed.github_pat);
       localStorage.removeItem(OLD_SERVICE);
     }
   } catch (e) {
@@ -324,6 +327,16 @@ type State = {
     initialAnchors?: import("./notes").NoteAnchor[];
     initialTurns?: import("./notes").NoteTurn[];
   };
+  // Feedback composer — same anchor + image plumbing as notes, but
+  // submits a GitHub issue (label `auto-fix:queued`) instead of writing
+  // to notes.jsonl. The cloud auto-fix agent picks queued issues up
+  // nightly and lands fixes on main.
+  feedbackComposer: {
+    open: boolean;
+    initialDraft?: string;
+    initialAnchors?: import("./notes").NoteAnchor[];
+  };
+  feedbackCapturePending: boolean;
 
   setVault: (p: string) => void;
   setFiles: (f: FileEntry[]) => void;
@@ -397,6 +410,16 @@ type State = {
     initialTurns?: import("./notes").NoteTurn[];
   }) => void;
   closeNoteComposer: () => void;
+  openFeedbackComposer: (payload?: {
+    initialDraft?: string;
+    initialAnchors?: import("./notes").NoteAnchor[];
+  }) => void;
+  closeFeedbackComposer: () => void;
+  stashFeedbackForCapture: (payload: {
+    draft: string;
+    anchors: import("./notes").NoteAnchor[];
+  }) => void;
+  setFeedbackCapturePending: (b: boolean) => void;
   resetStreaming: () => void;
   applyChatState: (s: {
     vaultPath: string | null;
@@ -463,6 +486,8 @@ export const useStore = create<State>((set) => ({
   chatPaneLastCapture: null,
   editorSelection: null,
   noteComposer: { open: false },
+  feedbackComposer: { open: false },
+  feedbackCapturePending: false,
 
   setVault: (p) =>
     set((s) => {
@@ -803,7 +828,8 @@ export const useStore = create<State>((set) => ({
   },
   setServiceKey: (name, k) => {
     set((s) => ({ serviceKeys: { ...s.serviceKeys, [name]: k } }));
-    const keyName = name === "tavily" ? KEY.tavily : null;
+    const keyName =
+      name === "tavily" ? KEY.tavily : name === "github_pat" ? KEY.github_pat : null;
     if (keyName) {
       keychainSet(keyName, k).catch((e) =>
         console.error(`[keys] keychain set ${name} failed:`, e),
@@ -816,7 +842,8 @@ export const useStore = create<State>((set) => ({
       delete next[name];
       return { serviceKeys: next };
     });
-    const keyName = name === "tavily" ? KEY.tavily : null;
+    const keyName =
+      name === "tavily" ? KEY.tavily : name === "github_pat" ? KEY.github_pat : null;
     if (keyName) {
       keychainDelete(keyName).catch((e) =>
         console.error(`[keys] keychain delete ${name} failed:`, e),
@@ -1053,6 +1080,25 @@ export const useStore = create<State>((set) => ({
       },
     }),
   closeNoteComposer: () => set({ noteComposer: { open: false } }),
+  openFeedbackComposer: (payload) =>
+    set({
+      feedbackComposer: {
+        open: true,
+        initialDraft: payload?.initialDraft,
+        initialAnchors: payload?.initialAnchors,
+      },
+    }),
+  closeFeedbackComposer: () => set({ feedbackComposer: { open: false } }),
+  stashFeedbackForCapture: (payload) =>
+    set({
+      feedbackComposer: {
+        open: false,
+        initialDraft: payload.draft,
+        initialAnchors: payload.anchors,
+      },
+      feedbackCapturePending: true,
+    }),
+  setFeedbackCapturePending: (b) => set({ feedbackCapturePending: b }),
   resetStreaming: () => {
     cancelStreamFlush();
     cancelReasoningFlush();

@@ -196,8 +196,9 @@ export function ImageView({ path }: { path: string }) {
         store.setEditPromptCapturePending(false);
         return;
       }
-      if (store.noteCapturePending) {
-        const stashed = store.noteComposer;
+      if (store.noteCapturePending || store.feedbackCapturePending) {
+        const isFeedback = store.feedbackCapturePending;
+        const stashed = isFeedback ? store.feedbackComposer : store.noteComposer;
         const prev = stashed.initialAnchors ?? [];
         const hasPrimary = prev.some((a) => a.primary);
         const appendImage = (a: typeof prev[number]) => {
@@ -226,12 +227,20 @@ export function ImageView({ path }: { path: string }) {
                 primary: true,
               },
             ];
-        store.openNoteComposer({
-          initialDraft: stashed.initialDraft,
-          initialAnchors: anchors,
-          initialTurns: stashed.initialTurns,
-        });
-        store.setNoteCapturePending(false);
+        if (isFeedback) {
+          store.openFeedbackComposer({
+            initialDraft: stashed.initialDraft,
+            initialAnchors: anchors,
+          });
+          store.setFeedbackCapturePending(false);
+        } else {
+          store.openNoteComposer({
+            initialDraft: stashed.initialDraft,
+            initialAnchors: anchors,
+            initialTurns: (stashed as typeof store.noteComposer).initialTurns,
+          });
+          store.setNoteCapturePending(false);
+        }
         return;
       }
       setInlineAsk({

@@ -3,9 +3,11 @@
 // npm via package.json's "bin" field so `npm link` exposes it on PATH
 // everywhere.
 //
-// Checks toolchain, installs node deps on first run, and execs
-// `npm run tauri dev` in the foreground. Same output you'd see running
-// `npm run tauri dev` directly — just reachable by a shorter name.
+// Checks toolchain, installs node deps on first run, fast-forward
+// pulls origin/main if the working tree is clean, and execs
+// `npm run tauri dev` in the foreground. Same output you'd see
+// running `npm run tauri dev` directly — just reachable by a shorter
+// name.
 
 import { spawn, spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -41,6 +43,55 @@ if (!existsSync(join(repo, "node_modules"))) {
   });
   if (r.status !== 0) process.exit(r.status ?? 1);
 }
+
+// Auto-pull origin/main before launching, so the cloud auto-fix
+// agent's overnight commits land in the user's working copy. Strict
+// safety: only fast-forwards on `main` with a clean working tree.
+// Anything else (feature branch, uncommitted changes, no network) is
+// a soft skip — print why, launch the app anyway. We never want
+// updater logic to block the user from running their app.
+function tryAutoPull() {
+  const git = (args, opts = {}) =>
+    spawnSync("git", args, {
+      cwd: repo,
+      encoding: "utf8",
+      shell: false,
+      ...opts,
+    });
+
+  const branchRes = git(["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (branchRes.status !== 0) {
+    console.log("vault-chat: not a git checkout, skipping auto-pull.");
+    return;
+  }
+  const branch = (branchRes.stdout || "").trim();
+  if (branch !== "main") {
+    console.log(`vault-chat: on '${branch}', not 'main' — skipping auto-pull.`);
+    return;
+  }
+
+  const statusRes = git(["status", "--porcelain"]);
+  if (statusRes.status === 0 && (statusRes.stdout || "").trim().length > 0) {
+    console.log("vault-chat: working tree has local changes — skipping auto-pull.");
+    return;
+  }
+
+  console.log("vault-chat: pulling origin/main…");
+  const pullRes = git(["pull", "--ff-only", "--quiet", "origin", "main"], {
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+  if (pullRes.status !== 0) {
+    console.log("vault-chat: auto-pull failed (offline? non-FF?) — launching anyway.");
+    return;
+  }
+  // Concise status: print the new HEAD and the count of new commits if any.
+  const headRes = git(["log", "-1", "--oneline"]);
+  if (headRes.status === 0) {
+    console.log(`vault-chat: at ${(headRes.stdout || "").trim()}`);
+  }
+}
+
+tryAutoPull();
 
 const child = spawn(npm, ["run", "tauri", "dev"], {
   cwd: repo,

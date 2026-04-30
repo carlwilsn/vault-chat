@@ -9,6 +9,7 @@ import { ChatPane } from "./ChatPane";
 import { SettingsPane } from "./SettingsPane";
 import { Titlebar } from "./Titlebar";
 import { NotePopup } from "./NotePopup";
+import { FeedbackPopup } from "./FeedbackPopup";
 import { NotesPanel } from "./NotesPanel";
 import { fileKind } from "./fileKind";
 import type { NoteAnchor } from "./notes";
@@ -28,6 +29,9 @@ export default function App() {
   const openNoteComposer = useStore((s) => s.openNoteComposer);
   const closeNoteComposer = useStore((s) => s.closeNoteComposer);
   const noteComposer = useStore((s) => s.noteComposer);
+  const openFeedbackComposer = useStore((s) => s.openFeedbackComposer);
+  const closeFeedbackComposer = useStore((s) => s.closeFeedbackComposer);
+  const feedbackComposer = useStore((s) => s.feedbackComposer);
   const showNotesPanel = useStore((s) => s.showNotesPanel);
   const setShowNotesPanel = useStore((s) => s.setShowNotesPanel);
   const setShowHistory = useStore((s) => s.setShowHistory);
@@ -176,6 +180,46 @@ export default function App() {
       } else if (k === "h" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         setShowHistory(true);
+      } else if (k === "g" && !e.shiftKey && !e.altKey) {
+        // Ctrl+G — Send Feedback. Same anchor-capture flow as Ctrl+N
+        // (Monaco selection > window.getSelection > recent marquee), so
+        // the issue body cites whatever the user was looking at when
+        // they hit the chord.
+        e.preventDefault();
+        const s = useStore.getState();
+        const cf = s.currentFile;
+        const cap = s.lastCapture;
+        const capFresh = cap && Date.now() - cap.timestamp < 2 * 60_000 && cap.path === cf;
+        const editorSel = s.editorSelection;
+        const editorSelActive =
+          editorSel && cf && editorSel.path === cf && editorSel.text.trim().length > 0;
+        const winSel = (window.getSelection?.()?.toString() ?? "").trim();
+        const selection = editorSelActive ? editorSel!.text : winSel;
+        const selectionAnchor = editorSelActive
+          ? editorSel!.lineStart === editorSel!.lineEnd
+            ? `L${editorSel!.lineStart}`
+            : `L${editorSel!.lineStart}-L${editorSel!.lineEnd}`
+          : null;
+        if (cf) {
+          const ck = fileKind(cf).kind;
+          const sourceKind: NoteAnchor["source_kind"] =
+            ck === "markdown" || ck === "pdf" || ck === "html" || ck === "image" || ck === "notebook"
+              ? ck
+              : "code";
+          const anchor: NoteAnchor = {
+            source_path: cf,
+            source_kind: sourceKind,
+            source_anchor: selectionAnchor ?? (capFresh ? cap!.source_anchor : null),
+            source_selection: selection || (capFresh ? cap!.selection : null) || null,
+            image_data_url: capFresh ? cap!.imageDataUrl : null,
+            primary: true,
+          };
+          openFeedbackComposer({ initialAnchors: [anchor] });
+          if (capFresh) s.clearLastCapture();
+        } else {
+          openFeedbackComposer();
+        }
+        return;
       } else if (k === "j" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         invoke("open_terminal", {
@@ -185,7 +229,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleMode, toggleLeft, toggleRight, currentFile, setTheme, openNoteComposer, setShowHistory]);
+  }, [toggleMode, toggleLeft, toggleRight, currentFile, setTheme, openNoteComposer, openFeedbackComposer, setShowHistory]);
 
   // Lazy-load notes the first time a vault is active (or after a vault
   // switch, which resets notesLoaded).
@@ -196,15 +240,17 @@ export default function App() {
   }, [vaultPath, notesLoaded, loadNotes]);
 
   // Suppress webview defaults that bleed through and make the app feel
-  // like a browser tab: Ctrl+F (find bar), Ctrl+G (find-next), Ctrl+R /
-  // F5 (reload), Ctrl+P (print), Ctrl+S (save-page), and the native
-  // right-click context menu. Custom menus (file tree, PDF) install
-  // their own contextmenu handlers that preventDefault locally.
+  // like a browser tab: Ctrl+F (find bar), Ctrl+R / F5 (reload),
+  // Ctrl+P (print), Ctrl+S (save-page), and the native right-click
+  // context menu. Custom menus (file tree, PDF) install their own
+  // contextmenu handlers that preventDefault locally. Ctrl+G used to
+  // be in this list (browser find-next), but we now bind it to Send
+  // Feedback — the Ctrl+G handler in the main keymap preventDefaults.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
-      if (mod && (k === "f" || k === "g" || k === "r" || k === "p" || k === "s")) {
+      if (mod && (k === "f" || k === "r" || k === "p" || k === "s")) {
         e.preventDefault();
         return;
       }
@@ -340,6 +386,12 @@ export default function App() {
         initialAnchors={noteComposer.initialAnchors}
         initialTurns={noteComposer.initialTurns}
         onClose={closeNoteComposer}
+      />
+      <FeedbackPopup
+        open={feedbackComposer.open}
+        initialDraft={feedbackComposer.initialDraft}
+        initialAnchors={feedbackComposer.initialAnchors}
+        onClose={closeFeedbackComposer}
       />
       <NotesPanel open={showNotesPanel} onClose={() => setShowNotesPanel(false)} />
     </div>

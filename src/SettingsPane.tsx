@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, Check, Key, Cog, X, Plus, Lock, Smartphone } from "lucide-react";
+import { ArrowLeft, Check, Key, Cog, X, Plus, Lock, Smartphone, Megaphone, Send } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { PROVIDER_LABEL, type ProviderId } from "./providers";
 import { Button, Input, Select } from "./ui";
 import { getMetaVaultPath } from "./meta";
 import { gitInitIfNeeded } from "./git";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
+import { testGithubToken } from "./feedback";
 
 const PROVIDERS: ProviderId[] = ["anthropic", "openai", "google", "openrouter"];
 
@@ -56,7 +57,15 @@ export function SettingsPane() {
     openrouter: apiKeys.openrouter ?? "",
   });
   const [tavilyDraft, setTavilyDraft] = useState(serviceKeys.tavily ?? "");
-  const [savedFlash, setSavedFlash] = useState<ProviderId | "tavily" | null>(null);
+  const [githubDraft, setGithubDraft] = useState(serviceKeys.github_pat ?? "");
+  const [githubTestState, setGithubTestState] = useState<
+    | { phase: "idle" }
+    | { phase: "testing" }
+    | { phase: "ok"; login: string }
+    | { phase: "error"; message: string }
+  >({ phase: "idle" });
+  const [savedFlash, setSavedFlash] = useState<ProviderId | "tavily" | "github_pat" | null>(null);
+  const openFeedbackComposer = useStore((s) => s.openFeedbackComposer);
   const [phoneInfo, setPhoneInfo] = useState<{
     port: number;
     token: string;
@@ -66,7 +75,7 @@ export function SettingsPane() {
   const [phoneCopied, setPhoneCopied] = useState(false);
 
   useEffect(() => {
-    invoke<{ port: number; token: string; tailscale_ip: string | null }>(
+    invoke<{ port: number; token: string; tailscale_ip: string | null; dns_name: string | null }>(
       "phone_server_info",
     )
       .then((info) => setPhoneInfo(info))
@@ -120,6 +129,43 @@ export function SettingsPane() {
   const removeTavily = () => {
     clearServiceKey("tavily");
     setTavilyDraft("");
+  };
+
+  const saveGithubPat = () => {
+    const v = githubDraft.trim();
+    if (!v) return;
+    setServiceKey("github_pat", v);
+    setGithubDraft("");
+    setSavedFlash("github_pat");
+    setTimeout(() => setSavedFlash((x) => (x === "github_pat" ? null : x)), 1500);
+    setGithubTestState({ phase: "idle" });
+  };
+
+  const removeGithubPat = () => {
+    clearServiceKey("github_pat");
+    setGithubDraft("");
+    setGithubTestState({ phase: "idle" });
+  };
+
+  const testGithubPat = async () => {
+    const v = (githubDraft.trim() || serviceKeys.github_pat || "").trim();
+    if (!v) {
+      setGithubTestState({ phase: "error", message: "Enter or save a token first." });
+      return;
+    }
+    setGithubTestState({ phase: "testing" });
+    try {
+      const login = await testGithubToken(v);
+      setGithubTestState({ phase: "ok", login });
+    } catch (e) {
+      const msg = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
+      setGithubTestState({ phase: "error", message: msg });
+    }
+  };
+
+  const sendFeedbackFromSettings = () => {
+    setShowSettings(false);
+    openFeedbackComposer();
   };
 
   // --- your keys (custom user-managed credentials) ---
@@ -338,6 +384,96 @@ export function SettingsPane() {
           <p className="text-[11px] text-muted-foreground/80">
             Enables WebSearch. Get a free key at tavily.com.
           </p>
+        </section>
+
+        <div className="h-px bg-border" />
+
+        <section className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
+                <Megaphone className="h-3 w-3" />
+                Send feedback (Ctrl+G)
+              </h3>
+              <p className="text-[11.5px] text-muted-foreground/80 mt-0.5 leading-relaxed">
+                Files a GitHub issue on the vault-chat repo with label{" "}
+                <code className="font-mono bg-muted px-1 rounded text-[10.5px]">
+                  auto-fix:queued
+                </code>
+                . A scheduled cloud agent picks the queue up nightly, lands a
+                fix on <code className="font-mono bg-muted px-1 rounded text-[10.5px]">main</code>{" "}
+                with a verification comment, and re-labels{" "}
+                <code className="font-mono bg-muted px-1 rounded text-[10.5px]">
+                  awaiting-verification
+                </code>
+                . Needs a GitHub PAT with the{" "}
+                <code className="font-mono bg-muted px-1 rounded text-[10.5px]">repo</code>{" "}
+                scope.
+              </p>
+            </div>
+            {savedFlash === "github_pat" && (
+              <span className="text-[11px] text-emerald-500 flex items-center gap-1">
+                <Check className="h-3 w-3" /> saved
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              placeholder={serviceKeys.github_pat ? "ghp_… (replace existing)" : "ghp_…"}
+              value={githubDraft}
+              onChange={(e) => setGithubDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveGithubPat();
+              }}
+            />
+            <Button size="sm" onClick={saveGithubPat} disabled={!githubDraft.trim()}>
+              Save
+            </Button>
+            {serviceKeys.github_pat && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={removeGithubPat}
+                title="Remove this token from the OS keychain"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            )}
+          </div>
+          <p className="text-[11px] text-muted-foreground/70 font-mono">
+            {serviceKeys.github_pat
+              ? `${serviceKeys.github_pat.slice(0, 8)}…${serviceKeys.github_pat.slice(-4)}`
+              : "not set"}
+          </p>
+          <div className="flex gap-2 items-center flex-wrap">
+            <Button size="sm" variant="outline" onClick={testGithubPat}>
+              Test connection
+            </Button>
+            <Button
+              size="sm"
+              onClick={sendFeedbackFromSettings}
+              disabled={!serviceKeys.github_pat}
+              className="bg-indigo-500 text-white hover:bg-indigo-400"
+            >
+              <Send className="h-3 w-3 mr-1.5" />
+              Send feedback now
+            </Button>
+            {githubTestState.phase === "testing" && (
+              <span className="text-[11px] text-muted-foreground">testing…</span>
+            )}
+            {githubTestState.phase === "ok" && (
+              <span className="text-[11px] text-emerald-500 flex items-center gap-1">
+                <Check className="h-3 w-3" /> authenticated as{" "}
+                <span className="font-mono">{githubTestState.login}</span>
+              </span>
+            )}
+            {githubTestState.phase === "error" && (
+              <span className="text-[11px] text-destructive">
+                {githubTestState.message}
+              </span>
+            )}
+          </div>
         </section>
 
         <div className="h-px bg-border" />

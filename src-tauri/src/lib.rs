@@ -949,6 +949,391 @@ async fn tavily_search(
     .map_err(|e| e.to_string())?
 }
 
+// ---------- GitHub feedback issues ----------
+//
+// Files an issue on the vault-chat repo when the user hits Ctrl+G or
+// the Settings "Send feedback" button. Images attached to the
+// feedback get committed to the target repo at
+// `.feedback-images/<uuid>.<ext>` so they render inline in the issue
+// and the cloud agent can fetch them. The agent processes these
+// issues nightly and lands fixes (see /schedule routine).
+
+const GH_API: &str = "https://api.github.com";
+const GH_UA: &str = "vault-chat/0.1 (feedback)";
+
+fn gh_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .user_agent(GH_UA)
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn gh_test_token(token: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let client = gh_client()?;
+        let resp = client
+            .get(format!("{}/user", GH_API))
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        let body = resp.text().map_err(|e| e.to_string())?;
+        if !status.is_success() {
+            return Err(format!(
+                "GitHub {}: {}",
+                status,
+                body.chars().take(200).collect::<String>()
+            ));
+        }
+        let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+        let login = v
+            .get("login")
+            .and_then(|x| x.as_str())
+            .unwrap_or("(unknown)")
+            .to_string();
+        Ok(login)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(serde::Deserialize)]
+struct FeedbackImage {
+    /// data: URL like "data:image/png;base64,iVBORw0KG..."
+    data_url: String,
+}
+
+#[derive(Serialize)]
+struct CreatedIssue {
+    number: u64,
+    url: String,
+}
+
+fn parse_data_url(s: &str) -> Option<(String, String)> {
+    // Returns (mime, base64-payload). Format: "data:<mime>;base64,<payload>"
+    let rest = s.strip_prefix("data:")?;
+    let (header, payload) = rest.split_once(',')?;
+    if !header.ends_with(";base64") {
+        return None;
+    }
+    let mime = header.trim_end_matches(";base64").to_string();
+    Some((mime, payload.to_string()))
+}
+
+fn mime_to_ext(mime: &str) -> Option<&'static str> {
+    match mime {
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        "image/svg+xml" => Some("svg"),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+async fn gh_create_feedback_issue(
+    token: String,
+    owner: String,
+    repo: String,
+    title: String,
+    body: String,
+    labels: Vec<String>,
+    images: Vec<FeedbackImage>,
+) -> Result<CreatedIssue, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<CreatedIssue, String> {
+        let client = gh_client()?;
+
+        // Step 1: upload each image via the Contents API. PUT to
+        // /repos/:owner/:repo/contents/.feedback-images/<uuid>.<ext>
+        // with base64 payload. Each upload is its own atomic commit
+        // on main; the response gives us a stable raw URL.
+        let mut image_urls: Vec<String> = Vec::new();
+        for (idx, img) in images.iter().enumerate() {
+            let (mime, b64) = parse_data_url(&img.data_url)
+                .ok_or_else(|| format!("image {}: not a base64 data URL", idx))?;
+            let ext = mime_to_ext(&mime).unwrap_or("bin");
+            let id = uuid::Uuid::new_v4();
+            let path = format!(".feedback-images/{}.{}", id, ext);
+            let payload = serde_json::json!({
+                "message": format!("feedback-image: {}", id),
+                "content": b64,
+            });
+            let url = format!(
+                "{}/repos/{}/{}/contents/{}",
+                GH_API, owner, repo, path
+            );
+            let resp = client
+                .put(&url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("Content-Type", "application/json")
+                .body(serde_json::to_string(&payload).map_err(|e| e.to_string())?)
+                .send()
+                .map_err(|e| e.to_string())?;
+            let status = resp.status();
+            let text = resp.text().map_err(|e| e.to_string())?;
+            if !status.is_success() {
+                return Err(format!(
+                    "image {} upload failed ({}): {}",
+                    idx,
+                    status,
+                    text.chars().take(200).collect::<String>()
+                ));
+            }
+            let v: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            let dl = v
+                .get("content")
+                .and_then(|c| c.get("download_url"))
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| format!("image {}: no download_url", idx))?;
+            image_urls.push(dl.to_string());
+        }
+
+        // Step 2: append image references to the issue body so they
+        // render inline. Empty image list = no appended block.
+        let mut full_body = body;
+        if !image_urls.is_empty() {
+            full_body.push_str("\n\n---\n\n**Attached images:**\n\n");
+            for url in &image_urls {
+                full_body.push_str(&format!("![attachment]({})\n\n", url));
+            }
+        }
+
+        // Step 3: create the issue.
+        let issue_payload = serde_json::json!({
+            "title": title,
+            "body": full_body,
+            "labels": labels,
+        });
+        let url = format!("{}/repos/{}/{}/issues", GH_API, owner, repo);
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&issue_payload).map_err(|e| e.to_string())?)
+            .send()
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        let text = resp.text().map_err(|e| e.to_string())?;
+        if !status.is_success() {
+            return Err(format!(
+                "issue create failed ({}): {}",
+                status,
+                text.chars().take(400).collect::<String>()
+            ));
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        let number = v
+            .get("number")
+            .and_then(|x| x.as_u64())
+            .ok_or("response missing issue number")?;
+        let html = v
+            .get("html_url")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        Ok(CreatedIssue { number, url: html })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
+struct IssueLabel {
+    name: String,
+    color: String,
+}
+
+#[derive(Serialize)]
+struct IssueSummary {
+    number: u64,
+    title: String,
+    body: Option<String>,
+    state: String,
+    labels: Vec<IssueLabel>,
+    html_url: String,
+    created_at: String,
+    updated_at: String,
+    comments: u64,
+}
+
+#[derive(Serialize)]
+struct IssueCommentOut {
+    id: u64,
+    body: String,
+    author: String,
+    created_at: String,
+}
+
+fn gh_get(token: &str, url: &str, client: &reqwest::blocking::Client) -> Result<String, String> {
+    let resp = client
+        .get(url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send()
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let text = resp.text().map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!(
+            "GitHub {}: {}",
+            status,
+            text.chars().take(300).collect::<String>()
+        ));
+    }
+    Ok(text)
+}
+
+#[tauri::command]
+async fn gh_list_feedback_issues(
+    token: String,
+    owner: String,
+    repo: String,
+) -> Result<Vec<IssueSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<IssueSummary>, String> {
+        let client = gh_client()?;
+        // Pull both open and recently-closed issues so the user can see
+        // ones the agent landed and they haven't closed yet, plus any
+        // they've closed in case of recent activity. per_page caps at
+        // 100; for our scale, one page is plenty.
+        let url = format!(
+            "{}/repos/{}/{}/issues?state=all&per_page=100&sort=updated&direction=desc",
+            GH_API, owner, repo
+        );
+        let text = gh_get(&token, &url, &client)?;
+        let arr: Vec<serde_json::Value> =
+            serde_json::from_str(&text).map_err(|e| e.to_string())?;
+
+        let mut out: Vec<IssueSummary> = Vec::new();
+        for v in arr {
+            // Skip pull requests — GitHub returns them in the issues
+            // endpoint by default, but they have a `pull_request` key.
+            if v.get("pull_request").is_some() {
+                continue;
+            }
+            let labels_arr = v
+                .get("labels")
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut labels = Vec::new();
+            let mut has_auto_fix_label = false;
+            for l in &labels_arr {
+                let name = l
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if name.starts_with("auto-fix") {
+                    has_auto_fix_label = true;
+                }
+                let color = l
+                    .get("color")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("888888")
+                    .to_string();
+                labels.push(IssueLabel { name, color });
+            }
+            // Only show issues this feature filed.
+            if !has_auto_fix_label {
+                continue;
+            }
+            out.push(IssueSummary {
+                number: v.get("number").and_then(|x| x.as_u64()).unwrap_or(0),
+                title: v
+                    .get("title")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                body: v
+                    .get("body")
+                    .and_then(|x| x.as_str())
+                    .map(String::from),
+                state: v
+                    .get("state")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                labels,
+                html_url: v
+                    .get("html_url")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                created_at: v
+                    .get("created_at")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                updated_at: v
+                    .get("updated_at")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                comments: v.get("comments").and_then(|x| x.as_u64()).unwrap_or(0),
+            });
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn gh_get_issue_comments(
+    token: String,
+    owner: String,
+    repo: String,
+    number: u64,
+) -> Result<Vec<IssueCommentOut>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<IssueCommentOut>, String> {
+        let client = gh_client()?;
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/comments?per_page=100",
+            GH_API, owner, repo, number
+        );
+        let text = gh_get(&token, &url, &client)?;
+        let arr: Vec<serde_json::Value> =
+            serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for v in arr {
+            out.push(IssueCommentOut {
+                id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0),
+                body: v
+                    .get("body")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                author: v
+                    .get("user")
+                    .and_then(|u| u.get("login"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                created_at: v
+                    .get("created_at")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            });
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
     let p = PathBuf::from(&path);
@@ -2230,7 +2615,11 @@ pub fn run() {
             keychain_set,
             keychain_delete,
             phone_send_chunk,
-            phone_server_info
+            phone_server_info,
+            gh_test_token,
+            gh_create_feedback_issue,
+            gh_list_feedback_issues,
+            gh_get_issue_comments
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
