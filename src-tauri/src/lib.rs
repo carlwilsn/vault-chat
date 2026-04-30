@@ -1335,6 +1335,214 @@ async fn gh_get_issue_comments(
 }
 
 #[tauri::command]
+async fn gh_close_issue(
+    token: String,
+    owner: String,
+    repo: String,
+    number: u64,
+    state_reason: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let client = gh_client()?;
+        let mut body = serde_json::json!({ "state": "closed" });
+        // state_reason: "completed" (default), "not_planned", "reopened" - skip
+        if let Some(r) = state_reason {
+            body["state_reason"] = serde_json::Value::String(r);
+        }
+        let url = format!("{}/repos/{}/{}/issues/{}", GH_API, owner, repo, number);
+        let resp = client
+            .patch(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&body).map_err(|e| e.to_string())?)
+            .send()
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().unwrap_or_default();
+            return Err(format!(
+                "GitHub {}: {}",
+                status,
+                text.chars().take(300).collect::<String>()
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn gh_reopen_issue(
+    token: String,
+    owner: String,
+    repo: String,
+    number: u64,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let client = gh_client()?;
+        let body = serde_json::json!({ "state": "open" });
+        let url = format!("{}/repos/{}/{}/issues/{}", GH_API, owner, repo, number);
+        let resp = client
+            .patch(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&body).map_err(|e| e.to_string())?)
+            .send()
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().unwrap_or_default();
+            return Err(format!(
+                "GitHub {}: {}",
+                status,
+                text.chars().take(300).collect::<String>()
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn gh_relabel_issue(
+    token: String,
+    owner: String,
+    repo: String,
+    number: u64,
+    add: Vec<String>,
+    remove: Vec<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let client = gh_client()?;
+        // Two-step: DELETE each removed label individually (the
+        // bulk-set endpoint replaces, which would clobber unrelated
+        // labels), then POST to add. Both endpoints are forgiving of
+        // missing labels — DELETE returns 404 we treat as ok.
+        for label in &remove {
+            let url = format!(
+                "{}/repos/{}/{}/issues/{}/labels/{}",
+                GH_API,
+                owner,
+                repo,
+                number,
+                urlencoding::encode_path(label)
+            );
+            let resp = client
+                .delete(&url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .send()
+                .map_err(|e| e.to_string())?;
+            // 404 means the label wasn't applied; ignore. 200 means removed.
+            // Anything else is a real error.
+            if !resp.status().is_success() && resp.status().as_u16() != 404 {
+                let text = resp.text().unwrap_or_default();
+                return Err(format!(
+                    "GitHub remove-label {}: {}",
+                    resp.status(),
+                    text.chars().take(200).collect::<String>()
+                ));
+            }
+        }
+        if !add.is_empty() {
+            let url = format!(
+                "{}/repos/{}/{}/issues/{}/labels",
+                GH_API, owner, repo, number
+            );
+            let body = serde_json::json!({ "labels": add });
+            let resp = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("Content-Type", "application/json")
+                .body(serde_json::to_string(&body).map_err(|e| e.to_string())?)
+                .send()
+                .map_err(|e| e.to_string())?;
+            if !resp.status().is_success() {
+                let text = resp.text().unwrap_or_default();
+                return Err(format!(
+                    "GitHub add-label {}: {}",
+                    resp.status(),
+                    text.chars().take(200).collect::<String>()
+                ));
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn gh_comment_issue(
+    token: String,
+    owner: String,
+    repo: String,
+    number: u64,
+    body: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let client = gh_client()?;
+        let payload = serde_json::json!({ "body": body });
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/comments",
+            GH_API, owner, repo, number
+        );
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_string(&payload).map_err(|e| e.to_string())?)
+            .send()
+            .map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().unwrap_or_default();
+            return Err(format!(
+                "GitHub {}: {}",
+                status,
+                text.chars().take(300).collect::<String>()
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// Tiny helper — reqwest doesn't ship a path-encoder. This handles the
+// few special characters that show up in our label names (colon,
+// space). Good enough for our limited label set; not a general
+// percent-encoder.
+mod urlencoding {
+    pub fn encode_path(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for ch in s.chars() {
+            match ch {
+                'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => out.push(ch),
+                ' ' => out.push_str("%20"),
+                ':' => out.push_str("%3A"),
+                '/' => out.push_str("%2F"),
+                '?' => out.push_str("%3F"),
+                '#' => out.push_str("%23"),
+                _ => out.push_str(&format!("%{:02X}", ch as u32 & 0xFF)),
+            }
+        }
+        out
+    }
+}
+
+#[tauri::command]
 async fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
     let p = PathBuf::from(&path);
     if !p.is_dir() {
@@ -2619,7 +2827,11 @@ pub fn run() {
             gh_test_token,
             gh_create_feedback_issue,
             gh_list_feedback_issues,
-            gh_get_issue_comments
+            gh_get_issue_comments,
+            gh_close_issue,
+            gh_reopen_issue,
+            gh_relabel_issue,
+            gh_comment_issue
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

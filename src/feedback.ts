@@ -13,6 +13,7 @@ export const VAULT_CHAT_REPO = "vault-chat";
 export const FEEDBACK_LABEL_QUEUED = "auto-fix:queued";
 export const FEEDBACK_LABEL_AWAITING = "auto-fix:awaiting-verification";
 export const FEEDBACK_LABEL_NEEDS_REVIEW = "auto-fix:needs-review";
+export const FEEDBACK_LABEL_AGENT_ERROR = "auto-fix:agent-error";
 
 export type FeedbackSubmission = {
   text: string;
@@ -96,11 +97,56 @@ export async function getIssueComments(
   });
 }
 
+export async function closeIssue(
+  token: string,
+  number: number,
+  state_reason?: "completed" | "not_planned",
+): Promise<void> {
+  return invoke<void>("gh_close_issue", {
+    token,
+    owner: VAULT_CHAT_OWNER,
+    repo: VAULT_CHAT_REPO,
+    number,
+    stateReason: state_reason,
+  });
+}
+
+export async function relabelIssue(
+  token: string,
+  number: number,
+  add: string[],
+  remove: string[],
+): Promise<void> {
+  return invoke<void>("gh_relabel_issue", {
+    token,
+    owner: VAULT_CHAT_OWNER,
+    repo: VAULT_CHAT_REPO,
+    number,
+    add,
+    remove,
+  });
+}
+
+export async function commentIssue(
+  token: string,
+  number: number,
+  body: string,
+): Promise<void> {
+  return invoke<void>("gh_comment_issue", {
+    token,
+    owner: VAULT_CHAT_OWNER,
+    repo: VAULT_CHAT_REPO,
+    number,
+    body,
+  });
+}
+
 /** Map an issue's label set to a single conceptual status. */
 export type FeedbackStatus =
   | "queued"
   | "awaiting-verification"
   | "needs-review"
+  | "agent-error"
   | "closed"
   | "unknown";
 
@@ -109,9 +155,20 @@ export function feedbackStatusOf(issue: IssueSummary): FeedbackStatus {
   const names = new Set(issue.labels.map((l) => l.name));
   if (names.has(FEEDBACK_LABEL_AWAITING)) return "awaiting-verification";
   if (names.has(FEEDBACK_LABEL_NEEDS_REVIEW)) return "needs-review";
+  if (names.has(FEEDBACK_LABEL_AGENT_ERROR)) return "agent-error";
   if (names.has(FEEDBACK_LABEL_QUEUED)) return "queued";
   return "unknown";
 }
+
+/** The set of `auto-fix:*` labels we own — used to clean off any
+ *  status label before applying a new one. Other labels (set by you
+ *  or others on GitHub) are left alone. */
+export const ALL_FEEDBACK_STATUS_LABELS: readonly string[] = [
+  FEEDBACK_LABEL_QUEUED,
+  FEEDBACK_LABEL_AWAITING,
+  FEEDBACK_LABEL_NEEDS_REVIEW,
+  FEEDBACK_LABEL_AGENT_ERROR,
+];
 
 function deriveTitle(text: string): string {
   const trimmed = text.trim();

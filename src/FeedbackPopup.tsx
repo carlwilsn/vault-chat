@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, X as XIcon, Camera, Send, ExternalLink, RefreshCw } from "lucide-react";
+import {
+  Plus,
+  X as XIcon,
+  Camera,
+  Send,
+  ExternalLink,
+  RefreshCw,
+  Check,
+  RotateCw,
+  X,
+} from "lucide-react";
 import { useStore } from "./store";
 import { anchorImages, type NoteAnchor } from "./notes";
 import { fileKind } from "./fileKind";
@@ -9,7 +19,11 @@ import {
   submitFeedback,
   listFeedbackIssues,
   getIssueComments,
+  closeIssue,
+  relabelIssue,
   feedbackStatusOf,
+  ALL_FEEDBACK_STATUS_LABELS,
+  FEEDBACK_LABEL_QUEUED,
   type FeedbackStatus,
   type IssueSummary,
   type IssueComment,
@@ -18,7 +32,9 @@ import {
 // "Send feedback" composer + Issues tab. Visually mirrors NotePopup
 // but with an indigo accent so it's unmistakably not a note. New tab
 // files a GitHub issue (label auto-fix:queued); Issues tab lists what
-// you've filed and what the cloud agent has done with each one.
+// you've filed and what the cloud agent has done with each one, with
+// inline buttons to close / re-queue / convert without leaving the
+// app.
 
 type FeedbackPopupProps = {
   open: boolean;
@@ -46,6 +62,11 @@ type SendState =
 
 type Tab = "new" | "issues";
 
+type IssueActionState =
+  | { phase: "idle" }
+  | { phase: "pending"; verb: string }
+  | { phase: "error"; message: string };
+
 export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors }: FeedbackPopupProps) {
   const currentFile = useStore((s) => s.currentFile);
   const files = useStore((s) => s.files);
@@ -69,6 +90,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
   const [issuesError, setIssuesError] = useState<string | null>(null);
   const [expandedIssue, setExpandedIssue] = useState<number | null>(null);
   const [comments, setComments] = useState<Record<number, IssueComment[] | "loading" | { error: string }>>({});
+  const [actionState, setActionState] = useState<Record<number, IssueActionState>>({});
 
   useEffect(() => {
     if (!open) return;
@@ -93,6 +115,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
     setIssues(null);
     setExpandedIssue(null);
     setComments({});
+    setActionState({});
     setIssuesError(null);
   }, [open, initialAnchors, currentFile]);
 
@@ -116,7 +139,6 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose, pickerOpen, send.phase]);
 
-  // Lazy-fetch issues the first time the Issues tab is opened.
   useEffect(() => {
     if (tab !== "issues") return;
     if (issues !== null || issuesLoading) return;
@@ -156,6 +178,53 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
       setComments((c) => ({ ...c, [n]: { error: stringifyError(e) } }));
     }
   };
+
+  // Run an action against an issue, then optimistically refresh just
+  // that issue from the latest list. On error, surface inline so the
+  // user can retry.
+  const runAction = async (
+    issue: IssueSummary,
+    verb: string,
+    fn: () => Promise<void>,
+  ) => {
+    setActionState((s) => ({ ...s, [issue.number]: { phase: "pending", verb } }));
+    try {
+      await fn();
+      // Refetch the issues list so labels/state reflect what we just did.
+      // Keep the user's expansion state intact.
+      const list = await listFeedbackIssues(githubPat!);
+      setIssues(list);
+      setActionState((s) => ({ ...s, [issue.number]: { phase: "idle" } }));
+    } catch (e) {
+      setActionState((s) => ({
+        ...s,
+        [issue.number]: { phase: "error", message: stringifyError(e) },
+      }));
+    }
+  };
+
+  const verifyAndClose = (issue: IssueSummary) =>
+    runAction(issue, "closing", async () => {
+      await closeIssue(githubPat!, issue.number, "completed");
+    });
+
+  const closeAnyway = (issue: IssueSummary) =>
+    runAction(issue, "closing", async () => {
+      await closeIssue(githubPat!, issue.number, "not_planned");
+    });
+
+  const reQueue = (issue: IssueSummary) =>
+    runAction(issue, "re-queueing", async () => {
+      // Strip every auto-fix:* status label, then add queued. Other
+      // labels (set on GitHub) are left alone.
+      const currentNames = new Set(issue.labels.map((l) => l.name));
+      const remove = ALL_FEEDBACK_STATUS_LABELS.filter(
+        (l) => currentNames.has(l) && l !== FEEDBACK_LABEL_QUEUED,
+      );
+      const add = currentNames.has(FEEDBACK_LABEL_QUEUED) ? [] : [FEEDBACK_LABEL_QUEUED];
+      if (remove.length === 0 && add.length === 0) return;
+      await relabelIssue(githubPat!, issue.number, add, remove);
+    });
 
   const pickerMatches = useMemo(() => {
     if (!pickerOpen || !vaultPath) return [] as Array<{ path: string; name: string; rel: string; is_dir: boolean }>;
@@ -259,7 +328,6 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
     try {
       const created = await submitFeedback(githubPat, { text, anchors });
       setSend({ phase: "ok", number: created.number, url: created.url });
-      // Force the Issues tab to refetch on next open so the new one shows up.
       setIssues(null);
     } catch (e) {
       setSend({ phase: "error", message: stringifyError(e) });
@@ -275,8 +343,6 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
 
   const sending = send.phase === "sending";
   const sentOk = send.phase === "ok";
-
-  // Issue counts for the tab badge.
   const openCount = (issues ?? []).filter((i) => i.state === "open").length;
 
   return (
@@ -291,7 +357,6 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
         className="w-[540px] max-w-[92vw] rounded-xl border-2 border-indigo-500/40 bg-card shadow-xl overflow-hidden"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        {/* Tab bar */}
         <div className="flex items-stretch border-b border-border bg-muted/30">
           <TabButton active={tab === "new"} onClick={() => setTab("new")}>
             New
@@ -344,8 +409,12 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
               error={issuesError}
               expandedIssue={expandedIssue}
               comments={comments}
+              actionState={actionState}
               onToggleExpand={toggleExpandIssue}
               onRefresh={loadIssues}
+              onVerifyClose={verifyAndClose}
+              onCloseAnyway={closeAnyway}
+              onReQueue={reQueue}
               hasToken={!!githubPat}
               onOpenSettings={() => {
                 onClose();
@@ -627,8 +696,12 @@ type IssuesTabProps = {
   error: string | null;
   expandedIssue: number | null;
   comments: Record<number, IssueComment[] | "loading" | { error: string }>;
+  actionState: Record<number, IssueActionState>;
   onToggleExpand: (n: number) => void;
   onRefresh: () => void;
+  onVerifyClose: (issue: IssueSummary) => Promise<void>;
+  onCloseAnyway: (issue: IssueSummary) => Promise<void>;
+  onReQueue: (issue: IssueSummary) => Promise<void>;
   hasToken: boolean;
   onOpenSettings: () => void;
 };
@@ -639,8 +712,12 @@ function IssuesTab({
   error,
   expandedIssue,
   comments,
+  actionState,
   onToggleExpand,
   onRefresh,
+  onVerifyClose,
+  onCloseAnyway,
+  onReQueue,
   hasToken,
   onOpenSettings,
 }: IssuesTabProps) {
@@ -685,6 +762,7 @@ function IssuesTab({
           const status = feedbackStatusOf(iss);
           const isExpanded = expandedIssue === iss.number;
           const cmt = comments[iss.number];
+          const a = actionState[iss.number] ?? { phase: "idle" };
           return (
             <div
               key={iss.number}
@@ -747,21 +825,137 @@ function IssuesTab({
                       </div>
                     )}
                   </div>
-                  <a
-                    href={iss.html_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:underline"
-                  >
-                    Open on GitHub
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
+
+                  <ActionRow
+                    issue={iss}
+                    status={status}
+                    action={a}
+                    onVerifyClose={onVerifyClose}
+                    onCloseAnyway={onCloseAnyway}
+                    onReQueue={onReQueue}
+                  />
                 </div>
               )}
             </div>
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function ActionRow({
+  issue,
+  status,
+  action,
+  onVerifyClose,
+  onCloseAnyway,
+  onReQueue,
+}: {
+  issue: IssueSummary;
+  status: FeedbackStatus;
+  action: IssueActionState;
+  onVerifyClose: (issue: IssueSummary) => Promise<void>;
+  onCloseAnyway: (issue: IssueSummary) => Promise<void>;
+  onReQueue: (issue: IssueSummary) => Promise<void>;
+}) {
+  const pending = action.phase === "pending";
+  const error = action.phase === "error" ? action.message : null;
+
+  // Buttons by status. Each button is a (label, icon, fn, variant) tuple
+  // rendered as a <button>. Closed issues get no actions (we don't yet
+  // expose "Reopen" — easy to add if needed).
+  const buttons: Array<{
+    label: string;
+    icon: React.ReactNode;
+    fn: () => Promise<void>;
+    primary?: boolean;
+  }> = [];
+
+  if (status === "awaiting-verification") {
+    buttons.push({
+      label: "Verified & close",
+      icon: <Check className="h-3 w-3" />,
+      fn: () => onVerifyClose(issue),
+      primary: true,
+    });
+    buttons.push({
+      label: "Re-queue",
+      icon: <RotateCw className="h-3 w-3" />,
+      fn: () => onReQueue(issue),
+    });
+  } else if (status === "needs-review") {
+    buttons.push({
+      label: "Re-queue",
+      icon: <RotateCw className="h-3 w-3" />,
+      fn: () => onReQueue(issue),
+    });
+    buttons.push({
+      label: "Close anyway",
+      icon: <X className="h-3 w-3" />,
+      fn: () => onCloseAnyway(issue),
+    });
+  } else if (status === "agent-error") {
+    buttons.push({
+      label: "Convert to queued",
+      icon: <RotateCw className="h-3 w-3" />,
+      fn: () => onReQueue(issue),
+      primary: true,
+    });
+    buttons.push({
+      label: "Close",
+      icon: <X className="h-3 w-3" />,
+      fn: () => onCloseAnyway(issue),
+    });
+  } else if (status === "queued") {
+    buttons.push({
+      label: "Cancel",
+      icon: <X className="h-3 w-3" />,
+      fn: () => onCloseAnyway(issue),
+    });
+  }
+
+  const githubLink = (
+    <a
+      href={issue.html_url}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:underline"
+    >
+      Open on GitHub
+      <ExternalLink className="h-3 w-3" />
+    </a>
+  );
+
+  return (
+    <div className="border-t border-border/40 pt-2 space-y-1.5">
+      <div className="flex items-center gap-2 flex-wrap">
+        {buttons.map((b, i) => (
+          <button
+            key={i}
+            onClick={b.fn}
+            disabled={pending}
+            className={cn(
+              "inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded border transition-colors disabled:opacity-50",
+              b.primary
+                ? "bg-indigo-500 text-white border-indigo-500 hover:bg-indigo-400 hover:border-indigo-400"
+                : "bg-background/60 text-foreground/85 border-border hover:bg-accent",
+            )}
+          >
+            {b.icon}
+            {b.label}
+          </button>
+        ))}
+        <div className="ml-auto">{githubLink}</div>
+      </div>
+      {pending && (
+        <div className="text-[11px] text-muted-foreground italic">
+          {action.verb}…
+        </div>
+      )}
+      {error && (
+        <div className="text-[11px] text-destructive leading-relaxed">{error}</div>
+      )}
     </div>
   );
 }
@@ -776,6 +970,10 @@ function StatusBadge({ status }: { status: FeedbackStatus }) {
     "needs-review": {
       label: "review",
       cls: "bg-amber-500/15 text-amber-500 border-amber-500/40",
+    },
+    "agent-error": {
+      label: "agent err",
+      cls: "bg-rose-500/15 text-rose-400 border-rose-500/40",
     },
     closed: { label: "closed", cls: "bg-muted/40 text-muted-foreground/60 border-border/60" },
     unknown: { label: "?", cls: "bg-muted/40 text-muted-foreground border-border/60" },
@@ -812,8 +1010,6 @@ function relativeTime(iso: string): string {
 }
 
 function trimBody(s: string): string {
-  // Strip the auto-appended "Filed via in-app feedback" footer for display —
-  // it's noise after you've already opened the modal.
   const idx = s.indexOf("\n\n---\n\n_Filed via in-app feedback");
   if (idx >= 0) return s.slice(0, idx).trim();
   return s.trim();
