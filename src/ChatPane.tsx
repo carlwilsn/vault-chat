@@ -494,16 +494,18 @@ export function ChatPane() {
             )}
             {streamingText && (
               <div className="prose-chat text-foreground/95">
-                {/* While streaming, skip rehypeHighlight — re-tokenizing
-                    every code block in the growing buffer on every
-                    flush is the main cause of UI-thread freezes on
-                    long responses. Code blocks render unstyled until
-                    the message finalizes (then the MessageBubble path
-                    re-renders with the full plugin set). */}
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[[rehypeKatex, KATEX_OPTIONS]]}
-                >
+                {/* While streaming, skip rehypeHighlight AND
+                    remarkMath/rehypeKatex — re-tokenizing every code
+                    block AND re-rendering every $$…$$ from scratch on
+                    every flush is O(N²) over the growing buffer and
+                    locks the main thread on long responses (most
+                    visible with high-throughput providers like Opus
+                    4.6 fast on OpenRouter). Code blocks render
+                    unstyled and math renders as raw $$ during the
+                    stream; both snap to their final form once the
+                    MessageBubble path re-renders the finalized
+                    message with the full plugin set. */}
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {streamingText}
                 </ReactMarkdown>
               </div>
