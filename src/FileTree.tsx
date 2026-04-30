@@ -22,7 +22,11 @@ export function FileTree() {
     applyDeleteCascade,
     applyRenameCascade,
   } = useStore();
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // Tracks which folders the user has explicitly opened. Empty means
+  // every folder is closed — the default. Inverting from a `collapsed`
+  // set means the first render is already "all closed" with no flash
+  // of the exploded tree before a useEffect fixes it up.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [pending, setPending] = useState<{ kind: PendingKind; parent: string } | null>(null);
   const [pendingName, setPendingName] = useState("");
   const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null);
@@ -42,16 +46,11 @@ export function FileTree() {
   const renameRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    if (
-      vaultPath &&
-      vaultPath !== lastVaultRef.current &&
-      files.length > 0 &&
-      files[0].path.startsWith(vaultPath)
-    ) {
+    if (vaultPath && vaultPath !== lastVaultRef.current) {
       lastVaultRef.current = vaultPath;
-      setCollapsed(new Set(files.filter((f) => f.is_dir).map((f) => f.path)));
+      setExpanded(new Set());
     }
-  }, [vaultPath, files]);
+  }, [vaultPath]);
 
   useEffect(() => {
     if (pending && inputRef.current) inputRef.current.focus();
@@ -98,7 +97,7 @@ export function FileTree() {
   };
 
   const toggleFolder = (path: string) => {
-    setCollapsed((prev) => {
+    setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(path)) next.delete(path);
       else next.add(path);
@@ -107,8 +106,17 @@ export function FileTree() {
   };
 
   const isHidden = (f: FileEntry) => {
-    for (const c of collapsed) {
-      if (f.path !== c && f.path.startsWith(c + "/")) return true;
+    if (!vaultPath) return false;
+    // Walk up from the immediate parent to the vault root, treating any
+    // ancestor that isn't in `expanded` as collapsed (default closed).
+    if (!f.path.startsWith(vaultPath + "/")) return false;
+    const rel = f.path.slice(vaultPath.length + 1);
+    if (!rel.includes("/")) return false; // top-level entry
+    const parts = rel.split("/");
+    let acc = vaultPath;
+    for (let i = 0; i < parts.length - 1; i++) {
+      acc = `${acc}/${parts[i]}`;
+      if (!expanded.has(acc)) return true;
     }
     return false;
   };
@@ -212,7 +220,7 @@ export function FileTree() {
           }
         }
       }
-      setCollapsed((prev) => {
+      setExpanded((prev) => {
         const next = new Set<string>();
         for (const p of prev) {
           let rewritten = p;
@@ -276,9 +284,9 @@ export function FileTree() {
     if (!vaultPath) return;
     const parent = parentOverride ?? selectedDir ?? vaultPath;
     if (parent !== vaultPath) {
-      setCollapsed((prev) => {
+      setExpanded((prev) => {
         const n = new Set(prev);
-        n.delete(parent);
+        n.add(parent);
         return n;
       });
     }
@@ -573,7 +581,7 @@ export function FileTree() {
           const isActive = !multiSelecting && currentFile === f.path;
           const isSelectedDir = !multiSelecting && f.is_dir && selectedDir === f.path;
           const isMultiSelected = multiSelecting && selected.has(f.path);
-          const isOpen = f.is_dir && !collapsed.has(f.path);
+          const isOpen = f.is_dir && expanded.has(f.path);
           const isRenaming = renaming?.path === f.path;
           return (
             <div key={f.path} className="mx-1 rounded-sm">
