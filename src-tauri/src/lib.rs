@@ -1203,12 +1203,10 @@ async fn gh_list_feedback_issues(
 ) -> Result<Vec<IssueSummary>, String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<IssueSummary>, String> {
         let client = gh_client()?;
-        // Pull both open and recently-closed issues so the user can see
-        // ones the agent landed and they haven't closed yet, plus any
-        // they've closed in case of recent activity. per_page caps at
-        // 100; for our scale, one page is plenty.
+        // Only open issues — once the user closes an issue they want it
+        // gone from the in-app list.
         let url = format!(
-            "{}/repos/{}/{}/issues?state=all&per_page=100&sort=updated&direction=desc",
+            "{}/repos/{}/{}/issues?state=open&per_page=100&sort=updated&direction=desc",
             GH_API, owner, repo
         );
         let text = gh_get(&token, &url, &client)?;
