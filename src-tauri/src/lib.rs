@@ -1442,11 +1442,12 @@ async fn gh_relabel_issue(
                 .map_err(|e| e.to_string())?;
             // 404 means the label wasn't applied; ignore. 200 means removed.
             // Anything else is a real error.
-            if !resp.status().is_success() && resp.status().as_u16() != 404 {
+            let status = resp.status();
+            if !status.is_success() && status.as_u16() != 404 {
                 let text = resp.text().unwrap_or_default();
                 return Err(format!(
                     "GitHub remove-label {}: {}",
-                    resp.status(),
+                    status,
                     text.chars().take(200).collect::<String>()
                 ));
             }
@@ -1466,11 +1467,12 @@ async fn gh_relabel_issue(
                 .body(serde_json::to_string(&body).map_err(|e| e.to_string())?)
                 .send()
                 .map_err(|e| e.to_string())?;
-            if !resp.status().is_success() {
+            let status = resp.status();
+            if !status.is_success() {
                 let text = resp.text().unwrap_or_default();
                 return Err(format!(
                     "GitHub add-label {}: {}",
-                    resp.status(),
+                    status,
                     text.chars().take(200).collect::<String>()
                 ));
             }
