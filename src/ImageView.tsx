@@ -170,13 +170,8 @@ export function ImageView({ path }: { path: string }) {
       const dirX = endX === start.x ? 1 : Math.sign(endX - start.x);
       const dirY = endY === start.y ? 1 : Math.sign(endY - start.y);
       setMarqueeOn(false);
-      useStore.getState().setLastCapture({
-        path,
-        source_anchor: null,
-        selection: null,
-        imageDataUrl: image,
-        timestamp: Date.now(),
-      });
+      // Marquee output is owned by whichever popup it feeds. Don't
+      // stash in lastCapture — Ctrl+N stays vault-context-only.
       const store = useStore.getState();
       if (store.chatPaneCapturePending) {
         store.setChatPaneLastCapture({

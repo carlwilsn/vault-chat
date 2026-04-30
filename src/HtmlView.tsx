@@ -172,15 +172,8 @@ export function HtmlView({ content }: { content: string }) {
         if (!pending) return;
         const selection = typeof mr.text === "string" ? mr.text : "";
         const curPath = useStore.getState().currentFile;
-        if (curPath) {
-          useStore.getState().setLastCapture({
-            path: curPath,
-            source_anchor: null,
-            selection: selection || null,
-            imageDataUrl: null,
-            timestamp: Date.now(),
-          });
-        }
+        // Marquee output is owned by whichever popup it feeds. Don't
+        // stash in lastCapture — Ctrl+N stays vault-context-only.
         const store = useStore.getState();
         if ((store.noteCapturePending || store.feedbackCapturePending) && curPath) {
           // HTML doesn't snapshot pixels — just pipe the selection text

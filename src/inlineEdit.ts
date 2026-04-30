@@ -136,7 +136,7 @@ function buildContextBody(
 
 const ASK_SYSTEM = `You are an assistant inside a text/code file viewer. The user highlights a selection (or puts their cursor on a line) and asks a question about it.
 
-You have read-only tools for fetching more context: Read, Glob, Grep, ListDir, PdfExtract, WebFetch, WebSearch. Use them only when you genuinely need more than the file excerpt provides — otherwise answer directly.
+You have read-only tools for fetching more context: Read, Glob, Grep, ListDir, PdfExtract, ListNotes, WebFetch, WebSearch. Use them only when you genuinely need more than the file excerpt provides — otherwise answer directly.
 
 Answer in markdown. Be concise — this renders in a small popover. Use fenced code blocks for code. Use $$...$$ for display math (inline $...$ does not render here). Don't narrate tool use.`;
 
@@ -181,6 +181,7 @@ export async function* runInlineAsk(
     "PdfExtract",
     "WebFetch",
     "WebSearch",
+    "ListNotes",
   ] as const;
   const tools: Record<string, unknown> = {};
   for (const name of readOnlyNames) {

@@ -593,17 +593,10 @@ export function PdfView({ path }: { path: string }) {
         }
       }
       const sourceAnchor = bestPage ? `page=${bestPage}` : null;
-      // Stash the capture so Ctrl+N picks it up if the user dismisses
-      // the popover without saving.
-      useStore.getState().setLastCapture({
-        path,
-        source_anchor: sourceAnchor,
-        selection: captured || null,
-        imageDataUrl: image ?? null,
-        timestamp: Date.now(),
-      });
-      // If the NotePopup asked us for a region, route this capture
-      // back into the composer instead of opening InlineEditPrompt.
+      // Marquee output is owned by whichever popup it feeds (chat
+      // capture, edit-prompt, note, feedback, or a fresh inline-ask).
+      // Don't stash in the global lastCapture — Ctrl+N is supposed to
+      // be vault-context-only and shouldn't pick up popup leftovers.
       const store = useStore.getState();
       if (store.chatPaneCapturePending && image) {
         store.setChatPaneLastCapture({
