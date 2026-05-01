@@ -47,7 +47,15 @@ export default function App() {
   const setFiles = useStore((s) => s.setFiles);
   useEffect(() => {
     const saved = useStore.getState().vaultPath;
-    if (!saved) return;
+    // Tell main.tsx the splash can fade. We signal ready *after* the
+    // initial file listing resolves (or immediately if no vault is
+    // saved) so Allotment's one-time remount on `layoutKey` change
+    // happens behind the splash, not in front of the user.
+    const signalReady = () => window.dispatchEvent(new Event("vault-chat:app-ready"));
+    if (!saved) {
+      signalReady();
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -59,6 +67,8 @@ export default function App() {
           localStorage.removeItem("vault_chat_last_vault");
           useStore.setState({ vaultPath: null });
         }
+      } finally {
+        if (!cancelled) signalReady();
       }
     })();
     return () => {
