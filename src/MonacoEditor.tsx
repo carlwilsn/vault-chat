@@ -174,7 +174,12 @@ export function MonacoEditor({
           fontSize: 13,
           fontFamily:
             '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
-          minimap: { enabled: true, renderCharacters: false },
+          minimap: { enabled: false },
+          scrollbar: {
+            verticalScrollbarSize: 5,
+            horizontalScrollbarSize: 5,
+            useShadows: false,
+          },
           scrollBeyondLastLine: false,
           wordWrap: language === "markdown" ? "on" : "off",
           wrappingIndent: "same",
