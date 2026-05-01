@@ -35,6 +35,7 @@ export const KEY = {
   openrouter: "api.openrouter",
   tavily: "service.tavily",
   github_pat: "service.github_pat",
+  cloud_agent_url: "service.cloud_agent_url",
 } as const;
 
 // ----- user-managed custom keys -----
