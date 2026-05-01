@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff, FolderOpen, Plus, Upload } from "lucide-react";
+import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff, FolderOpen } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { VAULT_PATH_MIME, VAULT_PATHS_MIME, isExternalFileDrop, copyExternalFilesInto } from "./dnd";
 import { cn } from "./lib/utils";
@@ -42,8 +41,6 @@ export function FileTree() {
   // Drop target is either a specific folder path or null for the tree root
   // (vault root). undefined means no drop in progress.
   const [dropTarget, setDropTarget] = useState<string | null | undefined>(undefined);
-  // Open state for the header "+" menu (New file / New folder / Upload).
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const lastVaultRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const renameRef = useRef<HTMLInputElement | null>(null);
@@ -76,13 +73,6 @@ export function FileTree() {
       window.removeEventListener("mousedown", close);
     };
   }, [menu]);
-
-  useEffect(() => {
-    if (!addMenuOpen) return;
-    const close = () => setAddMenuOpen(false);
-    window.addEventListener("mousedown", close);
-    return () => window.removeEventListener("mousedown", close);
-  }, [addMenuOpen]);
 
   useEffect(() => {
     if (!confirmDelete && !confirmDeleteMulti) return;
@@ -288,60 +278,6 @@ export function FileTree() {
       else next.add(path);
       return next;
     });
-  };
-
-  // Upload one or more OS paths into the given vault directory. `mode`
-  // controls the picker: "files" allows multi-select of files; "folder"
-  // picks a single directory and copies it recursively. Each picked
-  // path is handed to the Rust `copy_into_vault` command which handles
-  // collision-renaming and recursion.
-  const beginUpload = async (mode: "files" | "folder", parentOverride?: string) => {
-    if (!vaultPath) return;
-    const parent = parentOverride ?? selectedDir ?? vaultPath;
-    let picked: string | string[] | null;
-    try {
-      picked = await openDialog({
-        directory: mode === "folder",
-        multiple: mode === "files",
-        title: mode === "folder" ? "Upload folder into vault" : "Upload files into vault",
-      });
-    } catch (e) {
-      console.error("[upload] dialog failed:", e);
-      return;
-    }
-    if (!picked) return;
-    const sources = Array.isArray(picked) ? picked : [picked];
-    if (sources.length === 0) return;
-    if (parent !== vaultPath) {
-      setExpanded((prev) => {
-        const n = new Set(prev);
-        n.add(parent);
-        return n;
-      });
-    }
-    const copied: string[] = [];
-    for (const src of sources) {
-      try {
-        const out = await invoke<string>("copy_into_vault", {
-          dstDir: parent,
-          src,
-        });
-        copied.push(out);
-      } catch (e) {
-        console.error("[upload] copy failed:", src, e);
-      }
-    }
-    if (copied.length === 0) return;
-    await refreshFiles();
-    if (vaultPath) {
-      const rel = (p: string) =>
-        p.startsWith(vaultPath + "/") ? p.slice(vaultPath.length + 1) : p;
-      const msg =
-        copied.length === 1
-          ? `upload ${rel(copied[0])}`
-          : `upload ${copied.length} items`;
-      commitFsAction(vaultPath, msg).catch(() => {});
-    }
   };
 
   const beginCreate = (kind: PendingKind, parentOverride?: string) => {
@@ -569,64 +505,24 @@ export function FileTree() {
   return (
     <div className="h-full flex flex-col bg-card border-r border-border">
       {vaultPath && (
-        <div className="flex items-center gap-1 px-2 py-1 border-b border-border/50 shrink-0 relative">
+        <div className="flex items-center gap-1 px-2 py-1 border-b border-border/50 shrink-0">
           <div className="flex-1 text-[10px] text-muted-foreground/70 font-mono truncate">
             {vaultPath}
           </div>
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setAddMenuOpen((v) => !v);
-            }}
-            title="Add to vault"
+            onClick={() => beginCreate("file")}
+            title="New file"
             className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
           >
-            <Plus className="h-3.5 w-3.5" />
+            <FilePlus className="h-3.5 w-3.5" />
           </button>
-          {addMenuOpen && (
-            <div
-              className="absolute right-1 top-7 z-40 rounded-md border border-border bg-card shadow-lg py-1 text-[12.5px] min-w-[140px]"
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              <button
-                className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                onClick={() => {
-                  setAddMenuOpen(false);
-                  beginCreate("file");
-                }}
-              >
-                <FilePlus className="h-3.5 w-3.5 opacity-70" /> New file
-              </button>
-              <button
-                className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                onClick={() => {
-                  setAddMenuOpen(false);
-                  beginCreate("folder");
-                }}
-              >
-                <FolderPlus className="h-3.5 w-3.5 opacity-70" /> New folder
-              </button>
-              <div className="my-1 h-px bg-border/60" />
-              <button
-                className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                onClick={() => {
-                  setAddMenuOpen(false);
-                  beginUpload("files");
-                }}
-              >
-                <Upload className="h-3.5 w-3.5 opacity-70" /> Upload files…
-              </button>
-              <button
-                className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                onClick={() => {
-                  setAddMenuOpen(false);
-                  beginUpload("folder");
-                }}
-              >
-                <Upload className="h-3.5 w-3.5 opacity-70" /> Upload folder…
-              </button>
-            </div>
-          )}
+          <button
+            onClick={() => beginCreate("folder")}
+            title="New folder"
+            className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
+          >
+            <FolderPlus className="h-3.5 w-3.5" />
+          </button>
         </div>
       )}
       <div
@@ -907,26 +803,6 @@ export function FileTree() {
                   >
                     <FolderPlus className="h-3.5 w-3.5 opacity-70" /> New folder
                   </button>
-                  <button
-                    className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                    onClick={() => {
-                      const target = menu.entry!.path;
-                      setMenu(null);
-                      beginUpload("files", target);
-                    }}
-                  >
-                    <Upload className="h-3.5 w-3.5 opacity-70" /> Upload files…
-                  </button>
-                  <button
-                    className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                    onClick={() => {
-                      const target = menu.entry!.path;
-                      setMenu(null);
-                      beginUpload("folder", target);
-                    }}
-                  >
-                    <Upload className="h-3.5 w-3.5 opacity-70" /> Upload folder…
-                  </button>
                   <div className="my-1 h-px bg-border/60" />
                 </>
               )}
@@ -990,37 +866,17 @@ export function FileTree() {
                 <FolderPlus className="h-3.5 w-3.5 opacity-70" /> New folder
               </button>
               {vaultPath && (
-                <>
-                  <button
-                    className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                    onClick={() => {
-                      setMenu(null);
-                      beginUpload("files", vaultPath);
-                    }}
-                  >
-                    <Upload className="h-3.5 w-3.5 opacity-70" /> Upload files…
-                  </button>
-                  <button
-                    className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                    onClick={() => {
-                      setMenu(null);
-                      beginUpload("folder", vaultPath);
-                    }}
-                  >
-                    <Upload className="h-3.5 w-3.5 opacity-70" /> Upload folder…
-                  </button>
-                  <button
-                    className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                    onClick={() => {
-                      revealInFileExplorer(vaultPath).catch((e) =>
-                        console.error("[opener] reveal failed:", e),
-                      );
-                      setMenu(null);
-                    }}
-                  >
-                    <FolderOpen className="h-3.5 w-3.5 opacity-70" /> File Explorer
-                  </button>
-                </>
+                <button
+                  className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                  onClick={() => {
+                    revealInFileExplorer(vaultPath).catch((e) =>
+                      console.error("[opener] reveal failed:", e),
+                    );
+                    setMenu(null);
+                  }}
+                >
+                  <FolderOpen className="h-3.5 w-3.5 opacity-70" /> File Explorer
+                </button>
               )}
             </>
           )}

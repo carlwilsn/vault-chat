@@ -517,85 +517,6 @@ async fn write_binary_file_unique(
     .map_err(|e| e.to_string())?
 }
 
-// Copy an arbitrary OS path (file or directory) into a vault folder.
-// Used by the Upload buttons in the file tree, which hand us absolute
-// paths from the dialog plugin. Collision-renames the top-level entry
-// with " (1)", " (2)", … suffixes so two uploads of the same name don't
-// clobber. Returns the absolute path of the copied entry.
-#[tauri::command]
-async fn copy_into_vault(dst_dir: String, src: String) -> Result<String, String> {
-    git_guard(&dst_dir)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let dst_dir_path = std::path::Path::new(&dst_dir);
-        let src_path = std::path::Path::new(&src);
-        std::fs::create_dir_all(dst_dir_path).map_err(|e| e.to_string())?;
-
-        let meta = std::fs::symlink_metadata(src_path).map_err(|e| e.to_string())?;
-        let raw_name = src_path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .ok_or_else(|| format!("source has no file name: {}", src))?;
-
-        // Pick a non-colliding destination name. Files preserve
-        // extension on the suffix ("notes (1).md"); dirs just append.
-        let target = if meta.is_dir() {
-            let mut candidate = dst_dir_path.join(&raw_name);
-            let mut n = 1;
-            while candidate.exists() {
-                candidate = dst_dir_path.join(format!("{} ({})", raw_name, n));
-                n += 1;
-            }
-            candidate
-        } else {
-            let name_path = std::path::Path::new(&raw_name);
-            let stem = name_path
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| raw_name.clone());
-            let ext = name_path
-                .extension()
-                .map(|e| format!(".{}", e.to_string_lossy()))
-                .unwrap_or_default();
-            let mut candidate = dst_dir_path.join(&raw_name);
-            let mut n = 1;
-            while candidate.exists() {
-                candidate = dst_dir_path.join(format!("{} ({}){}", stem, n, ext));
-                n += 1;
-            }
-            candidate
-        };
-
-        if meta.is_dir() {
-            copy_dir_recursive(src_path, &target)?;
-        } else {
-            std::fs::copy(src_path, &target).map_err(|e| e.to_string())?;
-        }
-        Ok(target.to_string_lossy().replace('\\', "/"))
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
-    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
-    let entries = std::fs::read_dir(src).map_err(|e| e.to_string())?;
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let file_type = entry.file_type().map_err(|e| e.to_string())?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else if file_type.is_file() {
-            std::fs::copy(&from, &to).map_err(|e| e.to_string())?;
-        }
-        // Symlinks: skipped intentionally — copying them as links would
-        // dangle outside the vault, and resolving them risks copying
-        // huge trees the user didn't mean to upload.
-    }
-    Ok(())
-}
-
 #[tauri::command]
 async fn rename_path(from: String, to: String) -> Result<(), String> {
     git_guard(&from)?;
@@ -2878,7 +2799,6 @@ pub fn run() {
             read_binary_file,
             write_text_file,
             write_binary_file_unique,
-            copy_into_vault,
             delete_file,
             create_dir,
             rename_path,
