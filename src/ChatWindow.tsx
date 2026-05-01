@@ -5,6 +5,7 @@ import { ChatPane } from "./ChatPane";
 import { SettingsPane } from "./SettingsPane";
 import { useStore } from "./store";
 import { applyHljsTheme } from "./main";
+import { useGlobalAnchorClickHandler } from "./linkNav";
 
 export function ChatWindow() {
   const win = getCurrentWindow();
@@ -17,6 +18,8 @@ export function ChatWindow() {
     document.documentElement.dataset.theme = theme;
     applyHljsTheme(theme);
   }, [theme]);
+
+  useGlobalAnchorClickHandler();
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
