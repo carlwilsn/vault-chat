@@ -26,7 +26,6 @@ import {
   getIssueComments,
   closeIssue,
   relabelIssue,
-  commentIssue,
   feedbackStatusOf,
   ALL_FEEDBACK_STATUS_LABELS,
   FEEDBACK_LABEL_QUEUED,
@@ -226,19 +225,8 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
       await closeIssue(githubPat!, issue.number, "not_planned");
     });
 
-  const reQueue = (issue: IssueSummary, guidance?: string) =>
+  const reQueue = (issue: IssueSummary) =>
     runAction(issue, "re-queueing", async () => {
-      // Optional guidance from the user — posted as an issue comment so
-      // the agent can read it on the next run alongside the original
-      // body and any prior comments.
-      const note = (guidance ?? "").trim();
-      if (note.length > 0) {
-        await commentIssue(
-          githubPat!,
-          issue.number,
-          `**Guidance from user before re-queue:**\n\n${note}`,
-        );
-      }
       // Strip every auto-fix:* status label, then add queued. Other
       // labels (set on GitHub) are left alone.
       const currentNames = new Set(issue.labels.map((l) => l.name));
@@ -725,7 +713,7 @@ type IssuesTabProps = {
   onRefresh: () => void;
   onVerifyClose: (issue: IssueSummary) => Promise<void>;
   onCloseAnyway: (issue: IssueSummary) => Promise<void>;
-  onReQueue: (issue: IssueSummary, guidance?: string) => Promise<void>;
+  onReQueue: (issue: IssueSummary) => Promise<void>;
   hasToken: boolean;
   onOpenSettings: () => void;
 };
@@ -895,17 +883,10 @@ function ActionRow({
   action: IssueActionState;
   onVerifyClose: (issue: IssueSummary) => Promise<void>;
   onCloseAnyway: (issue: IssueSummary) => Promise<void>;
-  onReQueue: (issue: IssueSummary, guidance?: string) => Promise<void>;
+  onReQueue: (issue: IssueSummary) => Promise<void>;
 }) {
   const pending = action.phase === "pending";
   const error = action.phase === "error" ? action.message : null;
-
-  // Guidance textarea — when the agent kicked an issue back to us
-  // (needs-review or agent-error), the user may want to leave a note
-  // before re-queueing. The text gets posted as an issue comment so the
-  // next agent run sees it.
-  const showGuidance = status === "needs-review" || status === "agent-error";
-  const [guidance, setGuidance] = useState("");
 
   // Buttons by status. Each button is a (label, icon, fn, variant) tuple
   // rendered as a <button>. Closed issues get no actions (we don't yet
@@ -931,10 +912,9 @@ function ActionRow({
     });
   } else if (status === "needs-review") {
     buttons.push({
-      label: guidance.trim() ? "Re-queue with note" : "Re-queue",
+      label: "Re-queue",
       icon: <RotateCw className="h-3 w-3" />,
-      fn: () => onReQueue(issue, guidance),
-      primary: true,
+      fn: () => onReQueue(issue),
     });
     buttons.push({
       label: "Close anyway",
@@ -943,9 +923,9 @@ function ActionRow({
     });
   } else if (status === "agent-error") {
     buttons.push({
-      label: guidance.trim() ? "Re-queue with note" : "Convert to queued",
+      label: "Convert to queued",
       icon: <RotateCw className="h-3 w-3" />,
-      fn: () => onReQueue(issue, guidance),
+      fn: () => onReQueue(issue),
       primary: true,
     });
     buttons.push({
@@ -975,16 +955,6 @@ function ActionRow({
 
   return (
     <div className="border-t border-border/40 pt-2 space-y-1.5">
-      {showGuidance && (
-        <textarea
-          value={guidance}
-          onChange={(e) => setGuidance(e.target.value)}
-          placeholder="Optional: leave a note for the agent before re-queueing (e.g. what went wrong, what to try instead)…"
-          rows={3}
-          disabled={pending}
-          className="w-full resize-y rounded border border-border bg-background/60 px-2 py-1.5 text-[12px] leading-snug placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 disabled:opacity-50"
-        />
-      )}
       <div className="flex items-center gap-2 flex-wrap">
         {buttons.map((b, i) => (
           <button
