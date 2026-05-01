@@ -21,6 +21,9 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    env:
+      # Vite's transform pass needs more heap than Node's Windows default.
+      NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - uses: actions/checkout@v4
         with:
