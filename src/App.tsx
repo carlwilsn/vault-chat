@@ -11,6 +11,7 @@ import { Titlebar } from "./Titlebar";
 import { NotePopup } from "./NotePopup";
 import { FeedbackPopup } from "./FeedbackPopup";
 import { NotesPanel } from "./NotesPanel";
+import { UpdateBanner } from "./UpdateBanner";
 import { fileKind } from "./fileKind";
 import type { NoteAnchor } from "./notes";
 import { useStore } from "./store";
@@ -394,6 +395,7 @@ export default function App() {
         onClose={closeFeedbackComposer}
       />
       <NotesPanel open={showNotesPanel} onClose={() => setShowNotesPanel(false)} />
+      <UpdateBanner />
     </div>
   );
 }
