@@ -525,31 +525,27 @@ export function SettingsPane() {
             <div>
               <h3 className="text-[11px] font-semibold uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
                 <Cloud className="h-3 w-3" />
-                Cloud agent (chat)
+                Cloud agent
               </h3>
               <p className="text-[11.5px] text-muted-foreground/80 mt-0.5 leading-relaxed">
-                Pop out a Claude conversation scoped to this repo for
-                higher-level feature discussions. The agent reads/writes
-                via the GitHub connector and proposes PRs back.
+                Pop out Claude Code in the cloud for this repo — talk
+                through features and have the agent implement, run, and
+                verify changes in a sandbox, then open PRs back.
                 <br />
                 <br />
                 <strong className="text-foreground/90">
                   One-time setup:
                 </strong>{" "}
-                create a Project on{" "}
+                open{" "}
                 <a
-                  href="https://claude.ai"
+                  href="https://claude.ai/code"
                   target="_blank"
                   rel="noreferrer"
                   className="text-indigo-400 hover:underline"
                 >
-                  claude.ai
+                  claude.ai/code
                 </a>
-                , attach the vault-chat repo via{" "}
-                <span className="font-mono text-[10.5px]">
-                  + → Add from GitHub
-                </span>
-                , then paste the Project URL below.
+                , connect the vault-chat repo, then paste the URL here.
               </p>
             </div>
             {savedFlash === "cloud_agent_url" && (
@@ -561,7 +557,7 @@ export function SettingsPane() {
           <div className="flex gap-2">
             <Input
               type="url"
-              placeholder="https://claude.ai/project/…"
+              placeholder="https://claude.ai/code/…"
               value={cloudAgentUrlDraft}
               onChange={(e) => setCloudAgentUrlDraft(e.target.value)}
               onKeyDown={(e) => {
@@ -580,7 +576,7 @@ export function SettingsPane() {
                 size="sm"
                 variant="ghost"
                 onClick={removeCloudAgentUrl}
-                title="Remove the saved Project URL"
+                title="Remove the saved Cloud agent URL"
               >
                 <X className="h-3 w-3" />
               </Button>
