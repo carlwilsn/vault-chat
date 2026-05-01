@@ -1,15 +1,22 @@
 # Packaging & auto-updates
 
 vault-chat ships as a packaged Tauri app with auto-updates. Once set up, the
-loop is:
+loop is fully hands-off:
 
 1. You file feedback or talk to the cloud agent.
-2. Cloud agent merges a PR to `main`.
-3. You bump `version` in `package.json`, `src-tauri/tauri.conf.json`, and
-   `src-tauri/Cargo.toml`, then push a `vX.Y.Z` tag.
-4. GitHub Actions builds + signs + publishes the release with `latest.json`.
-5. Installed app sees the update on next launch and offers an "Install &
+2. Cloud agent commits fixes directly to `main` (no PRs — you don't review).
+3. **Every morning at 7am EDT, the `ship` workflow** wakes up, sees there
+   are new commits since the last release, bumps the patch version, builds
+   + signs the Windows installer, and publishes a GitHub Release with the
+   updater manifest.
+4. Installed app sees the update on next launch and offers an "Install &
    restart" prompt (the Claude-branded card in the bottom-right).
+
+If nothing changed overnight, the workflow no-ops. No empty releases, no
+spam.
+
+**Manual escape hatch:** push a `vX.Y.Z` tag yourself and `release.yml`
+fires a one-off release. Useful when you want to ship outside the cron.
 
 ## One-time setup
 
@@ -78,17 +85,16 @@ tagging — useful for dry runs.
 
 ## Releasing subsequent versions
 
-Bump `version` in three places (they must match):
+Don't. The `ship` workflow handles this every morning automatically.
 
-- `package.json` → `"version": "0.1.1"`
-- `src-tauri/tauri.conf.json` → `"version": "0.1.1"`
-- `src-tauri/Cargo.toml` → `version = "0.1.1"`
+If you want to force a release outside the morning cron:
 
-Commit, tag `v0.1.1`, push the tag.
-
-> **Tip:** the cloud agent can do this for you. Tell it
-> "release v0.1.1 with whatever's on main" and it'll bump the three
-> files, commit, and push the tag.
+1. From the **Actions** tab, run the `ship` workflow manually
+   (workflow_dispatch). This bumps + builds + ships in one go.
+2. Or, for a fully manual path: bump `version` yourself in
+   `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`,
+   then push a `vX.Y.Z` tag — `release.yml` picks it up. Easiest is
+   `node scripts/bump-version.mjs && git commit -am "v$(node -p 'require(\"./package.json\").version')" && git tag "v$(node -p 'require(\"./package.json\").version')" && git push --follow-tags`.
 
 ## What "just me" actually means
 
@@ -127,4 +133,7 @@ cloned even after you've packaged. If something ships broken:
   `@tauri-apps/plugin-process`.
 - `src/UpdateBanner.tsx` — the Claude-branded "update available" card.
 - `src/App.tsx` — mounts `<UpdateBanner />` in the root.
-- `.github/workflows/release.yml` — Windows build + sign + publish on `v*` tag.
+- `.github/workflows/release.yml` — Windows build + sign + publish on `v*` tag (manual escape hatch).
+- `.github/workflows/ship.yml` — daily 7am EDT auto-release: checks for new
+  commits, bumps patch, ships if there's anything new.
+- `scripts/bump-version.mjs` — keeps the three version fields in sync.
