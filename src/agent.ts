@@ -1,5 +1,6 @@
-import { streamText, stepCountIs, type ModelMessage } from "ai";
+import { streamText, stepCountIs, tool, type ModelMessage } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
+import { z } from "zod";
 import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./providers";
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
@@ -172,7 +173,71 @@ export async function runAgent(params: {
     ];
 
     const builtinTools = buildTools(vault, tavilyKey);
-    const tools = { ...builtinTools, ...metaTools };
+    const innerTools = { ...builtinTools, ...metaTools };
+
+    // Agent: delegate a self-contained sub-task to a sub-call with
+    // isolated context. The sub-agent shares the model + tool set
+    // (minus Agent itself, to prevent unbounded recursion) but starts
+    // from a fresh conversation, so it can read 30 files without
+    // bloating the main agent's working context. Returns the
+    // sub-agent's final assistant text as a single string. The
+    // caller's chat UI sees this as one tool call with one result —
+    // intermediate sub-agent steps are not surfaced.
+    const subAgentTool = tool({
+      description:
+        "Delegate a self-contained sub-task to a sub-agent. The sub-agent has its own fresh context and the same tool set (minus Agent itself). " +
+        "Use this when (a) the work would otherwise read 10+ files and burn the main context, (b) the user wants a synthesized answer rather than a play-by-play, or (c) you want to map a large codebase or do parallel research. " +
+        "Do NOT use Agent for single tool calls you could do directly, or for tasks where the user needs to see/review each step. " +
+        "The `prompt` field MUST be self-contained — the sub-agent has zero memory of this conversation. Include every file path, every constraint, and the exact form of answer you want back.",
+      inputSchema: z.object({
+        description: z.string().describe("3-5 word task description (shown in the UI)."),
+        prompt: z
+          .string()
+          .describe(
+            "Self-contained prompt for the sub-agent. Include the question, the relevant context, and what shape of answer to return.",
+          ),
+      }),
+      execute: async ({ prompt: subPrompt }) => {
+        const subSystem = `You are a sub-agent spawned by the main vault agent.
+
+Your job is one focused task. Return a tight synthesis — no preamble, no closing summary, no offers to do more. The caller is another agent, not the user.
+
+You have full read/write tool access to the user's vault.
+Vault root: ${vault}
+${shellNote}
+
+Be terse. If the task is research, return findings as a structured list with file:line citations. If the task is a code change, make the change and return what you did + the affected files.`;
+        try {
+          const subResult = streamText({
+            model,
+            messages: [
+              { role: "system", content: subSystem },
+              { role: "user", content: subPrompt },
+            ],
+            tools: innerTools,
+            stopWhen: stepCountIs(20),
+            abortSignal,
+          });
+          let final = "";
+          for await (const part of subResult.fullStream) {
+            if (
+              part.type === "text-delta" &&
+              "text" in part &&
+              typeof part.text === "string"
+            ) {
+              final += part.text;
+            }
+            // Ignore tool calls / tool results / reasoning — those are
+            // internal to the sub-agent and shouldn't surface upstream.
+          }
+          return final.trim() || "(sub-agent returned no output)";
+        } catch (e: any) {
+          return `Sub-agent failed: ${e?.message ?? String(e)}`;
+        }
+      },
+    });
+
+    const tools = { ...innerTools, Agent: subAgentTool };
 
     // Reasoning hints per provider. Each SDK takes a different shape,
     // so we branch on spec.provider and construct just the block the
