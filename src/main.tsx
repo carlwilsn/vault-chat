@@ -74,39 +74,21 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   </React.StrictMode>,
 );
 
-// Show the OS window once React has committed its first frame — the
-// window was created hidden (main window via tauri.conf.json, popout
-// via sync.ts), so the user never sees a pre-paint white flash.
+// Hide the boot splash on the next paint after React mounts. One rAF
+// ensures the first real frame has been committed, and a short delay
+// gives CSS/layout one more tick so the fade-out looks smooth rather
+// than snapping.
+//
+// At the same time, ask the OS to show the window (it was created
+// hidden — main window in lib.rs setup(), popout in sync.ts — so the
+// user only ever sees a fully painted frame).
 requestAnimationFrame(() => {
   requestAnimationFrame(() => {
+    const splash = document.getElementById("vault-splash");
+    if (splash) {
+      splash.classList.add("hidden");
+      setTimeout(() => splash.remove(), 250);
+    }
     invoke("app_ready").catch((e) => console.warn("[boot] app_ready:", e));
   });
 });
-
-// Hide the splash only once the app has signalled it's done with its
-// initial async work (main window: vault file listing resolved or no
-// vault saved; popout: React mounted). Without this gate, the splash
-// fades and Allotment immediately remounts/relayouts when files arrive
-// — that's the "snap-in after the splash" the user kept seeing.
-let splashHidden = false;
-function hideSplash() {
-  if (splashHidden) return;
-  splashHidden = true;
-  const splash = document.getElementById("vault-splash");
-  if (splash) {
-    splash.classList.add("hidden");
-    setTimeout(() => splash.remove(), 250);
-  }
-}
-window.addEventListener("vault-chat:app-ready", hideSplash, { once: true });
-// Failsafe: never leave the splash up longer than this, even if the
-// vault listing hangs or the ready event never fires.
-setTimeout(hideSplash, 1500);
-if (isPopout) {
-  // Popouts have no vault-load step — fire ready as soon as React paints.
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      window.dispatchEvent(new Event("vault-chat:app-ready"));
-    });
-  });
-}
