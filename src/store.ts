@@ -109,11 +109,7 @@ const newPaneId = () =>
     : `p_${Math.random().toString(36).slice(2)}`);
 
 type ApiKeys = Partial<Record<ProviderId, string>>;
-export type ServiceKeys = {
-  tavily?: string;
-  github_pat?: string;
-  cloud_agent_url?: string;
-};
+export type ServiceKeys = { tavily?: string; github_pat?: string };
 
 const MODEL_STORAGE = "vault_chat_model";
 const THEME_STORAGE = "vault_chat_theme";
@@ -175,16 +171,14 @@ async function fetchAllFromKeychain(): Promise<{
   apiKeys: ApiKeys;
   serviceKeys: ServiceKeys;
 }> {
-  const [anthropic, openai, google, openrouter, tavily, github_pat, cloud_agent_url] =
-    await Promise.all([
-      keychainGet(KEY.anthropic),
-      keychainGet(KEY.openai),
-      keychainGet(KEY.google),
-      keychainGet(KEY.openrouter),
-      keychainGet(KEY.tavily),
-      keychainGet(KEY.github_pat),
-      keychainGet(KEY.cloud_agent_url),
-    ]);
+  const [anthropic, openai, google, openrouter, tavily, github_pat] = await Promise.all([
+    keychainGet(KEY.anthropic),
+    keychainGet(KEY.openai),
+    keychainGet(KEY.google),
+    keychainGet(KEY.openrouter),
+    keychainGet(KEY.tavily),
+    keychainGet(KEY.github_pat),
+  ]);
   const apiKeys: ApiKeys = {};
   if (anthropic) apiKeys.anthropic = anthropic;
   if (openai) apiKeys.openai = openai;
@@ -193,7 +187,6 @@ async function fetchAllFromKeychain(): Promise<{
   const serviceKeys: ServiceKeys = {};
   if (tavily) serviceKeys.tavily = tavily;
   if (github_pat) serviceKeys.github_pat = github_pat;
-  if (cloud_agent_url) serviceKeys.cloud_agent_url = cloud_agent_url;
   return { apiKeys, serviceKeys };
 }
 
@@ -222,8 +215,6 @@ async function migrateLocalStorageKeys(): Promise<void> {
       const parsed = JSON.parse(rawService) as ServiceKeys;
       if (parsed.tavily) await keychainSet(KEY.tavily, parsed.tavily);
       if (parsed.github_pat) await keychainSet(KEY.github_pat, parsed.github_pat);
-      if (parsed.cloud_agent_url)
-        await keychainSet(KEY.cloud_agent_url, parsed.cloud_agent_url);
       localStorage.removeItem(OLD_SERVICE);
     }
   } catch (e) {
@@ -838,7 +829,8 @@ export const useStore = create<State>((set) => ({
   },
   setServiceKey: (name, k) => {
     set((s) => ({ serviceKeys: { ...s.serviceKeys, [name]: k } }));
-    const keyName = KEY[name] ?? null;
+    const keyName =
+      name === "tavily" ? KEY.tavily : name === "github_pat" ? KEY.github_pat : null;
     if (keyName) {
       keychainSet(keyName, k).catch((e) =>
         console.error(`[keys] keychain set ${name} failed:`, e),
@@ -851,7 +843,8 @@ export const useStore = create<State>((set) => ({
       delete next[name];
       return { serviceKeys: next };
     });
-    const keyName = KEY[name] ?? null;
+    const keyName =
+      name === "tavily" ? KEY.tavily : name === "github_pat" ? KEY.github_pat : null;
     if (keyName) {
       keychainDelete(keyName).catch((e) =>
         console.error(`[keys] keychain delete ${name} failed:`, e),

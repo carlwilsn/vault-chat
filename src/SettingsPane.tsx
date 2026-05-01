@@ -72,18 +72,13 @@ export function SettingsPane() {
   });
   const [tavilyDraft, setTavilyDraft] = useState(serviceKeys.tavily ?? "");
   const [githubDraft, setGithubDraft] = useState(serviceKeys.github_pat ?? "");
-  const [cloudAgentUrlDraft, setCloudAgentUrlDraft] = useState(
-    serviceKeys.cloud_agent_url ?? "",
-  );
   const [githubTestState, setGithubTestState] = useState<
     | { phase: "idle" }
     | { phase: "testing" }
     | { phase: "ok"; login: string }
     | { phase: "error"; message: string }
   >({ phase: "idle" });
-  const [savedFlash, setSavedFlash] = useState<
-    ProviderId | "tavily" | "github_pat" | "cloud_agent_url" | null
-  >(null);
+  const [savedFlash, setSavedFlash] = useState<ProviderId | "tavily" | "github_pat" | null>(null);
   const openFeedbackComposer = useStore((s) => s.openFeedbackComposer);
   const [phoneInfo, setPhoneInfo] = useState<{
     port: number;
@@ -164,29 +159,6 @@ export function SettingsPane() {
     clearServiceKey("github_pat");
     setGithubDraft("");
     setGithubTestState({ phase: "idle" });
-  };
-
-  const saveCloudAgentUrl = () => {
-    const v = cloudAgentUrlDraft.trim();
-    if (!v) return;
-    setServiceKey("cloud_agent_url", v);
-    setCloudAgentUrlDraft("");
-    setSavedFlash("cloud_agent_url");
-    setTimeout(
-      () => setSavedFlash((x) => (x === "cloud_agent_url" ? null : x)),
-      1500,
-    );
-  };
-
-  const removeCloudAgentUrl = () => {
-    clearServiceKey("cloud_agent_url");
-    setCloudAgentUrlDraft("");
-  };
-
-  const openCloudAgent = () => {
-    const url = serviceKeys.cloud_agent_url;
-    if (!url) return;
-    openUrl(url).catch((e) => console.error("[cloud-agent] open failed:", e));
   };
 
   const testGithubPat = async () => {
@@ -521,78 +493,27 @@ export function SettingsPane() {
         <div className="h-px bg-border" />
 
         <section className="space-y-2">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
-                <Cloud className="h-3 w-3" />
-                Cloud agent
-              </h3>
-              <p className="text-[11.5px] text-muted-foreground/80 mt-0.5 leading-relaxed">
-                Pop out Claude Code in the cloud for this repo — talk
-                through features and have the agent implement, run, and
-                verify changes in a sandbox, then open PRs back.
-                <br />
-                <br />
-                <strong className="text-foreground/90">
-                  One-time setup:
-                </strong>{" "}
-                open{" "}
-                <a
-                  href="https://claude.ai/code"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-indigo-400 hover:underline"
-                >
-                  claude.ai/code
-                </a>
-                , connect the vault-chat repo, then paste the URL here.
-              </p>
-            </div>
-            {savedFlash === "cloud_agent_url" && (
-              <span className="text-[11px] text-emerald-500 flex items-center gap-1 shrink-0">
-                <Check className="h-3 w-3" /> saved
-              </span>
-            )}
+          <div>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <Cloud className="h-3 w-3" />
+              Claude Code (browser)
+            </h3>
+            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5 leading-relaxed">
+              Opens claude.ai/code in your browser for repo-aware
+              sessions when you want the cloud agent's full sandbox.
+              Just a labeled launcher — no in-app integration.
+            </p>
           </div>
-          <div className="flex gap-2">
-            <Input
-              type="url"
-              placeholder="https://claude.ai/code/…"
-              value={cloudAgentUrlDraft}
-              onChange={(e) => setCloudAgentUrlDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") saveCloudAgentUrl();
-              }}
-            />
-            <Button
-              size="sm"
-              onClick={saveCloudAgentUrl}
-              disabled={!cloudAgentUrlDraft.trim()}
-            >
-              Save
-            </Button>
-            {serviceKeys.cloud_agent_url && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={removeCloudAgentUrl}
-                title="Remove the saved Cloud agent URL"
-              >
-                <X className="h-3 w-3" />
-              </Button>
-            )}
-          </div>
-          <p className="text-[11px] text-muted-foreground/70 font-mono break-all">
-            {serviceKeys.cloud_agent_url ?? "not set"}
-          </p>
           <Button
             size="sm"
-            onClick={openCloudAgent}
-            disabled={!serviceKeys.cloud_agent_url}
-            className="bg-indigo-500 text-white hover:bg-indigo-400"
+            onClick={() =>
+              openUrl("https://claude.ai/code").catch((e) =>
+                console.error("[cloud-agent] open failed:", e),
+              )
+            }
           >
             <ExternalLink className="h-3 w-3 mr-1.5" />
-            Open cloud agent
+            Open Claude Code
           </Button>
         </section>
 
