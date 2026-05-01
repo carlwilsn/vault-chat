@@ -1,10 +1,16 @@
 name: ship
 
-# Daily auto-release loop. Wakes up once a morning, checks if there are any
-# new commits on main since the last release tag, and if so: bumps the patch
-# version, commits the bump back to main with [skip ci], builds + signs the
-# Windows installer, and publishes a GitHub Release with the updater
-# manifest. The installed app sees it on next launch.
+# Daily auto-release loop, plus push-triggered shipping when source under
+# src/** or src-tauri/** changes. The path filter keeps trivial commits
+# (workflow tweaks, docs, scripts) from burning a build; the daily cron
+# is the safety net so you never go more than 24h without a release if
+# you push something the path filter doesn't catch. Wakes up, checks if
+# there are any new commits on main since the last release tag, and if
+# so: bumps the patch version, commits the bump back to main with
+# [skip ci] (which prevents this workflow from re-firing on its own
+# version-bump push), builds + signs the Windows installer, and
+# publishes a GitHub Release with the updater manifest. The installed
+# app sees it on next launch.
 #
 # Manual escape hatch lives in release.yml — push a v* tag yourself if you
 # want to force a release outside the cron.
@@ -14,7 +20,29 @@ on:
     # 11:00 UTC = 7am EDT / 6am EST. Tweak this if you want a different
     # "morning digest" time.
     - cron: "0 11 * * *"
+  push:
+    branches: [main]
+    # Only ship when something that actually goes into the bundled app
+    # changes. Workflow tweaks, READMEs, the meta-tools-staging area,
+    # and feedback images don't justify a 15-minute build.
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "tailwind.config.js"
+      - "vite.config.ts"
+      - "tsconfig.json"
   workflow_dispatch:
+
+# Coalesce a flurry of pushes (e.g. the auto-fix agent landing four
+# fixes back-to-back) into a single build. cancel-in-progress kills the
+# running build when a fresh commit arrives so we always ship the tip
+# of main rather than a stale interim state.
+concurrency:
+  group: ship
+  cancel-in-progress: true
 
 jobs:
   ship:
