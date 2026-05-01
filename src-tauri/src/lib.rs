@@ -2649,6 +2649,18 @@ fn run_script_sync(
     })
 }
 
+// Show the calling window. Paired with the `visible: false` startup
+// state set on the main window in `setup()` and on the popout in
+// sync.ts: the frontend invokes this once React has mounted and the
+// boot splash has begun fading, so the OS only ever sees the window
+// in its painted state — no pre-paint flash.
+#[tauri::command]
+fn app_ready(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.show().map_err(|e| e.to_string())?;
+    let _ = window.set_focus();
+    Ok(())
+}
+
 #[cfg(windows)]
 fn apply_titlebar_color(window: &tauri::WebviewWindow) {
     use windows_sys::Win32::Foundation::HWND;
@@ -2743,19 +2755,19 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
-            #[cfg(windows)]
-            {
-                use tauri::Manager;
-                if let Some(w) = app.get_webview_window("main") {
-                    apply_titlebar_color(&w);
-                }
+            use tauri::Manager;
+            // Start the main window hidden so the OS doesn't show an
+            // unpainted frame while the WebView is still loading. The
+            // frontend calls `app_ready` once React has mounted and the
+            // splash starts fading — see src/main.tsx.
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.hide();
+                #[cfg(windows)]
+                apply_titlebar_color(&w);
             }
-            #[cfg(not(windows))]
-            { let _ = app; }
 
             // Phone bridge: load or generate a stable token, then spin
             // up the HTTP + WebSocket server on a Tauri async task.
-            use tauri::Manager;
             let app_data = app
                 .path()
                 .app_data_dir()
@@ -2833,7 +2845,8 @@ pub fn run() {
             gh_close_issue,
             gh_reopen_issue,
             gh_relabel_issue,
-            gh_comment_issue
+            gh_comment_issue,
+            app_ready
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

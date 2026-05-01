@@ -6,6 +6,7 @@ import { Buffer } from "buffer";
 
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { invoke } from "@tauri-apps/api/core";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
 import "@fontsource/inter/600.css";
@@ -77,6 +78,10 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
 // ensures the first real frame has been committed, and a short delay
 // gives CSS/layout one more tick so the fade-out looks smooth rather
 // than snapping.
+//
+// At the same time, ask the OS to show the window (it was created
+// hidden — main window in lib.rs setup(), popout in sync.ts — so the
+// user only ever sees a fully painted frame).
 requestAnimationFrame(() => {
   requestAnimationFrame(() => {
     const splash = document.getElementById("vault-splash");
@@ -84,5 +89,6 @@ requestAnimationFrame(() => {
       splash.classList.add("hidden");
       setTimeout(() => splash.remove(), 250);
     }
+    invoke("app_ready").catch((e) => console.warn("[boot] app_ready:", e));
   });
 });

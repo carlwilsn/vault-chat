@@ -237,6 +237,10 @@ export async function openChatPopout() {
     decorations: false,
     backgroundColor: "#1f1f23",
     theme: "dark",
+    // Stay hidden until the popout's main.tsx has mounted React and the
+    // splash has begun fading — invokes `app_ready`. Avoids showing an
+    // unpainted frame while the WebView loads.
+    visible: false,
   });
   useStore.getState().setPopoutOpen(true);
   w.once("tauri://destroyed", () => {
