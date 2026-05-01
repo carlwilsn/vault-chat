@@ -5,7 +5,7 @@ import remarkMath from "remark-math";
 import remarkBreaks from "remark-breaks";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
-import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X } from "lucide-react";
+import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, History } from "lucide-react";
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
@@ -308,6 +308,24 @@ export function ChatPane() {
 
   const stop = () => dispatchChatAction({ kind: "stop" });
   const onClear = () => dispatchChatAction({ kind: "clear" });
+  const saveCurrentChat = useStore((s) => s.saveCurrentChat);
+  const loadSavedChat = useStore((s) => s.loadSavedChat);
+  const savedChats = useStore((s) => s.savedChats);
+  const savedForVault = savedChats.filter((c) => c.vaultPath === vaultPath);
+  const [recentsOpen, setRecentsOpen] = useState(false);
+  useEffect(() => {
+    if (!recentsOpen) return;
+    const close = () => setRecentsOpen(false);
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [recentsOpen]);
+  const onPickRecent = (id: string) => {
+    setRecentsOpen(false);
+    // Snapshot what's currently on screen first so the user can come
+    // back to it — same rolling-buffer behaviour as Clear.
+    saveCurrentChat();
+    loadSavedChat(id);
+  };
   const onSelectModel = (id: string) => dispatchChatAction({ kind: "setModel", id });
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -721,11 +739,48 @@ export function ChatPane() {
                   <span>{formatTokens(lastContext)}</span>
                 </div>
               )}
+              {savedForVault.length > 0 && (
+                <div className="relative">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setRecentsOpen((v) => !v);
+                    }}
+                    className="hover:text-foreground transition-colors"
+                    title={`Recent conversations (${savedForVault.length})`}
+                  >
+                    <History className="h-3 w-3" />
+                  </button>
+                  {recentsOpen && (
+                    <div
+                      className="absolute right-0 bottom-5 z-40 w-[280px] rounded-md border border-border bg-card shadow-lg py-1 text-[12px]"
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      <div className="px-3 py-1 text-[10.5px] uppercase tracking-wider text-muted-foreground/80">
+                        Recent conversations
+                      </div>
+                      {savedForVault.map((c) => (
+                        <button
+                          key={c.id}
+                          onClick={() => onPickRecent(c.id)}
+                          className="w-full text-left px-3 py-1.5 hover:bg-accent/60 flex flex-col gap-0.5"
+                        >
+                          <span className="truncate text-foreground">{c.title}</span>
+                          <span className="text-[10.5px] text-muted-foreground/80">
+                            {savedRelativeTime(c.savedAt)} · {c.messages.length} message
+                            {c.messages.length === 1 ? "" : "s"}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               {messages.length > 0 && (
                 <button
                   onClick={onClear}
                   className="hover:text-foreground transition-colors"
-                  title="Clear conversation"
+                  title="Clear conversation (saves it to recents)"
                 >
                   <Trash2 className="h-3 w-3" />
                 </button>
@@ -736,6 +791,18 @@ export function ChatPane() {
       </div>
     </div>
   );
+}
+
+function savedRelativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const sec = Math.round(diff / 1000);
+  if (sec < 60) return "just now";
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.round(hr / 24);
+  return `${day}d ago`;
 }
 
 function toolSummary(input: any): string {

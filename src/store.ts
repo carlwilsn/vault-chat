@@ -115,6 +115,11 @@ const MODEL_STORAGE = "vault_chat_model";
 const THEME_STORAGE = "vault_chat_theme";
 const VAULT_STORAGE = "vault_chat_last_vault";
 const CHAT_STORAGE = "vault_chat_history";
+// Rolling buffer of the last few finalised conversations. Capped at
+// SAVED_CHATS_MAX entries (newest first), shared across vaults — the
+// UI filters to the active vault on display.
+const SAVED_CHATS_STORAGE = "vault_chat_saved";
+const SAVED_CHATS_MAX = 3;
 
 export type Theme = "graphite" | "light";
 
@@ -239,6 +244,20 @@ export async function hydrateKeychain(): Promise<void> {
   }
 }
 
+export type SavedChat = {
+  id: string;
+  vaultPath: string | null;
+  // First user message (trimmed to 80 chars) — labels the entry in the
+  // recents popover. Empty conversations are never saved so this is
+  // always meaningful.
+  title: string;
+  savedAt: number;
+  messages: ChatMessage[];
+  compactionSummary: string | null;
+  lastContext: number;
+  tokenUsage: { prompt: number; completion: number; total: number };
+};
+
 type State = {
   vaultPath: string | null;
   files: FileEntry[];
@@ -337,6 +356,11 @@ type State = {
     initialAnchors?: import("./notes").NoteAnchor[];
   };
   feedbackCapturePending: boolean;
+  // Rolling buffer of finished conversations, capped to the last
+  // SAVED_CHATS_MAX. Auto-snapshotted whenever the user clears or
+  // loads another saved chat. UI shows entries matching the current
+  // vaultPath.
+  savedChats: SavedChat[];
 
   setVault: (p: string) => void;
   setFiles: (f: FileEntry[]) => void;
@@ -433,6 +457,8 @@ type State = {
     panePaths?: string[];
     files?: FileEntry[];
   }) => void;
+  saveCurrentChat: () => void;
+  loadSavedChat: (id: string) => void;
   applyChatStream: (s: {
     busy: boolean;
     streamingText?: string;
@@ -489,6 +515,7 @@ export const useStore = create<State>((set) => ({
   noteComposer: { open: false },
   feedbackComposer: { open: false },
   feedbackCapturePending: false,
+  savedChats: loadSavedChats(),
 
   setVault: (p) =>
     set((s) => {
@@ -1156,7 +1183,78 @@ export const useStore = create<State>((set) => ({
       compactionSummary: null,
       agentTodos: [],
     }),
+  saveCurrentChat: () =>
+    set((s) => {
+      if (s.messages.length === 0) return {};
+      const entry: SavedChat = {
+        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        vaultPath: s.vaultPath,
+        title: deriveSavedChatTitle(s.messages),
+        savedAt: Date.now(),
+        messages: s.messages,
+        compactionSummary: s.compactionSummary,
+        lastContext: s.lastContext,
+        tokenUsage: s.tokenUsage,
+      };
+      // Prune any older entry that already matches by message ref —
+      // happens when the user loads then immediately re-saves the same
+      // chat without changes.
+      const trimmed = s.savedChats.filter((c) => c.messages !== entry.messages);
+      const next = [entry, ...trimmed].slice(0, SAVED_CHATS_MAX);
+      return { savedChats: next };
+    }),
+  loadSavedChat: (id) =>
+    set((s) => {
+      const entry = s.savedChats.find((c) => c.id === id);
+      if (!entry) return {};
+      return {
+        messages: entry.messages,
+        compactionSummary: entry.compactionSummary,
+        lastContext: entry.lastContext,
+        tokenUsage: entry.tokenUsage,
+        agentTodos: [],
+        streamingText: "",
+        streamingReasoning: "",
+        liveTools: [],
+      };
+    }),
 }));
+
+function deriveSavedChatTitle(messages: ChatMessage[]): string {
+  for (const m of messages) {
+    if (m.role !== "user") continue;
+    const trimmed = (m.content ?? "").trim();
+    if (!trimmed) continue;
+    const firstLine = trimmed.split(/\r?\n/)[0]!;
+    return firstLine.length <= 80 ? firstLine : firstLine.slice(0, 77) + "…";
+  }
+  return "(no prompt)";
+}
+
+function loadSavedChats(): SavedChat[] {
+  try {
+    const raw = localStorage.getItem(SAVED_CHATS_STORAGE);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.slice(0, SAVED_CHATS_MAX);
+  } catch (e) {
+    console.warn("[saved-chats] load failed:", e);
+    return [];
+  }
+}
+
+let savedChatsLastSig = "";
+useStore.subscribe((state) => {
+  const sig = state.savedChats.map((c) => c.id).join("|");
+  if (sig === savedChatsLastSig) return;
+  savedChatsLastSig = sig;
+  try {
+    localStorage.setItem(SAVED_CHATS_STORAGE, JSON.stringify(state.savedChats));
+  } catch (e) {
+    console.warn("[saved-chats] persist failed:", e);
+  }
+});
 
 // Persist chat history to localStorage so HMR reloads (or crashes) don't
 // nuke the conversation mid-edit. We only snapshot finalized fields —
