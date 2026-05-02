@@ -127,9 +127,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Maintainer has its own dedicated minisign keypair (separate
-          # trust domain from the main app) — see #26 fix. Generated
-          # unencrypted via `minisign -G -W` so no password is needed.
+          # trust domain from the main app) — see #26 fix. Key is
+          # generated unencrypted, but we still pass the password env
+          # var explicitly: tauri-action's signer expects the var to be
+          # set (empty string is fine) and silently falls back to a bad
+          # default when it isn't, which produced
+          # "incorrect updater private key password" failures.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MAINTAINER_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MAINTAINER_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: maintainer
           tagName: maintainer-v${{ steps.version.outputs.version }}
