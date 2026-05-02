@@ -14,10 +14,17 @@ export const FEEDBACK_LABEL_QUEUED = "auto-fix:queued";
 export const FEEDBACK_LABEL_AWAITING = "auto-fix:awaiting-verification";
 export const FEEDBACK_LABEL_NEEDS_REVIEW = "auto-fix:needs-review";
 export const FEEDBACK_LABEL_AGENT_ERROR = "auto-fix:agent-error";
+// Long-running feature/idea task. Picked up by the maintainer app for
+// multi-turn iteration with the agent. Distinct from `auto-fix:queued`
+// which is one-shot bug fixes.
+export const FEEDBACK_LABEL_TASK = "task:in-progress";
+
+export type FeedbackKind = "bug" | "feature";
 
 export type FeedbackSubmission = {
   text: string;
   anchors: NoteAnchor[];
+  kind: FeedbackKind;
 };
 
 export type CreatedIssue = { number: number; url: string };
@@ -49,9 +56,9 @@ export async function testGithubToken(token: string): Promise<string> {
   return invoke<string>("gh_test_token", { token });
 }
 
-/** File a feedback issue. Uploads any captured images first, then
- *  creates the issue with inline image links and label
- *  `auto-fix:queued`. */
+/** File a feedback issue. Bug → `auto-fix:queued` (one-shot, picked up
+ *  by the nightly auto-fix routine). Feature → `task:in-progress` (long-
+ *  running, picked up by the maintainer app's iterative agent). */
 export async function submitFeedback(
   token: string,
   s: FeedbackSubmission,
@@ -62,6 +69,7 @@ export async function submitFeedback(
 
   const title = deriveTitle(s.text);
   const body = renderBody(s);
+  const label = s.kind === "feature" ? FEEDBACK_LABEL_TASK : FEEDBACK_LABEL_QUEUED;
 
   return invoke<CreatedIssue>("gh_create_feedback_issue", {
     token,
@@ -69,7 +77,7 @@ export async function submitFeedback(
     repo: VAULT_CHAT_REPO,
     title,
     body,
-    labels: [FEEDBACK_LABEL_QUEUED],
+    labels: [label],
     images,
   });
 }
@@ -180,6 +188,8 @@ function deriveTitle(text: string): string {
 
 function renderBody(s: FeedbackSubmission): string {
   const parts: string[] = [];
+  parts.push(`**Type:** ${s.kind === "feature" ? "Feature" : "Bug"}`);
+  parts.push("");
   parts.push(s.text.trim() || "_(no description)_");
 
   const refs = s.anchors.filter((a) => a.source_path);
@@ -207,7 +217,9 @@ function renderBody(s: FeedbackSubmission): string {
   parts.push("---");
   parts.push("");
   parts.push(
-    "_Filed via in-app feedback (Ctrl+G). The cloud auto-fix agent will pick this up on its next run; once it lands a fix it will comment with verification steps and re-label `auto-fix:awaiting-verification`._",
+    s.kind === "feature"
+      ? "_Filed via in-app feedback (Ctrl+G) as a Feature. Iterative agent will respond in this thread; reply via the maintainer app to advance the task._"
+      : "_Filed via in-app feedback (Ctrl+G) as a Bug. The cloud auto-fix agent will pick this up on its next run; once it lands a fix it will comment with verification steps and re-label `auto-fix:awaiting-verification`._",
   );
 
   return parts.join("\n");

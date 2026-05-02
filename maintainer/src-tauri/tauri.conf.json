@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "vault-chat-maintainer",
+  "version": "0.1.0",
+  "identifier": "com.vault-chat.maintainer",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1421",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "vault-chat maintainer",
+        "width": 920,
+        "height": 680,
+        "minWidth": 600,
+        "minHeight": 400,
+        "theme": "Dark",
+        "decorations": false,
+        "titleBarStyle": "Overlay",
+        "backgroundColor": "#1a1a1f",
+        "dragDropEnabled": false,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": false,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ]
+  }
+}

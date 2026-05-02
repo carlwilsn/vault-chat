@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Maintainer app icon. Visual pairing with vault-chat main:
+       same dark card background (hsl 240 6% 13% ≈ #1f1f23) with
+       the indigo accent the main app uses for primary actions.
+       Geometry: a stylised wrench tilted 30°, the head wrapping
+       an empty hex socket at top-right. Reads at 32×32. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#23232a"/>
+      <stop offset="100%" stop-color="#191920"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="180" fill="url(#bg)"/>
+  <g transform="translate(512 512) rotate(-30)" fill="none" stroke="#818cf8" stroke-width="64" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Handle -->
+    <line x1="-260" y1="260" x2="120" y2="-120"/>
+    <!-- Head: open-ended ring (wrench socket) -->
+    <path d="M 120 -260
+             A 200 200 0 1 1 280 -100
+             L 200 -180
+             A 100 100 0 1 0 100 -280
+             Z" fill="#818cf8" stroke="none"/>
+    <!-- Grip cap -->
+    <circle cx="-260" cy="260" r="48" fill="#818cf8" stroke="none"/>
+  </g>
+</svg>

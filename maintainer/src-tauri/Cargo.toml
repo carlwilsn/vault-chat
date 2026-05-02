@@ -1,0 +1,29 @@
+[package]
+name = "vault-chat-maintainer"
+version = "0.1.0"
+description = "vault-chat maintainer companion app"
+authors = ["carlwilsn"]
+edition = "2021"
+
+[lib]
+name = "vault_chat_maintainer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-process = "2"
+tauri-plugin-shell = "2"
+keyring = "3"
+open = "5"
+reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

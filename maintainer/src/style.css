@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; }
+::selection { background: hsla(238, 80%, 66%, 0.35); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: hsl(240 5% 22%); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(240 5% 30%); }

@@ -1,0 +1,88 @@
+name: ship-maintainer
+
+# Builds + publishes the maintainer app independently from the main
+# vault-chat app. Path-filtered so trivial changes elsewhere don't
+# burn a build. The maintainer's update cadence is intentionally low
+# — its whole value proposition is staying stable for months.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "maintainer/**"
+      - ".github/workflows/ship-maintainer.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ship-maintainer
+  cancel-in-progress: true
+
+jobs:
+  ship:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    defaults:
+      run:
+        working-directory: maintainer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: maintainer/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: maintainer/src-tauri
+
+      - run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          V=$(node -e "console.log(require('./package.json').version)")
+          echo "version=$V" >> $GITHUB_OUTPUT
+          echo "Maintainer version: $V"
+
+      - name: Check if release exists
+        id: release_check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="maintainer-v${{ steps.version.outputs.version }}"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG")
+          if [ "$STATUS" = "200" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Release $TAG already exists — skipping build"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build, publish release
+        if: steps.release_check.outputs.exists == 'false'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: maintainer
+          tagName: maintainer-v${{ steps.version.outputs.version }}
+          releaseName: vault-chat maintainer v${{ steps.version.outputs.version }}
+          releaseBody: |
+            Maintainer companion app. Install over an existing maintainer install.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: false
