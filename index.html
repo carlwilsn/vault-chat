@@ -75,6 +75,36 @@
   <body>
     <div id="root"></div>
     <div id="vault-splash"><span class="dot"></span>vault-chat</div>
+    <!-- Diagnostic panel: catches any unhandled error / promise rejection
+         and renders the message + stack on screen, since we have no
+         DevTools in production builds. Stays hidden until something
+         throws. Will be removed once we've identified the v0.1.7 crash. -->
+    <div id="vault-error" style="display:none;position:fixed;inset:0;z-index:99999;background:#1f1f23;color:#ffb4b4;font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:24px;overflow:auto;white-space:pre-wrap;"></div>
+    <script>
+      (function () {
+        var panel = document.getElementById("vault-error");
+        function show(label, payload) {
+          panel.style.display = "block";
+          var splash = document.getElementById("vault-splash");
+          if (splash) splash.style.display = "none";
+          panel.textContent =
+            "vault-chat diagnostic — caught a runtime error:\n\n" +
+            label + "\n\n" + payload + "\n\n" +
+            "Screenshot this and paste it back in chat. Then install v0.1.6 to recover.";
+        }
+        window.addEventListener("error", function (e) {
+          var msg = (e && e.message) || String(e);
+          var stack = (e && e.error && e.error.stack) || "(no stack)";
+          show("window.onerror: " + msg, stack);
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          var r = (e && e.reason) || e;
+          var msg = (r && r.message) || String(r);
+          var stack = (r && r.stack) || "(no stack)";
+          show("unhandledrejection: " + msg, stack);
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
