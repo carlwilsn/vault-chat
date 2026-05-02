@@ -1,6 +1,6 @@
 [package]
 name = "vault-chat-maintainer"
-version = "0.1.7"
+version = "0.1.8"
 description = "vault-chat maintainer companion app"
 authors = ["carlwilsn"]
 edition = "2021"
