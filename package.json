@@ -1,7 +1,7 @@
 {
   "name": "vault-chat",
   "private": true,
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Minimal desktop viewer + LLM chat for a folder of markdown notes. Ctrl+K inline edit, PDF marquee ask with vision, an agent that can modify its own config.",
   "author": "Carl Wilson",
   "license": "MIT",
