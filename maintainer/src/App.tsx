@@ -12,6 +12,7 @@ import { Triage } from "./Triage";
 import { UpdateBanner } from "./UpdateBanner";
 import { NewIssueModal } from "./NewIssueModal";
 import { getMe } from "./github";
+import pkg from "../package.json";
 
 export function App() {
   const tab = useStore((s) => s.tab);
@@ -80,8 +81,9 @@ export function App() {
           className="flex items-center gap-2 px-3 text-[12px] text-foreground/90"
           style={isMac ? { paddingLeft: 76 } : undefined}
         >
-          <Wrench className="h-3.5 w-3.5 text-indigo-400" />
+          <Wrench className="h-3.5 w-3.5 text-muted-foreground" />
           <span className="font-medium">vault-chat maintainer</span>
+          <span className="text-[10.5px] font-mono text-muted-foreground/70">v{pkg.version}</span>
         </div>
         <div data-tauri-drag-region className="flex-1 h-full" />
         {githubPat && (
