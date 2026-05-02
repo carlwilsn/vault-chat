@@ -134,6 +134,21 @@ export function ChatPane() {
   const chatPaneLastCapture = useStore((s) => s.chatPaneLastCapture);
   const setChatPaneLastCapture = useStore((s) => s.setChatPaneLastCapture);
   const setChatPaneCapturePending = useStore((s) => s.setChatPaneCapturePending);
+  // Hooks for the saved-chats popover. Must live above the early
+  // `showSettings`/`!activeKey` returns below — React's Rules of Hooks
+  // require the same hook-call order on every render, and putting these
+  // after the returns means they get skipped when settings is open then
+  // run when it closes (React error #310).
+  const saveCurrentChat = useStore((s) => s.saveCurrentChat);
+  const loadSavedChat = useStore((s) => s.loadSavedChat);
+  const savedChats = useStore((s) => s.savedChats);
+  const [recentsOpen, setRecentsOpen] = useState(false);
+  useEffect(() => {
+    if (!recentsOpen) return;
+    const close = () => setRecentsOpen(false);
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [recentsOpen]);
   const [pendingImages, setPendingImages] = useState<
     Array<{ imageDataUrl: string; sourcePath?: string; sourceAnchor?: string | null }>
   >([]);
@@ -308,20 +323,8 @@ export function ChatPane() {
 
   const stop = () => dispatchChatAction({ kind: "stop" });
   const onClear = () => dispatchChatAction({ kind: "clear" });
-  const saveCurrentChat = useStore((s) => s.saveCurrentChat);
-  const loadSavedChat = useStore((s) => s.loadSavedChat);
-  const savedChats = useStore((s) => s.savedChats);
-  // Belt-and-suspenders fallback: if for some reason the state field is
-  // missing (popout sync, future store refactor, etc.) treat it as
-  // empty rather than crashing render with `.filter` on undefined.
+  // Defensive `?? []` in case the store field is ever missing.
   const savedForVault = (savedChats ?? []).filter((c) => c.vaultPath === vaultPath);
-  const [recentsOpen, setRecentsOpen] = useState(false);
-  useEffect(() => {
-    if (!recentsOpen) return;
-    const close = () => setRecentsOpen(false);
-    window.addEventListener("mousedown", close);
-    return () => window.removeEventListener("mousedown", close);
-  }, [recentsOpen]);
   const onPickRecent = (id: string) => {
     setRecentsOpen(false);
     // Snapshot what's currently on screen first so the user can come
