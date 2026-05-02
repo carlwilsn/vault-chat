@@ -74,21 +74,26 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   </React.StrictMode>,
 );
 
-// Hide the boot splash on the next paint after React mounts. One rAF
-// ensures the first real frame has been committed, and a short delay
-// gives CSS/layout one more tick so the fade-out looks smooth rather
-// than snapping.
-//
-// At the same time, ask the OS to show the window (it was created
-// hidden — main window in lib.rs setup(), popout in sync.ts — so the
-// user only ever sees a fully painted frame).
+// Cold-start sequence:
+//   1. Window starts hidden (tauri.conf.json visible:false for main,
+//      sync.ts visible:false for popout) so the OS never paints a
+//      half-loaded white frame.
+//   2. After React's first commit (two rAFs), invoke `app_ready` to
+//      show the window — the user's first sight of the app is the
+//      splash dot pulsing on the proper background.
+//   3. Hold the splash for ~400ms so the dot is actually perceivable
+//      (without this, the fade starts the same frame the window
+//      appears and the dot is gone before the eye registers it).
+//   4. Fade the splash out and remove it.
 requestAnimationFrame(() => {
   requestAnimationFrame(() => {
-    const splash = document.getElementById("vault-splash");
-    if (splash) {
-      splash.classList.add("hidden");
-      setTimeout(() => splash.remove(), 250);
-    }
     invoke("app_ready").catch((e) => console.warn("[boot] app_ready:", e));
+    setTimeout(() => {
+      const splash = document.getElementById("vault-splash");
+      if (splash) {
+        splash.classList.add("hidden");
+        setTimeout(() => splash.remove(), 250);
+      }
+    }, 400);
   });
 });

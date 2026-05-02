@@ -21,7 +21,8 @@
         "decorations": false,
         "titleBarStyle": "Overlay",
         "backgroundColor": "#1f1f23",
-        "dragDropEnabled": false
+        "dragDropEnabled": false,
+        "visible": false
       }
     ],
     "security": {
