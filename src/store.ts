@@ -1246,11 +1246,15 @@ function loadSavedChats(): SavedChat[] {
 
 let savedChatsLastSig = "";
 useStore.subscribe((state) => {
-  const sig = state.savedChats.map((c) => c.id).join("|");
+  // Defensive: never crash the subscribe pipeline if the field is
+  // somehow missing — Zustand state shape can drift across refactors
+  // and the popout's installPopoutSync overwrites partial state.
+  const list = state.savedChats ?? [];
+  const sig = list.map((c) => c.id).join("|");
   if (sig === savedChatsLastSig) return;
   savedChatsLastSig = sig;
   try {
-    localStorage.setItem(SAVED_CHATS_STORAGE, JSON.stringify(state.savedChats));
+    localStorage.setItem(SAVED_CHATS_STORAGE, JSON.stringify(list));
   } catch (e) {
     console.warn("[saved-chats] persist failed:", e);
   }

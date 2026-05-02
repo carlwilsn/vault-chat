@@ -311,7 +311,10 @@ export function ChatPane() {
   const saveCurrentChat = useStore((s) => s.saveCurrentChat);
   const loadSavedChat = useStore((s) => s.loadSavedChat);
   const savedChats = useStore((s) => s.savedChats);
-  const savedForVault = savedChats.filter((c) => c.vaultPath === vaultPath);
+  // Belt-and-suspenders fallback: if for some reason the state field is
+  // missing (popout sync, future store refactor, etc.) treat it as
+  // empty rather than crashing render with `.filter` on undefined.
+  const savedForVault = (savedChats ?? []).filter((c) => c.vaultPath === vaultPath);
   const [recentsOpen, setRecentsOpen] = useState(false);
   useEffect(() => {
     if (!recentsOpen) return;
