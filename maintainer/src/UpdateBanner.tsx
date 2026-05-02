@@ -68,7 +68,22 @@ export function UpdateBanner() {
       });
       setPhase({ kind: "ready" });
     } catch (e) {
-      setPhase({ kind: "error", message: (e as Error).message });
+      // Tauri's updater plugin sometimes throws errors with empty
+      // .message strings (e.g. signature mismatch surfaces as a bare
+      // object). Fall back to the stringified form so we always have
+      // SOMETHING to debug with instead of "Update failed: ".
+      const err = e as Error;
+      let msg = err?.message ?? "";
+      if (!msg || msg.trim() === "") {
+        try {
+          msg = JSON.stringify(e);
+        } catch {
+          msg = String(e);
+        }
+      }
+      if (!msg || msg === "{}") msg = "unknown error (check the build's latest.json signature)";
+      console.error("[maintainer-updater] install failed:", e);
+      setPhase({ kind: "error", message: msg });
     }
   };
 
