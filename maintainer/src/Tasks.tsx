@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { ChevronLeft, RefreshCw, Send, ExternalLink } from "lucide-react";
+import { ChevronLeft, RefreshCw, Send, ExternalLink, Check } from "lucide-react";
 import {
   type Issue,
   type IssueComment,
   listIssuesByLabel,
   listIssueComments,
   postIssueComment,
+  closeIssue,
 } from "./github";
 import { useStore } from "./store";
 import { cn, relativeTime } from "./lib";
@@ -41,6 +42,8 @@ export function Tasks({ token }: { token: string }) {
   const [activeId, setActiveId] = useState<number | null>(null);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
+  const [confirmDone, setConfirmDone] = useState(false);
+  const [closing, setClosing] = useState(false);
 
   const refresh = async () => {
     try {
@@ -73,8 +76,35 @@ export function Tasks({ token }: { token: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  // Reset the per-task close-confirm armed state when navigating
+  // between tasks so a stale "Sure?" doesn't carry over and bite you.
+  useEffect(() => {
+    setConfirmDone(false);
+    setReply("");
+  }, [activeId]);
+
   const active = issues?.find((i) => i.number === activeId) ?? null;
   const activeComments = active ? commentsByIssue[active.number] ?? [] : [];
+
+  const armOrClose = async () => {
+    if (!active) return;
+    if (!confirmDone) {
+      setConfirmDone(true);
+      setTimeout(() => setConfirmDone(false), 3000);
+      return;
+    }
+    setConfirmDone(false);
+    setClosing(true);
+    try {
+      await closeIssue(token, active.number, "completed");
+      setActiveId(null);
+      await refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setClosing(false);
+    }
+  };
 
   const sendReply = async () => {
     if (!active) return;
@@ -141,7 +171,21 @@ export function Tasks({ token }: { token: string }) {
             disabled={sending}
             className="w-full rounded border border-border bg-background px-2 py-1.5 text-[12.5px] outline-none focus:ring-1 focus:ring-indigo-500/50 disabled:opacity-50 resize-y"
           />
-          <div className="flex justify-end">
+          <div className="flex items-center justify-between">
+            <button
+              onClick={() => void armOrClose()}
+              disabled={closing || sending}
+              className={cn(
+                "inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded border transition-colors disabled:opacity-50",
+                confirmDone
+                  ? "bg-emerald-500 hover:bg-emerald-400 text-white border-emerald-500"
+                  : "bg-background/60 text-muted-foreground border-border hover:bg-accent",
+              )}
+              title={confirmDone ? "Click again to confirm" : "Mark this task done and close it"}
+            >
+              <Check className="h-3 w-3" />
+              {closing ? "Closing…" : confirmDone ? "Sure?" : "Done — close it"}
+            </button>
             <button
               onClick={() => void sendReply()}
               disabled={sending || reply.trim().length === 0}
@@ -175,42 +219,96 @@ export function Tasks({ token }: { token: string }) {
         in the main app. Reply here to advance the conversation.
       </p>
       {error && <div className="text-[11.5px] text-destructive">{error}</div>}
-      <div className="rounded border border-border bg-card/40 divide-y divide-border/40">
-        {issues === null && !error && (
-          <div className="px-3 py-2 text-[11.5px] text-muted-foreground italic">Loading…</div>
-        )}
-        {issues && issues.length === 0 && (
-          <div className="px-3 py-3 text-[12px] text-muted-foreground italic">
-            No open tasks. File one from the main app's feedback popup with the Feature toggle on.
-          </div>
-        )}
-        {issues && issues.map((i) => {
+      {issues === null && !error && (
+        <div className="px-3 py-2 text-[11.5px] text-muted-foreground italic">Loading…</div>
+      )}
+      {issues && issues.length === 0 && (
+        <div className="rounded border border-border bg-card/40 px-3 py-3 text-[12px] text-muted-foreground italic">
+          No open tasks. File one from the main app's feedback popup with the Feature toggle on.
+        </div>
+      )}
+      {issues && issues.length > 0 && (() => {
+        // Bucket the open tasks by who's currently blocking. Within each
+        // bucket, newest activity first so the most-recently-touched
+        // thread floats up.
+        const buckets: Record<TaskStatus, Issue[]> = {
+          "waiting-you": [],
+          "waiting-agent": [],
+          fresh: [],
+        };
+        for (const i of issues) {
           const cs = commentsByIssue[i.number];
-          const status = statusFor(i, cs, ghLogin);
-          return (
-            <button
-              key={i.number}
-              onClick={() => setActiveId(i.number)}
-              className="w-full text-left px-3 py-2 hover:bg-accent/40 flex items-start gap-2 text-[12.5px]"
-            >
-              <StatusPill status={status} />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-baseline gap-2">
-                  <span className="truncate font-medium">{i.title}</span>
-                  <span className="text-[10.5px] text-muted-foreground/80 font-mono shrink-0">
-                    #{i.number}
-                  </span>
+          buckets[statusFor(i, cs, ghLogin)].push(i);
+        }
+        for (const k of Object.keys(buckets) as TaskStatus[]) {
+          buckets[k].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+        }
+        const sections: Array<{ key: TaskStatus; title: string; subtitle: string; cls: string }> = [
+          {
+            key: "waiting-you",
+            title: "Your turn",
+            subtitle: "Agent's blocked on a decision from you.",
+            cls: "border-amber-500/40 bg-amber-500/5",
+          },
+          {
+            key: "waiting-agent",
+            title: "Agent's working on it",
+            subtitle: "Latest reply was yours — agent will pick up next run.",
+            cls: "border-indigo-500/30 bg-card/40",
+          },
+          {
+            key: "fresh",
+            title: "Fresh",
+            subtitle: "No back-and-forth yet — agent hasn't started.",
+            cls: "border-border bg-card/40",
+          },
+        ];
+        return (
+          <div className="space-y-4">
+            {sections.map((s) =>
+              buckets[s.key].length === 0 ? null : (
+                <div key={s.key} className="space-y-1.5">
+                  <div className="flex items-baseline gap-2">
+                    <h3 className={cn(
+                      "text-[11px] font-semibold uppercase tracking-wider",
+                      s.key === "waiting-you" ? "text-amber-500" : "text-muted-foreground/90",
+                    )}>
+                      {s.title}
+                    </h3>
+                    <span className="text-[10.5px] text-muted-foreground/70">
+                      {buckets[s.key].length} · {s.subtitle}
+                    </span>
+                  </div>
+                  <div className={cn("rounded border divide-y divide-border/40", s.cls)}>
+                    {buckets[s.key].map((i) => (
+                      <button
+                        key={i.number}
+                        onClick={() => setActiveId(i.number)}
+                        className="w-full text-left px-3 py-2 hover:bg-accent/40 flex items-start gap-2 text-[12.5px]"
+                      >
+                        <StatusPill status={s.key} />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-baseline gap-2">
+                            <span className="truncate font-medium">{i.title}</span>
+                            <span className="text-[10.5px] text-muted-foreground/80 font-mono shrink-0">
+                              #{i.number}
+                            </span>
+                          </div>
+                          <div className="text-[10.5px] text-muted-foreground/80">
+                            filed {relativeTime(i.created_at)}
+                            {i.comments > 0 && ` · ${i.comments} comment${i.comments === 1 ? "" : "s"}`}
+                            {i.updated_at !== i.created_at && ` · updated ${relativeTime(i.updated_at)}`}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
                 </div>
-                <div className="text-[10.5px] text-muted-foreground/80">
-                  filed {relativeTime(i.created_at)}
-                  {i.comments > 0 && ` · ${i.comments} comment${i.comments === 1 ? "" : "s"}`}
-                  {i.updated_at !== i.created_at && ` · updated ${relativeTime(i.updated_at)}`}
-                </div>
-              </div>
-            </button>
-          );
-        })}
-      </div>
+              ),
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

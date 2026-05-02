@@ -174,3 +174,68 @@ export async function setIssueLabels(
 export async function getMe(token: string): Promise<{ login: string }> {
   return ghJson<{ login: string }>(`/user`, token);
 }
+
+// Repository action variables — used for the SHIP_PAUSED kill switch.
+// `value` is always a string per GH's API; we store "true" / "false".
+export async function getRepoVariable(
+  token: string,
+  name: string,
+): Promise<string | null> {
+  const res = await ghFetch(
+    `/repos/${OWNER}/${REPO}/actions/variables/${encodeURIComponent(name)}`,
+    token,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`getVar ${res.status}: ${text.slice(0, 200)}`);
+  }
+  const data = (await res.json()) as { value: string };
+  return data.value;
+}
+
+export async function setRepoVariable(
+  token: string,
+  name: string,
+  value: string,
+): Promise<void> {
+  // Try update first; fall back to create if it doesn't exist yet.
+  let res = await ghFetch(
+    `/repos/${OWNER}/${REPO}/actions/variables/${encodeURIComponent(name)}`,
+    token,
+    { method: "PATCH", body: JSON.stringify({ name, value }) },
+  );
+  if (res.status === 404) {
+    res = await ghFetch(
+      `/repos/${OWNER}/${REPO}/actions/variables`,
+      token,
+      { method: "POST", body: JSON.stringify({ name, value }) },
+    );
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`setVar ${res.status}: ${text.slice(0, 200)}`);
+  }
+}
+
+// Close an issue. `state_reason` distinguishes "this fix worked / I
+// don't want it anymore" — surfaced in the GitHub UI as the close icon
+// shape (purple check vs grey x).
+export async function closeIssue(
+  token: string,
+  issueNumber: number,
+  state_reason: "completed" | "not_planned",
+): Promise<void> {
+  const res = await ghFetch(
+    `/repos/${OWNER}/${REPO}/issues/${issueNumber}`,
+    token,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ state: "closed", state_reason }),
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Close ${res.status}: ${text.slice(0, 200)}`);
+  }
+}

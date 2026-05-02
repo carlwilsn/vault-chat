@@ -19,6 +19,10 @@ concurrency:
 
 jobs:
   ship:
+    # Same kill switch as ship.yml — when SHIP_PAUSED=true, no
+    # publishing. Maintainer-update builds also obey it so a
+    # paused state is truly silent.
+    if: vars.SHIP_PAUSED != 'true'
     runs-on: windows-latest
     permissions:
       contents: write
@@ -28,9 +32,9 @@ jobs:
       run:
         working-directory: maintainer
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -47,11 +51,49 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      # Auto-bump the patch version when there are unreleased
+      # maintainer-touching commits AND the current version equals
+      # the most recently released tag. Removes the manual-bump
+      # footgun that used to silently no-op the workflow.
+      - name: Auto-bump version if unreleased changes exist
+        id: autobump
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          CURRENT=$(node -e "console.log(require('./maintainer/package.json').version)")
+          # Most recent released maintainer tag (e.g. maintainer-v0.1.5).
+          LAST_TAG=$(curl -sH "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases?per_page=30" \
+            | node -e "const r=JSON.parse(require('fs').readFileSync(0,'utf8')); const m=r.filter(x=>x.tag_name && x.tag_name.startsWith('maintainer-v')); console.log(m.length?m[0].tag_name.replace(/^maintainer-v/,''):'')")
+          echo "Current package version: $CURRENT"
+          echo "Last released maintainer version: ${LAST_TAG:-(none)}"
+          if [ -n "$LAST_TAG" ] && [ "$CURRENT" = "$LAST_TAG" ]; then
+            # Compute next patch.
+            IFS='.' read -r MAJ MIN PAT <<< "$CURRENT"
+            NEW="$MAJ.$MIN.$((PAT+1))"
+            echo "Auto-bumping $CURRENT -> $NEW"
+            node -e "const fs=require('fs');const f='maintainer/package.json';const j=JSON.parse(fs.readFileSync(f,'utf8'));j.version='$NEW';fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
+            sed -i.bak "s/^version = \"$CURRENT\"/version = \"$NEW\"/" maintainer/src-tauri/Cargo.toml && rm maintainer/src-tauri/Cargo.toml.bak
+            sed -i.bak "s/\"version\": \"$CURRENT\"/\"version\": \"$NEW\"/" maintainer/src-tauri/tauri.conf.json && rm maintainer/src-tauri/tauri.conf.json.bak
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add maintainer/package.json maintainer/src-tauri/Cargo.toml maintainer/src-tauri/tauri.conf.json
+            git commit -m "maintainer-v$NEW [skip ci]"
+            git push origin HEAD:main
+            echo "version=$NEW" >> $GITHUB_OUTPUT
+          else
+            echo "No bump needed (manual bump or first release)."
+            echo "version=$CURRENT" >> $GITHUB_OUTPUT
+          fi
+
       - name: Read version
         id: version
         shell: bash
         run: |
-          V=$(node -e "console.log(require('./package.json').version)")
+          V="${{ steps.autobump.outputs.version }}"
           echo "version=$V" >> $GITHUB_OUTPUT
           echo "Maintainer version: $V"
 

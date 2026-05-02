@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Wrench, ListChecks, AlertTriangle, X, Minus, Square, Copy } from "lucide-react";
+import { Wrench, ListChecks, AlertTriangle, X, Minus, Square, Copy, Newspaper } from "lucide-react";
 import { useStore } from "./store";
 import { cn } from "./lib";
+import { Activity } from "./Activity";
 import { System } from "./System";
 import { Tasks } from "./Tasks";
 import { Triage } from "./Triage";
@@ -117,14 +118,17 @@ export function App() {
       )}
 
       <div className="flex items-stretch border-b border-border bg-card/50 shrink-0">
-        <TabButton active={tab === "system"} onClick={() => setTab("system")} icon={<Wrench className="h-3.5 w-3.5" />}>
-          System
+        <TabButton active={tab === "activity"} onClick={() => setTab("activity")} icon={<Newspaper className="h-3.5 w-3.5" />}>
+          Activity
+        </TabButton>
+        <TabButton active={tab === "triage"} onClick={() => setTab("triage")} icon={<AlertTriangle className="h-3.5 w-3.5" />}>
+          Triage
         </TabButton>
         <TabButton active={tab === "tasks"} onClick={() => setTab("tasks")} icon={<ListChecks className="h-3.5 w-3.5" />}>
           Tasks
         </TabButton>
-        <TabButton active={tab === "triage"} onClick={() => setTab("triage")} icon={<AlertTriangle className="h-3.5 w-3.5" />}>
-          Triage
+        <TabButton active={tab === "system"} onClick={() => setTab("system")} icon={<Wrench className="h-3.5 w-3.5" />}>
+          System
         </TabButton>
       </div>
 
@@ -133,12 +137,14 @@ export function App() {
           <div className="px-6 py-10 text-center text-[12px] text-muted-foreground">
             Waiting for a configured GitHub PAT…
           </div>
-        ) : tab === "system" ? (
-          <System token={githubPat} />
+        ) : tab === "activity" ? (
+          <Activity token={githubPat} />
+        ) : tab === "triage" ? (
+          <Triage token={githubPat} />
         ) : tab === "tasks" ? (
           <Tasks token={githubPat} />
         ) : (
-          <Triage token={githubPat} />
+          <System token={githubPat} />
         )}
       </div>
     </div>

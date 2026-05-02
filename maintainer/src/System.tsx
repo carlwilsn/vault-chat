@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Play, RefreshCw, Download, ExternalLink, X as XIcon, ArrowUpCircle } from "lucide-react";
+import { Play, RefreshCw, Download, ExternalLink, X as XIcon, ArrowUpCircle, Pause } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -10,10 +10,14 @@ import {
   listWorkflowRuns,
   dispatchWorkflow,
   cancelWorkflowRun,
+  getRepoVariable,
+  setRepoVariable,
   OWNER,
   REPO,
 } from "./github";
 import { cn, relativeTime } from "./lib";
+
+const SHIP_PAUSED_VAR = "SHIP_PAUSED";
 
 // System tab — release management + manual ship + run status.
 //
@@ -40,6 +44,33 @@ export function System({ token }: { token: string }) {
   const [shipState, setShipState] = useState<"idle" | "dispatching" | { error: string }>("idle");
   const [installState, setInstallState] = useState<Record<number, "idle" | "downloading" | "running" | { error: string }>>({});
   const [selfUpdate, setSelfUpdate] = useState<SelfUpdateState>({ phase: "idle" });
+  const [paused, setPaused] = useState<boolean | null>(null);
+  const [pausing, setPausing] = useState(false);
+  const [pauseError, setPauseError] = useState<string | null>(null);
+
+  const refreshPaused = async () => {
+    try {
+      const v = await getRepoVariable(token, SHIP_PAUSED_VAR);
+      setPaused(v === "true");
+      setPauseError(null);
+    } catch (e) {
+      setPauseError((e as Error).message);
+    }
+  };
+
+  const togglePaused = async () => {
+    if (paused === null) return;
+    setPausing(true);
+    try {
+      await setRepoVariable(token, SHIP_PAUSED_VAR, paused ? "false" : "true");
+      setPaused(!paused);
+      setPauseError(null);
+    } catch (e) {
+      setPauseError((e as Error).message);
+    } finally {
+      setPausing(false);
+    }
+  };
 
   // Check for maintainer updates via Tauri's updater plugin (signed
   // update flow, not the raw download-and-run we use for installing
@@ -106,6 +137,7 @@ export function System({ token }: { token: string }) {
   useEffect(() => {
     void refreshReleases();
     void refreshRuns();
+    void refreshPaused();
     // Poll runs every 5s while mounted so manual ship status is live.
     const id = setInterval(() => void refreshRuns(), 5000);
     return () => clearInterval(id);
@@ -155,6 +187,51 @@ export function System({ token }: { token: string }) {
 
   return (
     <div className="p-4 space-y-6 max-w-[820px]">
+      {/* Pause-ship kill switch. When on, both the main app's and
+          the maintainer's ship workflows skip publishing — commits
+          still land but no installer reaches the user's machine
+          until they unpause. Stored as the repo variable
+          SHIP_PAUSED. */}
+      <section className={cn(
+        "rounded border p-3 space-y-2",
+        paused
+          ? "border-amber-500/50 bg-amber-500/10"
+          : "border-border bg-card/40",
+      )}>
+        <div className="flex items-center gap-3">
+          <Pause className={cn("h-4 w-4 shrink-0", paused ? "text-amber-500" : "text-muted-foreground")} />
+          <div className="flex-1 min-w-0">
+            <div className="text-[12.5px] font-medium text-foreground/95">
+              {paused === null
+                ? "Ship status: loading…"
+                : paused
+                  ? "🛑 Auto-ship is paused"
+                  : "Auto-ship is on"}
+            </div>
+            <div className="text-[11px] text-muted-foreground/90 leading-relaxed">
+              {paused
+                ? "Commits keep landing on main, but no new releases will publish until you turn this off. Useful while you're sleeping, demoing, or studying."
+                : "Daily cron + push triggers run normally. Releases auto-publish."}
+            </div>
+          </div>
+          <button
+            onClick={() => void togglePaused()}
+            disabled={paused === null || pausing}
+            className={cn(
+              "shrink-0 inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded border transition-colors disabled:opacity-50",
+              paused
+                ? "bg-emerald-500 hover:bg-emerald-400 text-white border-emerald-500"
+                : "bg-amber-500 hover:bg-amber-400 text-white border-amber-500",
+            )}
+          >
+            {pausing ? "…" : paused ? "Resume shipping" : "Pause shipping"}
+          </button>
+        </div>
+        {pauseError && (
+          <div className="text-[11px] text-destructive">{pauseError}</div>
+        )}
+      </section>
+
       {/* Self-update — manual check only, signed via Tauri updater
           plugin. Different mechanism from the Releases list below
           (which uses raw download_and_install). */}

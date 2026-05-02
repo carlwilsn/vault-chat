@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type Tab = "tasks" | "system" | "triage";
+export type Tab = "activity" | "tasks" | "system" | "triage";
 
 type State = {
   tab: Tab;
@@ -18,7 +18,9 @@ type State = {
 };
 
 export const useStore = create<State>((set) => ({
-  tab: "system",
+  // Activity is the morning-briefing default — open the maintainer
+  // and you see what happened today, no clicks needed.
+  tab: "activity",
   setTab: (t) => set({ tab: t }),
   githubPat: null,
   setGithubPat: (t) => set({ githubPat: t }),
