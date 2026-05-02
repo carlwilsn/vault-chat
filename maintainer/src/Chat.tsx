@@ -241,7 +241,7 @@ export function Chat() {
               href="https://console.anthropic.com/settings/keys"
               target="_blank"
               rel="noreferrer"
-              className="text-indigo-400 hover:underline"
+              className="text-foreground underline hover:text-foreground/80"
             >
               console.anthropic.com/settings/keys
             </a>
@@ -257,12 +257,12 @@ export function Chat() {
             onKeyDown={(e) => {
               if (e.key === "Enter") void saveApiKey();
             }}
-            className="flex-1 rounded border border-border bg-background px-3 py-2 text-[12.5px] outline-none focus:ring-1 focus:ring-indigo-500/50"
+            className="flex-1 rounded border border-border bg-background px-3 py-2 text-[12.5px] outline-none focus:ring-1 focus:ring-foreground/30"
           />
           <button
             onClick={() => void saveApiKey()}
             disabled={!apiKeyDraft.trim() || savingKey}
-            className="text-[12px] px-3 py-1.5 rounded bg-indigo-500 hover:bg-indigo-400 text-white disabled:opacity-50"
+            className="text-[12px] px-3 py-1.5 rounded bg-foreground text-background hover:bg-foreground/90 disabled:opacity-50"
           >
             {savingKey ? "Saving…" : "Save"}
           </button>
@@ -277,7 +277,7 @@ export function Chat() {
       <div ref={transcriptRef} className="flex-1 min-h-0 overflow-auto px-4 py-4 space-y-2">
         {messages.length === 0 && (
           <div className="text-center py-12 space-y-2 text-muted-foreground">
-            <Wrench className="h-6 w-6 mx-auto text-indigo-400" />
+            <Wrench className="h-6 w-6 mx-auto text-muted-foreground" />
             <div className="text-[13px] font-medium">Planner ready</div>
             <div className="text-[11.5px] max-w-[400px] mx-auto leading-relaxed">
               Ask "what should I work on?" or describe a problem. I'll look around the
@@ -297,7 +297,7 @@ export function Chat() {
         ))}
         {phase === "thinking" && (
           <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground italic px-1">
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse" />
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-foreground/60 animate-pulse" />
             Thinking…
           </div>
         )}
@@ -318,12 +318,12 @@ export function Chat() {
             placeholder="Ask the Planner… (Enter to send, Shift+Enter newline)"
             rows={1}
             disabled={phase === "thinking"}
-            className="flex-1 rounded border border-border bg-background px-3 py-2 text-[12.5px] outline-none focus:ring-1 focus:ring-indigo-500/50 disabled:opacity-50 resize-y min-h-[36px] max-h-[140px]"
+            className="flex-1 rounded border border-border bg-background px-3 py-2 text-[12.5px] outline-none focus:ring-1 focus:ring-foreground/30 disabled:opacity-50 resize-y min-h-[36px] max-h-[140px]"
           />
           <button
             onClick={() => void send()}
             disabled={phase === "thinking" || !input.trim()}
-            className="inline-flex items-center justify-center h-9 w-9 rounded bg-indigo-500 hover:bg-indigo-400 text-white disabled:opacity-50"
+            className="inline-flex items-center justify-center h-9 w-9 rounded bg-foreground text-background hover:bg-foreground/90 disabled:opacity-50"
           >
             <Send className="h-4 w-4" />
           </button>
@@ -367,7 +367,7 @@ function BlockRow({
 }) {
   const { role, block } = fb;
 
-  // Text from user → right side, indigo-tinted.
+  // Text from user → right side, slightly higher-contrast bubble.
   // Text from agent → left side, plain card.
   // Tool calls + results → left side, narrower & subtler (they belong
   // to the agent's stream of work, not the user).
@@ -379,11 +379,11 @@ function BlockRow({
           className={cn(
             "max-w-[80%] rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed prose-chat",
             isUser
-              ? "bg-indigo-500 text-white border border-indigo-500"
-              : "bg-card/60 border border-border text-foreground/95",
+              ? "bg-accent/70 border border-border/70 text-foreground"
+              : "bg-card/40 border border-border/40 text-foreground/95",
           )}
         >
-          <Markdown text={block.text} dark={isUser} />
+          <Markdown text={block.text} />
         </div>
       </div>
     );
@@ -399,7 +399,7 @@ function BlockRow({
             className="w-full flex items-center gap-1.5 px-2.5 py-1 text-left hover:bg-accent/30"
           >
             {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            <Wrench className="h-3 w-3 text-indigo-400 shrink-0" />
+            <Wrench className="h-3 w-3 text-muted-foreground/80 shrink-0" />
             <span className="font-mono text-foreground/85">{block.name}</span>
             <span className="text-muted-foreground/70 truncate ml-1 font-mono text-[10.5px]">
               ({summarizeInput(block.input)})
@@ -434,7 +434,7 @@ function BlockRow({
                 href={issueLink[0]}
                 target="_blank"
                 rel="noreferrer"
-                className="ml-auto inline-flex items-center gap-0.5 text-indigo-400 hover:underline shrink-0"
+                className="ml-auto inline-flex items-center gap-0.5 text-foreground/80 underline hover:text-foreground shrink-0"
                 onClick={(e) => e.stopPropagation()}
               >
                 open <ExternalLink className="h-3 w-3" />
@@ -454,7 +454,7 @@ function BlockRow({
   return null;
 }
 
-function Markdown({ text, dark }: { text: string; dark: boolean }) {
+function Markdown({ text }: { text: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -471,7 +471,7 @@ function Markdown({ text, dark }: { text: string; dark: boolean }) {
             href={href}
             target="_blank"
             rel="noreferrer"
-            className={cn("underline", dark ? "text-white/90 hover:text-white" : "text-indigo-400 hover:text-indigo-300")}
+            className="underline text-foreground hover:text-foreground/80"
           >
             {children}
           </a>
@@ -486,30 +486,18 @@ function Markdown({ text, dark }: { text: string; dark: boolean }) {
             );
           }
           return (
-            <code
-              className={cn(
-                "font-mono text-[11.5px] rounded px-1 py-px",
-                dark ? "bg-white/15 text-white" : "bg-muted text-foreground/90",
-              )}
-            >
+            <code className="font-mono text-[11.5px] rounded px-1 py-px bg-muted text-foreground/90">
               {children}
             </code>
           );
         },
         pre: ({ children }) => (
-          <pre
-            className={cn(
-              "rounded-md p-2 my-1.5 text-[11.5px] overflow-x-auto",
-              dark ? "bg-black/30" : "bg-muted",
-            )}
-          >
+          <pre className="rounded-md p-2 my-1.5 text-[11.5px] overflow-x-auto bg-muted">
             {children}
           </pre>
         ),
         blockquote: ({ children }) => (
-          <blockquote className={cn("border-l-2 pl-2 my-1.5", dark ? "border-white/40" : "border-border")}>
-            {children}
-          </blockquote>
+          <blockquote className="border-l-2 pl-2 my-1.5 border-border">{children}</blockquote>
         ),
         hr: () => <hr className="my-2 border-border/50" />,
         strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
