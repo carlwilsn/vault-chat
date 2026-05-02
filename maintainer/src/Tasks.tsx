@@ -13,9 +13,13 @@ import { cn, relativeTime } from "./lib";
 
 // Tasks tab — long-running collaboration threads, one per
 // `task:in-progress` issue. Click a task → see the full comment
-// thread + a reply box. Sending a reply posts a comment to GitHub;
-// the `task-resume` workflow picks up the `issue_comment` event
-// (when implemented) and wakes the agent for the next iteration.
+// thread + a reply box. Sending a reply posts a comment to GitHub.
+//
+// New task:in-progress issues are auto-routed by the `task-resume`
+// workflow into the implementer's bug queue (re-labelled
+// auto-fix:queued) so they actually run. The Planner can also queue
+// a stalled task on demand via its `run_task_now` tool — once queued,
+// the issue moves out of this tab and into Triage.
 //
 // "Waiting on you" status is derived from the latest comment: if
 // the agent's last comment ended with [BLOCKED ON USER], we
@@ -186,7 +190,7 @@ export function Tasks({ token }: { token: string }) {
           <textarea
             value={reply}
             onChange={(e) => setReply(e.target.value)}
-            placeholder="Reply — agent picks up the next time the task-resume workflow fires."
+            placeholder="Reply — drops a comment on the issue. Ask the Planner to 'run task #N now' to actually kick off the implementer."
             rows={4}
             disabled={sending}
             className="w-full rounded border border-border bg-background px-2 py-1.5 text-[12.5px] outline-none focus:ring-1 focus:ring-indigo-500/50 disabled:opacity-50 resize-y"

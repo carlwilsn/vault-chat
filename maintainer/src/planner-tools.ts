@@ -14,6 +14,8 @@ import {
   listReleases,
   listWorkflowRuns,
   createIssue,
+  setIssueLabels,
+  postIssueComment,
   ghJson,
   OWNER,
   REPO,
@@ -155,6 +157,21 @@ export const PLANNER_TOOLS: ToolDef[] = [
       required: ["title", "body", "type"],
     },
   },
+  {
+    name: "run_task_now",
+    description:
+      "Manually queue a task issue (one labelled task:in-progress) for immediate execution by the implementer agent. Use this when Carl says things like 'run task #28 now', 'kick off the chat-polish task', or 'start that one'. The issue gets re-labelled from task:in-progress to auto-fix:queued, which moves it from the Tasks tab into the Triage tab where the cloud loop picks it up on its next run. Always confirm the issue number with Carl before calling this tool — and only use it on issues currently labelled task:in-progress (verify with read_issue first if unsure).",
+    input_schema: {
+      type: "object",
+      properties: {
+        issue_number: {
+          type: "number",
+          description: "Issue number of the task to queue.",
+        },
+      },
+      required: ["issue_number"],
+    },
+  },
 ];
 
 // ----- execution -----
@@ -196,6 +213,8 @@ export async function executeTool(
         input.body as string,
         input.type as "bug" | "feature" | "maintainer-task",
       );
+    case "run_task_now":
+      return runTaskNowImpl(token, input.issue_number as number);
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -369,5 +388,34 @@ async function fileIssueImpl(
     return `✅ Filed as #${created.number}: ${created.html_url}`;
   } catch (e) {
     return `Error filing issue: ${(e as Error).message}`;
+  }
+}
+
+async function runTaskNowImpl(token: string, issueNumber: number): Promise<string> {
+  try {
+    const issue = await ghJson<Issue>(
+      `/repos/${OWNER}/${REPO}/issues/${issueNumber}`,
+      token,
+    );
+    const current = issue.labels.map((l) => l.name);
+    if (current.includes("auto-fix:queued")) {
+      return `Issue #${issueNumber} is already queued (label auto-fix:queued is set). The cloud agent will pick it up on its next run.`;
+    }
+    if (!current.includes("task:in-progress")) {
+      return `Issue #${issueNumber} is not labelled task:in-progress (current labels: ${current.join(", ") || "none"}). Refusing to queue — verify with read_issue first.`;
+    }
+    // Swap labels: drop task:in-progress, add auto-fix:queued. Preserve
+    // any other labels (e.g. trust markers) that may be present.
+    const next = current.filter((l) => l !== "task:in-progress");
+    if (!next.includes("auto-fix:queued")) next.push("auto-fix:queued");
+    await setIssueLabels(token, issueNumber, next);
+    await postIssueComment(
+      token,
+      issueNumber,
+      "🚀 Queued by Carl from the Planner chat. The cloud agent will pick this up on its next run.",
+    );
+    return `✅ Queued #${issueNumber} ("${issue.title}"). It moved from the Tasks tab to the Triage tab — the implementer will start work shortly and post back when there's a fix to verify.`;
+  } catch (e) {
+    return `Error queueing task: ${(e as Error).message}`;
   }
 }

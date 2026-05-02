@@ -1,0 +1,63 @@
+name: task-resume
+
+# When a feature/task issue is filed (or labeled `task:in-progress`
+# after the fact), automatically route it into the implementer's bug
+# queue so it actually gets worked on. Without this, `task:in-progress`
+# issues sat forever — there was no agent watching that label and no
+# cron picking them up. The "Tasks tab" UX implied automation that
+# wasn't wired through.
+#
+# Route: remove `task:in-progress`, add `auto-fix:queued`. The existing
+# cloud agent loop watches `auto-fix:queued` and picks the issue up on
+# its next run. The issue then flows through the standard verify cycle
+# (auto-fix:awaiting-verification → user closes).
+#
+# Manual entry point: `workflow_dispatch` accepts an issue_number for
+# the maintainer's Planner agent to queue a specific task on demand
+# ("run task #28 now").
+
+on:
+  issues:
+    types: [opened, labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Task issue number to queue immediately"
+        required: true
+        type: string
+
+jobs:
+  route:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' && github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'task:in-progress')) ||
+      (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'task:in-progress')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Determine issue number
+        id: issue
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "number=${{ inputs.issue_number }}" >> $GITHUB_OUTPUT
+          else
+            echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Route task to implementer queue
+        shell: bash
+        run: |
+          set -euo pipefail
+          N="${{ steps.issue.outputs.number }}"
+          # Tolerate the labels not existing on a manually-dispatched
+          # issue that's already in the queue; --remove-label is
+          # idempotent in `gh` 2.x and --add-label dedupes.
+          gh issue edit "$N" --repo "${{ github.repository }}" \
+            --remove-label "task:in-progress" \
+            --add-label "auto-fix:queued" || true
+          gh issue comment "$N" --repo "${{ github.repository }}" \
+            --body "🤖 Routed to the implementer queue. The cloud agent will pick this up on its next run."
