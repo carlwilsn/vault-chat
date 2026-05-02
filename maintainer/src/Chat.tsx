@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Anthropic from "@anthropic-ai/sdk";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Send, AlertTriangle, Trash2, Wrench, ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 import { PLANNER_TOOLS, executeTool } from "./planner-tools";
 import { useStore } from "./store";
@@ -272,7 +274,7 @@ export function Chat() {
 
   return (
     <div className="h-full flex flex-col">
-      <div ref={transcriptRef} className="flex-1 min-h-0 overflow-auto px-4 py-4 space-y-3">
+      <div ref={transcriptRef} className="flex-1 min-h-0 overflow-auto px-4 py-4 space-y-2">
         {messages.length === 0 && (
           <div className="text-center py-12 space-y-2 text-muted-foreground">
             <Wrench className="h-6 w-6 mx-auto text-indigo-400" />
@@ -285,11 +287,19 @@ export function Chat() {
             </div>
           </div>
         )}
-        {messages.map((m, i) => (
-          <MessageView key={i} message={m} expandedTools={expandedTools} toggleTool={toggleTool} />
+        {flattenBlocks(messages).map((b, i) => (
+          <BlockRow
+            key={i}
+            block={b}
+            expandedTools={expandedTools}
+            toggleTool={toggleTool}
+          />
         ))}
         {phase === "thinking" && (
-          <div className="text-[11.5px] text-muted-foreground italic">Thinking…</div>
+          <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground italic px-1">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse" />
+            Thinking…
+          </div>
         )}
         {typeof phase === "object" && "error" in phase && (
           <div className="text-[11.5px] text-destructive flex items-start gap-2 rounded border border-destructive/40 bg-destructive/10 px-3 py-2">
@@ -333,129 +343,182 @@ export function Chat() {
   );
 }
 
-function MessageView({
-  message,
-  expandedTools,
-  toggleTool,
-}: {
-  message: Message;
-  expandedTools: Set<string>;
-  toggleTool: (id: string) => void;
-}) {
-  const isUser = message.role === "user";
-  // For user messages that are pure tool_results, render them as a
-  // tool-output block under the assistant's prior turn. (No special
-  // treatment needed — we just render each block.)
-  return (
-    <div
-      className={cn(
-        "flex flex-col gap-2",
-        isUser ? "items-end" : "items-start",
-      )}
-    >
-      {message.blocks.map((b, i) => (
-        <BlockView
-          key={i}
-          block={b}
-          isUser={isUser}
-          expandedTools={expandedTools}
-          toggleTool={toggleTool}
-        />
-      ))}
-    </div>
-  );
+// A single row in the flat transcript. Carries the originating role
+// only so we can branch on user-text vs agent-text alignment; tool
+// blocks never align right.
+type FlatBlock = { role: Role; block: Block };
+
+function flattenBlocks(messages: Message[]): FlatBlock[] {
+  const out: FlatBlock[] = [];
+  for (const m of messages) {
+    for (const b of m.blocks) out.push({ role: m.role, block: b });
+  }
+  return out;
 }
 
-function BlockView({
-  block,
-  isUser,
+function BlockRow({
+  block: fb,
   expandedTools,
   toggleTool,
 }: {
-  block: Block;
-  isUser: boolean;
+  block: FlatBlock;
   expandedTools: Set<string>;
   toggleTool: (id: string) => void;
 }) {
+  const { role, block } = fb;
+
+  // Text from user → right side, indigo-tinted.
+  // Text from agent → left side, plain card.
+  // Tool calls + results → left side, narrower & subtler (they belong
+  // to the agent's stream of work, not the user).
   if (block.type === "text") {
+    const isUser = role === "user";
     return (
-      <div
-        className={cn(
-          "max-w-[85%] rounded-lg px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap",
-          isUser
-            ? "bg-indigo-500/15 border border-indigo-500/30 text-foreground"
-            : "bg-card/60 border border-border text-foreground/95",
-        )}
-      >
-        <FormattedText text={block.text} />
+      <div className={cn("flex w-full", isUser ? "justify-end" : "justify-start")}>
+        <div
+          className={cn(
+            "max-w-[80%] rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed prose-chat",
+            isUser
+              ? "bg-indigo-500 text-white border border-indigo-500"
+              : "bg-card/60 border border-border text-foreground/95",
+          )}
+        >
+          <Markdown text={block.text} dark={isUser} />
+        </div>
       </div>
     );
   }
+
   if (block.type === "tool_use") {
     const expanded = expandedTools.has(block.id);
     return (
-      <div className="max-w-[85%] rounded-lg border border-border/60 bg-background/60 text-[11.5px] overflow-hidden">
-        <button
-          onClick={() => toggleTool(block.id)}
-          className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-accent/40"
-        >
-          {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          <Wrench className="h-3 w-3 text-indigo-400" />
-          <span className="font-mono text-foreground/90">{block.name}</span>
-          <span className="text-muted-foreground/80 truncate ml-1">
-            {summarizeInput(block.input)}
-          </span>
-        </button>
-        {expanded && (
-          <pre className="px-2.5 py-1.5 text-[10.5px] bg-card/40 border-t border-border/40 overflow-auto max-h-[200px] font-mono whitespace-pre-wrap">
-            {JSON.stringify(block.input, null, 2)}
-          </pre>
-        )}
+      <div className="flex w-full justify-start">
+        <div className="max-w-[70%] rounded-md border border-border/50 bg-background/40 text-[11.5px] overflow-hidden">
+          <button
+            onClick={() => toggleTool(block.id)}
+            className="w-full flex items-center gap-1.5 px-2.5 py-1 text-left hover:bg-accent/30"
+          >
+            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            <Wrench className="h-3 w-3 text-indigo-400 shrink-0" />
+            <span className="font-mono text-foreground/85">{block.name}</span>
+            <span className="text-muted-foreground/70 truncate ml-1 font-mono text-[10.5px]">
+              ({summarizeInput(block.input)})
+            </span>
+          </button>
+          {expanded && (
+            <pre className="px-2.5 py-1.5 text-[10.5px] bg-card/30 border-t border-border/40 overflow-auto max-h-[200px] font-mono whitespace-pre-wrap">
+              {JSON.stringify(block.input, null, 2)}
+            </pre>
+          )}
+        </div>
       </div>
     );
   }
+
   if (block.type === "tool_result") {
     const expanded = expandedTools.has(block.tool_use_id + ":result");
     const issueLink = block.content.match(/https:\/\/github\.com\/[^\s]+\/issues\/\d+/);
+    const oneLine = block.content.split("\n")[0]?.slice(0, 100) ?? "";
     return (
-      <div className="max-w-[85%] rounded-lg border border-border/60 bg-background/60 text-[11.5px] overflow-hidden">
-        <button
-          onClick={() => toggleTool(block.tool_use_id + ":result")}
-          className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-accent/40"
-        >
-          {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          <span className="text-muted-foreground/80">result</span>
-          <span className="text-muted-foreground/70 truncate ml-1">
-            {block.content.slice(0, 80).replace(/\n/g, " ")}
-            {block.content.length > 80 && "…"}
-          </span>
-          {issueLink && (
-            <a
-              href={issueLink[0]}
-              target="_blank"
-              rel="noreferrer"
-              className="ml-auto inline-flex items-center gap-0.5 text-indigo-400 hover:underline"
-              onClick={(e) => e.stopPropagation()}
-            >
-              open <ExternalLink className="h-3 w-3" />
-            </a>
+      <div className="flex w-full justify-start">
+        <div className="max-w-[70%] rounded-md border border-border/50 bg-background/40 text-[11.5px] overflow-hidden ml-4">
+          <button
+            onClick={() => toggleTool(block.tool_use_id + ":result")}
+            className="w-full flex items-center gap-1.5 px-2.5 py-1 text-left hover:bg-accent/30"
+          >
+            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            <span className="text-muted-foreground/80 shrink-0">→</span>
+            <span className="text-muted-foreground/70 truncate text-[10.5px]">{oneLine || "(empty)"}</span>
+            {issueLink && (
+              <a
+                href={issueLink[0]}
+                target="_blank"
+                rel="noreferrer"
+                className="ml-auto inline-flex items-center gap-0.5 text-indigo-400 hover:underline shrink-0"
+                onClick={(e) => e.stopPropagation()}
+              >
+                open <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
+          </button>
+          {expanded && (
+            <pre className="px-2.5 py-1.5 text-[10.5px] bg-card/30 border-t border-border/40 overflow-auto max-h-[300px] font-mono whitespace-pre-wrap">
+              {block.content}
+            </pre>
           )}
-        </button>
-        {expanded && (
-          <pre className="px-2.5 py-1.5 text-[10.5px] bg-card/40 border-t border-border/40 overflow-auto max-h-[300px] font-mono whitespace-pre-wrap">
-            {block.content}
-          </pre>
-        )}
+        </div>
       </div>
     );
   }
+
   return null;
 }
 
-function FormattedText({ text }: { text: string }) {
-  // Minimal markdown: render code spans, paragraphs, and links.
-  // Avoid the full markdown stack — kept the maintainer's dep tree small.
-  return <span>{text}</span>;
+function Markdown({ text, dark }: { text: string; dark: boolean }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+        ul: ({ children }) => <ul className="mb-2 last:mb-0 ml-4 list-disc space-y-0.5">{children}</ul>,
+        ol: ({ children }) => <ol className="mb-2 last:mb-0 ml-4 list-decimal space-y-0.5">{children}</ol>,
+        li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+        h1: ({ children }) => <h1 className="text-[15px] font-semibold mb-1.5 mt-2 first:mt-0">{children}</h1>,
+        h2: ({ children }) => <h2 className="text-[14px] font-semibold mb-1.5 mt-2 first:mt-0">{children}</h2>,
+        h3: ({ children }) => <h3 className="text-[13px] font-semibold mb-1 mt-1.5 first:mt-0">{children}</h3>,
+        a: ({ href, children }) => (
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            className={cn("underline", dark ? "text-white/90 hover:text-white" : "text-indigo-400 hover:text-indigo-300")}
+          >
+            {children}
+          </a>
+        ),
+        code: ({ children, ...rest }) => {
+          const isBlock = (rest as { className?: string }).className?.startsWith("language-");
+          if (isBlock) {
+            return (
+              <code className="block font-mono text-[11.5px] whitespace-pre overflow-x-auto">
+                {children}
+              </code>
+            );
+          }
+          return (
+            <code
+              className={cn(
+                "font-mono text-[11.5px] rounded px-1 py-px",
+                dark ? "bg-white/15 text-white" : "bg-muted text-foreground/90",
+              )}
+            >
+              {children}
+            </code>
+          );
+        },
+        pre: ({ children }) => (
+          <pre
+            className={cn(
+              "rounded-md p-2 my-1.5 text-[11.5px] overflow-x-auto",
+              dark ? "bg-black/30" : "bg-muted",
+            )}
+          >
+            {children}
+          </pre>
+        ),
+        blockquote: ({ children }) => (
+          <blockquote className={cn("border-l-2 pl-2 my-1.5", dark ? "border-white/40" : "border-border")}>
+            {children}
+          </blockquote>
+        ),
+        hr: () => <hr className="my-2 border-border/50" />,
+        strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+        em: ({ children }) => <em className="italic">{children}</em>,
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  );
 }
 
 function summarizeInput(input: Record<string, unknown>): string {
