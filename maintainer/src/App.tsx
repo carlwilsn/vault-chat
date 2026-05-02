@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Wrench, ListChecks, AlertTriangle, X, Minus, Square, Copy, Newspaper } from "lucide-react";
+import { Wrench, ListChecks, AlertTriangle, X, Minus, Square, Copy, Newspaper, Plus } from "lucide-react";
 import { useStore } from "./store";
 import { cn } from "./lib";
 import { Activity } from "./Activity";
@@ -9,6 +9,7 @@ import { System } from "./System";
 import { Tasks } from "./Tasks";
 import { Triage } from "./Triage";
 import { UpdateBanner } from "./UpdateBanner";
+import { NewIssueModal } from "./NewIssueModal";
 import { getMe } from "./github";
 
 export function App() {
@@ -19,6 +20,7 @@ export function App() {
   const setGhLogin = useStore((s) => s.setGhLogin);
   const [maximized, setMaximized] = useState(false);
   const [tokenError, setTokenError] = useState<string | null>(null);
+  const [newIssueOpen, setNewIssueOpen] = useState(false);
   const win = getCurrentWindow();
 
   // On first paint, pull the GitHub PAT from the OS keychain via the
@@ -81,6 +83,16 @@ export function App() {
           <span className="font-medium">vault-chat maintainer</span>
         </div>
         <div data-tauri-drag-region className="flex-1 h-full" />
+        {githubPat && (
+          <button
+            onClick={() => setNewIssueOpen(true)}
+            className="h-7 inline-flex items-center gap-1.5 px-2.5 mr-2 rounded text-[11.5px] bg-indigo-500 hover:bg-indigo-400 text-white"
+            title="File a new issue"
+          >
+            <Plus className="h-3 w-3" />
+            New issue
+          </button>
+        )}
         {!isMac && (
           <div className="flex items-center">
             <button
@@ -147,6 +159,14 @@ export function App() {
           <System token={githubPat} />
         )}
       </div>
+
+      {githubPat && (
+        <NewIssueModal
+          open={newIssueOpen}
+          onClose={() => setNewIssueOpen(false)}
+          token={githubPat}
+        />
+      )}
     </div>
   );
 }

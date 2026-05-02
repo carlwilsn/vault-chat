@@ -43,7 +43,6 @@ export function Tasks({ token }: { token: string }) {
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
   const [confirmDone, setConfirmDone] = useState(false);
-  const [closing, setClosing] = useState(false);
 
   const refresh = async () => {
     try {
@@ -94,15 +93,16 @@ export function Tasks({ token }: { token: string }) {
       return;
     }
     setConfirmDone(false);
-    setClosing(true);
+    // Optimistic: leave the detail view immediately, drop the task
+    // from the list locally, fire the close in the background.
+    const closingNumber = active.number;
+    setActiveId(null);
+    setIssues((cur) => cur?.filter((i) => i.number !== closingNumber) ?? null);
     try {
-      await closeIssue(token, active.number, "completed");
-      setActiveId(null);
-      await refresh();
+      await closeIssue(token, closingNumber, "completed");
     } catch (e) {
       setError((e as Error).message);
-    } finally {
-      setClosing(false);
+      void refresh();
     }
   };
 
@@ -110,14 +110,34 @@ export function Tasks({ token }: { token: string }) {
     if (!active) return;
     const body = reply.trim();
     if (!body) return;
+    // Optimistic: clear the textarea + append the comment to the
+    // thread immediately so the user sees their reply land. Fire
+    // the API in the background; on error, restore the textarea.
+    const optimisticComment: IssueComment = {
+      id: -Date.now(), // negative id signals "pending"
+      body,
+      user: { login: ghLogin ?? "you" },
+      created_at: new Date().toISOString(),
+    };
+    setReply("");
+    setCommentsByIssue((m) => ({
+      ...m,
+      [active.number]: [...(m[active.number] ?? []), optimisticComment],
+    }));
     setSending(true);
     try {
       await postIssueComment(token, active.number, body);
-      setReply("");
-      // Refresh just this thread.
+      // Refetch to replace the optimistic comment with the real one
+      // (real GitHub id, server timestamp).
       const fresh = await listIssueComments(token, active.number);
       setCommentsByIssue((m) => ({ ...m, [active.number]: fresh }));
     } catch (e) {
+      // Restore the textarea + drop the optimistic comment.
+      setReply(body);
+      setCommentsByIssue((m) => ({
+        ...m,
+        [active.number]: (m[active.number] ?? []).filter((c) => c.id !== optimisticComment.id),
+      }));
       setError((e as Error).message);
     } finally {
       setSending(false);
@@ -174,7 +194,7 @@ export function Tasks({ token }: { token: string }) {
           <div className="flex items-center justify-between">
             <button
               onClick={() => void armOrClose()}
-              disabled={closing || sending}
+              disabled={sending}
               className={cn(
                 "inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded border transition-colors disabled:opacity-50",
                 confirmDone
@@ -184,7 +204,7 @@ export function Tasks({ token }: { token: string }) {
               title={confirmDone ? "Click again to confirm" : "Mark this task done and close it"}
             >
               <Check className="h-3 w-3" />
-              {closing ? "Closing…" : confirmDone ? "Sure?" : "Done — close it"}
+              {confirmDone ? "Sure?" : "Done — close it"}
             </button>
             <button
               onClick={() => void sendReply()}

@@ -175,6 +175,19 @@ export async function getMe(token: string): Promise<{ login: string }> {
   return ghJson<{ login: string }>(`/user`, token);
 }
 
+export async function createIssue(
+  token: string,
+  title: string,
+  body: string,
+  labels: string[],
+): Promise<{ number: number; html_url: string }> {
+  return ghJson<{ number: number; html_url: string }>(
+    `/repos/${OWNER}/${REPO}/issues`,
+    token,
+    { method: "POST", body: JSON.stringify({ title, body, labels }) },
+  );
+}
+
 // Repository action variables — used for the SHIP_PAUSED kill switch.
 // `value` is always a string per GH's API; we store "true" / "false".
 export async function getRepoVariable(

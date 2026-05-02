@@ -99,6 +99,15 @@ export function Triage({ token }: { token: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, ghLogin]);
 
+  // Optimistic local hide. The GitHub API is slow (1–3s round-trip);
+  // awaiting it before updating UI feels like the click did nothing.
+  // Hide the row instantly, fire the API in the background, restore
+  // with an error indicator if it fails.
+  const hideOptimistic = (issueNumber: number) => {
+    setVerify((v) => v?.filter((x) => x.issue.number !== issueNumber) ?? null);
+    setHelp((h) => h?.filter((x) => x.issue.number !== issueNumber) ?? null);
+  };
+
   const armOrCloseAsCompleted = async (issue: Issue) => {
     if (!confirmClose[issue.number]) {
       setConfirmClose((m) => ({ ...m, [issue.number]: true }));
@@ -115,13 +124,14 @@ export function Triage({ token }: { token: string }) {
       delete n[issue.number];
       return n;
     });
-    setActions((m) => ({ ...m, [issue.number]: "running" }));
+    hideOptimistic(issue.number);
     try {
       await closeIssue(token, issue.number, "completed");
-      await refresh();
-      setActions((m) => ({ ...m, [issue.number]: "idle" }));
     } catch (e) {
+      // Roll back: re-fetch the truth from GitHub so we don't lose
+      // visibility of items that didn't actually close.
       setActions((m) => ({ ...m, [issue.number]: { error: (e as Error).message } }));
+      void refresh();
     }
   };
 
@@ -141,20 +151,23 @@ export function Triage({ token }: { token: string }) {
       delete n[issue.number];
       return n;
     });
-    setActions((m) => ({ ...m, [issue.number]: "running" }));
+    hideOptimistic(issue.number);
     try {
       await closeIssue(token, issue.number, "not_planned");
-      await refresh();
-      setActions((m) => ({ ...m, [issue.number]: "idle" }));
     } catch (e) {
       setActions((m) => ({ ...m, [issue.number]: { error: (e as Error).message } }));
+      void refresh();
     }
   };
 
   const reQueue = async (issue: Issue) => {
-    setActions((m) => ({ ...m, [issue.number]: "running" }));
+    const note = (guidance[issue.number] ?? "").trim();
+    hideOptimistic(issue.number);
+    setGuidance((g) => {
+      const { [issue.number]: _drop, ...rest } = g;
+      return rest;
+    });
     try {
-      const note = (guidance[issue.number] ?? "").trim();
       if (note) {
         await postIssueComment(
           token,
@@ -164,14 +177,9 @@ export function Triage({ token }: { token: string }) {
       }
       const keep = issue.labels.map((l) => l.name).filter((n) => !ALL_AUTOFIX.includes(n));
       await setIssueLabels(token, issue.number, [...keep, LABEL_QUEUED]);
-      await refresh();
-      setGuidance((g) => {
-        const { [issue.number]: _drop, ...rest } = g;
-        return rest;
-      });
-      setActions((m) => ({ ...m, [issue.number]: "idle" }));
     } catch (e) {
       setActions((m) => ({ ...m, [issue.number]: { error: (e as Error).message } }));
+      void refresh();
     }
   };
 
