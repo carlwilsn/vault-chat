@@ -129,7 +129,7 @@ jobs:
           # Maintainer has its own dedicated minisign keypair (separate
           # trust domain from the main app) — see #26 fix.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MAINTAINER_TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MAINTAINER_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: maintainer
           tagName: maintainer-v${{ steps.version.outputs.version }}
