@@ -2835,6 +2835,44 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             use tauri::Manager;
+
+            // Pre-React auto-update safety net (release builds only).
+            // Runs before the WebView is shown so a broken React bundle in
+            // the installed version can still self-heal — if JS throws on
+            // mount, the in-app `UpdateBanner` never gets a chance to fire.
+            // Bounded by a short timeout so a slow/offline network can't
+            // hang the app at launch; failures fall through to normal boot.
+            #[cfg(not(debug_assertions))]
+            {
+                use tauri_plugin_updater::UpdaterExt;
+                let handle = app.handle().clone();
+                let outcome = tauri::async_runtime::block_on(async {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        async {
+                            let updater = handle.updater()?;
+                            let Some(update) = updater.check().await? else {
+                                return Ok::<bool, tauri_plugin_updater::Error>(false);
+                            };
+                            update
+                                .download_and_install(|_, _| {}, || {})
+                                .await?;
+                            Ok(true)
+                        },
+                    )
+                    .await
+                });
+                match outcome {
+                    Ok(Ok(true)) => {
+                        // Diverges — process exits and the new version launches.
+                        handle.restart();
+                    }
+                    Ok(Ok(false)) => {}
+                    Ok(Err(e)) => eprintln!("[updater] pre-react check failed: {e}"),
+                    Err(_) => eprintln!("[updater] pre-react check timed out"),
+                }
+            }
+
             // Start the main window hidden so the OS doesn't show an
             // unpainted frame while the WebView is still loading. The
             // frontend calls `app_ready` once React has mounted and the
