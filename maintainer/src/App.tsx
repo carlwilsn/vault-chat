@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Wrench, ListChecks, AlertTriangle, X, Minus, Square, Copy, Newspaper, Plus } from "lucide-react";
+import { Wrench, ListChecks, AlertTriangle, X, Minus, Square, Copy, Newspaper, Plus, MessageSquare } from "lucide-react";
 import { useStore } from "./store";
 import { cn } from "./lib";
+import { Chat } from "./Chat";
 import { Activity } from "./Activity";
 import { System } from "./System";
 import { Tasks } from "./Tasks";
@@ -130,6 +131,9 @@ export function App() {
       )}
 
       <div className="flex items-stretch border-b border-border bg-card/50 shrink-0">
+        <TabButton active={tab === "chat"} onClick={() => setTab("chat")} icon={<MessageSquare className="h-3.5 w-3.5" />}>
+          Chat
+        </TabButton>
         <TabButton active={tab === "activity"} onClick={() => setTab("activity")} icon={<Newspaper className="h-3.5 w-3.5" />}>
           Activity
         </TabButton>
@@ -149,6 +153,8 @@ export function App() {
           <div className="px-6 py-10 text-center text-[12px] text-muted-foreground">
             Waiting for a configured GitHub PAT…
           </div>
+        ) : tab === "chat" ? (
+          <Chat />
         ) : tab === "activity" ? (
           <Activity token={githubPat} />
         ) : tab === "triage" ? (

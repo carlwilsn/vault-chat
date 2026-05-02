@@ -19,6 +19,25 @@ fn keychain_get(key: String) -> Result<Option<String>, String> {
     }
 }
 
+// Used for storing the Planner agent's Anthropic API key (and any
+// future maintainer-owned secrets) under the same service namespace
+// as the main app.
+#[tauri::command]
+fn keychain_set(key: String, value: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key).map_err(|e| e.to_string())?;
+    entry.set_password(&value).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn keychain_delete(key: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key).map_err(|e| e.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 // Show the calling window. Paired with `visible: false` in
 // tauri.conf.json so the OS only sees the window after React has
 // painted its first frame.
@@ -95,6 +114,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             keychain_get,
+            keychain_set,
+            keychain_delete,
             app_ready,
             download_and_install
         ])
