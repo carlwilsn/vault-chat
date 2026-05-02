@@ -26,7 +26,10 @@ export function App() {
   useEffect(() => {
     (async () => {
       try {
-        const pat = await invoke<string | null>("keychain_get", { key: "github_pat" });
+        // Main app stores secrets keyed as `service.<name>` — see
+        // src/keychain.ts in the main app. Must match exactly or we
+        // read nothing.
+        const pat = await invoke<string | null>("keychain_get", { key: "service.github_pat" });
         if (!pat) {
           setTokenError("No GitHub PAT in the OS keychain. Add one in vault-chat → Settings → Send feedback.");
           return;

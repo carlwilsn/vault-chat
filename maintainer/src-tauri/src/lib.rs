@@ -1,7 +1,10 @@
 use serde::Serialize;
 use tauri::Manager;
 
-const KEYCHAIN_SERVICE: &str = "vault-chat";
+// Must match the main app's KEYCHAIN_SERVICE constant exactly so we
+// read from the same OS keychain entry the main app writes to. If you
+// rename either side, rename both.
+const KEYCHAIN_SERVICE: &str = "com.vault-chat.app";
 
 // Read a secret from the OS keychain. We deliberately use the same
 // service name as the main app so the GitHub PAT entered there is
