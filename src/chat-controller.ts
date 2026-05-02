@@ -209,6 +209,10 @@ export function stopAgent() {
 
 export function clearChat() {
   const s = useStore.getState();
+  // Roll the conversation we're about to drop into the rolling
+  // saved-chats buffer so the user can pull it back from the recents
+  // popover. No-op if there's nothing to save.
+  s.saveCurrentChat();
   s.clearMessages();
   s.resetStreaming();
 }
