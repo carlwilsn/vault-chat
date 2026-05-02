@@ -1,6 +1,6 @@
 [package]
 name = "vault-chat"
-version = "0.1.16"
+version = "0.1.17"
 description = "Minimal desktop viewer + LLM chat for a folder of markdown notes."
 authors = ["Carl Wilson"]
 license = "MIT"
