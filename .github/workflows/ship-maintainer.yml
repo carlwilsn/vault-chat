@@ -77,6 +77,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: maintainer
           tagName: maintainer-v${{ steps.version.outputs.version }}
@@ -85,4 +87,29 @@ jobs:
             Maintainer companion app. Install over an existing maintainer install.
           releaseDraft: false
           prerelease: false
-          includeUpdaterJson: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+
+      # Maintain a moving "maintainer-latest" release that always
+      # points at the most recent maintainer build. The maintainer's
+      # Tauri updater hits its `latest.json` asset to discover new
+      # versions — without this stable pointer, the updater can't know
+      # which release is current (the GH "/releases/latest/" alias
+      # gets clobbered by the main app's frequent releases).
+      - name: Update maintainer-latest pointer
+        if: steps.release_check.outputs.exists == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="maintainer-v${{ steps.version.outputs.version }}"
+          mkdir -p /tmp/latest
+          gh release download "$TAG" --repo ${{ github.repository }} --pattern latest.json --dir /tmp/latest
+          # Best-effort delete of any prior pointer release and tag.
+          gh release delete maintainer-latest --repo ${{ github.repository }} --yes --cleanup-tag 2>/dev/null || true
+          gh release create maintainer-latest /tmp/latest/latest.json \
+            --repo ${{ github.repository }} \
+            --target ${{ github.sha }} \
+            --title "Maintainer auto-update channel" \
+            --notes "Auto-maintained pointer to the latest maintainer release. Do not delete — the maintainer's Tauri updater fetches latest.json from this release."

@@ -7,6 +7,7 @@ import { cn } from "./lib";
 import { System } from "./System";
 import { Tasks } from "./Tasks";
 import { Triage } from "./Triage";
+import { UpdateBanner } from "./UpdateBanner";
 import { getMe } from "./github";
 
 export function App() {
@@ -105,6 +106,8 @@ export function App() {
           </div>
         )}
       </div>
+
+      <UpdateBanner />
 
       {tokenError && (
         <div className="px-4 py-2 bg-amber-500/15 border-b border-amber-500/30 text-[11.5px] text-amber-500 flex items-start gap-2">

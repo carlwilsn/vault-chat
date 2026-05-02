@@ -15,6 +15,8 @@
     "core:window:allow-set-focus",
     "dialog:allow-open",
     "shell:allow-open",
-    "process:default"
+    "process:default",
+    "process:allow-restart",
+    "updater:default"
   ]
 }

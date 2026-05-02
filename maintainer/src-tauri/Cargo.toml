@@ -1,6 +1,6 @@
 [package]
 name = "vault-chat-maintainer"
-version = "0.1.1"
+version = "0.1.2"
 description = "vault-chat maintainer companion app"
 authors = ["carlwilsn"]
 edition = "2021"
@@ -17,7 +17,11 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
 tauri-plugin-shell = "2"
-keyring = "3"
+tauri-plugin-updater = "2"
+# Same feature flags as the main app — without `windows-native` keyring v3
+# falls back to a backend that doesn't see Windows Credential Manager
+# entries, so the PAT the main app stored is invisible to us.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 open = "5"
 reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false }
 tokio = { version = "1", features = ["full"] }

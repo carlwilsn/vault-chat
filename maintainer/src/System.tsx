@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { Play, RefreshCw, Download, ExternalLink, X as XIcon } from "lucide-react";
+import { Play, RefreshCw, Download, ExternalLink, X as XIcon, ArrowUpCircle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import {
   type Release,
   type WorkflowRun,
@@ -21,6 +23,15 @@ import { cn, relativeTime } from "./lib";
 // workflow. The status panel polls the latest two ship runs every
 // 5s while the tab is mounted.
 
+type SelfUpdateState =
+  | { phase: "idle" }
+  | { phase: "checking" }
+  | { phase: "none" }
+  | { phase: "available"; update: Update }
+  | { phase: "installing"; progress: number }
+  | { phase: "ready" }
+  | { phase: "error"; message: string };
+
 export function System({ token }: { token: string }) {
   const [releases, setReleases] = useState<Release[] | null>(null);
   const [releasesError, setReleasesError] = useState<string | null>(null);
@@ -28,6 +39,49 @@ export function System({ token }: { token: string }) {
   const [runsError, setRunsError] = useState<string | null>(null);
   const [shipState, setShipState] = useState<"idle" | "dispatching" | { error: string }>("idle");
   const [installState, setInstallState] = useState<Record<number, "idle" | "downloading" | "running" | { error: string }>>({});
+  const [selfUpdate, setSelfUpdate] = useState<SelfUpdateState>({ phase: "idle" });
+
+  // Check for maintainer updates via Tauri's updater plugin (signed
+  // update flow, not the raw download-and-run we use for installing
+  // arbitrary releases). Manual trigger only — no auto-check on
+  // launch by design, so a bad maintainer release never auto-pushes.
+  const checkSelfUpdate = async () => {
+    setSelfUpdate({ phase: "checking" });
+    try {
+      const update = await check();
+      if (!update) {
+        setSelfUpdate({ phase: "none" });
+        return;
+      }
+      setSelfUpdate({ phase: "available", update });
+    } catch (e) {
+      setSelfUpdate({ phase: "error", message: (e as Error).message });
+    }
+  };
+
+  const installSelfUpdate = async () => {
+    if (selfUpdate.phase !== "available") return;
+    const update = selfUpdate.update;
+    setSelfUpdate({ phase: "installing", progress: 0 });
+    let total = 0;
+    let downloaded = 0;
+    try {
+      await update.downloadAndInstall((evt) => {
+        if (evt.event === "Started") {
+          total = evt.data.contentLength ?? 0;
+        } else if (evt.event === "Progress") {
+          downloaded += evt.data.chunkLength;
+          const pct = total > 0 ? Math.round((downloaded / total) * 100) : 0;
+          setSelfUpdate({ phase: "installing", progress: pct });
+        } else if (evt.event === "Finished") {
+          setSelfUpdate({ phase: "ready" });
+        }
+      });
+      setSelfUpdate({ phase: "ready" });
+    } catch (e) {
+      setSelfUpdate({ phase: "error", message: (e as Error).message });
+    }
+  };
 
   const refreshReleases = async () => {
     try {
@@ -101,6 +155,65 @@ export function System({ token }: { token: string }) {
 
   return (
     <div className="p-4 space-y-6 max-w-[820px]">
+      {/* Self-update — manual check only, signed via Tauri updater
+          plugin. Different mechanism from the Releases list below
+          (which uses raw download_and_install). */}
+      <section className="space-y-2">
+        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-indigo-400">
+          Maintainer self-update
+        </h2>
+        <p className="text-[11.5px] text-muted-foreground leading-relaxed">
+          Pulls the latest signed maintainer release through the Tauri updater. Manual
+          trigger only — no auto-check on launch, so a bad release can't auto-push itself.
+        </p>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => void checkSelfUpdate()}
+            disabled={selfUpdate.phase === "checking" || selfUpdate.phase === "installing"}
+            className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded border border-border bg-background/60 hover:bg-accent disabled:opacity-50"
+          >
+            <ArrowUpCircle className="h-3 w-3" />
+            {selfUpdate.phase === "checking" ? "Checking…" : "Check for updates"}
+          </button>
+          {selfUpdate.phase === "none" && (
+            <span className="text-[11.5px] text-muted-foreground">You're on the latest.</span>
+          )}
+          {selfUpdate.phase === "available" && (
+            <>
+              <span className="text-[11.5px] text-foreground/90">
+                v{selfUpdate.update.version} available
+              </span>
+              <button
+                onClick={() => void installSelfUpdate()}
+                className="bg-indigo-500 hover:bg-indigo-400 text-white text-[12px] px-3 py-1.5 rounded inline-flex items-center gap-1.5"
+              >
+                <Download className="h-3 w-3" />
+                Install
+              </button>
+            </>
+          )}
+          {selfUpdate.phase === "installing" && (
+            <span className="text-[11.5px] text-muted-foreground">
+              Downloading… {selfUpdate.progress}%
+            </span>
+          )}
+          {selfUpdate.phase === "ready" && (
+            <>
+              <span className="text-[11.5px] text-emerald-500">Ready — restart to apply.</span>
+              <button
+                onClick={() => void relaunch()}
+                className="bg-emerald-500 hover:bg-emerald-400 text-white text-[12px] px-3 py-1.5 rounded"
+              >
+                Restart now
+              </button>
+            </>
+          )}
+          {selfUpdate.phase === "error" && (
+            <span className="text-[11.5px] text-destructive">{selfUpdate.message}</span>
+          )}
+        </div>
+      </section>
+
       {/* Manual ship */}
       <section className="space-y-2">
         <div className="flex items-center justify-between">
