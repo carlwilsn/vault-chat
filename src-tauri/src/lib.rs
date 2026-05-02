@@ -2883,6 +2883,58 @@ pub fn run() {
                 apply_titlebar_color(&w);
             }
 
+            // Pre-React updater safety net. If React crashes on mount
+            // (which has happened — see #15), the in-app UpdateBanner
+            // never gets a chance to fetch a newer version, leaving
+            // the user stuck on a broken build with no way out short
+            // of manually downloading an installer. Run an async
+            // updater check here in parallel with WebView load: if
+            // there's a newer version, download + install + restart
+            // before the user sees anything. Any failure (offline,
+            // no update, network glitch) is silent — React mounts
+            // normally and the regular UpdateBanner takes over.
+            let updater_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use tauri_plugin_updater::UpdaterExt;
+                let updater = match updater_handle.updater() {
+                    Ok(u) => u,
+                    Err(e) => {
+                        eprintln!("[pre-react-updater] init failed: {}", e);
+                        return;
+                    }
+                };
+                let check_fut = updater.check();
+                // Cap the check at 5s so an offline launch isn't
+                // delayed waiting on network timeouts.
+                let update = match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    check_fut,
+                )
+                .await
+                {
+                    Ok(Ok(Some(u))) => u,
+                    Ok(Ok(None)) => return, // up-to-date
+                    Ok(Err(e)) => {
+                        eprintln!("[pre-react-updater] check error: {}", e);
+                        return;
+                    }
+                    Err(_) => {
+                        eprintln!("[pre-react-updater] check timed out");
+                        return;
+                    }
+                };
+                eprintln!(
+                    "[pre-react-updater] new version {} available — installing",
+                    update.version
+                );
+                if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+                    eprintln!("[pre-react-updater] install failed: {}", e);
+                    return;
+                }
+                eprintln!("[pre-react-updater] install ok — restarting");
+                updater_handle.restart();
+            });
+
             // Phone bridge: load or generate a stable token, then spin
             // up the HTTP + WebSocket server on a Tauri async task.
             let app_data = app

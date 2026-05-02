@@ -264,9 +264,14 @@ export function ChatPane() {
   }
 
   const send = async () => {
-    if (busy || !ready) return;
+    if (!ready) return;
     const text = input.trim();
     if (!text && pendingImages.length === 0) return;
+    // While the agent is mid-generation, "send" interrupts: capture
+    // the partial response as a final assistant turn, abort the
+    // current call, then send the new user message as a fresh turn.
+    // See chat-controller's interruptAndSend.
+    const actionKind: "send" | "interrupt" = busy ? "interrupt" : "send";
     // Resolve every @name token in the text — not just the ones picked
     // from the dropdown. Users type @name manually all the time, and
     // without resolution the agent just sees a literal "@foo.md" and
@@ -314,7 +319,7 @@ export function ChatPane() {
     setFileMention(null);
     setPendingImages([]);
     dispatchChatAction({
-      kind: "send",
+      kind: actionKind,
       text: text + pathFooter,
       contextPreamble: contextPreamble || undefined,
       attachments: imagesToSend.length > 0 ? imagesToSend : undefined,
@@ -715,16 +720,30 @@ export function ChatPane() {
                     </button>
                   );
                 })()}
-                {busy ? (
-                  <Button size="icon" variant="secondary" onClick={stop} className="h-7 w-7 rounded-lg">
+                {/* Three states for the trailing button group:
+                    - idle: just the Send arrow.
+                    - busy + empty input: just the Stop square.
+                    - busy + non-empty input: Stop square AND Interrupt-and-send arrow
+                      (clicking Send mid-generation captures the partial reply
+                      as a final assistant turn and starts the new user turn). */}
+                {busy && (
+                  <Button
+                    size="icon"
+                    variant="secondary"
+                    onClick={stop}
+                    className="h-7 w-7 rounded-lg"
+                    title="Stop the agent"
+                  >
                     <Square className="h-3 w-3 fill-current" />
                   </Button>
-                ) : (
+                )}
+                {(!busy || input.trim().length > 0 || pendingImages.length > 0) && (
                   <Button
                     size="icon"
                     onClick={send}
                     disabled={!ready || (!input.trim() && pendingImages.length === 0)}
                     className="h-7 w-7 rounded-lg"
+                    title={busy ? "Interrupt and send your message" : "Send"}
                   >
                     <ArrowUp className="h-3.5 w-3.5" />
                   </Button>

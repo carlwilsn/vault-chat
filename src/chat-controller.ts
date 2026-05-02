@@ -207,6 +207,42 @@ export function stopAgent() {
   store.setBusy(false);
 }
 
+// Mid-generation interruption. Captures whatever the agent had
+// streamed so far as a final assistant turn (so the conversation
+// keeps its history), aborts the in-flight call, then immediately
+// fires off the new user message as a fresh turn. If the agent
+// wasn't busy, this just degrades to a normal sendMessage.
+export async function interruptAndSend(
+  text: string,
+  contextPreamble?: string,
+  attachments?: import("./store").ChatAttachment[],
+) {
+  const s = useStore.getState();
+  if (s.busy) {
+    const partialText = s.streamingText.trim();
+    const partialTools = s.liveTools;
+    // Append a final assistant turn for whatever the agent had
+    // produced. Italic suffix marks the interrupt so the user can
+    // see at a glance which turns were cut short.
+    const interrupted: ChatMessage = {
+      role: "assistant",
+      content: partialText
+        ? `${partialText}\n\n_(interrupted)_`
+        : "_(interrupted before any reply)_",
+      toolCalls: partialTools.length > 0 ? partialTools : undefined,
+    };
+    s.appendMessage(interrupted);
+    abortRef?.abort();
+    abortRef = null;
+    s.resetStreaming();
+    s.setBusy(false);
+  }
+  // Hand off to the normal send flow on the next microtask so the
+  // store updates from the interrupt above settle first.
+  await Promise.resolve();
+  await sendMessage(text, contextPreamble, attachments);
+}
+
 export function clearChat() {
   const s = useStore.getState();
   // Roll the conversation we're about to drop into the rolling

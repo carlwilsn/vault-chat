@@ -1,7 +1,7 @@
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme, type TodoItem } from "./store";
-import { sendMessage, stopAgent, clearChat, setModel } from "./chat-controller";
+import { sendMessage, stopAgent, clearChat, setModel, interruptAndSend } from "./chat-controller";
 
 const POPOUT_LABEL = "chat-popout";
 const MAIN_LABEL = "main";
@@ -49,6 +49,16 @@ export type ChatAction =
       contextPreamble?: string;
       attachments?: import("./store").ChatAttachment[];
     }
+  // Mid-generation interruption. Aborts the current run, captures
+  // whatever the agent had streamed so far as a final assistant
+  // message (so the conversation isn't lost), then sends the new
+  // user turn. Same payload shape as `send`.
+  | {
+      kind: "interrupt";
+      text: string;
+      contextPreamble?: string;
+      attachments?: import("./store").ChatAttachment[];
+    }
   | { kind: "stop" }
   | { kind: "clear" }
   | { kind: "setModel"; id: string }
@@ -83,6 +93,7 @@ function takeStreamSnapshot(): StreamSnapshot {
 
 function applyActionLocal(a: ChatAction) {
   if (a.kind === "send") sendMessage(a.text, a.contextPreamble, a.attachments);
+  else if (a.kind === "interrupt") interruptAndSend(a.text, a.contextPreamble, a.attachments);
   else if (a.kind === "stop") stopAgent();
   else if (a.kind === "clear") clearChat();
   else if (a.kind === "setModel") setModel(a.id);

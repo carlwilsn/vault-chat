@@ -5312,7 +5312,7 @@ dependencies = [
 
 [[package]]
 name = "vault-chat"
-version = "0.1.9"
+version = "0.1.11"
 dependencies = [
  "axum",
  "futures-util",
