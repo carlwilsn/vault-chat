@@ -4,9 +4,80 @@ A desktop app for your markdown notes with Claude (or GPT, or Gemini, or any Ope
 
 ![vault-chat demo](assets/demo.gif)
 
-## Getting started
+## Try it (Windows)
 
-This is a source-first project. You clone the repo, install the prereqs once, and launch it from your terminal.
+Grab the latest installer:
+
+→ **[Download the latest release](https://github.com/carlwilsn/vault-chat/releases/latest)** (look for `vault-chat_X.X.X_x64-setup.exe`)
+
+When you run it, Windows will show:
+
+> **Windows protected your PC**
+> Microsoft Defender SmartScreen prevented an unrecognized app from starting…
+
+This is normal — the installer isn't code-signed yet, so SmartScreen hasn't seen it before. Click the small **More info** link, then **Run anyway**. You only do this once. From then on, vault-chat auto-updates itself silently in the background — every new release just shows up the next time you launch the app.
+
+When it opens: gear icon → paste an API key → open a folder as your vault → start asking.
+
+### Try it free (no credit card)
+
+You don't need to spend a cent to try it — Google's Gemini API has a generous free tier that's enough to kick the tires.
+
+1. Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey), sign in with a Google account, click **Create API key**, copy the value.
+2. In vault-chat: gear icon → paste it into the **Google** field → **Save**.
+3. In the model dropdown (top of the chat pane) pick a Gemini model — `gemini-2.5-flash` is fine for everyday use.
+4. Open any folder as a vault and start chatting.
+
+That's it — Read / Write / Edit / Bash / PDF marquee / inline edit all work on the free tier. Anthropic and OpenAI require prepaid credits and are worth adding once you know you like the app; the same gear-icon flow applies.
+
+**Optional: WebSearch.** The agent's `WebSearch` tool is powered by [Tavily](https://app.tavily.com/), which also has a free tier (1000 searches/month). Grab a key from your Tavily dashboard, then in vault-chat: gear icon → **Tavily (web search)** field → paste → **Save**. `WebFetch` (loading a specific URL) needs no key and works out of the box.
+
+### Mac / Linux
+
+No prebuilt installers yet — see [Build from source](#build-from-source) below.
+
+## What's in it
+
+- **Ctrl+K inline edit** on any paragraph or code selection. `Ctrl+L` for an ask mode that answers in the same popover without touching the file.
+- **PDF marquee** — drag a rectangle over any region of a PDF. Selected text + the pixel screenshot go to the model together. Works on math, tables, scanned pages, handwriting.
+- **Model-agnostic**. Anthropic, OpenAI, Google, or OpenRouter (one key, hundreds of models). Swap mid-session via the settings dropdown.
+- **Git-backed**. Every agent turn that touches files auto-commits. `Ctrl+H` opens a history modal with per-file timeline + one-click restore to any earlier commit. Vault never loses state.
+- **Phone bridge**. Run the desktop app on your laptop, talk to it from your phone over Tailscale — voice in, agent answer back, with its own conversation thread separate from whatever you've got on screen.
+- **`Alt+L`** flips the whole UI between light and dark.
+- **Editable everywhere** — explained below. The agent can write its own skills and tools right inside the meta vault.
+
+## The editable surfaces
+
+vault-chat treats every folder as a vault. Two are worth knowing about:
+
+| Surface | Where | What's there | Switch from |
+|---|---|---|---|
+| **User vault** | any folder you pick | your notes | titlebar → folder icon |
+| **Meta vault** | `%APPDATA%/com.vault-chat.app/meta/` (Windows) — same pattern Mac/Linux | `system.md`, `skills/`, `tools/` | settings → "Open meta vault" |
+
+Each is git-versioned with auto-commit. The titlebar shows a chip when you're in the meta vault so you never forget where you are.
+
+### Creating new skills
+
+Ask the agent: *"Make me a skill for reviewing math HW."* It writes `<meta>/skills/review-hw/SKILL.md` with YAML front-matter. Next turn the skill is invokable as `/review-hw` in chat.
+
+### Creating new tools
+
+Ask: *"Build me a tool that fetches the Champions League standings."* The agent writes `<meta>/tools/champions-league/TOOL.md` (JSON Schema input spec) + `run.py` (reads stdin JSON, prints stdout JSON). Available on the next turn.
+
+## Security
+
+API keys live in the OS keychain (Windows Credential Manager / Mac Keychain / Linux libsecret), not in localStorage or plaintext files. The agent's file-operation tools (`Read`, `Write`, `Bash`, etc.) cannot reach them.
+
+The agent cannot modify files inside any `.git/` directory — the file-op tools refuse those paths so the undo system stays intact.
+
+## Got an idea for the app?
+
+Reach out to me (Carl) at [carlwilson2027@u.northwestern.edu](mailto:carlwilson2027@u.northwestern.edu). I'll help you cleanly clone the repo so you can make your own version — either with Claude Code driving the changes or by hand if you'd rather code it yourself.
+
+## Build from source
+
+If you want to hack on it, run unreleased changes, or you're on Mac/Linux: clone the repo, install the prereqs once, and launch it from your terminal.
 
 ### 1. Install prerequisites (one-time)
 
@@ -81,60 +152,6 @@ Just type `vault-chat` anywhere from your terminal and the app will open.
 ![vault-chat command in terminal](assets/vault-command.png)
 
 The launcher just runs `npm run tauri dev` in the foreground under a shorter name — you'll see cargo's output live. **First run takes ~10–15 min** while Rust compiles everything; subsequent runs are ~2 seconds because cargo caches incrementally.
-
-When the app opens: hit the gear icon → paste an API key (Anthropic, OpenAI, Google, or OpenRouter) → open a folder as your vault → start asking.
-
-### Try it free (no credit card)
-
-You don't need to spend a cent to try the app — Google's Gemini API has a generous free tier that's enough to kick the tires.
-
-1. Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey), sign in with a Google account, click **Create API key**, copy the value.
-2. In vault-chat: gear icon → paste it into the **Google** field → **Save**.
-3. In the model dropdown (top of the chat pane) pick a Gemini model — `gemini-2.5-flash` is fine for everyday use.
-4. Open any folder as a vault and start chatting.
-
-That's it — Read / Write / Edit / Bash / PDF marquee / inline edit all work on the free tier. Anthropic and OpenAI require prepaid credits and are worth adding once you know you like the app; the same gear-icon flow applies.
-
-**Optional: WebSearch.** The agent's `WebSearch` tool is powered by [Tavily](https://app.tavily.com/), which also has a free tier (1000 searches/month). Grab a key from your Tavily dashboard, then in vault-chat: gear icon → **Tavily (web search)** field → paste → **Save**. `WebFetch` (loading a specific URL) needs no key and works out of the box.
-
-## What's in it
-
-- **Ctrl+K inline edit** on any paragraph or code selection. `Ctrl+L` for an ask mode that answers in the same popover without touching the file.
-- **PDF marquee** — drag a rectangle over any region of a PDF. Selected text + the pixel screenshot go to the model together. Works on math, tables, scanned pages, handwriting.
-- **Model-agnostic**. Anthropic, OpenAI, Google, or OpenRouter (one key, hundreds of models). Swap mid-session via the settings dropdown.
-- **Git-backed**. Every agent turn that touches files auto-commits. `Ctrl+H` opens a history modal with per-file timeline + one-click restore to any earlier commit. Vault never loses state.
-- **Phone bridge**. Run the desktop app on your laptop, talk to it from your phone over Tailscale — voice in, agent answer back, with its own conversation thread separate from whatever you've got on screen.
-- **`Alt+L`** flips the whole UI between light and dark.
-- **Editable everywhere** — explained below. The agent can write its own skills and tools right inside the meta vault.
-
-## The editable surfaces
-
-vault-chat treats every folder as a vault. Two are worth knowing about:
-
-| Surface | Where | What's there | Switch from |
-|---|---|---|---|
-| **User vault** | any folder you pick | your notes | titlebar → folder icon |
-| **Meta vault** | `%APPDATA%/com.vault-chat.app/meta/` (Windows) — same pattern Mac/Linux | `system.md`, `skills/`, `tools/` | settings → "Open meta vault" |
-
-Each is git-versioned with auto-commit. The titlebar shows a chip when you're in the meta vault so you never forget where you are.
-
-### Creating new skills
-
-Ask the agent: *"Make me a skill for reviewing math HW."* It writes `<meta>/skills/review-hw/SKILL.md` with YAML front-matter. Next turn the skill is invokable as `/review-hw` in chat.
-
-### Creating new tools
-
-Ask: *"Build me a tool that fetches the Champions League standings."* The agent writes `<meta>/tools/champions-league/TOOL.md` (JSON Schema input spec) + `run.py` (reads stdin JSON, prints stdout JSON). Available on the next turn.
-
-## Security
-
-API keys live in the OS keychain (Windows Credential Manager / Mac Keychain / Linux libsecret), not in localStorage or plaintext files. The agent's file-operation tools (`Read`, `Write`, `Bash`, etc.) cannot reach them.
-
-The agent cannot modify files inside any `.git/` directory — the file-op tools refuse those paths so the undo system stays intact.
-
-## Got an idea for the app?
-
-Reach out to me (Carl) at [carlwilson2027@u.northwestern.edu](mailto:carlwilson2027@u.northwestern.edu). I'll help you cleanly clone the repo so you can make your own version — either with Claude Code driving the changes or by hand if you'd rather code it yourself.
 
 ## License
 
