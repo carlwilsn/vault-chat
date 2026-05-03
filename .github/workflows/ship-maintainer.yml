@@ -65,9 +65,13 @@ jobs:
           set -euo pipefail
           CURRENT=$(node -e "console.log(require('./maintainer/package.json').version)")
           # Most recent released maintainer tag (e.g. maintainer-v0.1.5).
+          # NOTE: GitHub's releases API list returns tags in lexicographic
+          # order, so v0.1.10 sorts BEFORE v0.1.2 — taking m[0] gives a
+          # stale answer once the patch number hits double digits and was
+          # what froze the maintainer at v0.1.10. Sort by created_at desc.
           LAST_TAG=$(curl -sH "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/releases?per_page=30" \
-            | node -e "const r=JSON.parse(require('fs').readFileSync(0,'utf8')); const m=r.filter(x=>x.tag_name && x.tag_name.startsWith('maintainer-v')); console.log(m.length?m[0].tag_name.replace(/^maintainer-v/,''):'')")
+            "https://api.github.com/repos/${{ github.repository }}/releases?per_page=100" \
+            | node -e "const r=JSON.parse(require('fs').readFileSync(0,'utf8')); const m=r.filter(x=>x.tag_name && x.tag_name.startsWith('maintainer-v')).sort((a,b)=>Date.parse(b.created_at)-Date.parse(a.created_at)); console.log(m.length?m[0].tag_name.replace(/^maintainer-v/,''):'')")
           echo "Current package version: $CURRENT"
           echo "Last released maintainer version: ${LAST_TAG:-(none)}"
           if [ -n "$LAST_TAG" ] && [ "$CURRENT" = "$LAST_TAG" ]; then
