@@ -111,7 +111,70 @@ function stripNotebook(raw: string): string {
   }
 }
 
-export function buildTools(vault: string, tavilyKey?: string) {
+export type BuildToolsOptions = {
+  metaPath?: string | null;
+  tavilyKey?: string;
+  // When true, file-op tools refuse paths outside the active vault and
+  // meta vault. Doesn't constrain Bash — that's a separate switch
+  // because we have no real shell sandbox.
+  strictVault?: boolean;
+  // When true, the Bash tool is omitted from the agent's toolset.
+  bashDisabled?: boolean;
+};
+
+// Pure-string path containment check. Symlinks are NOT resolved — a
+// determined attacker (or an LLM doing something dumb) could bypass via
+// a symlink inside the vault. Documented in README. We reject any path
+// containing a `..` segment to block the obvious traversal escape.
+function isInside(absPath: string, root: string): boolean {
+  const np = absPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const nr = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!nr) return false;
+  return np === nr || np.startsWith(nr + "/");
+}
+
+function assertAllowed(
+  path: string,
+  vault: string,
+  metaPath: string | null | undefined,
+  strict: boolean,
+): void {
+  if (!strict) return;
+  const np = path.replace(/\\/g, "/");
+  if (np.split("/").some((seg) => seg === "..")) {
+    throw new Error(`refusing path with '..' segment (strict vault mode): ${path}`);
+  }
+  if (isInside(np, vault)) return;
+  if (metaPath && isInside(np, metaPath)) return;
+  const allowed = metaPath ? `${vault} or ${metaPath}` : vault;
+  throw new Error(
+    `refusing access outside vault (strict vault mode): ${path}\nallowed: ${allowed}`,
+  );
+}
+
+// Globs that resolve outside the vault would defeat the guard. With
+// `cwd: vault` set on glob_files, an absolute pattern (e.g. /etc/**) or
+// one starting with ../ is the obvious escape — reject those when
+// strict.
+function assertGlobAllowed(pattern: string, strict: boolean): void {
+  if (!strict) return;
+  const p = pattern.replace(/\\/g, "/");
+  const isAbsolute = /^([a-zA-Z]:)?\//.test(p);
+  if (isAbsolute) {
+    throw new Error(
+      `refusing absolute glob pattern (strict vault mode): ${pattern}`,
+    );
+  }
+  if (p.split("/").some((seg) => seg === "..")) {
+    throw new Error(
+      `refusing glob with '..' segment (strict vault mode): ${pattern}`,
+    );
+  }
+}
+
+export function buildTools(vault: string, options: BuildToolsOptions = {}) {
+  const { metaPath = null, tavilyKey, strictVault = false, bashDisabled = false } = options;
+  const guardPath = (path: string) => assertAllowed(path, vault, metaPath, strictVault);
   const base = {
     Read: tool({
       description:
@@ -120,6 +183,7 @@ export function buildTools(vault: string, tavilyKey?: string) {
         path: z.string().describe("Absolute path to the file."),
       }),
       execute: async ({ path }) => {
+        guardPath(path);
         const raw = await invoke<string>("read_text_file", { path });
         const text = path.toLowerCase().endsWith(".ipynb") ? stripNotebook(raw) : raw;
         return truncate(text, READ_CAP);
@@ -134,6 +198,7 @@ export function buildTools(vault: string, tavilyKey?: string) {
         contents: z.string(),
       }),
       execute: async ({ path, contents }) => {
+        guardPath(path);
         await invoke("write_text_file", { path, contents });
         return `wrote ${path}`;
       },
@@ -146,6 +211,7 @@ export function buildTools(vault: string, tavilyKey?: string) {
         path: z.string().describe("Absolute path to the file or directory to delete."),
       }),
       execute: async ({ path }) => {
+        guardPath(path);
         await invoke("delete_file", { path });
         return `deleted ${path}`;
       },
@@ -161,6 +227,7 @@ export function buildTools(vault: string, tavilyKey?: string) {
         replace_all: z.boolean().optional(),
       }),
       execute: async ({ path, old_string, new_string, replace_all }) => {
+        guardPath(path);
         return await invoke<string>("edit_text_file", {
           path,
           oldString: old_string,
@@ -177,6 +244,7 @@ export function buildTools(vault: string, tavilyKey?: string) {
         pattern: z.string(),
       }),
       execute: async ({ pattern }) => {
+        assertGlobAllowed(pattern, strictVault);
         const results = await invoke<string[]>("glob_files", {
           pattern,
           cwd: vault,
@@ -197,6 +265,7 @@ export function buildTools(vault: string, tavilyKey?: string) {
         max_results: z.number().int().optional(),
       }),
       execute: async ({ pattern, path, glob_filter, case_insensitive, max_results }) => {
+        if (path) guardPath(path);
         const results = await invoke<{ path: string; line: number; text: string }[]>(
           "grep_files",
           {
@@ -260,6 +329,7 @@ export function buildTools(vault: string, tavilyKey?: string) {
       }),
       execute: async ({ path, action, cell_index, source, cell_type }) => {
         try {
+          guardPath(path);
           const raw = await invoke<string>("read_text_file", { path });
           const nb = JSON.parse(raw);
           if (!nb || !Array.isArray(nb.cells)) {
@@ -340,6 +410,7 @@ export function buildTools(vault: string, tavilyKey?: string) {
       }),
       execute: async ({ path, pages }) => {
         try {
+          guardPath(path);
           const text = await extractPdfText(path, pages);
           return truncate(text, PDF_CAP);
         } catch (e) {
@@ -459,6 +530,7 @@ export function buildTools(vault: string, tavilyKey?: string) {
         path: z.string(),
       }),
       execute: async ({ path }) => {
+        guardPath(path);
         const entries = await invoke<{ path: string; name: string; is_dir: boolean }[]>(
           "list_dir",
           { path }
@@ -482,6 +554,10 @@ export function buildTools(vault: string, tavilyKey?: string) {
       },
     }),
   };
+
+  if (bashDisabled) {
+    delete (base as Partial<typeof base>).Bash;
+  }
 
   if (!tavilyKey) return base;
 

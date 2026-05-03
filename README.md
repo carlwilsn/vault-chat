@@ -79,6 +79,15 @@ API keys live in the OS keychain (Windows Credential Manager / Mac Keychain / Li
 
 The agent cannot modify files inside any `.git/` directory — the file-op tools refuse those paths so the undo system stays intact.
 
+### Sandboxing the agent
+
+By default the agent is restricted to the active vault and the meta vault. Two toggles in **Settings → Security** control this:
+
+- **Strict vault mode** (on by default): `Read`, `Write`, `Edit`, `Delete`, `Glob`, `Grep`, `ListDir`, `NotebookEdit`, and `PdfExtract` refuse any path outside the active vault or meta vault. Paths containing `..` are rejected. Turning this off lets the agent reach anywhere your OS user can.
+- **Disable Bash** (on by default; auto-enabled with strict mode): removes the `Bash` tool from the agent's toolset entirely. Bash is *not* covered by strict mode — true shell containment needs OS-level sandboxing (job objects on Windows, seccomp/landlock on Linux, sandbox-exec on macOS) which vault-chat doesn't have. So if you want strict mode to mean anything, you also want Bash off, or the agent can shell out around the guard.
+
+Known limitations of strict mode: symlinks inside the vault that point outside aren't resolved, so a symlink could be followed through. The guard is a string-prefix check, not a kernel-level sandbox — it's a guard rail for an LLM that occasionally goes off-script, not a defense against a determined attacker. If you turn Bash on with strict mode, the agent can run any command your shell can.
+
 ## Got an idea for the app?
 
 Reach out to me (Carl) at [carlwilson2027@u.northwestern.edu](mailto:carlwilson2027@u.northwestern.edu). I'll help you cleanly clone the repo so you can make your own version — either with Claude Code driving the changes or by hand if you'd rather code it yourself.

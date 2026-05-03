@@ -116,6 +116,8 @@ const MODEL_STORAGE = "vault_chat_model";
 const THEME_STORAGE = "vault_chat_theme";
 const VAULT_STORAGE = "vault_chat_last_vault";
 const CHAT_STORAGE = "vault_chat_history";
+const STRICT_VAULT_STORAGE = "vault_chat_strict_vault";
+const BASH_DISABLED_STORAGE = "vault_chat_bash_disabled";
 // Rolling buffer of the last few finalised conversations. Capped at
 // SAVED_CHATS_MAX entries (newest first), shared across vaults — the
 // UI filters to the active vault on display.
@@ -169,6 +171,14 @@ function cancelReasoningFlush() {
 function loadTheme(): Theme {
   const raw = localStorage.getItem(THEME_STORAGE);
   return raw === "light" ? "light" : "graphite";
+}
+
+// Both default to ON: safer-by-default for new installs. Existing users
+// can opt back into wider access in Settings.
+function loadBoolFlag(key: string, defaultValue: boolean): boolean {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return defaultValue;
+  return raw === "true";
 }
 
 /** Fetch every known credential from the OS keychain into memory.
@@ -295,6 +305,13 @@ type State = {
   catalogErrors: Partial<Record<ProviderId, string>>;
   modelId: string;
   theme: Theme;
+  // Restrict file-op tools (Read/Write/Edit/Delete/Glob/Grep/ListDir/
+  // NotebookEdit/PdfExtract) to the active vault + meta vault. Bash is
+  // not covered — it's a separate setting because real shell containment
+  // needs OS sandboxing we don't have.
+  strictVaultMode: boolean;
+  // Don't expose the Bash tool to the agent at all.
+  bashDisabled: boolean;
   skills: Skill[];
   busy: boolean;
   showSettings: boolean;
@@ -405,6 +422,12 @@ type State = {
   setModelId: (id: string) => void;
   setTheme: (t: Theme) => void;
   applyThemeFromEvent: (t: Theme) => void;
+  // Turning strict mode ON also flips bashDisabled ON (it's the matching
+  // safer default — no point sandboxing file ops while leaving a shell
+  // open that bypasses the guard). User can independently turn Bash back
+  // on after, if they explicitly want shell + strict file ops.
+  setStrictVaultMode: (b: boolean) => void;
+  setBashDisabled: (b: boolean) => void;
   setSkills: (s: Skill[]) => void;
   setBusy: (b: boolean) => void;
   setShowSettings: (b: boolean) => void;
@@ -506,6 +529,8 @@ export const useStore = create<State>((set) => ({
   catalogErrors: {},
   modelId: localStorage.getItem(MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
   theme: loadTheme(),
+  strictVaultMode: loadBoolFlag(STRICT_VAULT_STORAGE, true),
+  bashDisabled: loadBoolFlag(BASH_DISABLED_STORAGE, true),
   skills: [],
   busy: false,
   showSettings: false,
@@ -930,6 +955,19 @@ export const useStore = create<State>((set) => ({
   applyThemeFromEvent: (t) => {
     localStorage.setItem(THEME_STORAGE, t);
     set({ theme: t });
+  },
+  setStrictVaultMode: (b) => {
+    localStorage.setItem(STRICT_VAULT_STORAGE, String(b));
+    if (b) {
+      localStorage.setItem(BASH_DISABLED_STORAGE, "true");
+      set({ strictVaultMode: true, bashDisabled: true });
+    } else {
+      set({ strictVaultMode: false });
+    }
+  },
+  setBashDisabled: (b) => {
+    localStorage.setItem(BASH_DISABLED_STORAGE, String(b));
+    set({ bashDisabled: b });
   },
   setSkills: (s) => set({ skills: s }),
   setBusy: (b) => set({ busy: b }),

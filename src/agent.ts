@@ -5,7 +5,7 @@ import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./provi
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
-import { loadMetaSystemPrompt, loadMetaTools } from "./meta";
+import { loadMetaSystemPrompt, loadMetaTools, getMetaVaultPath } from "./meta";
 
 export type TokenUsage = {
   prompt: number;
@@ -51,19 +51,22 @@ export async function runAgent(params: {
   onEvent: (e: StreamEvent) => void;
   abortSignal?: AbortSignal;
   tavilyKey?: string;
+  strictVault?: boolean;
+  bashDisabled?: boolean;
 }) {
-  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey } = params;
+  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled } = params;
 
   try {
     const spec = findModel(modelId) ?? findModel(DEFAULT_MODEL_ID);
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey);
 
-    const [sessionContext, skills, metaSystem, metaTools] = await Promise.all([
+    const [sessionContext, skills, metaSystem, metaTools, metaPath] = await Promise.all([
       loadSessionContext(vault),
       loadSkills(vault),
       loadMetaSystemPrompt(),
       loadMetaTools(),
+      getMetaVaultPath().catch(() => null),
     ]);
 
     const { body: expandedMessage } = expandSkillInvocation(userMessage, skills);
@@ -175,7 +178,12 @@ export async function runAgent(params: {
       finalUserMessage,
     ];
 
-    const builtinTools = buildTools(vault, tavilyKey);
+    const builtinTools = buildTools(vault, {
+      metaPath,
+      tavilyKey,
+      strictVault: strictVault ?? false,
+      bashDisabled: bashDisabled ?? false,
+    });
     const innerTools = { ...builtinTools, ...metaTools };
 
     // Agent: delegate a self-contained sub-task to a sub-call with

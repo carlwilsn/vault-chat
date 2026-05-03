@@ -1,6 +1,7 @@
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { buildModel, findModel, DEFAULT_MODEL_ID } from "./providers";
 import { buildTools } from "./tools";
+import { getMetaVaultPath } from "./meta";
 
 const SYSTEM = `You are an inline editor inside a text/code file. The user presses Ctrl+K and gives you an instruction plus context from the surrounding file.
 
@@ -148,6 +149,7 @@ export type AskEvent =
 export type InlineAskParams = InlineEditParams & {
   vault: string;
   tavilyKey?: string;
+  strictVault?: boolean;
   // Optional region screenshot (data URL) to attach to the first user
   // message alongside the text context. Used by the PDF marquee so the
   // model can see math, tables, and diagrams that text extraction
@@ -172,7 +174,16 @@ export async function* runInlineAsk(
   if (!spec) throw new Error(`unknown model: ${p.modelId}`);
   const model = buildModel(spec, p.apiKey);
 
-  const allTools = buildTools(p.vault, p.tavilyKey) as Record<string, unknown>;
+  const metaPath = await getMetaVaultPath().catch(() => null);
+  const allTools = buildTools(p.vault, {
+    metaPath,
+    tavilyKey: p.tavilyKey,
+    strictVault: p.strictVault ?? false,
+    // Inline ask only ever exposes the read-only subset below — Bash
+    // isn't in that list, so this flag is moot here. Pass-through for
+    // consistency with the main agent.
+    bashDisabled: true,
+  }) as Record<string, unknown>;
   const readOnlyNames = [
     "Read",
     "Glob",

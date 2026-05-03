@@ -10,6 +10,7 @@ import {
   Lock,
   Megaphone,
   Send,
+  Shield,
 } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { PROVIDER_LABEL, type ProviderId } from "./providers";
@@ -41,6 +42,10 @@ export function SettingsPane() {
     clearServiceKey,
     setModelId,
     setTheme,
+    strictVaultMode,
+    bashDisabled,
+    setStrictVaultMode,
+    setBashDisabled,
     setShowSettings,
     catalog,
     catalogRefreshing,
@@ -269,6 +274,48 @@ export function SettingsPane() {
             <option value="graphite">Graphite (default)</option>
             <option value="light">Light</option>
           </Select>
+        </section>
+
+        <div className="h-px bg-border" />
+
+        <section className="space-y-3">
+          <div>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <Shield className="h-3 w-3" />
+              Security
+            </h3>
+            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
+              Limit what the agent can touch.
+            </p>
+          </div>
+          <label className="flex items-start gap-2.5 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={strictVaultMode}
+              onChange={(e) => setStrictVaultMode(e.target.checked)}
+            />
+            <div className="flex-1">
+              <div className="text-[12px]">Strict vault mode</div>
+              <p className="text-[11px] text-muted-foreground/80">
+                File-op tools (Read/Write/Edit/Delete/Glob/Grep/ListDir/NotebookEdit/PdfExtract) refuse paths outside the active vault and meta vault. Does not constrain Bash. Symlinks are not resolved.
+              </p>
+            </div>
+          </label>
+          <label className="flex items-start gap-2.5 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={bashDisabled}
+              onChange={(e) => setBashDisabled(e.target.checked)}
+            />
+            <div className="flex-1">
+              <div className="text-[12px]">Disable Bash tool</div>
+              <p className="text-[11px] text-muted-foreground/80">
+                Removes the shell tool from the agent. Auto-enabled when strict vault mode turns on (Bash bypasses the file guard otherwise).
+              </p>
+            </div>
+          </label>
         </section>
 
         <div className="h-px bg-border" />

@@ -74,6 +74,7 @@ export function InlineEditPrompt({
   const apiKeys = useStore((s) => s.apiKeys);
   const vaultPath = useStore((s) => s.vaultPath);
   const serviceKeys = useStore((s) => s.serviceKeys);
+  const strictVault = useStore((s) => s.strictVaultMode);
   const files = useStore((s) => s.files);
   const currentFile = useStore((s) => s.currentFile);
   const openNoteComposer = useStore((s) => s.openNoteComposer);
@@ -331,6 +332,7 @@ export function InlineEditPrompt({
           apiKey: key,
           vault: vaultPath!,
           tavilyKey: serviceKeys.tavily,
+          strictVault,
           prompt: currentPrompt,
           selection: request.selection,
           before: request.before,

@@ -31,6 +31,8 @@ export async function sendMessage(
   const apiKey = spec ? s.apiKeys[spec.provider] : undefined;
   if (!s.vaultPath || !apiKey || !spec) return;
   const tavilyKey = s.serviceKeys.tavily;
+  const strictVault = s.strictVaultMode;
+  const bashDisabled = s.bashDisabled;
 
   if (
     s.lastContext > COMPACT_THRESHOLD * MODEL_CONTEXT_LIMIT &&
@@ -121,6 +123,8 @@ export async function sendMessage(
     userAttachments: attachments,
     abortSignal: signal,
     tavilyKey,
+    strictVault,
+    bashDisabled,
     onEvent: (e) => {
       const store = useStore.getState();
       if (e.kind === "text") {
