@@ -10,8 +10,7 @@ name: implementer
 # put it in line — but nothing actually fired. Items waited for an
 # external scheduled invocation. Now: queue == run.
 #
-# Prerequisite: ANTHROPIC_API_KEY repo secret. Same key Carl uses in
-# the maintainer's Planner chat — copy it into
+# Prerequisite: ANTHROPIC_API_KEY repo secret. Set it at
 # https://github.com/carlwilsn/vault-chat/settings/secrets/actions
 #
 # Concurrency: each issue gets its own group, so two queued issues
@@ -142,7 +141,6 @@ jobs:
             - Never `--force`, never amend, never reset on main.
             - Never skip hooks (`--no-verify`).
             - Edits scoped to: `src/`, `src-tauri/src/`, `index.html`, `tailwind.config.js`, `vite.config.ts`, and `package.json` if a dep change is genuinely required.
-            - **NEVER edit `/maintainer/**`** — owned by a separate loop. Exception: issue title starts with `maintainer:` OR body contains the literal string `[allow maintainer scope]`. In that case also bump `maintainer/package.json`, `maintainer/src-tauri/Cargo.toml`, and `maintainer/src-tauri/tauri.conf.json` versions.
             - Never edit `.github/`, CI configs, or dependency major versions unless the issue explicitly says so.
 
             # Tone for the issue comment

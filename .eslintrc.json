@@ -8,5 +8,5 @@
     "react-hooks/rules-of-hooks": "error",
     "react-hooks/exhaustive-deps": "off"
   },
-  "ignorePatterns": ["dist/", "node_modules/", "src-tauri/", "maintainer/", "scripts/"]
+  "ignorePatterns": ["dist/", "node_modules/", "src-tauri/", "scripts/"]
 }

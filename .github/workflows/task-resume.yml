@@ -12,9 +12,9 @@ name: task-resume
 # its next run. The issue then flows through the standard verify cycle
 # (auto-fix:awaiting-verification → user closes).
 #
-# Manual entry point: `workflow_dispatch` accepts an issue_number for
-# the maintainer's Planner agent to queue a specific task on demand
-# ("run task #28 now").
+# Manual entry point: `workflow_dispatch` accepts an issue_number to
+# queue a specific task on demand ("run task #28 now") via the GitHub
+# UI or `gh workflow run`.
 
 on:
   issues:

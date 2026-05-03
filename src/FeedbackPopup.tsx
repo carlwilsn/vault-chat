@@ -9,11 +9,9 @@ import { submitFeedback, type FeedbackKind } from "./feedback";
 
 // "Send feedback" composer. Visually mirrors NotePopup but with an
 // indigo accent so it's unmistakably not a note. Files a GitHub issue
-// — Bug → label `auto-fix:queued` (one-shot, picked up by the nightly
-// auto-fix routine); Feature → label `task:in-progress` (long-running,
-// owned by the maintainer app's iterative agent). Issue management
-// (verify/close/re-queue) lives in the maintainer app, not here, so
-// this popup stays single-purpose: file new feedback fast.
+// — Bug → label `auto-fix:queued`; Feature → label `task:in-progress`
+// (routed by task-resume.yml into the same implementer queue). Both
+// flows are one-shot through the cloud implementer.
 
 type FeedbackPopupProps = {
   open: boolean;
@@ -53,8 +51,8 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerIdx, setPickerIdx] = useState(0);
   const [send, setSend] = useState<SendState>({ phase: "idle" });
-  // Bug → one-shot fix flow (auto-fix:queued). Feature → long-running
-  // task flow owned by the maintainer app (task:in-progress).
+  // Bug → auto-fix:queued. Feature → task:in-progress (task-resume.yml
+  // routes it back into the same implementer queue).
   const [kind, setKind] = useState<FeedbackKind>("bug");
 
   useEffect(() => {
@@ -240,9 +238,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
                   <ExternalLink className="h-3 w-3" />
                 </a>
                 .{" "}
-                {kind === "feature"
-                  ? "Iterate on it via the maintainer app's Tasks tab."
-                  : "The auto-fix agent will pick it up on its next run."}
+                The cloud implementer will pick it up on its next run.
               </div>
               <div className="flex justify-end">
                 <Button size="sm" onClick={onClose}>
@@ -252,8 +248,8 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
             </div>
           ) : (
             <>
-              {/* Bug / Feature toggle. Bug = fast one-shot fix. Feature
-                  = slow iterative task owned by the maintainer agent. */}
+              {/* Bug / Feature toggle. Both flow through the cloud
+                  implementer; the label just tags intent. */}
               <div className="inline-flex rounded-md border border-border bg-background overflow-hidden text-[11.5px]">
                 <button
                   onClick={() => setKind("bug")}
@@ -275,7 +271,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
                       ? "bg-indigo-500 text-white"
                       : "text-muted-foreground hover:bg-accent/60",
                   )}
-                  title="Long-running task — task:in-progress, iterate via maintainer app"
+                  title="Feature/idea — task:in-progress, routed to the cloud implementer"
                 >
                   <Sparkles className="h-3 w-3" /> Feature
                 </button>
@@ -427,7 +423,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
                 defaultValue={initialDraft}
                 placeholder={
                   kind === "feature"
-                    ? "Describe the feature or idea. Agent will reply with options or questions; you iterate from the maintainer app."
+                    ? "Describe the feature or idea. The cloud agent will read this and try to build it."
                     : "What's broken? The cloud agent will read this and try to fix it."
                 }
                 onKeyDown={onTextareaKey}

@@ -14,9 +14,9 @@ export const FEEDBACK_LABEL_QUEUED = "auto-fix:queued";
 export const FEEDBACK_LABEL_AWAITING = "auto-fix:awaiting-verification";
 export const FEEDBACK_LABEL_NEEDS_REVIEW = "auto-fix:needs-review";
 export const FEEDBACK_LABEL_AGENT_ERROR = "auto-fix:agent-error";
-// Long-running feature/idea task. Picked up by the maintainer app for
-// multi-turn iteration with the agent. Distinct from `auto-fix:queued`
-// which is one-shot bug fixes.
+// Long-running feature/idea task. task-resume.yml routes any new
+// `task:in-progress` issue into the implementer queue (`auto-fix:queued`)
+// so it gets worked on the same way bugs do.
 export const FEEDBACK_LABEL_TASK = "task:in-progress";
 
 export type FeedbackKind = "bug" | "feature";
@@ -57,8 +57,8 @@ export async function testGithubToken(token: string): Promise<string> {
 }
 
 /** File a feedback issue. Bug → `auto-fix:queued` (one-shot, picked up
- *  by the nightly auto-fix routine). Feature → `task:in-progress` (long-
- *  running, picked up by the maintainer app's iterative agent). */
+ *  by the cloud implementer). Feature → `task:in-progress` (routed via
+ *  task-resume.yml into the same implementer queue). */
 export async function submitFeedback(
   token: string,
   s: FeedbackSubmission,
@@ -218,8 +218,8 @@ function renderBody(s: FeedbackSubmission): string {
   parts.push("");
   parts.push(
     s.kind === "feature"
-      ? "_Filed via in-app feedback (Ctrl+G) as a Feature. Iterative agent will respond in this thread; reply via the maintainer app to advance the task._"
-      : "_Filed via in-app feedback (Ctrl+G) as a Bug. The cloud auto-fix agent will pick this up on its next run; once it lands a fix it will comment with verification steps and re-label `auto-fix:awaiting-verification`._",
+      ? "_Filed via in-app feedback (Ctrl+G) as a Feature. The cloud implementer will pick this up on its next run, comment with verification steps, and re-label `auto-fix:awaiting-verification`._"
+      : "_Filed via in-app feedback (Ctrl+G) as a Bug. The cloud implementer will pick this up on its next run; once it lands a fix it will comment with verification steps and re-label `auto-fix:awaiting-verification`._",
   );
 
   return parts.join("\n");
