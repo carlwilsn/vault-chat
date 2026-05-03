@@ -19,6 +19,14 @@ This is normal — the installer isn't code-signed yet, so SmartScreen hasn't se
 
 When it opens: gear icon → paste an API key → open a folder as your vault → start asking.
 
+### New here? Try the demo vault
+
+Don't have a folder of markdown notes yet? Grab the demo vault — eight short notes that walk you through every feature hands-on (inline edit, PDF marquee, agentic file ops, undo, skill creation), plus a sample PDF to drag a box on. Ten minutes end-to-end.
+
+→ **[Download demo-vault.zip](https://github.com/carlwilsn/vault-chat/releases/latest/download/demo-vault.zip)**
+
+Unzip anywhere, then in vault-chat: titlebar → folder icon → pick the unzipped `demo-vault` folder. Start with `00 - Welcome.md`.
+
 ### Try it free (no credit card)
 
 You don't need to spend a cent to try it — Google's Gemini API has a generous free tier that's enough to kick the tires.

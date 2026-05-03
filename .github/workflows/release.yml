@@ -45,3 +45,17 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
+
+      # Bundle the demo vault as a release asset so first-time users can
+      # download a ready-made tour vault alongside the installer. README
+      # links the latest-release URL, which always resolves to the most
+      # recent attachment.
+      - name: Zip demo vault
+        shell: pwsh
+        run: Compress-Archive -Path demo-vault -DestinationPath demo-vault.zip -Force
+
+      - name: Attach demo vault to release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.ref_name }} demo-vault.zip --clobber
