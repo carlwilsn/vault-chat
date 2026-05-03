@@ -80,7 +80,8 @@ jobs:
 
       - run: npm ci
 
-      - uses: anthropics/claude-code-action@beta
+      - id: claude
+        uses: anthropics/claude-code-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -147,3 +148,38 @@ jobs:
             # Tone for the issue comment
 
             Carl reads these. Write for him, not for an engineer. He should be able to glance at "What I changed" and know whether to verify or not.
+
+      # The action's design pushes Claude's commits to a feature branch
+      # named `claude/issue-N-...` instead of main, expecting a PR to be
+      # opened and reviewed. That doesn't match Carl's UX (he wants
+      # ship-on-merge automation; review happens via Triage after the
+      # fact, not before merge). Auto-merge the action's branch into
+      # main after gates passed, then push so ship.yml fires.
+      - name: Auto-merge claude branch into main
+        if: success() && steps.claude.outputs.branch_name != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.claude.outputs.branch_name }}
+        run: |
+          set -euo pipefail
+          echo "Merging $BRANCH into main"
+          git fetch origin "$BRANCH" main
+          git checkout main
+          git pull --ff-only origin main
+          # Try fast-forward first; if main has moved (parallel
+          # implementer runs, ship's [skip ci] bumps), fall back to
+          # a real merge commit. Race-safe push retries handle the
+          # window between pull and push.
+          if git merge --ff-only "origin/$BRANCH" 2>/dev/null; then
+            echo "Fast-forward merged"
+          else
+            git merge --no-ff -m "Merge $BRANCH into main" "origin/$BRANCH"
+          fi
+          for attempt in 1 2 3; do
+            git pull --rebase origin main && git push origin main && break
+            echo "push attempt $attempt failed — retrying"
+            sleep 2
+          done
+          # Best-effort cleanup of the now-merged claude branch.
+          git push origin --delete "$BRANCH" 2>/dev/null || true
