@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type Tab = "chat" | "activity" | "tasks" | "system" | "triage";
+export type Tab = "chat" | "live" | "tasks" | "system" | "triage";
 
 type State = {
   tab: Tab;

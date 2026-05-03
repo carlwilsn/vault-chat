@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Wrench, ListChecks, AlertTriangle, X, Minus, Square, Copy, Newspaper, Plus, MessageSquare } from "lucide-react";
+import { Wrench, ListChecks, AlertTriangle, X, Minus, Square, Copy, Radio, Plus, MessageSquare } from "lucide-react";
 import { useStore } from "./store";
 import { cn } from "./lib";
 import { Chat } from "./Chat";
@@ -133,11 +133,11 @@ export function App() {
       )}
 
       <div className="flex items-stretch border-b border-border bg-card/50 shrink-0">
+        <TabButton active={tab === "live"} onClick={() => setTab("live")} icon={<Radio className="h-3.5 w-3.5" />}>
+          Live
+        </TabButton>
         <TabButton active={tab === "chat"} onClick={() => setTab("chat")} icon={<MessageSquare className="h-3.5 w-3.5" />}>
           Chat
-        </TabButton>
-        <TabButton active={tab === "activity"} onClick={() => setTab("activity")} icon={<Newspaper className="h-3.5 w-3.5" />}>
-          Activity
         </TabButton>
         <TabButton active={tab === "triage"} onClick={() => setTab("triage")} icon={<AlertTriangle className="h-3.5 w-3.5" />}>
           Triage
@@ -157,7 +157,7 @@ export function App() {
           </div>
         ) : tab === "chat" ? (
           <Chat />
-        ) : tab === "activity" ? (
+        ) : tab === "live" ? (
           <Activity token={githubPat} />
         ) : tab === "triage" ? (
           <Triage token={githubPat} />
