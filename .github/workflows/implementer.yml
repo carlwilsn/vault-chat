@@ -1,0 +1,139 @@
+name: implementer
+
+# Fires a fresh Claude Code session immediately when an issue gets
+# labelled `auto-fix:queued`. Processes that single issue end-to-end,
+# pushes the fix to main, comments on the issue with verification
+# steps, and re-labels for the user to verify.
+#
+# This is the missing piece in the cloud loop: previously, queuing
+# an issue (via Ctrl+G as a Bug, or the Planner's run_task_now tool)
+# put it in line — but nothing actually fired. Items waited for an
+# external scheduled invocation. Now: queue == run.
+#
+# Prerequisite: ANTHROPIC_API_KEY repo secret. Same key Carl uses in
+# the maintainer's Planner chat — copy it into
+# https://github.com/carlwilsn/vault-chat/settings/secrets/actions
+#
+# Concurrency: each issue gets its own group, so two queued issues
+# can be processed in parallel without stepping on each other. They
+# may produce conflicting commits to main; the implementer handles
+# rebases automatically.
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to process"
+        required: true
+        type: string
+
+concurrency:
+  group: implementer-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  process:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' && github.event.label.name == 'auto-fix:queued')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "claude[bot]"
+          git config user.email "claude@anthropic.com"
+
+      - name: Install Tauri Linux build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          model: claude-opus-4-7
+          prompt: |
+            You are the implementer agent for vault-chat. Process GitHub issue #${{ env.ISSUE_NUMBER }} on carlwilsn/vault-chat end-to-end.
+
+            Repository: carlwilsn/vault-chat
+            Working directory: already checked out at the repo root.
+            Branch: main (commit + push directly).
+
+            # Steps
+
+            1. Read the issue with `gh issue view ${{ env.ISSUE_NUMBER }} --repo carlwilsn/vault-chat --json title,body,labels,comments`. Image attachments appear as `https://raw.githubusercontent.com/carlwilsn/vault-chat/main/.feedback-images/<uuid>.<ext>` — download with curl and read them so you can see what Carl is reporting visually.
+
+            2. Make the requested change end-to-end. Be tightly scoped — don't add features the issue didn't ask for. Within scope, be thorough: handle empty states, popout windows, keyboard shortcuts, and edge cases that mirror the change.
+
+            3. Verification gates — ALL must pass before committing:
+               - `npx tsc --noEmit`
+               - `npx eslint "src/**/*.{ts,tsx}" --max-warnings 0` (only if `.eslintrc.json` exists at repo root)
+               - `cargo check --manifest-path src-tauri/Cargo.toml`
+
+            4. If gates pass:
+               - One atomic commit: `git add -A && git commit -m "feedback(#${{ env.ISSUE_NUMBER }}): <issue title verbatim>"`
+               - Push: `git push origin main` (rebase if rejected: `git pull --rebase origin main && git push`)
+               - Comment on the issue in plain language for Carl. He's the CEO and non-technical — never mention file paths, function names, library names, or commit hashes. Describe what he'll see, feel, or do. Use this exact structure:
+
+                 ✅ **Landed**
+
+                 **What I changed:** <one sentence in plain language>
+
+                 **How to verify:**
+                 1. Restart the app (auto-pulls the latest version on launch).
+                 2. <observable user-level step>
+                 3. <observable user-level step>
+
+                 If this works, close the issue. If not, comment with what you're seeing and re-label `auto-fix:queued` — the implementer will pick it up next run.
+
+               - Re-label: `gh issue edit ${{ env.ISSUE_NUMBER }} --remove-label "auto-fix:queued" --add-label "auto-fix:awaiting-verification"`
+
+            5. If gates fail:
+               - Restore: `git restore .` and `git clean -fd src/ src-tauri/src/` (do NOT touch `.feedback-images/`).
+               - Comment in plain language about what went wrong (no code/jargon).
+               - Re-label: `gh issue edit ${{ env.ISSUE_NUMBER }} --remove-label "auto-fix:queued" --add-label "auto-fix:needs-review"`
+
+            # Safety contract
+
+            - Never `--force`, never amend, never reset on main.
+            - Never skip hooks (`--no-verify`).
+            - Edits scoped to: `src/`, `src-tauri/src/`, `index.html`, `tailwind.config.js`, `vite.config.ts`, and `package.json` if a dep change is genuinely required.
+            - **NEVER edit `/maintainer/**`** — owned by a separate loop. Exception: issue title starts with `maintainer:` OR body contains the literal string `[allow maintainer scope]`. In that case also bump `maintainer/package.json`, `maintainer/src-tauri/Cargo.toml`, and `maintainer/src-tauri/tauri.conf.json` versions.
+            - Never edit `.github/`, CI configs, or dependency major versions unless the issue explicitly says so.
+
+            # Tone for the issue comment
+
+            Carl reads these. Write for him, not for an engineer. He should be able to glance at "What I changed" and know whether to verify or not.
