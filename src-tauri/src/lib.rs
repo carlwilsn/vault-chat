@@ -4,8 +4,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use walkdir::WalkDir;
 
-mod server;
-
 const IGNORE_FILE: &str = ".vaultchatignore";
 const NOTES_DIR: &str = ".vault-chat";
 const NOTES_FILE: &str = "notes.jsonl";
@@ -2776,56 +2774,6 @@ fn apply_titlebar_color(window: &tauri::WebviewWindow) {
     }
 }
 
-#[tauri::command]
-async fn phone_send_chunk(
-    state: tauri::State<'_, server::ServerState>,
-    chunk: String,
-) -> Result<(), String> {
-    server::push_chunk(&state, chunk).await;
-    Ok(())
-}
-
-#[tauri::command]
-fn phone_server_info(
-    state: tauri::State<'_, server::ServerState>,
-) -> Result<serde_json::Value, String> {
-    // Prefer the MagicDNS hostname so the HTTPS cert (which is issued
-    // for the hostname, not the raw IP) matches. Fall back to the IP
-    // for plain-HTTP LAN use if tailscale isn't available.
-    let dns_name = std::process::Command::new("tailscale")
-        .args(["status", "--json"])
-        .output()
-        .ok()
-        .and_then(|out| {
-            if !out.status.success() { return None; }
-            let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-            let raw = json["Self"]["DNSName"].as_str()?.to_string();
-            Some(raw.trim_end_matches('.').to_string())
-        });
-
-    let tailscale_ip = std::process::Command::new("tailscale")
-        .args(["ip", "--4"])
-        .output()
-        .ok()
-        .and_then(|out| {
-            if out.status.success() {
-                String::from_utf8(out.stdout)
-                    .ok()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            } else {
-                None
-            }
-        });
-
-    Ok(serde_json::json!({
-        "port": 8787,
-        "token": state.token,
-        "tailscale_ip": tailscale_ip,
-        "dns_name": dns_name,
-    }))
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2845,31 +2793,6 @@ pub fn run() {
                 #[cfg(windows)]
                 apply_titlebar_color(&w);
             }
-
-            // Phone bridge: load or generate a stable token, then spin
-            // up the HTTP + WebSocket server on a Tauri async task.
-            let app_data = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("app_data_dir: {}", e))?;
-            std::fs::create_dir_all(&app_data).ok();
-            let token_path = app_data.join("phone_token.txt");
-            let token = match std::fs::read_to_string(&token_path) {
-                Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
-                _ => {
-                    let fresh = uuid::Uuid::new_v4().simple().to_string();
-                    let _ = std::fs::write(&token_path, &fresh);
-                    fresh
-                }
-            };
-
-            let state = server::ServerState {
-                app: app.handle().clone(),
-                token,
-                outbound: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-            };
-            app.manage(state.clone());
-            tauri::async_runtime::spawn(server::serve(state, 8787));
 
             Ok(())
         })
@@ -2917,8 +2840,6 @@ pub fn run() {
             keychain_get,
             keychain_set,
             keychain_delete,
-            phone_send_chunk,
-            phone_server_info,
             gh_test_token,
             gh_create_feedback_issue,
             gh_list_feedback_issues,
