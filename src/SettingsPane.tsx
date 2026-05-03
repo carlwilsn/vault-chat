@@ -16,6 +16,7 @@ import { PROVIDER_LABEL, type ProviderId } from "./providers";
 import { Button, Input, Select } from "./ui";
 import { getMetaVaultPath } from "./meta";
 import { gitInitIfNeeded } from "./git";
+import { stopAgent } from "./chat-controller";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
 import { testGithubToken } from "./feedback";
 
@@ -176,6 +177,9 @@ export function SettingsPane() {
       if (meta === vaultPath) {
         setShowSettings(false);
         return;
+      }
+      if (useStore.getState().busy) {
+        stopAgent();
       }
       setVault(meta);
       setCurrentFile(null, "");

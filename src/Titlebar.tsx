@@ -6,6 +6,7 @@ import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, Ex
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
+import { stopAgent } from "./chat-controller";
 import { HistoryModal } from "./HistoryModal";
 
 export function Titlebar() {
@@ -65,6 +66,9 @@ export function Titlebar() {
     if (typeof picked === "string") {
       const normalized = picked.replace(/\\/g, "/");
       const switching = normalized !== vaultPath;
+      if (switching && useStore.getState().busy) {
+        stopAgent();
+      }
       setVault(normalized);
       if (switching) setCurrentFile(null, "");
       const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: picked });
