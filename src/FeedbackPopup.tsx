@@ -5,7 +5,9 @@ import { anchorImages, type NoteAnchor } from "./notes";
 import { fileKind } from "./fileKind";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
-import { submitFeedback, type FeedbackKind } from "./feedback";
+import { submitFeedback, VAULT_CHAT_OWNER, type FeedbackKind } from "./feedback";
+
+const OWNER_EMAIL = "carlwilson2027@u.northwestern.edu";
 
 // "Send feedback" composer. Visually mirrors NotePopup but with an
 // indigo accent so it's unmistakably not a note. Files a GitHub issue
@@ -42,6 +44,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
   const files = useStore((s) => s.files);
   const vaultPath = useStore((s) => s.vaultPath);
   const githubPat = useStore((s) => s.serviceKeys.github_pat);
+  const githubLogin = useStore((s) => s.githubLogin);
   const setShowSettings = useStore((s) => s.setShowSettings);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const pickerRef = useRef<HTMLInputElement | null>(null);
@@ -170,6 +173,62 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
   })();
 
   if (!open) return null;
+
+  // Feedback is owner-only. Friends running the app see an "email Carl"
+  // panel instead of the composer — the server-side guard in
+  // implementer.yml ignores non-owner-authored issues anyway, but this
+  // keeps the UX honest. `verifying` covers the brief window between
+  // PAT save and the background `testGithubToken` resolving.
+  const isOwner = githubLogin === VAULT_CHAT_OWNER;
+  const verifying = !!githubPat && !githubLogin;
+  if (!isOwner) {
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-start justify-center pt-[18vh] bg-black/40 backdrop-blur-sm"
+        onMouseDown={(e) => {
+          if (e.target === e.currentTarget) onClose();
+        }}
+      >
+        <div
+          className="w-[480px] max-w-[92vw] rounded-xl border-2 border-indigo-500/40 bg-card shadow-xl overflow-hidden"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-stretch border-b border-border bg-muted/30">
+            <div className="px-4 py-2 text-[12px] font-medium text-foreground/90">Send feedback</div>
+            <div className="ml-auto flex items-center pr-3 text-[10.5px] text-muted-foreground/80">
+              Esc closes
+            </div>
+          </div>
+          <div className="p-5 space-y-3 text-[12.5px] leading-relaxed text-foreground/90">
+            {verifying ? (
+              <p className="text-muted-foreground italic">Checking GitHub identity…</p>
+            ) : (
+              <>
+                <p>
+                  In-app feedback is restricted to the project owner so the
+                  cloud auto-fix loop only runs for changes Carl approves.
+                </p>
+                <p>
+                  Got an idea or a bug? Email Carl directly:{" "}
+                  <a
+                    href={`mailto:${OWNER_EMAIL}`}
+                    className="font-mono text-indigo-400 hover:underline"
+                  >
+                    {OWNER_EMAIL}
+                  </a>
+                </p>
+              </>
+            )}
+            <div className="flex justify-end pt-2">
+              <Button size="sm" onClick={onClose}>
+                Close
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const trySend = async () => {
     const ref = textareaRef.current;

@@ -34,9 +34,14 @@ concurrency:
 
 jobs:
   process:
+    # Owner-only: the cloud implementer burns Carl's Anthropic API key
+    # and lands commits on Carl's main. Restrict triggers to issues
+    # filed by `carlwilsn` and manual dispatches by `carlwilsn`. Anyone
+    # else's queued issues sit untouched — visible in the repo, but
+    # never processed.
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issues' && github.event.label.name == 'auto-fix:queued')
+      (github.event_name == 'workflow_dispatch' && github.actor == 'carlwilsn') ||
+      (github.event_name == 'issues' && github.event.label.name == 'auto-fix:queued' && github.event.issue.user.login == 'carlwilsn')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

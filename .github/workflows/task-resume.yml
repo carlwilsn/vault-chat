@@ -28,10 +28,14 @@ on:
 
 jobs:
   route:
+    # Owner-only: routing happens for Carl's tasks only. Friends'
+    # `task:in-progress` issues sit untouched — implementer.yml has the
+    # same guard so even if the relabel slipped through, the cloud
+    # implementer wouldn't act on them.
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issues' && github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'task:in-progress')) ||
-      (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'task:in-progress')
+      (github.event_name == 'workflow_dispatch' && github.actor == 'carlwilsn') ||
+      (github.event_name == 'issues' && github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'task:in-progress') && github.event.issue.user.login == 'carlwilsn') ||
+      (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'task:in-progress' && github.event.issue.user.login == 'carlwilsn')
     runs-on: ubuntu-latest
     permissions:
       issues: write

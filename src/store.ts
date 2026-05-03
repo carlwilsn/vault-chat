@@ -8,6 +8,7 @@ import { readNotes, appendNote, writeAllNotes } from "./notes";
 import { formatNote } from "./notes-format";
 import { findModel } from "./providers";
 import { keychainGet, keychainSet, keychainDelete, KEY } from "./keychain";
+import { testGithubToken } from "./feedback";
 import {
   fetchAllCatalog,
   loadCatalogFromLocalStorage,
@@ -234,6 +235,12 @@ export async function hydrateKeychain(): Promise<void> {
   await migrateLocalStorageKeys();
   const { apiKeys, serviceKeys } = await fetchAllFromKeychain();
   useStore.setState({ apiKeys, serviceKeys });
+  // Resolve the GitHub PAT to its login so the feedback popup knows
+  // whether the current user is the project owner. Background only —
+  // boot must not block on a network call.
+  if (serviceKeys.github_pat) {
+    void resolveGithubLogin(serviceKeys.github_pat);
+  }
   // Seed the live model catalog from last session's cache so the
   // dropdown isn't empty on boot. The actual refresh happens on demand
   // (Settings button) or in the background via refreshCatalog().
@@ -241,6 +248,15 @@ export async function hydrateKeychain(): Promise<void> {
   if (cached && cached.length > 0) {
     setLiveCatalog(cached);
     useStore.setState({ catalog: cached });
+  }
+}
+
+async function resolveGithubLogin(token: string): Promise<void> {
+  try {
+    const login = await testGithubToken(token);
+    useStore.setState({ githubLogin: login });
+  } catch {
+    useStore.setState({ githubLogin: undefined });
   }
 }
 
@@ -269,6 +285,11 @@ type State = {
   messages: ChatMessage[];
   apiKeys: ApiKeys;
   serviceKeys: ServiceKeys;
+  // Resolved GitHub login of the configured PAT (undefined if no PAT
+  // or the PAT is invalid/unreachable). Used by FeedbackPopup to gate
+  // composition on `login === VAULT_CHAT_OWNER` — friends running the
+  // app see an "email Carl" panel instead of a broken submit flow.
+  githubLogin?: string;
   catalog: ModelSpec[];
   catalogRefreshing: boolean;
   catalogErrors: Partial<Record<ProviderId, string>>;
@@ -863,6 +884,9 @@ export const useStore = create<State>((set) => ({
         console.error(`[keys] keychain set ${name} failed:`, e),
       );
     }
+    if (name === "github_pat") {
+      void resolveGithubLogin(k);
+    }
   },
   clearServiceKey: (name) => {
     set((s) => {
@@ -876,6 +900,9 @@ export const useStore = create<State>((set) => ({
       keychainDelete(keyName).catch((e) =>
         console.error(`[keys] keychain delete ${name} failed:`, e),
       );
+    }
+    if (name === "github_pat") {
+      set({ githubLogin: undefined });
     }
   },
   refreshCatalog: async () => {
