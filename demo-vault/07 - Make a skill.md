@@ -16,8 +16,4 @@ You can do the same with tools (Python scripts the agent calls):
 
 The agent writes `tools/weather/TOOL.md` (input schema) + `run.py` (the script). Available on the next turn.
 
----
-
-That's the tour. Now open a folder you *actually* use — your real notes, your research, a project directory — and start chatting. Titlebar → folder icon → pick a directory.
-
-Found a bug or have an idea? carlwilson2027@u.northwestern.edu.
+Next: **08 - Code editing.md**.
