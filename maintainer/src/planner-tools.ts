@@ -16,6 +16,7 @@ import {
   createIssue,
   setIssueLabels,
   postIssueComment,
+  closeIssue,
   ghJson,
   OWNER,
   REPO,
@@ -136,6 +137,23 @@ export const PLANNER_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "close_issue",
+    description:
+      "Close a GitHub issue. Always confirm with Carl before closing — same rule as filing. Use state_reason='completed' when a fix shipped or the task is done; use 'not_planned' when it's a won't-do or no longer relevant.",
+    input_schema: {
+      type: "object",
+      properties: {
+        issue_number: { type: "number", description: "Issue number to close." },
+        state_reason: {
+          type: "string",
+          enum: ["completed", "not_planned"],
+          description: "'completed' = fix shipped / task done. 'not_planned' = won't do / no longer relevant.",
+        },
+      },
+      required: ["issue_number", "state_reason"],
+    },
+  },
+  {
     name: "file_issue",
     description:
       "File a new GitHub issue. This is your ONLY write tool — use it to hand work to the implementer agent. Always confirm with the user before filing. Pick the right type: 'bug' (small one-shot fix, picked up by the auto-fix routine), 'feature' (long-running task, lives in Tasks tab), 'maintainer-task' (touches the maintainer app's own code).",
@@ -232,6 +250,12 @@ export async function executeTool(
       return runTaskNowImpl(token, input.issue_number as number);
     case "requeue_issue":
       return requeueIssueImpl(token, input.issue_number as number);
+    case "close_issue":
+      return closeIssueImpl(
+        token,
+        input.issue_number as number,
+        input.state_reason as "completed" | "not_planned",
+      );
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -405,6 +429,19 @@ async function fileIssueImpl(
     return `✅ Filed as #${created.number}: ${created.html_url}`;
   } catch (e) {
     return `Error filing issue: ${(e as Error).message}`;
+  }
+}
+
+async function closeIssueImpl(
+  token: string,
+  issueNumber: number,
+  stateReason: "completed" | "not_planned",
+): Promise<string> {
+  try {
+    await closeIssue(token, issueNumber, stateReason);
+    return `✅ Closed #${issueNumber} (${stateReason}).`;
+  } catch (e) {
+    return `Error closing issue: ${(e as Error).message}`;
   }
 }
 
