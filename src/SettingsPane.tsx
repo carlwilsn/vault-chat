@@ -10,8 +10,6 @@ import {
   Lock,
   Megaphone,
   Send,
-  Cloud,
-  ExternalLink,
 } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { PROVIDER_LABEL, type ProviderId } from "./providers";
@@ -20,7 +18,6 @@ import { getMetaVaultPath } from "./meta";
 import { gitInitIfNeeded } from "./git";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
 import { testGithubToken } from "./feedback";
-import { openUrl } from "./opener";
 
 const PROVIDERS: ProviderId[] = ["anthropic", "openai", "google", "openrouter"];
 
@@ -453,33 +450,6 @@ export function SettingsPane() {
               </span>
             )}
           </div>
-        </section>
-
-        <div className="h-px bg-border" />
-
-        <section className="space-y-2">
-          <div>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <Cloud className="h-3 w-3" />
-              Claude Code (browser)
-            </h3>
-            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5 leading-relaxed">
-              Opens claude.ai/code in your browser for repo-aware
-              sessions when you want the cloud agent's full sandbox.
-              Just a labeled launcher — no in-app integration.
-            </p>
-          </div>
-          <Button
-            size="sm"
-            onClick={() =>
-              openUrl("https://claude.ai/code").catch((e) =>
-                console.error("[cloud-agent] open failed:", e),
-              )
-            }
-          >
-            <ExternalLink className="h-3 w-3 mr-1.5" />
-            Open Claude Code
-          </Button>
         </section>
 
         <div className="h-px bg-border" />
