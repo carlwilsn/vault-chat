@@ -51,6 +51,8 @@ No prebuilt installers yet — see [Build from source](#build-from-source) below
 - **Model-agnostic**. Anthropic, OpenAI, Google, or OpenRouter (one key, hundreds of models). Swap mid-session via the settings dropdown.
 - **Git-backed**. Every agent turn that touches files auto-commits. `Ctrl+H` opens a history modal with per-file timeline + one-click restore to any earlier commit. Vault never loses state.
 - **Phone bridge**. Run the desktop app on your laptop, talk to it from your phone over Tailscale — voice in, agent answer back, with its own conversation thread separate from whatever you've got on screen.
+- **Notes scratchpad** (`Ctrl+N`). Capture a thought anchored to whatever you're looking at — file + line, PDF page + region, conversation turn. Stored as JSONL at `<vault>/.vault-chat/notes.jsonl`. The agent can list, create, resolve, and reopen them via `ListNotes` / `CreateNote` / `ResolveNote` / `ReopenNote` tools — ask "what did I flag?" or "remember this for later" and it does the right thing.
+- **File hiding**. Right-click any file or folder → Hide. Hidden entries drop out of the file tree but stay on disk; the list lives in `.vaultchatignore` at the vault root (gitignore-style syntax). This is purely a tree-view declutter for build artifacts and noise — *the agent still sees hidden files via Glob/Grep/Read.* Not a security boundary.
 - **`Alt+L`** flips the whole UI between light and dark.
 - **Editable everywhere** — explained below. The agent can write its own skills and tools right inside the meta vault.
 
@@ -87,6 +89,13 @@ By default the agent is restricted to the active vault and the meta vault. Two t
 - **Disable Bash** (on by default; auto-enabled with strict mode): removes the `Bash` tool from the agent's toolset entirely. Bash is *not* covered by strict mode — true shell containment needs OS-level sandboxing (job objects on Windows, seccomp/landlock on Linux, sandbox-exec on macOS) which vault-chat doesn't have. So if you want strict mode to mean anything, you also want Bash off, or the agent can shell out around the guard.
 
 Known limitations of strict mode: symlinks inside the vault that point outside aren't resolved, so a symlink could be followed through. The guard is a string-prefix check, not a kernel-level sandbox — it's a guard rail for an LLM that occasionally goes off-script, not a defense against a determined attacker. If you turn Bash on with strict mode, the agent can run any command your shell can.
+
+### What the agent can see inside the vault
+
+Even in strict mode, the agent has full read/write across the active vault. Two things to be aware of:
+
+- **Hidden files are not hidden from the agent.** `.vaultchatignore` only filters the file tree UI. `Read`, `Glob`, and `Grep` still hit hidden files. If something is sensitive, don't put it in the vault — keep it outside, or add a `.gitignore` and store it elsewhere.
+- **Your notes are accessible.** Anything you save with `Ctrl+N` lands in `<vault>/.vault-chat/notes.jsonl` and the agent can list it (`ListNotes`), close it (`ResolveNote`), or write new entries (`CreateNote`). This is by design — "what did I flag yesterday?" is a useful question — but worth knowing if you scribble anything you wouldn't want surfaced in a chat reply.
 
 ## Got an idea for the app?
 
