@@ -26,8 +26,4 @@ In the chat pane:
 
 Watch it write the file. Click it in the file tree. It just works.
 
----
-
-That's the tour for real this time. Open a folder you actually use — your real notes, your research, a project directory — and start chatting.
-
-Found a bug or have an idea? carlwilson2027@u.northwestern.edu.
+Next: **10 - Terminal.md**.
