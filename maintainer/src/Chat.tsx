@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import Anthropic from "@anthropic-ai/sdk";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Send, AlertTriangle, Trash2, Wrench, ChevronDown, ChevronRight, ExternalLink, Key, Eye, EyeOff, Copy, Check } from "lucide-react";
+import { Send, AlertTriangle, Trash2, Wrench, ChevronDown, ExternalLink, Key, Eye, EyeOff, Copy, Check } from "lucide-react";
 import { PLANNER_TOOLS, executeTool } from "./planner-tools";
 import { OWNER, REPO } from "./github";
 import { useStore } from "./store";
@@ -74,6 +74,15 @@ type Message = {
 
 type Phase = "idle" | "thinking" | { error: string };
 
+// Live tool entry while the agent is running
+type LiveTool = {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+  result?: string;
+  startedAt: number;
+};
+
 export function Chat() {
   const ghLogin = useStore((s) => s.ghLogin);
   // Re-read on mount; the GH PAT we already have for the rest of the
@@ -87,7 +96,7 @@ export function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
-  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+  const [liveTools, setLiveTools] = useState<LiveTool[]>([]);
   const [showKeyPanel, setShowKeyPanel] = useState(false);
   const [keyRevealed, setKeyRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -129,7 +138,7 @@ export function Chat() {
     const el = transcriptRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, phase]);
+  }, [messages, phase, liveTools]);
 
   const saveApiKey = async () => {
     const v = apiKeyDraft.trim();
@@ -195,6 +204,7 @@ export function Chat() {
   const runAgentLoop = async (history: Message[]) => {
     if (!apiKey) return;
     setPhase("thinking");
+    setLiveTools([]);
     const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     let working = [...history];
     try {
@@ -238,12 +248,26 @@ export function Chat() {
         // user message containing all the tool_results.
         const toolUses = assistantBlocks.filter((b): b is Extract<Block, { type: "tool_use" }> => b.type === "tool_use");
         const resultBlocks: Block[] = [];
+
+        // Show live tool ticker while tools are executing.
+        const hopTools: LiveTool[] = toolUses.map((tu) => ({
+          id: tu.id,
+          name: tu.name,
+          input: tu.input,
+          startedAt: Date.now(),
+        }));
+        setLiveTools(hopTools);
+
         for (const tu of toolUses) {
           const result = await executeTool(githubPat, tu.name, tu.input);
           resultBlocks.push({ type: "tool_result", tool_use_id: tu.id, content: result });
+          setLiveTools((prev) =>
+            prev.map((t) => (t.id === tu.id ? { ...t, result } : t)),
+          );
         }
         working = [...working, { role: "user", blocks: resultBlocks }];
         setMessages(working);
+        setLiveTools([]);
       }
       setPhase("idle");
     } catch (e) {
@@ -258,13 +282,13 @@ export function Chat() {
     }
   };
 
-  const toggleTool = (id: string) =>
-    setExpandedTools((s) => {
-      const next = new Set(s);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  // Auto-grow textarea up to ~140px.
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.style.height = "auto";
+      inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 140)}px`;
+    }
+  }, [input]);
 
   // ---------- render ----------
 
@@ -320,7 +344,7 @@ export function Chat() {
 
   return (
     <div className="h-full flex flex-col">
-      <div ref={transcriptRef} className="flex-1 min-h-0 overflow-auto px-4 py-4 space-y-2">
+      <div ref={transcriptRef} className="flex-1 min-h-0 overflow-auto px-4 py-4 space-y-3">
         {messages.length === 0 && (
           <div className="text-center py-12 space-y-2 text-muted-foreground">
             <Wrench className="h-6 w-6 mx-auto text-muted-foreground" />
@@ -337,15 +361,13 @@ export function Chat() {
           <BlockRow
             key={i}
             block={b}
-            expandedTools={expandedTools}
-            toggleTool={toggleTool}
           />
         ))}
-        {phase === "thinking" && (
-          <div className="flex items-center gap-2 text-[11.5px] text-muted-foreground italic px-1">
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-foreground/60 animate-pulse" />
-            Thinking…
-          </div>
+        {phase === "thinking" && liveTools.length > 0 && (
+          <LiveToolTicker tools={liveTools} />
+        )}
+        {phase === "thinking" && liveTools.length === 0 && (
+          <ThinkingIndicator />
         )}
         {typeof phase === "object" && "error" in phase && (
           <div className="text-[11.5px] text-destructive flex items-start gap-2 rounded border border-destructive/40 bg-destructive/10 px-3 py-2">
@@ -429,7 +451,7 @@ export function Chat() {
             </div>
           </div>
         )}
-        <div className="flex items-end gap-2">
+        <div className="relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors">
           <textarea
             ref={inputRef}
             value={input}
@@ -438,15 +460,19 @@ export function Chat() {
             placeholder="Ask the Planner… (Enter to send, Shift+Enter newline)"
             rows={1}
             disabled={phase === "thinking"}
-            className="flex-1 rounded border border-border bg-background px-3 py-2 text-[12.5px] outline-none focus:ring-1 focus:ring-foreground/30 disabled:opacity-50 resize-y min-h-[36px] max-h-[140px]"
+            className="w-full bg-transparent min-h-0 resize-none outline-none border-0 px-3 py-2.5 text-[12.5px] disabled:opacity-50 pr-12"
+            style={{ maxHeight: "140px" }}
           />
-          <button
-            onClick={() => void send()}
-            disabled={phase === "thinking" || !input.trim()}
-            className="inline-flex items-center justify-center h-9 w-9 rounded bg-foreground text-background hover:bg-foreground/90 disabled:opacity-50"
-          >
-            <Send className="h-4 w-4" />
-          </button>
+          <div className="absolute right-2 bottom-2">
+            <button
+              onClick={() => void send()}
+              disabled={phase === "thinking" || !input.trim()}
+              className="inline-flex items-center justify-center h-7 w-7 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Send"
+            >
+              <Send className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
         <div className="flex items-center gap-3 text-[10.5px] text-muted-foreground/80">
           <span>{MODEL_ID}</span>
@@ -477,112 +503,154 @@ export function Chat() {
 type FlatBlock = { role: Role; block: Block };
 
 function flattenBlocks(messages: Message[]): FlatBlock[] {
-  const out: FlatBlock[] = [];
-  for (const m of messages) {
-    for (const b of m.blocks) out.push({ role: m.role, block: b });
+  // Group assistant tool_use blocks with the next user tool_result turn
+  // so they render as a collapsible details block instead of scattered rows.
+  const grouped: FlatBlock[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    // Collect text blocks normally; batch all tool calls from an assistant
+    // turn into a single ToolCallGroup block.
+    const toolUses = m.blocks.filter((b): b is Extract<Block, { type: "tool_use" }> => b.type === "tool_use");
+    const textBlocks = m.blocks.filter((b): b is Extract<Block, { type: "text" }> => b.type === "text");
+
+    for (const b of textBlocks) {
+      grouped.push({ role: m.role, block: b });
+    }
+
+    if (toolUses.length > 0 && m.role === "assistant") {
+      // Find the matching result turn (next user message with tool_result blocks).
+      const resultMsg = messages[i + 1];
+      const results: Array<{ tool_use_id: string; content: string }> = [];
+      if (resultMsg?.role === "user") {
+        for (const rb of resultMsg.blocks) {
+          if (rb.type === "tool_result") {
+            results.push({ tool_use_id: rb.tool_use_id, content: rb.content });
+          }
+        }
+      }
+      grouped.push({
+        role: "assistant",
+        block: {
+          type: "tool_use" as const,
+          id: toolUses[0].id,
+          name: toolUses.map((t) => t.name).join(", "),
+          input: { _tools: toolUses, _results: results } as unknown as Record<string, unknown>,
+        },
+      });
+      // Skip the result turn since we embedded it above.
+      if (results.length > 0) i++;
+    }
   }
-  return out;
+  return grouped;
 }
 
-function BlockRow({
-  block: fb,
-  expandedTools,
-  toggleTool,
-}: {
-  block: FlatBlock;
-  expandedTools: Set<string>;
-  toggleTool: (id: string) => void;
-}) {
+function BlockRow({ block: fb }: { block: FlatBlock }) {
   const { role, block } = fb;
 
-  // Text from user → right side, slightly higher-contrast bubble.
-  // Text from agent → left side, plain card.
-  // Tool calls + results → left side, narrower & subtler (they belong
-  // to the agent's stream of work, not the user).
   if (block.type === "text") {
     const isUser = role === "user";
     return (
       <div className={cn("flex w-full", isUser ? "justify-end" : "justify-start")}>
-        <div
-          className={cn(
-            "max-w-[80%] rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed prose-chat",
-            isUser
-              ? "bg-accent/70 border border-border/70 text-foreground"
-              : "bg-card/40 border border-border/40 text-foreground/95",
-          )}
-        >
-          <Markdown text={block.text} />
-        </div>
+        {isUser ? (
+          <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/90 text-primary-foreground px-3.5 py-2 text-[13px] leading-relaxed break-words overflow-hidden">
+            <Markdown text={block.text} isUser />
+          </div>
+        ) : (
+          <div className="w-full prose-chat text-foreground/95">
+            <Markdown text={block.text} isUser={false} />
+          </div>
+        )}
       </div>
     );
   }
 
   if (block.type === "tool_use") {
-    const expanded = expandedTools.has(block.id);
-    return (
-      <div className="flex w-full justify-start">
-        <div className="max-w-[70%] rounded-md border border-border/50 bg-background/40 text-[11.5px] overflow-hidden">
-          <button
-            onClick={() => toggleTool(block.id)}
-            className="w-full flex items-center gap-1.5 px-2.5 py-1 text-left hover:bg-accent/30"
-          >
-            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            <Wrench className="h-3 w-3 text-muted-foreground/80 shrink-0" />
-            <span className="font-mono text-foreground/85">{block.name}</span>
-            <span className="text-muted-foreground/70 truncate ml-1 font-mono text-[10.5px]">
-              ({summarizeInput(block.input)})
-            </span>
-          </button>
-          {expanded && (
-            <pre className="px-2.5 py-1.5 text-[10.5px] bg-card/30 border-t border-border/40 overflow-auto max-h-[200px] font-mono whitespace-pre-wrap">
-              {JSON.stringify(block.input, null, 2)}
-            </pre>
-          )}
-        </div>
-      </div>
-    );
-  }
+    const rawInput = block.input as { _tools?: Array<{ id: string; name: string; input: Record<string, unknown> }>; _results?: Array<{ tool_use_id: string; content: string }> };
+    const tools = rawInput._tools ?? [];
+    const results = rawInput._results ?? [];
 
-  if (block.type === "tool_result") {
-    const expanded = expandedTools.has(block.tool_use_id + ":result");
-    const issueLink = block.content.match(/https:\/\/github\.com\/[^\s]+\/issues\/\d+/);
-    const oneLine = block.content.split("\n")[0]?.slice(0, 100) ?? "";
+    if (tools.length === 0) return null;
+
+    const count = tools.length;
     return (
-      <div className="flex w-full justify-start">
-        <div className="max-w-[70%] rounded-md border border-border/50 bg-background/40 text-[11.5px] overflow-hidden ml-4">
-          <button
-            onClick={() => toggleTool(block.tool_use_id + ":result")}
-            className="w-full flex items-center gap-1.5 px-2.5 py-1 text-left hover:bg-accent/30"
-          >
-            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            <span className="text-muted-foreground/80 shrink-0">→</span>
-            <span className="text-muted-foreground/70 truncate text-[10.5px]">{oneLine || "(empty)"}</span>
-            {issueLink && (
-              <a
-                href={issueLink[0]}
-                target="_blank"
-                rel="noreferrer"
-                className="ml-auto inline-flex items-center gap-0.5 text-foreground/80 underline hover:text-foreground shrink-0"
-                onClick={(e) => e.stopPropagation()}
-              >
-                open <ExternalLink className="h-3 w-3" />
-              </a>
-            )}
-          </button>
-          {expanded && (
-            <pre className="px-2.5 py-1.5 text-[10.5px] bg-card/30 border-t border-border/40 overflow-auto max-h-[300px] font-mono whitespace-pre-wrap">
-              {block.content}
-            </pre>
-          )}
+      <details className="group">
+        <summary className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer hover:text-foreground list-none select-none">
+          <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-0 -rotate-90" />
+          <Wrench className="h-3 w-3" />
+          <span>{count} tool call{count === 1 ? "" : "s"}</span>
+        </summary>
+        <div className="mt-2 space-y-2 pl-4 border-l border-border">
+          {tools.map((t, j) => {
+            const res = results.find((r) => r.tool_use_id === t.id);
+            const issueLink = res?.content.match(/https:\/\/github\.com\/[^\s]+\/issues\/\d+/);
+            return (
+              <div key={j} className="space-y-1">
+                <div className="text-[11px] font-mono text-primary">{t.name}</div>
+                <pre className="text-[10.5px] font-mono bg-muted/60 border border-border/40 rounded p-2 max-h-[140px] overflow-auto whitespace-pre-wrap break-all">
+                  {JSON.stringify(t.input, null, 2)}
+                </pre>
+                {res && (
+                  <div className="space-y-0.5">
+                    <pre className="text-[10.5px] font-mono bg-muted/30 border border-border/40 rounded p-2 max-h-[200px] overflow-auto whitespace-pre-wrap break-all text-muted-foreground">
+                      {res.content.length > 1200 ? `${res.content.slice(0, 1200)}…` : res.content}
+                    </pre>
+                    {issueLink && (
+                      <a
+                        href={issueLink[0]}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-0.5 text-[10.5px] text-foreground/80 underline hover:text-foreground"
+                      >
+                        open <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
-      </div>
+      </details>
     );
   }
 
   return null;
 }
 
-function Markdown({ text }: { text: string }) {
+function Markdown({ text, isUser }: { text: string; isUser: boolean }) {
+  if (isUser) {
+    return (
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          p: ({ children }) => <p className="mb-1.5 last:mb-0">{children}</p>,
+          ul: ({ children }) => <ul className="mb-1.5 last:mb-0 ml-4 list-disc space-y-0.5">{children}</ul>,
+          ol: ({ children }) => <ol className="mb-1.5 last:mb-0 ml-4 list-decimal space-y-0.5">{children}</ol>,
+          li: ({ children }) => <li>{children}</li>,
+          code: ({ children }) => (
+            <code className="font-mono text-[11.5px] rounded px-1 py-px bg-primary-foreground/20 text-primary-foreground">
+              {children}
+            </code>
+          ),
+          pre: ({ children }) => (
+            <pre className="rounded p-2 my-1.5 text-[11.5px] overflow-x-auto bg-primary-foreground/15 font-mono">
+              {children}
+            </pre>
+          ),
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noreferrer" className="underline opacity-90 hover:opacity-100">
+              {children}
+            </a>
+          ),
+          strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+          em: ({ children }) => <em className="italic">{children}</em>,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    );
+  }
+
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -591,15 +659,15 @@ function Markdown({ text }: { text: string }) {
         ul: ({ children }) => <ul className="mb-2 last:mb-0 ml-4 list-disc space-y-0.5">{children}</ul>,
         ol: ({ children }) => <ol className="mb-2 last:mb-0 ml-4 list-decimal space-y-0.5">{children}</ol>,
         li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-        h1: ({ children }) => <h1 className="text-[15px] font-semibold mb-1.5 mt-2 first:mt-0">{children}</h1>,
-        h2: ({ children }) => <h2 className="text-[14px] font-semibold mb-1.5 mt-2 first:mt-0">{children}</h2>,
-        h3: ({ children }) => <h3 className="text-[13px] font-semibold mb-1 mt-1.5 first:mt-0">{children}</h3>,
+        h1: ({ children }) => <h1 className="text-base font-semibold mb-1.5 mt-3 first:mt-0">{children}</h1>,
+        h2: ({ children }) => <h2 className="text-[14px] font-semibold mb-1.5 mt-3 first:mt-0">{children}</h2>,
+        h3: ({ children }) => <h3 className="text-[13px] font-semibold mb-1 mt-2 first:mt-0">{children}</h3>,
         a: ({ href, children }) => (
           <a
             href={href}
             target="_blank"
             rel="noreferrer"
-            className="underline text-foreground hover:text-foreground/80"
+            className="underline text-primary underline-offset-2 hover:opacity-80"
           >
             {children}
           </a>
@@ -614,20 +682,20 @@ function Markdown({ text }: { text: string }) {
             );
           }
           return (
-            <code className="font-mono text-[11.5px] rounded px-1 py-px bg-muted text-foreground/90">
+            <code className="font-mono text-[11.5px] rounded px-1.5 py-0.5 bg-muted text-foreground/90">
               {children}
             </code>
           );
         },
         pre: ({ children }) => (
-          <pre className="rounded-md p-2 my-1.5 text-[11.5px] overflow-x-auto bg-muted">
+          <pre className="rounded-lg p-3 my-2 text-[11.5px] overflow-x-auto bg-muted/60 border border-border/60 font-mono">
             {children}
           </pre>
         ),
         blockquote: ({ children }) => (
-          <blockquote className="border-l-2 pl-2 my-1.5 border-border">{children}</blockquote>
+          <blockquote className="border-l-2 pl-3 my-2 border-border text-muted-foreground">{children}</blockquote>
         ),
-        hr: () => <hr className="my-2 border-border/50" />,
+        hr: () => <hr className="my-4 border-border" />,
         strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
         em: ({ children }) => <em className="italic">{children}</em>,
       }}
@@ -637,8 +705,53 @@ function Markdown({ text }: { text: string }) {
   );
 }
 
+// Single-line ticker for live tool calls during execution.
+function LiveToolTicker({ tools }: { tools: LiveTool[] }) {
+  const latest = tools.find((t) => !t.result) ?? tools[tools.length - 1];
+  if (!latest) return null;
+  const total = tools.length;
+  const done = tools.filter((t) => t.result).length;
+  const running = !latest.result;
+  return (
+    <div className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground overflow-hidden">
+      <Wrench className={cn("h-3 w-3 shrink-0", running && "animate-pulse")} />
+      <span
+        key={latest.id}
+        className="live-tool-flip flex min-w-0 flex-1 items-center gap-2"
+      >
+        <span className="text-foreground/80 shrink-0">{latest.name}</span>
+        <span className="opacity-70 truncate" title={summarizeInput(latest.input)}>
+          {summarizeInput(latest.input)}
+        </span>
+      </span>
+      {total > 1 && (
+        <span className="shrink-0 opacity-50">
+          {done}/{total}
+        </span>
+      )}
+      {running ? (
+        <span className="opacity-40 shrink-0">…</span>
+      ) : (
+        <span className="text-emerald-500 shrink-0">✓</span>
+      )}
+    </div>
+  );
+}
+
+function ThinkingIndicator() {
+  return (
+    <div className="flex items-center gap-2 py-1 text-foreground/80">
+      <span className="relative inline-flex h-3 w-3 vc-pulse-drift">
+        <span className="absolute inset-0 rounded-full bg-current vc-pulse-ring-a" />
+        <span className="absolute inset-0 rounded-full bg-current vc-pulse-ring-b" />
+        <span className="relative inline-flex h-3 w-3 rounded-full bg-current vc-pulse-core" />
+      </span>
+    </div>
+  );
+}
+
 function summarizeInput(input: Record<string, unknown>): string {
-  const entries = Object.entries(input);
+  const entries = Object.entries(input).filter(([k]) => !k.startsWith("_"));
   if (entries.length === 0) return "";
   return entries
     .map(([k, v]) => `${k}=${typeof v === "string" ? v.slice(0, 40) : JSON.stringify(v).slice(0, 40)}`)
