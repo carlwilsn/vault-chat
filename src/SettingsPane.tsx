@@ -291,7 +291,7 @@ export function SettingsPane() {
           <label className="flex items-start gap-2.5 cursor-pointer">
             <input
               type="checkbox"
-              className="mt-0.5"
+              className="vc-checkbox mt-0.5"
               checked={strictVaultMode}
               onChange={(e) => setStrictVaultMode(e.target.checked)}
             />
@@ -305,7 +305,7 @@ export function SettingsPane() {
           <label className="flex items-start gap-2.5 cursor-pointer">
             <input
               type="checkbox"
-              className="mt-0.5"
+              className="vc-checkbox mt-0.5"
               checked={bashDisabled}
               onChange={(e) => setBashDisabled(e.target.checked)}
             />
