@@ -84,15 +84,11 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # The action's default label_trigger is "claude" — without
-          # this, an issues.labeled event for auto-fix:queued doesn't
-          # match and the action exits silently. Took a real run that
-          # "succeeded" but did nothing on #32 to figure that out.
+          # Match our queue label so the action's mode-detection
+          # recognizes the issues.labeled event as a trigger to act.
           label_trigger: "auto-fix:queued"
-          # Model selection isn't a top-level input on this action —
-          # it's passed through to the Claude Code CLI via claude_args.
-          claude_args: "--model claude-sonnet-4-6"
-          prompt: |
+          model: claude-sonnet-4-6
+          direct_prompt: |
             You are the implementer agent for vault-chat. Process GitHub issue #${{ env.ISSUE_NUMBER }} on carlwilsn/vault-chat end-to-end.
 
             Repository: carlwilsn/vault-chat
