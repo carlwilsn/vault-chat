@@ -88,6 +88,13 @@ jobs:
           # recognizes the issues.labeled event as a trigger to act.
           label_trigger: "auto-fix:queued"
           model: claude-sonnet-4-6
+          # Without an explicit allowlist Claude can't actually run
+          # the bash commands the workflow's prompt asks for (gh, git,
+          # npx, cargo). The first real run on #34 made this visible —
+          # the analysis was right but the verification + relabel
+          # steps were blocked. Granted the minimum bash patterns the
+          # implementer needs.
+          allowed_tools: "Edit,Write,Read,Glob,Grep,Bash(gh:*),Bash(git:*),Bash(npx:*),Bash(npm:*),Bash(cargo:*),Bash(node:*),Bash(curl:*),Bash(rm:*),Bash(mkdir:*),Bash(cat:*),Bash(ls:*),Bash(pwd),Bash(echo:*)"
           direct_prompt: |
             You are the implementer agent for vault-chat. Process GitHub issue #${{ env.ISSUE_NUMBER }} on carlwilsn/vault-chat end-to-end.
 
