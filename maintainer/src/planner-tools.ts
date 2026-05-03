@@ -172,6 +172,21 @@ export const PLANNER_TOOLS: ToolDef[] = [
       required: ["issue_number"],
     },
   },
+  {
+    name: "requeue_issue",
+    description:
+      "Force the implementer workflow to fire RIGHT NOW on a specific issue, regardless of its current state. Use this when Carl says 'run #N again', 'retry that one', 'force-run', or when an issue is stuck queued without progress. Mechanism: removes auto-fix:queued (and task:in-progress) if present, then re-adds auto-fix:queued — the re-add fires the labeled event the implementer workflow listens for. Works on items already queued, in awaiting-verification, in needs-review, or any other state. The implementer will start within seconds of the call. Always confirm the issue number with Carl before calling.",
+    input_schema: {
+      type: "object",
+      properties: {
+        issue_number: {
+          type: "number",
+          description: "Issue number to fire the implementer on.",
+        },
+      },
+      required: ["issue_number"],
+    },
+  },
 ];
 
 // ----- execution -----
@@ -215,6 +230,8 @@ export async function executeTool(
       );
     case "run_task_now":
       return runTaskNowImpl(token, input.issue_number as number);
+    case "requeue_issue":
+      return requeueIssueImpl(token, input.issue_number as number);
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -388,6 +405,36 @@ async function fileIssueImpl(
     return `✅ Filed as #${created.number}: ${created.html_url}`;
   } catch (e) {
     return `Error filing issue: ${(e as Error).message}`;
+  }
+}
+
+async function requeueIssueImpl(token: string, issueNumber: number): Promise<string> {
+  try {
+    const issue = await ghJson<Issue>(
+      `/repos/${OWNER}/${REPO}/issues/${issueNumber}`,
+      token,
+    );
+    const current = issue.labels.map((l) => l.name);
+    // Step 1: clear queue/task labels so we can re-add them and fire
+    // the labeled event afresh. Other labels (e.g. "[allow maintainer
+    // scope]" markers) are preserved.
+    const cleared = current.filter(
+      (l) => l !== "auto-fix:queued" && l !== "task:in-progress",
+    );
+    await setIssueLabels(token, issueNumber, cleared);
+    // Step 2: re-add auto-fix:queued — this is what the implementer
+    // workflow listens for. The labeled event fires and a fresh
+    // Claude session spawns within seconds.
+    const next = [...cleared, "auto-fix:queued"];
+    await setIssueLabels(token, issueNumber, next);
+    await postIssueComment(
+      token,
+      issueNumber,
+      "🔁 Re-queued via the Planner. The implementer is firing now — watch the Actions tab or the Triage tab in a few minutes.",
+    );
+    return `✅ Re-queued #${issueNumber} ("${issue.title}"). The implementer workflow is firing now and a fresh Claude session will start within seconds.`;
+  } catch (e) {
+    return `Error re-queueing: ${(e as Error).message}`;
   }
 }
 

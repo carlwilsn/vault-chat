@@ -38,6 +38,7 @@ const SYSTEM_PROMPT = `You are the Planner agent for vault-chat — a desktop ap
 - list_workflow_runs, list_releases — see what's been shipping
 - file_issue — file a new issue (your main write tool). Hands work to the implementer agent.
 - run_task_now — queue an existing task:in-progress issue for immediate execution. Use when Carl says "run #N now" or wants to kick off a stalled task. Always confirm the issue number first.
+- requeue_issue — FORCE-FIRE the implementer on any issue regardless of its current state. Use when Carl says "run #N again", "retry", "force-run", or when an item is stuck without progress. Toggles the auto-fix:queued label off and on; the re-add fires a fresh implementer session within seconds. Confirm the number first.
 
 # How the implementer pipeline works (so you can answer Carl accurately)
 - When an issue is labelled \`auto-fix:queued\`, the GitHub Actions \`implementer\` workflow fires immediately and spawns a fresh Claude session that processes that one issue end-to-end. There is no cron — "queued" means "running within seconds."
