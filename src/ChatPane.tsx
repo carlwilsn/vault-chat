@@ -388,7 +388,7 @@ export function ChatPane() {
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      send();
+      if (!busy) send();
       return;
     }
   };
@@ -720,12 +720,9 @@ export function ChatPane() {
                     </button>
                   );
                 })()}
-                {/* Three states for the trailing button group:
+                {/* Two states for the trailing button group:
                     - idle: just the Send arrow.
-                    - busy + empty input: just the Stop square.
-                    - busy + non-empty input: Stop square AND Interrupt-and-send arrow
-                      (clicking Send mid-generation captures the partial reply
-                      as a final assistant turn and starts the new user turn). */}
+                    - busy: just the Stop square (Send is hidden entirely). */}
                 {busy && (
                   <Button
                     size="icon"
@@ -737,13 +734,13 @@ export function ChatPane() {
                     <Square className="h-3 w-3 fill-current" />
                   </Button>
                 )}
-                {(!busy || input.trim().length > 0 || pendingImages.length > 0) && (
+                {!busy && (
                   <Button
                     size="icon"
                     onClick={send}
                     disabled={!ready || (!input.trim() && pendingImages.length === 0)}
                     className="h-7 w-7 rounded-lg"
-                    title={busy ? "Interrupt and send your message" : "Send"}
+                    title="Send"
                   >
                     <ArrowUp className="h-3.5 w-3.5" />
                   </Button>

@@ -123,16 +123,18 @@ export async function runAgent(params: {
     // empty assistant turn at the tail of history; an unconfigured
     // system prompt can also be "". Only stamp the cacheControl
     // breakpoint on a content block that actually has text.
-    const historyMessages: ModelMessage[] = history.map<ModelMessage>((h, i) => {
-      const isLast = i === history.length - 1;
-      const scrubbed = scrub(h.content);
-      const cacheable = isLast && scrubbed.trim().length > 0;
-      return {
-        role: h.role,
-        content: scrubbed,
-        ...(cacheable ? { providerOptions: cacheControl } : {}),
-      };
-    });
+    const historyMessages: ModelMessage[] = history
+      .filter((h) => h.content.trim().length > 0)
+      .map<ModelMessage>((h, i, arr) => {
+        const isLast = i === arr.length - 1;
+        const scrubbed = scrub(h.content);
+        const cacheable = isLast && scrubbed.trim().length > 0;
+        return {
+          role: h.role,
+          content: scrubbed,
+          ...(cacheable ? { providerOptions: cacheControl } : {}),
+        };
+      });
 
     const systemMessage: ModelMessage = {
       role: "system",
@@ -146,12 +148,13 @@ export async function runAgent(params: {
     // these are IMAGE parts not markdown — we gate by supportsVision.
     const finalUserText = scrub(expandedMessage);
     const attachableImages = vision ? userAttachments ?? [] : [];
+    const safeUserText = finalUserText.trim() ? finalUserText : "(no message text)";
     const finalUserMessage: ModelMessage =
       attachableImages.length > 0
         ? {
             role: "user",
             content: [
-              { type: "text", text: finalUserText },
+              { type: "text", text: safeUserText },
               ...attachableImages.flatMap((a) => {
                 const src = a.sourcePath ? a.sourcePath.split("/").pop() : null;
                 const caption = src
@@ -164,7 +167,7 @@ export async function runAgent(params: {
               }),
             ],
           }
-        : { role: "user", content: finalUserText };
+        : { role: "user", content: safeUserText };
 
     const messages: ModelMessage[] = [
       systemMessage,
