@@ -3,10 +3,17 @@ import { invoke } from "@tauri-apps/api/core";
 import Anthropic from "@anthropic-ai/sdk";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Send, AlertTriangle, Trash2, Wrench, ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
+import { Send, AlertTriangle, Trash2, Wrench, ChevronDown, ChevronRight, ExternalLink, Key, Eye, EyeOff, Copy, Check } from "lucide-react";
 import { PLANNER_TOOLS, executeTool } from "./planner-tools";
+import { OWNER, REPO } from "./github";
 import { useStore } from "./store";
 import { cn } from "./lib";
+
+function maskKey(k: string): string {
+  if (!k) return "(no key set)";
+  if (k.length <= 12) return "•".repeat(k.length);
+  return `${k.slice(0, 7)}${"•".repeat(8)}${k.slice(-4)}`;
+}
 
 // Planner agent — the CEO's read-only thinking partner. Conversational
 // strategy + filing well-formed issues for the implementer to execute.
@@ -80,6 +87,9 @@ export function Chat() {
   const [input, setInput] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+  const [showKeyPanel, setShowKeyPanel] = useState(false);
+  const [keyRevealed, setKeyRevealed] = useState(false);
+  const [copied, setCopied] = useState(false);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -139,6 +149,34 @@ export function Chat() {
   const clearTranscript = () => {
     setMessages([]);
     localStorage.removeItem(STORAGE_KEY);
+  };
+
+  const copyKey = async () => {
+    if (!apiKey) return;
+    try {
+      await navigator.clipboard.writeText(apiKey);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      setKeyError(`Couldn't copy: ${(e as Error).message}`);
+    }
+  };
+
+  const replaceKey = async () => {
+    const v = apiKeyDraft.trim();
+    if (!v) return;
+    setSavingKey(true);
+    try {
+      await invoke("keychain_set", { key: ANTHROPIC_KEY, value: v });
+      setApiKey(v);
+      setApiKeyDraft("");
+      setKeyRevealed(false);
+      setKeyError(null);
+    } catch (e) {
+      setKeyError((e as Error).message);
+    } finally {
+      setSavingKey(false);
+    }
   };
 
   const send = async () => {
@@ -316,6 +354,80 @@ export function Chat() {
         )}
       </div>
       <div className="border-t border-border bg-card/40 px-4 py-3 space-y-2">
+        {showKeyPanel && (
+          <div className="rounded border border-border bg-background/60 p-3 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Anthropic API key
+              </div>
+              <button
+                onClick={() => {
+                  setShowKeyPanel(false);
+                  setKeyRevealed(false);
+                  setApiKeyDraft("");
+                  setKeyError(null);
+                }}
+                className="text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                close
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 truncate font-mono text-[11.5px] bg-muted/40 px-2 py-1.5 rounded">
+                {keyRevealed ? apiKey : maskKey(apiKey ?? "")}
+              </code>
+              <button
+                onClick={() => setKeyRevealed((v) => !v)}
+                className="inline-flex items-center justify-center h-7 w-7 rounded border border-border hover:bg-accent text-muted-foreground hover:text-foreground"
+                title={keyRevealed ? "Hide" : "Reveal"}
+              >
+                {keyRevealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </button>
+              <button
+                onClick={() => void copyKey()}
+                className="inline-flex items-center justify-center h-7 w-7 rounded border border-border hover:bg-accent text-muted-foreground hover:text-foreground"
+                title="Copy to clipboard"
+              >
+                {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+              </button>
+            </div>
+            <div className="text-[10.5px] text-muted-foreground/80 leading-relaxed">
+              Paste this same key into{" "}
+              <a
+                href={`https://github.com/${OWNER}/${REPO}/settings/secrets/actions`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-foreground underline hover:text-foreground/80"
+              >
+                GitHub Secrets
+              </a>{" "}
+              as <span className="font-mono">ANTHROPIC_API_KEY</span> so the implementer workflow can run.
+            </div>
+            <div className="border-t border-border/60 pt-2 space-y-1.5">
+              <div className="text-[11px] font-semibold text-muted-foreground">Replace key</div>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  placeholder="sk-ant-…"
+                  value={apiKeyDraft}
+                  onChange={(e) => setApiKeyDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void replaceKey();
+                  }}
+                  className="flex-1 rounded border border-border bg-background px-2 py-1.5 text-[12px] outline-none focus:ring-1 focus:ring-foreground/30"
+                />
+                <button
+                  onClick={() => void replaceKey()}
+                  disabled={!apiKeyDraft.trim() || savingKey}
+                  className="text-[11.5px] px-2.5 py-1.5 rounded bg-foreground text-background hover:bg-foreground/90 disabled:opacity-50"
+                >
+                  {savingKey ? "Saving…" : "Save"}
+                </button>
+              </div>
+              {keyError && <div className="text-[10.5px] text-destructive">{keyError}</div>}
+            </div>
+          </div>
+        )}
         <div className="flex items-end gap-2">
           <textarea
             ref={inputRef}
@@ -340,6 +452,14 @@ export function Chat() {
           <span>·</span>
           <button onClick={clearTranscript} className="inline-flex items-center gap-1 hover:text-foreground">
             <Trash2 className="h-3 w-3" /> clear conversation
+          </button>
+          <span>·</span>
+          <button
+            onClick={() => setShowKeyPanel((v) => !v)}
+            className="inline-flex items-center gap-1 hover:text-foreground"
+            title="View, copy, or replace your Anthropic API key"
+          >
+            <Key className="h-3 w-3" /> manage key
           </button>
           <span className="ml-auto">
             {messages.length} {messages.length === 1 ? "turn" : "turns"}
