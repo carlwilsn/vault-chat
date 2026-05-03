@@ -15,7 +15,7 @@ When you run it, Windows will show:
 > **Windows protected your PC**
 > Microsoft Defender SmartScreen prevented an unrecognized app from starting…
 
-This is normal — the installer isn't code-signed yet, so SmartScreen hasn't seen it before. Click the small **More info** link, then **Run anyway**. You only do this once. From then on, vault-chat auto-updates itself silently in the background — every new release just shows up the next time you launch the app.
+This is normal — the installer isn't code-signed yet, so SmartScreen hasn't seen it before. Click the small **More info** link, then **Run anyway**. You only do this once. From then on, vault-chat checks for updates on launch and shows a small "Install & restart" banner in the corner when a new release is available — click to install, or "Later" to skip.
 
 When it opens: gear icon → paste an API key → open a folder as your vault → start asking.
 
