@@ -48,6 +48,11 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
+      # Needed by `gh workflow run ship.yml` at the end of the
+      # auto-merge step. Without `actions: write`, the dispatch call
+      # 403s ("Resource not accessible by integration") and the fix
+      # lands on main but doesn't release until the next push or cron.
+      actions: write
     env:
       ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
     steps:
