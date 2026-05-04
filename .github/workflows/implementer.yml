@@ -94,6 +94,12 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # `agent` mode handles direct_prompt automation across all
+          # trigger types — issues.labeled AND workflow_dispatch. The
+          # default `tag` mode is for @mention/comment triggers and
+          # rejects workflow_dispatch, which broke our manual-dispatch
+          # path (e.g. retrying a stuck issue).
+          mode: agent
           # Match our queue label so the action's mode-detection
           # recognizes the issues.labeled event as a trigger to act.
           label_trigger: "auto-fix:queued"
