@@ -11,8 +11,6 @@ type Phase =
   | { kind: "installing" }
   | { kind: "error"; message: string };
 
-const DISMISS_KEY = "vault_chat_update_dismissed_version";
-
 // Dev mode: the updater plugin throws on `check()` because there's no
 // installed binary to compare against. Detect that and stay silent so we
 // don't spam errors during local dev.
@@ -28,8 +26,6 @@ export function UpdateBanner() {
       try {
         const update = await check();
         if (cancelled || !update) return;
-        const dismissed = localStorage.getItem(DISMISS_KEY);
-        if (dismissed === update.version) return;
         setPhase({ kind: "available", update });
       } catch (e) {
         console.warn("[updater] check failed:", e);
@@ -42,12 +38,10 @@ export function UpdateBanner() {
 
   if (phase.kind === "idle" || phase.kind === "error") return null;
 
-  const dismiss = () => {
-    if (phase.kind === "available") {
-      localStorage.setItem(DISMISS_KEY, phase.update.version);
-    }
-    setPhase({ kind: "idle" });
-  };
+  // Session-scoped dismiss: hide for this run only. The next launch
+  // re-runs check() and shows the banner again if the update is still
+  // outstanding — so "Later" really means "later," not "never."
+  const dismiss = () => setPhase({ kind: "idle" });
 
   const install = async () => {
     if (phase.kind !== "available") return;
