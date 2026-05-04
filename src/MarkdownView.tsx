@@ -514,7 +514,14 @@ export function MarkdownView({ paneId }: Props) {
   // would just flip to a near-identical view. Only markdown has a
   // meaningful view/edit split.
   const showToggle = kind === "markdown";
-  const showingEditor = kind === "code" || (kind === "markdown" && mode === "edit" && isActive);
+  // Editor visibility tracks the pane's own mode. The previous
+  // `&& isActive` gate (kept editor mounted only on the active pane)
+  // unmounted LiveEditor whenever focus moved elsewhere — which broke
+  // the inline-edit Accept button: the floating popup outlived the
+  // editor, but its dispatch had no view to dispatch into and silently
+  // no-op'd. Per-pane mode is the user's intent for what each pane
+  // shows; activation is a separate axis.
+  const showingEditor = kind === "code" || (kind === "markdown" && mode === "edit");
 
   return (
     <div
