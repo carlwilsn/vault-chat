@@ -290,21 +290,28 @@ export function FileTree() {
     });
   };
 
-  // Upload one or more OS paths into the given vault directory. `mode`
-  // controls the picker: "files" allows multi-select of files; "folder"
-  // picks a single directory and copies it recursively. Each picked
-  // path is handed to the Rust `copy_into_vault` command which handles
-  // collision-renaming and recursion.
-  const beginUpload = async (mode: "files" | "folder", parentOverride?: string) => {
+  // Upload one or more OS paths into the given vault directory.
+  // Opens a file picker first; if cancelled, opens a folder picker so
+  // the user can upload either files or a folder with a single button.
+  // Each picked path is handed to the Rust `copy_into_vault` command
+  // which handles collision-renaming and recursion.
+  const beginUpload = async (parentOverride?: string) => {
     if (!vaultPath) return;
     const parent = parentOverride ?? selectedDir ?? vaultPath;
     let picked: string | string[] | null;
     try {
       picked = await openDialog({
-        directory: mode === "folder",
-        multiple: mode === "files",
-        title: mode === "folder" ? "Upload folder into vault" : "Upload files into vault",
+        directory: false,
+        multiple: true,
+        title: "Upload files into vault",
       });
+      if (!picked) {
+        picked = await openDialog({
+          directory: true,
+          multiple: false,
+          title: "Upload folder into vault",
+        });
+      }
     } catch (e) {
       console.error("[upload] dialog failed:", e);
       return;
@@ -618,19 +625,10 @@ export function FileTree() {
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                 onClick={() => {
                   setAddMenuOpen(false);
-                  beginUpload("files");
+                  beginUpload();
                 }}
               >
-                <Upload className="h-3.5 w-3.5 opacity-70" /> Upload files…
-              </button>
-              <button
-                className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                onClick={() => {
-                  setAddMenuOpen(false);
-                  beginUpload("folder");
-                }}
-              >
-                <Upload className="h-3.5 w-3.5 opacity-70" /> Upload folder…
+                <Upload className="h-3.5 w-3.5 opacity-70" /> Upload…
               </button>
             </div>
           )}
@@ -919,20 +917,10 @@ export function FileTree() {
                     onClick={() => {
                       const target = menu.entry!.path;
                       setMenu(null);
-                      beginUpload("files", target);
+                      beginUpload(target);
                     }}
                   >
-                    <Upload className="h-3.5 w-3.5 opacity-70" /> Upload files…
-                  </button>
-                  <button
-                    className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                    onClick={() => {
-                      const target = menu.entry!.path;
-                      setMenu(null);
-                      beginUpload("folder", target);
-                    }}
-                  >
-                    <Upload className="h-3.5 w-3.5 opacity-70" /> Upload folder…
+                    <Upload className="h-3.5 w-3.5 opacity-70" /> Upload…
                   </button>
                   <div className="my-1 h-px bg-border/60" />
                 </>
@@ -1002,19 +990,10 @@ export function FileTree() {
                     className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
                     onClick={() => {
                       setMenu(null);
-                      beginUpload("files", vaultPath);
+                      beginUpload(vaultPath);
                     }}
                   >
-                    <Upload className="h-3.5 w-3.5 opacity-70" /> Upload files…
-                  </button>
-                  <button
-                    className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
-                    onClick={() => {
-                      setMenu(null);
-                      beginUpload("folder", vaultPath);
-                    }}
-                  >
-                    <Upload className="h-3.5 w-3.5 opacity-70" /> Upload folder…
+                    <Upload className="h-3.5 w-3.5 opacity-70" /> Upload…
                   </button>
                   <button
                     className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
