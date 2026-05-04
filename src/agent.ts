@@ -231,15 +231,23 @@ Be terse. If the task is research, return findings as a structured list with fil
           });
           let final = "";
           for await (const part of subResult.fullStream) {
-            if (
-              part.type === "text-delta" &&
-              "text" in part &&
-              typeof part.text === "string"
-            ) {
+            if (part.type === "text-delta" && "text" in part && typeof part.text === "string") {
               final += part.text;
+              onEvent({ kind: "text", delta: part.text });
+            } else if (part.type === "tool-input-start") {
+              onEvent({ kind: "tool_input_start", id: (part as any).id, name: (part as any).toolName });
+            } else if (part.type === "tool-input-delta") {
+              const delta = (part as any).delta;
+              if (typeof delta === "string" && delta.length > 0) {
+                onEvent({ kind: "tool_input_delta", id: (part as any).id, delta });
+              }
+            } else if (part.type === "tool-call") {
+              onEvent({ kind: "tool_use", id: (part as any).toolCallId, name: (part as any).toolName, input: (part as any).input });
+            } else if (part.type === "tool-result") {
+              const output = (part as any).output;
+              const text = typeof output === "string" ? output : JSON.stringify(output, null, 2);
+              onEvent({ kind: "tool_result", id: (part as any).toolCallId, result: text });
             }
-            // Ignore tool calls / tool results / reasoning — those are
-            // internal to the sub-agent and shouldn't surface upstream.
           }
           return final.trim() || "(sub-agent returned no output)";
         } catch (e: any) {
