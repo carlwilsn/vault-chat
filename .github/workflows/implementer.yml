@@ -186,3 +186,10 @@ jobs:
           done
           # Best-effort cleanup of the now-merged claude branch.
           git push origin --delete "$BRANCH" 2>/dev/null || true
+          # Pushes made via GITHUB_TOKEN don't fire `on: push` workflow
+          # events (GitHub safeguard against runaway loops), so ship.yml
+          # never sees the implementer's commit. Manually dispatch it
+          # here — workflow_dispatch fires regardless of token. Without
+          # this, fixes land on main but the daily cron is the only path
+          # to a release, so users wait up to 24h.
+          gh workflow run ship.yml --ref main || true

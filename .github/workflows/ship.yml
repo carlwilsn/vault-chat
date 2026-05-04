@@ -46,10 +46,10 @@ concurrency:
 
 jobs:
   ship:
-    # Maintainer has a kill switch (System tab → Pause auto-ship) that
-    # sets repo variable SHIP_PAUSED=true. When paused, builds are
-    # skipped — commits keep landing on main, but no release publishes
-    # until unpaused. Useful before sleep, exam week, demos.
+    # Kill switch: set repo variable SHIP_PAUSED=true (Settings →
+    # Secrets and variables → Actions → Variables) to skip builds.
+    # Commits keep landing on main, but no release publishes until
+    # unpaused. Useful before sleep, exam week, demos.
     if: vars.SHIP_PAUSED != 'true'
     runs-on: windows-latest
     permissions:
@@ -115,9 +115,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
           git commit -m "v${{ steps.bump.outputs.version }} [skip ci]"
-          # Race-safe push: ship-maintainer.yml may also be pushing
-          # `[skip ci]` autobumps to main. Rebase on top of whatever
-          # arrived first; retry once on a tighter race.
+          # Race-safe push: parallel ship runs (e.g. cron + a fresh
+          # push arriving within the build window) can both try to
+          # land a `[skip ci]` autobump. Rebase on top of whatever
+          # arrived first; retry on a tighter race.
           for attempt in 1 2 3; do
             git pull --rebase origin main && git push origin HEAD:main && break
             echo "push attempt $attempt failed — retrying"
