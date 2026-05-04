@@ -14,10 +14,6 @@ export const FEEDBACK_LABEL_QUEUED = "auto-fix:queued";
 export const FEEDBACK_LABEL_AWAITING = "auto-fix:awaiting-verification";
 export const FEEDBACK_LABEL_NEEDS_REVIEW = "auto-fix:needs-review";
 export const FEEDBACK_LABEL_AGENT_ERROR = "auto-fix:agent-error";
-// Long-running feature/idea task. task-resume.yml routes any new
-// `task:in-progress` issue into the implementer queue (`auto-fix:queued`)
-// so it gets worked on the same way bugs do.
-export const FEEDBACK_LABEL_TASK = "task:in-progress";
 
 export type FeedbackKind = "bug" | "feature";
 
@@ -56,9 +52,9 @@ export async function testGithubToken(token: string): Promise<string> {
   return invoke<string>("gh_test_token", { token });
 }
 
-/** File a feedback issue. Bug → `auto-fix:queued` (one-shot, picked up
- *  by the cloud implementer). Feature → `task:in-progress` (routed via
- *  task-resume.yml into the same implementer queue). */
+/** File a feedback issue. Both Bug and Feature land on
+ *  `auto-fix:queued` — the implementer picks them up the same way.
+ *  The kind is recorded in the issue body for human triage. */
 export async function submitFeedback(
   token: string,
   s: FeedbackSubmission,
@@ -69,7 +65,6 @@ export async function submitFeedback(
 
   const title = deriveTitle(s.text);
   const body = renderBody(s);
-  const label = s.kind === "feature" ? FEEDBACK_LABEL_TASK : FEEDBACK_LABEL_QUEUED;
 
   return invoke<CreatedIssue>("gh_create_feedback_issue", {
     token,
@@ -77,7 +72,7 @@ export async function submitFeedback(
     repo: VAULT_CHAT_REPO,
     title,
     body,
-    labels: [label],
+    labels: [FEEDBACK_LABEL_QUEUED],
     images,
   });
 }

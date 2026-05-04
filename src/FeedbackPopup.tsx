@@ -11,10 +11,10 @@ const OWNER_EMAIL = "carlwilson2027@u.northwestern.edu";
 
 // "Send feedback" composer. Visually mirrors NotePopup but with a
 // thicker border and the title bar ("Send feedback") to distinguish
-// it. Files a GitHub issue — Bug → label `auto-fix:queued`; Feature →
-// label `task:in-progress` (routed by task-resume.yml into the same
-// implementer queue). Both flows are one-shot through the cloud
-// implementer.
+// it. Files a GitHub issue labeled `auto-fix:queued` — the cloud
+// implementer picks it up and ships a fix. The Bug/Feature toggle
+// only changes the issue body's "Type:" line for human triage; both
+// kinds flow through the same one-shot implementer.
 
 type FeedbackPopupProps = {
   open: boolean;
@@ -55,8 +55,8 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerIdx, setPickerIdx] = useState(0);
   const [send, setSend] = useState<SendState>({ phase: "idle" });
-  // Bug → auto-fix:queued. Feature → task:in-progress (task-resume.yml
-  // routes it back into the same implementer queue).
+  // Both kinds use the auto-fix:queued label; this toggle only flips
+  // the "Type:" line in the issue body for human triage.
   const [kind, setKind] = useState<FeedbackKind>("bug");
 
   useEffect(() => {
@@ -331,7 +331,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
                       ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:bg-accent/60",
                   )}
-                  title="Feature/idea — task:in-progress, routed to the cloud implementer"
+                  title="Feature/idea — picked up by the cloud implementer"
                 >
                   <Sparkles className="h-3 w-3" /> Feature
                 </button>
