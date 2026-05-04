@@ -235,7 +235,11 @@ export function SettingsPane() {
             onChange={(e) => setModelSearch(e.target.value)}
           />
           <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
-            {filteredCatalog.length === 0 ? (
+            {catalog.length === 0 ? (
+              <option value="" disabled>
+                Add an API key below to load models
+              </option>
+            ) : filteredCatalog.length === 0 ? (
               <option value={modelId} disabled>
                 No models match "{modelSearch}"
               </option>

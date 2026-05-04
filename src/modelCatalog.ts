@@ -62,9 +62,10 @@ async function fetchGoogle(apiKey: string): Promise<ModelSpec[]> {
     });
 }
 
-async function fetchOpenRouter(_apiKey?: string): Promise<ModelSpec[]> {
-  // OpenRouter's /models is public — no auth required just to list.
-  const res = await fetch("https://openrouter.ai/api/v1/models");
+async function fetchOpenRouter(apiKey: string): Promise<ModelSpec[]> {
+  const res = await fetch("https://openrouter.ai/api/v1/models", {
+    headers: { authorization: `Bearer ${apiKey}` },
+  });
   if (!res.ok) throw new Error(`openrouter ${res.status}`);
   const json = (await res.json()) as { data: Array<{ id: string; name?: string }> };
   return json.data.map((m) => ({
@@ -95,19 +96,17 @@ export async function fetchAllCatalog(
   if (apiKeys.anthropic) run("anthropic", () => fetchAnthropic(apiKeys.anthropic!));
   if (apiKeys.openai) run("openai", () => fetchOpenAI(apiKeys.openai!));
   if (apiKeys.google) run("google", () => fetchGoogle(apiKeys.google!));
-  // OpenRouter always — list is public. Gives users a browse-able
-  // catalog even before they paste a key.
-  run("openrouter", () => fetchOpenRouter(apiKeys.openrouter));
+  if (apiKeys.openrouter) run("openrouter", () => fetchOpenRouter(apiKeys.openrouter!));
 
   const results = await Promise.all(tasks);
   const merged = results.flat();
 
-  // Fall back to seed models for any provider that returned nothing
-  // (e.g. no key set, or request failed). This keeps the dropdown from
-  // going empty on transient errors.
+  // Fall back to seed models for any provider that has a key set but
+  // returned nothing (e.g. request failed). Providers without a key
+  // are skipped — we only show models the user can actually use.
   const gotProvider = new Set(merged.map((m) => m.provider));
   for (const seed of SEED_MODELS) {
-    if (!gotProvider.has(seed.provider)) merged.push(seed);
+    if (!gotProvider.has(seed.provider) && apiKeys[seed.provider]) merged.push(seed);
   }
 
   // Rank roughly by capability so the strongest frontier models show

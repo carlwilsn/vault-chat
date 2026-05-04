@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { emit } from "@tauri-apps/api/event";
 import type { ModelSpec, ProviderId } from "./providers";
-import { DEFAULT_MODEL_ID, MODELS as SEED_MODELS, setLiveCatalog } from "./providers";
+import { DEFAULT_MODEL_ID, setLiveCatalog } from "./providers";
 import type { Skill } from "./skills";
 import type { Note } from "./notes";
 import { readNotes, appendNote, writeAllNotes } from "./notes";
@@ -252,12 +252,15 @@ export async function hydrateKeychain(): Promise<void> {
     void resolveGithubLogin(serviceKeys.github_pat);
   }
   // Seed the live model catalog from last session's cache so the
-  // dropdown isn't empty on boot. The actual refresh happens on demand
-  // (Settings button) or in the background via refreshCatalog().
+  // dropdown isn't empty on boot.
   const cached = loadCatalogFromLocalStorage();
   if (cached && cached.length > 0) {
     setLiveCatalog(cached);
     useStore.setState({ catalog: cached });
+  } else if (Object.keys(apiKeys).length > 0) {
+    // New install with keys already in the keychain (e.g. migrated):
+    // kick off a background refresh so the dropdown populates.
+    void useStore.getState().refreshCatalog();
   }
 }
 
@@ -525,7 +528,7 @@ export const useStore = create<State>((set) => ({
   messages: [],
   apiKeys: {}, // populated async via hydrateKeychain
   serviceKeys: {}, // populated async via hydrateKeychain
-  catalog: loadCatalogFromLocalStorage() ?? SEED_MODELS,
+  catalog: loadCatalogFromLocalStorage() ?? [],
   catalogRefreshing: false,
   catalogErrors: {},
   modelId: localStorage.getItem(MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
