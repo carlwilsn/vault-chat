@@ -75,9 +75,9 @@ export function UpdateBanner() {
   };
 
   return (
-    <div className="fixed bottom-4 right-4 w-80 z-50 rounded-lg border border-indigo-500/40 bg-card shadow-xl overflow-hidden">
-      <div className="flex items-start gap-2.5 p-3 border-b border-border bg-gradient-to-br from-indigo-500/10 to-transparent">
-        <div className="h-7 w-7 rounded-md bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0">
+    <div className="fixed bottom-4 right-4 w-80 z-50 rounded-lg border border-border bg-card shadow-xl overflow-hidden">
+      <div className="flex items-start gap-2.5 p-3 border-b border-border bg-gradient-to-br from-accent/40 to-transparent">
+        <div className="h-7 w-7 rounded-md bg-accent/60 text-foreground flex items-center justify-center shrink-0">
           <Sparkles className="h-3.5 w-3.5" />
         </div>
         <div className="flex-1 min-w-0">
@@ -110,7 +110,7 @@ export function UpdateBanner() {
             <Button
               size="sm"
               onClick={install}
-              className="bg-indigo-500 text-white hover:bg-indigo-400 flex-1"
+              className="bg-primary text-primary-foreground hover:bg-primary/90 flex-1"
             >
               <RefreshCcw className="h-3 w-3 mr-1.5" />
               Install &amp; restart
@@ -129,7 +129,7 @@ export function UpdateBanner() {
           </div>
           <div className="h-1.5 bg-muted rounded-full overflow-hidden">
             <div
-              className="h-full bg-indigo-500 transition-[width]"
+              className="h-full bg-primary transition-[width]"
               style={{
                 width: phase.total
                   ? `${Math.min(100, (phase.downloaded / phase.total) * 100)}%`

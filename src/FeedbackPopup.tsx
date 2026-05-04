@@ -9,11 +9,12 @@ import { submitFeedback, VAULT_CHAT_OWNER, type FeedbackKind } from "./feedback"
 
 const OWNER_EMAIL = "carlwilson2027@u.northwestern.edu";
 
-// "Send feedback" composer. Visually mirrors NotePopup but with an
-// indigo accent so it's unmistakably not a note. Files a GitHub issue
-// — Bug → label `auto-fix:queued`; Feature → label `task:in-progress`
-// (routed by task-resume.yml into the same implementer queue). Both
-// flows are one-shot through the cloud implementer.
+// "Send feedback" composer. Visually mirrors NotePopup but with a
+// thicker border and the title bar ("Send feedback") to distinguish
+// it. Files a GitHub issue — Bug → label `auto-fix:queued`; Feature →
+// label `task:in-progress` (routed by task-resume.yml into the same
+// implementer queue). Both flows are one-shot through the cloud
+// implementer.
 
 type FeedbackPopupProps = {
   open: boolean;
@@ -190,7 +191,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
         }}
       >
         <div
-          className="w-[480px] max-w-[92vw] rounded-xl border-2 border-indigo-500/40 bg-card shadow-xl overflow-hidden"
+          className="w-[480px] max-w-[92vw] rounded-xl border-2 border-border bg-card shadow-xl overflow-hidden"
           onMouseDown={(e) => e.stopPropagation()}
         >
           <div className="flex items-stretch border-b border-border bg-muted/30">
@@ -212,7 +213,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
                   Got an idea or a bug? Email Carl directly:{" "}
                   <a
                     href={`mailto:${OWNER_EMAIL}`}
-                    className="font-mono text-indigo-400 hover:underline"
+                    className="font-mono text-foreground hover:underline"
                   >
                     {OWNER_EMAIL}
                   </a>
@@ -272,7 +273,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
       }}
     >
       <div
-        className="w-[540px] max-w-[92vw] rounded-xl border-2 border-indigo-500/40 bg-card shadow-xl overflow-hidden"
+        className="w-[540px] max-w-[92vw] rounded-xl border-2 border-border bg-card shadow-xl overflow-hidden"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex items-stretch border-b border-border bg-muted/30">
@@ -291,7 +292,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
                   href={send.url}
                   target="_blank"
                   rel="noreferrer"
-                  className="font-mono text-indigo-400 hover:underline inline-flex items-center gap-1"
+                  className="font-mono text-foreground hover:underline inline-flex items-center gap-1"
                 >
                   #{send.number}
                   <ExternalLink className="h-3 w-3" />
@@ -315,7 +316,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
                   className={cn(
                     "flex items-center gap-1.5 px-3 py-1.5 transition-colors",
                     kind === "bug"
-                      ? "bg-indigo-500 text-white"
+                      ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:bg-accent/60",
                   )}
                   title="One-shot fix — auto-fix:queued, agent ships overnight"
@@ -327,7 +328,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
                   className={cn(
                     "flex items-center gap-1.5 px-3 py-1.5 transition-colors border-l border-border",
                     kind === "feature"
-                      ? "bg-indigo-500 text-white"
+                      ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:bg-accent/60",
                   )}
                   title="Feature/idea — task:in-progress, routed to the cloud implementer"
@@ -342,7 +343,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
                     key={`${a.source_path}:${i}`}
                     className={cn(
                       "flex items-center gap-2 text-[11.5px] rounded border px-2 py-1 font-mono group",
-                      "border-indigo-500/40 bg-indigo-500/10 text-foreground/90",
+                      "border-border bg-accent/40 text-foreground/90",
                     )}
                   >
                     <span>📎</span>
@@ -414,7 +415,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
                             }}
                             onMouseEnter={() => setPickerIdx(i)}
                           >
-                            <span className="text-indigo-400 font-mono text-[11.5px] font-medium shrink-0 truncate max-w-[50%]">
+                            <span className="text-foreground font-mono text-[11.5px] font-medium shrink-0 truncate max-w-[50%]">
                               {m.is_dir ? `${m.name}/` : m.name}
                             </span>
                             <span className="text-muted-foreground text-[10.5px] truncate font-mono">
@@ -491,14 +492,14 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
               />
 
               {!githubPat && (
-                <div className="text-[11px] text-indigo-400 leading-relaxed">
+                <div className="text-[11px] text-muted-foreground leading-relaxed">
                   No GitHub token configured.{" "}
                   <button
                     onClick={() => {
                       onClose();
                       setShowSettings(true);
                     }}
-                    className="underline hover:text-indigo-300"
+                    className="underline hover:text-foreground"
                   >
                     Add one in Settings →
                   </button>
@@ -517,7 +518,7 @@ export function FeedbackPopup({ open, onClose, initialDraft = "", initialAnchors
                   size="sm"
                   onClick={trySend}
                   disabled={sending || !githubPat}
-                  className="bg-indigo-500 text-white hover:bg-indigo-400"
+                  className="bg-primary text-primary-foreground hover:bg-primary/90"
                 >
                   <Send className="h-3 w-3 mr-1.5" />
                   {sending ? "Filing…" : `File ${kind === "feature" ? "feature" : "bug"}`}

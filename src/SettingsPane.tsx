@@ -420,7 +420,7 @@ export function SettingsPane() {
         <section className="space-y-2">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-foreground flex items-center gap-1.5">
                 <Megaphone className="h-3 w-3" />
                 Send feedback (Ctrl+G)
               </h3>
@@ -483,7 +483,7 @@ export function SettingsPane() {
               size="sm"
               onClick={sendFeedbackFromSettings}
               disabled={!serviceKeys.github_pat}
-              className="bg-indigo-500 text-white hover:bg-indigo-400"
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
             >
               <Send className="h-3 w-3 mr-1.5" />
               Send feedback now
