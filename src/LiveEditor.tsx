@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { EditorState, StateField } from "@codemirror/state";
+import { Annotation, EditorState, StateField } from "@codemirror/state";
 import type { Range, Extension } from "@codemirror/state";
+
+// Tag the programmatic `view.dispatch` we fire when the `value` prop
+// changes (file switch, external reload). The update listener uses
+// this annotation to skip firing onChange for those — they're echoes
+// of state we just received, not user edits, and routing them through
+// the autosave path was the cause of cross-file content swaps when
+// switching between files quickly.
+const ExternalSet = Annotation.define<boolean>();
 import { EditorView, Decoration, keymap, WidgetType } from "@codemirror/view";
 import type { DecorationSet } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
@@ -643,7 +651,12 @@ export function LiveEditor({
       liveTheme,
       EditorView.lineWrapping,
       EditorView.updateListener.of((u) => {
-        if (u.docChanged) onChangeRef.current(u.state.doc.toString());
+        if (!u.docChanged) return;
+        // Echoes from the [value]-effect dispatch are flagged with
+        // ExternalSet — skip those so they don't masquerade as user
+        // edits and trigger the autosave with stale closures.
+        if (u.transactions.some((t) => t.annotation(ExternalSet))) return;
+        onChangeRef.current(u.state.doc.toString());
       }),
       EditorView.domEventHandlers({
         scroll: (_e, view) => {
@@ -685,6 +698,7 @@ export function LiveEditor({
     if (cur !== value) {
       view.dispatch({
         changes: { from: 0, to: cur.length, insert: value },
+        annotations: ExternalSet.of(true),
       });
     }
   }, [value]);

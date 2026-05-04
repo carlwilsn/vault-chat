@@ -259,6 +259,15 @@ export function MarkdownView({ paneId }: Props) {
   };
 
   const onChange = (value: string) => {
+    // Editors fire onChange both for user edits and for programmatic
+    // value-prop changes (LiveEditor's [value] effect, Monaco's
+    // wrapper setValue). The LiveEditor case is filtered upstream via
+    // an ExternalSet annotation; this guard catches the Monaco case
+    // and any other echo. Without it, switching files quickly could
+    // cause the new file's content to be saved against the previous
+    // file's path — which is how daily.md once ended up with
+    // boosting-loop.md's content.
+    if (value === content) return;
     if (paneId) {
       updatePaneContent(paneId, value);
     } else {
@@ -267,6 +276,34 @@ export function MarkdownView({ paneId }: Props) {
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(async () => {
       if (value === lastSaved.current || !file) return;
+      // Path-still-active guard. If the user has switched away from
+      // this file in the time it took the debounce to fire, the value
+      // we're holding belongs to a buffer that isn't on screen anymore
+      // — saving could land on the wrong path. (Closures capture the
+      // file at onChange time; this re-checks at write time.)
+      const live = useStore.getState();
+      const livePath = paneId
+        ? live.panes.find((p) => p.id === paneId)?.file
+        : live.currentFile;
+      if (livePath !== file) return;
+      // External-mutation guard. If something else (Obsidian, a sync
+      // client, a script) rewrote the file since we last synced it,
+      // our buffer doesn't reflect the on-disk truth — overwriting
+      // would silently destroy the external change. Reload instead.
+      try {
+        const onDisk = await invoke<string>("read_text_file", { path: file });
+        if (onDisk !== lastSaved.current) {
+          if (paneId) {
+            useStore.getState().setPaneFile(paneId, file, onDisk);
+          } else if (useStore.getState().currentFile === file) {
+            useStore.getState().setCurrentFile(file, onDisk);
+          }
+          lastSaved.current = onDisk;
+          return;
+        }
+      } catch {
+        return;
+      }
       try {
         await invoke("write_text_file", { path: file, contents: value });
         lastSaved.current = value;

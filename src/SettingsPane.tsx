@@ -85,12 +85,15 @@ export function SettingsPane() {
 
   const save = (p: ProviderId) => {
     const v = drafts[p].trim();
-    if (v) {
-      setApiKey(p, v);
-      setDrafts((d) => ({ ...d, [p]: "" }));
-      setSavedFlash(p);
-      setTimeout(() => setSavedFlash((x) => (x === p ? null : x)), 1500);
-    }
+    if (!v) return;
+    setApiKey(p, v);
+    // Keep the draft populated so type=password keeps showing dots —
+    // an empty input after save reads as "nothing saved." A small
+    // refresh delay lets the saved-flash animate before models reload.
+    setDrafts((d) => ({ ...d, [p]: v }));
+    setSavedFlash(p);
+    setTimeout(() => setSavedFlash((x) => (x === p ? null : x)), 1500);
+    setTimeout(() => refreshCatalog(), 500);
   };
 
   const remove = (p: ProviderId) => {
@@ -100,12 +103,11 @@ export function SettingsPane() {
 
   const saveTavily = () => {
     const v = tavilyDraft.trim();
-    if (v) {
-      setServiceKey("tavily", v);
-      setTavilyDraft("");
-      setSavedFlash("tavily");
-      setTimeout(() => setSavedFlash((x) => (x === "tavily" ? null : x)), 1500);
-    }
+    if (!v) return;
+    setServiceKey("tavily", v);
+    setTavilyDraft(v);
+    setSavedFlash("tavily");
+    setTimeout(() => setSavedFlash((x) => (x === "tavily" ? null : x)), 1500);
   };
 
   const removeTavily = () => {
@@ -117,7 +119,7 @@ export function SettingsPane() {
     const v = githubDraft.trim();
     if (!v) return;
     setServiceKey("github_pat", v);
-    setGithubDraft("");
+    setGithubDraft(v);
     setSavedFlash("github_pat");
     setTimeout(() => setSavedFlash((x) => (x === "github_pat" ? null : x)), 1500);
     setGithubTestState({ phase: "idle" });
