@@ -260,6 +260,7 @@ function buildDecorations(state: EditorState): DecorationSet {
         const level = name === "SetextHeading1" ? 1 : 2;
         const startLine = doc.lineAt(nFrom).number;
         const endLine = doc.lineAt(nTo).number;
+        if (lineActive(doc.line(endLine).from)) return;
         for (let ln = startLine; ln < endLine; ln++) {
           builder.push(
             Decoration.line({ class: `cm-h cm-h${level}` }).range(doc.line(ln).from),
@@ -389,7 +390,9 @@ function buildDecorations(state: EditorState): DecorationSet {
       }
 
       if (name === "HorizontalRule") {
-        builder.push(Decoration.line({ class: "cm-hr" }).range(doc.lineAt(nFrom).from));
+        if (!lineActive(nFrom)) {
+          builder.push(Decoration.line({ class: "cm-hr" }).range(doc.lineAt(nFrom).from));
+        }
         return;
       }
     },
