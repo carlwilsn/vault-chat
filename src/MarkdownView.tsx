@@ -213,8 +213,9 @@ export function MarkdownView({ paneId }: Props) {
   const currentContent = useStore((s) => s.currentContent);
   const panes = useStore((s) => s.panes);
   const activePaneId = useStore((s) => s.activePaneId);
-  const mode = useStore((s) => s.mode);
-  const toggleMode = useStore((s) => s.toggleMode);
+  const globalMode = useStore((s) => s.mode);
+  const toggleGlobalMode = useStore((s) => s.toggleMode);
+  const togglePaneMode = useStore((s) => s.togglePaneMode);
   const reloadCurrent = useStore((s) => s.reloadCurrent);
   const setActivePane = useStore((s) => s.setActivePane);
   const closePane = useStore((s) => s.closePane);
@@ -223,6 +224,10 @@ export function MarkdownView({ paneId }: Props) {
   const pane = paneId ? panes.find((p) => p.id === paneId) : null;
   const file = pane ? pane.file : currentFile;
   const content = pane ? pane.content : currentContent;
+  // Each pane carries its own view/edit mode so split panes can show
+  // one rendered + one editor at the same time.
+  const mode = pane ? pane.mode : globalMode;
+  const toggleMode = paneId ? () => togglePaneMode(paneId) : toggleGlobalMode;
   const isActive = paneId ? paneId === activePaneId : true;
   const inSplit = panes.length > 0;
 

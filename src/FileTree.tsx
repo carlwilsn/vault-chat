@@ -375,8 +375,15 @@ export function FileTree() {
         setCurrentFile(path, content);
         // A brand-new file is empty — there's nothing to *view*, so
         // landing in view mode just shows a blank pane and forces an
-        // extra Ctrl+E. Drop straight into the editor.
-        setMode("edit");
+        // extra Ctrl+E. Drop straight into the editor. In split mode
+        // the active pane carries its own mode, so flip that one
+        // rather than the global default.
+        const s = useStore.getState();
+        if (s.activePaneId && s.panes.some((p) => p.id === s.activePaneId && p.mode !== "edit")) {
+          s.togglePaneMode(s.activePaneId);
+        } else if (!s.activePaneId) {
+          setMode("edit");
+        }
         if (vaultPath) {
           const rel = path.startsWith(vaultPath + "/")
             ? path.slice(vaultPath.length + 1)

@@ -171,7 +171,15 @@ export default function App() {
       if (k === "e") {
         if (!currentFile) return;
         e.preventDefault();
-        toggleMode();
+        // In split mode, Ctrl+E toggles only the active pane so users
+        // can read one note while editing another. Falls back to the
+        // global mode when there are no panes.
+        const st = useStore.getState();
+        if (st.activePaneId && st.panes.some((p) => p.id === st.activePaneId)) {
+          st.togglePaneMode(st.activePaneId);
+        } else {
+          toggleMode();
+        }
       } else if (k === "b" && !e.shiftKey) {
         e.preventDefault();
         toggleLeft();

@@ -100,7 +100,7 @@ function todosEqual(a: TodoItem[], b: TodoItem[]): boolean {
   return true;
 }
 
-export type Pane = { id: string; file: string; content: string };
+export type Pane = { id: string; file: string; content: string; mode: "view" | "edit" };
 export type SplitDirection = "horizontal" | "vertical" | null;
 export type DropSide = "left" | "right" | "top" | "bottom";
 
@@ -433,6 +433,7 @@ type State = {
   setShowSettings: (b: boolean) => void;
   setMode: (m: "view" | "edit") => void;
   toggleMode: () => void;
+  togglePaneMode: (paneId: string) => void;
   toggleLeft: () => void;
   toggleRight: () => void;
   setPopoutOpen: (b: boolean) => void;
@@ -757,8 +758,10 @@ export const useStore = create<State>((set) => ({
         return { currentFile: path, currentContent: content };
       }
       const direction: SplitDirection = side === "left" || side === "right" ? "horizontal" : "vertical";
-      const newPane: Pane = { id: newPaneId(), file: path, content };
-      const existingPane: Pane = { id: newPaneId(), file: existingFile, content: existingContent };
+      // Splitting inherits the global mode for both panes — that's
+      // the user's last choice. Per-pane toggle takes over from there.
+      const newPane: Pane = { id: newPaneId(), file: path, content, mode: s.mode };
+      const existingPane: Pane = { id: newPaneId(), file: existingFile, content: existingContent, mode: s.mode };
       const panes =
         side === "left" || side === "top" ? [newPane, existingPane] : [existingPane, newPane];
       return {
@@ -839,11 +842,12 @@ export const useStore = create<State>((set) => ({
       }
 
       if (s.panes.length === 0) {
-        const newPane: Pane = { id: newPaneId(), file: path, content };
+        const newPane: Pane = { id: newPaneId(), file: path, content, mode: s.mode };
         const existingPane: Pane = {
           id: newPaneId(),
           file: s.currentFile!,
           content: s.currentContent,
+          mode: s.mode,
         };
         const panes =
           side === "left" || side === "top" ? [newPane, existingPane] : [existingPane, newPane];
@@ -872,7 +876,7 @@ export const useStore = create<State>((set) => ({
 
       const activeIdx = s.panes.findIndex((p) => p.id === s.activePaneId);
       const keep = s.panes[activeIdx >= 0 ? activeIdx : 0];
-      const newPane: Pane = { id: newPaneId(), file: path, content };
+      const newPane: Pane = { id: newPaneId(), file: path, content, mode: keep.mode };
       const panes =
         side === "left" || side === "top" ? [newPane, keep] : [keep, newPane];
       return {
@@ -974,6 +978,12 @@ export const useStore = create<State>((set) => ({
   setShowSettings: (b) => set({ showSettings: b }),
   setMode: (m) => set({ mode: m }),
   toggleMode: () => set((s) => ({ mode: s.mode === "view" ? "edit" : "view" })),
+  togglePaneMode: (paneId) =>
+    set((s) => ({
+      panes: s.panes.map((p) =>
+        p.id === paneId ? { ...p, mode: p.mode === "view" ? "edit" : "view" } : p,
+      ),
+    })),
   toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
   toggleRight: () =>
     // No-op while the chat is popped out — the right pane doesn't
@@ -1213,6 +1223,7 @@ export const useStore = create<State>((set) => ({
               id: prev.panes[i]?.id ?? `popout-${i}`,
               file: p,
               content: "",
+              mode: prev.panes[i]?.mode ?? ("view" as const),
             }))
           : prev.panes;
       return {
