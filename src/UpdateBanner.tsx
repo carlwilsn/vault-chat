@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { Sparkles, X, RefreshCcw } from "lucide-react";
+import { Sparkles, X, RefreshCcw, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "./ui";
 
 type Phase =
@@ -11,13 +11,11 @@ type Phase =
   | { kind: "installing" }
   | { kind: "error"; message: string };
 
-// Dev mode: the updater plugin throws on `check()` because there's no
-// installed binary to compare against. Detect that and stay silent so we
-// don't spam errors during local dev.
 const isDev = import.meta.env.DEV;
 
 export function UpdateBanner() {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   useEffect(() => {
     if (isDev) return;
@@ -38,9 +36,6 @@ export function UpdateBanner() {
 
   if (phase.kind === "idle" || phase.kind === "error") return null;
 
-  // Session-scoped dismiss: hide for this run only. The next launch
-  // re-runs check() and shows the banner again if the update is still
-  // outstanding — so "Later" really means "later," not "never."
   const dismiss = () => setPhase({ kind: "idle" });
 
   const install = async () => {
@@ -96,8 +91,23 @@ export function UpdateBanner() {
       {phase.kind === "available" && (
         <div className="p-3 space-y-2.5">
           {phase.update.body && (
-            <div className="text-[11.5px] text-muted-foreground/90 leading-relaxed max-h-32 overflow-auto whitespace-pre-wrap">
-              {phase.update.body}
+            <div>
+              <button
+                onClick={() => setDetailsOpen((v) => !v)}
+                className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+              >
+                {detailsOpen ? (
+                  <ChevronUp className="h-3 w-3" />
+                ) : (
+                  <ChevronDown className="h-3 w-3" />
+                )}
+                {detailsOpen ? "Hide details" : "What's new"}
+              </button>
+              {detailsOpen && (
+                <div className="mt-2 text-[11.5px] text-muted-foreground/90 leading-relaxed max-h-48 overflow-auto whitespace-pre-wrap border-l-2 border-border pl-2.5">
+                  {phase.update.body}
+                </div>
+              )}
             </div>
           )}
           <div className="flex gap-2">
