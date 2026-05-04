@@ -5180,7 +5180,7 @@ dependencies = [
 
 [[package]]
 name = "vault-chat"
-version = "0.1.28"
+version = "0.1.35"
 dependencies = [
  "glob",
  "keyring",

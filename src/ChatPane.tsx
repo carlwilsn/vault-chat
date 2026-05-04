@@ -582,59 +582,59 @@ export function ChatPane() {
             new messages
           </button>
         )}
-        {skillMention && filteredSkills.length > 0 && (
-          <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg">
-            {filteredSkills.slice(0, 8).map((s, i) => (
-              <div
-                key={s.name}
-                className={cn(
-                  "flex items-baseline gap-3 px-3 py-2 cursor-pointer border-b border-border/40 last:border-b-0",
-                  i === skillMentionIdx ? "bg-accent" : "hover:bg-accent/60",
-                )}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  pickSkill(s.name);
-                }}
-                onMouseEnter={() => setSkillMentionIdx(i)}
-              >
-                <span className="text-primary font-mono text-[12.5px] font-medium shrink-0">/{s.name}</span>
-                {s.description && (
-                  <span className="text-muted-foreground text-[11px] truncate">
-                    {s.description}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        {fileMention && matchedFiles.length > 0 && (
-          <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg">
-            {matchedFiles.map((f, i) => (
-              <div
-                key={f.path}
-                className={cn(
-                  "flex items-baseline gap-3 px-3 py-2 cursor-pointer border-b border-border/40 last:border-b-0",
-                  i === fileMentionIdx ? "bg-accent" : "hover:bg-accent/60",
-                )}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  pickMention(f);
-                }}
-                onMouseEnter={() => setFileMentionIdx(i)}
-              >
-                <span className="text-primary font-mono text-[12.5px] font-medium shrink-0 max-w-[50%] truncate">
-                  {f.name}
-                </span>
-                <span className="text-muted-foreground text-[11px] truncate font-mono">
-                  {f.rel}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
 
         <div className="p-3 max-w-[820px] mx-auto w-full">
           <div className="relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors">
+            {skillMention && filteredSkills.length > 0 && (
+              <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg z-10">
+                {filteredSkills.slice(0, 8).map((s, i) => (
+                  <div
+                    key={s.name}
+                    className={cn(
+                      "flex items-baseline gap-3 px-3 py-2 cursor-pointer border-b border-border/40 last:border-b-0",
+                      i === skillMentionIdx ? "bg-accent" : "hover:bg-accent/60",
+                    )}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      pickSkill(s.name);
+                    }}
+                    onMouseEnter={() => setSkillMentionIdx(i)}
+                  >
+                    <span className="text-primary font-mono text-[12.5px] font-medium shrink-0">/{s.name}</span>
+                    {s.description && (
+                      <span className="text-muted-foreground text-[11px] truncate">
+                        {s.description}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            {fileMention && matchedFiles.length > 0 && (
+              <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg z-10">
+                {matchedFiles.map((f, i) => (
+                  <div
+                    key={f.path}
+                    className={cn(
+                      "flex items-baseline gap-3 px-3 py-2 cursor-pointer border-b border-border/40 last:border-b-0",
+                      i === fileMentionIdx ? "bg-accent" : "hover:bg-accent/60",
+                    )}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      pickMention(f);
+                    }}
+                    onMouseEnter={() => setFileMentionIdx(i)}
+                  >
+                    <span className="text-primary font-mono text-[12.5px] font-medium shrink-0 max-w-[50%] truncate">
+                      {f.name}
+                    </span>
+                    <span className="text-muted-foreground text-[11px] truncate font-mono">
+                      {f.rel}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
             {pendingImages.length > 0 && (
               <div className="flex flex-wrap gap-2 px-3 pt-2">
                 {pendingImages.map((img, i) => {
