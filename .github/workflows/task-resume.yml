@@ -65,3 +65,10 @@ jobs:
             --add-label "auto-fix:queued" || true
           gh issue comment "$N" --repo "${{ github.repository }}" \
             --body "🤖 Routed to the implementer queue. The cloud agent will pick this up on its next run."
+          # Label changes made via GITHUB_TOKEN don't fire `on: issues`
+          # workflow events (the same loop-prevention safeguard that
+          # affects pushes), so the auto-fix:queued add above is
+          # invisible to implementer.yml's listener and the issue would
+          # otherwise sit forever. Dispatch the implementer directly —
+          # workflow_dispatch fires regardless of token.
+          gh workflow run implementer.yml --repo "${{ github.repository }}" -f issue_number="$N" || true
