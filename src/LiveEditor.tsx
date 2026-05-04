@@ -13,7 +13,7 @@ import { EditorView, Decoration, keymap, WidgetType } from "@codemirror/view";
 import type { DecorationSet } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { Table } from "@lezer/markdown";
-import { syntaxTree } from "@codemirror/language";
+import { syntaxTree, indentUnit } from "@codemirror/language";
 import { history, historyKeymap, defaultKeymap, indentWithTab } from "@codemirror/commands";
 import katex from "katex";
 import {
@@ -642,10 +642,11 @@ export function LiveEditor({
             return true;
           },
         },
+        indentWithTab,
         ...defaultKeymap,
         ...historyKeymap,
-        indentWithTab,
       ]),
+      indentUnit.of("  "),
       markdown({ extensions: [Table] }),
       livePreviewField,
       liveTheme,
