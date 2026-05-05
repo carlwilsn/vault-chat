@@ -152,6 +152,26 @@ class BulletWidget extends WidgetType {
   }
 }
 
+// Replaces the `---` (or `***`/`___`) source on a horizontal-rule line
+// with a thin rule that mirrors view mode's <hr>. Click the line and
+// `lineActive` flips, so the widget is dropped and the raw chars come
+// back for editing — matching the in-place "click to reveal source"
+// pattern the rest of the editor uses.
+class HrWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = "cm-hr-widget";
+    el.setAttribute("aria-hidden", "true");
+    return el;
+  }
+  ignoreEvent() {
+    return false;
+  }
+}
+
 class MathWidget extends WidgetType {
   constructor(readonly src: string, readonly display: boolean) {
     super();
@@ -391,7 +411,9 @@ function buildDecorations(state: EditorState): DecorationSet {
 
       if (name === "HorizontalRule") {
         if (!lineActive(nFrom)) {
-          builder.push(Decoration.line({ class: "cm-hr" }).range(doc.lineAt(nFrom).from));
+          builder.push(
+            Decoration.replace({ widget: new HrWidget() }).range(nFrom, nTo),
+          );
         }
         return;
       }
@@ -554,11 +576,12 @@ const liveTheme = EditorView.theme({
     height: "0 !important",
     overflow: "hidden",
   },
-  ".cm-hr": {
-    borderTop: "1px solid hsl(var(--border))",
-    paddingTop: "1em",
-    paddingBottom: "1em",
-    color: "transparent",
+  ".cm-hr-widget": {
+    display: "inline-block",
+    width: "100%",
+    height: "1px",
+    background: "hsl(var(--border))",
+    verticalAlign: "middle",
   },
   ".cm-math-block": { display: "block", padding: "0.5em 0", textAlign: "center" },
   ".cm-math-src": {
@@ -649,7 +672,7 @@ export function LiveEditor({
         ...defaultKeymap,
         ...historyKeymap,
       ]),
-      indentUnit.of("  "),
+      indentUnit.of("    "),
       markdown({ extensions: [Table] }),
       livePreviewField,
       liveTheme,
