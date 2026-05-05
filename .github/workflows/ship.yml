@@ -83,16 +83,32 @@ jobs:
           if [ -z "$LAST_TAG" ]; then
             echo "First release — proceeding"
             echo "has_changes=true" >> $GITHUB_OUTPUT
+            RANGE="HEAD"
           else
             COUNT=$(git rev-list --count "$LAST_TAG"..HEAD)
             if [ "$COUNT" -gt 0 ]; then
               echo "$COUNT new commits since $LAST_TAG — shipping"
               echo "has_changes=true" >> $GITHUB_OUTPUT
+              RANGE="$LAST_TAG..HEAD"
             else
               echo "No new commits since $LAST_TAG — nothing to do"
               echo "has_changes=false" >> $GITHUB_OUTPUT
+              exit 0
             fi
           fi
+
+          # Build a human-readable changelog for the release body. This
+          # is what the in-app UpdateBanner shows verbatim, so keep it
+          # short — bullet per commit subject, skip the [skip ci]
+          # version bumps since they're noise to the user.
+          {
+            echo "notes<<NOTES_EOF"
+            git log --pretty=format:'- %s' --no-merges "$RANGE" \
+              | grep -v '\[skip ci\]' \
+              | head -50
+            echo
+            echo "NOTES_EOF"
+          } >> $GITHUB_OUTPUT
 
       - name: Type check
         if: steps.changes.outputs.has_changes == 'true'
@@ -135,8 +151,7 @@ jobs:
         with:
           tagName: v${{ steps.bump.outputs.version }}
           releaseName: vault-chat v${{ steps.bump.outputs.version }}
-          releaseBody: |
-            Auto-released from main. See the commit log for what changed.
+          releaseBody: ${{ steps.changes.outputs.notes }}
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
