@@ -172,9 +172,39 @@ function assertGlobAllowed(pattern: string, strict: boolean): void {
   }
 }
 
+// Throw if `absPath` lives under (or is) any entry in the vault's
+// .vaultchatdeny file. Read fresh per call so a user toggling
+// "Restrict from agent" mid-chat takes effect on the very next tool
+// invocation — the file is small, the IPC is sub-ms, and rebuilding
+// the toolset on every change would be a much bigger surface.
+async function assertNotDenied(absPath: string, vault: string): Promise<void> {
+  const np = absPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!nv) return;
+  if (np !== nv && !np.startsWith(nv + "/")) return; // outside vault — deny doesn't apply
+  const rel = np === nv ? "" : np.slice(nv.length + 1);
+  if (!rel) return;
+  let lines: string[];
+  try {
+    lines = await invoke<string[]>("read_deny_lines", { vault });
+  } catch {
+    return;
+  }
+  for (const entry of lines) {
+    const e = entry.replace(/\\/g, "/").replace(/\/+$/, "").replace(/^\/+/, "");
+    if (!e) continue;
+    if (rel === e || rel.startsWith(e + "/")) {
+      throw new Error(
+        `Refused: '${rel}' is restricted from the agent (.vaultchatdeny). Right-click → "Allow agent access" in the file tree to revoke.`,
+      );
+    }
+  }
+}
+
 export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   const { metaPath = null, tavilyKey, strictVault = false, bashDisabled = false } = options;
   const guardPath = (path: string) => assertAllowed(path, vault, metaPath, strictVault);
+  const guardDenied = (path: string) => assertNotDenied(path, vault);
   const base = {
     Read: tool({
       description:
@@ -184,6 +214,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       }),
       execute: async ({ path }) => {
         guardPath(path);
+        await guardDenied(path);
         const raw = await invoke<string>("read_text_file", { path });
         const text = path.toLowerCase().endsWith(".ipynb") ? stripNotebook(raw) : raw;
         return truncate(text, READ_CAP);
@@ -199,6 +230,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       }),
       execute: async ({ path, contents }) => {
         guardPath(path);
+        await guardDenied(path);
         await invoke("write_text_file", { path, contents });
         return `wrote ${path}`;
       },
@@ -212,6 +244,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       }),
       execute: async ({ path }) => {
         guardPath(path);
+        await guardDenied(path);
         await invoke("delete_file", { path });
         return `deleted ${path}`;
       },
@@ -228,6 +261,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       }),
       execute: async ({ path, old_string, new_string, replace_all }) => {
         guardPath(path);
+        await guardDenied(path);
         return await invoke<string>("edit_text_file", {
           path,
           oldString: old_string,
@@ -265,7 +299,10 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         max_results: z.number().int().optional(),
       }),
       execute: async ({ pattern, path, glob_filter, case_insensitive, max_results }) => {
-        if (path) guardPath(path);
+        if (path) {
+          guardPath(path);
+          await guardDenied(path);
+        }
         const results = await invoke<{ path: string; line: number; text: string }[]>(
           "grep_files",
           {
@@ -277,7 +314,21 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           }
         );
         if (!results.length) return "(no matches)";
-        return truncate(results.map((r) => `${r.path}:${r.line}: ${r.text}`).join("\n"), SHORT_CAP);
+        // Filter denied paths from results so a directory grep can't
+        // surface content from a restricted subtree even when the
+        // search path itself is allowed.
+        const denyLines = await invoke<string[]>("read_deny_lines", { vault }).catch(() => [] as string[]);
+        const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
+        const denyRels = denyLines.map((l) => l.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "")).filter(Boolean);
+        const isDenied = (abs: string): boolean => {
+          const np = abs.replace(/\\/g, "/").replace(/\/+$/, "");
+          if (!np.startsWith(nv + "/") && np !== nv) return false;
+          const rel = np === nv ? "" : np.slice(nv.length + 1);
+          return denyRels.some((e) => rel === e || rel.startsWith(e + "/"));
+        };
+        const kept = results.filter((r) => !isDenied(r.path));
+        if (!kept.length) return "(no matches)";
+        return truncate(kept.map((r) => `${r.path}:${r.line}: ${r.text}`).join("\n"), SHORT_CAP);
       },
     }),
 
@@ -290,6 +341,25 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         timeout_ms: z.number().int().optional(),
       }),
       execute: async ({ command, cwd, timeout_ms }) => {
+        // Best-effort deny gate for Bash: refuse if the command string
+        // mentions a restricted path (relative or absolute). Catches the
+        // obvious `cat secrets/x` case; doesn't catch glob expansion or
+        // env-var indirection — Bash is fundamentally an escape hatch
+        // and the user accepts that by enabling it.
+        try {
+          const denyLines = await invoke<string[]>("read_deny_lines", { vault });
+          const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
+          for (const raw of denyLines) {
+            const rel = raw.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+            if (!rel) continue;
+            const abs = `${nv}/${rel}`;
+            if (command.includes(rel) || command.includes(abs)) {
+              return `Refused: command references restricted path '${rel}' (.vaultchatdeny). Right-click → "Allow agent access" in the file tree to revoke.`;
+            }
+          }
+        } catch {
+          // No deny file or read failed — fall through, original behaviour.
+        }
         const result = await invoke<{
           stdout: string;
           stderr: string;
@@ -330,6 +400,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       execute: async ({ path, action, cell_index, source, cell_type }) => {
         try {
           guardPath(path);
+          await guardDenied(path);
           const raw = await invoke<string>("read_text_file", { path });
           const nb = JSON.parse(raw);
           if (!nb || !Array.isArray(nb.cells)) {
@@ -411,6 +482,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       execute: async ({ path, pages }) => {
         try {
           guardPath(path);
+          await guardDenied(path);
           const text = await extractPdfText(path, pages);
           return truncate(text, PDF_CAP);
         } catch (e) {
@@ -531,12 +603,26 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       }),
       execute: async ({ path }) => {
         guardPath(path);
+        await guardDenied(path);
         const entries = await invoke<{ path: string; name: string; is_dir: boolean }[]>(
           "list_dir",
           { path }
         );
+        // Hide denied descendants from the listing too — otherwise the
+        // agent would see filenames inside a restricted folder even
+        // though it can't open them.
+        const denyLines = await invoke<string[]>("read_deny_lines", { vault }).catch(() => [] as string[]);
+        const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
+        const denyRels = denyLines.map((l) => l.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "")).filter(Boolean);
+        const isDenied = (abs: string): boolean => {
+          const np = abs.replace(/\\/g, "/").replace(/\/+$/, "");
+          if (!np.startsWith(nv + "/") && np !== nv) return false;
+          const rel = np === nv ? "" : np.slice(nv.length + 1);
+          return denyRels.some((e) => rel === e || rel.startsWith(e + "/"));
+        };
+        const kept = entries.filter((e) => !isDenied(e.path));
         return truncate(
-          entries.map((e) => `${e.is_dir ? "[dir] " : "      "}${e.name}`).join("\n"),
+          kept.map((e) => `${e.is_dir ? "[dir] " : "      "}${e.name}`).join("\n"),
           SHORT_CAP,
         );
       },

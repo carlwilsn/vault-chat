@@ -5,6 +5,13 @@ use std::process::Command;
 use walkdir::WalkDir;
 
 const IGNORE_FILE: &str = ".vaultchatignore";
+// Sibling list to .vaultchatignore. Same line format (one relative
+// path per line, # for comments). Where IGNORE only hides entries
+// from the file tree, DENY also blocks every agent file-touching
+// tool — Read, Write, Edit, Delete, Glob, Grep, ListDir, etc. — so
+// the user can mark "agent stays out of this" without affecting
+// their own browsing.
+const DENY_FILE: &str = ".vaultchatdeny";
 const NOTES_DIR: &str = ".vault-chat";
 const NOTES_FILE: &str = "notes.jsonl";
 
@@ -15,6 +22,7 @@ struct FileEntry {
     is_dir: bool,
     depth: usize,
     hidden: bool,
+    denied: bool,
 }
 
 // Extensions we hide from the file tree even though they exist on disk —
@@ -42,8 +50,11 @@ fn is_hidden_ext(ext: &str) -> bool {
     )
 }
 
-fn load_ignore_set(vault: &std::path::Path) -> HashSet<String> {
-    let path = vault.join(IGNORE_FILE);
+// Load a list-file (.vaultchatignore or .vaultchatdeny) into a set of
+// normalised relative paths. Empty lines and `#` comments are skipped;
+// leading/trailing slashes are stripped; back-slashes folded to `/`.
+fn load_list_set(vault: &std::path::Path, file: &str) -> HashSet<String> {
+    let path = vault.join(file);
     let mut set = HashSet::new();
     if let Ok(contents) = std::fs::read_to_string(&path) {
         for line in contents.lines() {
@@ -63,16 +74,31 @@ fn load_ignore_set(vault: &std::path::Path) -> HashSet<String> {
     set
 }
 
-fn is_hidden_path(rel_path: &str, ignored: &HashSet<String>) -> bool {
-    if ignored.contains(rel_path) {
+fn load_ignore_set(vault: &std::path::Path) -> HashSet<String> {
+    load_list_set(vault, IGNORE_FILE)
+}
+
+fn load_deny_set(vault: &std::path::Path) -> HashSet<String> {
+    load_list_set(vault, DENY_FILE)
+}
+
+// True when `rel_path` itself is in the set, OR any ancestor
+// directory of `rel_path` is in the set. Lets a single entry cover
+// a whole subtree without listing every descendant.
+fn is_listed_path(rel_path: &str, set: &HashSet<String>) -> bool {
+    if set.contains(rel_path) {
         return true;
     }
     for (i, _) in rel_path.match_indices('/') {
-        if ignored.contains(&rel_path[..i]) {
+        if set.contains(&rel_path[..i]) {
             return true;
         }
     }
     false
+}
+
+fn is_hidden_path(rel_path: &str, ignored: &HashSet<String>) -> bool {
+    is_listed_path(rel_path, ignored)
 }
 
 #[tauri::command]
@@ -88,6 +114,7 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
         return Err(format!("Not a directory: {}", vault));
     }
     let ignored = load_ignore_set(&root);
+    let denied = load_deny_set(&root);
     let mut entries: Vec<FileEntry> = Vec::new();
     for entry in WalkDir::new(&root)
         .sort_by(|a, b| {
@@ -126,69 +153,218 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
         }
         let rel_str = rel.to_string_lossy().replace('\\', "/");
         let hidden = is_hidden_path(&rel_str, &ignored);
+        let is_denied = is_listed_path(&rel_str, &denied);
         entries.push(FileEntry {
             path: path.to_string_lossy().replace('\\', "/"),
             name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
             is_dir,
             depth: rel.components().count().saturating_sub(1),
             hidden,
+            denied: is_denied,
         });
     }
     Ok(entries)
 }
 
+// Inner sync helpers below are file-name agnostic — called by both
+// the .vaultchatignore and .vaultchatdeny tauri commands so the
+// list-management logic only lives in one place.
+
+fn read_list_lines_sync(vault: &str, file: &str) -> Result<Vec<String>, String> {
+    let path = std::path::Path::new(vault).join(file);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let mut out: Vec<String> = Vec::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let normalized = trimmed
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .replace('\\', "/");
+        if !normalized.is_empty() {
+            out.push(normalized);
+        }
+    }
+    Ok(out)
+}
+
+fn add_to_list_sync(
+    vault: &str,
+    file: &str,
+    relative_path: &str,
+    empty_err: &str,
+) -> Result<(), String> {
+    let normalized = relative_path
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .replace('\\', "/");
+    if normalized.is_empty() {
+        return Err(empty_err.to_string());
+    }
+    let path = std::path::Path::new(vault).join(file);
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    for line in existing.lines() {
+        if line.trim() == normalized {
+            return Ok(());
+        }
+    }
+    let mut new_contents = existing;
+    if !new_contents.is_empty() && !new_contents.ends_with('\n') {
+        new_contents.push('\n');
+    }
+    new_contents.push_str(&normalized);
+    new_contents.push('\n');
+    std::fs::write(&path, new_contents).map_err(|e| e.to_string())
+}
+
+fn rename_in_list_sync(
+    vault: &str,
+    file: &str,
+    old_relative: &str,
+    new_relative: &str,
+) -> Result<(), String> {
+    let normalize = |p: &str| -> String {
+        p.trim_start_matches('/')
+            .trim_end_matches('/')
+            .replace('\\', "/")
+    };
+    let old_n = normalize(old_relative);
+    let new_n = normalize(new_relative);
+    if old_n.is_empty() || new_n.is_empty() || old_n == new_n {
+        return Ok(());
+    }
+    let path = std::path::Path::new(vault).join(file);
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+    let mut changed = false;
+    let prefix = format!("{}/", old_n);
+    let mut out_lines: Vec<String> = Vec::with_capacity(existing.lines().count());
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed == old_n {
+            changed = true;
+            out_lines.push(new_n.clone());
+        } else if trimmed.starts_with(&prefix) {
+            changed = true;
+            let suffix = &trimmed[prefix.len()..];
+            out_lines.push(format!("{}/{}", new_n, suffix));
+        } else {
+            out_lines.push(line.to_string());
+        }
+    }
+    if !changed {
+        return Ok(());
+    }
+    let mut new_contents = out_lines.join("\n");
+    if !new_contents.is_empty() && !new_contents.ends_with('\n') {
+        new_contents.push('\n');
+    }
+    std::fs::write(&path, new_contents).map_err(|e| e.to_string())
+}
+
+fn remove_prefix_from_list_sync(
+    vault: &str,
+    file: &str,
+    relative_prefixes: &[String],
+) -> Result<(), String> {
+    let prefixes: Vec<String> = relative_prefixes
+        .iter()
+        .map(|p| {
+            p.trim_start_matches('/')
+                .trim_end_matches('/')
+                .replace('\\', "/")
+        })
+        .filter(|p| !p.is_empty())
+        .collect();
+    if prefixes.is_empty() {
+        return Ok(());
+    }
+    let path = std::path::Path::new(vault).join(file);
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+    let mut changed = false;
+    let kept: Vec<&str> = existing
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            let drop = prefixes
+                .iter()
+                .any(|p| t == p || t.starts_with(&format!("{}/", p)));
+            if drop {
+                changed = true;
+            }
+            !drop
+        })
+        .collect();
+    if !changed {
+        return Ok(());
+    }
+    let new_contents = if kept.iter().all(|l| l.trim().is_empty()) {
+        String::new()
+    } else {
+        let mut s = kept.join("\n");
+        s.push('\n');
+        s
+    };
+    std::fs::write(&path, new_contents).map_err(|e| e.to_string())
+}
+
+fn remove_from_list_sync(
+    vault: &str,
+    file: &str,
+    relative_paths: &[String],
+) -> Result<(), String> {
+    let targets: HashSet<String> = relative_paths
+        .iter()
+        .map(|p| {
+            p.trim_start_matches('/')
+                .trim_end_matches('/')
+                .replace('\\', "/")
+        })
+        .filter(|p| !p.is_empty())
+        .collect();
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let path = std::path::Path::new(vault).join(file);
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+    let kept: Vec<&str> = existing
+        .lines()
+        .filter(|l| !targets.contains(l.trim()))
+        .collect();
+    let new_contents = if kept.iter().all(|l| l.trim().is_empty()) {
+        String::new()
+    } else {
+        let mut s = kept.join("\n");
+        s.push('\n');
+        s
+    };
+    std::fs::write(&path, new_contents).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn read_ignore_lines(vault: String) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let path = std::path::Path::new(&vault).join(IGNORE_FILE);
-        let contents = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return Ok(Vec::new()),
-        };
-        let mut out: Vec<String> = Vec::new();
-        for line in contents.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            let normalized = trimmed
-                .trim_start_matches('/')
-                .trim_end_matches('/')
-                .replace('\\', "/");
-            if !normalized.is_empty() {
-                out.push(normalized);
-            }
-        }
-        Ok(out)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || read_list_lines_sync(&vault, IGNORE_FILE))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 async fn add_to_ignore(vault: String, relative_path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let normalized = relative_path
-            .trim_start_matches('/')
-            .trim_end_matches('/')
-            .replace('\\', "/");
-        if normalized.is_empty() {
-            return Err("cannot hide vault root".to_string());
-        }
-        let path = std::path::Path::new(&vault).join(IGNORE_FILE);
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        for line in existing.lines() {
-            if line.trim() == normalized {
-                return Ok(());
-            }
-        }
-        let mut new_contents = existing;
-        if !new_contents.is_empty() && !new_contents.ends_with('\n') {
-            new_contents.push('\n');
-        }
-        new_contents.push_str(&normalized);
-        new_contents.push('\n');
-        std::fs::write(&path, new_contents).map_err(|e| e.to_string())
+        add_to_list_sync(&vault, IGNORE_FILE, &relative_path, "cannot hide vault root")
     })
     .await
     .map_err(|e| e.to_string())?
@@ -201,45 +377,7 @@ async fn rename_in_ignore(
     new_relative: String,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let normalize = |p: &str| -> String {
-            p.trim_start_matches('/')
-                .trim_end_matches('/')
-                .replace('\\', "/")
-        };
-        let old_n = normalize(&old_relative);
-        let new_n = normalize(&new_relative);
-        if old_n.is_empty() || new_n.is_empty() || old_n == new_n {
-            return Ok(());
-        }
-        let path = std::path::Path::new(&vault).join(IGNORE_FILE);
-        let existing = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return Ok(()),
-        };
-        let mut changed = false;
-        let prefix = format!("{}/", old_n);
-        let mut out_lines: Vec<String> = Vec::with_capacity(existing.lines().count());
-        for line in existing.lines() {
-            let trimmed = line.trim();
-            if trimmed == old_n {
-                changed = true;
-                out_lines.push(new_n.clone());
-            } else if trimmed.starts_with(&prefix) {
-                changed = true;
-                let suffix = &trimmed[prefix.len()..];
-                out_lines.push(format!("{}/{}", new_n, suffix));
-            } else {
-                out_lines.push(line.to_string());
-            }
-        }
-        if !changed {
-            return Ok(());
-        }
-        let mut new_contents = out_lines.join("\n");
-        if !new_contents.is_empty() && !new_contents.ends_with('\n') {
-            new_contents.push('\n');
-        }
-        std::fs::write(&path, new_contents).map_err(|e| e.to_string())
+        rename_in_list_sync(&vault, IGNORE_FILE, &old_relative, &new_relative)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -255,48 +393,7 @@ async fn remove_prefix_from_ignore(
     relative_prefixes: Vec<String>,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let prefixes: Vec<String> = relative_prefixes
-            .into_iter()
-            .map(|p| {
-                p.trim_start_matches('/')
-                    .trim_end_matches('/')
-                    .replace('\\', "/")
-            })
-            .filter(|p| !p.is_empty())
-            .collect();
-        if prefixes.is_empty() {
-            return Ok(());
-        }
-        let path = std::path::Path::new(&vault).join(IGNORE_FILE);
-        let existing = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return Ok(()),
-        };
-        let mut changed = false;
-        let kept: Vec<&str> = existing
-            .lines()
-            .filter(|l| {
-                let t = l.trim();
-                let drop = prefixes
-                    .iter()
-                    .any(|p| t == p || t.starts_with(&format!("{}/", p)));
-                if drop {
-                    changed = true;
-                }
-                !drop
-            })
-            .collect();
-        if !changed {
-            return Ok(());
-        }
-        let new_contents = if kept.iter().all(|l| l.trim().is_empty()) {
-            String::new()
-        } else {
-            let mut s = kept.join("\n");
-            s.push('\n');
-            s
-        };
-        std::fs::write(&path, new_contents).map_err(|e| e.to_string())
+        remove_prefix_from_list_sync(&vault, IGNORE_FILE, &relative_prefixes)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -305,35 +402,68 @@ async fn remove_prefix_from_ignore(
 #[tauri::command]
 async fn remove_from_ignore(vault: String, relative_paths: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let targets: HashSet<String> = relative_paths
-            .into_iter()
-            .map(|p| {
-                p.trim_start_matches('/')
-                    .trim_end_matches('/')
-                    .replace('\\', "/")
-            })
-            .filter(|p| !p.is_empty())
-            .collect();
-        if targets.is_empty() {
-            return Ok(());
-        }
-        let path = std::path::Path::new(&vault).join(IGNORE_FILE);
-        let existing = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return Ok(()),
-        };
-        let kept: Vec<&str> = existing
-            .lines()
-            .filter(|l| !targets.contains(l.trim()))
-            .collect();
-        let new_contents = if kept.iter().all(|l| l.trim().is_empty()) {
-            String::new()
-        } else {
-            let mut s = kept.join("\n");
-            s.push('\n');
-            s
-        };
-        std::fs::write(&path, new_contents).map_err(|e| e.to_string())
+        remove_from_list_sync(&vault, IGNORE_FILE, &relative_paths)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// .vaultchatdeny — orthogonal to .vaultchatignore. Where ignore hides
+// entries from the file tree, deny blocks every agent file-touching
+// tool. The user explicitly opts paths in via a right-click toggle;
+// the agent gets a clear error rather than a silent skip so it can
+// say "I can't read this — you've restricted it".
+
+#[tauri::command]
+async fn read_deny_lines(vault: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || read_list_lines_sync(&vault, DENY_FILE))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn add_to_deny(vault: String, relative_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        add_to_list_sync(
+            &vault,
+            DENY_FILE,
+            &relative_path,
+            "cannot restrict vault root",
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn rename_in_deny(
+    vault: String,
+    old_relative: String,
+    new_relative: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        rename_in_list_sync(&vault, DENY_FILE, &old_relative, &new_relative)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn remove_prefix_from_deny(
+    vault: String,
+    relative_prefixes: Vec<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        remove_prefix_from_list_sync(&vault, DENY_FILE, &relative_prefixes)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn remove_from_deny(vault: String, relative_paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        remove_from_list_sync(&vault, DENY_FILE, &relative_paths)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1639,6 +1769,7 @@ async fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
             is_dir: path.is_dir(),
             depth: 0,
             hidden: false,
+            denied: false,
         });
     }
     entries.sort_by(|a, b| {
@@ -2818,6 +2949,11 @@ pub fn run() {
             rename_in_ignore,
             remove_prefix_from_ignore,
             remove_from_ignore,
+            read_deny_lines,
+            add_to_deny,
+            rename_in_deny,
+            remove_prefix_from_deny,
+            remove_from_deny,
             notes_read,
             notes_append,
             notes_write_all,

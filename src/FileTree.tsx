@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff, FolderOpen, Plus, Upload } from "lucide-react";
+import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff, FolderOpen, Plus, Upload, Lock, Unlock } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { VAULT_PATH_MIME, VAULT_PATHS_MIME, isExternalFileDrop, copyExternalFilesInto } from "./dnd";
 import { cn } from "./lib/utils";
@@ -494,12 +494,15 @@ export function FileTree() {
 
   const deletePaths = async (paths: string[]) => {
     const deletedOk: string[] = [];
+    const failures: { path: string; error: string }[] = [];
     for (const p of paths) {
       try {
         await invoke("delete_file", { path: p });
         deletedOk.push(p);
       } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
         console.error("[delete]", p, e);
+        failures.push({ path: p, error: msg });
       }
     }
     if (deletedOk.length > 0) {
@@ -515,6 +518,14 @@ export function FileTree() {
             });
           } catch (e) {
             console.error("[delete] prune ignore failed:", e);
+          }
+          try {
+            await invoke("remove_prefix_from_deny", {
+              vault: vaultPath,
+              relativePrefixes: rels,
+            });
+          } catch (e) {
+            console.error("[delete] prune deny failed:", e);
           }
         }
       }
@@ -532,6 +543,16 @@ export function FileTree() {
           : `delete ${deletedOk.length} items`;
       commitFsAction(vaultPath, msg).catch(() => {});
     }
+    if (failures.length > 0) {
+      const lines = failures
+        .slice(0, 5)
+        .map((f) => `• ${f.path.split("/").pop()}: ${f.error}`)
+        .join("\n");
+      const more = failures.length > 5 ? `\n• …and ${failures.length - 5} more` : "";
+      alert(
+        `${failures.length} file${failures.length === 1 ? "" : "s"} couldn't be deleted:\n\n${lines}${more}\n\nIf any are open in another program (Excel, Word, etc.), close them and try again.`,
+      );
+    }
   };
 
   const hideEntry = async (f: FileEntry) => {
@@ -542,6 +563,34 @@ export function FileTree() {
       await refreshFiles();
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  // Add the entry to .vaultchatdeny so the agent's file-touching tools
+  // refuse it. The lock badge in the tree updates after refreshFiles
+  // returns the new `denied` flag from Rust.
+  const restrictEntry = async (f: FileEntry) => {
+    if (!vaultPath || !f.path.startsWith(vaultPath + "/")) return;
+    const rel = f.path.slice(vaultPath.length + 1);
+    try {
+      await invoke("add_to_deny", { vault: vaultPath, relativePath: rel });
+      await refreshFiles();
+    } catch (e) {
+      console.error("[restrict]", e);
+    }
+  };
+
+  // Remove the entry from .vaultchatdeny. No-op if the deny was via an
+  // ancestor — the user has to right-click the ancestor to revoke that
+  // case, since the lock at this row is inherited.
+  const unrestrictEntry = async (f: FileEntry) => {
+    if (!vaultPath || !f.path.startsWith(vaultPath + "/")) return;
+    const rel = f.path.slice(vaultPath.length + 1);
+    try {
+      await invoke("remove_from_deny", { vault: vaultPath, relativePaths: [rel] });
+      await refreshFiles();
+    } catch (e) {
+      console.error("[unrestrict]", e);
     }
   };
 
@@ -558,6 +607,14 @@ export function FileTree() {
         } catch (e) {
           console.error("[delete] prune ignore failed:", e);
         }
+        try {
+          await invoke("remove_prefix_from_deny", {
+            vault: vaultPath,
+            relativePrefixes: [rel],
+          });
+        } catch (e) {
+          console.error("[delete] prune deny failed:", e);
+        }
       }
       await applyDeleteCascade([f.path]);
       await refreshFiles();
@@ -566,7 +623,15 @@ export function FileTree() {
         commitFsAction(vaultPath, `delete ${rel}`).catch(() => {});
       }
     } catch (e) {
-      console.error(e);
+      // Surface the OS error to the user. Common case on Windows:
+      // the file is open in another program (Excel locks .xlsx, Word
+      // locks .docx, etc.) and the OS refuses the delete. Previously
+      // we just console.error'd which looked like a silent no-op.
+      console.error("[delete]", f.path, e);
+      const msg = e instanceof Error ? e.message : String(e);
+      alert(
+        `Couldn't delete ${f.name}.\n\n${msg}\n\nIf the file is open in another program (Excel, Word, etc.), close it and try again.`,
+      );
     }
   };
 
@@ -828,6 +893,12 @@ export function FileTree() {
                     <FileText className="h-3.5 w-3.5 shrink-0 opacity-70 ml-3.5" />
                   )}
                   <span className="truncate">{f.name.replace(/\.md$/, "")}</span>
+                  {f.denied && (
+                    <Lock
+                      className="h-3 w-3 shrink-0 ml-auto text-muted-foreground/70"
+                      aria-label="Restricted from agent"
+                    />
+                  )}
                 </div>
               )}
               {pending && pending.parent === f.path && (
@@ -949,6 +1020,27 @@ export function FileTree() {
               >
                 <EyeOff className="h-3.5 w-3.5 opacity-70" /> Hide
               </button>
+              {menu.entry!.denied ? (
+                <button
+                  className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                  onClick={() => {
+                    unrestrictEntry(menu.entry!);
+                    setMenu(null);
+                  }}
+                >
+                  <Unlock className="h-3.5 w-3.5 opacity-70" /> Allow agent access
+                </button>
+              ) : (
+                <button
+                  className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                  onClick={() => {
+                    restrictEntry(menu.entry!);
+                    setMenu(null);
+                  }}
+                >
+                  <Lock className="h-3.5 w-3.5 opacity-70" /> Restrict from agent
+                </button>
+              )}
               <button
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-destructive whitespace-nowrap"
                 onClick={() => {

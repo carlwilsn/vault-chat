@@ -21,6 +21,9 @@ export type FileEntry = {
   is_dir: boolean;
   depth: number;
   hidden: boolean;
+  // True when this path (or an ancestor) is in `.vaultchatdeny`. The
+  // file tree shows a lock badge; agent file-touching tools refuse it.
+  denied: boolean;
 };
 
 export type ChatRole = "user" | "assistant";
