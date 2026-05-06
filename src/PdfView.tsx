@@ -20,10 +20,14 @@ function clampZoom(z: number) {
 export function PdfView({ path }: { path: string }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  // Full plain-text dump of the PDF, used as ask-mode context when
-  // nothing is selected (or as the "before"/"after" pool when the user
-  // has a text-layer selection).
-  const fullTextRef = useRef<string>("");
+  // Per-page plain-text dump of the PDF (index = page-1). Used to build
+  // the structured page-keyed ask-mode context when the user marquees a
+  // region — the canvas-overlap page (`bestPage`) tells us which entry
+  // is "current," and adjacent entries become PREV/NEXT context. Keeping
+  // pages separate (vs. one joined string) avoids the old indexOf-based
+  // anchor lookup, which could land on the wrong section of the doc and
+  // feed the model context for a different theorem entirely.
+  const pageTextsRef = useRef<string[]>([]);
   const [pages, setPages] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -82,7 +86,7 @@ export function PdfView({ path }: { path: string }) {
     const host = hostRef.current;
     if (!host) return;
     host.innerHTML = "";
-    fullTextRef.current = "";
+    pageTextsRef.current = [];
     setLoading(true);
     setError(null);
     setPages(0);
@@ -286,7 +290,7 @@ export function PdfView({ path }: { path: string }) {
         // Cheap relative to rendering (no rasterization); doesn't block
         // the UI. Marquee captures still work for visible pages even if
         // this hasn't completed yet — `textInRect` reads from the live
-        // text-layer DOM, not from `fullTextRef`.
+        // text-layer DOM, not from `pageTextsRef`.
         void (async () => {
           const allText: string[] = new Array(proxies.length).fill("");
           await Promise.all(
@@ -297,13 +301,13 @@ export function PdfView({ path }: { path: string }) {
                 const text = tc.items
                   .map((it) => (typeof it.str === "string" ? it.str : ""))
                   .join(" ");
-                allText[i] = `--- page ${i + 1} ---\n${text}`;
+                allText[i] = text;
               } catch {
                 /* ignore */
               }
             }),
           );
-          if (!cancelled) fullTextRef.current = allText.join("\n\n");
+          if (!cancelled) pageTextsRef.current = allText;
         })();
 
         const scroller = scrollRef.current;
@@ -551,22 +555,6 @@ export function PdfView({ path }: { path: string }) {
       // Need either text or an image to be useful.
       if (!captured && !image) return;
 
-      const full = fullTextRef.current;
-      let before = full.slice(-3000);
-      let after = "";
-      if (captured) {
-        const idx = full.indexOf(
-          captured.slice(0, Math.min(80, captured.length)),
-        );
-        if (idx >= 0) {
-          before = full.slice(Math.max(0, idx - 3000), idx);
-          after = full.slice(
-            idx + captured.length,
-            Math.min(full.length, idx + captured.length + 3000),
-          );
-        }
-      }
-
       setMarqueeOn(false);
       // Drag direction — popover opens on the side the mouse ended.
       // Treat a pure-vertical or pure-horizontal drag as +1 on the
@@ -593,6 +581,37 @@ export function PdfView({ path }: { path: string }) {
         }
       }
       const sourceAnchor = bestPage ? `page=${bestPage}` : null;
+
+      // Page-keyed context: instead of the (buggy) indexOf-based slice
+      // of a joined full-text string, use the canvas-overlap page as
+      // ground truth. PREV/NEXT come from adjacent entries in
+      // `pageTextsRef`. before/after still get filled (so the
+      // chat-transplant hidden preamble has something), and pdfContext
+      // carries the structured form for the ask agent to reason from.
+      const PAGE_CHAR_CAP = 3000;
+      const cap = (s: string) =>
+        s.length > PAGE_CHAR_CAP ? s.slice(0, PAGE_CHAR_CAP) + "…" : s;
+      const pageTexts = pageTextsRef.current;
+      const pageIdx = bestPage ? Number(bestPage) - 1 : -1;
+      const currentPageText =
+        pageIdx >= 0 && pageIdx < pageTexts.length ? pageTexts[pageIdx] ?? "" : "";
+      const prevPageText =
+        pageIdx > 0 ? pageTexts[pageIdx - 1] ?? "" : "";
+      const nextPageText =
+        pageIdx >= 0 && pageIdx + 1 < pageTexts.length ? pageTexts[pageIdx + 1] ?? "" : "";
+      const before = prevPageText ? cap(prevPageText) : "";
+      const after = nextPageText ? cap(nextPageText) : "";
+      const pdfContext =
+        pageIdx >= 0
+          ? {
+              pageNum: pageIdx + 1,
+              totalPages: pageTexts.length || pages,
+              fileName: path.split("/").pop() ?? path,
+              currentPageText: cap(currentPageText),
+              prevPageText: prevPageText ? cap(prevPageText) : null,
+              nextPageText: nextPageText ? cap(nextPageText) : null,
+            }
+          : undefined;
       // Marquee output is owned by whichever popup it feeds (chat
       // capture, edit-prompt, note, feedback, or a fresh inline-ask).
       // Don't stash in the global lastCapture — Ctrl+N is supposed to
@@ -684,6 +703,7 @@ export function PdfView({ path }: { path: string }) {
         language: "pdf",
         imageDataUrl: image ?? undefined,
         sourceAnchor: sourceAnchor ?? undefined,
+        pdfContext,
       });
     };
 

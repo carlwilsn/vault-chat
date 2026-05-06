@@ -139,12 +139,29 @@ const ASK_SYSTEM = `You are an assistant inside a text/code file viewer. The use
 
 You have read-only tools for fetching more context: Read, Glob, Grep, ListDir, PdfExtract, ListNotes, WebFetch, WebSearch. Use them only when you genuinely need more than the file excerpt provides — otherwise answer directly.
 
+When the user has captured a region from a PDF (a LOCATION line is present and an image is attached), the captured image is the primary subject of the question. Lead with what is visible in the image — describe the marqueed content first, then bring in surrounding-page text only as supporting context. The LOCATION line tells you exactly which page the user is on; trust it over any pattern-matching impulse from training data, and prefer the labeled CURRENT PAGE text over PREV/NEXT when they conflict. Do not invent theorem numbers, equation labels, or proof structure that isn't visible in the image or in the labeled page text.
+
 Answer in markdown. Be concise — this renders in a small popover. Use fenced code blocks for code. Use $$...$$ for display math (inline $...$ does not render here). Don't narrate tool use.`;
 
 export type AskEvent =
   | { kind: "text"; delta: string }
   | { kind: "thinking" }
   | { kind: "error"; message: string };
+
+// Structured page-keyed context for PDF marquees. Fixes the old
+// behavior where surrounding context was sliced from a single joined
+// full-text string via indexOf(captured snippet) — which could anchor
+// on the wrong page entirely if the snippet's prefix happened to match
+// elsewhere in the doc. Now the page comes from canvas-overlap geometry
+// (authoritative), and PREV/NEXT are direct page-array lookups.
+export type PdfAskContext = {
+  pageNum: number;
+  totalPages: number;
+  fileName: string;
+  currentPageText: string;
+  prevPageText: string | null;
+  nextPageText: string | null;
+};
 
 export type InlineAskParams = InlineEditParams & {
   vault: string;
@@ -155,6 +172,12 @@ export type InlineAskParams = InlineEditParams & {
   // model can see math, tables, and diagrams that text extraction
   // mangles.
   imageDataUrl?: string;
+  // PDF-only: when present, the first user turn uses a structured
+  // page-keyed context block (LOCATION + CURRENT/PREV/NEXT pages)
+  // instead of the flat before/after dump. before/after are still
+  // populated for the chat-transplant hidden preamble downstream, but
+  // the popover ask itself reads from this field exclusively.
+  pdfContext?: PdfAskContext;
   // User-attached files via @mention. Content is pre-loaded by the
   // caller (null for binaries) so we don't re-read here.
   attachedFiles?: Array<{ rel: string; path: string; content: string | null }>;
@@ -202,7 +225,9 @@ export async function* runInlineAsk(
   const messages: ModelMessage[] = [];
   const prior = p.priorTurns ?? [];
   const firstPrompt = prior[0]?.prompt ?? p.prompt;
-  let firstContent = buildContextBody(p, firstPrompt, p.attachedFiles);
+  let firstContent = p.pdfContext
+    ? buildPdfContextBody(p, firstPrompt, p.pdfContext, p.attachedFiles)
+    : buildContextBody(p, firstPrompt, p.attachedFiles);
 
   // If the caller supplied recent chat-pane history, prepend it to
   // the first turn's context body as a labelled transcript. The
@@ -269,6 +294,55 @@ export async function* runInlineAsk(
       yield { kind: "error", message: err?.message ?? String(err) };
     }
   }
+}
+
+// Build the first-turn user content for a PDF marquee ask. Layout:
+//
+//   LOCATION + CAPTURED TEXT first so the model frames its answer
+//   around "the user is on page N looking at this region." Image goes
+//   into the user content array separately (right after this text), so
+//   model order is: location label → image → labeled page texts →
+//   question. The QUESTION lands last because recency pulls a stronger
+//   signal from later content in the prompt.
+function buildPdfContextBody(
+  p: InlineAskParams,
+  instruction: string,
+  ctx: PdfAskContext,
+  attached?: Array<{ rel: string; path: string; content?: string | null }>,
+): string {
+  const parts: string[] = [];
+  parts.push(
+    `LOCATION: page ${ctx.pageNum} of ${ctx.totalPages} in ${ctx.fileName}`,
+  );
+  if (p.selection) {
+    parts.push(`CAPTURED TEXT (inside the marqueed rectangle):\n${p.selection}`);
+  } else {
+    parts.push(
+      "CAPTURED TEXT: (none — the rectangle has no extractable text; rely on the image)",
+    );
+  }
+  parts.push(
+    `CURRENT PAGE (page ${ctx.pageNum} — where the user is):\n${ctx.currentPageText || "(empty)"}`,
+  );
+  if (ctx.prevPageText) {
+    parts.push(`PREV PAGE (page ${ctx.pageNum - 1}):\n${ctx.prevPageText}`);
+  }
+  if (ctx.nextPageText) {
+    parts.push(`NEXT PAGE (page ${ctx.pageNum + 1}):\n${ctx.nextPageText}`);
+  }
+  if (attached && attached.length > 0) {
+    const blocks = attached.map((a) => {
+      if (a.content == null) {
+        return `@${a.rel} — absolute path: ${a.path} (binary or unreadable; call Read if you need contents)`;
+      }
+      return `@${a.rel} — absolute path: ${a.path}\n${a.content}`;
+    });
+    parts.push(
+      `ATTACHED FILES (the user referenced these with @mention; paths are authoritative, do not search for them):\n${blocks.join("\n\n")}`,
+    );
+  }
+  parts.push(`QUESTION:\n${instruction}`);
+  return parts.join("\n\n");
 }
 
 export function stripCodeFence(s: string): string {

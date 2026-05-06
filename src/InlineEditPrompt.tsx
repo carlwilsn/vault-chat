@@ -39,6 +39,21 @@ export type InlineEditAnchor = {
   dirY?: number;
 };
 
+// PDF marquees carry richer location info: the canvas-overlap page is
+// authoritative (computed from canvas geometry, not text matching), and
+// PREV/CURRENT/NEXT page text comes from a page-indexed array — so the
+// ask agent gets context that is anchored to where the user actually is
+// in the doc, not "wherever the captured snippet first matches in a
+// joined full-text string." Image leads, page label is explicit.
+export type PdfContext = {
+  pageNum: number;
+  totalPages: number;
+  fileName: string;
+  currentPageText: string;
+  prevPageText: string | null;
+  nextPageText: string | null;
+};
+
 export type InlineEditRequest = {
   anchor: InlineEditAnchor;
   selection: string;
@@ -51,6 +66,9 @@ export type InlineEditRequest = {
   // Optional source-location hint for when this request later becomes
   // a note — e.g. "page=3" for a PDF marquee, "L42" for a code cursor.
   sourceAnchor?: string;
+  // PDF-only: structured page-keyed context. When present, the ask
+  // agent uses this in place of the flat before/after dump.
+  pdfContext?: PdfContext;
 };
 
 const POPOVER_WIDTH = 416;
@@ -339,6 +357,7 @@ export function InlineEditPrompt({
           after: request.after,
           language: request.language,
           imageDataUrl: request.imageDataUrl,
+          pdfContext: request.pdfContext,
           attachedFiles,
           priorTurns: nextPrior,
           extraImages,
