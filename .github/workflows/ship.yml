@@ -1,25 +1,18 @@
 name: ship
 
-# Daily auto-release loop, plus push-triggered shipping when source under
-# src/** or src-tauri/** changes. The path filter keeps trivial commits
-# (workflow tweaks, docs, scripts) from burning a build; the daily cron
-# is the safety net so you never go more than 24h without a release if
-# you push something the path filter doesn't catch. Wakes up, checks if
-# there are any new commits on main since the last release tag, and if
-# so: bumps the patch version, commits the bump back to main with
-# [skip ci] (which prevents this workflow from re-firing on its own
-# version-bump push), builds + signs the Windows installer, and
-# publishes a GitHub Release with the updater manifest. The installed
-# app sees it on next launch.
+# Push-triggered shipping when source under src/** or src-tauri/**
+# changes. The path filter keeps trivial commits (workflow tweaks, docs,
+# scripts) from burning a build. Checks if there are any new commits on
+# main since the last release tag, and if so: bumps the patch version,
+# commits the bump back to main with [skip ci] (which prevents this
+# workflow from re-firing on its own version-bump push), builds + signs
+# the Windows installer, and publishes a GitHub Release with the updater
+# manifest. The installed app sees it on next launch.
 #
-# Manual escape hatch lives in release.yml — push a v* tag yourself if you
-# want to force a release outside the cron.
+# Manual escape hatch: push a v* tag yourself (release.yml), or
+# workflow_dispatch this from the Actions UI.
 
 on:
-  schedule:
-    # 11:00 UTC = 7am EDT / 6am EST. Tweak this if you want a different
-    # "morning digest" time.
-    - cron: "0 11 * * *"
   push:
     branches: [main]
     # Only ship when something that actually goes into the bundled app
