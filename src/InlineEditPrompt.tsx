@@ -153,6 +153,20 @@ export function InlineEditPrompt({
 
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Refs + state for the bottom-edge resize-to-expand handle. The
+  // result area defaults to a ~20-line cap; dragging the handle at the
+  // popup's bottom unfurls it (scroll-style) until either the user
+  // releases or there is no more content to reveal.
+  const popupRef = useRef<HTMLDivElement | null>(null);
+  const resultRef = useRef<HTMLDivElement | null>(null);
+  const [resultMaxHeight, setResultMaxHeight] = useState<number | null>(null);
+  // When the user starts resizing while the popover is bottom-anchored,
+  // we snapshot its current visual top and switch to top-anchored
+  // positioning. Vertical growth is then unambiguous (popup grows
+  // downward) and the handle tracks the cursor naturally — without
+  // this, a bottom-anchored popup's bottom edge can't move and the
+  // handle would stay glued to the viewport while the cursor drifts.
+  const [pinnedTop, setPinnedTop] = useState<number | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => inputRef.current?.focus(), 0);
@@ -604,6 +618,11 @@ export function InlineEditPrompt({
   useLayoutEffect(() => {
     if (dragged.current) return;
     setPlacement(computePlacement(request.anchor));
+    // A new anchor invalidates any user-driven resize — the popover is
+    // about to be repositioned, and a leftover pinnedTop would freeze
+    // it at the previous location.
+    setResultMaxHeight(null);
+    setPinnedTop(null);
   }, [request.anchor.left, request.anchor.top, request.anchor.bottom, request.anchor.right, request.anchor.dirX, request.anchor.dirY]);
 
   useEffect(() => {
@@ -655,14 +674,70 @@ export function InlineEditPrompt({
     window.addEventListener("pointerup", onUp);
   };
 
+  // Bottom-edge resize. Stop propagation so the popup-level move drag
+  // doesn't also fire, then capture pointer move/up on window for fast
+  // drags that fling the cursor outside the handle. Two caps on growth:
+  // the result area's natural scrollHeight (so dragging into empty
+  // space does nothing — the "no more text to show" stop), and the
+  // viewport's remaining vertical room (so the popup never slides off
+  // the bottom of the screen).
+  const onResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const popup = popupRef.current;
+    const result = resultRef.current;
+    if (!popup || !result) return;
+    const popupRect = popup.getBoundingClientRect();
+    setPinnedTop(popupRect.top - drag.y);
+    dragged.current = true;
+    const startY = e.clientY;
+    const startHeight = result.getBoundingClientRect().height;
+
+    const onMove = (ev: PointerEvent) => {
+      const r = resultRef.current;
+      const p = popupRef.current;
+      if (!r || !p) return;
+      ev.preventDefault();
+      const delta = ev.clientY - startY;
+      const desired = startHeight + delta;
+      const contentCap = r.scrollHeight;
+      const pRect = p.getBoundingClientRect();
+      const otherHeight = pRect.height - r.getBoundingClientRect().height;
+      const viewportCap = window.innerHeight - pRect.top - otherHeight - 8;
+      const cap = Math.min(contentCap, viewportCap);
+      setResultMaxHeight(Math.max(60, Math.min(desired, cap)));
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
   return createPortal(
     <div
+      ref={popupRef}
       className="fixed z-50 w-[416px] max-w-[90vw] rounded-md border border-border bg-card shadow-xl flex flex-col"
       style={{
         left: placement.left + drag.x,
-        top: placement.top != null ? placement.top + drag.y : undefined,
-        bottom: placement.bottom != null ? placement.bottom - drag.y : undefined,
-        maxHeight: placement.maxHeight,
+        top:
+          pinnedTop != null
+            ? pinnedTop + drag.y
+            : placement.top != null
+              ? placement.top + drag.y
+              : undefined,
+        bottom:
+          pinnedTop != null
+            ? undefined
+            : placement.bottom != null
+              ? placement.bottom - drag.y
+              : undefined,
+        maxHeight:
+          pinnedTop != null
+            ? `calc(100vh - ${pinnedTop + drag.y + 8}px)`
+            : placement.maxHeight,
         userSelect: dragging ? "none" : undefined,
         WebkitUserSelect: dragging ? "none" : undefined,
         cursor: dragging ? "grabbing" : undefined,
@@ -810,8 +885,14 @@ export function InlineEditPrompt({
       )}
       {(streaming || result || error) && (
         <div
+          ref={resultRef}
           className="prose-chat min-h-0 overflow-auto border-t border-border/60 px-3 py-2 text-foreground/90"
-          style={{ maxHeight: "calc(20 * 1lh + 1rem)" }}
+          style={{
+            maxHeight:
+              resultMaxHeight != null
+                ? `${resultMaxHeight}px`
+                : "calc(20 * 1lh + 1rem)",
+          }}
         >
           {error ? (
             <span className="text-destructive">{error}</span>
@@ -883,6 +964,15 @@ export function InlineEditPrompt({
         </div>
         <span className="opacity-70">Enter · Esc</span>
       </div>
+      {(streaming || result || error) && (
+        <div
+          className="h-1.5 cursor-ns-resize flex items-center justify-center group shrink-0"
+          onPointerDown={onResizePointerDown}
+          title="Drag to expand"
+        >
+          <div className="h-px w-12 bg-border/40 group-hover:bg-primary/60 transition-colors" />
+        </div>
+      )}
     </div>,
     document.body,
   );
