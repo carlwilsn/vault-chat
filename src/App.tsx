@@ -248,6 +248,21 @@ export default function App() {
     }
   }, [vaultPath, notesLoaded, loadNotes]);
 
+  // Sweep stale chat-pane captures on every vault activation. The
+  // user's mental model is "captures are for this session" — once a
+  // few hours pass, stick around past usefulness only as disk clutter.
+  // Saved chat history still renders the bubbles from data URLs, so
+  // pruning the disk copies only invalidates the path reference (used
+  // when the agent is asked to embed the image in a markdown file).
+  useEffect(() => {
+    if (!vaultPath) return;
+    const RETENTION_HOURS = 6;
+    void invoke("cleanup_old_captures", {
+      vault: vaultPath,
+      olderThanHours: RETENTION_HOURS,
+    }).catch((e) => console.warn("[captures] sweep failed:", e));
+  }, [vaultPath]);
+
   // Suppress webview defaults that bleed through and make the app feel
   // like a browser tab: Ctrl+F (find bar), Ctrl+R / F5 (reload),
   // Ctrl+P (print), Ctrl+S (save-page), and the native right-click

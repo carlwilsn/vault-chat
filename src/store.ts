@@ -31,6 +31,13 @@ export type ChatAttachment = {
   imageDataUrl: string;
   sourcePath?: string;
   sourceAnchor?: string | null;
+  // Vault-relative path where the capture's PNG bytes are saved on disk
+  // (e.g. ".vault-chat/captures/2026-05-07_142530-abc123.png"). Surfaced
+  // to the agent so it can reference the image in a markdown file via
+  // `![cap](.vault-chat/captures/...)`. Captures get pruned after the
+  // retention window, after which this path dangles — chat bubbles
+  // still render from the data URL.
+  capturedFilePath?: string;
 };
 
 export type ChatMessage = {

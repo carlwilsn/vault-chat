@@ -606,6 +606,50 @@ async fn write_text_file(path: String, contents: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Prune the `<vault>/.vault-chat/captures/` folder of files whose
+/// mtime is older than `older_than_hours`. Called on vault open so
+/// chat captures don't accumulate forever — the user's mental model is
+/// "captures are for this session"; once the session is over, the disk
+/// copies are disposable. The data URLs in saved chat history still
+/// render the bubbles, so deleting these files only invalidates the
+/// `capturedFilePath` reference (used to embed the image in a freshly
+/// authored markdown file). Returns the count of deleted files.
+#[tauri::command]
+async fn cleanup_old_captures(
+    vault: String,
+    older_than_hours: u64,
+) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = std::path::Path::new(&vault)
+            .join(".vault-chat")
+            .join("captures");
+        if !dir.exists() {
+            return Ok(0u64);
+        }
+        let now = std::time::SystemTime::now();
+        let cutoff = std::time::Duration::from_secs(older_than_hours * 3600);
+        let mut deleted: u64 = 0;
+        let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            let Ok(modified) = meta.modified() else { continue };
+            let Ok(age) = now.duration_since(modified) else { continue };
+            if age > cutoff {
+                if std::fs::remove_file(&path).is_ok() {
+                    deleted += 1;
+                }
+            }
+        }
+        Ok(deleted)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Write raw bytes to a path (creating parent dirs). Used by external
 /// drag-drop: the dropped File is read into an ArrayBuffer on the JS side
 /// and handed to us as Vec<u8>. If a file with the same name already
@@ -2933,6 +2977,7 @@ pub fn run() {
             read_binary_file,
             write_text_file,
             write_binary_file_unique,
+            cleanup_old_captures,
             copy_into_vault,
             delete_file,
             create_dir,

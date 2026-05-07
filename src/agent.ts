@@ -160,9 +160,24 @@ export async function runAgent(params: {
               { type: "text", text: safeUserText },
               ...attachableImages.flatMap((a) => {
                 const src = a.sourcePath ? a.sourcePath.split("/").pop() : null;
-                const caption = src
-                  ? `Captured region from ${src}${a.sourceAnchor ? ` (${a.sourceAnchor})` : ""}:`
-                  : "Captured region:";
+                const headParts: string[] = [];
+                headParts.push(
+                  src
+                    ? `Captured region from ${src}${a.sourceAnchor ? ` (${a.sourceAnchor})` : ""}`
+                    : "Captured region",
+                );
+                if (a.capturedFilePath) {
+                  // Surface the on-disk vault-relative path so the agent
+                  // can reference this image in tool calls — e.g. write a
+                  // markdown file that embeds it via
+                  // ![cap](.vault-chat/captures/foo.png). The file exists
+                  // for the rest of this session; if the user doesn't act
+                  // on it, the next app-start sweep prunes it.
+                  headParts.push(
+                    `saved at ${a.capturedFilePath} (vault-relative — reference this path in a markdown image link if the user asks for one)`,
+                  );
+                }
+                const caption = headParts.join("; ") + ":";
                 return [
                   { type: "text" as const, text: caption },
                   { type: "image" as const, image: new URL(a.imageDataUrl) },

@@ -32,6 +32,53 @@ const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
 const allowImageDataUrls = (url: string): string =>
   url.startsWith("data:image/") ? url : defaultUrlTransform(url);
 
+// Persist a chat-pane capture's PNG bytes to disk so the agent can
+// reference it from tools like `Write` (e.g. building a markdown file
+// that embeds the screenshot). Returns the vault-relative path on
+// success, or null on any failure — capture data URLs already render
+// in the bubble regardless, so a write failure is non-fatal.
+//
+// Files land in `<vault>/.vault-chat/captures/`; an app-start sweep
+// prunes anything older than CAPTURE_RETENTION_HOURS, so we don't
+// retain user data past the active session.
+async function saveCaptureToDisk(
+  vault: string,
+  imageDataUrl: string,
+): Promise<string | null> {
+  try {
+    const m = imageDataUrl.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+    if (!m) return null;
+    const ext = m[1] === "jpeg" ? "jpg" : m[1].toLowerCase();
+    const b64 = m[2];
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    // Timestamp + short random suffix so two near-simultaneous
+    // captures never collide before write_binary_file_unique's
+    // " (1)" rename kicks in.
+    const ts = new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-")
+      .replace(/T/, "_")
+      .slice(0, 19);
+    const suffix = Math.random().toString(36).slice(2, 7);
+    const name = `capture-${ts}-${suffix}.${ext}`;
+    const dir = `${vault}/.vault-chat/captures`;
+    const absPath = await invoke<string>("write_binary_file_unique", {
+      dir,
+      name,
+      bytes: Array.from(bytes),
+    });
+    if (absPath.startsWith(vault + "/")) {
+      return absPath.slice(vault.length + 1);
+    }
+    return absPath;
+  } catch (e) {
+    console.warn("[capture] disk save failed:", e);
+    return null;
+  }
+}
+
 // Fuzzy-ish file picker for @mentions. Query matches against file name
 // first (startsWith > contains), then against the relative path as a
 // fallback. Folders are excluded — attaching a whole folder isn't a
@@ -150,20 +197,43 @@ export function ChatPane() {
     return () => window.removeEventListener("mousedown", close);
   }, [recentsOpen]);
   const [pendingImages, setPendingImages] = useState<
-    Array<{ imageDataUrl: string; sourcePath?: string; sourceAnchor?: string | null }>
+    Array<{
+      imageDataUrl: string;
+      sourcePath?: string;
+      sourceAnchor?: string | null;
+      capturedFilePath?: string;
+    }>
   >([]);
   useEffect(() => {
     if (!chatPaneLastCapture) return;
+    const cap = chatPaneLastCapture;
+    setChatPaneLastCapture(null);
+    // Append immediately with the data URL so the thumbnail is instant;
+    // disk save runs async and patches the entry with capturedFilePath
+    // when ready. Sending before the patch lands is fine — the agent
+    // still sees the image via the data URL, just without a path
+    // reference for tool calls.
     setPendingImages((prev) => [
       ...prev,
       {
-        imageDataUrl: chatPaneLastCapture.imageDataUrl,
-        sourcePath: chatPaneLastCapture.sourcePath,
-        sourceAnchor: chatPaneLastCapture.sourceAnchor,
+        imageDataUrl: cap.imageDataUrl,
+        sourcePath: cap.sourcePath,
+        sourceAnchor: cap.sourceAnchor,
       },
     ]);
-    setChatPaneLastCapture(null);
-  }, [chatPaneLastCapture, setChatPaneLastCapture]);
+    if (vaultPath) {
+      void saveCaptureToDisk(vaultPath, cap.imageDataUrl).then((rel) => {
+        if (!rel) return;
+        setPendingImages((prev) =>
+          prev.map((img) =>
+            img.imageDataUrl === cap.imageDataUrl && !img.capturedFilePath
+              ? { ...img, capturedFilePath: rel }
+              : img,
+          ),
+        );
+      });
+    }
+  }, [chatPaneLastCapture, setChatPaneLastCapture, vaultPath]);
   const [input, setInput] = useState("");
   // Skill menu opens on a /word-boundary token at the caret — same
   // shape as fileMention so it can appear mid-message, not just at
