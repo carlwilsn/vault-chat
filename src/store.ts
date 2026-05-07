@@ -657,6 +657,20 @@ export const useStore = create<State>((set) => ({
         patch.panes = [];
         patch.splitDirection = null;
         patch.activePaneId = null;
+      } else if (panesAfter.length === 1) {
+        // Collapse back to single-pane mode. Leaving panes=[one] with
+        // splitDirection still set leaves the app in an inconsistent
+        // state: UI sees panes.length > 0 and thinks you're still
+        // split (so split actions are gated off), and setCurrentFile
+        // replaces the file in the lone surviving pane instead of
+        // opening a new split. The single-pane invariant is panes=[]
+        // + currentFile set, so collapse to that.
+        const survivor = panesAfter[0];
+        patch.panes = [];
+        patch.splitDirection = null;
+        patch.activePaneId = null;
+        patch.currentFile = survivor.file;
+        patch.currentContent = survivor.content;
       } else {
         patch.panes = panesAfter;
         const stillActive = panesAfter.some((p) => p.id === state.activePaneId);
