@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Annotation, EditorState, StateField } from "@codemirror/state";
+import { Annotation, EditorState, StateEffect, StateField } from "@codemirror/state";
 import type { Range, Extension } from "@codemirror/state";
+import { invoke } from "@tauri-apps/api/core";
 
 // Tag the programmatic `view.dispatch` we fire when the `value` prop
 // changes (file switch, external reload). The update listener uses
@@ -166,6 +167,124 @@ class HrWidget extends WidgetType {
     el.className = "cm-hr-widget";
     el.setAttribute("aria-hidden", "true");
     return el;
+  }
+  ignoreEvent() {
+    return false;
+  }
+}
+
+// Tracks which file this editor is showing, so ImageWidget can resolve
+// relative `![alt](./foo.png)` paths against the right base directory.
+// Set on mount and on file switch via `setCurrentFileEffect`. Read from
+// `buildDecorations` so the widget is constructed with a stable path.
+const setCurrentFileEffect = StateEffect.define<string | null>();
+const currentFileField = StateField.define<string | null>({
+  create: () => null,
+  update: (val, tr) => {
+    for (const e of tr.effects) {
+      if (e.is(setCurrentFileEffect)) return e.value;
+    }
+    return val;
+  },
+});
+
+// Resolve a possibly-relative image src against the file the editor
+// is showing. Mirrors MarkdownView's resolveRelative — copying the
+// behavior keeps the same image render in edit and view modes.
+function resolveImageSrc(baseFile: string, rel: string): string {
+  const cleaned = rel.replace(/^file:\/\/\/?/, "").split("#")[0].split("?")[0];
+  if (/^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned)) return cleaned;
+  const sep = baseFile.includes("\\") ? "\\" : "/";
+  const baseParts = baseFile.slice(0, baseFile.lastIndexOf(sep)).split(sep);
+  const relParts = cleaned.replace(/^\.\/+/, "").split(/[\/\\]/);
+  for (const p of relParts) {
+    if (p === "..") baseParts.pop();
+    else if (p && p !== ".") baseParts.push(p);
+  }
+  return baseParts.join(sep);
+}
+
+const IMAGE_EXT_MIME: Record<string, string> = {
+  svg: "image/svg+xml",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+};
+
+// Module-level cache so re-rendering the same image (e.g. after a
+// cursor move forces a buildDecorations pass) doesn't re-read bytes
+// from disk every time. Keyed by absolute path; value is the blob
+// URL we already minted. URLs are intentionally not revoked — the
+// cache lives for the life of the page, like the file tree's image
+// thumbnails. A typical doc has at most a handful of images.
+const imageBlobCache = new Map<string, string>();
+
+class ImageWidget extends WidgetType {
+  constructor(
+    readonly src: string,
+    readonly alt: string,
+    readonly baseFile: string | null,
+  ) {
+    super();
+  }
+  eq(other: ImageWidget) {
+    return (
+      other.src === this.src &&
+      other.alt === this.alt &&
+      other.baseFile === this.baseFile
+    );
+  }
+  toDOM() {
+    const wrap = document.createElement("span");
+    wrap.className = "cm-image-widget";
+    const img = document.createElement("img");
+    img.alt = this.alt;
+    wrap.appendChild(img);
+    // External / data / blob URLs go straight in. Local paths run
+    // through read_binary_file → blob URL because the webview can't
+    // load arbitrary file:// directly.
+    if (/^(https?:|data:|blob:)/i.test(this.src)) {
+      img.src = this.src;
+      return wrap;
+    }
+    if (!this.baseFile) {
+      // Editor wasn't given a base file — show the alt text in
+      // brackets as a graceful fallback, mirroring VaultImage.
+      const fallback = document.createElement("span");
+      fallback.className = "cm-image-fallback";
+      fallback.textContent = `[${this.alt || this.src}]`;
+      wrap.replaceChildren(fallback);
+      return wrap;
+    }
+    const resolved = resolveImageSrc(this.baseFile, this.src);
+    const cached = imageBlobCache.get(resolved);
+    if (cached) {
+      img.src = cached;
+      return wrap;
+    }
+    void (async () => {
+      try {
+        const bytes = await invoke<number[]>("read_binary_file", { path: resolved });
+        const dot = resolved.lastIndexOf(".");
+        const ext = dot > 0 ? resolved.slice(dot + 1).toLowerCase() : "";
+        const mime = IMAGE_EXT_MIME[ext] ?? `image/${ext || "png"}`;
+        const blob = new Blob([new Uint8Array(bytes)], { type: mime });
+        const url = URL.createObjectURL(blob);
+        imageBlobCache.set(resolved, url);
+        img.src = url;
+      } catch (err) {
+        console.warn("[live-editor] image load failed:", resolved, err);
+        const fallback = document.createElement("span");
+        fallback.className = "cm-image-fallback";
+        fallback.textContent = `[${this.alt || this.src}]`;
+        wrap.replaceChildren(fallback);
+      }
+    })();
+    return wrap;
   }
   ignoreEvent() {
     return false;
@@ -481,6 +600,31 @@ function buildDecorations(state: EditorState): DecorationSet {
     }
   }
 
+  // Image widgets — render `![alt](src)` inline so edit mode shows the
+  // same picture the view-mode renderer would. Click the line and
+  // `lineActive` flips, so the widget drops and the raw markdown is
+  // back for editing — same pattern as MathWidget / HrWidget.
+  if (text.indexOf("![") !== -1) {
+    const baseFile = state.field(currentFileField);
+    const imageRe = /!\[([^\]\n]*)\]\(([^)\n]+?)\)/g;
+    for (let ln = 1; ln <= doc.lines; ln++) {
+      const line = doc.line(ln);
+      if (line.text.indexOf("![") === -1) continue;
+      if (lineActive(line.from)) continue;
+      imageRe.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = imageRe.exec(line.text))) {
+        const s = line.from + m.index;
+        const e = s + m[0].length;
+        builder.push(
+          Decoration.replace({
+            widget: new ImageWidget(m[2].trim(), m[1], baseFile),
+          }).range(s, e),
+        );
+      }
+    }
+  }
+
   builder.sort((a, b) => a.from - b.from || a.value.startSide - b.value.startSide);
   return Decoration.set(builder, true);
 }
@@ -501,6 +645,12 @@ const livePreviewField = StateField.define<DecorationSet>({
   create: (state) => buildDecorations(state),
   update: (deco, tr) => {
     if (tr.docChanged) return buildDecorations(tr.state);
+    // Rebuild when the underlying file changes — image widgets capture
+    // the base path at construction so they can resolve relative srcs,
+    // and a stale cache would resolve against the previous file.
+    for (const e of tr.effects) {
+      if (e.is(setCurrentFileEffect)) return buildDecorations(tr.state);
+    }
     if (tr.selection) {
       const prev = activeLineSet(tr.startState);
       const next = activeLineSet(tr.state);
@@ -584,6 +734,22 @@ const liveTheme = EditorView.theme({
     verticalAlign: "middle",
   },
   ".cm-math-block": { display: "block", padding: "0.5em 0", textAlign: "center" },
+  ".cm-image-widget": {
+    display: "inline-block",
+    verticalAlign: "middle",
+    maxWidth: "100%",
+  },
+  ".cm-image-widget img": {
+    maxWidth: "100%",
+    maxHeight: "60vh",
+    height: "auto",
+    borderRadius: "4px",
+    display: "block",
+  },
+  ".cm-image-fallback": {
+    color: "hsl(var(--muted-foreground))",
+    fontStyle: "italic",
+  },
   ".cm-math-src": {
     color: "hsl(var(--tex-body))",
     fontFamily: '"Times New Roman", Cambria, Georgia, serif',
@@ -633,11 +799,16 @@ export function LiveEditor({
   onChange,
   initialScrollRatio,
   onScrollRatio,
+  file,
 }: {
   value: string;
   onChange: (next: string) => void;
   initialScrollRatio?: number;
   onScrollRatio?: (ratio: number) => void;
+  // Absolute path of the file this editor is showing. Used to resolve
+  // relative `![alt](./foo.png)` srcs against the right base directory
+  // so image widgets can read the bytes off disk.
+  file?: string | null;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -674,6 +845,7 @@ export function LiveEditor({
       ]),
       indentUnit.of("    "),
       markdown({ extensions: [Table] }),
+      currentFileField,
       livePreviewField,
       liveTheme,
       EditorView.lineWrapping,
@@ -705,6 +877,14 @@ export function LiveEditor({
       parent: hostRef.current,
     });
     viewRef.current = view;
+    // Seed the file path so the very first decoration build (which
+    // runs synchronously inside EditorState.create) sees a non-null
+    // baseFile. Without this, images render once with baseFile=null
+    // (showing the alt-text fallback) before the file-effect below
+    // fires and triggers a rebuild.
+    if (file) {
+      view.dispatch({ effects: setCurrentFileEffect.of(file) });
+    }
     if (initialScrollRatio && initialScrollRatio > 0) {
       requestAnimationFrame(() => {
         const el = view.scrollDOM;
@@ -717,6 +897,15 @@ export function LiveEditor({
       viewRef.current = null;
     };
   }, [extensions]);
+
+  // File switch within the same editor instance — push the new path
+  // through the StateEffect so livePreviewField rebuilds, getting
+  // image widgets re-anchored against the new base directory.
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({ effects: setCurrentFileEffect.of(file ?? null) });
+  }, [file]);
 
   useEffect(() => {
     const view = viewRef.current;

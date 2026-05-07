@@ -587,6 +587,7 @@ export function MarkdownView({ paneId }: Props) {
             onScrollRatio={(r) => {
               scrollRatioRef.current = r;
             }}
+            file={file}
           />
         </div>
       ) : showingEditor ? (
