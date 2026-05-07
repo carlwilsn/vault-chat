@@ -12,6 +12,11 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 5;
 const BASE_RENDER_SCALE = 1.5;
+// Cap on how much the rasterizer scales up with zoom. Beyond this, CSS
+// zoom takes over and the bitmap is upscaled (mild blur), but memory
+// stays bounded — at MAX_ZOOM × BASE_RENDER_SCALE × fitScale a long doc
+// would otherwise eat several GB of canvas memory.
+const RENDER_SCALE_CAP = 3;
 
 function clampZoom(z: number) {
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
@@ -43,6 +48,16 @@ export function PdfView({ path }: { path: string }) {
     y2: number;
   } | null>(null);
   const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
+  // Refs that let the zoom-change effect (below) call into the
+  // rendering machinery built inside the main `[path]`-scoped useEffect
+  // without re-running its setup. zoomRef tracks the current zoom so
+  // renderPage can read it at render time without going stale.
+  const zoomRef = useRef(1);
+  const pageStatesRef = useRef<
+    Array<{ rendered: boolean; renderTask: { cancel(): void } | null }>
+  >([]);
+  const renderPageRef = useRef<((idx: number) => Promise<void>) | null>(null);
+  const tearDownPageRef = useRef<((idx: number) => void) | null>(null);
 
   // Ctrl+M fires a `vc-marquee-toggle` window event from the top-level
   // keydown handler; each marquee-capable viewer listens and flips its
@@ -129,10 +144,21 @@ export function PdfView({ path }: { path: string }) {
       const wrap = wrappers[idx];
       if (!state || !wrap || state.rendered || state.renderTask) return;
 
+      // Re-rasterize at current zoom (capped) so canvas pixels stay
+      // sharp instead of getting CSS-stretched. The `style.{width,
+      // height}` keeps the layout box at the unzoomed display
+      // dimensions — CSS zoom on the host wrapper still owns visual
+      // scaling, but now the pixels behind it match the zoom level.
+      const z = Math.min(zoomRef.current, RENDER_SCALE_CAP);
+      const renderViewport = state.page.getViewport({
+        scale: state.fitScale * BASE_RENDER_SCALE * z,
+      });
+      state.renderViewport = renderViewport;
+
       const dpr = window.devicePixelRatio || 1;
       const canvas = document.createElement("canvas");
-      canvas.width = Math.floor(state.renderViewport.width * dpr);
-      canvas.height = Math.floor(state.renderViewport.height * dpr);
+      canvas.width = Math.floor(renderViewport.width * dpr);
+      canvas.height = Math.floor(renderViewport.height * dpr);
       canvas.style.width = `${state.displayViewport.width}px`;
       canvas.style.height = `${state.displayViewport.height}px`;
       canvas.className = "pdf-page shadow-md rounded";
@@ -143,7 +169,7 @@ export function PdfView({ path }: { path: string }) {
         dpr === 1 ? [1, 0, 0, 1, 0, 0] : [dpr, 0, 0, dpr, 0, 0];
       const task = state.page.render({
         canvas,
-        viewport: state.renderViewport,
+        viewport: renderViewport,
         transform,
       });
       state.renderTask = task;
@@ -285,6 +311,12 @@ export function PdfView({ path }: { path: string }) {
             renderTask: null,
           });
         }
+        // Surface the rendering machinery so the zoom-change effect
+        // can re-rasterize visible pages without re-running this
+        // whole `[path]`-scoped setup.
+        pageStatesRef.current = pageStates;
+        renderPageRef.current = renderPage;
+        tearDownPageRef.current = tearDownPage;
 
         // Background: pull all pages' text content for ask-mode context.
         // Cheap relative to rendering (no rasterization); doesn't block
@@ -374,9 +406,36 @@ export function PdfView({ path }: { path: string }) {
           /* ignore */
         }
       }
+      pageStatesRef.current = [];
+      renderPageRef.current = null;
+      tearDownPageRef.current = null;
       if (doc) doc.destroy();
     };
   }, [path]);
+
+  // Re-rasterize visible pages when zoom changes so canvas pixels
+  // stay sharp instead of getting CSS-stretched by the host wrapper's
+  // `style={{ zoom }}`. Debounced so dragging the zoom controls
+  // doesn't kick off a render storm — the heavy work fires only when
+  // the user has settled on a value for ~150ms. Beyond
+  // RENDER_SCALE_CAP, renderPage clamps the rasterization scale and
+  // CSS zoom does the rest with mild bilinear blur.
+  useEffect(() => {
+    zoomRef.current = zoom;
+    const timer = setTimeout(() => {
+      const states = pageStatesRef.current;
+      const renderFn = renderPageRef.current;
+      const teardownFn = tearDownPageRef.current;
+      if (!states.length || !renderFn || !teardownFn) return;
+      for (let i = 0; i < states.length; i++) {
+        if (states[i].rendered) {
+          teardownFn(i);
+          void renderFn(i);
+        }
+      }
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [zoom]);
 
   // Capture the pixels in the given client-space rectangle by compositing
   // the overlapping canvases into a new canvas. Returns a PNG data URL
