@@ -340,7 +340,26 @@ export function PdfView({ path }: { path: string }) {
               }
             }),
           );
-          if (!cancelled) pageTextsRef.current = allText;
+          if (!cancelled) {
+            pageTextsRef.current = allText;
+            // Publish initial viewport so follow-along voice mode has
+            // page 1's content right after the doc loads, before the
+            // user has scrolled.
+            const total = allText.length;
+            if (total > 0) {
+              const PAGE_CAP = 4000;
+              const text = allText[0] ?? "";
+              const trunc =
+                text.length > PAGE_CAP ? text.slice(0, PAGE_CAP) + "\n[...]" : text;
+              useStore.getState().setViewport({
+                path,
+                page: 1,
+                totalPages: total,
+                pageText: trunc,
+              });
+              pushViewportContextDebounced();
+            }
+          }
         })();
 
         const scroller = scrollRef.current;

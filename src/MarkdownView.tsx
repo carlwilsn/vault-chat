@@ -269,6 +269,11 @@ export function MarkdownView({ paneId }: Props) {
   useEffect(() => {
     lastSaved.current = content;
     scrollRatioRef.current = 0;
+    // Publish viewport for the freshly-opened file so voice mode's
+    // follow-along contextual update fires even before the user has
+    // scrolled. Without this, switching files mid-session leaves the
+    // agent thinking you're still on the previous file.
+    publishTextViewport(file, content, 0);
   }, [file]);
 
   useEffect(() => {

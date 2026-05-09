@@ -112,6 +112,13 @@ export function CodeView({
     publishCodeViewport(path, content, ratio);
   };
 
+  // Publish initial viewport on mount / file change so voice
+  // follow-along has the new file's content even before scroll.
+  useEffect(() => {
+    if (!path) return;
+    publishCodeViewport(path, content, 0);
+  }, [path, content]);
+
   return (
     <div
       ref={scrollRef}
