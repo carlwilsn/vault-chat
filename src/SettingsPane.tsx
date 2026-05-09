@@ -78,6 +78,9 @@ export function SettingsPane() {
   const [elevenlabsVoiceDraft, setElevenlabsVoiceDraft] = useState(
     localStorage.getItem("vault_chat_elevenlabs_voice") ?? "nPczCjzI2devNBz1zQrb",
   );
+  const [elevenlabsLlmDraft, setElevenlabsLlmDraft] = useState(
+    localStorage.getItem("vault_chat_elevenlabs_llm") ?? "claude-sonnet-4-6",
+  );
   const [githubTestState, setGithubTestState] = useState<
     | { phase: "idle" }
     | { phase: "testing" }
@@ -85,7 +88,13 @@ export function SettingsPane() {
     | { phase: "error"; message: string }
   >({ phase: "idle" });
   const [savedFlash, setSavedFlash] = useState<
-    ProviderId | "tavily" | "github_pat" | "elevenlabs" | "elevenlabs_voice" | null
+    | ProviderId
+    | "tavily"
+    | "github_pat"
+    | "elevenlabs"
+    | "elevenlabs_voice"
+    | "elevenlabs_llm"
+    | null
   >(null);
   const openFeedbackComposer = useStore((s) => s.openFeedbackComposer);
 
@@ -138,6 +147,16 @@ export function SettingsPane() {
     setSavedFlash("elevenlabs_voice");
     setTimeout(
       () => setSavedFlash((x) => (x === "elevenlabs_voice" ? null : x)),
+      1500,
+    );
+  };
+
+  const saveElevenlabsLlm = (v: string) => {
+    localStorage.setItem("vault_chat_elevenlabs_llm", v);
+    setElevenlabsLlmDraft(v);
+    setSavedFlash("elevenlabs_llm");
+    setTimeout(
+      () => setSavedFlash((x) => (x === "elevenlabs_llm" ? null : x)),
       1500,
     );
   };
@@ -525,6 +544,39 @@ export function SettingsPane() {
           <p className="text-[11px] text-muted-foreground/80">
             Default is Brian (Jarvis-adjacent). Browse voices at
             elevenlabs.io/app/voice-library and paste any voice ID here.
+          </p>
+          <div className="flex items-center justify-between pt-2">
+            <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+              Voice model
+            </h4>
+            {savedFlash === "elevenlabs_llm" && (
+              <span className="text-[11px] text-emerald-500 flex items-center gap-1">
+                <Check className="h-3 w-3" /> saved
+              </span>
+            )}
+          </div>
+          <select
+            value={elevenlabsLlmDraft}
+            onChange={(e) => saveElevenlabsLlm(e.target.value)}
+            className="w-full h-8 px-2 rounded border border-border bg-background text-[12px] font-mono"
+          >
+            <optgroup label="Sonnet (recommended for voice)">
+              <option value="claude-sonnet-4-6">claude-sonnet-4-6 (newest)</option>
+              <option value="claude-sonnet-4-5@20250929">claude-sonnet-4-5</option>
+              <option value="claude-sonnet-4@20250514">claude-sonnet-4</option>
+              <option value="claude-3-7-sonnet">claude-3-7-sonnet</option>
+            </optgroup>
+            <optgroup label="Opus (smartest, slower)">
+              <option value="claude-opus-4-7">claude-opus-4-7</option>
+            </optgroup>
+            <optgroup label="Haiku (fastest, cheapest)">
+              <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+            </optgroup>
+          </select>
+          <p className="text-[11px] text-muted-foreground/80">
+            Brain that handles voice turns. Sonnet 4.6 is the default — Opus
+            adds noticeable latency, Haiku is less reliable with tools. Changes
+            re-provision the agent on next session.
           </p>
         </section>
 

@@ -10,11 +10,18 @@ import { useStore, type ChatMessage, type Viewport } from "./store";
 // ends.
 
 const AGENT_NAME = "vault-chat";
-// ElevenLabs's LLM allowlist requires the `@<release-date>` suffix —
-// bare `claude-sonnet-4-5` 422s the agent-create call. The dated form
-// is what their docs publish:
-// https://elevenlabs.io/docs/api-reference/agents/create
-const AGENT_LLM = "claude-sonnet-4-5@20250929";
+// Default — overridable via Settings → ElevenLabs → Voice model.
+// Stored in localStorage as `vault_chat_elevenlabs_llm`. Their LLM
+// allowlist accepts both bare aliases (claude-sonnet-4-6) and dated
+// forms (claude-sonnet-4-5@20250929); we use the bare alias for the
+// newest models since it stays current as ElevenLabs rolls dates.
+const DEFAULT_LLM = "claude-sonnet-4-6";
+const LLM_STORAGE = "vault_chat_elevenlabs_llm";
+const AGENT_LLM_AT_PROVISION = "vault_chat_elevenlabs_agent_llm";
+
+function getCurrentLlm(): string {
+  return localStorage.getItem(LLM_STORAGE) ?? DEFAULT_LLM;
+}
 const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -369,7 +376,16 @@ export function getLastAgentCreateError(): { status: number; body: string } | nu
 
 async function ensureAgent(apiKey: string): Promise<string | null> {
   const cached = localStorage.getItem(AGENT_ID_STORAGE);
-  if (cached) return cached;
+  const provisionedWith = localStorage.getItem(AGENT_LLM_AT_PROVISION);
+  const wantedLlm = getCurrentLlm();
+  // If the cached agent was provisioned with a different LLM than
+  // the one currently selected, force a fresh provision so the new
+  // model actually takes effect. (The orchestrator caches LLM at
+  // agent level, not per-session.)
+  if (cached && provisionedWith === wantedLlm) return cached;
+  if (cached && provisionedWith !== wantedLlm) {
+    localStorage.removeItem(AGENT_ID_STORAGE);
+  }
   try {
     const res = await fetch("https://api.elevenlabs.io/v1/convai/agents/create", {
       method: "POST",
@@ -385,7 +401,7 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
             language: "en",
             prompt: {
               prompt: "(per-session override)",
-              llm: AGENT_LLM,
+              llm: wantedLlm,
               tools: CLIENT_TOOL_DEFINITIONS.map((t) => ({
                 type: "client",
                 name: t.name,
@@ -432,6 +448,7 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
     }
     lastAgentCreateError = null;
     localStorage.setItem(AGENT_ID_STORAGE, json.agent_id);
+    localStorage.setItem(AGENT_LLM_AT_PROVISION, wantedLlm);
     return json.agent_id;
   } catch (e) {
     console.error("[voice-eleven] agent create exception:", e);
