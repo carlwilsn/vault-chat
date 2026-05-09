@@ -156,6 +156,14 @@ export async function startElevenLabsSession(): Promise<void> {
   if (!agentId) {
     useStore.getState().setVoiceConnecting(false);
     const err = getLastAgentCreateError();
+    if (err && err.body.includes("voice_not_found")) {
+      const failedVoice =
+        localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID;
+      reportVoiceError(
+        `Voice ID ${failedVoice} isn't in your ElevenLabs library, so the agent can't be created with it. Two ways to fix: (1) open elevenlabs.io/app/voice-library, find that voice, click "Add to library" — then click the mic again; or (2) change the Voice ID in Settings to one already in your library (Brian — ${DEFAULT_VOICE_ID} — is the default and always works).`,
+      );
+      return;
+    }
     const detail = err
       ? `HTTP ${err.status}: ${truncate(err.body, 600)}`
       : "(no response captured)";
