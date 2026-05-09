@@ -331,7 +331,19 @@ function buildSystemPrompt(state: ReturnType<typeof useStore.getState>): string 
     "- No emoji.",
     "- If asked to read content, call Read (or fall back to Glob/Grep) and speak it naturally — your text becomes audio.",
     "",
-    `Vault root: ${vault}`,
+    `Vault root (absolute): ${vault}`,
+    "",
+    "Tool calling rules — CRITICAL:",
+    "- Read, ListDir take ABSOLUTE paths. Construct them by joining the vault root with the relative file/folder name. Never pass bare filenames like 'study.md' — they will fail.",
+    "- Glob takes a pattern relative to the vault root. To find study.md across the vault, call Glob with pattern '**/study.md'. To find any markdown, '**/*.md'.",
+    "- Grep takes an optional path argument. Omit it to search the whole vault, or pass an absolute path under the vault root to scope the search.",
+    "- If a tool returns '(no matches)' or '(empty)', that's a real result, not a failure. Try a different pattern or path before giving up.",
+    "",
+    `Examples for THIS vault:`,
+    `- ListDir("${vault}")  → list the vault root`,
+    `- Read("${vault}/study.md")  → read study.md if it's in the vault root`,
+    `- Glob("**/study.md")  → find study.md anywhere in the vault`,
+    `- Grep("gradient descent", undefined, "*.md")  → search markdown for "gradient descent"`,
     "",
     followNote,
     "",
@@ -511,81 +523,122 @@ async function getSignedUrl(apiKey: string, agentId: string): Promise<string | n
 
 // ---- Client tool implementations ----------------------------------------
 
+// Wraps every tool handler with diagnostic logging — each call is
+// console.log'd and pushed onto a transcript buffer that flushes to
+// the chat pane on session end. Without this we have no visibility
+// into what the voice agent was actually calling.
+function logToolCall(name: string, args: unknown, result: string): void {
+  const argsStr = JSON.stringify(args);
+  const summary = result.length > 200 ? result.slice(0, 200) + "…" : result;
+  console.log(`[voice-eleven] tool ${name}(${argsStr}) →`, summary);
+  collectedTranscripts.push({
+    role: "assistant",
+    content: `🔧 ${name}(${argsStr})\n→ ${summary}`,
+    system: true,
+  });
+}
+
 function buildClientToolHandlers(): Record<
   string,
   (parameters: any) => Promise<string>
 > {
   return {
-    Read: async ({ path }: { path: string }) => {
+    Read: async (args: { path: string }) => {
+      let result: string;
       try {
-        const raw = await invoke<string>("read_text_file", { path });
-        return raw.length > READ_CAP
-          ? raw.slice(0, READ_CAP) + "\n…[truncated]"
-          : raw;
+        const raw = await invoke<string>("read_text_file", { path: args.path });
+        result =
+          raw.length > READ_CAP
+            ? raw.slice(0, READ_CAP) + "\n…[truncated]"
+            : raw;
       } catch (e) {
-        return `Error: ${(e as any)?.message ?? String(e)}`;
+        result = `Error: ${(e as any)?.message ?? String(e)}`;
       }
+      logToolCall("Read", args, result);
+      return result;
     },
-    Glob: async ({ pattern }: { pattern: string }) => {
+    Glob: async (args: { pattern: string }) => {
       const vault = useStore.getState().vaultPath;
-      if (!vault) return "Error: no active vault";
-      try {
-        const results = await invoke<string[]>("glob_files", {
-          pattern,
-          cwd: vault,
-        });
-        if (!results.length) return "(no matches)";
-        const out = results.slice(0, 200).join("\n");
-        return results.length > 200 ? out + `\n…(${results.length - 200} more)` : out;
-      } catch (e) {
-        return `Error: ${(e as any)?.message ?? String(e)}`;
+      let result: string;
+      if (!vault) {
+        result = "Error: no active vault";
+      } else {
+        try {
+          const results = await invoke<string[]>("glob_files", {
+            pattern: args.pattern,
+            cwd: vault,
+          });
+          if (!results.length) {
+            result = "(no matches)";
+          } else {
+            const out = results.slice(0, 200).join("\n");
+            result =
+              results.length > 200
+                ? out + `\n…(${results.length - 200} more)`
+                : out;
+          }
+        } catch (e) {
+          result = `Error: ${(e as any)?.message ?? String(e)}`;
+        }
       }
+      logToolCall("Glob", args, result);
+      return result;
     },
-    Grep: async ({
-      pattern,
-      path,
-      glob_filter,
-      case_insensitive,
-    }: {
+    Grep: async (args: {
       pattern: string;
       path?: string;
       glob_filter?: string;
       case_insensitive?: boolean;
     }) => {
       const vault = useStore.getState().vaultPath;
-      if (!vault) return "Error: no active vault";
-      try {
-        const results = await invoke<{ path: string; line: number; text: string }[]>(
-          "grep_files",
-          {
-            pattern,
-            path: path ?? vault,
-            globFilter: glob_filter ?? null,
-            caseInsensitive: case_insensitive ?? false,
+      let result: string;
+      if (!vault) {
+        result = "Error: no active vault";
+      } else {
+        try {
+          const results = await invoke<
+            { path: string; line: number; text: string }[]
+          >("grep_files", {
+            pattern: args.pattern,
+            path: args.path ?? vault,
+            globFilter: args.glob_filter ?? null,
+            caseInsensitive: args.case_insensitive ?? false,
             maxResults: 200,
-          },
-        );
-        if (!results.length) return "(no matches)";
-        return results
-          .slice(0, 100)
-          .map((r) => `${r.path}:${r.line}: ${r.text}`)
-          .join("\n");
-      } catch (e) {
-        return `Error: ${(e as any)?.message ?? String(e)}`;
+          });
+          if (!results.length) {
+            result = "(no matches)";
+          } else {
+            result = results
+              .slice(0, 100)
+              .map((r) => `${r.path}:${r.line}: ${r.text}`)
+              .join("\n");
+          }
+        } catch (e) {
+          result = `Error: ${(e as any)?.message ?? String(e)}`;
+        }
       }
+      logToolCall("Grep", args, result);
+      return result;
     },
-    ListDir: async ({ path }: { path: string }) => {
+    ListDir: async (args: { path: string }) => {
+      let result: string;
       try {
-        const entries = await invoke<{ name: string; is_dir: boolean }[]>("list_dir", {
-          path,
-        });
-        if (!entries.length) return "(empty)";
-        return entries
-          .map((e) => (e.is_dir ? `${e.name}/` : e.name))
-          .join("\n");
+        const entries = await invoke<{ name: string; is_dir: boolean }[]>(
+          "list_dir",
+          { path: args.path },
+        );
+        if (!entries.length) {
+          result = "(empty)";
+        } else {
+          result = entries
+            .map((e) => (e.is_dir ? `${e.name}/` : e.name))
+            .join("\n");
+        }
       } catch (e) {
-        return `Error: ${(e as any)?.message ?? String(e)}`;
+        result = `Error: ${(e as any)?.message ?? String(e)}`;
       }
+      logToolCall("ListDir", args, result);
+      return result;
     },
   };
 }
