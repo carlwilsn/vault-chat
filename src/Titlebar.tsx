@@ -9,6 +9,7 @@ import { gitInitIfNeeded } from "./git";
 import { stopAgent, interruptAndSend } from "./chat-controller";
 import { initVoiceTts, cancelVoice } from "./voice-tts";
 import { startListening, stopListening } from "./voice-stt";
+import { VoiceCockpit } from "./VoiceCockpit";
 import { HistoryModal } from "./HistoryModal";
 
 export function Titlebar() {
@@ -145,8 +146,9 @@ export function Titlebar() {
     <>
     <div
       data-tauri-drag-region
-      className="h-9 flex items-center bg-card border-b border-border select-none shrink-0"
+      className="h-9 flex items-center bg-card border-b border-border select-none shrink-0 relative"
     >
+      <VoiceCockpit />
       <div
         className="flex items-center gap-1 px-2"
         style={isMac ? { paddingLeft: 76 } : undefined}
@@ -217,7 +219,12 @@ export function Titlebar() {
                     // (mid-turn) and idle cases: aborts in-flight
                     // generation when needed, otherwise degrades to a
                     // normal sendMessage.
-                    void interruptAndSend(text);
+                    const s = useStore.getState();
+                    const preamble =
+                      s.followAlong && s.currentFile
+                        ? `[Currently viewing: ${s.currentFile}]`
+                        : undefined;
+                    void interruptAndSend(text, preamble);
                   });
                 } else {
                   cancelVoice();

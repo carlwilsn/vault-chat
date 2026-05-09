@@ -334,6 +334,10 @@ type State = {
   popoutOpen: boolean;
   // Resets to false on app start — never persisted.
   voiceMode: boolean;
+  // Inside voice mode: agent receives the active file path as a
+  // hidden context preamble on each turn so it can answer about
+  // "this document" without you naming it. Off by default.
+  followAlong: boolean;
   tokenUsage: { prompt: number; completion: number; total: number };
   lastContext: number;
   compactionSummary: string | null;
@@ -453,6 +457,7 @@ type State = {
   toggleRight: () => void;
   setPopoutOpen: (b: boolean) => void;
   toggleVoiceMode: () => void;
+  toggleFollowAlong: () => void;
   addTokenUsage: (u: { prompt: number; completion: number; total: number }) => void;
   setLastContext: (n: number) => void;
   setCompacting: (b: boolean) => void;
@@ -556,6 +561,7 @@ export const useStore = create<State>((set) => ({
   rightCollapsed: true,
   popoutOpen: false,
   voiceMode: false,
+  followAlong: false,
   tokenUsage: { prompt: 0, completion: 0, total: 0 },
   lastContext: 0,
   compactionSummary: null,
@@ -1023,6 +1029,7 @@ export const useStore = create<State>((set) => ({
     set((s) => (s.popoutOpen ? s : { rightCollapsed: !s.rightCollapsed })),
   setPopoutOpen: (b) => set({ popoutOpen: b }),
   toggleVoiceMode: () => set((s) => ({ voiceMode: !s.voiceMode })),
+  toggleFollowAlong: () => set((s) => ({ followAlong: !s.followAlong })),
   addTokenUsage: (u) =>
     set((s) => ({
       tokenUsage: {
