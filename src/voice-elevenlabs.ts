@@ -46,6 +46,10 @@ let lastViewportSent: string | null = null;
 // derive a useful commit subject from the user's first utterance.
 let sessionMutationCount = 0;
 let sessionFirstUserText: string | null = null;
+// Store subscription that watches active-pane / current-file and
+// pushes a contextual update when either changes. Set up at session
+// start, torn down at session end.
+let unsubscribeViewportWatch: (() => void) | null = null;
 
 const READ_CAP = 8000;
 
@@ -239,6 +243,7 @@ export async function startElevenLabsSession(): Promise<void> {
   lastViewportSent = null;
   sessionMutationCount = 0;
   sessionFirstUserText = null;
+  startViewportWatch();
 
   const systemPrompt = buildSystemPrompt(state);
   const dynamicVariables = buildDynamicVariables(state);
@@ -271,6 +276,7 @@ export async function startElevenLabsSession(): Promise<void> {
           system: true,
         });
         activeConversation = null;
+        stopViewportWatch();
         useStore.getState().setVoiceConnecting(false);
         useStore.getState().setVoiceListening(false);
         useStore.getState().setVoiceSpeaking(false);
@@ -311,6 +317,27 @@ export async function startElevenLabsSession(): Promise<void> {
     reportVoiceError(
       `Voice session failed to start: ${(e as any)?.message ?? String(e)}.`,
     );
+  }
+}
+
+// Subscribes to the store and pushes a contextual update whenever
+// the active pane / current file changes mid-session. Without this,
+// switching pane focus in split view doesn't tell the agent — the
+// per-viewer scroll listener only fires on actual scroll events.
+function startViewportWatch(): void {
+  let lastSig = "";
+  unsubscribeViewportWatch = useStore.subscribe((state) => {
+    const sig = `${state.activePaneId ?? ""}|${state.currentFile ?? ""}|${state.panes.map((p) => p.file).join(",")}`;
+    if (sig === lastSig) return;
+    lastSig = sig;
+    pushViewportContextDebounced();
+  });
+}
+
+function stopViewportWatch(): void {
+  if (unsubscribeViewportWatch) {
+    unsubscribeViewportWatch();
+    unsubscribeViewportWatch = null;
   }
 }
 
@@ -364,6 +391,7 @@ export async function endElevenLabsSession(): Promise<void> {
   } catch (e) {
     console.warn("[voice-eleven] end session failed:", e);
   }
+  stopViewportWatch();
   useStore.getState().setVoiceListening(false);
   useStore.getState().setVoiceSpeaking(false);
 }
@@ -475,28 +503,52 @@ function buildViewportContextText(
   state: ReturnType<typeof useStore.getState>,
 ): string {
   if (!state.followAlong) return "";
-  const file = state.currentFile;
-  if (!file) return "";
+  const activeFile = state.currentFile;
+  if (!activeFile) return "";
+
+  const sections: string[] = [activeSectionFor(state, activeFile)];
+
+  // Split view: include the OTHER pane(s) too so the agent knows
+  // both files are visible. Marked OTHER vs ACTIVE so it can pick
+  // the right one when the user says "this" or "that one".
+  if (state.panes.length > 0) {
+    for (const pane of state.panes) {
+      if (pane.id === state.activePaneId) continue;
+      const content = (pane.content ?? "").trim();
+      const otherCap = 2000;
+      sections.push(
+        content
+          ? `OTHER pane document: ${pane.file}\nContent:\n${truncate(content, otherCap)}`
+          : `OTHER pane document: ${pane.file} (no text content)`,
+      );
+    }
+  }
+
+  return sections.join("\n\n---\n\n");
+}
+
+function activeSectionFor(
+  state: ReturnType<typeof useStore.getState>,
+  activeFile: string,
+): string {
   const v: Viewport | null = state.viewport;
-  if (v && v.path === file) {
+  if (v && v.path === activeFile) {
     if (v.page !== undefined && v.pageText) {
       const total = v.totalPages ?? "?";
-      return `Active document: ${file}\nViewing page ${v.page} of ${total}\nPage content:\n${truncate(v.pageText, VIEWPORT_TEXT_CAP)}`;
+      return `ACTIVE pane document: ${activeFile}\nViewing page ${v.page} of ${total}\nPage content:\n${truncate(v.pageText, VIEWPORT_TEXT_CAP)}`;
     }
     if (v.visibleText) {
       const pct =
-        v.scrollRatio !== undefined
-          ? Math.round(v.scrollRatio * 100)
-          : null;
+        v.scrollRatio !== undefined ? Math.round(v.scrollRatio * 100) : null;
       const loc = pct !== null ? ` (scrolled ~${pct}%)` : "";
-      return `Active document: ${file}${loc}\nVisible content:\n${truncate(v.visibleText, VIEWPORT_TEXT_CAP)}`;
+      return `ACTIVE pane document: ${activeFile}${loc}\nVisible content:\n${truncate(v.visibleText, VIEWPORT_TEXT_CAP)}`;
     }
   }
   const fallback = (state.currentContent ?? "").trim();
   if (!fallback) {
-    return `Active document: ${file} (no text content available; call Read for contents)`;
+    return `ACTIVE pane document: ${activeFile} (no text content available; call Read for contents)`;
   }
-  return `Active document: ${file}\nContent:\n${truncate(fallback, VIEWPORT_TEXT_CAP)}`;
+  return `ACTIVE pane document: ${activeFile}\nContent:\n${truncate(fallback, VIEWPORT_TEXT_CAP)}`;
 }
 
 function formatRecentHistory(messages: ChatMessage[], take: number): string {
