@@ -10,7 +10,10 @@ import { useStore, type ChatMessage, type Viewport } from "./store";
 // ends.
 
 const AGENT_NAME = "vault-chat";
-const AGENT_LLM = "claude-sonnet-4-5";
+// Conservative model string. ElevenLabs's allowlist for the LLM field
+// lags Anthropic's releases — newer aliases (e.g. claude-sonnet-4-5)
+// may 422 the agent-create call. claude-3-7-sonnet is widely accepted.
+const AGENT_LLM = "claude-3-7-sonnet";
 const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -85,15 +88,39 @@ export async function startElevenLabsSession(): Promise<void> {
   const state = useStore.getState();
   const apiKey = state.serviceKeys.elevenlabs;
   if (!apiKey) {
-    console.warn("[voice-eleven] no ElevenLabs API key — set one in Settings");
+    reportVoiceError(
+      "Voice mode needs an ElevenLabs API key. Add one in Settings.",
+    );
+    return;
+  }
+
+  // Pre-flight mic permission. WebView2 on Windows sometimes refuses
+  // silently otherwise; this surfaces the failure visibly.
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    for (const t of stream.getTracks()) t.stop();
+  } catch (e) {
+    reportVoiceError(
+      `Microphone access denied or unavailable: ${(e as any)?.message ?? String(e)}. Check Windows Settings → Privacy → Microphone.`,
+    );
     return;
   }
 
   const agentId = await ensureAgent(apiKey);
-  if (!agentId) return;
+  if (!agentId) {
+    reportVoiceError(
+      "Couldn't provision the ElevenLabs agent. Most likely cause: your ElevenLabs plan doesn't include Conversational AI, or the API key lacks permission. Check elevenlabs.io/app/conversational-ai. (See dev console for details.)",
+    );
+    return;
+  }
 
   const signedUrl = await getSignedUrl(apiKey, agentId);
-  if (!signedUrl) return;
+  if (!signedUrl) {
+    reportVoiceError(
+      "Couldn't get a signed conversation URL from ElevenLabs. The agent ID may be stale (try clearing localStorage `vault_chat_elevenlabs_agent_id`) or your account may have hit a rate limit.",
+    );
+    return;
+  }
 
   collectedTranscripts = [];
   lastViewportSent = null;
@@ -147,7 +174,19 @@ export async function startElevenLabsSession(): Promise<void> {
   } catch (e) {
     console.error("[voice-eleven] session start failed:", e);
     activeConversation = null;
+    reportVoiceError(
+      `Voice session failed to start: ${(e as any)?.message ?? String(e)}.`,
+    );
   }
+}
+
+function reportVoiceError(message: string): void {
+  console.warn("[voice-eleven]", message);
+  useStore.getState().appendMessage({
+    role: "assistant",
+    content: `⚠️ Voice mode: ${message}`,
+    system: true,
+  });
 }
 
 export async function endElevenLabsSession(): Promise<void> {
@@ -393,6 +432,10 @@ async function getSignedUrl(apiKey: string, agentId: string): Promise<string | n
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       console.error("[voice-eleven] signed url failed:", res.status, body);
+      // Stale cached agent ID → clear it so the next start re-creates.
+      if (res.status === 404 || res.status === 403) {
+        localStorage.removeItem(AGENT_ID_STORAGE);
+      }
       return null;
     }
     const json = (await res.json()) as { signed_url?: string };
