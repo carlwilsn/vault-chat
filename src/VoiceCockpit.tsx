@@ -23,17 +23,21 @@ export function VoiceCockpit() {
   const busy = useStore((s) => s.busy);
   const voiceListening = useStore((s) => s.voiceListening);
   const voiceSpeaking = useStore((s) => s.voiceSpeaking);
+  const voiceConnecting = useStore((s) => s.voiceConnecting);
 
   if (!voiceMode) return null;
 
   const runningTool = liveTools.find((t) => t.result === undefined);
 
-  // Priority order: user-facing states win over agent states.
-  // Listening (you're talking) > running tool (visible work) >
-  // speaking (audio is out) > thinking (generating, no audio yet).
+  // Priority: connecting (initial handshake) > listening (you're
+  // talking) > running tool (visible work) > speaking (audio out)
+  // > thinking (generating, no audio yet).
   let label: string;
-  let labelKind: "user" | "tool" | "speak" | "think" | "idle";
-  if (voiceListening) {
+  let labelKind: "connecting" | "user" | "tool" | "speak" | "think" | "idle";
+  if (voiceConnecting) {
+    label = "Connecting…";
+    labelKind = "connecting";
+  } else if (voiceListening) {
     label = "Listening…";
     labelKind = "user";
   } else if (runningTool) {
@@ -51,8 +55,9 @@ export function VoiceCockpit() {
   }
 
   // Bars animate when something audio-ish is happening — listening,
-  // speaking, or thinking (the agent is on its way to making sound).
-  const barsActive = voiceListening || voiceSpeaking || busy;
+  // speaking, thinking, or while still connecting (gives the user a
+  // visible heartbeat during the boot wait).
+  const barsActive = voiceListening || voiceSpeaking || busy || voiceConnecting;
 
   return (
     <>
@@ -79,15 +84,17 @@ export function VoiceCockpit() {
         <div className="h-3 w-px bg-border/60" />
         <div
           className={`text-[10.5px] font-medium tabular-nums whitespace-nowrap ${
-            labelKind === "user"
-              ? "text-primary"
-              : labelKind === "tool"
-                ? "text-primary/85"
-                : labelKind === "speak"
-                  ? "text-foreground/80"
-                  : labelKind === "think"
-                    ? "text-muted-foreground"
-                    : "text-muted-foreground/70"
+            labelKind === "connecting"
+              ? "text-primary/85 animate-pulse"
+              : labelKind === "user"
+                ? "text-primary"
+                : labelKind === "tool"
+                  ? "text-primary/85"
+                  : labelKind === "speak"
+                    ? "text-foreground/80"
+                    : labelKind === "think"
+                      ? "text-muted-foreground"
+                      : "text-muted-foreground/70"
           }`}
         >
           {label}

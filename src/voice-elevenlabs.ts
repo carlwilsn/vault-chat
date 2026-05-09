@@ -134,12 +134,18 @@ export async function startElevenLabsSession(): Promise<void> {
     return;
   }
 
+  // "Connecting…" lights up the cockpit immediately so the user
+  // knows the click registered. Cleared in onConnect (success) or
+  // any of the error paths below.
+  useStore.getState().setVoiceConnecting(true);
+
   // Pre-flight mic permission. WebView2 on Windows sometimes refuses
   // silently otherwise; this surfaces the failure visibly.
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     for (const t of stream.getTracks()) t.stop();
   } catch (e) {
+    useStore.getState().setVoiceConnecting(false);
     reportVoiceError(
       `Microphone access denied or unavailable: ${(e as any)?.message ?? String(e)}. Check Windows Settings → Privacy → Microphone.`,
     );
@@ -148,6 +154,7 @@ export async function startElevenLabsSession(): Promise<void> {
 
   const agentId = await ensureAgent(apiKey);
   if (!agentId) {
+    useStore.getState().setVoiceConnecting(false);
     const err = getLastAgentCreateError();
     const detail = err
       ? `HTTP ${err.status}: ${truncate(err.body, 600)}`
@@ -160,6 +167,7 @@ export async function startElevenLabsSession(): Promise<void> {
 
   const signedUrl = await getSignedUrl(apiKey, agentId);
   if (!signedUrl) {
+    useStore.getState().setVoiceConnecting(false);
     reportVoiceError(
       "Couldn't get a signed conversation URL from ElevenLabs. The agent ID may be stale (try clearing localStorage `vault_chat_elevenlabs_agent_id`) or your account may have hit a rate limit.",
     );
@@ -188,6 +196,7 @@ export async function startElevenLabsSession(): Promise<void> {
       dynamicVariables,
       clientTools: buildClientToolHandlers(),
       onConnect: () => {
+        useStore.getState().setVoiceConnecting(false);
         useStore.getState().setVoiceListening(false);
         useStore.getState().setVoiceSpeaking(false);
       },
@@ -198,6 +207,7 @@ export async function startElevenLabsSession(): Promise<void> {
           system: true,
         });
         activeConversation = null;
+        useStore.getState().setVoiceConnecting(false);
         useStore.getState().setVoiceListening(false);
         useStore.getState().setVoiceSpeaking(false);
       },
@@ -227,6 +237,7 @@ export async function startElevenLabsSession(): Promise<void> {
   } catch (e) {
     console.error("[voice-eleven] session start failed:", e);
     activeConversation = null;
+    useStore.getState().setVoiceConnecting(false);
     reportVoiceError(
       `Voice session failed to start: ${(e as any)?.message ?? String(e)}.`,
     );

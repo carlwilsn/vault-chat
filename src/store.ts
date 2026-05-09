@@ -354,6 +354,10 @@ type State = {
   // mode off.
   voiceListening: boolean;
   voiceSpeaking: boolean;
+  // True between mic-click and the ElevenLabs session reporting ready
+  // — covers agent provisioning, signed-URL fetch, and the WebRTC
+  // handshake. The cockpit shows "Connecting…" during this window.
+  voiceConnecting: boolean;
   // What the user is currently looking at. Updated by each viewer on
   // scroll. Voice mode's follow-along preamble uses this to send the
   // visible portion of the active document, not the whole file —
@@ -481,6 +485,7 @@ type State = {
   toggleFollowAlong: () => void;
   setVoiceListening: (b: boolean) => void;
   setVoiceSpeaking: (b: boolean) => void;
+  setVoiceConnecting: (b: boolean) => void;
   setViewport: (v: Viewport | null) => void;
   addTokenUsage: (u: { prompt: number; completion: number; total: number }) => void;
   setLastContext: (n: number) => void;
@@ -588,6 +593,7 @@ export const useStore = create<State>((set) => ({
   followAlong: false,
   voiceListening: false,
   voiceSpeaking: false,
+  voiceConnecting: false,
   viewport: null,
   tokenUsage: { prompt: 0, completion: 0, total: 0 },
   lastContext: 0,
@@ -1071,6 +1077,7 @@ export const useStore = create<State>((set) => ({
   toggleFollowAlong: () => set((s) => ({ followAlong: !s.followAlong })),
   setVoiceListening: (b) => set({ voiceListening: b }),
   setVoiceSpeaking: (b) => set({ voiceSpeaking: b }),
+  setVoiceConnecting: (b) => set({ voiceConnecting: b }),
   setViewport: (v) => set({ viewport: v }),
   addTokenUsage: (u) =>
     set((s) => ({
