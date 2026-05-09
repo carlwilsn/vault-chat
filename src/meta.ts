@@ -33,6 +33,19 @@ export async function loadMetaSystemPrompt(): Promise<string> {
   }
 }
 
+/** Read the voice-mode personality prompt from the meta vault.
+ *  voice.md is the user-editable header that controls how the voice
+ *  agent talks (tone, length, persona, speech rules). Returns ""
+ *  when the file is missing — caller falls back to a baseline. */
+export async function loadMetaVoicePrompt(): Promise<string> {
+  try {
+    const p = await getMetaVaultPath();
+    return await invoke<string>("read_text_file", { path: `${p}/voice.md` });
+  } catch {
+    return "";
+  }
+}
+
 // ----- vault-tool loader -----
 //
 // A vault-tool is a folder under <meta>/tools/<name>/ containing:

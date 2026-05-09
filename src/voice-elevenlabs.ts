@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./store";
 import { buildNote } from "./notes";
 import { gitCommitAll } from "./git";
+import { loadMetaVoicePrompt } from "./meta";
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
 // platform owns the audio loop (STT + LLM + TTS) and we provide the
@@ -245,7 +246,11 @@ export async function startElevenLabsSession(): Promise<void> {
   sessionFirstUserText = null;
   startViewportWatch();
 
-  const systemPrompt = buildSystemPrompt(state);
+  // Load the user-editable voice header from the meta vault. Empty
+  // string when the file is missing → buildSystemPrompt falls back
+  // to the built-in default header.
+  const customHeader = await loadMetaVoicePrompt();
+  const systemPrompt = buildSystemPrompt(state, customHeader);
   const dynamicVariables = buildDynamicVariables(state);
 
   try {
@@ -448,20 +453,30 @@ function binFrequencyData(data: Uint8Array, n: number): number[] {
 }
 
 
-function buildSystemPrompt(state: ReturnType<typeof useStore.getState>): string {
+// Built-in default for the personality / speech-rules header.
+// Lives at the top of the system prompt and gets overridden if the
+// user has a meta-vault `voice.md`. Kept as a constant + exported so
+// users have a starting point if they want to fork it.
+export const DEFAULT_VOICE_PROMPT_HEADER = `You are vault-chat speaking to the user via voice. Your output is converted to audio in real time.
+
+Speech rules:
+- Conversational. Short answers. Like talking to a friend.
+- No markdown formatting (no asterisks, no headers, no bullets, no code fences). Plain prose.
+- No emoji.
+- If asked to read content, call Read (or fall back to Glob/Grep) and speak it naturally — your text becomes audio.`;
+
+function buildSystemPrompt(
+  state: ReturnType<typeof useStore.getState>,
+  customHeader: string,
+): string {
   const vault = state.vaultPath ?? "(no vault)";
   const recentHistory = formatRecentHistory(state.messages, 8);
   const followNote = state.followAlong
     ? "Follow-along is on. The active document and viewport are in dynamic variables and will refresh via contextual updates as the user scrolls."
     : "Follow-along is off. The user is not asking about a specific document unless they name one.";
+  const header = customHeader.trim() || DEFAULT_VOICE_PROMPT_HEADER;
   return [
-    "You are vault-chat speaking to the user via voice. Your output is converted to audio in real time.",
-    "",
-    "Speech rules:",
-    "- Conversational. Short answers. Like talking to a friend.",
-    "- No markdown formatting (no asterisks, no headers, no bullets, no code fences). Plain prose.",
-    "- No emoji.",
-    "- If asked to read content, call Read (or fall back to Glob/Grep) and speak it naturally — your text becomes audio.",
+    header,
     "",
     `Vault root (absolute): ${vault}`,
     "",
