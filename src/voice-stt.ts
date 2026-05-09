@@ -1,5 +1,5 @@
 import { useStore } from "./store";
-import { isVoicePlaying } from "./voice-tts";
+import { pauseVoice } from "./voice-tts";
 
 // Streaming STT for voice mode. Holds the mic stream open, runs a
 // simple energy-threshold VAD against the live audio, and segments
@@ -128,12 +128,12 @@ function pickRecorderMime(): string {
 
 function beginCapture(): void {
   if (!mediaStream) return;
-  // Voice input is dropped while the agent is busy or its TTS is
-  // still playing — the input loop is purely "user starts a fresh
-  // turn" until commit 4 lands the proper interrupt path. Gating on
-  // isVoicePlaying() also avoids speaker→mic crosstalk feeding the
-  // agent's own voice back into transcription.
-  if (useStore.getState().busy || isVoicePlaying()) return;
+  // Speech-start always silences the agent's voice — even if it
+  // turns out to be a backchannel, muting feels right. cancelVoice
+  // would clear the text buffer and lose the rest of the sentence;
+  // pauseVoice keeps it so TTS resumes at the next boundary if the
+  // user wasn't actually interrupting.
+  pauseVoice();
   isCapturing = true;
   speechStartTime = performance.now();
   recordedChunks = [];

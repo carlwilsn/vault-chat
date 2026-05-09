@@ -86,6 +86,32 @@ export function isVoicePlaying(): boolean {
   return isPlaying || audioQueue.length > 0 || pendingSources.length > 0;
 }
 
+// Stop the agent's voice immediately but keep the text buffer intact.
+// The agent's text stream may still be in flight; if it continues to
+// emit deltas we want TTS to pick back up at the next sentence rather
+// than dropping a paragraph. Used when the user starts speaking — if
+// the speech turns out to be a real interrupt, cancelVoice() (called
+// via interruptAndSend) will do the full reset; if it was just a
+// backchannel, the agent's voice resumes naturally.
+export function pauseVoice(): void {
+  generation++;
+  audioQueue = [];
+  for (const src of pendingSources) {
+    try {
+      src.stop();
+    } catch {}
+    try {
+      src.disconnect();
+    } catch {}
+  }
+  pendingSources = [];
+  if (activeFetch) {
+    activeFetch.abort();
+    activeFetch = null;
+  }
+  isPlaying = false;
+}
+
 export function cancelVoice(): void {
   generation++;
   textBuffer = "";

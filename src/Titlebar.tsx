@@ -6,7 +6,7 @@ import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, Ex
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
-import { stopAgent, sendMessage } from "./chat-controller";
+import { stopAgent, interruptAndSend } from "./chat-controller";
 import { initVoiceTts, cancelVoice } from "./voice-tts";
 import { startListening, stopListening } from "./voice-stt";
 import { HistoryModal } from "./HistoryModal";
@@ -213,7 +213,11 @@ export function Titlebar() {
                   // the user-gesture window of this click.
                   void initVoiceTts();
                   void startListening((text) => {
-                    void sendMessage(text);
+                    // interruptAndSend cleanly handles both the busy
+                    // (mid-turn) and idle cases: aborts in-flight
+                    // generation when needed, otherwise degrades to a
+                    // normal sendMessage.
+                    void interruptAndSend(text);
                   });
                 } else {
                   cancelVoice();
