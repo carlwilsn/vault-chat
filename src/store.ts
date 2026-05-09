@@ -358,6 +358,12 @@ type State = {
   // — covers agent provisioning, signed-URL fetch, and the WebRTC
   // handshake. The cockpit shows "Connecting…" during this window.
   voiceConnecting: boolean;
+  // Name of the client tool the ElevenLabs agent is currently
+  // executing, or null when no tool is in flight. Drives the
+  // cockpit's "Running <Tool>…" label during voice mode. Distinct
+  // from `liveTools` (which is the chat-controller's text-mode
+  // tool stream — these two pipelines don't overlap).
+  voiceCurrentTool: string | null;
   // What the user is currently looking at. Updated by each viewer on
   // scroll. Voice mode's follow-along preamble uses this to send the
   // visible portion of the active document, not the whole file —
@@ -486,6 +492,7 @@ type State = {
   setVoiceListening: (b: boolean) => void;
   setVoiceSpeaking: (b: boolean) => void;
   setVoiceConnecting: (b: boolean) => void;
+  setVoiceCurrentTool: (name: string | null) => void;
   setViewport: (v: Viewport | null) => void;
   addTokenUsage: (u: { prompt: number; completion: number; total: number }) => void;
   setLastContext: (n: number) => void;
@@ -590,10 +597,11 @@ export const useStore = create<State>((set) => ({
   rightCollapsed: true,
   popoutOpen: false,
   voiceMode: false,
-  followAlong: false,
+  followAlong: true,
   voiceListening: false,
   voiceSpeaking: false,
   voiceConnecting: false,
+  voiceCurrentTool: null,
   viewport: null,
   tokenUsage: { prompt: 0, completion: 0, total: 0 },
   lastContext: 0,
@@ -1078,6 +1086,7 @@ export const useStore = create<State>((set) => ({
   setVoiceListening: (b) => set({ voiceListening: b }),
   setVoiceSpeaking: (b) => set({ voiceSpeaking: b }),
   setVoiceConnecting: (b) => set({ voiceConnecting: b }),
+  setVoiceCurrentTool: (name) => set({ voiceCurrentTool: name }),
   setViewport: (v) => set({ viewport: v }),
   addTokenUsage: (u) =>
     set((s) => ({

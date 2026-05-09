@@ -218,6 +218,7 @@ export async function startElevenLabsSession(): Promise<void> {
         useStore.getState().setVoiceConnecting(false);
         useStore.getState().setVoiceListening(false);
         useStore.getState().setVoiceSpeaking(false);
+        useStore.getState().setVoiceCurrentTool(null);
       },
       onMessage: ({ message, role }) => {
         const text = (message ?? "").trim();
@@ -550,19 +551,39 @@ async function getSignedUrl(apiKey: string, agentId: string): Promise<string | n
 
 // ---- Client tool implementations ----------------------------------------
 
-// Wraps every tool handler with diagnostic logging — each call is
-// console.log'd and pushed onto a transcript buffer that flushes to
-// the chat pane on session end. Without this we have no visibility
-// into what the voice agent was actually calling.
+// Posts the tool call (no result) to the chat pane as a system
+// message — keeps the chat clean. The full result still goes to
+// console.log for debugging.
 function logToolCall(name: string, args: unknown, result: string): void {
   const argsStr = JSON.stringify(args);
   const summary = result.length > 200 ? result.slice(0, 200) + "…" : result;
   console.log(`[voice-eleven] tool ${name}(${argsStr}) →`, summary);
   useStore.getState().appendMessage({
     role: "assistant",
-    content: `🔧 ${name}(${argsStr})\n→ ${summary}`,
+    content: `🔧 ${name}(${argsStr})`,
     system: true,
   });
+}
+
+// Wraps a tool handler so the cockpit knows what's running. Sets
+// voiceCurrentTool before the impl fires and clears it after, so
+// the titlebar pill can show "Running ToolName…" while the work
+// happens. Always logs to chat regardless of success/failure.
+function withTracking<A>(
+  name: string,
+  impl: (args: A) => Promise<string>,
+): (args: A) => Promise<string> {
+  return async (args: A) => {
+    useStore.getState().setVoiceCurrentTool(name);
+    let result: string;
+    try {
+      result = await impl(args);
+    } finally {
+      useStore.getState().setVoiceCurrentTool(null);
+    }
+    logToolCall(name, args, result);
+    return result;
+  };
 }
 
 function buildClientToolHandlers(): Record<
@@ -570,58 +591,43 @@ function buildClientToolHandlers(): Record<
   (parameters: any) => Promise<string>
 > {
   return {
-    Read: async (args: { path: string }) => {
-      let result: string;
+    Read: withTracking("Read", async (args: { path: string }) => {
       try {
         const raw = await invoke<string>("read_text_file", { path: args.path });
-        result =
-          raw.length > READ_CAP
-            ? raw.slice(0, READ_CAP) + "\n…[truncated]"
-            : raw;
+        return raw.length > READ_CAP
+          ? raw.slice(0, READ_CAP) + "\n…[truncated]"
+          : raw;
       } catch (e) {
-        result = `Error: ${(e as any)?.message ?? String(e)}`;
+        return `Error: ${(e as any)?.message ?? String(e)}`;
       }
-      logToolCall("Read", args, result);
-      return result;
-    },
-    Glob: async (args: { pattern: string }) => {
+    }),
+    Glob: withTracking("Glob", async (args: { pattern: string }) => {
       const vault = useStore.getState().vaultPath;
-      let result: string;
-      if (!vault) {
-        result = "Error: no active vault";
-      } else {
-        try {
-          const results = await invoke<string[]>("glob_files", {
-            pattern: args.pattern,
-            cwd: vault,
-          });
-          if (!results.length) {
-            result = "(no matches)";
-          } else {
-            const out = results.slice(0, 200).join("\n");
-            result =
-              results.length > 200
-                ? out + `\n…(${results.length - 200} more)`
-                : out;
-          }
-        } catch (e) {
-          result = `Error: ${(e as any)?.message ?? String(e)}`;
-        }
+      if (!vault) return "Error: no active vault";
+      try {
+        const results = await invoke<string[]>("glob_files", {
+          pattern: args.pattern,
+          cwd: vault,
+        });
+        if (!results.length) return "(no matches)";
+        const out = results.slice(0, 200).join("\n");
+        return results.length > 200
+          ? out + `\n…(${results.length - 200} more)`
+          : out;
+      } catch (e) {
+        return `Error: ${(e as any)?.message ?? String(e)}`;
       }
-      logToolCall("Glob", args, result);
-      return result;
-    },
-    Grep: async (args: {
-      pattern: string;
-      path?: string;
-      glob_filter?: string;
-      case_insensitive?: boolean;
-    }) => {
-      const vault = useStore.getState().vaultPath;
-      let result: string;
-      if (!vault) {
-        result = "Error: no active vault";
-      } else {
+    }),
+    Grep: withTracking(
+      "Grep",
+      async (args: {
+        pattern: string;
+        path?: string;
+        glob_filter?: string;
+        case_insensitive?: boolean;
+      }) => {
+        const vault = useStore.getState().vaultPath;
+        if (!vault) return "Error: no active vault";
         try {
           const results = await invoke<
             { path: string; line: number; text: string }[]
@@ -632,40 +638,29 @@ function buildClientToolHandlers(): Record<
             caseInsensitive: args.case_insensitive ?? false,
             maxResults: 200,
           });
-          if (!results.length) {
-            result = "(no matches)";
-          } else {
-            result = results
-              .slice(0, 100)
-              .map((r) => `${r.path}:${r.line}: ${r.text}`)
-              .join("\n");
-          }
+          if (!results.length) return "(no matches)";
+          return results
+            .slice(0, 100)
+            .map((r) => `${r.path}:${r.line}: ${r.text}`)
+            .join("\n");
         } catch (e) {
-          result = `Error: ${(e as any)?.message ?? String(e)}`;
+          return `Error: ${(e as any)?.message ?? String(e)}`;
         }
-      }
-      logToolCall("Grep", args, result);
-      return result;
-    },
-    ListDir: async (args: { path: string }) => {
-      let result: string;
+      },
+    ),
+    ListDir: withTracking("ListDir", async (args: { path: string }) => {
       try {
         const entries = await invoke<{ name: string; is_dir: boolean }[]>(
           "list_dir",
           { path: args.path },
         );
-        if (!entries.length) {
-          result = "(empty)";
-        } else {
-          result = entries
-            .map((e) => (e.is_dir ? `${e.name}/` : e.name))
-            .join("\n");
-        }
+        if (!entries.length) return "(empty)";
+        return entries
+          .map((e) => (e.is_dir ? `${e.name}/` : e.name))
+          .join("\n");
       } catch (e) {
-        result = `Error: ${(e as any)?.message ?? String(e)}`;
+        return `Error: ${(e as any)?.message ?? String(e)}`;
       }
-      logToolCall("ListDir", args, result);
-      return result;
-    },
+    }),
   };
 }

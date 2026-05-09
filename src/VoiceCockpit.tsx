@@ -19,30 +19,30 @@ export function VoiceCockpit() {
   const voiceMode = useStore((s) => s.voiceMode);
   const followAlong = useStore((s) => s.followAlong);
   const toggleFollowAlong = useStore((s) => s.toggleFollowAlong);
-  const liveTools = useStore((s) => s.liveTools);
   const busy = useStore((s) => s.busy);
   const voiceListening = useStore((s) => s.voiceListening);
   const voiceSpeaking = useStore((s) => s.voiceSpeaking);
   const voiceConnecting = useStore((s) => s.voiceConnecting);
+  const voiceCurrentTool = useStore((s) => s.voiceCurrentTool);
 
   if (!voiceMode) return null;
 
-  const runningTool = liveTools.find((t) => t.result === undefined);
-
-  // Priority: connecting (initial handshake) > listening (you're
-  // talking) > running tool (visible work) > speaking (audio out)
+  // Priority: connecting (initial handshake) > running tool (visible
+  // local work) > listening (you're talking) > speaking (audio out)
   // > thinking (generating, no audio yet).
+  // Tool wins over listening so a mid-utterance tool call surfaces
+  // — agent isn't really "listening" while it's reading a file.
   let label: string;
   let labelKind: "connecting" | "user" | "tool" | "speak" | "think" | "idle";
   if (voiceConnecting) {
     label = "Connecting…";
     labelKind = "connecting";
+  } else if (voiceCurrentTool) {
+    label = `Running ${voiceCurrentTool}…`;
+    labelKind = "tool";
   } else if (voiceListening) {
     label = "Listening…";
     labelKind = "user";
-  } else if (runningTool) {
-    label = `Running ${runningTool.name}…`;
-    labelKind = "tool";
   } else if (voiceSpeaking) {
     label = "Speaking";
     labelKind = "speak";
@@ -54,10 +54,14 @@ export function VoiceCockpit() {
     labelKind = "idle";
   }
 
-  // Bars animate when something audio-ish is happening — listening,
-  // speaking, thinking, or while still connecting (gives the user a
-  // visible heartbeat during the boot wait).
-  const barsActive = voiceListening || voiceSpeaking || busy || voiceConnecting;
+  // Bars animate during any active state — gives a heartbeat while
+  // connecting, listening, speaking, thinking, or running a tool.
+  const barsActive =
+    voiceListening ||
+    voiceSpeaking ||
+    busy ||
+    voiceConnecting ||
+    !!voiceCurrentTool;
 
   return (
     <>
