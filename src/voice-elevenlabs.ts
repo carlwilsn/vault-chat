@@ -23,6 +23,12 @@ function getCurrentLlm(): string {
   return localStorage.getItem(LLM_STORAGE) ?? DEFAULT_LLM;
 }
 const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
+// Bump whenever the agent-create body changes in a way that affects
+// the agent itself — tool schema, expects_response flags, override
+// permissions. Mismatch with the cached agent triggers re-provision
+// on next session, so updates roll out without manual intervention.
+const AGENT_CONFIG_VERSION = "v2-expects-response";
+const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
 const SCROLL_DEBOUNCE_MS = 600;
@@ -405,13 +411,18 @@ export function getLastAgentCreateError(): { status: number; body: string } | nu
 async function ensureAgent(apiKey: string): Promise<string | null> {
   const cached = localStorage.getItem(AGENT_ID_STORAGE);
   const provisionedWith = localStorage.getItem(AGENT_LLM_AT_PROVISION);
+  const provisionedVersion = localStorage.getItem(AGENT_VERSION_STORAGE);
   const wantedLlm = getCurrentLlm();
-  // If the cached agent was provisioned with a different LLM than
-  // the one currently selected, force a fresh provision so the new
-  // model actually takes effect. (The orchestrator caches LLM at
-  // agent level, not per-session.)
-  if (cached && provisionedWith === wantedLlm) return cached;
-  if (cached && provisionedWith !== wantedLlm) {
+  // Re-provision if either the LLM choice or the agent-config schema
+  // has changed since this agent was created. (The orchestrator
+  // caches both at agent level, so changes don't take effect on the
+  // existing agent — we make a fresh one.)
+  const stale =
+    cached &&
+    (provisionedWith !== wantedLlm ||
+      provisionedVersion !== AGENT_CONFIG_VERSION);
+  if (cached && !stale) return cached;
+  if (stale) {
     localStorage.removeItem(AGENT_ID_STORAGE);
   }
   try {
@@ -435,6 +446,13 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
                 name: t.name,
                 description: t.description,
                 parameters: t.parameters,
+                // CRITICAL: defaults to false. When false, the SDK
+                // calls our handler but doesn't pass the return
+                // value back to the agent — every tool call
+                // appears empty to the model. With this true the
+                // agent actually receives and reasons over the
+                // result string.
+                expects_response: true,
                 response_timeout_secs: 30,
               })),
             },
@@ -477,6 +495,7 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
     lastAgentCreateError = null;
     localStorage.setItem(AGENT_ID_STORAGE, json.agent_id);
     localStorage.setItem(AGENT_LLM_AT_PROVISION, wantedLlm);
+    localStorage.setItem(AGENT_VERSION_STORAGE, AGENT_CONFIG_VERSION);
     return json.agent_id;
   } catch (e) {
     console.error("[voice-eleven] agent create exception:", e);
