@@ -23,6 +23,10 @@ const FIRST_CHUNK_MIN_CHARS = 20;
 const MAX_CHUNK_CHARS = 400;
 
 let audioContext: AudioContext | null = null;
+// Sits between every BufferSource and the destination so the cockpit
+// can read playback amplitude via getTtsLevels() — created lazily on
+// first source so we don't allocate when voice mode is never used.
+let outputAnalyser: AnalyserNode | null = null;
 let pendingSources: AudioBufferSourceNode[] = [];
 let audioQueue: AudioBuffer[] = [];
 let isPlaying = false;
@@ -96,6 +100,25 @@ export function flushVoice(): void {
   if (remaining.length > 0) {
     void enqueueSpeak(remaining);
   }
+}
+
+// Same shape as voice-stt.getMicLevels — returns N normalized [0..1]
+// frequency amplitudes from the live TTS playback. Returns zeros if
+// nothing is currently playing.
+export function getTtsLevels(n: number): number[] {
+  if (!outputAnalyser) return new Array(n).fill(0);
+  const data = new Uint8Array(outputAnalyser.frequencyBinCount);
+  outputAnalyser.getByteFrequencyData(data);
+  const out: number[] = [];
+  const binsPerBar = Math.max(1, Math.floor(data.length / n));
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    for (let j = 0; j < binsPerBar; j++) {
+      sum += data[i * binsPerBar + j] ?? 0;
+    }
+    out.push(sum / binsPerBar / 255);
+  }
+  return out;
 }
 
 export function isVoicePlaying(): boolean {
@@ -244,9 +267,14 @@ function playNext(): void {
   }
   isPlaying = true;
   useStore.getState().setVoiceSpeaking(true);
+  if (!outputAnalyser) {
+    outputAnalyser = audioContext.createAnalyser();
+    outputAnalyser.fftSize = 256;
+    outputAnalyser.connect(audioContext.destination);
+  }
   const src = audioContext.createBufferSource();
   src.buffer = buffer;
-  src.connect(audioContext.destination);
+  src.connect(outputAnalyser);
   src.onended = () => {
     pendingSources = pendingSources.filter((s) => s !== src);
     playNext();

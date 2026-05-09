@@ -88,6 +88,27 @@ export async function startListening(
   }, VAD_TICK_MS);
 }
 
+// Returns N normalized [0..1] frequency-bin amplitudes from the live
+// mic stream. Used by the cockpit to drive the voice-bar heights so
+// the user can visually confirm the mic is hearing them. Returns
+// zeros if listening hasn't started — caller is expected to fall back
+// to an idle visual.
+export function getMicLevels(n: number): number[] {
+  if (!analyser) return new Array(n).fill(0);
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(data);
+  const out: number[] = [];
+  const binsPerBar = Math.max(1, Math.floor(data.length / n));
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    for (let j = 0; j < binsPerBar; j++) {
+      sum += data[i * binsPerBar + j] ?? 0;
+    }
+    out.push(sum / binsPerBar / 255);
+  }
+  return out;
+}
+
 export function stopListening(): void {
   if (tickHandle !== null) {
     clearInterval(tickHandle);

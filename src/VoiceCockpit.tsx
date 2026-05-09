@@ -1,5 +1,14 @@
+import { useEffect, useRef } from "react";
 import { Eye } from "lucide-react";
 import { useStore } from "./store";
+import { getMicLevels } from "./voice-stt";
+import { getTtsLevels } from "./voice-tts";
+
+const NUM_BARS = 8;
+const IDLE_HEIGHTS = [0.3, 0.5, 0.35, 0.55, 0.4, 0.5, 0.3, 0.45];
+// Smoothing factor for level decay — current = max(new, prev * decay).
+// Keeps bars from flickering between frames during quiet patches.
+const LEVEL_DECAY = 0.85;
 
 // Floats absolutely-positioned in the center of the titlebar when
 // voice mode is on. Shows live state: follow-along eye toggle, an
@@ -48,10 +57,6 @@ export function VoiceCockpit() {
 
   return (
     <>
-      <style>{`
-        @keyframes vc-voice-bar { 0%,100% { transform: scaleY(0.35); } 50% { transform: scaleY(1); } }
-        .vc-voice-bar { transform-origin: bottom; animation: vc-voice-bar 1s ease-in-out infinite; }
-      `}</style>
       <div
         className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-2 px-3 h-7 rounded-full bg-primary/5 border border-primary/30 z-10 pointer-events-auto"
       >
@@ -94,16 +99,52 @@ export function VoiceCockpit() {
 }
 
 function VoiceBars({ active }: { active: boolean }) {
-  const heights = [3, 8, 4, 10, 5, 9, 4, 7];
+  const barRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const smoothed = useRef<number[]>(new Array(NUM_BARS).fill(0));
+
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      const s = useStore.getState();
+      let raw: number[];
+      if (s.voiceListening) {
+        raw = getMicLevels(NUM_BARS);
+      } else if (s.voiceSpeaking) {
+        raw = getTtsLevels(NUM_BARS);
+      } else {
+        raw = IDLE_HEIGHTS;
+      }
+      const sm = smoothed.current;
+      for (let i = 0; i < NUM_BARS; i++) {
+        const decayed = sm[i] * LEVEL_DECAY;
+        sm[i] = raw[i] > decayed ? raw[i] : decayed;
+        const ref = barRefs.current[i];
+        if (ref) {
+          // Floor at ~20% so the bars never collapse fully — feels
+          // alive rather than dead-flat between phonemes.
+          const h = 0.2 + Math.min(1, sm[i]) * 0.8;
+          ref.style.transform = `scaleY(${h.toFixed(3)})`;
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   return (
     <div className="flex items-end gap-[2px] h-3.5">
-      {heights.map((h, i) => (
+      {Array.from({ length: NUM_BARS }).map((_, i) => (
         <div
           key={i}
-          className={`w-[2px] rounded-sm bg-primary ${active ? "vc-voice-bar" : "opacity-40"}`}
+          ref={(el) => {
+            barRefs.current[i] = el;
+          }}
+          className={`w-[2px] rounded-sm bg-primary ${active ? "" : "opacity-40"}`}
           style={{
-            height: `${h}px`,
-            animationDelay: active ? `${i * 80}ms` : undefined,
+            height: `12px`,
+            transformOrigin: "bottom",
+            transform: `scaleY(${IDLE_HEIGHTS[i]})`,
           }}
         />
       ))}
