@@ -2691,6 +2691,7 @@ fn git_guard(path: &str) -> Result<(), String> {
 
 const DEFAULT_SYSTEM_MD: &str = include_str!("../defaults/system.md");
 const DEFAULT_META_README: &str = include_str!("../defaults/README.md");
+const DEFAULT_VOICE_MD: &str = include_str!("../defaults/voice.md");
 
 #[derive(Serialize)]
 struct MetaInit {
@@ -2719,6 +2720,10 @@ fn meta_vault_init(app: tauri::AppHandle) -> Result<MetaInit, String> {
     let system_path = dir.join("system.md");
     if !system_path.exists() {
         std::fs::write(&system_path, DEFAULT_SYSTEM_MD).map_err(|e| e.to_string())?;
+    }
+    let voice_path = dir.join("voice.md");
+    if !voice_path.exists() {
+        std::fs::write(&voice_path, DEFAULT_VOICE_MD).map_err(|e| e.to_string())?;
     }
     let readme_path = dir.join("README.md");
     if !readme_path.exists() {
