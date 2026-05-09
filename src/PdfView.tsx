@@ -795,6 +795,51 @@ export function PdfView({ path }: { path: string }) {
     };
   }, [marqueeOn, loading]);
 
+  // Throttled scroll → publishes the most-visible page (and its
+  // extracted text) into the store as the active viewport, so voice
+  // mode follow-along sends the page the user is actually reading.
+  // rAF coalesces bursty scroll events; one update per frame max.
+  const scrollPublishRaf = useRef<number | null>(null);
+  const onScroll = () => {
+    if (scrollPublishRaf.current !== null) return;
+    scrollPublishRaf.current = requestAnimationFrame(() => {
+      scrollPublishRaf.current = null;
+      const scroller = scrollRef.current;
+      const host = hostRef.current;
+      if (!scroller || !host) return;
+      const sRect = scroller.getBoundingClientRect();
+      const center = sRect.top + sRect.height / 2;
+      const canvases = host.querySelectorAll<HTMLCanvasElement>(
+        "canvas.pdf-page[data-page]",
+      );
+      let bestPage: number | null = null;
+      let bestDist = Infinity;
+      for (const c of canvases) {
+        const r = c.getBoundingClientRect();
+        const pageCenter = r.top + r.height / 2;
+        const dist = Math.abs(pageCenter - center);
+        if (dist < bestDist) {
+          bestDist = dist;
+          const p = c.dataset.page;
+          if (p) bestPage = parseInt(p, 10);
+        }
+      }
+      if (bestPage === null) return;
+      const texts = pageTextsRef.current;
+      const total = texts.length || pages;
+      const text = texts[bestPage - 1] ?? "";
+      const PAGE_CAP = 4000;
+      const trunc =
+        text.length > PAGE_CAP ? text.slice(0, PAGE_CAP) + "\n[...]" : text;
+      useStore.getState().setViewport({
+        path,
+        page: bestPage,
+        totalPages: total,
+        pageText: trunc,
+      });
+    });
+  };
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-muted/20">
       <div className="sticky top-0 z-10 bg-muted/80 backdrop-blur border-b border-border/60 px-6 py-1.5 flex items-center gap-2 text-[11px] text-muted-foreground shrink-0">
@@ -861,6 +906,7 @@ export function PdfView({ path }: { path: string }) {
       )}
       <div
         ref={scrollRef}
+        onScroll={onScroll}
         className={cn(
           "flex-1 overflow-auto p-4 relative",
           marqueeOn && "cursor-crosshair select-none",

@@ -297,6 +297,15 @@ export type SavedChat = {
   tokenUsage: { prompt: number; completion: number; total: number };
 };
 
+export type Viewport = {
+  path: string;
+  scrollRatio?: number;
+  visibleText?: string;
+  page?: number;
+  totalPages?: number;
+  pageText?: string;
+};
+
 type State = {
   vaultPath: string | null;
   files: FileEntry[];
@@ -343,6 +352,11 @@ type State = {
   // mode off.
   voiceListening: boolean;
   voiceSpeaking: boolean;
+  // What the user is currently looking at. Updated by each viewer on
+  // scroll. Voice mode's follow-along preamble uses this to send the
+  // visible portion of the active document, not the whole file —
+  // so "what does this say?" answers about the part you can see.
+  viewport: Viewport | null;
   tokenUsage: { prompt: number; completion: number; total: number };
   lastContext: number;
   compactionSummary: string | null;
@@ -465,6 +479,7 @@ type State = {
   toggleFollowAlong: () => void;
   setVoiceListening: (b: boolean) => void;
   setVoiceSpeaking: (b: boolean) => void;
+  setViewport: (v: Viewport | null) => void;
   addTokenUsage: (u: { prompt: number; completion: number; total: number }) => void;
   setLastContext: (n: number) => void;
   setCompacting: (b: boolean) => void;
@@ -571,6 +586,7 @@ export const useStore = create<State>((set) => ({
   followAlong: false,
   voiceListening: false,
   voiceSpeaking: false,
+  viewport: null,
   tokenUsage: { prompt: 0, completion: 0, total: 0 },
   lastContext: 0,
   compactionSummary: null,
@@ -782,9 +798,9 @@ export const useStore = create<State>((set) => ({
         const panes = s.panes.map((pane) =>
           pane.id === s.activePaneId ? { ...pane, file: p, content } : pane,
         );
-        return { panes, currentFile: p, currentContent: content };
+        return { panes, currentFile: p, currentContent: content, viewport: null };
       }
-      return { currentFile: p, currentContent: content, panes: [], splitDirection: null, activePaneId: null };
+      return { currentFile: p, currentContent: content, panes: [], splitDirection: null, activePaneId: null, viewport: null };
     }),
   reloadCurrent: (content) =>
     set((s) => {
@@ -1041,6 +1057,7 @@ export const useStore = create<State>((set) => ({
   toggleFollowAlong: () => set((s) => ({ followAlong: !s.followAlong })),
   setVoiceListening: (b) => set({ voiceListening: b }),
   setVoiceSpeaking: (b) => set({ voiceSpeaking: b }),
+  setViewport: (v) => set({ viewport: v }),
   addTokenUsage: (u) =>
     set((s) => ({
       tokenUsage: {

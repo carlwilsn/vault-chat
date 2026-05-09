@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, History, RefreshCw, StickyNote, Mic } from "lucide-react";
-import { useStore, type FileEntry } from "./store";
+import { useStore, type FileEntry, type Viewport } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
 import { stopAgent, interruptAndSend } from "./chat-controller";
@@ -222,7 +222,11 @@ export function Titlebar() {
                     const s = useStore.getState();
                     const preamble =
                       s.followAlong && s.currentFile
-                        ? buildFollowAlongPreamble(s.currentFile, s.currentContent)
+                        ? buildFollowAlongPreamble(
+                            s.currentFile,
+                            s.currentContent,
+                            s.viewport,
+                          )
                         : undefined;
                     void interruptAndSend(text, preamble);
                   });
@@ -379,11 +383,30 @@ export function Titlebar() {
 const FOLLOW_ALONG_TRUNCATE = 6000;
 
 // Builds the hidden preamble that gets prepended to a voice-mode user
-// turn when follow-along is on. Includes the file path plus a content
-// preview (truncated) so the agent can answer about "this document"
-// without firing a separate Read tool call. Empty / binary content
-// falls back to a path-only hint.
-function buildFollowAlongPreamble(path: string, content: string): string {
+// turn when follow-along is on. Prefers the viewport (what the user
+// can actually see right now) over the whole file — for PDFs that's
+// the current page; for markdown/code/text it's a window centered on
+// the current scroll position. Falls back to whole-file when no
+// viewport has been published yet (e.g. file just opened).
+function buildFollowAlongPreamble(
+  path: string,
+  content: string,
+  viewport: Viewport | null,
+): string {
+  if (viewport && viewport.path === path) {
+    if (viewport.page !== undefined && viewport.pageText) {
+      const total = viewport.totalPages ?? "?";
+      return `[Active document: ${path}. The user is viewing page ${viewport.page} of ${total}.\n\nVisible page content:\n${viewport.pageText}\n\n(Other pages exist; use Read or your PDF tools if you need them.)]`;
+    }
+    if (viewport.visibleText) {
+      const pct =
+        viewport.scrollRatio !== undefined
+          ? Math.round(viewport.scrollRatio * 100)
+          : null;
+      const loc = pct !== null ? ` (scrolled to roughly ${pct}%)` : "";
+      return `[Active document: ${path}${loc}.\n\nVisible content (the part the user can currently see):\n${viewport.visibleText}\n\n(Use Read for the full file if the answer needs context outside this window.)]`;
+    }
+  }
   const trimmed = (content ?? "").trim();
   if (!trimmed) {
     return `[Active document the user is viewing: ${path}\n(No text content available in this view — call Read or PdfExtract if you need the contents.)]`;

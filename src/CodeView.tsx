@@ -103,11 +103,39 @@ export function CodeView({
     return () => cancelAnimationFrame(id);
   }, [pendingScrollAnchor, path, clearScrollAnchor]);
 
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el || !path) return;
+    const max = el.scrollHeight - el.clientHeight;
+    const ratio = max > 0 ? el.scrollTop / max : 0;
+    publishCodeViewport(path, content, ratio);
+  };
+
   return (
-    <div ref={scrollRef} className="flex-1 overflow-auto py-6 px-6">
+    <div
+      ref={scrollRef}
+      onScroll={onScroll}
+      className="flex-1 overflow-auto py-6 px-6"
+    >
       <div ref={codeRef} className="prose-md mx-auto max-w-[920px]">
         <ReactMarkdown rehypePlugins={[rehypeHighlight]}>{fenced}</ReactMarkdown>
       </div>
     </div>
   );
+}
+
+const VIEWPORT_WINDOW = 4000;
+function publishCodeViewport(path: string, content: string, ratio: number): void {
+  const offset = Math.floor(ratio * content.length);
+  const half = VIEWPORT_WINDOW / 2;
+  const start = Math.max(0, offset - half);
+  const end = Math.min(content.length, offset + half);
+  let visible = content.slice(start, end);
+  if (start > 0) visible = "[...earlier content omitted...]\n" + visible;
+  if (end < content.length) visible = visible + "\n[...later content omitted...]";
+  useStore.getState().setViewport({
+    path,
+    scrollRatio: ratio,
+    visibleText: visible,
+  });
 }

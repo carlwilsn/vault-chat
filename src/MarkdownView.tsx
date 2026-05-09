@@ -206,6 +206,30 @@ function flipNthTaskCheckbox(content: string, n: number): string | null {
   return null;
 }
 
+// Publishes the visible-text window for follow-along voice mode.
+// Slices a ~4000-char chunk centered on the scroll offset so the
+// agent receives what the user can actually see, not the whole file.
+const VIEWPORT_WINDOW = 4000;
+function publishTextViewport(
+  path: string | null,
+  content: string,
+  ratio: number,
+): void {
+  if (!path) return;
+  const offset = Math.floor(ratio * content.length);
+  const half = VIEWPORT_WINDOW / 2;
+  const start = Math.max(0, offset - half);
+  const end = Math.min(content.length, offset + half);
+  let visible = content.slice(start, end);
+  if (start > 0) visible = "[...earlier content omitted...]\n" + visible;
+  if (end < content.length) visible = visible + "\n[...later content omitted...]";
+  useStore.getState().setViewport({
+    path,
+    scrollRatio: ratio,
+    visibleText: visible,
+  });
+}
+
 type Props = { paneId?: string };
 
 export function MarkdownView({ paneId }: Props) {
@@ -260,7 +284,9 @@ export function MarkdownView({ paneId }: Props) {
   const onViewScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     const max = el.scrollHeight - el.clientHeight;
-    scrollRatioRef.current = max > 0 ? el.scrollTop / max : 0;
+    const ratio = max > 0 ? el.scrollTop / max : 0;
+    scrollRatioRef.current = ratio;
+    publishTextViewport(file, content, ratio);
   };
 
   const onChange = (value: string) => {
@@ -586,6 +612,7 @@ export function MarkdownView({ paneId }: Props) {
             initialScrollRatio={scrollRatioRef.current}
             onScrollRatio={(r) => {
               scrollRatioRef.current = r;
+              publishTextViewport(file, content, r);
             }}
             file={file}
           />
