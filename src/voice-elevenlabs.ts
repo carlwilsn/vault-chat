@@ -10,10 +10,11 @@ import { useStore, type ChatMessage, type Viewport } from "./store";
 // ends.
 
 const AGENT_NAME = "vault-chat";
-// Conservative model string. ElevenLabs's allowlist for the LLM field
-// lags Anthropic's releases — newer aliases (e.g. claude-sonnet-4-5)
-// may 422 the agent-create call. claude-3-7-sonnet is widely accepted.
-const AGENT_LLM = "claude-3-7-sonnet";
+// ElevenLabs's LLM allowlist requires the `@<release-date>` suffix —
+// bare `claude-sonnet-4-5` 422s the agent-create call. The dated form
+// is what their docs publish:
+// https://elevenlabs.io/docs/api-reference/agents/create
+const AGENT_LLM = "claude-sonnet-4-5@20250929";
 const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -108,8 +109,12 @@ export async function startElevenLabsSession(): Promise<void> {
 
   const agentId = await ensureAgent(apiKey);
   if (!agentId) {
+    const err = getLastAgentCreateError();
+    const detail = err
+      ? `HTTP ${err.status}: ${truncate(err.body, 600)}`
+      : "(no response captured)";
     reportVoiceError(
-      "Couldn't provision the ElevenLabs agent. Most likely cause: your ElevenLabs plan doesn't include Conversational AI, or the API key lacks permission. Check elevenlabs.io/app/conversational-ai. (See dev console for details.)",
+      `Couldn't provision the ElevenLabs agent.\n\n${detail}\n\nCommon causes: plan doesn't include Conversational AI, key lacks scope, or the LLM string is rejected.`,
     );
     return;
   }
@@ -356,6 +361,12 @@ function truncate(s: string, cap: number): string {
 
 // ---- Agent provisioning ---------------------------------------------------
 
+let lastAgentCreateError: { status: number; body: string } | null = null;
+
+export function getLastAgentCreateError(): { status: number; body: string } | null {
+  return lastAgentCreateError;
+}
+
 async function ensureAgent(apiKey: string): Promise<string | null> {
   const cached = localStorage.getItem(AGENT_ID_STORAGE);
   if (cached) return cached;
@@ -389,6 +400,10 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
               localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
           },
         },
+        // Per-session overrides must be explicitly enabled in the
+        // agent's platform_settings or the orchestrator silently
+        // ignores them at session start. Whitelist the ones we
+        // actually use: prompt + first_message + language + voice_id.
         platform_settings: {
           overrides: {
             conversation_config_override: {
@@ -406,17 +421,21 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       console.error("[voice-eleven] agent create failed:", res.status, body);
+      lastAgentCreateError = { status: res.status, body };
       return null;
     }
     const json = (await res.json()) as { agent_id?: string };
     if (!json.agent_id) {
       console.error("[voice-eleven] agent create returned no agent_id:", json);
+      lastAgentCreateError = { status: 0, body: JSON.stringify(json) };
       return null;
     }
+    lastAgentCreateError = null;
     localStorage.setItem(AGENT_ID_STORAGE, json.agent_id);
     return json.agent_id;
   } catch (e) {
     console.error("[voice-eleven] agent create exception:", e);
+    lastAgentCreateError = { status: 0, body: (e as any)?.message ?? String(e) };
     return null;
   }
 }
