@@ -222,7 +222,7 @@ export function Titlebar() {
                     const s = useStore.getState();
                     const preamble =
                       s.followAlong && s.currentFile
-                        ? `[Currently viewing: ${s.currentFile}]`
+                        ? buildFollowAlongPreamble(s.currentFile, s.currentContent)
                         : undefined;
                     void interruptAndSend(text, preamble);
                   });
@@ -374,4 +374,23 @@ export function Titlebar() {
     <HistoryModal open={showHistory} onClose={() => setShowHistory(false)} />
     </>
   );
+}
+
+const FOLLOW_ALONG_TRUNCATE = 6000;
+
+// Builds the hidden preamble that gets prepended to a voice-mode user
+// turn when follow-along is on. Includes the file path plus a content
+// preview (truncated) so the agent can answer about "this document"
+// without firing a separate Read tool call. Empty / binary content
+// falls back to a path-only hint.
+function buildFollowAlongPreamble(path: string, content: string): string {
+  const trimmed = (content ?? "").trim();
+  if (!trimmed) {
+    return `[Active document the user is viewing: ${path}\n(No text content available in this view — call Read or PdfExtract if you need the contents.)]`;
+  }
+  const preview =
+    trimmed.length > FOLLOW_ALONG_TRUNCATE
+      ? trimmed.slice(0, FOLLOW_ALONG_TRUNCATE) + "\n\n[...truncated, call Read for full content]"
+      : trimmed;
+  return `[Active document the user is viewing: ${path}\n\nContent:\n${preview}]`;
 }

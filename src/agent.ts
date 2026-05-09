@@ -53,8 +53,9 @@ export async function runAgent(params: {
   tavilyKey?: string;
   strictVault?: boolean;
   bashDisabled?: boolean;
+  voiceMode?: boolean;
 }) {
-  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled } = params;
+  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode } = params;
 
   try {
     const spec = findModel(modelId) ?? findModel(DEFAULT_MODEL_ID);
@@ -82,6 +83,10 @@ export async function runAgent(params: {
           ? "Host OS: macOS. The Bash tool runs commands via `bash -lc`."
           : "Host OS: Linux. The Bash tool runs commands via `bash -lc`.";
 
+    const voiceNote = voiceMode
+      ? `\n## Voice mode\n\nThe user is speaking to you and listening to your replies via text-to-speech. Your output IS audio.\n\n- Keep replies short and conversational — like talking to a friend, not writing a doc. A few sentences usually beats paragraphs.\n- Plain prose only: no markdown formatting (no \`**bold**\`, \`*italic*\`, \`#\` headers, \`-\` bullets, code fences) for spoken content. They get pronounced literally and sound bad.\n- No emoji.\n- "Read this to me" / "what does this say" means: call Read (or PdfExtract for PDFs), then speak the content as natural prose. You CAN read content aloud — your text becomes audio. Don't say "I can't do audio."\n- If the user is following along with a document (the active-file context will be included on their turn), assume their question is about that document unless they say otherwise.\n- For things that genuinely need visual presentation (long code, big tables), say so briefly and write to a file with Write — don't dump the raw content into the voice channel.`
+      : "";
+
     const system = [
       baseSystem,
       `\nVault root: ${vault}`,
@@ -91,6 +96,7 @@ export async function runAgent(params: {
       metaToolNames.length
         ? `\n## Meta-vault tools\n\nThese tools were loaded from the meta vault and are available in addition to the built-in set:\n${metaToolNames.map((n) => `- ${n}`).join("\n")}`
         : "",
+      voiceNote,
     ]
       .filter(Boolean)
       .join("\n");

@@ -13,6 +13,10 @@ const TTS_SAMPLE_RATE = 24000;
 // Below this we wait for more text rather than firing a tiny request.
 // Tiny chunks both waste API calls and produce choppy speech.
 const MIN_CHUNK_CHARS = 60;
+// First chunk only — much lower so the agent starts speaking ASAP. The
+// trade-off is a slightly choppier first sentence in exchange for
+// dramatically lower time-to-first-audio. Reset on each agent turn.
+const FIRST_CHUNK_MIN_CHARS = 20;
 // Hard ceiling so a giant code block / no-punctuation paragraph doesn't
 // sit forever. If the buffer reaches this without a sentence boundary,
 // we cut at the nearest space.
@@ -24,6 +28,10 @@ let audioQueue: AudioBuffer[] = [];
 let isPlaying = false;
 let activeFetch: AbortController | null = null;
 let textBuffer = "";
+// True until the first chunk of an agent turn is dispatched — used to
+// gate FIRST_CHUNK_MIN_CHARS so the first audio fires fast even if the
+// model leads with a short opener. Reset on flush / cancel / pause.
+let firstChunkPending = true;
 // Bumped on every cancelVoice(). Lets in-flight fetches notice they've
 // been cancelled after the network resolves but before we touch audio.
 let generation = 0;
@@ -49,16 +57,20 @@ export async function initVoiceTts(): Promise<void> {
 export function feedText(delta: string): void {
   textBuffer += delta;
   while (textBuffer.length > 0) {
+    const minChars = firstChunkPending ? FIRST_CHUNK_MIN_CHARS : MIN_CHUNK_CHARS;
     const m = /[.!?]+(?:\s|$)/.exec(textBuffer);
     if (m) {
       const cut = m.index + m[0].length;
-      if (cut < MIN_CHUNK_CHARS && textBuffer.length < MAX_CHUNK_CHARS) {
+      if (cut < minChars && textBuffer.length < MAX_CHUNK_CHARS) {
         // Sentence ended too early — wait for more.
         break;
       }
       const chunk = textBuffer.slice(0, cut).trim();
       textBuffer = textBuffer.slice(cut);
-      if (chunk) void enqueueSpeak(chunk);
+      if (chunk) {
+        firstChunkPending = false;
+        void enqueueSpeak(chunk);
+      }
       continue;
     }
     if (textBuffer.length >= MAX_CHUNK_CHARS) {
@@ -67,7 +79,10 @@ export function feedText(delta: string): void {
       if (cut <= 0) cut = MAX_CHUNK_CHARS;
       const chunk = textBuffer.slice(0, cut).trim();
       textBuffer = textBuffer.slice(cut);
-      if (chunk) void enqueueSpeak(chunk);
+      if (chunk) {
+        firstChunkPending = false;
+        void enqueueSpeak(chunk);
+      }
       continue;
     }
     break;
@@ -77,6 +92,7 @@ export function feedText(delta: string): void {
 export function flushVoice(): void {
   const remaining = textBuffer.trim();
   textBuffer = "";
+  firstChunkPending = true;
   if (remaining.length > 0) {
     void enqueueSpeak(remaining);
   }
@@ -95,6 +111,8 @@ export function isVoicePlaying(): boolean {
 // backchannel, the agent's voice resumes naturally.
 export function pauseVoice(): void {
   generation++;
+  // Don't reset firstChunkPending — when text resumes after a pause we
+  // still want the next chunk to come out fast.
   audioQueue = [];
   for (const src of pendingSources) {
     try {
@@ -115,6 +133,7 @@ export function pauseVoice(): void {
 export function cancelVoice(): void {
   generation++;
   textBuffer = "";
+  firstChunkPending = true;
   audioQueue = [];
   for (const src of pendingSources) {
     try {
@@ -132,7 +151,33 @@ export function cancelVoice(): void {
   isPlaying = false;
 }
 
+// Defensive cleanup before TTS — even though the voice-mode system
+// prompt tells the agent not to emit markdown / emoji, slips happen
+// (model still drops a stray asterisk, or older history is being
+// reread). Strip the obvious offenders so the audio sounds natural.
+function sanitizeForSpeech(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " (code block) ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^[-*+]\s+/gm, "")
+    .replace(/^\d+\.\s+/gm, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(
+      /[\u{1F300}-\u{1F9FF}\u{2600}-\u{27BF}\u{1F000}-\u{1F02F}\u{1F100}-\u{1F1FF}\u{2700}-\u{27BF}]/gu,
+      "",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 async function enqueueSpeak(text: string): Promise<void> {
+  const cleaned = sanitizeForSpeech(text);
+  if (!cleaned) return;
   const myGen = generation;
   const apiKey = useStore.getState().apiKeys.openai;
   if (!apiKey) {
@@ -157,7 +202,7 @@ async function enqueueSpeak(text: string): Promise<void> {
       body: JSON.stringify({
         model: TTS_MODEL,
         voice: TTS_VOICE,
-        input: text,
+        input: cleaned,
         response_format: "pcm",
       }),
       signal: ac.signal,

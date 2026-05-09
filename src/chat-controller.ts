@@ -126,6 +126,7 @@ export async function sendMessage(
     tavilyKey,
     strictVault,
     bashDisabled,
+    voiceMode: cur.voiceMode,
     onEvent: (e) => {
       const store = useStore.getState();
       if (e.kind === "text") {
