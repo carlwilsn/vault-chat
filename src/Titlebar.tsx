@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, History, RefreshCw, StickyNote } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, History, RefreshCw, StickyNote, Mic } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
@@ -26,6 +26,8 @@ export function Titlebar() {
     notes,
     showHistory,
     setShowHistory,
+    voiceMode,
+    toggleVoiceMode,
   } = useStore();
   const [maximized, setMaximized] = useState(false);
   const [hiddenOpen, setHiddenOpen] = useState(false);
@@ -200,6 +202,17 @@ export function Titlebar() {
               {notes.filter((n) => n.status === "open").length > 0 && (
                 <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
               )}
+            </button>
+            <button
+              onClick={toggleVoiceMode}
+              className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${
+                voiceMode
+                  ? "bg-primary/15 text-primary ring-1 ring-primary/40"
+                  : "text-muted-foreground"
+              }`}
+              title={voiceMode ? "Voice mode (on) — click to turn off" : "Voice mode (off)"}
+            >
+              <Mic className="h-3.5 w-3.5" />
             </button>
           </>
         )}

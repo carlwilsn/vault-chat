@@ -332,6 +332,8 @@ type State = {
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   popoutOpen: boolean;
+  // Resets to false on app start — never persisted.
+  voiceMode: boolean;
   tokenUsage: { prompt: number; completion: number; total: number };
   lastContext: number;
   compactionSummary: string | null;
@@ -450,6 +452,7 @@ type State = {
   toggleLeft: () => void;
   toggleRight: () => void;
   setPopoutOpen: (b: boolean) => void;
+  toggleVoiceMode: () => void;
   addTokenUsage: (u: { prompt: number; completion: number; total: number }) => void;
   setLastContext: (n: number) => void;
   setCompacting: (b: boolean) => void;
@@ -552,6 +555,7 @@ export const useStore = create<State>((set) => ({
   leftCollapsed: false,
   rightCollapsed: true,
   popoutOpen: false,
+  voiceMode: false,
   tokenUsage: { prompt: 0, completion: 0, total: 0 },
   lastContext: 0,
   compactionSummary: null,
@@ -1018,6 +1022,7 @@ export const useStore = create<State>((set) => ({
     // cause the chat to jump back in when the popout closes.
     set((s) => (s.popoutOpen ? s : { rightCollapsed: !s.rightCollapsed })),
   setPopoutOpen: (b) => set({ popoutOpen: b }),
+  toggleVoiceMode: () => set((s) => ({ voiceMode: !s.voiceMode })),
   addTokenUsage: (u) =>
     set((s) => ({
       tokenUsage: {
