@@ -31,7 +31,6 @@ const VIEWPORT_TEXT_CAP = 4000;
 type ActiveConversation = Awaited<ReturnType<typeof Conversation.startSession>>;
 
 let activeConversation: ActiveConversation | null = null;
-let collectedTranscripts: ChatMessage[] = [];
 let scrollDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let lastViewportSent: string | null = null;
 
@@ -161,7 +160,6 @@ export async function startElevenLabsSession(): Promise<void> {
     return;
   }
 
-  collectedTranscripts = [];
   lastViewportSent = null;
 
   const systemPrompt = buildSystemPrompt(state);
@@ -188,7 +186,11 @@ export async function startElevenLabsSession(): Promise<void> {
         useStore.getState().setVoiceSpeaking(false);
       },
       onDisconnect: () => {
-        flushTranscriptsToChat();
+        useStore.getState().appendMessage({
+          role: "assistant",
+          content: "Voice session ended.",
+          system: true,
+        });
         activeConversation = null;
         useStore.getState().setVoiceListening(false);
         useStore.getState().setVoiceSpeaking(false);
@@ -196,10 +198,16 @@ export async function startElevenLabsSession(): Promise<void> {
       onMessage: ({ message, role }) => {
         const text = (message ?? "").trim();
         if (!text) return;
+        // Live append: each completed user/agent turn lands in the
+        // chat pane as it arrives, not buffered until session end.
+        // ElevenLabs sends whole messages (not token streams), so
+        // there's no spam — one append per turn boundary.
         if (role === "user") {
-          collectedTranscripts.push({ role: "user", content: text });
+          useStore.getState().appendMessage({ role: "user", content: text });
         } else if (role === "agent") {
-          collectedTranscripts.push({ role: "assistant", content: text });
+          useStore
+            .getState()
+            .appendMessage({ role: "assistant", content: text });
         }
       },
       onModeChange: ({ mode }) => {
@@ -241,9 +249,6 @@ export async function endElevenLabsSession(): Promise<void> {
   } catch (e) {
     console.warn("[voice-eleven] end session failed:", e);
   }
-  // onDisconnect normally flushes; ensure it ran in case the SDK
-  // didn't fire it on a manual close.
-  flushTranscriptsToChat();
   useStore.getState().setVoiceListening(false);
   useStore.getState().setVoiceSpeaking(false);
 }
@@ -299,22 +304,6 @@ function binFrequencyData(data: Uint8Array, n: number): number[] {
   return out;
 }
 
-function flushTranscriptsToChat(): void {
-  if (collectedTranscripts.length === 0) return;
-  const store = useStore.getState();
-  const banner: ChatMessage = {
-    role: "assistant",
-    content: "Voice session ended.",
-    system: true,
-  };
-  for (const turn of collectedTranscripts) {
-    store.appendMessage(turn);
-  }
-  // Tail banner so the user can spot where the voice block lives in
-  // the chat history.
-  store.appendMessage(banner);
-  collectedTranscripts = [];
-}
 
 function buildSystemPrompt(state: ReturnType<typeof useStore.getState>): string {
   const vault = state.vaultPath ?? "(no vault)";
@@ -531,7 +520,7 @@ function logToolCall(name: string, args: unknown, result: string): void {
   const argsStr = JSON.stringify(args);
   const summary = result.length > 200 ? result.slice(0, 200) + "…" : result;
   console.log(`[voice-eleven] tool ${name}(${argsStr}) →`, summary);
-  collectedTranscripts.push({
+  useStore.getState().appendMessage({
     role: "assistant",
     content: `🔧 ${name}(${argsStr})\n→ ${summary}`,
     system: true,
