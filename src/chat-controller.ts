@@ -4,6 +4,7 @@ import { findModel } from "./providers";
 import { compactConversation } from "./compactor";
 import { gitCommitAll } from "./git";
 import { flushEditCommit } from "./commit-controller";
+import { feedText, flushVoice, cancelVoice } from "./voice-tts";
 import {
   useStore,
   MODEL_CONTEXT_LIMIT,
@@ -130,6 +131,7 @@ export async function sendMessage(
       if (e.kind === "text") {
         acc += e.delta;
         store.appendStreamingText(e.delta);
+        if (store.voiceMode) feedText(e.delta);
       } else if (e.kind === "reasoning_start") {
         store.clearStreamingReasoning();
       } else if (e.kind === "reasoning") {
@@ -147,6 +149,7 @@ export async function sendMessage(
         if (t) t.result = e.result;
         store.updateLiveToolResult(e.id, e.result);
       } else if (e.kind === "done") {
+        if (store.voiceMode) flushVoice();
         if (e.usage) {
           store.addTokenUsage(e.usage);
           store.setLastContext(e.usage.context);
@@ -195,6 +198,7 @@ export async function sendMessage(
             .catch(() => {});
         }
       } else if (e.kind === "error") {
+        cancelVoice();
         store.appendMessage({ role: "assistant", content: `⚠️ ${e.message}` });
         store.resetStreaming();
         store.setBusy(false);
@@ -206,6 +210,7 @@ export async function sendMessage(
 export function stopAgent() {
   abortRef?.abort();
   abortRef = null;
+  cancelVoice();
   const store = useStore.getState();
   store.resetStreaming();
   store.setBusy(false);
@@ -238,6 +243,7 @@ export async function interruptAndSend(
     s.appendMessage(interrupted);
     abortRef?.abort();
     abortRef = null;
+    cancelVoice();
     s.resetStreaming();
     s.setBusy(false);
   }

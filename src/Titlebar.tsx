@@ -7,6 +7,7 @@ import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
 import { stopAgent } from "./chat-controller";
+import { initVoiceTts, cancelVoice } from "./voice-tts";
 import { HistoryModal } from "./HistoryModal";
 
 export function Titlebar() {
@@ -204,7 +205,17 @@ export function Titlebar() {
               )}
             </button>
             <button
-              onClick={toggleVoiceMode}
+              onClick={() => {
+                const turningOn = !useStore.getState().voiceMode;
+                if (turningOn) {
+                  // Fire-and-forget so AudioContext.resume() runs inside
+                  // the user-gesture window of this click.
+                  void initVoiceTts();
+                } else {
+                  cancelVoice();
+                }
+                toggleVoiceMode();
+              }}
               className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${
                 voiceMode
                   ? "bg-primary/15 text-primary ring-1 ring-primary/40"
