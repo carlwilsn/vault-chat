@@ -37,6 +37,11 @@ let lastViewportSent: string | null = null;
 
 const READ_CAP = 8000;
 
+// ElevenLabs's tool-parameter validator requires every property to
+// carry a `description` (or `dynamic_variable` / `is_system_provided`
+// / `constant_value`). Missing descriptions return HTTP 422 on
+// agent-create with a per-property loc trail. Make sure every leaf
+// property below has one.
 const CLIENT_TOOL_DEFINITIONS = [
   {
     name: "Read",
@@ -45,7 +50,7 @@ const CLIENT_TOOL_DEFINITIONS = [
     parameters: {
       type: "object" as const,
       properties: {
-        path: { type: "string", description: "Absolute path to the file." },
+        path: { type: "string", description: "Absolute path to the file to read." },
       },
       required: ["path"],
     },
@@ -57,7 +62,11 @@ const CLIENT_TOOL_DEFINITIONS = [
     parameters: {
       type: "object" as const,
       properties: {
-        pattern: { type: "string" },
+        pattern: {
+          type: "string",
+          description:
+            "Glob pattern relative to the vault root. Examples: '**/*.md', 'lectures/**/notes.md'.",
+        },
       },
       required: ["pattern"],
     },
@@ -69,10 +78,25 @@ const CLIENT_TOOL_DEFINITIONS = [
     parameters: {
       type: "object" as const,
       properties: {
-        pattern: { type: "string" },
-        path: { type: "string", description: "Optional directory or file. Defaults to vault root." },
-        glob_filter: { type: "string", description: "Optional filename glob, e.g. '*.md'." },
-        case_insensitive: { type: "boolean" },
+        pattern: {
+          type: "string",
+          description: "Regular expression to search for in file contents.",
+        },
+        path: {
+          type: "string",
+          description:
+            "Optional directory or single file to search. Defaults to the vault root.",
+        },
+        glob_filter: {
+          type: "string",
+          description:
+            "Optional filename glob to restrict matches, e.g. '*.md' or '*.tsx'.",
+        },
+        case_insensitive: {
+          type: "boolean",
+          description:
+            "If true, the regex match ignores ASCII case. Defaults to false.",
+        },
       },
       required: ["pattern"],
     },
@@ -84,7 +108,10 @@ const CLIENT_TOOL_DEFINITIONS = [
     parameters: {
       type: "object" as const,
       properties: {
-        path: { type: "string" },
+        path: {
+          type: "string",
+          description: "Absolute path to the directory to list.",
+        },
       },
       required: ["path"],
     },
