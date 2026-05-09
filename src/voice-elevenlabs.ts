@@ -1,0 +1,485 @@
+import { Conversation } from "@elevenlabs/client";
+import { invoke } from "@tauri-apps/api/core";
+import { useStore, type ChatMessage, type Viewport } from "./store";
+
+// Voice mode runs as an ElevenLabs Conversational AI session: their
+// platform owns the audio loop (STT + LLM + TTS) and we provide the
+// brain config (Claude), per-session prompt context, scroll-driven
+// updates, and client-side read tools. Transcripts come back via
+// SDK events and get appended to state.messages when the session
+// ends.
+
+const AGENT_NAME = "vault-chat";
+const AGENT_LLM = "claude-sonnet-4-5";
+const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
+const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
+const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
+const SCROLL_DEBOUNCE_MS = 600;
+const VIEWPORT_TEXT_CAP = 4000;
+
+type ActiveConversation = Awaited<ReturnType<typeof Conversation.startSession>>;
+
+let activeConversation: ActiveConversation | null = null;
+let collectedTranscripts: ChatMessage[] = [];
+let scrollDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let lastViewportSent: string | null = null;
+
+const READ_CAP = 8000;
+
+const CLIENT_TOOL_DEFINITIONS = [
+  {
+    name: "Read",
+    description:
+      "Read a UTF-8 text file from disk and return its contents. Use absolute paths. Long files are truncated.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        path: { type: "string", description: "Absolute path to the file." },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "Glob",
+    description:
+      "Find files matching a glob pattern (e.g. '**/*.md'). Relative patterns resolve from the active vault root. Returns paths newest-first.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        pattern: { type: "string" },
+      },
+      required: ["pattern"],
+    },
+  },
+  {
+    name: "Grep",
+    description:
+      "Regex search across files. Returns matching lines as 'path:line: text'. glob_filter restricts file types.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        pattern: { type: "string" },
+        path: { type: "string", description: "Optional directory or file. Defaults to vault root." },
+        glob_filter: { type: "string", description: "Optional filename glob, e.g. '*.md'." },
+        case_insensitive: { type: "boolean" },
+      },
+      required: ["pattern"],
+    },
+  },
+  {
+    name: "ListDir",
+    description:
+      "List entries in a directory. Returns names with trailing slash on subdirectories.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        path: { type: "string" },
+      },
+      required: ["path"],
+    },
+  },
+];
+
+export async function startElevenLabsSession(): Promise<void> {
+  if (activeConversation) return;
+  const state = useStore.getState();
+  const apiKey = state.serviceKeys.elevenlabs;
+  if (!apiKey) {
+    console.warn("[voice-eleven] no ElevenLabs API key — set one in Settings");
+    return;
+  }
+
+  const agentId = await ensureAgent(apiKey);
+  if (!agentId) return;
+
+  const signedUrl = await getSignedUrl(apiKey, agentId);
+  if (!signedUrl) return;
+
+  collectedTranscripts = [];
+  lastViewportSent = null;
+
+  const systemPrompt = buildSystemPrompt(state);
+  const dynamicVariables = buildDynamicVariables(state);
+
+  try {
+    activeConversation = await Conversation.startSession({
+      signedUrl,
+      overrides: {
+        agent: {
+          prompt: { prompt: systemPrompt },
+          firstMessage: "",
+          language: "en",
+        },
+        tts: {
+          voiceId:
+            localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
+        },
+      },
+      dynamicVariables,
+      clientTools: buildClientToolHandlers(),
+      onConnect: () => {
+        useStore.getState().setVoiceListening(false);
+        useStore.getState().setVoiceSpeaking(false);
+      },
+      onDisconnect: () => {
+        flushTranscriptsToChat();
+        activeConversation = null;
+        useStore.getState().setVoiceListening(false);
+        useStore.getState().setVoiceSpeaking(false);
+      },
+      onMessage: ({ message, role }) => {
+        const text = (message ?? "").trim();
+        if (!text) return;
+        if (role === "user") {
+          collectedTranscripts.push({ role: "user", content: text });
+        } else if (role === "agent") {
+          collectedTranscripts.push({ role: "assistant", content: text });
+        }
+      },
+      onModeChange: ({ mode }) => {
+        useStore.getState().setVoiceListening(mode === "listening");
+        useStore.getState().setVoiceSpeaking(mode === "speaking");
+      },
+      onError: (message: string) => {
+        console.warn("[voice-eleven] session error:", message);
+      },
+    });
+  } catch (e) {
+    console.error("[voice-eleven] session start failed:", e);
+    activeConversation = null;
+  }
+}
+
+export async function endElevenLabsSession(): Promise<void> {
+  if (scrollDebounceTimer !== null) {
+    clearTimeout(scrollDebounceTimer);
+    scrollDebounceTimer = null;
+  }
+  const conv = activeConversation;
+  activeConversation = null;
+  if (!conv) return;
+  try {
+    await conv.endSession();
+  } catch (e) {
+    console.warn("[voice-eleven] end session failed:", e);
+  }
+  // onDisconnect normally flushes; ensure it ran in case the SDK
+  // didn't fire it on a manual close.
+  flushTranscriptsToChat();
+  useStore.getState().setVoiceListening(false);
+  useStore.getState().setVoiceSpeaking(false);
+}
+
+export function pushViewportContextDebounced(): void {
+  if (!activeConversation) return;
+  if (scrollDebounceTimer !== null) clearTimeout(scrollDebounceTimer);
+  scrollDebounceTimer = setTimeout(() => {
+    scrollDebounceTimer = null;
+    const conv = activeConversation;
+    if (!conv) return;
+    const state = useStore.getState();
+    if (!state.followAlong) return;
+    const text = buildViewportContextText(state);
+    if (!text || text === lastViewportSent) return;
+    lastViewportSent = text;
+    try {
+      conv.sendContextualUpdate(text);
+    } catch (e) {
+      console.warn("[voice-eleven] contextual update failed:", e);
+    }
+  }, SCROLL_DEBOUNCE_MS);
+}
+
+export function getInputLevels(n: number): number[] {
+  if (!activeConversation) return new Array(n).fill(0);
+  try {
+    return binFrequencyData(activeConversation.getInputByteFrequencyData(), n);
+  } catch {
+    return new Array(n).fill(0);
+  }
+}
+
+export function getOutputLevels(n: number): number[] {
+  if (!activeConversation) return new Array(n).fill(0);
+  try {
+    return binFrequencyData(activeConversation.getOutputByteFrequencyData(), n);
+  } catch {
+    return new Array(n).fill(0);
+  }
+}
+
+function binFrequencyData(data: Uint8Array, n: number): number[] {
+  const out: number[] = [];
+  const binsPerBar = Math.max(1, Math.floor(data.length / n));
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    for (let j = 0; j < binsPerBar; j++) {
+      sum += data[i * binsPerBar + j] ?? 0;
+    }
+    out.push(sum / binsPerBar / 255);
+  }
+  return out;
+}
+
+function flushTranscriptsToChat(): void {
+  if (collectedTranscripts.length === 0) return;
+  const store = useStore.getState();
+  const banner: ChatMessage = {
+    role: "assistant",
+    content: "Voice session ended.",
+    system: true,
+  };
+  for (const turn of collectedTranscripts) {
+    store.appendMessage(turn);
+  }
+  // Tail banner so the user can spot where the voice block lives in
+  // the chat history.
+  store.appendMessage(banner);
+  collectedTranscripts = [];
+}
+
+function buildSystemPrompt(state: ReturnType<typeof useStore.getState>): string {
+  const vault = state.vaultPath ?? "(no vault)";
+  const recentHistory = formatRecentHistory(state.messages, 8);
+  const followNote = state.followAlong
+    ? "Follow-along is on. The active document and viewport are in dynamic variables and will refresh via contextual updates as the user scrolls."
+    : "Follow-along is off. The user is not asking about a specific document unless they name one.";
+  return [
+    "You are vault-chat speaking to the user via voice. Your output is converted to audio in real time.",
+    "",
+    "Speech rules:",
+    "- Conversational. Short answers. Like talking to a friend.",
+    "- No markdown formatting (no asterisks, no headers, no bullets, no code fences). Plain prose.",
+    "- No emoji.",
+    "- If asked to read content, call Read (or fall back to Glob/Grep) and speak it naturally — your text becomes audio.",
+    "",
+    `Vault root: ${vault}`,
+    "",
+    followNote,
+    "",
+    "{{viewport_context}}",
+    "",
+    recentHistory ? `Recent conversation context:\n${recentHistory}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildDynamicVariables(
+  state: ReturnType<typeof useStore.getState>,
+): Record<string, string> {
+  return {
+    viewport_context: buildViewportContextText(state) || "(no document open)",
+  };
+}
+
+function buildViewportContextText(
+  state: ReturnType<typeof useStore.getState>,
+): string {
+  if (!state.followAlong) return "";
+  const file = state.currentFile;
+  if (!file) return "";
+  const v: Viewport | null = state.viewport;
+  if (v && v.path === file) {
+    if (v.page !== undefined && v.pageText) {
+      const total = v.totalPages ?? "?";
+      return `Active document: ${file}\nViewing page ${v.page} of ${total}\nPage content:\n${truncate(v.pageText, VIEWPORT_TEXT_CAP)}`;
+    }
+    if (v.visibleText) {
+      const pct =
+        v.scrollRatio !== undefined
+          ? Math.round(v.scrollRatio * 100)
+          : null;
+      const loc = pct !== null ? ` (scrolled ~${pct}%)` : "";
+      return `Active document: ${file}${loc}\nVisible content:\n${truncate(v.visibleText, VIEWPORT_TEXT_CAP)}`;
+    }
+  }
+  const fallback = (state.currentContent ?? "").trim();
+  if (!fallback) {
+    return `Active document: ${file} (no text content available; call Read for contents)`;
+  }
+  return `Active document: ${file}\nContent:\n${truncate(fallback, VIEWPORT_TEXT_CAP)}`;
+}
+
+function formatRecentHistory(messages: ChatMessage[], take: number): string {
+  const recent = messages
+    .filter((m) => !m.system && (m.role === "user" || m.role === "assistant"))
+    .slice(-take);
+  if (recent.length === 0) return "";
+  return recent
+    .map((m) => `${m.role === "user" ? "User" : "You"}: ${truncate(m.content.trim(), 400)}`)
+    .join("\n");
+}
+
+function truncate(s: string, cap: number): string {
+  return s.length > cap ? s.slice(0, cap) + "…" : s;
+}
+
+// ---- Agent provisioning ---------------------------------------------------
+
+async function ensureAgent(apiKey: string): Promise<string | null> {
+  const cached = localStorage.getItem(AGENT_ID_STORAGE);
+  if (cached) return cached;
+  try {
+    const res = await fetch("https://api.elevenlabs.io/v1/convai/agents/create", {
+      method: "POST",
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: AGENT_NAME,
+        conversation_config: {
+          agent: {
+            first_message: "",
+            language: "en",
+            prompt: {
+              prompt: "(per-session override)",
+              llm: AGENT_LLM,
+              tools: CLIENT_TOOL_DEFINITIONS.map((t) => ({
+                type: "client",
+                name: t.name,
+                description: t.description,
+                parameters: t.parameters,
+                response_timeout_secs: 30,
+              })),
+            },
+          },
+          tts: {
+            voice_id:
+              localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
+          },
+        },
+        platform_settings: {
+          overrides: {
+            conversation_config_override: {
+              agent: {
+                prompt: { prompt: true },
+                first_message: true,
+                language: true,
+              },
+              tts: { voice_id: true },
+            },
+          },
+        },
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.error("[voice-eleven] agent create failed:", res.status, body);
+      return null;
+    }
+    const json = (await res.json()) as { agent_id?: string };
+    if (!json.agent_id) {
+      console.error("[voice-eleven] agent create returned no agent_id:", json);
+      return null;
+    }
+    localStorage.setItem(AGENT_ID_STORAGE, json.agent_id);
+    return json.agent_id;
+  } catch (e) {
+    console.error("[voice-eleven] agent create exception:", e);
+    return null;
+  }
+}
+
+async function getSignedUrl(apiKey: string, agentId: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${encodeURIComponent(agentId)}`,
+      {
+        headers: { "xi-api-key": apiKey },
+      },
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.error("[voice-eleven] signed url failed:", res.status, body);
+      return null;
+    }
+    const json = (await res.json()) as { signed_url?: string };
+    return json.signed_url ?? null;
+  } catch (e) {
+    console.error("[voice-eleven] signed url exception:", e);
+    return null;
+  }
+}
+
+// ---- Client tool implementations ----------------------------------------
+
+function buildClientToolHandlers(): Record<
+  string,
+  (parameters: any) => Promise<string>
+> {
+  return {
+    Read: async ({ path }: { path: string }) => {
+      try {
+        const raw = await invoke<string>("read_text_file", { path });
+        return raw.length > READ_CAP
+          ? raw.slice(0, READ_CAP) + "\n…[truncated]"
+          : raw;
+      } catch (e) {
+        return `Error: ${(e as any)?.message ?? String(e)}`;
+      }
+    },
+    Glob: async ({ pattern }: { pattern: string }) => {
+      const vault = useStore.getState().vaultPath;
+      if (!vault) return "Error: no active vault";
+      try {
+        const results = await invoke<string[]>("glob_files", {
+          pattern,
+          cwd: vault,
+        });
+        if (!results.length) return "(no matches)";
+        const out = results.slice(0, 200).join("\n");
+        return results.length > 200 ? out + `\n…(${results.length - 200} more)` : out;
+      } catch (e) {
+        return `Error: ${(e as any)?.message ?? String(e)}`;
+      }
+    },
+    Grep: async ({
+      pattern,
+      path,
+      glob_filter,
+      case_insensitive,
+    }: {
+      pattern: string;
+      path?: string;
+      glob_filter?: string;
+      case_insensitive?: boolean;
+    }) => {
+      const vault = useStore.getState().vaultPath;
+      if (!vault) return "Error: no active vault";
+      try {
+        const results = await invoke<{ path: string; line: number; text: string }[]>(
+          "grep_files",
+          {
+            pattern,
+            path: path ?? vault,
+            globFilter: glob_filter ?? null,
+            caseInsensitive: case_insensitive ?? false,
+            maxResults: 200,
+          },
+        );
+        if (!results.length) return "(no matches)";
+        return results
+          .slice(0, 100)
+          .map((r) => `${r.path}:${r.line}: ${r.text}`)
+          .join("\n");
+      } catch (e) {
+        return `Error: ${(e as any)?.message ?? String(e)}`;
+      }
+    },
+    ListDir: async ({ path }: { path: string }) => {
+      try {
+        const entries = await invoke<{ name: string; is_dir: boolean }[]>("list_dir", {
+          path,
+        });
+        if (!entries.length) return "(empty)";
+        return entries
+          .map((e) => (e.is_dir ? `${e.name}/` : e.name))
+          .join("\n");
+      } catch (e) {
+        return `Error: ${(e as any)?.message ?? String(e)}`;
+      }
+    },
+  };
+}

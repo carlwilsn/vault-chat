@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import { useStore } from "./store";
+import { pushViewportContextDebounced } from "./voice-elevenlabs";
 
 const EXT_TO_LANG: Record<string, string> = {
   py: "python",
@@ -138,4 +139,5 @@ function publishCodeViewport(path: string, content: string, ratio: number): void
     scrollRatio: ratio,
     visibleText: visible,
   });
+  pushViewportContextDebounced();
 }

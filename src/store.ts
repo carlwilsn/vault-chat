@@ -120,7 +120,7 @@ const newPaneId = () =>
     : `p_${Math.random().toString(36).slice(2)}`);
 
 type ApiKeys = Partial<Record<ProviderId, string>>;
-export type ServiceKeys = { tavily?: string; github_pat?: string };
+export type ServiceKeys = { tavily?: string; github_pat?: string; elevenlabs?: string };
 
 const MODEL_STORAGE = "vault_chat_model";
 const THEME_STORAGE = "vault_chat_theme";
@@ -197,13 +197,14 @@ async function fetchAllFromKeychain(): Promise<{
   apiKeys: ApiKeys;
   serviceKeys: ServiceKeys;
 }> {
-  const [anthropic, openai, google, openrouter, tavily, github_pat] = await Promise.all([
+  const [anthropic, openai, google, openrouter, tavily, github_pat, elevenlabs] = await Promise.all([
     keychainGet(KEY.anthropic),
     keychainGet(KEY.openai),
     keychainGet(KEY.google),
     keychainGet(KEY.openrouter),
     keychainGet(KEY.tavily),
     keychainGet(KEY.github_pat),
+    keychainGet(KEY.elevenlabs),
   ]);
   const apiKeys: ApiKeys = {};
   if (anthropic) apiKeys.anthropic = anthropic;
@@ -213,6 +214,7 @@ async function fetchAllFromKeychain(): Promise<{
   const serviceKeys: ServiceKeys = {};
   if (tavily) serviceKeys.tavily = tavily;
   if (github_pat) serviceKeys.github_pat = github_pat;
+  if (elevenlabs) serviceKeys.elevenlabs = elevenlabs;
   return { apiKeys, serviceKeys };
 }
 
@@ -969,7 +971,13 @@ export const useStore = create<State>((set) => ({
   setServiceKey: (name, k) => {
     set((s) => ({ serviceKeys: { ...s.serviceKeys, [name]: k } }));
     const keyName =
-      name === "tavily" ? KEY.tavily : name === "github_pat" ? KEY.github_pat : null;
+      name === "tavily"
+        ? KEY.tavily
+        : name === "github_pat"
+          ? KEY.github_pat
+          : name === "elevenlabs"
+            ? KEY.elevenlabs
+            : null;
     if (keyName) {
       keychainSet(keyName, k).catch((e) =>
         console.error(`[keys] keychain set ${name} failed:`, e),
@@ -986,7 +994,13 @@ export const useStore = create<State>((set) => ({
       return { serviceKeys: next };
     });
     const keyName =
-      name === "tavily" ? KEY.tavily : name === "github_pat" ? KEY.github_pat : null;
+      name === "tavily"
+        ? KEY.tavily
+        : name === "github_pat"
+          ? KEY.github_pat
+          : name === "elevenlabs"
+            ? KEY.elevenlabs
+            : null;
     if (keyName) {
       keychainDelete(keyName).catch((e) =>
         console.error(`[keys] keychain delete ${name} failed:`, e),
@@ -1462,5 +1476,31 @@ export function hydratePersistedChat(): void {
     });
   } catch (e) {
     console.warn("[chat] hydrate failed:", e);
+  }
+}
+
+// One-shot migration: when the ElevenLabs Conversational AI pipeline
+// lands, the user asked us to clear out test chats from the prior
+// voice-mode iterations so the new conversation starts fresh. The flag
+// makes this idempotent — runs once per install on first boot after
+// the upgrade.
+const VOICE_V2_CLEAR_FLAG = "vault_chat_voice_v2_cleared";
+export function maybeClearMessagesForVoiceV2(): void {
+  try {
+    if (localStorage.getItem(VOICE_V2_CLEAR_FLAG) === "1") return;
+    localStorage.removeItem(CHAT_STORAGE);
+    useStore.setState({
+      messages: [],
+      compactionSummary: null,
+      lastContext: 0,
+      tokenUsage: { prompt: 0, completion: 0, total: 0 },
+      streamingText: "",
+      streamingReasoning: "",
+      liveTools: [],
+      agentTodos: [],
+    });
+    localStorage.setItem(VOICE_V2_CLEAR_FLAG, "1");
+  } catch (e) {
+    console.warn("[chat] voice-v2 clear failed:", e);
   }
 }

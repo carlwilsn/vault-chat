@@ -6,6 +6,7 @@ import { FileText, ZoomIn, ZoomOut, BoxSelect } from "lucide-react";
 import { cn } from "./lib/utils";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
+import { pushViewportContextDebounced } from "./voice-elevenlabs";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -837,6 +838,7 @@ export function PdfView({ path }: { path: string }) {
         totalPages: total,
         pageText: trunc,
       });
+      pushViewportContextDebounced();
     });
   };
 

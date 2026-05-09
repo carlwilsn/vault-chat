@@ -1,8 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Eye } from "lucide-react";
 import { useStore } from "./store";
-import { getMicLevels } from "./voice-stt";
-import { getTtsLevels } from "./voice-tts";
+import { getInputLevels, getOutputLevels } from "./voice-elevenlabs";
 
 const NUM_BARS = 8;
 const IDLE_HEIGHTS = [0.3, 0.5, 0.35, 0.55, 0.4, 0.5, 0.3, 0.45];
@@ -108,9 +107,9 @@ function VoiceBars({ active }: { active: boolean }) {
       const s = useStore.getState();
       let raw: number[];
       if (s.voiceListening) {
-        raw = getMicLevels(NUM_BARS);
+        raw = getInputLevels(NUM_BARS);
       } else if (s.voiceSpeaking) {
-        raw = getTtsLevels(NUM_BARS);
+        raw = getOutputLevels(NUM_BARS);
       } else {
         raw = IDLE_HEIGHTS;
       }

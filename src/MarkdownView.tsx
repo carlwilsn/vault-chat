@@ -25,6 +25,7 @@ import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { fileKind } from "./fileKind";
 import { tryOpenLink } from "./linkNav";
 import { noteEditedFile } from "./commit-controller";
+import { pushViewportContextDebounced } from "./voice-elevenlabs";
 
 // remark-math renders $$…$$ as block (centered/large) display math only
 // when the $$ delimiters sit on their own lines with the body between
@@ -228,6 +229,10 @@ function publishTextViewport(
     scrollRatio: ratio,
     visibleText: visible,
   });
+  // Live scroll → push a contextual update to the active voice
+  // session so the agent always knows what the user is reading.
+  // No-op when no session is active.
+  pushViewportContextDebounced();
 }
 
 type Props = { paneId?: string };

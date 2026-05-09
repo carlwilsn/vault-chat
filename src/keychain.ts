@@ -35,6 +35,7 @@ export const KEY = {
   openrouter: "api.openrouter",
   tavily: "service.tavily",
   github_pat: "service.github_pat",
+  elevenlabs: "service.elevenlabs",
 } as const;
 
 // ----- user-managed custom keys -----

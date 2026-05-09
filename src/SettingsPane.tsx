@@ -74,13 +74,19 @@ export function SettingsPane() {
   });
   const [tavilyDraft, setTavilyDraft] = useState(serviceKeys.tavily ?? "");
   const [githubDraft, setGithubDraft] = useState(serviceKeys.github_pat ?? "");
+  const [elevenlabsDraft, setElevenlabsDraft] = useState(serviceKeys.elevenlabs ?? "");
+  const [elevenlabsVoiceDraft, setElevenlabsVoiceDraft] = useState(
+    localStorage.getItem("vault_chat_elevenlabs_voice") ?? "nPczCjzI2devNBz1zQrb",
+  );
   const [githubTestState, setGithubTestState] = useState<
     | { phase: "idle" }
     | { phase: "testing" }
     | { phase: "ok"; login: string }
     | { phase: "error"; message: string }
   >({ phase: "idle" });
-  const [savedFlash, setSavedFlash] = useState<ProviderId | "tavily" | "github_pat" | null>(null);
+  const [savedFlash, setSavedFlash] = useState<
+    ProviderId | "tavily" | "github_pat" | "elevenlabs" | "elevenlabs_voice" | null
+  >(null);
   const openFeedbackComposer = useStore((s) => s.openFeedbackComposer);
 
   const save = (p: ProviderId) => {
@@ -108,6 +114,32 @@ export function SettingsPane() {
     setTavilyDraft(v);
     setSavedFlash("tavily");
     setTimeout(() => setSavedFlash((x) => (x === "tavily" ? null : x)), 1500);
+  };
+
+  const saveElevenlabs = () => {
+    const v = elevenlabsDraft.trim();
+    if (!v) return;
+    setServiceKey("elevenlabs", v);
+    setElevenlabsDraft(v);
+    setSavedFlash("elevenlabs");
+    setTimeout(() => setSavedFlash((x) => (x === "elevenlabs" ? null : x)), 1500);
+  };
+
+  const removeElevenlabs = () => {
+    clearServiceKey("elevenlabs");
+    setElevenlabsDraft("");
+  };
+
+  const saveElevenlabsVoice = () => {
+    const v = elevenlabsVoiceDraft.trim();
+    if (!v) return;
+    localStorage.setItem("vault_chat_elevenlabs_voice", v);
+    setElevenlabsVoiceDraft(v);
+    setSavedFlash("elevenlabs_voice");
+    setTimeout(
+      () => setSavedFlash((x) => (x === "elevenlabs_voice" ? null : x)),
+      1500,
+    );
   };
 
   const removeTavily = () => {
@@ -416,6 +448,83 @@ export function SettingsPane() {
           </div>
           <p className="text-[11px] text-muted-foreground/80">
             Enables WebSearch. Get a free key at tavily.com.
+          </p>
+        </section>
+
+        <div className="h-px bg-border" />
+
+        <section className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <Key className="h-3 w-3" />
+                ElevenLabs (voice mode)
+              </h3>
+              <p className="text-[11px] text-muted-foreground/70 mt-0.5 font-mono">
+                {mask(serviceKeys.elevenlabs)}
+              </p>
+            </div>
+            {savedFlash === "elevenlabs" && (
+              <span className="text-[11px] text-emerald-500 flex items-center gap-1">
+                <Check className="h-3 w-3" /> saved
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              placeholder="sk_…"
+              value={elevenlabsDraft}
+              onChange={(e) => setElevenlabsDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveElevenlabs();
+              }}
+            />
+            <Button size="sm" onClick={saveElevenlabs} disabled={!elevenlabsDraft.trim()}>
+              Save
+            </Button>
+            {serviceKeys.elevenlabs && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={removeElevenlabs}
+                title="Remove this key from the OS keychain"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            )}
+          </div>
+          <p className="text-[11px] text-muted-foreground/80">
+            Required for voice mode. Conversational AI plan needed (free tier
+            includes 15 min/mo). Get a key at elevenlabs.io.
+          </p>
+          <div className="flex items-center justify-between pt-2">
+            <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+              Voice ID
+            </h4>
+            {savedFlash === "elevenlabs_voice" && (
+              <span className="text-[11px] text-emerald-500 flex items-center gap-1">
+                <Check className="h-3 w-3" /> saved
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="text"
+              placeholder="nPczCjzI2devNBz1zQrb (Brian)"
+              value={elevenlabsVoiceDraft}
+              onChange={(e) => setElevenlabsVoiceDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveElevenlabsVoice();
+              }}
+            />
+            <Button size="sm" onClick={saveElevenlabsVoice} disabled={!elevenlabsVoiceDraft.trim()}>
+              Save
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground/80">
+            Default is Brian (Jarvis-adjacent). Browse voices at
+            elevenlabs.io/app/voice-library and paste any voice ID here.
           </p>
         </section>
 
