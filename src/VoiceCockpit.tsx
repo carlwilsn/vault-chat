@@ -3,27 +3,48 @@ import { useStore } from "./store";
 
 // Floats absolutely-positioned in the center of the titlebar when
 // voice mode is on. Shows live state: follow-along eye toggle, an
-// animated voice bar, the tail of whatever the agent is saying, and
-// a chip when a tool call is in flight. Hidden when voiceMode is off.
-
-const STREAMING_TEXT_TAIL = 48;
+// animated voice bar, and a single status label that rolls through
+// listening / thinking / running-tool / speaking. Hidden when
+// voiceMode is off.
 
 export function VoiceCockpit() {
   const voiceMode = useStore((s) => s.voiceMode);
   const followAlong = useStore((s) => s.followAlong);
   const toggleFollowAlong = useStore((s) => s.toggleFollowAlong);
-  const streamingText = useStore((s) => s.streamingText);
   const liveTools = useStore((s) => s.liveTools);
   const busy = useStore((s) => s.busy);
+  const voiceListening = useStore((s) => s.voiceListening);
+  const voiceSpeaking = useStore((s) => s.voiceSpeaking);
 
   if (!voiceMode) return null;
 
-  const tail =
-    streamingText.length > STREAMING_TEXT_TAIL
-      ? "…" + streamingText.slice(-STREAMING_TEXT_TAIL).trimStart()
-      : streamingText.trimStart();
-
   const runningTool = liveTools.find((t) => t.result === undefined);
+
+  // Priority order: user-facing states win over agent states.
+  // Listening (you're talking) > running tool (visible work) >
+  // speaking (audio is out) > thinking (generating, no audio yet).
+  let label: string;
+  let labelKind: "user" | "tool" | "speak" | "think" | "idle";
+  if (voiceListening) {
+    label = "Listening…";
+    labelKind = "user";
+  } else if (runningTool) {
+    label = `Running ${runningTool.name}…`;
+    labelKind = "tool";
+  } else if (voiceSpeaking) {
+    label = "Speaking";
+    labelKind = "speak";
+  } else if (busy) {
+    label = "Thinking…";
+    labelKind = "think";
+  } else {
+    label = "Voice mode on";
+    labelKind = "idle";
+  }
+
+  // Bars animate when something audio-ish is happening — listening,
+  // speaking, or thinking (the agent is on its way to making sound).
+  const barsActive = voiceListening || voiceSpeaking || busy;
 
   return (
     <>
@@ -50,19 +71,23 @@ export function VoiceCockpit() {
           <Eye className="h-3 w-3" />
         </button>
         <div className="h-3 w-px bg-border/60" />
-        <VoiceBars active={busy} />
+        <VoiceBars active={barsActive} />
         <div className="h-3 w-px bg-border/60" />
-        <div className="text-[10.5px] text-muted-foreground italic max-w-[260px] truncate min-w-[60px]">
-          {tail || (busy ? "…" : "voice mode on")}
+        <div
+          className={`text-[10.5px] font-medium tabular-nums whitespace-nowrap ${
+            labelKind === "user"
+              ? "text-primary"
+              : labelKind === "tool"
+                ? "text-primary/85"
+                : labelKind === "speak"
+                  ? "text-foreground/80"
+                  : labelKind === "think"
+                    ? "text-muted-foreground"
+                    : "text-muted-foreground/70"
+          }`}
+        >
+          {label}
         </div>
-        {runningTool && (
-          <>
-            <div className="h-3 w-px bg-border/60" />
-            <div className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-primary/15 text-primary">
-              {runningTool.name}
-            </div>
-          </>
-        )}
       </div>
     </>
   );

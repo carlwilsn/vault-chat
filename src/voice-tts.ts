@@ -128,6 +128,7 @@ export function pauseVoice(): void {
     activeFetch = null;
   }
   isPlaying = false;
+  useStore.getState().setVoiceSpeaking(false);
 }
 
 export function cancelVoice(): void {
@@ -149,6 +150,7 @@ export function cancelVoice(): void {
     activeFetch = null;
   }
   isPlaying = false;
+  useStore.getState().setVoiceSpeaking(false);
 }
 
 // Defensive cleanup before TTS — even though the voice-mode system
@@ -237,9 +239,11 @@ function playNext(): void {
   const buffer = audioQueue.shift();
   if (!buffer) {
     isPlaying = false;
+    useStore.getState().setVoiceSpeaking(false);
     return;
   }
   isPlaying = true;
+  useStore.getState().setVoiceSpeaking(true);
   const src = audioContext.createBufferSource();
   src.buffer = buffer;
   src.connect(audioContext.destination);

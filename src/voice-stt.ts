@@ -113,6 +113,7 @@ export function stopListening(): void {
   aboveThresholdSince = null;
   belowThresholdSince = null;
   isCapturing = false;
+  useStore.getState().setVoiceListening(false);
   onTranscriptCallback = null;
 }
 
@@ -135,6 +136,7 @@ function beginCapture(): void {
   // user wasn't actually interrupting.
   pauseVoice();
   isCapturing = true;
+  useStore.getState().setVoiceListening(true);
   speechStartTime = performance.now();
   recordedChunks = [];
   try {
@@ -154,6 +156,7 @@ function beginCapture(): void {
 
 function endCapture(): void {
   isCapturing = false;
+  useStore.getState().setVoiceListening(false);
   const startedAt = speechStartTime;
   speechStartTime = null;
   belowThresholdSince = null;

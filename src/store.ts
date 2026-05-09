@@ -338,6 +338,11 @@ type State = {
   // hidden context preamble on each turn so it can answer about
   // "this document" without you naming it. Off by default.
   followAlong: boolean;
+  // Live status flags driven by the voice modules — used by the
+  // VoiceCockpit to derive its status label. Both reset on voice
+  // mode off.
+  voiceListening: boolean;
+  voiceSpeaking: boolean;
   tokenUsage: { prompt: number; completion: number; total: number };
   lastContext: number;
   compactionSummary: string | null;
@@ -458,6 +463,8 @@ type State = {
   setPopoutOpen: (b: boolean) => void;
   toggleVoiceMode: () => void;
   toggleFollowAlong: () => void;
+  setVoiceListening: (b: boolean) => void;
+  setVoiceSpeaking: (b: boolean) => void;
   addTokenUsage: (u: { prompt: number; completion: number; total: number }) => void;
   setLastContext: (n: number) => void;
   setCompacting: (b: boolean) => void;
@@ -562,6 +569,8 @@ export const useStore = create<State>((set) => ({
   popoutOpen: false,
   voiceMode: false,
   followAlong: false,
+  voiceListening: false,
+  voiceSpeaking: false,
   tokenUsage: { prompt: 0, completion: 0, total: 0 },
   lastContext: 0,
   compactionSummary: null,
@@ -1030,6 +1039,8 @@ export const useStore = create<State>((set) => ({
   setPopoutOpen: (b) => set({ popoutOpen: b }),
   toggleVoiceMode: () => set((s) => ({ voiceMode: !s.voiceMode })),
   toggleFollowAlong: () => set((s) => ({ followAlong: !s.followAlong })),
+  setVoiceListening: (b) => set({ voiceListening: b }),
+  setVoiceSpeaking: (b) => set({ voiceSpeaking: b }),
   addTokenUsage: (u) =>
     set((s) => ({
       tokenUsage: {
