@@ -1,5 +1,27 @@
-import { useStore } from "./store";
+import { useStore, type ChatMessage } from "./store";
 import { pauseVoice } from "./voice-tts";
+
+// Pulls the tail of the most recent assistant reply for use as a
+// transcription bias. Strips markdown so backticks / asterisks don't
+// pollute Whisper's "what comes next" prediction. Empty string when
+// there's no assistant turn yet (fresh conversation).
+function recentAssistantHint(messages: ChatMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "assistant" || m.system) continue;
+    const cleaned = (m.content ?? "")
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/\*([^*]+)\*/g, "$1")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!cleaned) continue;
+    return cleaned.length > 800 ? "…" + cleaned.slice(-800) : cleaned;
+  }
+  return "";
+}
 
 // Streaming STT for voice mode. Holds the mic stream open, runs a
 // simple energy-threshold VAD against the live audio, and segments
@@ -17,7 +39,9 @@ const ANALYSER_FFT_SIZE = 1024;
 const SPEECH_ENERGY_THRESHOLD = 0.012;
 // How long energy must stay above threshold to count as speech start.
 // Short enough that "yes" lands; long enough that a chair-creak doesn't.
-const SPEECH_START_MS = 80;
+// Tightened from 80→50 to recover more of the leading consonant. The
+// VAD energy threshold + 50ms minimum still filters out chair creaks.
+const SPEECH_START_MS = 50;
 // Silence after speech that signals end-of-utterance.
 const SILENCE_END_MS = 800;
 // Total recording duration below this is treated as noise and dropped.
@@ -49,7 +73,17 @@ export async function startListening(
   if (mediaStream) return;
   onTranscriptCallback = onTranscript;
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Explicit constraints — usually browser defaults but better to be
+    // sure. echoCancellation matters most: it stops the agent's TTS
+    // playback (coming back through the speakers) from being recorded
+    // and re-transcribed when the user starts to speak over it.
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
   } catch (e) {
     console.warn("[voice-stt] mic unavailable:", e);
     onTranscriptCallback = null;
@@ -201,7 +235,8 @@ function endCapture(): void {
 }
 
 async function transcribeAndSubmit(blob: Blob): Promise<void> {
-  const apiKey = useStore.getState().apiKeys.openai;
+  const state = useStore.getState();
+  const apiKey = state.apiKeys.openai;
   if (!apiKey) {
     console.warn("[voice-stt] no OpenAI API key — voice input requires one");
     return;
@@ -210,6 +245,16 @@ async function transcribeAndSubmit(blob: Blob): Promise<void> {
   const ext = blob.type.includes("ogg") ? "ogg" : "webm";
   form.append("file", blob, `speech.${ext}`);
   form.append("model", STT_MODEL);
+  // Skip language detection. The user is English; this saves a step
+  // and removes a class of mistranscriptions where Whisper guesses
+  // wrong on short utterances.
+  form.append("language", "en");
+  // Bias the transcription toward terminology from the most recent
+  // assistant reply — keeps proper nouns / technical terms from the
+  // ongoing conversation stable across turns. Capped at ~800 chars
+  // (Whisper accepts up to ~244 tokens of prompt).
+  const promptHint = recentAssistantHint(state.messages);
+  if (promptHint) form.append("prompt", promptHint);
   let text: string;
   try {
     const res = await fetch(STT_ENDPOINT, {
