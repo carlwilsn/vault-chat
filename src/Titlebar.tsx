@@ -6,8 +6,9 @@ import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, Ex
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
-import { stopAgent } from "./chat-controller";
+import { stopAgent, sendMessage } from "./chat-controller";
 import { initVoiceTts, cancelVoice } from "./voice-tts";
+import { startListening, stopListening } from "./voice-stt";
 import { HistoryModal } from "./HistoryModal";
 
 export function Titlebar() {
@@ -211,8 +212,12 @@ export function Titlebar() {
                   // Fire-and-forget so AudioContext.resume() runs inside
                   // the user-gesture window of this click.
                   void initVoiceTts();
+                  void startListening((text) => {
+                    void sendMessage(text);
+                  });
                 } else {
                   cancelVoice();
+                  stopListening();
                 }
                 toggleVoiceMode();
               }}

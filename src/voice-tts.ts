@@ -82,6 +82,10 @@ export function flushVoice(): void {
   }
 }
 
+export function isVoicePlaying(): boolean {
+  return isPlaying || audioQueue.length > 0 || pendingSources.length > 0;
+}
+
 export function cancelVoice(): void {
   generation++;
   textBuffer = "";
