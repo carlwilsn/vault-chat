@@ -18,7 +18,9 @@ function recentAssistantHint(messages: ChatMessage[]): string {
       .replace(/\s+/g, " ")
       .trim();
     if (!cleaned) continue;
-    return cleaned.length > 800 ? "…" + cleaned.slice(-800) : cleaned;
+    // Capped to leave room for the verbatim hint inside Whisper's
+    // ~244-token prompt budget.
+    return cleaned.length > 600 ? "…" + cleaned.slice(-600) : cleaned;
   }
   return "";
 }
@@ -31,7 +33,13 @@ function recentAssistantHint(messages: ChatMessage[]): string {
 // the Titlebar wires to sendMessage).
 
 const STT_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions";
-const STT_MODEL = "gpt-4o-transcribe";
+// whisper-1 over gpt-4o-transcribe: the gpt-4o models aggressively
+// "clean up" the transcript — they delete fillers (um, uh, like),
+// smooth over stutters, and normalise grammar. whisper-1 is the
+// original, less interpretive model and preserves disfluencies more
+// faithfully. The context-bias prompt still works on whisper-1 for
+// keeping technical terms accurate across turns.
+const STT_MODEL = "whisper-1";
 
 const ANALYSER_FFT_SIZE = 1024;
 // Tuned to be forgiving — this is RMS amplitude on a [-1, 1] signal.
@@ -249,12 +257,18 @@ async function transcribeAndSubmit(blob: Blob): Promise<void> {
   // and removes a class of mistranscriptions where Whisper guesses
   // wrong on short utterances.
   form.append("language", "en");
-  // Bias the transcription toward terminology from the most recent
-  // assistant reply — keeps proper nouns / technical terms from the
-  // ongoing conversation stable across turns. Capped at ~800 chars
-  // (Whisper accepts up to ~244 tokens of prompt).
-  const promptHint = recentAssistantHint(state.messages);
-  if (promptHint) form.append("prompt", promptHint);
+  // The prompt has two jobs:
+  // (a) Verbatim hint — Whisper uses the prompt's style as a bias
+  //     for output style, so a disfluency-rich opener nudges it
+  //     toward keeping the user's stutters and fillers intact.
+  // (b) Term bias — the most recent assistant reply (last ~600 chars)
+  //     keeps proper nouns and technical terms stable across turns.
+  // Whisper accepts up to ~244 tokens of prompt total.
+  const verbatimHint =
+    "Transcribe verbatim, including filler words like um, uh, like, and any false starts or self-corrections. Don't clean up grammar.";
+  const termHint = recentAssistantHint(state.messages);
+  const fullPrompt = termHint ? `${verbatimHint}\n\n${termHint}` : verbatimHint;
+  form.append("prompt", fullPrompt);
   let text: string;
   try {
     const res = await fetch(STT_ENDPOINT, {
