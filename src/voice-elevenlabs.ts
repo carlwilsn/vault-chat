@@ -1,6 +1,8 @@
 import { Conversation } from "@elevenlabs/client";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore, type ChatMessage, type Viewport } from "./store";
+import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./store";
+import { buildNote } from "./notes";
+import { gitCommitAll } from "./git";
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
 // platform owns the audio loop (STT + LLM + TTS) and we provide the
@@ -27,7 +29,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v2-expects-response";
+const AGENT_CONFIG_VERSION = "v3-write-createnote";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -39,6 +41,11 @@ type ActiveConversation = Awaited<ReturnType<typeof Conversation.startSession>>;
 let activeConversation: ActiveConversation | null = null;
 let scrollDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let lastViewportSent: string | null = null;
+// Tracked across the lifetime of one session — used at session end
+// to decide whether to auto-commit + refresh the file tree, and to
+// derive a useful commit subject from the user's first utterance.
+let sessionMutationCount = 0;
+let sessionFirstUserText: string | null = null;
 
 const READ_CAP = 8000;
 
@@ -121,6 +128,53 @@ const CLIENT_TOOL_DEFINITIONS = [
       required: ["path"],
     },
   },
+  {
+    name: "Write",
+    description:
+      "Write a UTF-8 text file. Creates parent directories as needed; overwrites existing files. Use absolute paths under the vault root. Good for saving summaries, study guides, or other content the user asked you to record.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        path: {
+          type: "string",
+          description:
+            "Absolute path to the file to write, under the vault root.",
+        },
+        contents: {
+          type: "string",
+          description:
+            "Full UTF-8 content of the file. Plain markdown is usually the right choice.",
+        },
+      },
+      required: ["path", "contents"],
+    },
+  },
+  {
+    name: "CreateNote",
+    description:
+      "Save a short entry to the user's notes scratchpad — visible later in their notes panel. Use when the user says 'remember this', 'jot that down', 'add a note', or you notice a thought worth saving for review. Keep it short, like a reminder; not an essay.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        text: {
+          type: "string",
+          description:
+            "The note text — what the user would want to see when they review it later.",
+        },
+        source_path: {
+          type: "string",
+          description:
+            "Optional absolute path to anchor the note to. Lets the note jump to that file later.",
+        },
+        source_anchor: {
+          type: "string",
+          description:
+            "Optional location within the source — e.g. 'page=3' for PDFs or 'L42' for line 42.",
+        },
+      },
+      required: ["text"],
+    },
+  },
 ];
 
 export async function startElevenLabsSession(): Promise<void> {
@@ -183,6 +237,8 @@ export async function startElevenLabsSession(): Promise<void> {
   }
 
   lastViewportSent = null;
+  sessionMutationCount = 0;
+  sessionFirstUserText = null;
 
   const systemPrompt = buildSystemPrompt(state);
   const dynamicVariables = buildDynamicVariables(state);
@@ -219,6 +275,10 @@ export async function startElevenLabsSession(): Promise<void> {
         useStore.getState().setVoiceListening(false);
         useStore.getState().setVoiceSpeaking(false);
         useStore.getState().setVoiceCurrentTool(null);
+        // If anything got written / a note got saved, snapshot the
+        // session as a single git commit and refresh the file tree.
+        // Fire-and-forget — UI doesn't need to wait.
+        void finalizeSessionMutations();
       },
       onMessage: ({ message, role }) => {
         const text = (message ?? "").trim();
@@ -228,6 +288,7 @@ export async function startElevenLabsSession(): Promise<void> {
         // ElevenLabs sends whole messages (not token streams), so
         // there's no spam — one append per turn boundary.
         if (role === "user") {
+          if (sessionFirstUserText === null) sessionFirstUserText = text;
           useStore.getState().appendMessage({ role: "user", content: text });
         } else if (role === "agent") {
           useStore
@@ -250,6 +311,34 @@ export async function startElevenLabsSession(): Promise<void> {
     reportVoiceError(
       `Voice session failed to start: ${(e as any)?.message ?? String(e)}.`,
     );
+  }
+}
+
+// Snapshot whatever the session wrote / noted into a single git
+// commit so the user has the same "fall back to git" safety net
+// they get from text-mode tool calls. Refreshes the file tree so
+// newly-written files show up in the panel.
+async function finalizeSessionMutations(): Promise<void> {
+  const count = sessionMutationCount;
+  const firstUser = sessionFirstUserText;
+  sessionMutationCount = 0;
+  sessionFirstUserText = null;
+  if (count === 0) return;
+  const vault = useStore.getState().vaultPath;
+  if (!vault) return;
+  const subject = firstUser
+    ? `voice session: ${truncate(firstUser, 60)}`
+    : "voice session";
+  try {
+    await gitCommitAll(vault, subject);
+  } catch (e) {
+    console.warn("[voice-eleven] auto-commit failed:", e);
+  }
+  try {
+    const files = await invoke<FileEntry[]>("list_markdown_files", { vault });
+    useStore.getState().setFiles(files);
+  } catch (e) {
+    console.warn("[voice-eleven] file tree refresh failed:", e);
   }
 }
 
@@ -349,16 +438,20 @@ function buildSystemPrompt(state: ReturnType<typeof useStore.getState>): string 
     `Vault root (absolute): ${vault}`,
     "",
     "Tool calling rules — CRITICAL:",
-    "- Read, ListDir take ABSOLUTE paths. Construct them by joining the vault root with the relative file/folder name. Never pass bare filenames like 'study.md' — they will fail.",
+    "- Read, ListDir, Write take ABSOLUTE paths. Construct them by joining the vault root with the relative file/folder name. Never pass bare filenames like 'study.md' — they will fail.",
     "- Glob takes a pattern relative to the vault root. To find study.md across the vault, call Glob with pattern '**/study.md'. To find any markdown, '**/*.md'.",
     "- Grep takes an optional path argument. Omit it to search the whole vault, or pass an absolute path under the vault root to scope the search.",
-    "- If a tool returns '(no matches)' or '(empty)', that's a real result, not a failure. Try a different pattern or path before giving up.",
+    "- Write creates or overwrites a file with full contents. Use plain markdown unless the path's extension implies otherwise. Don't write outside the vault root.",
+    "- CreateNote saves a short reminder to the user's notes panel — use it when the user says 'remember', 'jot that down', 'add a note', etc. Keep notes brief.",
+    "- If a read tool returns '(no matches)' or '(empty)', that's a real result, not a failure. Try a different pattern or path before giving up.",
     "",
     `Examples for THIS vault:`,
     `- ListDir("${vault}")  → list the vault root`,
     `- Read("${vault}/study.md")  → read study.md if it's in the vault root`,
     `- Glob("**/study.md")  → find study.md anywhere in the vault`,
     `- Grep("gradient descent", undefined, "*.md")  → search markdown for "gradient descent"`,
+    `- Write("${vault}/lectures/transformer-summary.md", "...")  → save a study summary`,
+    `- CreateNote("review chapter 3 before next class")  → drop a quick reminder`,
     "",
     followNote,
     "",
@@ -662,5 +755,49 @@ function buildClientToolHandlers(): Record<
         return `Error: ${(e as any)?.message ?? String(e)}`;
       }
     }),
+    Write: withTracking(
+      "Write",
+      async (args: { path: string; contents: string }) => {
+        try {
+          await invoke("write_text_file", {
+            path: args.path,
+            contents: args.contents,
+          });
+          sessionMutationCount++;
+          return `Wrote ${args.path}`;
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    CreateNote: withTracking(
+      "CreateNote",
+      async (args: {
+        text: string;
+        source_path?: string;
+        source_anchor?: string;
+      }) => {
+        const vault = useStore.getState().vaultPath;
+        if (!vault) return "Error: no active vault";
+        const anchors = args.source_path
+          ? [
+              {
+                source_path: args.source_path,
+                source_kind: "code" as const,
+                source_anchor: args.source_anchor ?? null,
+                primary: true,
+              },
+            ]
+          : [];
+        try {
+          const note = buildNote({ anchors, userDraft: args.text });
+          await useStore.getState().addNote(note);
+          sessionMutationCount++;
+          return `Saved note ${note.id}.`;
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
   };
 }
