@@ -2724,6 +2724,22 @@ fn meta_vault_init(app: tauri::AppHandle) -> Result<MetaInit, String> {
     let voice_path = dir.join("voice.md");
     if !voice_path.exists() {
         std::fs::write(&voice_path, DEFAULT_VOICE_MD).map_err(|e| e.to_string())?;
+    } else {
+        // Migration: the first version of the seed accidentally
+        // included editing instructions ("Things you might want to
+        // add:" / "Things to keep:") inside the file, which then
+        // got fed to the agent as part of the prompt. Detect that
+        // exact buggy seed (both marker strings together) and
+        // replace with the clean version. Files the user has
+        // actually customized won't have both markers.
+        if let Ok(contents) = std::fs::read_to_string(&voice_path) {
+            if contents.contains("Things you might want to add:")
+                && contents.contains("Things to keep:")
+            {
+                std::fs::write(&voice_path, DEFAULT_VOICE_MD)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
     }
     let readme_path = dir.join("README.md");
     if !readme_path.exists() {

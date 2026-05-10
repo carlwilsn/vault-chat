@@ -4,7 +4,14 @@ This folder is your agent's internals — the system prompt, the skills it knows
 
 ## What's here
 
-- **`system.md`** — the system prompt delivered on every agent turn. Edit it to change how the agent behaves, what rules it follows, what tools it should prefer. Takes effect on the next turn.
+- **`system.md`** — the system prompt delivered on every agent turn (text mode). Edit it to change how the agent behaves, what rules it follows, what tools it should prefer. Takes effect on the next turn.
+- **`voice.md`** — the personality / speech-rules header for voice mode. Loaded fresh at every voice session start. Keep it short and write only the prompt itself — the file's content is sent verbatim to the agent. Don't put editing notes here; put them in this README.
+
+  What you can change: persona ("You are JARVIS — calm, dry, slightly British."), tone, length constraints, domain framing.
+
+  What to keep: the "no markdown / no emoji" rule (TTS pronounces asterisks literally) and the "your text becomes audio" framing (otherwise the agent sometimes refuses to read content aloud, claiming it can't do audio).
+
+  What gets appended automatically (don't bother re-stating these): vault root, tool calling rules, examples for your active vault, viewport content via follow-along, recent chat history.
 - **`skills/`** — slash-command skills. Each subfolder is a skill: `skills/my-skill/SKILL.md` with YAML front-matter (`name`, `description`) + a body of prose / examples. Invoke with `/my-skill` in the chat. Same format as vault-level skills.
 - **`tools/`** — custom tools exposed to the agent. Each subfolder is one tool: `tools/my-tool/TOOL.md` (description + input schema as YAML front-matter) + `run.py` / `run.js` / `run.sh` (the executable). The app loads these at each agent turn and adds them to the tool roster.
 
