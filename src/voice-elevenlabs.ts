@@ -588,6 +588,7 @@ function buildSystemPrompt(
     "- CreateNote saves a short reminder to the user's notes panel — use it when the user says 'remember', 'jot that down', 'add a note', etc. Keep notes brief.",
     "- If a read tool returns '(no matches)' or '(empty)', that's a real result, not a failure. Try a different pattern or path before giving up.",
     "- Call end_call to hang up the conversation when the user clearly wraps things up — phrases like 'we're done', 'thanks, bye', 'talk later', 'I'm good'. Don't end on ambiguous pauses.",
+    "- If the user speaks while you're running a tool (especially Write or Grep), don't drop the task. Briefly acknowledge them — 'one sec, I'm writing that' / 'still searching, hang on' — then finish the tool call and address what they said. Only abandon the task if they explicitly tell you to stop or change direction.",
     "",
     `Examples for THIS vault:`,
     `- ListDir("${vault}")  → list the vault root`,
