@@ -354,6 +354,10 @@ type State = {
   // mode off.
   voiceListening: boolean;
   voiceSpeaking: boolean;
+  // True between the user finishing a turn (user_transcript event)
+  // and the agent starting to speak (mode flips to "speaking").
+  // Bridges the gap that the SDK's two-mode model doesn't expose.
+  voiceThinking: boolean;
   // True between mic-click and the ElevenLabs session reporting ready
   // — covers agent provisioning, signed-URL fetch, and the WebRTC
   // handshake. The cockpit shows "Connecting…" during this window.
@@ -492,6 +496,7 @@ type State = {
   setVoiceListening: (b: boolean) => void;
   setVoiceSpeaking: (b: boolean) => void;
   setVoiceConnecting: (b: boolean) => void;
+  setVoiceThinking: (b: boolean) => void;
   setVoiceCurrentTool: (name: string | null) => void;
   setViewport: (v: Viewport | null) => void;
   addTokenUsage: (u: { prompt: number; completion: number; total: number }) => void;
@@ -601,6 +606,7 @@ export const useStore = create<State>((set) => ({
   voiceListening: false,
   voiceSpeaking: false,
   voiceConnecting: false,
+  voiceThinking: false,
   voiceCurrentTool: null,
   viewport: null,
   tokenUsage: { prompt: 0, completion: 0, total: 0 },
@@ -1086,6 +1092,7 @@ export const useStore = create<State>((set) => ({
   setVoiceListening: (b) => set({ voiceListening: b }),
   setVoiceSpeaking: (b) => set({ voiceSpeaking: b }),
   setVoiceConnecting: (b) => set({ voiceConnecting: b }),
+  setVoiceThinking: (b) => set({ voiceThinking: b }),
   setVoiceCurrentTool: (name) => set({ voiceCurrentTool: name }),
   setViewport: (v) => set({ viewport: v }),
   addTokenUsage: (u) =>

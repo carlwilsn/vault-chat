@@ -14,18 +14,17 @@ const LEVEL_DECAY = 0.85;
 
 export function VoiceCockpit() {
   const voiceMode = useStore((s) => s.voiceMode);
-  const busy = useStore((s) => s.busy);
-  const voiceSpeaking = useStore((s) => s.voiceSpeaking);
   const voiceConnecting = useStore((s) => s.voiceConnecting);
+  const voiceThinking = useStore((s) => s.voiceThinking);
 
   if (!voiceMode) return null;
 
   // labelOnly states: nothing meaningful to visualise as a waveform.
-  // Connecting → no audio stream yet. Thinking → mic muted while
-  // the agent processes. Both surface the state via text.
+  // Connecting → no audio stream yet. Thinking → user just finished
+  // their turn and the agent is processing before audio starts.
   let label: string | null = null;
   if (voiceConnecting) label = "Connecting…";
-  else if (busy && !voiceSpeaking) label = "Thinking…";
+  else if (voiceThinking) label = "Thinking…";
 
   return (
     <div
