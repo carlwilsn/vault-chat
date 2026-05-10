@@ -242,9 +242,7 @@ export function Titlebar() {
             <button
               onClick={toggleVoice}
               className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${
-                voiceMode
-                  ? "bg-primary/15 text-primary ring-1 ring-primary/40"
-                  : "text-muted-foreground"
+                voiceMode ? "text-foreground" : "text-muted-foreground"
               }`}
               title={
                 voiceMode
@@ -252,7 +250,7 @@ export function Titlebar() {
                   : "Voice mode (off) — Ctrl+D to turn on"
               }
             >
-              <Mic className="h-3.5 w-3.5" />
+              <Mic className="h-3.5 w-3.5" strokeWidth={voiceMode ? 2.5 : 2} />
             </button>
           </>
         )}

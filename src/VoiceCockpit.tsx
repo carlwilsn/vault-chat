@@ -1,5 +1,4 @@
 import { useEffect, useRef } from "react";
-import { Eye } from "lucide-react";
 import { useStore } from "./store";
 import { getInputLevels, getOutputLevels } from "./voice-elevenlabs";
 
@@ -10,15 +9,12 @@ const IDLE_HEIGHTS = [0.3, 0.5, 0.35, 0.55, 0.4, 0.5, 0.3, 0.45];
 const LEVEL_DECAY = 0.85;
 
 // Floats absolutely-positioned in the center of the titlebar when
-// voice mode is on. Shows live state: follow-along eye toggle, an
-// animated voice bar, and a single status label that rolls through
-// listening / thinking / running-tool / speaking. Hidden when
-// voiceMode is off.
+// voice mode is on. Shows live state: an animated voice bar and a
+// single status label that rolls through listening / thinking /
+// running-tool / speaking. Hidden when voiceMode is off.
 
 export function VoiceCockpit() {
   const voiceMode = useStore((s) => s.voiceMode);
-  const followAlong = useStore((s) => s.followAlong);
-  const toggleFollowAlong = useStore((s) => s.toggleFollowAlong);
   const busy = useStore((s) => s.busy);
   const voiceListening = useStore((s) => s.voiceListening);
   const voiceSpeaking = useStore((s) => s.voiceSpeaking);
@@ -68,22 +64,6 @@ export function VoiceCockpit() {
       <div
         className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-2 px-3 h-7 rounded-full bg-primary/5 border border-primary/30 z-10 pointer-events-auto"
       >
-        <button
-          onClick={toggleFollowAlong}
-          title={
-            followAlong
-              ? "Follow-along on — agent receives the active file as context"
-              : "Follow-along off — click to let the agent see what you see"
-          }
-          className={`h-5 w-5 flex items-center justify-center rounded ${
-            followAlong
-              ? "text-primary"
-              : "text-muted-foreground/60 hover:text-muted-foreground"
-          }`}
-        >
-          <Eye className="h-3 w-3" />
-        </button>
-        <div className="h-3 w-px bg-border/60" />
         <VoiceBars active={barsActive} />
         <div className="h-3 w-px bg-border/60" />
         <div
