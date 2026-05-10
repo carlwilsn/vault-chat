@@ -15,24 +15,20 @@ const LEVEL_DECAY = 0.85;
 export function VoiceCockpit() {
   const voiceMode = useStore((s) => s.voiceMode);
   const voiceConnecting = useStore((s) => s.voiceConnecting);
-  const voiceThinking = useStore((s) => s.voiceThinking);
 
   if (!voiceMode) return null;
 
-  // labelOnly states: nothing meaningful to visualise as a waveform.
-  // Connecting → no audio stream yet. Thinking → user just finished
-  // their turn and the agent is processing before audio starts.
-  let label: string | null = null;
-  if (voiceConnecting) label = "Connecting…";
-  else if (voiceThinking) label = "Thinking…";
-
+  // Only Connecting gets a label — the listening↔speaking gap is
+  // brief enough that a "Thinking" label flashes faster than it
+  // reads. Bars stay up the whole conversation; speaking spectrum
+  // takes over when the agent's audio starts.
   return (
     <div
       className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center z-10 pointer-events-auto"
     >
-      {label !== null ? (
+      {voiceConnecting ? (
         <div className="text-[10.5px] font-medium tabular-nums whitespace-nowrap text-muted-foreground animate-pulse">
-          {label}
+          Connecting…
         </div>
       ) : (
         <VoiceBars />

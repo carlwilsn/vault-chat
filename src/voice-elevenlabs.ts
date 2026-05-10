@@ -290,7 +290,6 @@ export async function startElevenLabsSession(): Promise<void> {
         useStore.getState().setVoiceConnecting(false);
         useStore.getState().setVoiceListening(false);
         useStore.getState().setVoiceSpeaking(false);
-        useStore.getState().setVoiceThinking(false);
         useStore.getState().setVoiceCurrentTool(null);
         // If anything got written / a note got saved, snapshot the
         // session as a single git commit and refresh the file tree.
@@ -307,11 +306,6 @@ export async function startElevenLabsSession(): Promise<void> {
         if (role === "user") {
           if (sessionFirstUserText === null) sessionFirstUserText = text;
           useStore.getState().appendMessage({ role: "user", content: text });
-          // User just finished a turn → enter "thinking" until the
-          // mode flips to speaking. SDK doesn't expose a thinking
-          // mode itself, so we synthesise it from the gap between
-          // the user_transcript event and the speaking-mode change.
-          useStore.getState().setVoiceThinking(true);
           // Client-side belt-and-suspenders for end_call. If the
           // whole utterance matches one of a few unambiguous end
           // phrases, hang up without waiting for the agent's
@@ -329,10 +323,6 @@ export async function startElevenLabsSession(): Promise<void> {
       onModeChange: ({ mode }) => {
         useStore.getState().setVoiceListening(mode === "listening");
         useStore.getState().setVoiceSpeaking(mode === "speaking");
-        // Either side of the gap clears thinking — once audio (or
-        // a fresh listening turn) starts, the agent isn't thinking
-        // anymore.
-        useStore.getState().setVoiceThinking(false);
       },
       onError: (message: string) => {
         console.warn("[voice-eleven] session error:", message);
@@ -350,19 +340,28 @@ export async function startElevenLabsSession(): Promise<void> {
 
 // If the agent just wrote `path` and that path is currently open
 // in any pane / as the single-pane current file, refresh the
-// in-memory content. Path comparison normalises slashes so we
-// don't miss matches because of forward vs backslash drift.
+// in-memory content — but only when the viewer is in VIEW mode.
+// In edit mode the user's CodeMirror has its own state plus a
+// debounced autosave; clobbering pane.content there races with
+// the autosave (which holds a stale closure) and ends up writing
+// the old content back over the agent's write. Path comparison
+// normalises slashes so we don't miss matches because of forward
+// vs backslash drift.
 function refreshIfOpen(path: string, contents: string): void {
   const norm = (p: string) => p.replace(/\\/g, "/");
   const target = norm(path);
   const store = useStore.getState();
   if (store.panes.length > 0) {
     for (const pane of store.panes) {
-      if (norm(pane.file) === target) {
+      if (norm(pane.file) === target && pane.mode === "view") {
         store.setPaneFile(pane.id, pane.file, contents);
       }
     }
-  } else if (store.currentFile && norm(store.currentFile) === target) {
+  } else if (
+    store.currentFile &&
+    norm(store.currentFile) === target &&
+    store.mode === "view"
+  ) {
     store.reloadCurrent(contents);
   }
 }
@@ -499,7 +498,6 @@ export async function endElevenLabsSession(): Promise<void> {
   useStore.getState().setVoiceListening(false);
   useStore.getState().setVoiceSpeaking(false);
   useStore.getState().setVoiceConnecting(false);
-  useStore.getState().setVoiceThinking(false);
   useStore.getState().setVoiceCurrentTool(null);
 }
 
