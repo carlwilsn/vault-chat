@@ -282,6 +282,11 @@ export async function startElevenLabsSession(): Promise<void> {
         });
         activeConversation = null;
         stopViewportWatch();
+        // Flip the mic-button source of truth off so it matches
+        // reality. Critical for end_call / end-phrase paths where
+        // the click handler never ran. Idempotent for manual ends
+        // (endElevenLabsSession already set it).
+        useStore.setState({ voiceMode: false });
         useStore.getState().setVoiceConnecting(false);
         useStore.getState().setVoiceListening(false);
         useStore.getState().setVoiceSpeaking(false);
@@ -460,6 +465,20 @@ export async function endElevenLabsSession(): Promise<void> {
   }
   const conv = activeConversation;
   activeConversation = null;
+  // Cut audio synchronously before the async endSession() runs.
+  // Without this, the user can keep speaking and the SDK keeps
+  // streaming their audio to ElevenLabs until the WebSocket
+  // actually closes — agent hears them and replies even though
+  // they hit the mic toggle.
+  if (conv) {
+    try {
+      conv.setMicMuted(true);
+    } catch {}
+  }
+  // voiceMode is the source of truth for "is voice active". Set it
+  // false here for both manual click-off and the looksLikeEnd /
+  // end_call paths. onDisconnect also sets it (idempotent).
+  useStore.setState({ voiceMode: false });
   if (!conv) return;
   try {
     await conv.endSession();
@@ -469,6 +488,8 @@ export async function endElevenLabsSession(): Promise<void> {
   stopViewportWatch();
   useStore.getState().setVoiceListening(false);
   useStore.getState().setVoiceSpeaking(false);
+  useStore.getState().setVoiceConnecting(false);
+  useStore.getState().setVoiceCurrentTool(null);
 }
 
 export function pushViewportContextDebounced(): void {

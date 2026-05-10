@@ -32,7 +32,6 @@ export function Titlebar() {
     showHistory,
     setShowHistory,
     voiceMode,
-    toggleVoiceMode,
   } = useStore();
   const [maximized, setMaximized] = useState(false);
   const [hiddenOpen, setHiddenOpen] = useState(false);
@@ -135,15 +134,19 @@ export function Titlebar() {
 
   // Shared toggle so click-handler + Ctrl+D shortcut do exactly the
   // same thing (start session + connecting state on, end + cleanup
-  // on off).
+  // on off). We don't toggle the flag here — startElevenLabsSession
+  // sets voiceMode=true via setVoiceConnecting flow on success, and
+  // endElevenLabsSession sets voiceMode=false synchronously before
+  // tearing down. Either path also covers auto-end (looksLikeEnd /
+  // end_call) so click and auto-end share one source of truth.
   const toggleVoice = () => {
     const turningOn = !useStore.getState().voiceMode;
     if (turningOn) {
+      useStore.setState({ voiceMode: true });
       void startElevenLabsSession();
     } else {
       void endElevenLabsSession();
     }
-    toggleVoiceMode();
   };
 
   // Ctrl+D global shortcut for voice mode. Uses preventDefault so

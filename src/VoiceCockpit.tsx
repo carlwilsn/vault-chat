@@ -117,12 +117,20 @@ function VoiceBars({ active }: { active: boolean }) {
     const tick = () => {
       const s = useStore.getState();
       let raw: number[];
-      if (s.voiceListening) {
-        raw = getInputLevels(NUM_BARS);
-      } else if (s.voiceSpeaking) {
+      // Bar source priority:
+      // - speaking: agent's TTS output spectrum
+      // - connecting: static idle (no stream yet)
+      // - everything else (incl. before first listening event):
+      //   mic input. The SDK's audio stream is live right after
+      //   onConnect, so we don't need to wait for the explicit
+      //   "listening" mode flip — bars track the mic from the
+      //   moment the session is up.
+      if (s.voiceSpeaking) {
         raw = getOutputLevels(NUM_BARS);
-      } else {
+      } else if (s.voiceConnecting) {
         raw = IDLE_HEIGHTS;
+      } else {
+        raw = getInputLevels(NUM_BARS);
       }
       const sm = smoothed.current;
       for (let i = 0; i < NUM_BARS; i++) {
