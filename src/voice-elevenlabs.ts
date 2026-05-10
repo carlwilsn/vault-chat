@@ -811,16 +811,55 @@ async function getSignedUrl(apiKey: string, agentId: string): Promise<string | n
 
 // ---- Client tool implementations ----------------------------------------
 
-// Posts the tool call (no result) to the chat pane as a system
-// message — keeps the chat clean. The full result still goes to
-// console.log for debugging.
-function logToolCall(name: string, args: unknown, result: string): void {
+// Format a path relative to the active vault, or fall back to the
+// basename when the path lives outside the vault root. Keeps tool
+// markers readable instead of dumping absolute Windows paths.
+function relPath(path: string): string {
+  if (!path) return "";
+  const norm = (p: string) => p.replace(/\\/g, "/");
+  const p = norm(path).replace(/\/+$/, "");
+  const vault = useStore.getState().vaultPath;
+  if (vault) {
+    const v = norm(vault).replace(/\/+$/, "");
+    if (p === v) return ".";
+    if (p.startsWith(v + "/")) return p.slice(v.length + 1);
+  }
+  const tail = p.split("/").pop();
+  return tail || path;
+}
+
+// Render a one-line italic marker per tool — verb + target only,
+// no JSON args, no result. Reads like a journal entry in the chat
+// pane. The full result still goes to console.log for debugging.
+function formatToolMarker(name: string, args: any): string {
+  switch (name) {
+    case "Read":
+      return `_Read ${relPath(args.path ?? "")}_`;
+    case "Write":
+      return `_Wrote ${relPath(args.path ?? "")}_`;
+    case "ListDir":
+      return `_Listed ${relPath(args.path ?? "")}_`;
+    case "Glob":
+      return `_Searched files matching "${args.pattern ?? ""}"_`;
+    case "Grep":
+      return `_Searched "${args.pattern ?? ""}"_`;
+    case "CreateNote": {
+      const text = (args.text ?? "").trim();
+      const snip = text.length > 50 ? text.slice(0, 47) + "…" : text;
+      return `_Saved note "${snip}"_`;
+    }
+    default:
+      return `_${name}_`;
+  }
+}
+
+function logToolCall(name: string, args: any, result: string): void {
   const argsStr = JSON.stringify(args);
   const summary = result.length > 200 ? result.slice(0, 200) + "…" : result;
   console.log(`[voice-eleven] tool ${name}(${argsStr}) →`, summary);
   useStore.getState().appendMessage({
     role: "assistant",
-    content: `🔧 ${name}(${argsStr})`,
+    content: formatToolMarker(name, args),
     system: true,
   });
 }
