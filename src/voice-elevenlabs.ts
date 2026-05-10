@@ -301,6 +301,14 @@ export async function startElevenLabsSession(): Promise<void> {
         if (role === "user") {
           if (sessionFirstUserText === null) sessionFirstUserText = text;
           useStore.getState().appendMessage({ role: "user", content: text });
+          // Client-side belt-and-suspenders for end_call. If the
+          // whole utterance matches one of a few unambiguous end
+          // phrases, hang up without waiting for the agent's
+          // judgment. Conservative whitelist — won't match
+          // ambiguous "I'm done talking about it" style phrases.
+          if (looksLikeEnd(text)) {
+            void endElevenLabsSession();
+          }
         } else if (role === "agent") {
           useStore
             .getState()
@@ -391,6 +399,49 @@ async function finalizeSessionMutations(): Promise<void> {
   } catch (e) {
     console.warn("[voice-eleven] file tree refresh failed:", e);
   }
+}
+
+// Whole-utterance whitelist for client-side hang-up. Each entry has
+// to match the entire transcribed turn (modulo trailing punctuation)
+// so we don't false-positive on phrases that contain "bye" inside a
+// longer sentence ("we said goodbye to that idea"). Add new phrases
+// only if they're unambiguously a session-end signal.
+const END_PHRASES = new Set([
+  "goodbye",
+  "bye",
+  "bye bye",
+  "okay bye",
+  "ok bye",
+  "alright bye",
+  "thanks bye",
+  "thank you bye",
+  "we're done",
+  "we are done",
+  "i'm done",
+  "im done",
+  "i am done",
+  "all done",
+  "that's all",
+  "thats all",
+  "that is all",
+  "that's all for now",
+  "talk later",
+  "talk to you later",
+  "catch you later",
+  "hang up",
+  "end the call",
+  "end this call",
+  "end the conversation",
+  "end this conversation",
+  "end conversation",
+]);
+
+function looksLikeEnd(text: string): boolean {
+  const cleaned = text
+    .toLowerCase()
+    .replace(/[.,!?]+$/g, "")
+    .trim();
+  return END_PHRASES.has(cleaned);
 }
 
 function reportVoiceError(message: string): void {
