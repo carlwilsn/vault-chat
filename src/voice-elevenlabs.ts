@@ -30,7 +30,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v3-write-createnote";
+const AGENT_CONFIG_VERSION = "v4-end-call";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -325,6 +325,25 @@ export async function startElevenLabsSession(): Promise<void> {
   }
 }
 
+// If the agent just wrote `path` and that path is currently open
+// in any pane / as the single-pane current file, refresh the
+// in-memory content. Path comparison normalises slashes so we
+// don't miss matches because of forward vs backslash drift.
+function refreshIfOpen(path: string, contents: string): void {
+  const norm = (p: string) => p.replace(/\\/g, "/");
+  const target = norm(path);
+  const store = useStore.getState();
+  if (store.panes.length > 0) {
+    for (const pane of store.panes) {
+      if (norm(pane.file) === target) {
+        store.setPaneFile(pane.id, pane.file, contents);
+      }
+    }
+  } else if (store.currentFile && norm(store.currentFile) === target) {
+    store.reloadCurrent(contents);
+  }
+}
+
 // Subscribes to the store and pushes a contextual update whenever
 // the active pane / current file changes mid-session. Without this,
 // switching pane focus in split view doesn't tell the agent — the
@@ -487,6 +506,7 @@ function buildSystemPrompt(
     "- Write creates or overwrites a file with full contents. Use plain markdown unless the path's extension implies otherwise. Don't write outside the vault root.",
     "- CreateNote saves a short reminder to the user's notes panel — use it when the user says 'remember', 'jot that down', 'add a note', etc. Keep notes brief.",
     "- If a read tool returns '(no matches)' or '(empty)', that's a real result, not a failure. Try a different pattern or path before giving up.",
+    "- Call end_call to hang up the conversation when the user clearly wraps things up — phrases like 'we're done', 'thanks, bye', 'talk later', 'I'm good'. Don't end on ambiguous pauses.",
     "",
     `Examples for THIS vault:`,
     `- ListDir("${vault}")  → list the vault root`,
@@ -621,20 +641,28 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
             prompt: {
               prompt: "(per-session override)",
               llm: wantedLlm,
-              tools: CLIENT_TOOL_DEFINITIONS.map((t) => ({
-                type: "client",
-                name: t.name,
-                description: t.description,
-                parameters: t.parameters,
-                // CRITICAL: defaults to false. When false, the SDK
-                // calls our handler but doesn't pass the return
-                // value back to the agent — every tool call
-                // appears empty to the model. With this true the
-                // agent actually receives and reasons over the
-                // result string.
-                expects_response: true,
-                response_timeout_secs: 30,
-              })),
+              tools: [
+                ...CLIENT_TOOL_DEFINITIONS.map((t) => ({
+                  type: "client" as const,
+                  name: t.name,
+                  description: t.description,
+                  parameters: t.parameters,
+                  // CRITICAL: defaults to false. When false, the SDK
+                  // calls our handler but doesn't pass the return
+                  // value back to the agent — every tool call
+                  // appears empty to the model. With this true the
+                  // agent actually receives and reasons over the
+                  // result string.
+                  expects_response: true,
+                  response_timeout_secs: 30,
+                })),
+                // Built-in system tool — lets the agent hang up the
+                // call when the user signals they're done ("bye",
+                // "we're done for now", "thanks, that's all"). No
+                // implementation needed on our side; ElevenLabs
+                // closes the WebSocket and onDisconnect fires.
+                { type: "system" as const, name: "end_call" },
+              ],
             },
           },
           tts: {
@@ -831,6 +859,12 @@ function buildClientToolHandlers(): Record<
             contents: args.contents,
           });
           sessionMutationCount++;
+          // If the file the agent just wrote is currently open in a
+          // viewer, push the new content into the store immediately
+          // so the user sees the edit without having to re-open. We
+          // use the bytes the agent supplied — same content the
+          // file now contains on disk.
+          refreshIfOpen(args.path, args.contents);
           return `Wrote ${args.path}`;
         } catch (e) {
           return `Error: ${(e as any)?.message ?? String(e)}`;

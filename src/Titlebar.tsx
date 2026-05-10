@@ -133,6 +133,33 @@ export function Titlebar() {
     return () => window.removeEventListener("keydown", onKey);
   }, [hiddenOpen]);
 
+  // Shared toggle so click-handler + Ctrl+D shortcut do exactly the
+  // same thing (start session + connecting state on, end + cleanup
+  // on off).
+  const toggleVoice = () => {
+    const turningOn = !useStore.getState().voiceMode;
+    if (turningOn) {
+      void startElevenLabsSession();
+    } else {
+      void endElevenLabsSession();
+    }
+    toggleVoiceMode();
+  };
+
+  // Ctrl+D global shortcut for voice mode. Uses preventDefault so
+  // it overrides the browser/editor default (which is usually
+  // bookmark / select-next-occurrence / similar).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        toggleVoice();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const vaultName = vaultPath ? vaultPath.split("/").filter(Boolean).pop() : null;
   const isMac =
     typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -210,24 +237,17 @@ export function Titlebar() {
               )}
             </button>
             <button
-              onClick={() => {
-                const turningOn = !useStore.getState().voiceMode;
-                if (turningOn) {
-                  // Fire-and-forget so the WebRTC connection negotiates
-                  // inside the user-gesture window of this click. The
-                  // ElevenLabs SDK owns the audio loop end-to-end.
-                  void startElevenLabsSession();
-                } else {
-                  void endElevenLabsSession();
-                }
-                toggleVoiceMode();
-              }}
+              onClick={toggleVoice}
               className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${
                 voiceMode
                   ? "bg-primary/15 text-primary ring-1 ring-primary/40"
                   : "text-muted-foreground"
               }`}
-              title={voiceMode ? "Voice mode (on) — click to turn off" : "Voice mode (off)"}
+              title={
+                voiceMode
+                  ? "Voice mode (on) — Ctrl+D to turn off"
+                  : "Voice mode (off) — Ctrl+D to turn on"
+              }
             >
               <Mic className="h-3.5 w-3.5" />
             </button>
