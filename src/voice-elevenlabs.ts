@@ -31,7 +31,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v7-nb-append";
+const AGENT_CONFIG_VERSION = "v8-2h-duration";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -908,6 +908,13 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
           tts: {
             voice_id:
               localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
+          },
+          // ElevenLabs caps conversations at 10 minutes by default,
+          // which is way too short for a study session — the platform
+          // just hangs up with "Voice session ended." mid-explanation.
+          // Bump to 2 hours.
+          conversation: {
+            max_duration_seconds: 7200,
           },
         },
         // Per-session overrides must be explicitly enabled in the
