@@ -683,6 +683,35 @@ Speech rules:
 - No emoji.
 - If asked to read content, call Read (or fall back to Glob/Grep) and speak it naturally — your text becomes audio.`;
 
+// Compact file index for the system prompt. Voice mode struggles to
+// "find" files when it has to guess paths from a name — dumping the
+// real listing here gives the agent a direct map so it can construct
+// absolute paths without a Glob round-trip. Cap is high enough for
+// typical study vaults (~200 markdown + PDF + notebook files) without
+// blowing up the prompt for huge ones.
+const VAULT_INDEX_CAP = 250;
+
+function buildVaultIndex(
+  state: ReturnType<typeof useStore.getState>,
+): string {
+  const vault = state.vaultPath;
+  if (!vault) return "";
+  const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
+  const rels: string[] = [];
+  for (const f of state.files) {
+    if (f.is_dir || f.hidden || f.denied) continue;
+    const np = f.path.replace(/\\/g, "/");
+    const rel = np.startsWith(nv + "/") ? np.slice(nv.length + 1) : np;
+    rels.push(rel);
+  }
+  if (rels.length === 0) return "";
+  const shown = rels.slice(0, VAULT_INDEX_CAP);
+  const more = rels.length > VAULT_INDEX_CAP
+    ? `\n…(${rels.length - VAULT_INDEX_CAP} more files — use Glob to find them)`
+    : "";
+  return `Vault file index (${rels.length} files, ${shown.length} shown — all paths relative to vault root):\n${shown.join("\n")}${more}\n\nWhen the user names a file, prefer matching against this index FIRST before guessing or calling Glob. Construct absolute paths by joining the vault root with the relative path above.`;
+}
+
 function buildSystemPrompt(
   state: ReturnType<typeof useStore.getState>,
   customHeader: string,
@@ -693,6 +722,7 @@ function buildSystemPrompt(
     ? "Follow-along is on. The active document and viewport are in dynamic variables and will refresh via contextual updates as the user scrolls."
     : "Follow-along is off. The user is not asking about a specific document unless they name one.";
   const header = customHeader.trim() || DEFAULT_VOICE_PROMPT_HEADER;
+  const vaultIndex = buildVaultIndex(state);
   return [
     header,
     "",
@@ -710,7 +740,8 @@ function buildSystemPrompt(
     "- ListNotes shows what the user has flagged. Use when they ask 'what did I save', 'what notes do I have', 'what's open', etc. Defaults to open notes.",
     "- ResolveNote marks an open note as resolved — call it when the user confirms a flagged item has been addressed.",
     "- If a read tool returns '(no matches)' or '(empty)', that's a real result, not a failure. Try a different pattern or path before giving up.",
-    "- If Read errors with 'No such file' or similar, the path is wrong — DON'T give up. Call Glob with '**/<filename>' to locate it (e.g. Glob('**/transformer.ipynb')), then Read the absolute path Glob returns. The user usually only knows the filename, not the full path.",
+    "- Before guessing or calling Glob, scan the 'Vault file index' below for a match — those are the real relative paths in this vault. Join with the vault root for the absolute path. Only fall back to Glob('**/<filename>') if the index is empty, truncated, or you genuinely can't find a match.",
+    "- If Read errors with 'No such file' or similar, the path is wrong — DON'T give up. Call Glob with '**/<filename>' to locate it (e.g. Glob('**/transformer.ipynb')), then Read the absolute path Glob returns.",
     "- If a Read response ends with '…[truncated]' and you need more, call Read again with a narrower target (Glob a specific section) or use Grep to jump to the part you actually need. Don't pretend the truncated tail doesn't exist.",
     "- Call end_call to hang up the conversation when the user clearly wraps things up — phrases like 'we're done', 'thanks, bye', 'talk later', 'I'm good'. Don't end on ambiguous pauses.",
     "- If the user speaks while you're running a tool (especially Write or Grep), don't drop the task. Briefly acknowledge them — 'one sec, I'm writing that' / 'still searching, hang on' — then finish the tool call and address what they said. Only abandon the task if they explicitly tell you to stop or change direction.",
@@ -722,6 +753,8 @@ function buildSystemPrompt(
     `- Grep("gradient descent", undefined, "*.md")  → search markdown for "gradient descent"`,
     `- Write("${vault}/lectures/transformer-summary.md", "...")  → save a study summary`,
     `- CreateNote("review chapter 3 before next class")  → drop a quick reminder`,
+    "",
+    vaultIndex,
     "",
     followNote,
     "",
