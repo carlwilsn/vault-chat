@@ -19,6 +19,7 @@ import { NotebookView } from "./NotebookView";
 import { PdfView } from "./PdfView";
 import { HtmlView } from "./HtmlView";
 import { ImageView } from "./ImageView";
+import { VideoView } from "./VideoView";
 import { UnsupportedView } from "./UnsupportedView";
 import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
@@ -655,6 +656,8 @@ export function MarkdownView({ paneId }: Props) {
         <HtmlView content={content} />
       ) : kind === "image" ? (
         <ImageView path={file} />
+      ) : kind === "video" ? (
+        <VideoView path={file} />
       ) : kind === "unsupported" ? (
         <UnsupportedView path={file} />
       ) : (
