@@ -4,6 +4,7 @@ import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./sto
 import { buildNote } from "./notes";
 import { gitCommitAll } from "./git";
 import { loadMetaVoicePrompt } from "./meta";
+import { applyNotebookEdit, extractPdfText } from "./tools";
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
 // platform owns the audio loop (STT + LLM + TTS) and we provide the
@@ -30,7 +31,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v4-end-call";
+const AGENT_CONFIG_VERSION = "v5-edit-nb-pdf-notes";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -178,6 +179,117 @@ const CLIENT_TOOL_DEFINITIONS = [
         },
       },
       required: ["text"],
+    },
+  },
+  {
+    name: "Edit",
+    description:
+      "Replace a string in an existing file. old_string must be unique in the file (or pass replace_all=true). Prefer Edit over Write for small tweaks to a large file — much safer than overwriting the whole thing.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute path to the file to edit, under the vault root.",
+        },
+        old_string: {
+          type: "string",
+          description: "Exact text to find in the file. Include enough surrounding context to make it unique.",
+        },
+        new_string: {
+          type: "string",
+          description: "Replacement text. Pass an empty string to delete the matched region.",
+        },
+        replace_all: {
+          type: "boolean",
+          description: "If true, replace every occurrence. Defaults to false (single unique match required).",
+        },
+      },
+      required: ["path", "old_string", "new_string"],
+    },
+  },
+  {
+    name: "NotebookEdit",
+    description:
+      "Cell-aware edit of a Jupyter notebook (.ipynb). Use this instead of Write/Edit on raw notebook JSON. action='replace' rewrites a cell's source; 'insert' adds a new cell at cell_index (use -1 to append); 'delete' removes the cell. Cells are 0-indexed top-to-bottom.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute path to the .ipynb file.",
+        },
+        action: {
+          type: "string",
+          description: "One of 'replace', 'insert', or 'delete'.",
+        },
+        cell_index: {
+          type: "number",
+          description: "0-based cell index. Use -1 with insert to append to the end.",
+        },
+        source: {
+          type: "string",
+          description: "New cell source. Required for replace and insert.",
+        },
+        cell_type: {
+          type: "string",
+          description: "Cell type for insert/replace: 'code', 'markdown', or 'raw'. Defaults to 'code' on insert; preserves the existing type on replace when omitted.",
+        },
+      },
+      required: ["path", "action", "cell_index"],
+    },
+  },
+  {
+    name: "PdfExtract",
+    description:
+      "Extract text from a PDF file. Returns plain text grouped by page. Use `pages` to limit (e.g. '1', '1-5', '1,3,7-9'); omit for all pages. Call this — not Read — when the user asks about a .pdf file.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute path to the PDF file.",
+        },
+        pages: {
+          type: "string",
+          description: "Optional page selection: '1', '1-5', '1,3,7-9'. Omit for all pages.",
+        },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "ListNotes",
+    description:
+      "List the user's saved notes (their scratchpad) for the current vault. Each note has an id, timestamp, status (open|resolved), anchored file path(s), and body. Use when the user asks 'what did I flag', 'what's in my notes', etc. Defaults to open notes; pass status='resolved' for the archive or 'all' for everything.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        status: {
+          type: "string",
+          description: "Filter: 'open' (default), 'resolved', or 'all'.",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum notes to return. Defaults to 50.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "ResolveNote",
+    description:
+      "Mark a note as resolved. Call this when the user confirms an open note has been addressed ('I did that', 'we covered it', 'mark that done'). The note stays in history but drops out of the default Active view.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        id: {
+          type: "string",
+          description: "The note id (from ListNotes output, in square brackets).",
+        },
+      },
+      required: ["id"],
     },
   },
 ];
@@ -581,11 +693,16 @@ function buildSystemPrompt(
     `Vault root (absolute): ${vault}`,
     "",
     "Tool calling rules — CRITICAL:",
-    "- Read, ListDir, Write take ABSOLUTE paths. Construct them by joining the vault root with the relative file/folder name. Never pass bare filenames like 'study.md' — they will fail.",
+    "- Read, ListDir, Write, Edit, NotebookEdit, PdfExtract take ABSOLUTE paths. Construct them by joining the vault root with the relative file/folder name. Never pass bare filenames like 'study.md' — they will fail.",
     "- Glob takes a pattern relative to the vault root. To find study.md across the vault, call Glob with pattern '**/study.md'. To find any markdown, '**/*.md'.",
     "- Grep takes an optional path argument. Omit it to search the whole vault, or pass an absolute path under the vault root to scope the search.",
     "- Write creates or overwrites a file with full contents. Use plain markdown unless the path's extension implies otherwise. Don't write outside the vault root.",
+    "- Edit replaces a unique string in an existing file. Prefer Edit over Write when changing a small region of a large file — safer than overwriting. Include enough surrounding context in old_string to make it unique, or pass replace_all=true.",
+    "- NotebookEdit is the ONLY way to safely change a .ipynb file — never Write/Edit raw notebook JSON. Use action='replace'/'insert'/'delete', cell_index is 0-based, cell_index=-1 with insert appends.",
+    "- PdfExtract is how you read PDFs. The Read tool won't work on .pdf files. Use the `pages` argument ('1', '1-5', '3,5,7') when the user is on a specific page or you only need a section.",
     "- CreateNote saves a short reminder to the user's notes panel — use it when the user says 'remember', 'jot that down', 'add a note', etc. Keep notes brief.",
+    "- ListNotes shows what the user has flagged. Use when they ask 'what did I save', 'what notes do I have', 'what's open', etc. Defaults to open notes.",
+    "- ResolveNote marks an open note as resolved — call it when the user confirms a flagged item has been addressed.",
     "- If a read tool returns '(no matches)' or '(empty)', that's a real result, not a failure. Try a different pattern or path before giving up.",
     "- Call end_call to hang up the conversation when the user clearly wraps things up — phrases like 'we're done', 'thanks, bye', 'talk later', 'I'm good'. Don't end on ambiguous pauses.",
     "- If the user speaks while you're running a tool (especially Write or Grep), don't drop the task. Briefly acknowledge them — 'one sec, I'm writing that' / 'still searching, hang on' — then finish the tool call and address what they said. Only abandon the task if they explicitly tell you to stop or change direction.",
@@ -847,12 +964,31 @@ function formatToolMarker(name: string, args: any): string {
       return `_Read ${relPath(args.path ?? "")}_`;
     case "Write":
       return `_Wrote ${relPath(args.path ?? "")}_`;
+    case "Edit":
+      return `_Edited ${relPath(args.path ?? "")}_`;
+    case "NotebookEdit": {
+      const verb =
+        args.action === "delete"
+          ? "Deleted cell"
+          : args.action === "insert"
+            ? "Inserted cell"
+            : "Edited cell";
+      return `_${verb} ${args.cell_index ?? "?"} in ${relPath(args.path ?? "")}_`;
+    }
     case "ListDir":
       return `_Listed ${relPath(args.path ?? "")}_`;
     case "Glob":
       return `_Searched files matching "${args.pattern ?? ""}"_`;
     case "Grep":
       return `_Searched "${args.pattern ?? ""}"_`;
+    case "PdfExtract": {
+      const pages = args.pages ? ` (pages ${args.pages})` : "";
+      return `_Extracted ${relPath(args.path ?? "")}${pages}_`;
+    }
+    case "ListNotes":
+      return `_Listed ${args.status ?? "open"} notes_`;
+    case "ResolveNote":
+      return `_Resolved note ${args.id ?? ""}_`;
     case "CreateNote": {
       const text = (args.text ?? "").trim();
       const snip = text.length > 50 ? text.slice(0, 47) + "…" : text;
@@ -1016,6 +1152,118 @@ function buildClientToolHandlers(): Record<
           await useStore.getState().addNote(note);
           sessionMutationCount++;
           return `Saved note ${note.id}.`;
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    Edit: withTracking(
+      "Edit",
+      async (args: {
+        path: string;
+        old_string: string;
+        new_string: string;
+        replace_all?: boolean;
+      }) => {
+        try {
+          const summary = await invoke<string>("edit_text_file", {
+            path: args.path,
+            oldString: args.old_string,
+            newString: args.new_string,
+            replaceAll: args.replace_all ?? false,
+          });
+          sessionMutationCount++;
+          // Re-read the file so any open viewer reflects the edit.
+          try {
+            const fresh = await invoke<string>("read_text_file", { path: args.path });
+            refreshIfOpen(args.path, fresh);
+          } catch {}
+          return summary;
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    NotebookEdit: withTracking(
+      "NotebookEdit",
+      async (args: {
+        path: string;
+        action: "replace" | "insert" | "delete";
+        cell_index: number;
+        source?: string;
+        cell_type?: "code" | "markdown" | "raw";
+      }) => {
+        try {
+          const raw = await invoke<string>("read_text_file", { path: args.path });
+          const result = applyNotebookEdit(
+            raw,
+            args.action,
+            args.cell_index,
+            args.source,
+            args.cell_type,
+          );
+          if (!result.ok) return `Error: ${result.error}`;
+          await invoke("write_text_file", { path: args.path, contents: result.contents });
+          sessionMutationCount++;
+          refreshIfOpen(args.path, result.contents);
+          return `${result.summary} in ${args.path}`;
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    PdfExtract: withTracking(
+      "PdfExtract",
+      async (args: { path: string; pages?: string }) => {
+        try {
+          const text = await extractPdfText(args.path, args.pages);
+          return text.length > READ_CAP
+            ? text.slice(0, READ_CAP) + "\n…[truncated]"
+            : text;
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    ListNotes: withTracking(
+      "ListNotes",
+      async (args: { status?: "open" | "resolved" | "all"; limit?: number }) => {
+        const status = args.status ?? "open";
+        const limit = args.limit ?? 50;
+        const notes = useStore.getState().notes;
+        const filtered = notes.filter(
+          (n) => status === "all" || n.status === status,
+        );
+        const sliced = filtered.slice(0, limit);
+        if (sliced.length === 0) {
+          return `No ${status === "all" ? "" : status + " "}notes.`;
+        }
+        const lines = sliced.map((n) => {
+          const primary = n.anchors.find((a) => a.primary) ?? n.anchors[0];
+          const anchor = primary
+            ? `${primary.source_path.split("/").pop()}${primary.source_anchor ? ` (${primary.source_anchor})` : ""}`
+            : "(no anchor)";
+          const body =
+            n.formatted ??
+            n.user_draft ??
+            (n.turns[0]?.content ?? "").slice(0, 160);
+          return `[${n.id}] ${n.status} · ${anchor} · ${n.timestamp.slice(0, 16)}\n  ${body.replace(/\n+/g, " ")}`;
+        });
+        return `${filtered.length} note${filtered.length === 1 ? "" : "s"} (showing ${sliced.length}):\n\n${lines.join("\n\n")}`;
+      },
+    ),
+    ResolveNote: withTracking(
+      "ResolveNote",
+      async (args: { id: string }) => {
+        const n = useStore.getState().notes.find((n) => n.id === args.id);
+        if (!n) return `No note with id "${args.id}".`;
+        if (n.status === "resolved") {
+          return `Note ${args.id} was already resolved.`;
+        }
+        try {
+          await useStore.getState().setNoteStatus(args.id, "resolved");
+          sessionMutationCount++;
+          return `Resolved note ${args.id}.`;
         } catch (e) {
           return `Error: ${(e as any)?.message ?? String(e)}`;
         }

@@ -45,7 +45,7 @@ function parsePageSpec(spec: string | undefined, total: number): number[] {
   return Array.from(set).sort((a, b) => a - b);
 }
 
-async function extractPdfText(path: string, pageSpec?: string): Promise<string> {
+export async function extractPdfText(path: string, pageSpec?: string): Promise<string> {
   const bytes = await invoke<number[]>("read_binary_file", { path });
   const data = new Uint8Array(bytes);
   const doc = await pdfjs.getDocument({ data }).promise;
@@ -85,12 +85,94 @@ async function extractPdfText(path: string, pageSpec?: string): Promise<string> 
 
 // Jupyter stores cell source as an array of lines with trailing newlines
 // (except the last one). Match that format so diffs stay minimal.
-function splitSource(text: string): string[] {
+export function splitSource(text: string): string[] {
   if (!text) return [];
   const lines = text.split("\n");
   return lines.map((line, i) =>
     i === lines.length - 1 ? line : line + "\n",
   );
+}
+
+// Apply a single notebook-cell mutation to a raw .ipynb string. Returns
+// the new raw JSON and a one-line summary, or an error message string.
+// Shared by the agent's NotebookEdit tool and the voice-mode handler so
+// the two can't drift.
+export function applyNotebookEdit(
+  raw: string,
+  action: "replace" | "insert" | "delete",
+  cell_index: number,
+  source: string | undefined,
+  cell_type: "code" | "markdown" | "raw" | undefined,
+): { ok: true; contents: string; summary: string } | { ok: false; error: string } {
+  let nb: any;
+  try {
+    nb = JSON.parse(raw);
+  } catch (e) {
+    return { ok: false, error: `failed to parse notebook: ${(e as Error).message}` };
+  }
+  if (!nb || !Array.isArray(nb.cells)) {
+    return { ok: false, error: "not a notebook (missing cells array)" };
+  }
+  const cells = nb.cells as any[];
+
+  if (action === "delete") {
+    if (cell_index < 0 || cell_index >= cells.length) {
+      return { ok: false, error: `cell_index ${cell_index} out of range (0..${cells.length - 1})` };
+    }
+    cells.splice(cell_index, 1);
+  } else if (action === "replace") {
+    if (cell_index < 0 || cell_index >= cells.length) {
+      return { ok: false, error: `cell_index ${cell_index} out of range (0..${cells.length - 1})` };
+    }
+    if (source === undefined) {
+      return { ok: false, error: "replace requires `source`" };
+    }
+    const target = cells[cell_index];
+    target.source = splitSource(source);
+    if (cell_type && target.cell_type !== cell_type) {
+      target.cell_type = cell_type;
+      if (cell_type === "code") {
+        target.outputs = [];
+        target.execution_count = null;
+        delete target.attachments;
+      } else {
+        delete target.outputs;
+        delete target.execution_count;
+      }
+    }
+    if (target.cell_type === "code") {
+      target.outputs = [];
+      target.execution_count = null;
+    }
+  } else if (action === "insert") {
+    if (source === undefined) {
+      return { ok: false, error: "insert requires `source`" };
+    }
+    const type = cell_type ?? "code";
+    const newCell: any = {
+      cell_type: type,
+      metadata: {},
+      source: splitSource(source),
+    };
+    if (type === "code") {
+      newCell.outputs = [];
+      newCell.execution_count = null;
+    }
+    if (cell_index === -1 || cell_index >= cells.length) {
+      cells.push(newCell);
+    } else if (cell_index < 0) {
+      return { ok: false, error: "negative cell_index not allowed for insert (use -1 for append)" };
+    } else {
+      cells.splice(cell_index, 0, newCell);
+    }
+  }
+
+  const contents = JSON.stringify(nb, null, 1) + "\n";
+  return {
+    ok: true,
+    contents,
+    summary: `${action} cell ${cell_index} (now ${cells.length} cells)`,
+  };
 }
 
 function stripNotebook(raw: string): string {
@@ -402,67 +484,10 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           guardPath(path);
           await guardDenied(path);
           const raw = await invoke<string>("read_text_file", { path });
-          const nb = JSON.parse(raw);
-          if (!nb || !Array.isArray(nb.cells)) {
-            return `not a notebook (missing cells array): ${path}`;
-          }
-          const cells = nb.cells as any[];
-
-          if (action === "delete") {
-            if (cell_index < 0 || cell_index >= cells.length) {
-              return `cell_index ${cell_index} out of range (0..${cells.length - 1})`;
-            }
-            cells.splice(cell_index, 1);
-          } else if (action === "replace") {
-            if (cell_index < 0 || cell_index >= cells.length) {
-              return `cell_index ${cell_index} out of range (0..${cells.length - 1})`;
-            }
-            if (source === undefined) {
-              return "replace requires `source`";
-            }
-            const target = cells[cell_index];
-            target.source = splitSource(source);
-            if (cell_type && target.cell_type !== cell_type) {
-              target.cell_type = cell_type;
-              if (cell_type === "code") {
-                target.outputs = [];
-                target.execution_count = null;
-                delete target.attachments;
-              } else {
-                delete target.outputs;
-                delete target.execution_count;
-              }
-            }
-            if (target.cell_type === "code") {
-              target.outputs = [];
-              target.execution_count = null;
-            }
-          } else if (action === "insert") {
-            if (source === undefined) {
-              return "insert requires `source`";
-            }
-            const type = cell_type ?? "code";
-            const newCell: any = {
-              cell_type: type,
-              metadata: {},
-              source: splitSource(source),
-            };
-            if (type === "code") {
-              newCell.outputs = [];
-              newCell.execution_count = null;
-            }
-            if (cell_index === -1 || cell_index >= cells.length) {
-              cells.push(newCell);
-            } else if (cell_index < 0) {
-              return `negative cell_index not allowed for insert (use -1 for append)`;
-            } else {
-              cells.splice(cell_index, 0, newCell);
-            }
-          }
-
-          const contents = JSON.stringify(nb, null, 1) + "\n";
-          await invoke("write_text_file", { path, contents });
-          return `${action} cell ${cell_index} in ${path} (now ${cells.length} cells)`;
+          const result = applyNotebookEdit(raw, action, cell_index, source, cell_type);
+          if (!result.ok) return `${result.error}: ${path}`;
+          await invoke("write_text_file", { path, contents: result.contents });
+          return `${result.summary} in ${path}`;
         } catch (e) {
           return `NotebookEdit failed: ${(e as Error).message}`;
         }
