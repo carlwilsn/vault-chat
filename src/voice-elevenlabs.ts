@@ -4,7 +4,7 @@ import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./sto
 import { buildNote } from "./notes";
 import { gitCommitAll } from "./git";
 import { loadMetaVoicePrompt } from "./meta";
-import { applyNotebookEdit, extractPdfText } from "./tools";
+import { applyNotebookEdit, extractPdfText, stripNotebook } from "./tools";
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
 // platform owns the audio loop (STT + LLM + TTS) and we provide the
@@ -31,7 +31,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v5-edit-nb-pdf-notes";
+const AGENT_CONFIG_VERSION = "v6-read-ipynb-strip";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -53,7 +53,13 @@ let sessionFirstUserText: string | null = null;
 // start, torn down at session end.
 let unsubscribeViewportWatch: (() => void) | null = null;
 
-const READ_CAP = 8000;
+// Matched to text-mode tools so the voice agent gets enough context to
+// answer questions about a real-sized file. 8k was too small for
+// notebooks (cell metadata ate the budget before any code showed up).
+const READ_CAP = 24_000;
+// PDFs page out fast and the agent needs room for the actual content,
+// not just the first page or two. Still under text-mode's 60k.
+const PDF_CAP = 30_000;
 
 // ElevenLabs's tool-parameter validator requires every property to
 // carry a `description` (or `dynamic_variable` / `is_system_provided`
@@ -64,7 +70,7 @@ const CLIENT_TOOL_DEFINITIONS = [
   {
     name: "Read",
     description:
-      "Read a UTF-8 text file from disk and return its contents. Use absolute paths. Long files are truncated.",
+      "Read a UTF-8 text file from disk and return its contents. Use absolute paths. Long files are truncated. Jupyter notebooks (.ipynb) are returned as readable '# Cell N [type]\\n<source>' sections — outputs and metadata are stripped automatically.",
     parameters: {
       type: "object" as const,
       properties: {
@@ -704,6 +710,8 @@ function buildSystemPrompt(
     "- ListNotes shows what the user has flagged. Use when they ask 'what did I save', 'what notes do I have', 'what's open', etc. Defaults to open notes.",
     "- ResolveNote marks an open note as resolved — call it when the user confirms a flagged item has been addressed.",
     "- If a read tool returns '(no matches)' or '(empty)', that's a real result, not a failure. Try a different pattern or path before giving up.",
+    "- If Read errors with 'No such file' or similar, the path is wrong — DON'T give up. Call Glob with '**/<filename>' to locate it (e.g. Glob('**/transformer.ipynb')), then Read the absolute path Glob returns. The user usually only knows the filename, not the full path.",
+    "- If a Read response ends with '…[truncated]' and you need more, call Read again with a narrower target (Glob a specific section) or use Grep to jump to the part you actually need. Don't pretend the truncated tail doesn't exist.",
     "- Call end_call to hang up the conversation when the user clearly wraps things up — phrases like 'we're done', 'thanks, bye', 'talk later', 'I'm good'. Don't end on ambiguous pauses.",
     "- If the user speaks while you're running a tool (especially Write or Grep), don't drop the task. Briefly acknowledge them — 'one sec, I'm writing that' / 'still searching, hang on' — then finish the tool call and address what they said. Only abandon the task if they explicitly tell you to stop or change direction.",
     "",
@@ -1039,9 +1047,14 @@ function buildClientToolHandlers(): Record<
     Read: withTracking("Read", async (args: { path: string }) => {
       try {
         const raw = await invoke<string>("read_text_file", { path: args.path });
-        return raw.length > READ_CAP
-          ? raw.slice(0, READ_CAP) + "\n…[truncated]"
-          : raw;
+        // .ipynb is JSON noise — strip to "# Cell N [type]\n<source>"
+        // sections like text-mode does, otherwise notebook metadata
+        // burns the whole READ_CAP before any actual code shows up.
+        const isNotebook = /\.ipynb$/i.test(args.path);
+        const text = isNotebook ? stripNotebook(raw) : raw;
+        return text.length > READ_CAP
+          ? text.slice(0, READ_CAP) + "\n…[truncated]"
+          : text;
       } catch (e) {
         return `Error: ${(e as any)?.message ?? String(e)}`;
       }
@@ -1217,8 +1230,8 @@ function buildClientToolHandlers(): Record<
       async (args: { path: string; pages?: string }) => {
         try {
           const text = await extractPdfText(args.path, args.pages);
-          return text.length > READ_CAP
-            ? text.slice(0, READ_CAP) + "\n…[truncated]"
+          return text.length > PDF_CAP
+            ? text.slice(0, PDF_CAP) + "\n…[truncated]"
             : text;
         } catch (e) {
           return `Error: ${(e as any)?.message ?? String(e)}`;

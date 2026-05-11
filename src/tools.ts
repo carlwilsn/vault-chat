@@ -175,7 +175,7 @@ export function applyNotebookEdit(
   };
 }
 
-function stripNotebook(raw: string): string {
+export function stripNotebook(raw: string): string {
   try {
     const nb = JSON.parse(raw);
     if (!nb || !Array.isArray(nb.cells)) return raw;
