@@ -31,7 +31,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v6-read-ipynb-strip";
+const AGENT_CONFIG_VERSION = "v7-nb-append";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -217,7 +217,7 @@ const CLIENT_TOOL_DEFINITIONS = [
   {
     name: "NotebookEdit",
     description:
-      "Cell-aware edit of a Jupyter notebook (.ipynb). Use this instead of Write/Edit on raw notebook JSON. action='replace' rewrites a cell's source; 'insert' adds a new cell at cell_index (use -1 to append); 'delete' removes the cell. Cells are 0-indexed top-to-bottom.",
+      "Cell-aware edit of a Jupyter notebook (.ipynb). Use this instead of Write/Edit on raw notebook JSON. action='append' tacks `source` onto the END of an existing cell (with a newline if needed) — PREFER THIS over 'replace' for adding an observation or one line, since you don't have to retype the cell. 'replace' rewrites a cell's full source. 'insert' adds a new cell at cell_index (use -1 to append at notebook end). 'delete' removes the cell. Cells are 0-indexed top-to-bottom.",
     parameters: {
       type: "object" as const,
       properties: {
@@ -227,7 +227,7 @@ const CLIENT_TOOL_DEFINITIONS = [
         },
         action: {
           type: "string",
-          description: "One of 'replace', 'insert', or 'delete'.",
+          description: "One of 'append', 'replace', 'insert', or 'delete'.",
         },
         cell_index: {
           type: "number",
@@ -734,7 +734,7 @@ function buildSystemPrompt(
     "- Grep takes an optional path argument. Omit it to search the whole vault, or pass an absolute path under the vault root to scope the search.",
     "- Write creates or overwrites a file with full contents. Use plain markdown unless the path's extension implies otherwise. Don't write outside the vault root.",
     "- Edit replaces a unique string in an existing file. Prefer Edit over Write when changing a small region of a large file — safer than overwriting. Include enough surrounding context in old_string to make it unique, or pass replace_all=true.",
-    "- NotebookEdit is the ONLY way to safely change a .ipynb file — never Write/Edit raw notebook JSON. Use action='replace'/'insert'/'delete', cell_index is 0-based, cell_index=-1 with insert appends.",
+    "- NotebookEdit is the ONLY way to safely change a .ipynb file — never Write/Edit raw notebook JSON. Use action='append' to add text to the END of an existing cell (the common case: adding an observation, a note, one more line) — much safer than 'replace' since you don't retype the cell. Use 'replace' only when rewriting a cell wholesale. 'insert' adds a NEW cell at cell_index (-1 = end). 'delete' removes a cell. cell_index is 0-based.",
     "- PdfExtract is how you read PDFs. The Read tool won't work on .pdf files. Use the `pages` argument ('1', '1-5', '3,5,7') when the user is on a specific page or you only need a section.",
     "- CreateNote saves a short reminder to the user's notes panel — use it when the user says 'remember', 'jot that down', 'add a note', etc. Keep notes brief.",
     "- ListNotes shows what the user has flagged. Use when they ask 'what did I save', 'what notes do I have', 'what's open', etc. Defaults to open notes.",
@@ -1045,7 +1045,9 @@ function formatToolMarker(name: string, args: any): string {
           ? "Deleted cell"
           : args.action === "insert"
             ? "Inserted cell"
-            : "Edited cell";
+            : args.action === "append"
+              ? "Appended to cell"
+              : "Edited cell";
       return `*${verb} ${args.cell_index ?? "?"} in ${relPath(args.path ?? "")}*`;
     }
     case "ListDir":
@@ -1285,7 +1287,7 @@ function buildClientToolHandlers(): Record<
       "NotebookEdit",
       async (args: {
         path: string;
-        action: "replace" | "insert" | "delete";
+        action: "replace" | "insert" | "delete" | "append";
         cell_index: number;
         source?: string;
         cell_type?: "code" | "markdown" | "raw";

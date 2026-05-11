@@ -99,7 +99,7 @@ export function splitSource(text: string): string[] {
 // the two can't drift.
 export function applyNotebookEdit(
   raw: string,
-  action: "replace" | "insert" | "delete",
+  action: "replace" | "insert" | "delete" | "append",
   cell_index: number,
   source: string | undefined,
   cell_type: "code" | "markdown" | "raw" | undefined,
@@ -140,6 +140,23 @@ export function applyNotebookEdit(
         delete target.execution_count;
       }
     }
+    if (target.cell_type === "code") {
+      target.outputs = [];
+      target.execution_count = null;
+    }
+  } else if (action === "append") {
+    if (cell_index < 0 || cell_index >= cells.length) {
+      return { ok: false, error: `cell_index ${cell_index} out of range (0..${cells.length - 1})` };
+    }
+    if (source === undefined) {
+      return { ok: false, error: "append requires `source`" };
+    }
+    const target = cells[cell_index];
+    const existing = Array.isArray(target.source)
+      ? target.source.join("")
+      : String(target.source ?? "");
+    const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+    target.source = splitSource(existing + sep + source);
     if (target.cell_type === "code") {
       target.outputs = [];
       target.execution_count = null;
@@ -462,10 +479,10 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
 
     NotebookEdit: tool({
       description:
-        "Cell-aware edit of a Jupyter notebook (.ipynb). Use `action` to replace/insert/delete a cell. Cells are 0-indexed in the notebook's top-to-bottom order. For `insert`, the new cell is placed at `cell_index` (pushing the existing cell down); use `cell_index: -1` to append at the end. For `replace`, `source` fully replaces the target cell's source; `cell_type` can switch the cell type too. Much safer than using Write/Edit on raw JSON.",
+        "Cell-aware edit of a Jupyter notebook (.ipynb). Use `action` to replace/insert/delete/append a cell. Cells are 0-indexed in the notebook's top-to-bottom order. For `insert`, the new cell is placed at `cell_index` (pushing the existing cell down); use `cell_index: -1` to append a new cell at the end. For `replace`, `source` fully replaces the target cell's source; `cell_type` can switch the cell type too. For `append`, `source` is concatenated onto the END of the target cell's existing source (with a newline if needed) — much safer than `replace` when you only want to add a line without retyping the cell. Much safer than using Write/Edit on raw notebook JSON.",
       inputSchema: z.object({
         path: z.string().describe("Absolute path to the .ipynb file."),
-        action: z.enum(["replace", "insert", "delete"]),
+        action: z.enum(["replace", "insert", "delete", "append"]),
         cell_index: z
           .number()
           .int()
