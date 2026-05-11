@@ -730,7 +730,7 @@ function buildSystemPrompt(
     "",
     "Tool calling rules — CRITICAL:",
     "- Read, ListDir, Write, Edit, NotebookEdit, PdfExtract take ABSOLUTE paths. Construct them by joining the vault root with the relative file/folder name. Never pass bare filenames like 'study.md' — they will fail.",
-    "- Glob takes a pattern relative to the vault root. To find study.md across the vault, call Glob with pattern '**/study.md'. To find any markdown, '**/*.md'.",
+    "- Glob takes a pattern relative to the vault root. To find study.md across the vault, call Glob with pattern '**/study.md'. To find any markdown, '**/*.md'. Voice-mode Glob is case-insensitive and includes directories — 'hw3.ipynb' matches 'HW3.ipynb', and '**/HW3' matches the HW3 folder. So you don't need to try multiple case variants.",
     "- Grep takes an optional path argument. Omit it to search the whole vault, or pass an absolute path under the vault root to scope the search.",
     "- Write creates or overwrites a file with full contents. Use plain markdown unless the path's extension implies otherwise. Don't write outside the vault root.",
     "- Edit replaces a unique string in an existing file. Prefer Edit over Write when changing a small region of a large file — safer than overwriting. Include enough surrounding context in old_string to make it unique, or pass replace_all=true.",
@@ -977,6 +977,38 @@ async function getSignedUrl(apiKey: string, agentId: string): Promise<string | n
   }
 }
 
+// Convert a simple glob ('**', '*', '?') to a regex that matches the
+// whole path. Used as a case-insensitive fallback for the voice Glob
+// tool when the native, case-sensitive glob crate returns nothing —
+// voice users say file names by sound, not by exact case, so 'hw3' has
+// to match 'HW3'.
+function globPatternToRegex(pattern: string): RegExp {
+  let out = "";
+  let i = 0;
+  while (i < pattern.length) {
+    const c = pattern[i];
+    if (c === "*" && pattern[i + 1] === "*") {
+      // ** matches across path separators
+      out += ".*";
+      i += 2;
+      if (pattern[i] === "/") i += 1;
+    } else if (c === "*") {
+      out += "[^/]*";
+      i += 1;
+    } else if (c === "?") {
+      out += "[^/]";
+      i += 1;
+    } else if (/[.+^${}()|[\]\\]/.test(c)) {
+      out += "\\" + c;
+      i += 1;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return new RegExp(`^${out}$`, "i");
+}
+
 // ---- Client tool implementations ----------------------------------------
 
 // Format a path relative to the active vault, or fall back to the
@@ -1002,11 +1034,11 @@ function relPath(path: string): string {
 function formatToolMarker(name: string, args: any): string {
   switch (name) {
     case "Read":
-      return `_Read ${relPath(args.path ?? "")}_`;
+      return `*Read ${relPath(args.path ?? "")}*`;
     case "Write":
-      return `_Wrote ${relPath(args.path ?? "")}_`;
+      return `*Wrote ${relPath(args.path ?? "")}*`;
     case "Edit":
-      return `_Edited ${relPath(args.path ?? "")}_`;
+      return `*Edited ${relPath(args.path ?? "")}*`;
     case "NotebookEdit": {
       const verb =
         args.action === "delete"
@@ -1014,29 +1046,29 @@ function formatToolMarker(name: string, args: any): string {
           : args.action === "insert"
             ? "Inserted cell"
             : "Edited cell";
-      return `_${verb} ${args.cell_index ?? "?"} in ${relPath(args.path ?? "")}_`;
+      return `*${verb} ${args.cell_index ?? "?"} in ${relPath(args.path ?? "")}*`;
     }
     case "ListDir":
-      return `_Listed ${relPath(args.path ?? "")}_`;
+      return `*Listed ${relPath(args.path ?? "")}*`;
     case "Glob":
-      return `_Searched files matching "${args.pattern ?? ""}"_`;
+      return `*Searched files matching "${args.pattern ?? ""}"*`;
     case "Grep":
-      return `_Searched "${args.pattern ?? ""}"_`;
+      return `*Searched "${args.pattern ?? ""}"*`;
     case "PdfExtract": {
       const pages = args.pages ? ` (pages ${args.pages})` : "";
-      return `_Extracted ${relPath(args.path ?? "")}${pages}_`;
+      return `*Extracted ${relPath(args.path ?? "")}${pages}*`;
     }
     case "ListNotes":
-      return `_Listed ${args.status ?? "open"} notes_`;
+      return `*Listed ${args.status ?? "open"} notes*`;
     case "ResolveNote":
-      return `_Resolved note ${args.id ?? ""}_`;
+      return `*Resolved note ${args.id ?? ""}*`;
     case "CreateNote": {
       const text = (args.text ?? "").trim();
       const snip = text.length > 50 ? text.slice(0, 47) + "…" : text;
-      return `_Saved note "${snip}"_`;
+      return `*Saved note "${snip}"*`;
     }
     default:
-      return `_${name}_`;
+      return `*${name}*`;
   }
 }
 
@@ -1100,11 +1132,30 @@ function buildClientToolHandlers(): Record<
           pattern: args.pattern,
           cwd: vault,
         });
-        if (!results.length) return "(no matches)";
-        const out = results.slice(0, 200).join("\n");
-        return results.length > 200
-          ? out + `\n…(${results.length - 200} more)`
-          : out;
+        if (results.length > 0) {
+          const out = results.slice(0, 200).join("\n");
+          return results.length > 200
+            ? out + `\n…(${results.length - 200} more)`
+            : out;
+        }
+        // Fallback: native glob is case-sensitive and only returns
+        // files, so 'hw3.ipynb' misses 'HW3.ipynb' and '**/HW3' misses
+        // the HW3 directory. Scan state.files in JS with a
+        // case-insensitive regex that also includes directories.
+        const regex = globPatternToRegex(args.pattern);
+        const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
+        const fallback: string[] = [];
+        for (const f of useStore.getState().files) {
+          if (f.hidden || f.denied) continue;
+          const np = f.path.replace(/\\/g, "/");
+          const rel = np.startsWith(nv + "/") ? np.slice(nv.length + 1) : np;
+          if (regex.test(rel)) fallback.push(f.path + (f.is_dir ? "/" : ""));
+        }
+        if (fallback.length === 0) return "(no matches)";
+        const out = fallback.slice(0, 200).join("\n");
+        return fallback.length > 200
+          ? `${out}\n…(${fallback.length - 200} more) [case-insensitive fallback]`
+          : `${out}\n[case-insensitive fallback]`;
       } catch (e) {
         return `Error: ${(e as any)?.message ?? String(e)}`;
       }
