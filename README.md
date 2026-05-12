@@ -40,6 +40,8 @@ That's it — Read / Write / Edit / Bash / PDF marquee / inline edit all work on
 
 **Optional: WebSearch.** The agent's `WebSearch` tool is powered by [Tavily](https://app.tavily.com/), which also has a free tier (1000 searches/month). Grab a key from your Tavily dashboard, then in vault-chat: gear icon → **Tavily (web search)** field → paste → **Save**. `WebFetch` (loading a specific URL) needs no key and works out of the box.
 
+**Optional: voice mode.** Voice mode is powered by [ElevenLabs](https://elevenlabs.io/) and needs a Conversational AI plan key (free tier includes 15 min/month). Grab a key, then in vault-chat: gear icon → **ElevenLabs (voice mode)** field → paste → **Save**. Toggle voice mode anytime with `Ctrl+D`.
+
 ### Mac / Linux
 
 No prebuilt installers yet — see [Build from source](#build-from-source) below.
@@ -48,6 +50,7 @@ No prebuilt installers yet — see [Build from source](#build-from-source) below
 
 - **Ctrl+K inline edit** on any paragraph or code selection. `Ctrl+L` for an ask mode that answers in the same popover without touching the file.
 - **PDF marquee** — drag a rectangle over any region of a PDF. Selected text + the pixel screenshot go to the model together. Works on math, tables, scanned pages, handwriting.
+- **Voice mode** (`Ctrl+D`) — a hands-free conversation with the agent that still drives the file tools (`Read` / `Edit` / `Glob` / `Grep` / `NotebookEdit` / `PdfExtract` / `ListNotes` / `ResolveNote`). Interrupt mid-sentence and the agent stops talking, acknowledges, and reroutes — useful when you're studying and need to derail the explanation a few times before it clicks. Powered by ElevenLabs; needs a separate key (free tier is 15 min/month).
 - **Model-agnostic**. Anthropic, OpenAI, Google, or OpenRouter (one key, hundreds of models). Swap mid-session via the settings dropdown.
 - **Git-backed**. Every agent turn that touches files auto-commits. `Ctrl+H` opens a history modal with per-file timeline + one-click restore to any earlier commit. Vault never loses state.
 - **Notes scratchpad** (`Ctrl+N`). Capture a thought anchored to whatever you're looking at — file + line, PDF page + region, conversation turn. Stored as JSONL at `<vault>/.vault-chat/notes.jsonl`. The agent can list, create, resolve, and reopen them via `ListNotes` / `CreateNote` / `ResolveNote` / `ReopenNote` tools — ask "what did I flag?" or "remember this for later" and it does the right thing.
