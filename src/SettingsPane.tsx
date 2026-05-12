@@ -78,6 +78,18 @@ export function SettingsPane() {
   const [elevenlabsVoiceDraft, setElevenlabsVoiceDraft] = useState(
     localStorage.getItem("vault_chat_elevenlabs_voice") ?? "nPczCjzI2devNBz1zQrb",
   );
+  const [voiceLibrary, setVoiceLibrary] = useState<{ name: string; id: string }[]>(() => {
+    const raw = localStorage.getItem("vault_chat_elevenlabs_voice_library");
+    if (!raw) return [{ name: "Brian (Jarvis-adjacent)", id: "nPczCjzI2devNBz1zQrb" }];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
+  const [newVoiceName, setNewVoiceName] = useState("");
+  const [newVoiceId, setNewVoiceId] = useState("");
   const [elevenlabsLlmDraft, setElevenlabsLlmDraft] = useState(
     localStorage.getItem("vault_chat_elevenlabs_llm") ?? "claude-sonnet-4-6",
   );
@@ -139,16 +151,34 @@ export function SettingsPane() {
     setElevenlabsDraft("");
   };
 
-  const saveElevenlabsVoice = () => {
-    const v = elevenlabsVoiceDraft.trim();
-    if (!v) return;
-    localStorage.setItem("vault_chat_elevenlabs_voice", v);
-    setElevenlabsVoiceDraft(v);
+  const saveElevenlabsVoice = (v: string) => {
+    const trimmed = v.trim();
+    if (!trimmed) return;
+    localStorage.setItem("vault_chat_elevenlabs_voice", trimmed);
+    setElevenlabsVoiceDraft(trimmed);
     setSavedFlash("elevenlabs_voice");
     setTimeout(
       () => setSavedFlash((x) => (x === "elevenlabs_voice" ? null : x)),
       1500,
     );
+  };
+
+  const addVoiceToLibrary = () => {
+    const name = newVoiceName.trim();
+    const id = newVoiceId.trim();
+    if (!name || !id) return;
+    const next = [...voiceLibrary.filter((v) => v.id !== id), { name, id }];
+    setVoiceLibrary(next);
+    localStorage.setItem("vault_chat_elevenlabs_voice_library", JSON.stringify(next));
+    setNewVoiceName("");
+    setNewVoiceId("");
+    saveElevenlabsVoice(id);
+  };
+
+  const removeVoiceFromLibrary = (id: string) => {
+    const next = voiceLibrary.filter((v) => v.id !== id);
+    setVoiceLibrary(next);
+    localStorage.setItem("vault_chat_elevenlabs_voice_library", JSON.stringify(next));
   };
 
   const saveElevenlabsLlm = (v: string) => {
@@ -527,23 +557,71 @@ export function SettingsPane() {
               </span>
             )}
           </div>
-          <div className="flex gap-2">
+          <select
+            value={elevenlabsVoiceDraft}
+            onChange={(e) => saveElevenlabsVoice(e.target.value)}
+            className="w-full h-8 px-2 rounded border border-border bg-background text-[12px] font-mono"
+          >
+            {voiceLibrary.length === 0 && (
+              <option value={elevenlabsVoiceDraft}>{elevenlabsVoiceDraft}</option>
+            )}
+            {voiceLibrary.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name} — {v.id}
+              </option>
+            ))}
+            {voiceLibrary.length > 0 && !voiceLibrary.some((v) => v.id === elevenlabsVoiceDraft) && (
+              <option value={elevenlabsVoiceDraft}>(unsaved) {elevenlabsVoiceDraft}</option>
+            )}
+          </select>
+          {voiceLibrary.length > 0 && (
+            <div className="flex flex-col gap-1 pt-1">
+              {voiceLibrary.map((v) => (
+                <div
+                  key={v.id}
+                  className="flex items-center justify-between text-[11px] text-muted-foreground/80 px-2 py-1 rounded hover:bg-muted/40"
+                >
+                  <span className="truncate">
+                    <span className="font-medium text-foreground/90">{v.name}</span>
+                    <span className="ml-2 font-mono text-muted-foreground/60">{v.id}</span>
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => removeVoiceFromLibrary(v.id)}
+                    title="Remove from library"
+                  >
+                    <X className="h-3 w-3" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex gap-2 pt-1">
             <Input
               type="text"
-              placeholder="nPczCjzI2devNBz1zQrb (Brian)"
-              value={elevenlabsVoiceDraft}
-              onChange={(e) => setElevenlabsVoiceDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") saveElevenlabsVoice();
-              }}
+              placeholder="Name (e.g. Rachel)"
+              value={newVoiceName}
+              onChange={(e) => setNewVoiceName(e.target.value)}
+              className="flex-[2]"
             />
-            <Button size="sm" onClick={saveElevenlabsVoice} disabled={!elevenlabsVoiceDraft.trim()}>
-              Save
+            <Input
+              type="text"
+              placeholder="Voice ID"
+              value={newVoiceId}
+              onChange={(e) => setNewVoiceId(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addVoiceToLibrary();
+              }}
+              className="flex-[3] font-mono"
+            />
+            <Button size="sm" onClick={addVoiceToLibrary} disabled={!newVoiceName.trim() || !newVoiceId.trim()}>
+              Add
             </Button>
           </div>
           <p className="text-[11px] text-muted-foreground/80">
-            Default is Brian (Jarvis-adjacent). Browse voices at
-            elevenlabs.io/app/voice-library and paste any voice ID here.
+            Browse voices at elevenlabs.io/app/voice-library, then add them here
+            with a memorable name. Selecting from the dropdown sets the active voice.
           </p>
           <div className="flex items-center justify-between pt-2">
             <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">

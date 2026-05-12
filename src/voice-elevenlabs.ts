@@ -467,6 +467,14 @@ export async function startElevenLabsSession(): Promise<void> {
       },
       onError: (message: string) => {
         console.warn("[voice-eleven] session error:", message);
+        // Surface to the chat pane so a silent drop has SOMETHING the
+        // user can show us — otherwise "the convo dropped" is impossible
+        // to diagnose without a dev console open.
+        useStore.getState().appendMessage({
+          role: "assistant",
+          content: `Voice session error: ${message}`,
+          system: true,
+        });
       },
     });
   } catch (e) {
