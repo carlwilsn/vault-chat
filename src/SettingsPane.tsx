@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
@@ -90,6 +90,18 @@ export function SettingsPane() {
   });
   const [newVoiceName, setNewVoiceName] = useState("");
   const [newVoiceId, setNewVoiceId] = useState("");
+  const voicePickerRef = useRef<HTMLDetailsElement | null>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const el = voicePickerRef.current;
+      if (!el || !el.open) return;
+      if (e.target instanceof Node && !el.contains(e.target)) {
+        el.open = false;
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
   const [elevenlabsLlmDraft, setElevenlabsLlmDraft] = useState(
     localStorage.getItem("vault_chat_elevenlabs_llm") ?? "claude-sonnet-4-6",
   );
@@ -557,7 +569,7 @@ export function SettingsPane() {
               </span>
             )}
           </div>
-          <details className="w-full rounded border border-border bg-background group">
+          <details ref={voicePickerRef} className="w-full rounded border border-border bg-background group">
             <summary className="h-8 px-2 flex items-center justify-between cursor-pointer text-[12px] font-mono list-none">
               <span className="truncate">
                 {voiceLibrary.find((v) => v.id === elevenlabsVoiceDraft)?.name ?? "(unsaved)"}
