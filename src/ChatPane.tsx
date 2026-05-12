@@ -405,21 +405,34 @@ export function ChatPane() {
   const onClear = () => dispatchChatAction({ kind: "clear" });
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const imageItems = Array.from(e.clipboardData.items).filter((item) =>
-      item.type.startsWith("image/"),
-    );
-    if (imageItems.length === 0) return;
-    e.preventDefault();
-    for (const item of imageItems) {
+    // Snapshot items synchronously — clipboardData is invalidated as
+    // soon as the handler returns, so we can't read items inside
+    // FileReader callbacks. Collect blobs first, then promote them
+    // to data URLs and batch-append in one setState to avoid losing
+    // a paste-then-Enter race (if the user hits send before all
+    // readers fire, only the resolved ones land).
+    const blobs: File[] = [];
+    for (const item of Array.from(e.clipboardData.items)) {
+      if (!item.type.startsWith("image/")) continue;
       const file = item.getAsFile();
-      if (!file) continue;
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        const dataUrl = evt.target?.result as string;
-        if (dataUrl) setPendingImages((prev) => [...prev, { imageDataUrl: dataUrl }]);
-      };
-      reader.readAsDataURL(file);
+      if (file) blobs.push(file);
     }
+    if (blobs.length === 0) return;
+    e.preventDefault();
+    Promise.all(
+      blobs.map(
+        (b) =>
+          new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(b);
+          }),
+      ),
+    ).then((urls) => {
+      const additions = urls.filter(Boolean).map((u) => ({ imageDataUrl: u }));
+      if (additions.length > 0) setPendingImages((prev) => [...prev, ...additions]);
+    });
   };
   // Defensive `?? []` in case the store field is ever missing.
   const savedForVault = (savedChats ?? []).filter((c) => c.vaultPath === vaultPath);

@@ -46,11 +46,14 @@ function parsePageSpec(spec: string | undefined, total: number): number[] {
   return Array.from(set).sort((a, b) => a - b);
 }
 
-// Render one PDF page to a PNG data URL off-DOM. High-DPI on purpose:
-// the agent only reaches for this when the visual matters (diagrams,
-// formulas, table layout), so legibility beats token thrift. ~3x device
-// pixels — diminishing returns above that and most providers downscale.
-const SNAPSHOT_SCALE = 3.0;
+// Render one PDF page to a PNG data URL off-DOM. We aim for legibility
+// without overshooting provider limits: Anthropic recommends ≤1568 px
+// on the long edge and rejects oversized base64 payloads as "invalid
+// base64 data". Cap the long edge at 1568 px and pick the scale that
+// hits it; pages smaller than that natively render at scale 2 for crisp
+// text without ballooning.
+const SNAPSHOT_MAX_EDGE = 1568;
+const SNAPSHOT_MAX_SCALE = 2.0;
 
 export async function capturePageImage(path: string, pageNum: number): Promise<{ dataUrl: string; totalPages: number }> {
   const bytes = await invoke<number[]>("read_binary_file", { path });
@@ -62,14 +65,22 @@ export async function capturePageImage(path: string, pageNum: number): Promise<{
     }
     const page = await doc.getPage(pageNum);
     try {
-      const viewport = page.getViewport({ scale: SNAPSHOT_SCALE });
+      const base = page.getViewport({ scale: 1.0 });
+      const longEdge = Math.max(base.width, base.height);
+      const fitScale = SNAPSHOT_MAX_EDGE / longEdge;
+      const scale = Math.min(SNAPSHOT_MAX_SCALE, fitScale);
+      const viewport = page.getViewport({ scale });
       const canvas = document.createElement("canvas");
       canvas.width = Math.ceil(viewport.width);
       canvas.height = Math.ceil(viewport.height);
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("failed to get 2d canvas context");
       await page.render({ canvasContext: ctx, viewport, canvas }).promise;
-      return { dataUrl: canvas.toDataURL("image/png"), totalPages: doc.numPages };
+      // JPEG quality 0.9 — far smaller than PNG for photographic
+      // content and similar quality for rendered slides/diagrams.
+      // Anthropic accepts image/jpeg as image source.
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+      return { dataUrl, totalPages: doc.numPages };
     } finally {
       page.cleanup();
     }
@@ -645,12 +656,25 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         if (typeof output === "string") {
           return { type: "content", value: [{ type: "text", text: output }] };
         }
-        const base64 = String(output.dataUrl).replace(/^data:image\/png;base64,/, "");
+        // Parse data URL strictly: capture both the mediaType and the
+        // base64 payload, and bail if either is missing. The previous
+        // implementation did a literal-prefix `.replace` and silently
+        // shipped the original `data:image/...,...` string when the
+        // prefix didn't match — Anthropic rejected that as "invalid
+        // base64 data" because `:` and `/` aren't in the base64 alphabet.
+        const m = String(output.dataUrl).match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
+        if (!m) {
+          return {
+            type: "content",
+            value: [{ type: "text", text: `PdfPageSnapshot failed: rendered image was not a valid data URL.` }],
+          };
+        }
+        const [, mediaType, base64] = m;
         return {
           type: "content",
           value: [
             { type: "text", text: `Page ${output.page} of ${output.totalPages} from ${output.path}:` },
-            { type: "media", data: base64, mediaType: "image/png" },
+            { type: "media", data: base64, mediaType },
           ],
         };
       },
