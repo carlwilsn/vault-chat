@@ -557,46 +557,48 @@ export function SettingsPane() {
               </span>
             )}
           </div>
-          <select
-            value={elevenlabsVoiceDraft}
-            onChange={(e) => saveElevenlabsVoice(e.target.value)}
-            className="w-full h-8 px-2 rounded border border-border bg-background text-[12px] font-mono"
-          >
-            {voiceLibrary.length === 0 && (
-              <option value={elevenlabsVoiceDraft}>{elevenlabsVoiceDraft}</option>
-            )}
-            {voiceLibrary.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.name} — {v.id}
-              </option>
-            ))}
-            {voiceLibrary.length > 0 && !voiceLibrary.some((v) => v.id === elevenlabsVoiceDraft) && (
-              <option value={elevenlabsVoiceDraft}>(unsaved) {elevenlabsVoiceDraft}</option>
-            )}
-          </select>
-          {voiceLibrary.length > 0 && (
-            <div className="flex flex-col gap-1 pt-1">
-              {voiceLibrary.map((v) => (
-                <div
-                  key={v.id}
-                  className="flex items-center justify-between text-[11px] text-muted-foreground/80 px-2 py-1 rounded hover:bg-muted/40"
-                >
-                  <span className="truncate">
-                    <span className="font-medium text-foreground/90">{v.name}</span>
-                    <span className="ml-2 font-mono text-muted-foreground/60">{v.id}</span>
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => removeVoiceFromLibrary(v.id)}
-                    title="Remove from library"
-                  >
-                    <X className="h-3 w-3" />
-                  </Button>
+          <details className="w-full rounded border border-border bg-background group">
+            <summary className="h-8 px-2 flex items-center justify-between cursor-pointer text-[12px] font-mono list-none">
+              <span className="truncate">
+                {voiceLibrary.find((v) => v.id === elevenlabsVoiceDraft)?.name ?? "(unsaved)"}
+                <span className="ml-2 text-muted-foreground/60">{elevenlabsVoiceDraft}</span>
+              </span>
+              <span className="text-muted-foreground/60 group-open:rotate-180 transition-transform">▾</span>
+            </summary>
+            <div className="border-t border-border max-h-48 overflow-y-auto">
+              {voiceLibrary.length === 0 && (
+                <div className="px-2 py-2 text-[11px] text-muted-foreground/70">
+                  No saved voices yet. Add one below.
                 </div>
-              ))}
+              )}
+              {voiceLibrary.map((v) => {
+                const active = v.id === elevenlabsVoiceDraft;
+                return (
+                  <div
+                    key={v.id}
+                    className={`flex items-center justify-between px-2 py-1.5 text-[12px] cursor-pointer hover:bg-muted/40 ${active ? "bg-muted/60" : ""}`}
+                    onClick={() => saveElevenlabsVoice(v.id)}
+                  >
+                    <span className="truncate flex-1">
+                      <span className="font-medium text-foreground/90">{v.name}</span>
+                      <span className="ml-2 font-mono text-muted-foreground/60">{v.id}</span>
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeVoiceFromLibrary(v.id);
+                      }}
+                      title="Remove from library"
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
-          )}
+          </details>
           <div className="flex gap-2 pt-1">
             <Input
               type="text"
