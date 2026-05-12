@@ -806,7 +806,7 @@ function buildDynamicVariables(
   };
 }
 
-function buildViewportContextText(
+export function buildViewportContextText(
   state: ReturnType<typeof useStore.getState>,
 ): string {
   if (!state.followAlong) return "";

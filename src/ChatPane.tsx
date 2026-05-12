@@ -5,11 +5,12 @@ import remarkMath from "remark-math";
 import remarkBreaks from "remark-breaks";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
-import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, History } from "lucide-react";
+import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, History, Eye, EyeOff } from "lucide-react";
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
 import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
+import { buildViewportContextText } from "./voice-elevenlabs";
 import { findModel } from "./providers";
 import { loadSkills } from "./skills";
 import { isUnreadableAsText } from "./fileKind";
@@ -181,6 +182,8 @@ export function ChatPane() {
   const chatPaneLastCapture = useStore((s) => s.chatPaneLastCapture);
   const setChatPaneLastCapture = useStore((s) => s.setChatPaneLastCapture);
   const setChatPaneCapturePending = useStore((s) => s.setChatPaneCapturePending);
+  const followAlong = useStore((s) => s.followAlong);
+  const toggleFollowAlong = useStore((s) => s.toggleFollowAlong);
   // Hooks for the saved-chats popover. Must live above the early
   // `showSettings`/`!activeKey` returns below — React's Rules of Hooks
   // require the same hook-call order on every render, and putting these
@@ -373,7 +376,9 @@ export function ChatPane() {
       }
     }
     const resolved = Array.from(byPath.values());
-    const contextPreamble = await buildMentionPreamble(resolved);
+    const mentionPreamble = await buildMentionPreamble(resolved);
+    const viewportCtx = followAlong ? buildViewportContextText(useStore.getState()) : "";
+    const contextPreamble = [mentionPreamble, viewportCtx].filter(Boolean).join("\n\n---\n\n");
     // Belt-and-suspenders: append the resolved paths as a footer on
     // the user turn too. Hidden preamble alone wasn't enough — some
     // models re-search with Glob even when the path is in context.
@@ -398,6 +403,24 @@ export function ChatPane() {
 
   const stop = () => dispatchChatAction({ kind: "stop" });
   const onClear = () => dispatchChatAction({ kind: "clear" });
+
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageItems = Array.from(e.clipboardData.items).filter((item) =>
+      item.type.startsWith("image/"),
+    );
+    if (imageItems.length === 0) return;
+    e.preventDefault();
+    for (const item of imageItems) {
+      const file = item.getAsFile();
+      if (!file) continue;
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        const dataUrl = evt.target?.result as string;
+        if (dataUrl) setPendingImages((prev) => [...prev, { imageDataUrl: dataUrl }]);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
   // Defensive `?? []` in case the store field is ever missing.
   const savedForVault = (savedChats ?? []).filter((c) => c.vaultPath === vaultPath);
   const onPickRecent = (id: string) => {
@@ -742,12 +765,28 @@ export function ChatPane() {
                 value={input}
                 onChange={(e) => onInputChange(e.target.value)}
                 onKeyDown={onKey}
+                onPaste={onPaste}
                 placeholder={ready ? "Ask anything, or / for commands…" : "Open a vault first"}
                 disabled={!ready}
                 rows={1}
                 className="border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pl-3 !pr-20"
               />
               <div className="absolute right-3 bottom-2 flex items-center gap-1">
+                {!busy && (
+                  <button
+                    onClick={toggleFollowAlong}
+                    disabled={!ready}
+                    className={cn(
+                      "h-7 w-7 flex items-center justify-center rounded-lg disabled:opacity-40 disabled:cursor-not-allowed",
+                      followAlong
+                        ? "text-primary hover:bg-primary/10"
+                        : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                    )}
+                    title={followAlong ? "Panel follow-along on — active document context sent with each message" : "Panel follow-along off — click to include visible panel content as context"}
+                  >
+                    {followAlong ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                  </button>
+                )}
                 {!busy && (() => {
                   // Union of what's open in main's panes — synced to
                   // the popout via state broadcast. If any visible
