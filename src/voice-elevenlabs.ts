@@ -31,7 +31,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v8-2h-duration";
+const AGENT_CONFIG_VERSION = "v9-no-silence-end";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -945,8 +945,15 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
           // which is way too short for a study session — the platform
           // just hangs up with "Voice session ended." mid-explanation.
           // Bump to 2 hours.
+          //
+          // silence_end_call_timeout: -1 explicitly disables the
+          // "user went quiet, hang up" behavior. The platform default
+          // is supposedly -1 but at least some accounts seem to get
+          // ~30s applied implicitly — setting it ourselves removes the
+          // ambiguity. Study sessions involve long thinking pauses.
           conversation: {
             max_duration_seconds: 7200,
+            silence_end_call_timeout: -1,
           },
         },
         // Per-session overrides must be explicitly enabled in the
