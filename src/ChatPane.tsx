@@ -308,10 +308,17 @@ export function ChatPane() {
   }, [vaultPath, setSkills]);
 
   useEffect(() => {
-    if (inputRef.current) {
-      inputRef.current.style.height = "auto";
-      inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 200)}px`;
-    }
+    const el = inputRef.current;
+    if (!el) return;
+    // Reset to the natural `rows={1}` height first. When the input is
+    // empty we stop here — measuring scrollHeight on an empty textarea
+    // before layout settles can return a stale value (the previous
+    // height of the element), which made the box render unnaturally
+    // tall on mount and reset on first keystroke. Only grow when there
+    // is actual content to fit.
+    el.style.height = "auto";
+    if (input.length === 0) return;
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [input]);
 
   if (showSettings) return <SettingsPane />;
@@ -785,21 +792,6 @@ export function ChatPane() {
                 className="border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pl-3 !pr-20"
               />
               <div className="absolute right-3 bottom-2 flex items-center gap-1">
-                {!busy && (
-                  <button
-                    onClick={toggleFollowAlong}
-                    disabled={!ready}
-                    className={cn(
-                      "h-7 w-7 flex items-center justify-center rounded-lg disabled:opacity-40 disabled:cursor-not-allowed",
-                      followAlong
-                        ? "text-primary hover:bg-primary/10"
-                        : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-                    )}
-                    title={followAlong ? "Panel follow-along on — active document context sent with each message" : "Panel follow-along off — click to include visible panel content as context"}
-                  >
-                    {followAlong ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
-                  </button>
-                )}
                 {!busy && (() => {
                   // Union of what's open in main's panes — synced to
                   // the popout via state broadcast. If any visible
@@ -871,7 +863,26 @@ export function ChatPane() {
             </div>
           </div>
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
-            <ModelPicker modelId={modelId} apiKeys={apiKeys} onSelect={onSelectModel} />
+            <div className="flex items-center gap-1.5">
+              <ModelPicker modelId={modelId} apiKeys={apiKeys} onSelect={onSelectModel} />
+              <button
+                onClick={toggleFollowAlong}
+                disabled={!ready}
+                className={cn(
+                  "flex items-center justify-center h-5 w-5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
+                  followAlong
+                    ? "text-primary hover:bg-primary/10"
+                    : "hover:text-foreground hover:bg-accent/60",
+                )}
+                title={
+                  followAlong
+                    ? "Panel follow-along on — active document context sent with each message"
+                    : "Panel follow-along off — click to include visible panel content"
+                }
+              >
+                {followAlong ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+              </button>
+            </div>
             <div className="flex items-center gap-2">
               {busy && <ElapsedTimer />}
               {lastContext > 0 && (
