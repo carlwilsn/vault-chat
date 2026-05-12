@@ -4,7 +4,7 @@ import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./sto
 import { buildNote } from "./notes";
 import { gitCommitAll } from "./git";
 import { loadMetaVoicePrompt } from "./meta";
-import { applyNotebookEdit, extractPdfText, stripNotebook } from "./tools";
+import { applyNotebookEdit, describePageImage, extractPdfText, stripNotebook } from "./tools";
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
 // platform owns the audio loop (STT + LLM + TTS) and we provide the
@@ -262,6 +262,29 @@ const CLIENT_TOOL_DEFINITIONS = [
         },
       },
       required: ["path"],
+    },
+  },
+  {
+    name: "PdfPageDescribe",
+    description:
+      "Get a rich visual description of a single PDF page — the user can see the page on screen but you can't; this gives you eyes. Use whenever the user asks anything about what a page LOOKS like, asks about diagrams/figures/charts/tables/equations/colors/layout, or says things like 'what do you see' or 'describe this'. PdfExtract gives you text only and loses all visual structure — reach for PdfPageDescribe instead whenever visuals could matter. Pass the current page from the viewport context unless the user names a different one. Returns prose you can speak from directly.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute path to the PDF file.",
+        },
+        page: {
+          type: "number",
+          description: "1-based page number to describe.",
+        },
+        focus: {
+          type: "string",
+          description: "Optional: what the user specifically asked about (e.g., 'the colors of the boxes', 'the equation in the middle'). Helps the describer prioritize.",
+        },
+      },
+      required: ["path", "page"],
     },
   },
   {
@@ -736,6 +759,7 @@ function buildSystemPrompt(
     "- Edit replaces a unique string in an existing file. Prefer Edit over Write when changing a small region of a large file — safer than overwriting. Include enough surrounding context in old_string to make it unique, or pass replace_all=true.",
     "- NotebookEdit is the ONLY way to safely change a .ipynb file — never Write/Edit raw notebook JSON. Use action='append' to add text to the END of an existing cell (the common case: adding an observation, a note, one more line) — much safer than 'replace' since you don't retype the cell. Use 'replace' only when rewriting a cell wholesale. 'insert' adds a NEW cell at cell_index (-1 = end). 'delete' removes a cell. cell_index is 0-based.",
     "- PdfExtract is how you read PDFs. The Read tool won't work on .pdf files. Use the `pages` argument ('1', '1-5', '3,5,7') when the user is on a specific page or you only need a section.",
+    "- PdfPageDescribe is your EYES on a PDF page. You are not natively multimodal in this voice session — when the user asks anything about what a page LOOKS like (colors, diagrams, figures, charts, tables, layout, 'what do you see', 'describe this'), call PdfPageDescribe with the page they're viewing. The viewport context tells you the current page. Pass `focus` if the user asked about a specific thing on the page. Don't claim you can't see images — call this tool first.",
     "- CreateNote saves a short reminder to the user's notes panel — use it when the user says 'remember', 'jot that down', 'add a note', etc. Keep notes brief.",
     "- ListNotes shows what the user has flagged. Use when they ask 'what did I save', 'what notes do I have', 'what's open', etc. Defaults to open notes.",
     "- ResolveNote marks an open note as resolved — call it when the user confirms a flagged item has been addressed.",
@@ -1067,6 +1091,8 @@ function formatToolMarker(name: string, args: any): string {
       const pages = args.pages ? ` (pages ${args.pages})` : "";
       return `*Extracted ${relPath(args.path ?? "")}${pages}*`;
     }
+    case "PdfPageDescribe":
+      return `*Looked at ${relPath(args.path ?? "")} page ${args.page ?? "?"}*`;
     case "ListNotes":
       return `*Listed ${args.status ?? "open"} notes*`;
     case "ResolveNote":
@@ -1326,6 +1352,16 @@ function buildClientToolHandlers(): Record<
           return text.length > PDF_CAP
             ? text.slice(0, PDF_CAP) + "\n…[truncated]"
             : text;
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    PdfPageDescribe: withTracking(
+      "PdfPageDescribe",
+      async (args: { path: string; page: number; focus?: string }) => {
+        try {
+          return await describePageImage(args.path, args.page, args.focus);
         } catch (e) {
           return `Error: ${(e as any)?.message ?? String(e)}`;
         }
