@@ -22,9 +22,8 @@ dist-ssr
 *.sln
 *.sw?
 
-# Claude Code scratch / config — ignore everything except committed skills
-.claude/*
-!.claude/skills/
+# Claude Code scratch / config
+.claude
 
 # Agent scratch files — created by in-app agent tool calls
 _check.*
