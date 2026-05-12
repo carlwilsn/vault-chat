@@ -45,6 +45,38 @@ function parsePageSpec(spec: string | undefined, total: number): number[] {
   return Array.from(set).sort((a, b) => a - b);
 }
 
+// Render one PDF page to a PNG data URL off-DOM. High-DPI on purpose:
+// the agent only reaches for this when the visual matters (diagrams,
+// formulas, table layout), so legibility beats token thrift. ~3x device
+// pixels — diminishing returns above that and most providers downscale.
+const SNAPSHOT_SCALE = 3.0;
+
+export async function capturePageImage(path: string, pageNum: number): Promise<{ dataUrl: string; totalPages: number }> {
+  const bytes = await invoke<number[]>("read_binary_file", { path });
+  const data = new Uint8Array(bytes);
+  const doc = await pdfjs.getDocument({ data }).promise;
+  try {
+    if (pageNum < 1 || pageNum > doc.numPages) {
+      throw new Error(`page ${pageNum} out of range (1..${doc.numPages})`);
+    }
+    const page = await doc.getPage(pageNum);
+    try {
+      const viewport = page.getViewport({ scale: SNAPSHOT_SCALE });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("failed to get 2d canvas context");
+      await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+      return { dataUrl: canvas.toDataURL("image/png"), totalPages: doc.numPages };
+    } finally {
+      page.cleanup();
+    }
+  } finally {
+    doc.destroy();
+  }
+}
+
 export async function extractPdfText(path: string, pageSpec?: string): Promise<string> {
   const bytes = await invoke<number[]>("read_binary_file", { path });
   const data = new Uint8Array(bytes);
@@ -530,6 +562,34 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         } catch (e) {
           return `PDF extraction failed: ${(e as Error).message}`;
         }
+      },
+    }),
+
+    PdfPageSnapshot: tool({
+      description:
+        "Capture a single PDF page as a high-resolution image and return it to YOU as vision input. Use this when text extraction alone is insufficient — diagrams, figures, formulas with non-trivial layout, tables, hand-drawn content, or anything where the visual structure matters. Prefer PdfExtract for plain-text questions; this tool costs tokens per image. One page per call.",
+      inputSchema: z.object({
+        path: z.string().describe("Absolute path to the PDF file."),
+        page: z.number().int().describe("1-based page number to capture."),
+      }),
+      execute: async ({ path, page }) => {
+        guardPath(path);
+        await guardDenied(path);
+        const { dataUrl, totalPages } = await capturePageImage(path, page);
+        return { dataUrl, totalPages, page, path };
+      },
+      toModelOutput: (output: any) => {
+        if (typeof output === "string") {
+          return { type: "content", value: [{ type: "text", text: output }] };
+        }
+        const base64 = String(output.dataUrl).replace(/^data:image\/png;base64,/, "");
+        return {
+          type: "content",
+          value: [
+            { type: "text", text: `Page ${output.page} of ${output.totalPages} from ${output.path}:` },
+            { type: "media", data: base64, mediaType: "image/png" },
+          ],
+        };
       },
     }),
 
