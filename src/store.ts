@@ -343,6 +343,10 @@ type State = {
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   popoutOpen: boolean;
+  // Ctrl+Shift+F toggles a borderless fullscreen mode where the chat
+  // pane covers the entire window — no titlebar, no file tree, no
+  // viewer. Same toggle exits. Not persisted; resets on app start.
+  chatFullscreen: boolean;
   // Resets to false on app start — never persisted.
   voiceMode: boolean;
   // Always-on: the active document and viewport are sent as context
@@ -487,6 +491,7 @@ type State = {
   toggleLeft: () => void;
   toggleRight: () => void;
   setPopoutOpen: (b: boolean) => void;
+  toggleChatFullscreen: () => void;
   toggleVoiceMode: () => void;
   toggleFollowAlong: () => void;
   setVoiceListening: (b: boolean) => void;
@@ -596,6 +601,7 @@ export const useStore = create<State>((set) => ({
   leftCollapsed: false,
   rightCollapsed: true,
   popoutOpen: false,
+  chatFullscreen: false,
   voiceMode: false,
   followAlong: true,
   voiceListening: false,
@@ -1081,6 +1087,7 @@ export const useStore = create<State>((set) => ({
     // cause the chat to jump back in when the popout closes.
     set((s) => (s.popoutOpen ? s : { rightCollapsed: !s.rightCollapsed })),
   setPopoutOpen: (b) => set({ popoutOpen: b }),
+  toggleChatFullscreen: () => set((s) => ({ chatFullscreen: !s.chatFullscreen })),
   toggleVoiceMode: () => set((s) => ({ voiceMode: !s.voiceMode })),
   toggleFollowAlong: () => set((s) => ({ followAlong: !s.followAlong })),
   setVoiceListening: (b) => set({ voiceListening: b }),

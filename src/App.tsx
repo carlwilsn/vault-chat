@@ -68,6 +68,7 @@ export default function App() {
   const leftCollapsed = useStore((s) => s.leftCollapsed);
   const rightCollapsed = useStore((s) => s.rightCollapsed);
   const popoutOpen = useStore((s) => s.popoutOpen);
+  const chatFullscreen = useStore((s) => s.chatFullscreen);
   const showSettings = useStore((s) => s.showSettings);
   const chatHidden = rightCollapsed || popoutOpen;
   const files = useStore((s) => s.files);
@@ -186,6 +187,12 @@ export default function App() {
       } else if (k === "b" && e.shiftKey) {
         e.preventDefault();
         toggleRight();
+      } else if (k === "f" && e.shiftKey && !e.altKey) {
+        // Ctrl+Shift+F — toggle borderless fullscreen chat. Covers the
+        // titlebar, file tree, and viewer with just the ChatPane. Same
+        // chord exits.
+        e.preventDefault();
+        useStore.getState().toggleChatFullscreen();
       } else if (k === "h" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         setShowHistory(true);
@@ -312,6 +319,24 @@ export default function App() {
   }, []);
 
   useGlobalAnchorClickHandler();
+
+  // Fullscreen chat mode: ChatPane takes over the entire window — no
+  // titlebar, no Allotment, no viewer. Same Ctrl+Shift+F exits. Skipped
+  // when the chat is popped out (the popout window owns its own surface).
+  if (chatFullscreen && !popoutOpen) {
+    return (
+      <div className="h-full w-full bg-background flex flex-col">
+        <div
+          data-tauri-drag-region
+          className="h-1.5 shrink-0 bg-background"
+          title="Drag to move window — Ctrl+Shift+F to exit fullscreen chat"
+        />
+        <div className="flex-1 min-h-0">
+          <ChatPane />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-full w-full bg-background flex flex-col">
