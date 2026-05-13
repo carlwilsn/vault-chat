@@ -5,7 +5,7 @@ import remarkMath from "remark-math";
 import remarkBreaks from "remark-breaks";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
-import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, History, Eye, EyeOff } from "lucide-react";
+import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, History } from "lucide-react";
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
@@ -182,8 +182,6 @@ export function ChatPane() {
   const chatPaneLastCapture = useStore((s) => s.chatPaneLastCapture);
   const setChatPaneLastCapture = useStore((s) => s.setChatPaneLastCapture);
   const setChatPaneCapturePending = useStore((s) => s.setChatPaneCapturePending);
-  const followAlong = useStore((s) => s.followAlong);
-  const toggleFollowAlong = useStore((s) => s.toggleFollowAlong);
   // Hooks for the saved-chats popover. Must live above the early
   // `showSettings`/`!activeKey` returns below — React's Rules of Hooks
   // require the same hook-call order on every render, and putting these
@@ -384,7 +382,7 @@ export function ChatPane() {
     }
     const resolved = Array.from(byPath.values());
     const mentionPreamble = await buildMentionPreamble(resolved);
-    const viewportCtx = followAlong ? buildViewportContextText(useStore.getState()) : "";
+    const viewportCtx = buildViewportContextText(useStore.getState());
     const contextPreamble = [mentionPreamble, viewportCtx].filter(Boolean).join("\n\n---\n\n");
     // Belt-and-suspenders: append the resolved paths as a footer on
     // the user turn too. Hidden preamble alone wasn't enough — some
@@ -863,26 +861,7 @@ export function ChatPane() {
             </div>
           </div>
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
-            <div className="flex items-center gap-1.5">
-              <ModelPicker modelId={modelId} apiKeys={apiKeys} onSelect={onSelectModel} />
-              <button
-                onClick={toggleFollowAlong}
-                disabled={!ready}
-                className={cn(
-                  "flex items-center justify-center h-5 w-5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
-                  followAlong
-                    ? "text-primary hover:bg-primary/10"
-                    : "hover:text-foreground hover:bg-accent/60",
-                )}
-                title={
-                  followAlong
-                    ? "Panel follow-along on — active document context sent with each message"
-                    : "Panel follow-along off — click to include visible panel content"
-                }
-              >
-                {followAlong ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
-              </button>
-            </div>
+            <ModelPicker modelId={modelId} apiKeys={apiKeys} onSelect={onSelectModel} />
             <div className="flex items-center gap-2">
               {busy && <ElapsedTimer />}
               {lastContext > 0 && (

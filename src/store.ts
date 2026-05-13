@@ -345,9 +345,9 @@ type State = {
   popoutOpen: boolean;
   // Resets to false on app start — never persisted.
   voiceMode: boolean;
-  // Inside voice mode: agent receives the active file path as a
-  // hidden context preamble on each turn so it can answer about
-  // "this document" without you naming it. Off by default.
+  // Always-on: the active document and viewport are sent as context
+  // with every voice contextual update and chat message. No UI toggle;
+  // kept as a flag for code-level reasoning and future override.
   followAlong: boolean;
   // Live status flags driven by the voice modules — used by the
   // VoiceCockpit to derive its status label. Both reset on voice

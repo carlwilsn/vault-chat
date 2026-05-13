@@ -19,14 +19,12 @@ const AGENT_NAME = "vault-chat";
 // allowlist accepts both bare aliases (claude-sonnet-4-6) and dated
 // forms (claude-sonnet-4-5@20250929); we use the bare alias for the
 // newest models since it stays current as ElevenLabs rolls dates.
-// Gemini 2.5 Pro: native PDF input (up to 1000 pages), strong math
-// reasoning (AIME / GPQA Diamond near the top of the leaderboard), and
-// 1M-token multimodal context that was specifically architected for
-// long interleaved image+text workloads — exactly the read-along /
-// lecture-study workload this app is built around. GA, no `-preview`
-// rug-pull risk. Per-session LLM picker still works for swapping in
-// claude-sonnet-4-6 / gemini-3.1-pro-preview / etc.
-const DEFAULT_LLM = "gemini-2.5-pro";
+// Gemini 2.5 Flash: native PDF + multimodal-native context, far snappier
+// TTFT than 2.5 Pro for voice tempo. Most lecture-narration / "what does
+// this say" / "walk me through this" work doesn't need Pro-tier
+// reasoning — Flash handles it. Switch to gemini-2.5-pro via the
+// per-session picker for genuinely deep math sessions.
+const DEFAULT_LLM = "gemini-2.5-flash";
 const LLM_STORAGE = "vault_chat_elevenlabs_llm";
 const AGENT_LLM_AT_PROVISION = "vault_chat_elevenlabs_agent_llm";
 
