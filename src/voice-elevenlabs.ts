@@ -859,7 +859,8 @@ function buildSystemPrompt(
     "- Edit replaces a unique string in an existing file. Prefer Edit over Write when changing a small region of a large file — safer than overwriting. Include enough surrounding context in old_string to make it unique, or pass replace_all=true.",
     "- NotebookEdit is the ONLY way to safely change a .ipynb file — never Write/Edit raw notebook JSON. Use action='append' to add text to the END of an existing cell (the common case: adding an observation, a note, one more line) — much safer than 'replace' since you don't retype the cell. Use 'replace' only when rewriting a cell wholesale. 'insert' adds a NEW cell at cell_index (-1 = end). 'delete' removes a cell. cell_index is 0-based.",
     "- PdfExtract is how you read PDFs. The Read tool won't work on .pdf files. Use the `pages` argument ('1', '1-5', '3,5,7') when the user is on a specific page or you only need a section.",
-    "- You are MULTIMODAL in this session. When the user opens a PDF, the FULL document is attached to your context — every page, with text, equations, diagrams, and layout preserved. You can reason across pages, reference what came earlier, and anticipate what's ahead. When the user asks 'what do you see', 'describe this', or anything visual — answer from the document directly. Never say 'I can't see your screen' or 'I'm not multimodal'. The viewport text context tells you which page the user is currently looking at.",
+    "- You are MULTIMODAL in this session. When the user opens a PDF, the FULL document is attached to your context — every page, with text, equations, diagrams, and layout preserved. You can reason across pages, reference what came earlier, and anticipate what's ahead. When the user asks 'what do you see', 'describe this', or anything visual — answer from the document directly. Never say 'I can't see your screen' or 'I'm not multimodal'.",
+    "- CRITICAL — CURRENT PAGE IS THE DEFAULT REFERENT. The viewport context tells you exactly which page the user is currently looking at. Whenever the user says 'this', 'that', 'this math', 'explain this', 'what does this say', 'walk me through this', or any other ambiguous deictic reference — they mean the CURRENT page in their viewport. NOT pages you just narrated. NOT pages you just scrolled through. NOT pages that seem topically related. Just the current page. If they want a different page, they will name it explicitly ('go back to page 12', 'explain the formula on slide 3'). When in doubt: answer about the current page only, and offer to expand to nearby pages if useful. Walking through multiple pages when the user pointed to one is a common failure mode — don't fall into it.",
     "- ScrollTo moves the user's viewport. Use it to drive read-along sessions: when the user says 'let's go through this lecture', 'read along with me', 'walk me through this', or 'next page' — call ScrollTo to advance the page they're seeing, then narrate from the new page. When they say 'go back to X', 'wait, the slide about Y' — find the right page and ScrollTo it. CRITICAL TIMING: ScrollTo's visual movement is automatically synced to the end of your current sentence — when you call it mid-utterance, the page change waits for your audio to finish before applying. This means: finish your thought about the current page, THEN call ScrollTo, THEN start narrating the new page. The user will see the page flip at the natural breath between sentences, not mid-word. Don't call ScrollTo multiple times in quick succession unless you're doing a deliberate flip-through that the user explicitly asked for ('show me titles of the next five slides'). For normal read-along, one ScrollTo per page, followed by your narration of that page. If they interrupt with a question, answer it in context, then offer to resume.",
     "- CreateNote saves a short reminder to the user's notes panel — use it when the user says 'remember', 'jot that down', 'add a note', etc. Keep notes brief.",
     "- ListNotes shows what the user has flagged. Use when they ask 'what did I save', 'what notes do I have', 'what's open', etc. Defaults to open notes.",
@@ -935,20 +936,20 @@ function activeSectionFor(
   if (v && v.path === activeFile) {
     if (v.page !== undefined && v.pageText) {
       const total = v.totalPages ?? "?";
-      return `ACTIVE pane document: ${activeFile}\nViewing page ${v.page} of ${total}\nPage content:\n${truncate(v.pageText, VIEWPORT_TEXT_CAP)}`;
+      return `>>> USER IS CURRENTLY ON PAGE ${v.page} of ${total} of ${activeFile} <<<\nAny ambiguous reference ("this", "that", "this math", "what does this say") refers to PAGE ${v.page}, not other pages.\nPage ${v.page} text content:\n${truncate(v.pageText, VIEWPORT_TEXT_CAP)}`;
     }
     if (v.visibleText) {
       const pct =
         v.scrollRatio !== undefined ? Math.round(v.scrollRatio * 100) : null;
       const loc = pct !== null ? ` (scrolled ~${pct}%)` : "";
-      return `ACTIVE pane document: ${activeFile}${loc}\nVisible content:\n${truncate(v.visibleText, VIEWPORT_TEXT_CAP)}`;
+      return `>>> USER IS CURRENTLY VIEWING ${activeFile}${loc} <<<\nAny ambiguous reference refers to the visible portion below, not other parts of the document.\nVisible content:\n${truncate(v.visibleText, VIEWPORT_TEXT_CAP)}`;
     }
   }
   const fallback = (state.currentContent ?? "").trim();
   if (!fallback) {
-    return `ACTIVE pane document: ${activeFile} (no text content available; call Read for contents)`;
+    return `>>> USER IS CURRENTLY VIEWING ${activeFile} <<< (no text content available; call Read for contents)`;
   }
-  return `ACTIVE pane document: ${activeFile}\nContent:\n${truncate(fallback, VIEWPORT_TEXT_CAP)}`;
+  return `>>> USER IS CURRENTLY VIEWING ${activeFile} <<<\nContent:\n${truncate(fallback, VIEWPORT_TEXT_CAP)}`;
 }
 
 function formatRecentHistory(messages: ChatMessage[], take: number): string {
