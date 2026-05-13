@@ -658,27 +658,55 @@ export async function endElevenLabsSession(): Promise<void> {
   useStore.getState().setVoiceCurrentTool(null);
 }
 
-// Resolves when the voice agent's `voiceSpeaking` state flips to false,
-// or after a safety timeout. Used by ScrollTo to align viewport
-// movement with the end of the current audio segment so the user
-// doesn't see the next page mid-sentence about the previous one.
-function waitForSpeakingEnd(timeoutMs = 8000): Promise<void> {
+// Resolves when the agent's actual audio output has been silent for a
+// stable window — distinct from `voiceSpeaking`, which tracks the
+// ElevenLabs mode event (LLM generation state) and flips false the
+// moment the LLM stops emitting tokens, even if TTS audio is still
+// draining out of the speaker. Using the audio level directly is the
+// only reliable signal for "the user has heard everything that was
+// queued up so far." Polled every 50ms via the SDK's frequency-data
+// hook (the same one VoiceCockpit reads for its level bars).
+function waitForAudioSilence(timeoutMs = 8000, silenceMs = 250): Promise<void> {
   return new Promise((resolve) => {
-    let done = false;
-    const unsub = useStore.subscribe((state) => {
-      if (done) return;
-      if (!state.voiceSpeaking) {
-        done = true;
-        unsub();
+    const started = Date.now();
+    let silentSince: number | null = null;
+    const interval = setInterval(() => {
+      const conv = activeConversation;
+      if (!conv) {
+        clearInterval(interval);
         resolve();
+        return;
       }
-    });
-    setTimeout(() => {
-      if (done) return;
-      done = true;
-      unsub();
-      resolve();
-    }, timeoutMs);
+      let level = 0;
+      try {
+        const data = conv.getOutputByteFrequencyData();
+        for (let i = 0; i < data.length; i++) level += data[i];
+      } catch {
+        clearInterval(interval);
+        resolve();
+        return;
+      }
+      const now = Date.now();
+      // Threshold: empty Uint8Array sums to 0; even very quiet TTS
+      // sustains a baseline well above this. Tuned conservative to
+      // avoid releasing the scroll mid-breath.
+      const SILENCE_THRESHOLD = 50;
+      if (level < SILENCE_THRESHOLD) {
+        if (silentSince === null) silentSince = now;
+        if (now - silentSince >= silenceMs) {
+          clearInterval(interval);
+          resolve();
+          return;
+        }
+      } else {
+        silentSince = null;
+      }
+      if (now - started > timeoutMs) {
+        clearInterval(interval);
+        resolve();
+        return;
+      }
+    }, 50);
   });
 }
 
@@ -1492,16 +1520,15 @@ function buildClientToolHandlers(): Record<
         } else {
           return "Error: must provide either `page` (for PDFs) or `anchor` (for other file types).";
         }
-        // If the agent is mid-sentence, defer the actual viewport
-        // movement until TTS finishes. Otherwise the LLM emits the
-        // tool call faster than the audio drains, and the user sees
-        // the next page while still hearing about the previous one.
-        // With expects_response: true on this tool, ElevenLabs holds
-        // the agent's next utterance until we return — so the natural
-        // pause-then-scroll-then-narrate cadence falls out for free.
-        if (useStore.getState().voiceSpeaking) {
-          await waitForSpeakingEnd();
-        }
+        // Defer the actual viewport movement until the audio output
+        // has been silent for a stable window. The LLM emits tool
+        // calls faster than TTS drains, so without this guard the
+        // user sees the next page while still hearing about the
+        // previous one. With expects_response: true on the tool,
+        // ElevenLabs holds the agent's next utterance until we
+        // return — so the cadence becomes: agent finishes sentence,
+        // audio drains, scroll applies, agent narrates new page.
+        await waitForAudioSilence();
         useStore.getState().requestScrollAnchor(targetPath, anchor);
         return `Scrolled to ${anchor} in ${targetPath}`;
       },
