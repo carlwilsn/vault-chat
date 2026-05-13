@@ -4,7 +4,7 @@ import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./sto
 import { buildNote } from "./notes";
 import { gitCommitAll } from "./git";
 import { loadMetaVoicePrompt } from "./meta";
-import { applyNotebookEdit, capturePageImage, extractPdfText, stripNotebook } from "./tools";
+import { applyNotebookEdit, extractPdfText, stripNotebook } from "./tools";
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
 // platform owns the audio loop (STT + LLM + TTS) and we provide the
@@ -19,7 +19,14 @@ const AGENT_NAME = "vault-chat";
 // allowlist accepts both bare aliases (claude-sonnet-4-6) and dated
 // forms (claude-sonnet-4-5@20250929); we use the bare alias for the
 // newest models since it stays current as ElevenLabs rolls dates.
-const DEFAULT_LLM = "claude-sonnet-4-6";
+// Gemini 2.5 Pro: native PDF input (up to 1000 pages), strong math
+// reasoning (AIME / GPQA Diamond near the top of the leaderboard), and
+// 1M-token multimodal context that was specifically architected for
+// long interleaved image+text workloads — exactly the read-along /
+// lecture-study workload this app is built around. GA, no `-preview`
+// rug-pull risk. Per-session LLM picker still works for swapping in
+// claude-sonnet-4-6 / gemini-3.1-pro-preview / etc.
+const DEFAULT_LLM = "gemini-2.5-pro";
 const LLM_STORAGE = "vault_chat_elevenlabs_llm";
 const AGENT_LLM_AT_PROVISION = "vault_chat_elevenlabs_agent_llm";
 
@@ -31,7 +38,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v10-multimodal";
+const AGENT_CONFIG_VERSION = "v11-scrollto-pdf";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -265,6 +272,29 @@ const CLIENT_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: "ScrollTo",
+    description:
+      "Move the user's viewport to a specific page or section of the file they're currently viewing. Use this to drive read-along sessions: advance to the next page when the user is ready, jump back to a page they want to revisit ('go back to the bubble diagram'), or anchor on a specific section. The user's eyes follow what you scroll to, so move deliberately and explain what you're doing. Works on PDFs (page numbers). For non-PDF files, omit `page` and pass an `anchor` heading slug. Returns the resulting page / anchor on success.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        page: {
+          type: "number",
+          description: "1-based PDF page number to scroll to. For PDFs only.",
+        },
+        anchor: {
+          type: "string",
+          description: "Optional anchor string (e.g., 'page=12' for PDFs, or a heading slug for markdown). Prefer `page` for PDFs; use `anchor` when targeting a section.",
+        },
+        path: {
+          type: "string",
+          description: "Optional absolute file path. Defaults to the user's currently active file when omitted — that's the normal case for read-along.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: "ListNotes",
     description:
       "List the user's saved notes (their scratchpad) for the current vault. Each note has an id, timestamp, status (open|resolved), anchored file path(s), and body. Use when the user asks 'what did I flag', 'what's in my notes', etc. Defaults to open notes; pass status='resolved' for the archive or 'all' for everything.",
@@ -360,7 +390,7 @@ export async function startElevenLabsSession(): Promise<void> {
   }
 
   lastViewportSent = null;
-  sentImageKeys.clear();
+  sentPdfPaths.clear();
   sessionMutationCount = 0;
   sessionFirstUserText = null;
   startViewportWatch();
@@ -628,58 +658,58 @@ export async function endElevenLabsSession(): Promise<void> {
   useStore.getState().setVoiceCurrentTool(null);
 }
 
-// Tracks which (path, page) tuples we've already uploaded to ElevenLabs
-// during this session. The agent caches the file by id on its side and
-// keeps the most recent attachments in context, so re-uploading the
-// same page burns tokens for nothing. Cleared on session end.
-const sentImageKeys = new Set<string>();
-let imageUploadInFlight = false;
+// Tracks which PDF paths we've already uploaded to ElevenLabs during
+// this session. We upload the WHOLE document once per file — Gemini
+// (and Anthropic on the ElevenLabs side) accept PDF blobs natively and
+// keep the doc in context, so per-page re-uploads burn tokens for
+// nothing. The active page is communicated via the text contextual
+// update path instead. Cleared on session end.
+const sentPdfPaths = new Set<string>();
+let pdfUploadInFlight = false;
 
-function dataUrlToBlob(dataUrl: string): Blob {
-  const comma = dataUrl.indexOf(",");
-  const meta = dataUrl.slice(0, comma);
-  const b64 = dataUrl.slice(comma + 1);
-  const mime = meta.match(/data:([^;]+);base64/)?.[1] ?? "image/jpeg";
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new Blob([bytes], { type: mime });
-}
+// 50MB cap matches Gemini's per-PDF limit; ElevenLabs's conversation
+// upload endpoint doesn't publish a cap, but going larger risks
+// silent server-side rejection. Lectures are typically 5-20MB.
+const MAX_PDF_UPLOAD_BYTES = 50 * 1024 * 1024;
 
-// Ambient vision for voice mode: when the user is viewing a PDF, render
-// the current page and push it into the live conversation as a
-// multimodal message. The agent's native LLM (Sonnet 4.6) sees the
-// pixels directly — no description-pipeline detour. Skips if we've
-// already sent this (path, page) tuple this session. Quietly no-ops
-// for non-PDF active files; markdown/code/notebook content is already
-// sent as text via the contextual update path.
-async function pushViewportImageIfNeeded(): Promise<void> {
+// Ambient vision for voice mode: when the user opens a PDF, ship the
+// full document to the live conversation so the agent's native LLM
+// can see every page (text, equations, diagrams, layout — Gemini
+// handles native PDFs without rasterizing). Skips if we've already
+// sent this path this session. No-op for non-PDFs.
+async function pushPdfIfNeeded(): Promise<void> {
   const conv = activeConversation;
   if (!conv) return;
-  if (imageUploadInFlight) return;
+  if (pdfUploadInFlight) return;
   const state = useStore.getState();
   if (!state.followAlong) return;
   const file = state.currentFile;
   if (!file) return;
   if (!file.toLowerCase().endsWith(".pdf")) return;
-  const v = state.viewport;
-  if (!v || v.path !== file || v.page === undefined) return;
-  const key = `${file}::${v.page}`;
-  if (sentImageKeys.has(key)) return;
+  if (sentPdfPaths.has(file)) return;
 
-  imageUploadInFlight = true;
+  pdfUploadInFlight = true;
   try {
-    const { dataUrl } = await capturePageImage(file, v.page);
+    const bytes = await invoke<number[]>("read_binary_file", { path: file });
+    if (bytes.length > MAX_PDF_UPLOAD_BYTES) {
+      console.warn(`[voice-eleven] PDF too large (${bytes.length} bytes) — skipping upload for ${file}`);
+      sentPdfPaths.add(file); // mark so we don't retry every scroll
+      return;
+    }
     if (!activeConversation || activeConversation !== conv) return;
-    const blob = dataUrlToBlob(dataUrl);
+    const blob = new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
     const { fileId } = await conv.uploadFile(blob);
     if (!activeConversation || activeConversation !== conv) return;
-    conv.sendMultimodalMessage({ fileId });
-    sentImageKeys.add(key);
+    const name = file.split(/[\\/]/).pop() ?? "document.pdf";
+    conv.sendMultimodalMessage({
+      text: `[The user has opened ${name}. The full PDF is attached for your reference — you can see every page including diagrams, equations, and layout. The viewport context will tell you which page they are currently viewing.]`,
+      fileId,
+    });
+    sentPdfPaths.add(file);
   } catch (e) {
-    console.warn("[voice-eleven] page image push failed:", e);
+    console.warn("[voice-eleven] PDF upload failed:", e);
   } finally {
-    imageUploadInFlight = false;
+    pdfUploadInFlight = false;
   }
 }
 
@@ -701,10 +731,10 @@ export function pushViewportContextDebounced(): void {
         console.warn("[voice-eleven] contextual update failed:", e);
       }
     }
-    // Fire-and-forget the image push. Independent of the text update —
-    // a PDF whose viewport-text is unchanged (e.g., refocus on the same
-    // page) still benefits from having the image pre-loaded.
-    void pushViewportImageIfNeeded();
+    // Fire-and-forget the PDF push. Independent of the text update —
+    // refocusing on the same PDF doesn't re-trigger an upload because
+    // sentPdfPaths is a set.
+    void pushPdfIfNeeded();
   }, SCROLL_DEBOUNCE_MS);
 }
 
@@ -805,7 +835,8 @@ function buildSystemPrompt(
     "- Edit replaces a unique string in an existing file. Prefer Edit over Write when changing a small region of a large file — safer than overwriting. Include enough surrounding context in old_string to make it unique, or pass replace_all=true.",
     "- NotebookEdit is the ONLY way to safely change a .ipynb file — never Write/Edit raw notebook JSON. Use action='append' to add text to the END of an existing cell (the common case: adding an observation, a note, one more line) — much safer than 'replace' since you don't retype the cell. Use 'replace' only when rewriting a cell wholesale. 'insert' adds a NEW cell at cell_index (-1 = end). 'delete' removes a cell. cell_index is 0-based.",
     "- PdfExtract is how you read PDFs. The Read tool won't work on .pdf files. Use the `pages` argument ('1', '1-5', '3,5,7') when the user is on a specific page or you only need a section.",
-    "- You are MULTIMODAL in this session. When the user is viewing a PDF, the rendered image of the current page is automatically attached to your context as the user scrolls or flips pages. You can see diagrams, figures, charts, tables, equations, colors, and layout DIRECTLY. When the user asks 'what do you see', 'describe this', or anything visual — answer from the image you can see. Never say 'I can't see your screen' or 'I'm not multimodal'. If you genuinely don't have a page image yet (very recent page flip, or the file isn't a PDF), say 'one moment' and PdfExtract the text as a fallback while the image catches up.",
+    "- You are MULTIMODAL in this session. When the user opens a PDF, the FULL document is attached to your context — every page, with text, equations, diagrams, and layout preserved. You can reason across pages, reference what came earlier, and anticipate what's ahead. When the user asks 'what do you see', 'describe this', or anything visual — answer from the document directly. Never say 'I can't see your screen' or 'I'm not multimodal'. The viewport text context tells you which page the user is currently looking at.",
+    "- ScrollTo moves the user's viewport. Use it to drive read-along sessions: when the user says 'let's go through this lecture', 'read along with me', 'walk me through this', or 'next page' — call ScrollTo to advance the page they're seeing, then narrate from the new page. When they say 'go back to X', 'wait, the slide about Y' — find the right page and ScrollTo it. Move deliberately: narrate the current section, pause at natural breakpoints, ask if they're ready to continue. Don't auto-advance through long stretches without checking in. If they interrupt with a question, answer it in the context of what they're looking at, then offer to resume.",
     "- CreateNote saves a short reminder to the user's notes panel — use it when the user says 'remember', 'jot that down', 'add a note', etc. Keep notes brief.",
     "- ListNotes shows what the user has flagged. Use when they ask 'what did I save', 'what notes do I have', 'what's open', etc. Defaults to open notes.",
     "- ResolveNote marks an open note as resolved — call it when the user confirms a flagged item has been addressed.",
@@ -1154,6 +1185,10 @@ function formatToolMarker(name: string, args: any): string {
       const pages = args.pages ? ` (pages ${args.pages})` : "";
       return `*Extracted ${relPath(args.path ?? "")}${pages}*`;
     }
+    case "ScrollTo": {
+      const where = typeof args.page === "number" ? `page ${args.page}` : (args.anchor ?? "?");
+      return `*Scrolled to ${where}*`;
+    }
     case "ListNotes":
       return `*Listed ${args.status ?? "open"} notes*`;
     case "ResolveNote":
@@ -1416,6 +1451,24 @@ function buildClientToolHandlers(): Record<
         } catch (e) {
           return `Error: ${(e as any)?.message ?? String(e)}`;
         }
+      },
+    ),
+    ScrollTo: withTracking(
+      "ScrollTo",
+      async (args: { page?: number; anchor?: string; path?: string }) => {
+        const state = useStore.getState();
+        const targetPath = args.path ?? state.currentFile;
+        if (!targetPath) return "Error: no file is currently open.";
+        let anchor: string;
+        if (typeof args.page === "number" && Number.isFinite(args.page)) {
+          anchor = `page=${Math.max(1, Math.floor(args.page))}`;
+        } else if (args.anchor && args.anchor.trim().length > 0) {
+          anchor = args.anchor.trim();
+        } else {
+          return "Error: must provide either `page` (for PDFs) or `anchor` (for other file types).";
+        }
+        state.requestScrollAnchor(targetPath, anchor);
+        return `Scrolled to ${anchor} in ${targetPath}`;
       },
     ),
     ListNotes: withTracking(
