@@ -107,24 +107,45 @@ Produce a rich, faithful description of what's on the page. Cover, as applicable
 
 Be thorough but not redundant. Prose, not a bulleted dump. If the user later asks "what color is the box on the left," you should already have mentioned it. This description is the only thing the downstream voice agent will see — leave nothing important out.`;
 
+// Cache page descriptions in-memory for the lifetime of the app, keyed
+// by (path, page, focus). The describer is on the voice mode hot path:
+// without a cache, every "and what about…" follow-up about the same
+// slide re-rolls a 3-5s vision call. Cap entries to keep memory bounded;
+// LRU eviction is overkill at this scale, so just drop the oldest when
+// the cap is hit. Cleared on app reload — the staleness window is one
+// session, which matches how slide content actually changes.
+const DESCRIBE_CACHE_MAX = 64;
+const describeCache = new Map<string, string>();
+function describeCacheKey(path: string, page: number, focus: string | undefined): string {
+  return `${path}::${page}::${focus ?? ""}`;
+}
+
 export async function describePageImage(
   path: string,
   pageNum: number,
   focus: string | undefined,
 ): Promise<string> {
+  const cacheKey = describeCacheKey(path, pageNum, focus);
+  const cached = describeCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
   const state = useStore.getState();
   const keys = state.apiKeys;
-  // Prefer Opus 4.7 for writing taste; fall back to Gemini 2.5 Pro for
-  // multimodal depth; then GPT-4.1; then anything vision-capable the
-  // user has a key for. Never silently downgrade to a weak model.
-  let spec = findModel("claude-opus-4-7");
+  // Haiku 4.5 over Opus: descriptions are read by the voice agent which
+  // paraphrases anyway, so Opus's writing taste was being wasted on
+  // text the user never directly hears. Haiku is ~3-4× faster on the
+  // vision path and shrinks the idle gap noticeably. Fall back to
+  // Gemini 2.5 Flash / GPT-4o-mini if Anthropic isn't configured —
+  // same "fast vision" tier across providers. Never silently downgrade
+  // below a fast multimodal model.
+  let spec = findModel("claude-haiku-4-5-20251001");
   let apiKey = keys.anthropic;
   if (!apiKey) {
-    spec = findModel("gemini-2.5-pro");
+    spec = findModel("gemini-2.5-flash");
     apiKey = keys.google;
   }
   if (!apiKey) {
-    spec = findModel("gpt-4.1");
+    spec = findModel("gpt-4.1-mini");
     apiKey = keys.openai;
   }
   if (!spec || !apiKey) {
@@ -148,7 +169,14 @@ export async function describePageImage(
       },
     ],
   });
-  return result.text.trim();
+  const description = result.text.trim();
+
+  if (describeCache.size >= DESCRIBE_CACHE_MAX) {
+    const oldest = describeCache.keys().next().value;
+    if (oldest !== undefined) describeCache.delete(oldest);
+  }
+  describeCache.set(cacheKey, description);
+  return description;
 }
 
 export async function extractPdfText(path: string, pageSpec?: string): Promise<string> {
