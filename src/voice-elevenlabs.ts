@@ -4,7 +4,7 @@ import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./sto
 import { buildNote } from "./notes";
 import { gitCommitAll } from "./git";
 import { loadMetaVoicePrompt } from "./meta";
-import { applyNotebookEdit, describePageImage, extractPdfText, stripNotebook } from "./tools";
+import { applyNotebookEdit, capturePageImage, extractPdfText, stripNotebook } from "./tools";
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
 // platform owns the audio loop (STT + LLM + TTS) and we provide the
@@ -31,7 +31,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v9-no-silence-end";
+const AGENT_CONFIG_VERSION = "v10-multimodal";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -265,29 +265,6 @@ const CLIENT_TOOL_DEFINITIONS = [
     },
   },
   {
-    name: "PdfPageDescribe",
-    description:
-      "Get a rich visual description of a single PDF page — the user can see the page on screen but you can't; this gives you eyes. Use whenever the user asks anything about what a page LOOKS like, asks about diagrams/figures/charts/tables/equations/colors/layout, or says things like 'what do you see' or 'describe this'. PdfExtract gives you text only and loses all visual structure — reach for PdfPageDescribe instead whenever visuals could matter. Pass the current page from the viewport context unless the user names a different one. Returns prose you can speak from directly.",
-    parameters: {
-      type: "object" as const,
-      properties: {
-        path: {
-          type: "string",
-          description: "Absolute path to the PDF file.",
-        },
-        page: {
-          type: "number",
-          description: "1-based page number to describe.",
-        },
-        focus: {
-          type: "string",
-          description: "Optional: what the user specifically asked about (e.g., 'the colors of the boxes', 'the equation in the middle'). Helps the describer prioritize.",
-        },
-      },
-      required: ["path", "page"],
-    },
-  },
-  {
     name: "ListNotes",
     description:
       "List the user's saved notes (their scratchpad) for the current vault. Each note has an id, timestamp, status (open|resolved), anchored file path(s), and body. Use when the user asks 'what did I flag', 'what's in my notes', etc. Defaults to open notes; pass status='resolved' for the archive or 'all' for everything.",
@@ -383,6 +360,7 @@ export async function startElevenLabsSession(): Promise<void> {
   }
 
   lastViewportSent = null;
+  sentImageKeys.clear();
   sessionMutationCount = 0;
   sessionFirstUserText = null;
   startViewportWatch();
@@ -650,6 +628,61 @@ export async function endElevenLabsSession(): Promise<void> {
   useStore.getState().setVoiceCurrentTool(null);
 }
 
+// Tracks which (path, page) tuples we've already uploaded to ElevenLabs
+// during this session. The agent caches the file by id on its side and
+// keeps the most recent attachments in context, so re-uploading the
+// same page burns tokens for nothing. Cleared on session end.
+const sentImageKeys = new Set<string>();
+let imageUploadInFlight = false;
+
+function dataUrlToBlob(dataUrl: string): Blob {
+  const comma = dataUrl.indexOf(",");
+  const meta = dataUrl.slice(0, comma);
+  const b64 = dataUrl.slice(comma + 1);
+  const mime = meta.match(/data:([^;]+);base64/)?.[1] ?? "image/jpeg";
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+// Ambient vision for voice mode: when the user is viewing a PDF, render
+// the current page and push it into the live conversation as a
+// multimodal message. The agent's native LLM (Sonnet 4.6) sees the
+// pixels directly — no description-pipeline detour. Skips if we've
+// already sent this (path, page) tuple this session. Quietly no-ops
+// for non-PDF active files; markdown/code/notebook content is already
+// sent as text via the contextual update path.
+async function pushViewportImageIfNeeded(): Promise<void> {
+  const conv = activeConversation;
+  if (!conv) return;
+  if (imageUploadInFlight) return;
+  const state = useStore.getState();
+  if (!state.followAlong) return;
+  const file = state.currentFile;
+  if (!file) return;
+  if (!file.toLowerCase().endsWith(".pdf")) return;
+  const v = state.viewport;
+  if (!v || v.path !== file || v.page === undefined) return;
+  const key = `${file}::${v.page}`;
+  if (sentImageKeys.has(key)) return;
+
+  imageUploadInFlight = true;
+  try {
+    const { dataUrl } = await capturePageImage(file, v.page);
+    if (!activeConversation || activeConversation !== conv) return;
+    const blob = dataUrlToBlob(dataUrl);
+    const { fileId } = await conv.uploadFile(blob);
+    if (!activeConversation || activeConversation !== conv) return;
+    conv.sendMultimodalMessage({ fileId });
+    sentImageKeys.add(key);
+  } catch (e) {
+    console.warn("[voice-eleven] page image push failed:", e);
+  } finally {
+    imageUploadInFlight = false;
+  }
+}
+
 export function pushViewportContextDebounced(): void {
   if (!activeConversation) return;
   if (scrollDebounceTimer !== null) clearTimeout(scrollDebounceTimer);
@@ -660,13 +693,18 @@ export function pushViewportContextDebounced(): void {
     const state = useStore.getState();
     if (!state.followAlong) return;
     const text = buildViewportContextText(state);
-    if (!text || text === lastViewportSent) return;
-    lastViewportSent = text;
-    try {
-      conv.sendContextualUpdate(text);
-    } catch (e) {
-      console.warn("[voice-eleven] contextual update failed:", e);
+    if (text && text !== lastViewportSent) {
+      lastViewportSent = text;
+      try {
+        conv.sendContextualUpdate(text);
+      } catch (e) {
+        console.warn("[voice-eleven] contextual update failed:", e);
+      }
     }
+    // Fire-and-forget the image push. Independent of the text update —
+    // a PDF whose viewport-text is unchanged (e.g., refocus on the same
+    // page) still benefits from having the image pre-loaded.
+    void pushViewportImageIfNeeded();
   }, SCROLL_DEBOUNCE_MS);
 }
 
@@ -767,7 +805,7 @@ function buildSystemPrompt(
     "- Edit replaces a unique string in an existing file. Prefer Edit over Write when changing a small region of a large file — safer than overwriting. Include enough surrounding context in old_string to make it unique, or pass replace_all=true.",
     "- NotebookEdit is the ONLY way to safely change a .ipynb file — never Write/Edit raw notebook JSON. Use action='append' to add text to the END of an existing cell (the common case: adding an observation, a note, one more line) — much safer than 'replace' since you don't retype the cell. Use 'replace' only when rewriting a cell wholesale. 'insert' adds a NEW cell at cell_index (-1 = end). 'delete' removes a cell. cell_index is 0-based.",
     "- PdfExtract is how you read PDFs. The Read tool won't work on .pdf files. Use the `pages` argument ('1', '1-5', '3,5,7') when the user is on a specific page or you only need a section.",
-    "- PdfPageDescribe is your EYES on a PDF page. You are not natively multimodal in this voice session — when the user asks anything about what a page LOOKS like (colors, diagrams, figures, charts, tables, layout, 'what do you see', 'describe this'), call PdfPageDescribe with the page they're viewing. The viewport context tells you the current page. Pass `focus` if the user asked about a specific thing on the page. Don't claim you can't see images — call this tool first.",
+    "- You are MULTIMODAL in this session. When the user is viewing a PDF, the rendered image of the current page is automatically attached to your context as the user scrolls or flips pages. You can see diagrams, figures, charts, tables, equations, colors, and layout DIRECTLY. When the user asks 'what do you see', 'describe this', or anything visual — answer from the image you can see. Never say 'I can't see your screen' or 'I'm not multimodal'. If you genuinely don't have a page image yet (very recent page flip, or the file isn't a PDF), say 'one moment' and PdfExtract the text as a fallback while the image catches up.",
     "- CreateNote saves a short reminder to the user's notes panel — use it when the user says 'remember', 'jot that down', 'add a note', etc. Keep notes brief.",
     "- ListNotes shows what the user has flagged. Use when they ask 'what did I save', 'what notes do I have', 'what's open', etc. Defaults to open notes.",
     "- ResolveNote marks an open note as resolved — call it when the user confirms a flagged item has been addressed.",
@@ -955,6 +993,16 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
             max_duration_seconds: 7200,
             silence_end_call_timeout: -1,
           },
+          // Required for sendMultimodalMessage / file uploads to reach
+          // the agent's LLM. Without `enabled: true` ElevenLabs accepts
+          // the upload but doesn't forward the image content to the
+          // model — multimodal messages would silently degrade to text.
+          // Cap matches a normal study-session worth of slide flips;
+          // we cache by (path, page) so practical churn is much lower.
+          file_input: {
+            enabled: true,
+            max_files_per_conversation: 200,
+          },
         },
         // Per-session overrides must be explicitly enabled in the
         // agent's platform_settings or the orchestrator silently
@@ -1106,8 +1154,6 @@ function formatToolMarker(name: string, args: any): string {
       const pages = args.pages ? ` (pages ${args.pages})` : "";
       return `*Extracted ${relPath(args.path ?? "")}${pages}*`;
     }
-    case "PdfPageDescribe":
-      return `*Looked at ${relPath(args.path ?? "")} page ${args.page ?? "?"}*`;
     case "ListNotes":
       return `*Listed ${args.status ?? "open"} notes*`;
     case "ResolveNote":
@@ -1367,16 +1413,6 @@ function buildClientToolHandlers(): Record<
           return text.length > PDF_CAP
             ? text.slice(0, PDF_CAP) + "\n…[truncated]"
             : text;
-        } catch (e) {
-          return `Error: ${(e as any)?.message ?? String(e)}`;
-        }
-      },
-    ),
-    PdfPageDescribe: withTracking(
-      "PdfPageDescribe",
-      async (args: { path: string; page: number; focus?: string }) => {
-        try {
-          return await describePageImage(args.path, args.page, args.focus);
         } catch (e) {
           return `Error: ${(e as any)?.message ?? String(e)}`;
         }

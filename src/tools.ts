@@ -1,11 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { generateText, tool } from "ai";
+import { tool } from "ai";
 import { z } from "zod";
 import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useStore, type TodoItem } from "./store";
 import { buildNote } from "./notes";
-import { buildModel, findModel } from "./providers";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -87,96 +86,6 @@ export async function capturePageImage(path: string, pageNum: number): Promise<{
   } finally {
     doc.destroy();
   }
-}
-
-// Vision-pipeline-as-a-tool for voice mode. The voice LLM (ElevenLabs
-// Conversational AI) is text-only, so PdfPageSnapshot can't help it
-// directly. Instead we render the page, hand it to a real vision model
-// with a meaty prompt, and return rich prose the voice agent can speak.
-// Quality matters more than cost here — voice is a high-touch path and
-// a wishy-washy description is worse than no tool at all.
-const DESCRIBE_PROMPT = `You are describing a single page from a PDF so a voice assistant can talk about it with the user. The user CAN see the page on their screen; you are their eyes for the AI side of the conversation.
-
-Produce a rich, faithful description of what's on the page. Cover, as applicable:
-- The page's overall layout and what kind of page it is (slide, paper page, figure-heavy, text-heavy, table, etc.)
-- All text content — headings, bullets, body text, equations (transcribe equations in plain English or LaTeX), captions, labels
-- Any diagrams, figures, charts: describe what they depict, what's labeled, what the relationships look like
-- Tables: describe the columns, rows, and what the data shows
-- Visual emphasis: arrows, highlights, colors that carry meaning
-- Anything hand-drawn or annotated
-
-Be thorough but not redundant. Prose, not a bulleted dump. If the user later asks "what color is the box on the left," you should already have mentioned it. This description is the only thing the downstream voice agent will see — leave nothing important out.`;
-
-// Cache page descriptions in-memory for the lifetime of the app, keyed
-// by (path, page, focus). The describer is on the voice mode hot path:
-// without a cache, every "and what about…" follow-up about the same
-// slide re-rolls a 3-5s vision call. Cap entries to keep memory bounded;
-// LRU eviction is overkill at this scale, so just drop the oldest when
-// the cap is hit. Cleared on app reload — the staleness window is one
-// session, which matches how slide content actually changes.
-const DESCRIBE_CACHE_MAX = 64;
-const describeCache = new Map<string, string>();
-function describeCacheKey(path: string, page: number, focus: string | undefined): string {
-  return `${path}::${page}::${focus ?? ""}`;
-}
-
-export async function describePageImage(
-  path: string,
-  pageNum: number,
-  focus: string | undefined,
-): Promise<string> {
-  const cacheKey = describeCacheKey(path, pageNum, focus);
-  const cached = describeCache.get(cacheKey);
-  if (cached !== undefined) return cached;
-
-  const state = useStore.getState();
-  const keys = state.apiKeys;
-  // Haiku 4.5 over Opus: descriptions are read by the voice agent which
-  // paraphrases anyway, so Opus's writing taste was being wasted on
-  // text the user never directly hears. Haiku is ~3-4× faster on the
-  // vision path and shrinks the idle gap noticeably. Fall back to
-  // Gemini 2.5 Flash / GPT-4o-mini if Anthropic isn't configured —
-  // same "fast vision" tier across providers. Never silently downgrade
-  // below a fast multimodal model.
-  let spec = findModel("claude-haiku-4-5-20251001");
-  let apiKey = keys.anthropic;
-  if (!apiKey) {
-    spec = findModel("gemini-2.5-flash");
-    apiKey = keys.google;
-  }
-  if (!apiKey) {
-    spec = findModel("gpt-4.1-mini");
-    apiKey = keys.openai;
-  }
-  if (!spec || !apiKey) {
-    throw new Error("No vision-capable model API key found (need Anthropic, Google, or OpenAI key).");
-  }
-  const { dataUrl, totalPages } = await capturePageImage(path, pageNum);
-  const model = buildModel(spec, apiKey);
-  const userText = focus
-    ? `Page ${pageNum} of ${totalPages}. The user is specifically curious about: ${focus}. Cover that in detail but still give the full page description so we have context.`
-    : `Page ${pageNum} of ${totalPages}. Give the full description.`;
-  const result = await generateText({
-    model,
-    messages: [
-      { role: "system", content: DESCRIBE_PROMPT },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: userText },
-          { type: "image", image: new URL(dataUrl) },
-        ],
-      },
-    ],
-  });
-  const description = result.text.trim();
-
-  if (describeCache.size >= DESCRIBE_CACHE_MAX) {
-    const oldest = describeCache.keys().next().value;
-    if (oldest !== undefined) describeCache.delete(oldest);
-  }
-  describeCache.set(cacheKey, description);
-  return description;
 }
 
 export async function extractPdfText(path: string, pageSpec?: string): Promise<string> {
