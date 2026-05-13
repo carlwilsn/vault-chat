@@ -652,16 +652,21 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         const { dataUrl, totalPages } = await capturePageImage(path, page);
         return { dataUrl, totalPages, page, path };
       },
-      toModelOutput: (output: any) => {
+      // AI SDK v6 calls this with { toolCallId, input, output } — NOT the
+      // raw execute return. An earlier version of this code mistook the
+      // whole parameter object for `output`, so `output.dataUrl` was
+      // always undefined and the regex below always fell back to the
+      // "not a valid data URL" error.
+      toModelOutput: ({ output }: any) => {
         if (typeof output === "string") {
           return { type: "content", value: [{ type: "text", text: output }] };
         }
         // Parse data URL strictly: capture both the mediaType and the
-        // base64 payload, and bail if either is missing. The previous
-        // implementation did a literal-prefix `.replace` and silently
-        // shipped the original `data:image/...,...` string when the
-        // prefix didn't match — Anthropic rejected that as "invalid
-        // base64 data" because `:` and `/` aren't in the base64 alphabet.
+        // base64 payload, and bail if either is missing. Earlier versions
+        // used a literal-prefix `.replace` and silently shipped the
+        // original `data:image/...,...` string when the prefix didn't
+        // match — Anthropic rejected that as "invalid base64 data"
+        // because `:` and `/` aren't in the base64 alphabet.
         const m = String(output.dataUrl).match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
         if (!m) {
           return {
