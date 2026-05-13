@@ -658,6 +658,30 @@ export async function endElevenLabsSession(): Promise<void> {
   useStore.getState().setVoiceCurrentTool(null);
 }
 
+// Resolves when the voice agent's `voiceSpeaking` state flips to false,
+// or after a safety timeout. Used by ScrollTo to align viewport
+// movement with the end of the current audio segment so the user
+// doesn't see the next page mid-sentence about the previous one.
+function waitForSpeakingEnd(timeoutMs = 8000): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const unsub = useStore.subscribe((state) => {
+      if (done) return;
+      if (!state.voiceSpeaking) {
+        done = true;
+        unsub();
+        resolve();
+      }
+    });
+    setTimeout(() => {
+      if (done) return;
+      done = true;
+      unsub();
+      resolve();
+    }, timeoutMs);
+  });
+}
+
 // Tracks which PDF paths we've already uploaded to ElevenLabs during
 // this session. We upload the WHOLE document once per file — Gemini
 // (and Anthropic on the ElevenLabs side) accept PDF blobs natively and
@@ -836,7 +860,7 @@ function buildSystemPrompt(
     "- NotebookEdit is the ONLY way to safely change a .ipynb file — never Write/Edit raw notebook JSON. Use action='append' to add text to the END of an existing cell (the common case: adding an observation, a note, one more line) — much safer than 'replace' since you don't retype the cell. Use 'replace' only when rewriting a cell wholesale. 'insert' adds a NEW cell at cell_index (-1 = end). 'delete' removes a cell. cell_index is 0-based.",
     "- PdfExtract is how you read PDFs. The Read tool won't work on .pdf files. Use the `pages` argument ('1', '1-5', '3,5,7') when the user is on a specific page or you only need a section.",
     "- You are MULTIMODAL in this session. When the user opens a PDF, the FULL document is attached to your context — every page, with text, equations, diagrams, and layout preserved. You can reason across pages, reference what came earlier, and anticipate what's ahead. When the user asks 'what do you see', 'describe this', or anything visual — answer from the document directly. Never say 'I can't see your screen' or 'I'm not multimodal'. The viewport text context tells you which page the user is currently looking at.",
-    "- ScrollTo moves the user's viewport. Use it to drive read-along sessions: when the user says 'let's go through this lecture', 'read along with me', 'walk me through this', or 'next page' — call ScrollTo to advance the page they're seeing, then narrate from the new page. When they say 'go back to X', 'wait, the slide about Y' — find the right page and ScrollTo it. Move deliberately: narrate the current section, pause at natural breakpoints, ask if they're ready to continue. Don't auto-advance through long stretches without checking in. If they interrupt with a question, answer it in the context of what they're looking at, then offer to resume.",
+    "- ScrollTo moves the user's viewport. Use it to drive read-along sessions: when the user says 'let's go through this lecture', 'read along with me', 'walk me through this', or 'next page' — call ScrollTo to advance the page they're seeing, then narrate from the new page. When they say 'go back to X', 'wait, the slide about Y' — find the right page and ScrollTo it. CRITICAL TIMING: ScrollTo's visual movement is automatically synced to the end of your current sentence — when you call it mid-utterance, the page change waits for your audio to finish before applying. This means: finish your thought about the current page, THEN call ScrollTo, THEN start narrating the new page. The user will see the page flip at the natural breath between sentences, not mid-word. Don't call ScrollTo multiple times in quick succession unless you're doing a deliberate flip-through that the user explicitly asked for ('show me titles of the next five slides'). For normal read-along, one ScrollTo per page, followed by your narration of that page. If they interrupt with a question, answer it in context, then offer to resume.",
     "- CreateNote saves a short reminder to the user's notes panel — use it when the user says 'remember', 'jot that down', 'add a note', etc. Keep notes brief.",
     "- ListNotes shows what the user has flagged. Use when they ask 'what did I save', 'what notes do I have', 'what's open', etc. Defaults to open notes.",
     "- ResolveNote marks an open note as resolved — call it when the user confirms a flagged item has been addressed.",
@@ -1467,7 +1491,17 @@ function buildClientToolHandlers(): Record<
         } else {
           return "Error: must provide either `page` (for PDFs) or `anchor` (for other file types).";
         }
-        state.requestScrollAnchor(targetPath, anchor);
+        // If the agent is mid-sentence, defer the actual viewport
+        // movement until TTS finishes. Otherwise the LLM emits the
+        // tool call faster than the audio drains, and the user sees
+        // the next page while still hearing about the previous one.
+        // With expects_response: true on this tool, ElevenLabs holds
+        // the agent's next utterance until we return — so the natural
+        // pause-then-scroll-then-narrate cadence falls out for free.
+        if (useStore.getState().voiceSpeaking) {
+          await waitForSpeakingEnd();
+        }
+        useStore.getState().requestScrollAnchor(targetPath, anchor);
         return `Scrolled to ${anchor} in ${targetPath}`;
       },
     ),
