@@ -31,12 +31,25 @@ const AGENT_LLM_AT_PROVISION = "vault_chat_elevenlabs_agent_llm";
 function getCurrentLlm(): string {
   return localStorage.getItem(LLM_STORAGE) ?? DEFAULT_LLM;
 }
+
+// Gemini reads PDFs natively as part of the multimodal context we
+// upload via pushPdfIfNeeded — it can see every page, diagram, and
+// equation without any extraction tool. Registering PdfExtract for
+// Gemini just confuses the agent: it sometimes forgets it has direct
+// vision and reaches for the tool, burning a round-trip and getting
+// degraded text-only output. Skip the tool (and the prompt section
+// that tells the agent to use it) when running on Gemini. Other LLMs
+// the ElevenLabs orchestrator supports — Claude, OpenAI — don't get
+// the PDF blob piped to them the same way, so they keep the tool.
+function isGeminiLlm(llm: string): boolean {
+  return llm.toLowerCase().startsWith("gemini");
+}
 const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // Bump whenever the agent-create body changes in a way that affects
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v11-scrollto-pdf";
+const AGENT_CONFIG_VERSION = "v12-gemini-conditional-pdf";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -57,6 +70,28 @@ let sessionFirstUserText: string | null = null;
 // pushes a contextual update when either changes. Set up at session
 // start, torn down at session end.
 let unsubscribeViewportWatch: (() => void) | null = null;
+
+// Buffered agent text awaiting audio playback. ElevenLabs fires
+// onMessage when the LLM finishes emitting tokens, which is well
+// before TTS audio drains. Appending immediately makes the chat
+// transcript race ahead of what the user actually hears — full
+// multi-paragraph responses appear in the panel while the first
+// sentence is still playing. We hold the text here and flush it
+// when audio silence is detected (TTS done) or when the user barges
+// in (so the partial-heard turn is still recorded). Reset on
+// session end. Same waitForAudioSilence helper that ScrollTo uses
+// to gate visual changes.
+let pendingAgentMessage: string | null = null;
+
+function flushPendingAgentMessage(expected?: string): void {
+  const text = pendingAgentMessage;
+  if (text === null) return;
+  // If a newer agent turn replaced the pending text before this
+  // callback fired, do nothing — the next flush will handle it.
+  if (expected !== undefined && expected !== text) return;
+  pendingAgentMessage = null;
+  useStore.getState().appendMessage({ role: "assistant", content: text });
+}
 
 // Matched to text-mode tools so the voice agent gets enough context to
 // answer questions about a real-sized file. 8k was too small for
@@ -391,6 +426,7 @@ export async function startElevenLabsSession(): Promise<void> {
   sentPdfPaths.clear();
   sessionMutationCount = 0;
   sessionFirstUserText = null;
+  pendingAgentMessage = null;
   startViewportWatch();
 
   // Load the user-editable voice header from the meta vault. Empty
@@ -422,6 +458,10 @@ export async function startElevenLabsSession(): Promise<void> {
         useStore.getState().setVoiceSpeaking(false);
       },
       onDisconnect: () => {
+        // Drain any agent text that was waiting for audio silence
+        // before stamping the "session ended" marker — preserves
+        // ordering between the last spoken turn and the end notice.
+        flushPendingAgentMessage();
         useStore.getState().appendMessage({
           role: "assistant",
           content: "Voice session ended.",
@@ -462,14 +502,34 @@ export async function startElevenLabsSession(): Promise<void> {
             void endElevenLabsSession();
           }
         } else if (role === "agent") {
-          useStore
-            .getState()
-            .appendMessage({ role: "assistant", content: text });
+          // Buffer until TTS audio finishes draining. onMessage fires
+          // on text-complete, not audio-complete; appending now would
+          // race the transcript ahead of the user's ears.
+          if (pendingAgentMessage !== null) {
+            // Defensive: flush any prior pending before overwriting.
+            // Sequential turns shouldn't hit this, but if they do we
+            // commit the older message rather than losing it.
+            flushPendingAgentMessage();
+          }
+          pendingAgentMessage = text;
+          const captured = text;
+          void waitForAudioSilence().then(() =>
+            flushPendingAgentMessage(captured),
+          );
         }
       },
       onModeChange: ({ mode }) => {
         useStore.getState().setVoiceListening(mode === "listening");
         useStore.getState().setVoiceSpeaking(mode === "speaking");
+        // Barge-in path: when the user starts speaking, ElevenLabs
+        // cuts the agent's TTS and flips mode to "listening". Commit
+        // whatever was pending so the transcript reflects the partial
+        // turn that was actually heard. Without this, the buffered
+        // text could sit until the next silence window — which never
+        // arrives if the user keeps the floor.
+        if (mode === "listening") {
+          flushPendingAgentMessage();
+        }
       },
       onError: (message: string) => {
         console.warn("[voice-eleven] session error:", message);
@@ -627,6 +687,10 @@ export async function endElevenLabsSession(): Promise<void> {
     clearTimeout(scrollDebounceTimer);
     scrollDebounceTimer = null;
   }
+  // Commit any buffered agent text before tearing down — otherwise a
+  // turn whose audio was still draining when the user hit "end" gets
+  // dropped from the transcript.
+  flushPendingAgentMessage();
   const conv = activeConversation;
   activeConversation = null;
   // Cut audio synchronously before the async endSession() runs.
@@ -869,12 +933,20 @@ function buildSystemPrompt(
   customHeader: string,
 ): string {
   const vault = state.vaultPath ?? "(no vault)";
-  const recentHistory = formatRecentHistory(state.messages, 8);
+  const recentHistory = formatRecentHistory(state.messages, 32);
   const followNote = state.followAlong
     ? "Follow-along is on. The active document and viewport are in dynamic variables and will refresh via contextual updates as the user scrolls."
     : "Follow-along is off. The user is not asking about a specific document unless they name one.";
   const header = customHeader.trim() || DEFAULT_VOICE_PROMPT_HEADER;
   const vaultIndex = buildVaultIndex(state);
+  const gemini = isGeminiLlm(getCurrentLlm());
+  // For Gemini the PDF blob is in the multimodal context — no
+  // PdfExtract tool is registered, so the agent shouldn't be told
+  // about it. For other LLMs (Claude / OpenAI on ElevenLabs) the
+  // tool is the only way in.
+  const pdfReadingLine = gemini
+    ? "- PDFs: you can see them directly — the full document is in your multimodal context. Don't try to Read .pdf files as text; just look at the pages."
+    : "- PdfExtract is how you read PDFs (Read won't work on .pdf). `pages` arg accepts '1', '1-5', '3,5,7'.";
   return [
     header,
     "",
@@ -886,12 +958,21 @@ function buildSystemPrompt(
     "- Read / ListDir take absolute paths — join the vault root with a relative path from the file index below. Bare filenames fail.",
     "- Glob takes a pattern relative to the vault root ('**/study.md', '**/*.md'). Case-insensitive, matches directories too — one call usually finds it.",
     "- Grep searches contents. Pass a path to scope, omit it for the whole vault.",
-    "- PdfExtract is how you read PDFs (Read won't work on .pdf). `pages` arg accepts '1', '1-5', '3,5,7'.",
+    pdfReadingLine,
     "",
     "Writing:",
     "- Write creates or overwrites a file. Plain markdown unless the extension implies otherwise. Stay inside the vault.",
     "- Edit replaces a unique string in an existing file — prefer over Write for small changes to large files.",
     "- NotebookEdit is the only safe way to touch .ipynb files. action='append' adds to a cell's end; 'replace' overwrites a cell; 'insert' adds a new cell at cell_index (-1 = end); 'delete' removes one. 0-based.",
+    "",
+    "Writing math (markdown notes will be rendered with remark-math):",
+    "- Inline math: $x = 2$, $\\sum_{i=0}^n i$.",
+    "- Block math: the $$ fences MUST be on their own lines with the equation between them — blank-line padding alone isn't enough. Like this:",
+    "    $$",
+    "    a^2 + b^2 = c^2",
+    "    $$",
+    "- Use \\begin{align} ... \\end{align} inside a $$ block for multi-step proofs. One step per line, & to align on =.",
+    "- Write LaTeX commands with a single backslash (\\sum, \\frac, \\int) — markdown isn't a shell and doesn't need doubled escapes.",
     "",
     "Notes:",
     "- CreateNote saves a quick reminder when the user says 'remember', 'jot that down'. Keep notes brief.",
@@ -1052,7 +1133,15 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
               prompt: "(per-session override)",
               llm: wantedLlm,
               tools: [
-                ...CLIENT_TOOL_DEFINITIONS.map((t) => ({
+                ...CLIENT_TOOL_DEFINITIONS
+                  // Strip PdfExtract for Gemini — it reads PDFs from
+                  // the multimodal blob directly, the tool is dead
+                  // weight that occasionally distracts it.
+                  .filter(
+                    (t) =>
+                      !(isGeminiLlm(wantedLlm) && t.name === "PdfExtract"),
+                  )
+                  .map((t) => ({
                   type: "client" as const,
                   name: t.name,
                   description: t.description,
