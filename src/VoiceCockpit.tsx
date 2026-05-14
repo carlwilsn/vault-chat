@@ -45,12 +45,33 @@ function VoiceBars() {
     let raf = 0;
     const tick = () => {
       const s = useStore.getState();
-      // Only listening / speaking / fallback states reach the bars
-      // — the cockpit hides them in connecting / thinking. Speaking
-      // → TTS spectrum; everything else → live mic input.
-      const raw = s.voiceSpeaking
-        ? getOutputLevels(NUM_BARS)
-        : getInputLevels(NUM_BARS);
+      // Three sources, picked per-frame:
+      //   • speaking + real audio → TTS output spectrum (the agent is talking)
+      //   • speaking-mode but silent output OR a tool is running →
+      //     synthesized sine wave so the user sees the system "thinking"
+      //     instead of staring at flat bars during LLM/tool latency
+      //   • otherwise → live mic input (idle / listening)
+      const out = s.voiceSpeaking ? getOutputLevels(NUM_BARS) : null;
+      const outActive =
+        out !== null && out.reduce((a, b) => a + b, 0) > 0.05;
+
+      let raw: number[];
+      if (outActive && out) {
+        raw = out;
+      } else if (s.voiceSpeaking || s.voiceCurrentTool) {
+        // Synthetic "thinking" wave: travelling sine pulses across the
+        // bars so motion is visible. Amplitude is gentle (~0.4 max) so
+        // it doesn't compete with real audio's energy when it kicks in.
+        const t = performance.now() / 220;
+        raw = new Array(NUM_BARS);
+        for (let i = 0; i < NUM_BARS; i++) {
+          const wave = Math.sin(t + i * 0.55) * 0.5 + 0.5;
+          raw[i] = wave * 0.4;
+        }
+      } else {
+        raw = getInputLevels(NUM_BARS);
+      }
+
       const sm = smoothed.current;
       for (let i = 0; i < NUM_BARS; i++) {
         const decayed = sm[i] * LEVEL_DECAY;
