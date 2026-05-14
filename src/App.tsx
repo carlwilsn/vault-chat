@@ -69,6 +69,7 @@ export default function App() {
   const rightCollapsed = useStore((s) => s.rightCollapsed);
   const popoutOpen = useStore((s) => s.popoutOpen);
   const chatFullscreen = useStore((s) => s.chatFullscreen);
+  const viewerFullscreen = useStore((s) => s.viewerFullscreen);
   const showSettings = useStore((s) => s.showSettings);
   const chatHidden = rightCollapsed || popoutOpen;
   const files = useStore((s) => s.files);
@@ -319,6 +320,25 @@ export default function App() {
   }, []);
 
   useGlobalAnchorClickHandler();
+
+  // Fullscreen viewer mode: MarkdownArea (PDF / markdown / code / etc.)
+  // takes over the entire window. Toggled from each viewer's own
+  // toolbar (e.g., the maximize icon on the PDF toolbar). Chat
+  // fullscreen wins if both flags are somehow on.
+  if (viewerFullscreen && !chatFullscreen) {
+    return (
+      <div className="h-full w-full bg-background flex flex-col">
+        <div
+          data-tauri-drag-region
+          className="h-1.5 shrink-0 bg-background"
+          title="Drag to move window — click the maximize icon again to exit"
+        />
+        <div className="flex-1 min-h-0">
+          <MarkdownArea />
+        </div>
+      </div>
+    );
+  }
 
   // Fullscreen chat mode: ChatPane takes over the entire window — no
   // titlebar, no Allotment, no viewer. Same Ctrl+Shift+F exits. Skipped
