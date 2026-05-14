@@ -567,6 +567,10 @@ export function MarkdownView({ paneId }: Props) {
       }`}
       onClick={onPaneClick}
     >
+      {/* PDFs render their own toolbar (file path + page count + zoom)
+          — skip the generic header to avoid stacking two bars. The
+          PdfView absorbs the file-path display and the close button. */}
+      {kind !== "pdf" && (
       <div
         className={`flex items-center justify-between px-6 py-2.5 border-b border-border/60 ${
           paneId ? "cursor-grab active:cursor-grabbing" : ""
@@ -615,6 +619,7 @@ export function MarkdownView({ paneId }: Props) {
           )}
         </div>
       </div>
+      )}
       {showingEditor && kind === "markdown" ? (
         <div className="flex-1 min-h-0">
           <LiveEditor
@@ -651,7 +656,7 @@ export function MarkdownView({ paneId }: Props) {
       ) : kind === "notebook" ? (
         <NotebookView content={content} />
       ) : kind === "pdf" ? (
-        <PdfView path={file} />
+        <PdfView path={file} relPath={relPath} paneId={paneId} />
       ) : kind === "html" ? (
         <HtmlView content={content} />
       ) : kind === "image" ? (
