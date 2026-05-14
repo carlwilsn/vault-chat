@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { FileText, ZoomIn, ZoomOut, BoxSelect, Maximize2, Minimize2 } from "lucide-react";
+import { FileText, ZoomIn, ZoomOut, BoxSelect } from "lucide-react";
 import { cn } from "./lib/utils";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
@@ -78,7 +78,6 @@ export function PdfView({ path }: { path: string }) {
   // canvas itself.
   const pendingScrollAnchor = useStore((s) => s.pendingScrollAnchor);
   const clearScrollAnchor = useStore((s) => s.clearScrollAnchor);
-  const viewerFullscreen = useStore((s) => s.viewerFullscreen);
   useEffect(() => {
     if (loading) return;
     if (!pendingScrollAnchor) return;
@@ -915,17 +914,6 @@ export function PdfView({ path }: { path: string }) {
             title="Zoom in"
           >
             <ZoomIn className="h-3 w-3" />
-          </button>
-          <button
-            onClick={() => useStore.getState().toggleViewerFullscreen()}
-            className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground ml-1"
-            title={
-              viewerFullscreen
-                ? "Exit fullscreen"
-                : "Fullscreen viewer (hides titlebar, file tree, and chat)"
-            }
-          >
-            {viewerFullscreen ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
           </button>
         </div>
       </div>

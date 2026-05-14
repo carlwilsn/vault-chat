@@ -347,10 +347,6 @@ type State = {
   // pane covers the entire window — no titlebar, no file tree, no
   // viewer. Same toggle exits. Not persisted; resets on app start.
   chatFullscreen: boolean;
-  // Symmetric fullscreen mode for the viewer pane (PDF, markdown, code,
-  // etc.) — toggled from each viewer's own toolbar. Hides titlebar,
-  // file tree, and chat pane. Not persisted.
-  viewerFullscreen: boolean;
   // Resets to false on app start — never persisted.
   voiceMode: boolean;
   // Always-on: the active document and viewport are sent as context
@@ -496,7 +492,6 @@ type State = {
   toggleRight: () => void;
   setPopoutOpen: (b: boolean) => void;
   toggleChatFullscreen: () => void;
-  toggleViewerFullscreen: () => void;
   toggleVoiceMode: () => void;
   toggleFollowAlong: () => void;
   setVoiceListening: (b: boolean) => void;
@@ -607,7 +602,6 @@ export const useStore = create<State>((set) => ({
   rightCollapsed: true,
   popoutOpen: false,
   chatFullscreen: false,
-  viewerFullscreen: false,
   voiceMode: false,
   followAlong: true,
   voiceListening: false,
@@ -1094,7 +1088,6 @@ export const useStore = create<State>((set) => ({
     set((s) => (s.popoutOpen ? s : { rightCollapsed: !s.rightCollapsed })),
   setPopoutOpen: (b) => set({ popoutOpen: b }),
   toggleChatFullscreen: () => set((s) => ({ chatFullscreen: !s.chatFullscreen })),
-  toggleViewerFullscreen: () => set((s) => ({ viewerFullscreen: !s.viewerFullscreen })),
   toggleVoiceMode: () => set((s) => ({ voiceMode: !s.voiceMode })),
   toggleFollowAlong: () => set((s) => ({ followAlong: !s.followAlong })),
   setVoiceListening: (b) => set({ voiceListening: b }),
