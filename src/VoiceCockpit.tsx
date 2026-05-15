@@ -47,9 +47,10 @@ function VoiceBars() {
       const s = useStore.getState();
       // Three sources, picked per-frame:
       //   • speaking + real audio → TTS output spectrum (the agent is talking)
-      //   • speaking-mode but silent output OR a tool is running →
-      //     synthesized sine wave so the user sees the system "thinking"
-      //     instead of staring at flat bars during LLM/tool latency
+      //   • thinking gap (listening just ended, no TTS yet) OR a tool is
+      //     running OR speaking-mode but silent output → synthesized
+      //     sine wave so the user sees the system "thinking" instead of
+      //     staring at flat bars during LLM/tool latency
       //   • otherwise → live mic input (idle / listening)
       const out = s.voiceSpeaking ? getOutputLevels(NUM_BARS) : null;
       const outActive =
@@ -58,7 +59,7 @@ function VoiceBars() {
       let raw: number[];
       if (outActive && out) {
         raw = out;
-      } else if (s.voiceSpeaking || s.voiceCurrentTool) {
+      } else if (s.voiceThinking || s.voiceCurrentTool || s.voiceSpeaking) {
         // Synthetic "thinking" wave: travelling sine pulses across the
         // bars so motion is visible. Amplitude is gentle (~0.4 max) so
         // it doesn't compete with real audio's energy when it kicks in.

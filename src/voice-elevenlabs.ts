@@ -456,6 +456,7 @@ export async function startElevenLabsSession(): Promise<void> {
         useStore.getState().setVoiceConnecting(false);
         useStore.getState().setVoiceListening(false);
         useStore.getState().setVoiceSpeaking(false);
+        useStore.getState().setVoiceThinking(false);
       },
       onDisconnect: () => {
         // Drain any agent text that was waiting for audio silence
@@ -477,7 +478,9 @@ export async function startElevenLabsSession(): Promise<void> {
         useStore.getState().setVoiceConnecting(false);
         useStore.getState().setVoiceListening(false);
         useStore.getState().setVoiceSpeaking(false);
+        useStore.getState().setVoiceThinking(false);
         useStore.getState().setVoiceCurrentTool(null);
+        stopThinkingWatcher();
         // If anything got written / a note got saved, snapshot the
         // session as a single git commit and refresh the file tree.
         // Fire-and-forget — UI doesn't need to wait.
@@ -519,8 +522,20 @@ export async function startElevenLabsSession(): Promise<void> {
         }
       },
       onModeChange: ({ mode }) => {
+        const prevListening = useStore.getState().voiceListening;
         useStore.getState().setVoiceListening(mode === "listening");
         useStore.getState().setVoiceSpeaking(mode === "speaking");
+        // "Thinking" = the gap between the user finishing their turn
+        // and the agent's TTS actually producing audio. ElevenLabs
+        // flips mode straight from "listening" to "speaking" the
+        // moment LLM tokens start, but TTS audio can lag noticeably
+        // behind that flag. We set voiceThinking the instant we leave
+        // listening, then a watcher clears it once real output
+        // amplitude is detected (or speaking ends entirely).
+        if (prevListening && mode !== "listening") {
+          useStore.getState().setVoiceThinking(true);
+          startThinkingWatcher();
+        }
         // Barge-in path: when the user starts speaking, ElevenLabs
         // cuts the agent's TTS and flips mode to "listening". Commit
         // whatever was pending so the transcript reflects the partial
@@ -529,6 +544,8 @@ export async function startElevenLabsSession(): Promise<void> {
         // arrives if the user keeps the floor.
         if (mode === "listening") {
           flushPendingAgentMessage();
+          useStore.getState().setVoiceThinking(false);
+          stopThinkingWatcher();
         }
       },
       onError: (message: string) => {
@@ -728,7 +745,52 @@ export async function endElevenLabsSession(): Promise<void> {
 // only reliable signal for "the user has heard everything that was
 // queued up so far." Polled every 50ms via the SDK's frequency-data
 // hook (the same one VoiceCockpit reads for its level bars).
-function waitForAudioSilence(timeoutMs = 8000, silenceMs = 120): Promise<void> {
+// Polls the same output-amplitude signal as waitForAudioSilence, but
+// in reverse: clears voiceThinking the moment real TTS audio starts
+// playing. Without this, the sine wave would stay up underneath the
+// agent's actual speech instead of handing off to the output spectrum.
+// Safety timeout (5s) prevents a stuck-on wave if amplitude never
+// crosses the threshold (e.g. mic muted, audio context starved).
+let thinkingWatchInterval: ReturnType<typeof setInterval> | null = null;
+let thinkingWatchTimeout: ReturnType<typeof setTimeout> | null = null;
+function startThinkingWatcher(): void {
+  stopThinkingWatcher();
+  const AUDIO_PRESENT_THRESHOLD = 80;
+  thinkingWatchInterval = setInterval(() => {
+    const conv = activeConversation;
+    if (!conv) {
+      stopThinkingWatcher();
+      return;
+    }
+    try {
+      const data = conv.getOutputByteFrequencyData();
+      let level = 0;
+      for (let i = 0; i < data.length; i++) level += data[i];
+      if (level >= AUDIO_PRESENT_THRESHOLD) {
+        useStore.getState().setVoiceThinking(false);
+        stopThinkingWatcher();
+      }
+    } catch {
+      stopThinkingWatcher();
+    }
+  }, 50);
+  thinkingWatchTimeout = setTimeout(() => {
+    useStore.getState().setVoiceThinking(false);
+    stopThinkingWatcher();
+  }, 5000);
+}
+function stopThinkingWatcher(): void {
+  if (thinkingWatchInterval !== null) {
+    clearInterval(thinkingWatchInterval);
+    thinkingWatchInterval = null;
+  }
+  if (thinkingWatchTimeout !== null) {
+    clearTimeout(thinkingWatchTimeout);
+    thinkingWatchTimeout = null;
+  }
+}
+
+function waitForAudioSilence(timeoutMs = 8000, silenceMs = 450): Promise<void> {
   return new Promise((resolve) => {
     const started = Date.now();
     let silentSince: number | null = null;
@@ -751,7 +813,9 @@ function waitForAudioSilence(timeoutMs = 8000, silenceMs = 120): Promise<void> {
       const now = Date.now();
       // Threshold: empty Uint8Array sums to 0; even very quiet TTS
       // sustains a baseline well above this. Tuned conservative to
-      // avoid releasing the scroll mid-breath.
+      // avoid releasing the scroll mid-breath. Combined with a 450ms
+      // silenceMs window this lands at actual sentence boundaries
+      // rather than mid-sentence commas.
       const SILENCE_THRESHOLD = 50;
       if (level < SILENCE_THRESHOLD) {
         if (silentSince === null) silentSince = now;

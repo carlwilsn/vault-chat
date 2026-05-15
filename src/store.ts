@@ -358,6 +358,13 @@ type State = {
   // mode off.
   voiceListening: boolean;
   voiceSpeaking: boolean;
+  // True in the gap between the user finishing a turn and the agent's
+  // TTS audio actually starting — the "agent is thinking" window.
+  // ElevenLabs doesn't expose a dedicated processing mode, so we set
+  // this on `listening → !listening` and clear it once output audio
+  // amplitude crosses a threshold (or speaking ends). Drives the
+  // cockpit's sine-wave visualizer during the otherwise-silent gap.
+  voiceThinking: boolean;
   // True between mic-click and the ElevenLabs session reporting ready
   // — covers agent provisioning, signed-URL fetch, and the WebRTC
   // handshake. The cockpit shows "Connecting…" during this window.
@@ -496,6 +503,7 @@ type State = {
   toggleFollowAlong: () => void;
   setVoiceListening: (b: boolean) => void;
   setVoiceSpeaking: (b: boolean) => void;
+  setVoiceThinking: (b: boolean) => void;
   setVoiceConnecting: (b: boolean) => void;
   setVoiceCurrentTool: (name: string | null) => void;
   setViewport: (v: Viewport | null) => void;
@@ -606,6 +614,7 @@ export const useStore = create<State>((set) => ({
   followAlong: true,
   voiceListening: false,
   voiceSpeaking: false,
+  voiceThinking: false,
   voiceConnecting: false,
   voiceCurrentTool: null,
   viewport: null,
@@ -1092,6 +1101,7 @@ export const useStore = create<State>((set) => ({
   toggleFollowAlong: () => set((s) => ({ followAlong: !s.followAlong })),
   setVoiceListening: (b) => set({ voiceListening: b }),
   setVoiceSpeaking: (b) => set({ voiceSpeaking: b }),
+  setVoiceThinking: (b) => set({ voiceThinking: b }),
   setVoiceConnecting: (b) => set({ voiceConnecting: b }),
   setVoiceCurrentTool: (name) => set({ voiceCurrentTool: name }),
   setViewport: (v) => set({ viewport: v }),
