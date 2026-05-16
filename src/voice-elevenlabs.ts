@@ -49,7 +49,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v13-one-scroll-per-turn";
+const AGENT_CONFIG_VERSION = "v14-no-skipping-pages";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -1070,6 +1070,7 @@ function buildSystemPrompt(
     "- Reach for it when navigation is the natural response: they ask to move, they're going through pages with you, or you need to point at a different page to answer their question. Don't scroll just because you're mentioning another page — only when seeing it actually matters.",
     "- One ScrollTo per page transition, then narrate that page substantively before the next ScrollTo. Never fire multiple ScrollTo calls in a single response or chain them back-to-back — that races the viewport ahead of what you're saying.",
     "- Verbalize the move ('moving to page six, this one's about networking'). The viewport change applies at the next sentence boundary; keep talking through it.",
+    "- When the user asks for a slide-by-slide / page-by-page walkthrough, that means EVERY page in order — current → +1 → +2 → ... — no skipping pages you think are less important. If a page is genuinely empty or filler, still acknowledge it briefly before moving on. The user decides which pages are worth covering, not you.",
     "",
     "Misc:",
     "- '(no matches)' and '(empty)' are real results, not failures. Try a different angle.",
