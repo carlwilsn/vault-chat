@@ -49,7 +49,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v12-gemini-conditional-pdf";
+const AGENT_CONFIG_VERSION = "v13-one-scroll-per-turn";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -79,7 +79,7 @@ let unsubscribeViewportWatch: (() => void) | null = null;
 // sentence is still playing. We hold the text here and flush it
 // when audio silence is detected (TTS done) or when the user barges
 // in (so the partial-heard turn is still recorded). Reset on
-// session end. Same waitForAudioSilence helper that ScrollTo uses
+// session end. Same waitForSpeechEnd helper that ScrollTo uses
 // to gate visual changes.
 let pendingAgentMessage: string | null = null;
 
@@ -98,7 +98,7 @@ async function drainAgentQueue(): Promise<void> {
   agentQueueDraining = true;
   try {
     while (pendingAgentQueue.length > 0) {
-      await waitForAudioSilence();
+      await waitForSpeechEnd();
       const next = pendingAgentQueue.shift();
       if (next === undefined) break;
       useStore.getState().appendMessage({ role: "assistant", content: next });
@@ -540,6 +540,13 @@ export async function startElevenLabsSession(): Promise<void> {
         if (role === "user") {
           if (sessionFirstUserText === null) sessionFirstUserText = text;
           useStore.getState().appendMessage({ role: "user", content: text });
+          // User finished a turn — agent is now thinking until TTS
+          // audio arrives. Drives the sine-wave visualizer; cleared
+          // in onModeChange when mode flips to "speaking" (first
+          // audio chunk arrives) or back to "listening" (barge-in).
+          // 8s safety guard via setTimeout in case neither fires.
+          useStore.getState().setVoiceThinking(true);
+          armThinkingSafetyTimeout();
           // Client-side belt-and-suspenders for end_call. If the
           // whole utterance matches one of a few unambiguous end
           // phrases, hang up without waiting for the agent's
@@ -559,26 +566,21 @@ export async function startElevenLabsSession(): Promise<void> {
         }
       },
       onModeChange: ({ mode }) => {
-        const prevListening = useStore.getState().voiceListening;
         useStore.getState().setVoiceListening(mode === "listening");
         useStore.getState().setVoiceSpeaking(mode === "speaking");
-        // "Thinking" = the gap between the user finishing their turn
-        // and the agent's TTS actually producing audio. ElevenLabs
-        // flips mode straight from "listening" to "speaking" the
-        // moment LLM tokens start, but TTS audio can lag noticeably
-        // behind that flag. We set voiceThinking the instant we leave
-        // listening, then a watcher clears it once real output
-        // amplitude is detected (or speaking ends entirely).
-        if (prevListening && mode !== "listening") {
-          useStore.getState().setVoiceThinking(true);
-          startThinkingWatcher();
+        // Clear thinking the moment the first TTS chunk arrives — mode
+        // flips listening → speaking in `handleAudio` at chunk arrival
+        // per the SDK source. The wave hands off to the real output
+        // spectrum on this transition.
+        if (mode === "speaking") {
+          useStore.getState().setVoiceThinking(false);
+          stopThinkingWatcher();
         }
         // Barge-in path: when the user starts speaking, ElevenLabs
         // cuts the agent's TTS and flips mode to "listening". Commit
         // whatever was pending so the transcript reflects the partial
-        // turn that was actually heard. Without this, the buffered
-        // text could sit until the next silence window — which never
-        // arrives if the user keeps the floor.
+        // turn that was actually heard, and clear thinking since the
+        // agent's response (if any) is no longer in flight.
         if (mode === "listening") {
           flushPendingAgentMessage();
           flushAgentQueueImmediate();
@@ -776,103 +778,91 @@ export async function endElevenLabsSession(): Promise<void> {
   useStore.getState().setVoiceCurrentTool(null);
 }
 
-// Resolves when the agent's actual audio output has been silent for a
-// stable window — distinct from `voiceSpeaking`, which tracks the
-// ElevenLabs mode event (LLM generation state) and flips false the
-// moment the LLM stops emitting tokens, even if TTS audio is still
-// draining out of the speaker. Using the audio level directly is the
-// only reliable signal for "the user has heard everything that was
-// queued up so far." Polled every 50ms via the SDK's frequency-data
-// hook (the same one VoiceCockpit reads for its level bars).
-// Polls the same output-amplitude signal as waitForAudioSilence, but
-// in reverse: clears voiceThinking the moment real TTS audio starts
-// playing. Without this, the sine wave would stay up underneath the
-// agent's actual speech instead of handing off to the output spectrum.
-// Safety timeout (5s) prevents a stuck-on wave if amplitude never
-// crosses the threshold (e.g. mic muted, audio context starved).
-let thinkingWatchInterval: ReturnType<typeof setInterval> | null = null;
-let thinkingWatchTimeout: ReturnType<typeof setTimeout> | null = null;
-function startThinkingWatcher(): void {
-  stopThinkingWatcher();
-  const AUDIO_PRESENT_THRESHOLD = 80;
-  thinkingWatchInterval = setInterval(() => {
-    const conv = activeConversation;
-    if (!conv) {
-      stopThinkingWatcher();
-      return;
-    }
-    try {
-      const data = conv.getOutputByteFrequencyData();
-      let level = 0;
-      for (let i = 0; i < data.length; i++) level += data[i];
-      if (level >= AUDIO_PRESENT_THRESHOLD) {
-        useStore.getState().setVoiceThinking(false);
-        stopThinkingWatcher();
+// Gate primitive for "the agent has finished speaking this turn."
+//
+// Earlier versions of this code polled getOutputByteFrequencyData and
+// resolved when amplitude dropped below a threshold for a window. That
+// was wrong: the SDK's analyser sits post-gain after the audio worklet,
+// so amplitude reads silent during the buffer-up phase at the start of
+// every turn — the gate would fire BEFORE audio had played at all,
+// which is what caused scrolls and chat text to race ahead of voice.
+//
+// Correct primitive: subscribe to `voiceSpeaking`, which the SDK
+// derives from the audio worklet's drain signal (`handleAudio` →
+// "speaking" on chunk arrival; worklet posts `finished:true` → mode
+// "listening" when the buffer empties). This is the SDK's authoritative
+// "audio is playing right now" flag.
+//
+// Wrinkle: mode can flip listening → speaking → listening multiple
+// times within a single agent turn at inter-chunk gaps. So we require
+// `voiceSpeaking` to stay false continuously for sustainedMs before
+// resolving — distinguishes "real end-of-turn" from "tiny worklet gap
+// between chunks." 250ms is enough to absorb chunk handoffs but short
+// enough that post-turn actions feel snappy.
+function waitForSpeechEnd(
+  sustainedMs = 250,
+  hardTimeoutMs = 30000,
+): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    let armTimer: ReturnType<typeof setTimeout> | null = null;
+    // Whether we've observed voiceSpeaking flip true at least once.
+    // Critical: this gate is often called *before* audio for the turn
+    // starts arriving (tool calls can be dispatched ahead of the first
+    // chunk). If we armed the sustained-false timer immediately when
+    // speaking was already false, we'd resolve in 250ms — before TTS
+    // had a chance to play. So we wait for the first audio chunk
+    // (mode → speaking) before arming.
+    let sawSpeaking = useStore.getState().voiceSpeaking;
+
+    const finish = () => {
+      if (done) return;
+      done = true;
+      unsub();
+      if (armTimer) {
+        clearTimeout(armTimer);
+        armTimer = null;
       }
-    } catch {
-      stopThinkingWatcher();
-    }
-  }, 50);
-  thinkingWatchTimeout = setTimeout(() => {
-    useStore.getState().setVoiceThinking(false);
-    stopThinkingWatcher();
-  }, 5000);
-}
-function stopThinkingWatcher(): void {
-  if (thinkingWatchInterval !== null) {
-    clearInterval(thinkingWatchInterval);
-    thinkingWatchInterval = null;
-  }
-  if (thinkingWatchTimeout !== null) {
-    clearTimeout(thinkingWatchTimeout);
-    thinkingWatchTimeout = null;
-  }
+      clearTimeout(safetyTimer);
+      resolve();
+    };
+
+    const evaluate = () => {
+      const speaking = useStore.getState().voiceSpeaking;
+      if (speaking) {
+        sawSpeaking = true;
+        if (armTimer) {
+          clearTimeout(armTimer);
+          armTimer = null;
+        }
+      } else if (sawSpeaking && !armTimer) {
+        armTimer = setTimeout(finish, sustainedMs);
+      }
+    };
+
+    const safetyTimer = setTimeout(finish, hardTimeoutMs);
+    const unsub = useStore.subscribe(evaluate);
+    evaluate();
+  });
 }
 
-function waitForAudioSilence(timeoutMs = 8000, silenceMs = 450): Promise<void> {
-  return new Promise((resolve) => {
-    const started = Date.now();
-    let silentSince: number | null = null;
-    const interval = setInterval(() => {
-      const conv = activeConversation;
-      if (!conv) {
-        clearInterval(interval);
-        resolve();
-        return;
-      }
-      let level = 0;
-      try {
-        const data = conv.getOutputByteFrequencyData();
-        for (let i = 0; i < data.length; i++) level += data[i];
-      } catch {
-        clearInterval(interval);
-        resolve();
-        return;
-      }
-      const now = Date.now();
-      // Threshold: empty Uint8Array sums to 0; even very quiet TTS
-      // sustains a baseline well above this. Tuned conservative to
-      // avoid releasing the scroll mid-breath. Combined with a 450ms
-      // silenceMs window this lands at actual sentence boundaries
-      // rather than mid-sentence commas.
-      const SILENCE_THRESHOLD = 50;
-      if (level < SILENCE_THRESHOLD) {
-        if (silentSince === null) silentSince = now;
-        if (now - silentSince >= silenceMs) {
-          clearInterval(interval);
-          resolve();
-          return;
-        }
-      } else {
-        silentSince = null;
-      }
-      if (now - started > timeoutMs) {
-        clearInterval(interval);
-        resolve();
-        return;
-      }
-    }, 50);
-  });
+// Safety net for voiceThinking: if neither mode → speaking nor
+// barge-in fires within 8s of the user turn ending, force-clear the
+// flag so the sine wave doesn't stick on screen forever. Normal path
+// clears it inside onModeChange.
+let thinkingSafetyTimeout: ReturnType<typeof setTimeout> | null = null;
+function armThinkingSafetyTimeout(): void {
+  stopThinkingWatcher();
+  thinkingSafetyTimeout = setTimeout(() => {
+    useStore.getState().setVoiceThinking(false);
+    thinkingSafetyTimeout = null;
+  }, 8000);
+}
+function stopThinkingWatcher(): void {
+  if (thinkingSafetyTimeout !== null) {
+    clearTimeout(thinkingSafetyTimeout);
+    thinkingSafetyTimeout = null;
+  }
 }
 
 // Tracks which PDF paths we've already uploaded to ElevenLabs during
@@ -1720,15 +1710,16 @@ function buildClientToolHandlers(): Record<
         // Coalesce: if the agent emits multiple ScrollTo calls before
         // audio drains (common pattern — it "previews" the tour by
         // firing ScrollTo for every page it plans to mention), they'd
-        // each wait for silence and then fire serially, marching the
-        // viewport past the narration. Instead, only the LATEST target
-        // wins. Earlier calls return immediately with a superseded
-        // marker; the most-recent call is the one that awaits silence
-        // and applies. Result: no matter how many scrolls queue up,
-        // exactly one viewport movement lands per sentence boundary.
+        // each wait for end-of-speech and then fire serially, marching
+        // the viewport past the narration. Instead, only the LATEST
+        // target wins. Earlier calls return immediately with a
+        // superseded marker; the most-recent call is the one that
+        // awaits speech end and applies. Result: no matter how many
+        // scrolls queue up, exactly one viewport movement lands when
+        // the agent actually stops talking.
         const myGen = ++scrollGen;
         pendingScrollTarget = { path: targetPath, anchor };
-        await waitForAudioSilence();
+        await waitForSpeechEnd();
         if (myGen !== scrollGen) {
           return `Superseded by later ScrollTo`;
         }
