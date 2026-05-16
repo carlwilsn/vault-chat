@@ -83,6 +83,47 @@ let unsubscribeViewportWatch: (() => void) | null = null;
 // to gate visual changes.
 let pendingAgentMessage: string | null = null;
 
+// FIFO queue of agent messages that haven't been flushed to the chat
+// pane yet, plus a flag tracking whether a silence-wait is currently
+// in flight. Multiple agent messages in rapid succession would
+// previously cause the earlier one to flush *immediately* (so message
+// N+1 could take the single pending slot), which raced the transcript
+// ahead of the audio. Now each message takes its turn: one silence
+// window per message, in order.
+const pendingAgentQueue: string[] = [];
+let agentQueueDraining = false;
+
+async function drainAgentQueue(): Promise<void> {
+  if (agentQueueDraining) return;
+  agentQueueDraining = true;
+  try {
+    while (pendingAgentQueue.length > 0) {
+      await waitForAudioSilence();
+      const next = pendingAgentQueue.shift();
+      if (next === undefined) break;
+      useStore.getState().appendMessage({ role: "assistant", content: next });
+    }
+  } finally {
+    agentQueueDraining = false;
+  }
+}
+
+function flushAgentQueueImmediate(): void {
+  while (pendingAgentQueue.length > 0) {
+    const text = pendingAgentQueue.shift();
+    if (text === undefined) break;
+    useStore.getState().appendMessage({ role: "assistant", content: text });
+  }
+}
+
+// Monotonic generation counter + target slot for ScrollTo coalescing.
+// Every ScrollTo invocation bumps scrollGen and overwrites
+// pendingScrollTarget; only the call whose myGen still matches when its
+// silence-wait resolves actually applies the scroll. See ScrollTo
+// handler for the why.
+let scrollGen = 0;
+let pendingScrollTarget: { path: string; anchor: string } | null = null;
+
 function flushPendingAgentMessage(expected?: string): void {
   const text = pendingAgentMessage;
   if (text === null) return;
@@ -463,6 +504,7 @@ export async function startElevenLabsSession(): Promise<void> {
         // before stamping the "session ended" marker — preserves
         // ordering between the last spoken turn and the end notice.
         flushPendingAgentMessage();
+        flushAgentQueueImmediate();
         useStore.getState().appendMessage({
           role: "assistant",
           content: "Voice session ended.",
@@ -481,6 +523,8 @@ export async function startElevenLabsSession(): Promise<void> {
         useStore.getState().setVoiceThinking(false);
         useStore.getState().setVoiceCurrentTool(null);
         stopThinkingWatcher();
+        pendingScrollTarget = null;
+        scrollGen++;
         // If anything got written / a note got saved, snapshot the
         // session as a single git commit and refresh the file tree.
         // Fire-and-forget — UI doesn't need to wait.
@@ -505,20 +549,13 @@ export async function startElevenLabsSession(): Promise<void> {
             void endElevenLabsSession();
           }
         } else if (role === "agent") {
-          // Buffer until TTS audio finishes draining. onMessage fires
-          // on text-complete, not audio-complete; appending now would
-          // race the transcript ahead of the user's ears.
-          if (pendingAgentMessage !== null) {
-            // Defensive: flush any prior pending before overwriting.
-            // Sequential turns shouldn't hit this, but if they do we
-            // commit the older message rather than losing it.
-            flushPendingAgentMessage();
-          }
-          pendingAgentMessage = text;
-          const captured = text;
-          void waitForAudioSilence().then(() =>
-            flushPendingAgentMessage(captured),
-          );
+          // Queue and drain serially. onMessage fires on text-complete,
+          // not audio-complete; appending now would race the transcript
+          // ahead of the user's ears. Each queued message waits its
+          // own silence window before landing in the chat so rapid-fire
+          // turns flush in order, not all at once.
+          pendingAgentQueue.push(text);
+          void drainAgentQueue();
         }
       },
       onModeChange: ({ mode }) => {
@@ -544,6 +581,7 @@ export async function startElevenLabsSession(): Promise<void> {
         // arrives if the user keeps the floor.
         if (mode === "listening") {
           flushPendingAgentMessage();
+          flushAgentQueueImmediate();
           useStore.getState().setVoiceThinking(false);
           stopThinkingWatcher();
         }
@@ -708,6 +746,7 @@ export async function endElevenLabsSession(): Promise<void> {
   // turn whose audio was still draining when the user hit "end" gets
   // dropped from the transcript.
   flushPendingAgentMessage();
+  flushAgentQueueImmediate();
   const conv = activeConversation;
   activeConversation = null;
   // Cut audio synchronously before the async endSession() runs.
@@ -1039,7 +1078,8 @@ function buildSystemPrompt(
     "",
     "ScrollTo — moves the user's viewport to a page or anchor:",
     "- Reach for it when navigation is the natural response: they ask to move, they're going through pages with you, or you need to point at a different page to answer their question. Don't scroll just because you're mentioning another page — only when seeing it actually matters.",
-    "- When you do scroll, verbalize the move ('moving to page six, this one's about networking'). The audio bridges the visual transition. The viewport change auto-syncs to the end of your current sentence — you don't have to time it.",
+    "- One ScrollTo per page transition, then narrate that page substantively before the next ScrollTo. Never fire multiple ScrollTo calls in a single response or chain them back-to-back — that races the viewport ahead of what you're saying.",
+    "- Verbalize the move ('moving to page six, this one's about networking'). The viewport change applies at the next sentence boundary; keep talking through it.",
     "",
     "Misc:",
     "- '(no matches)' and '(empty)' are real results, not failures. Try a different angle.",
@@ -1677,17 +1717,28 @@ function buildClientToolHandlers(): Record<
         } else {
           return "Error: must provide either `page` (for PDFs) or `anchor` (for other file types).";
         }
-        // Defer the actual viewport movement until the audio output
-        // has been silent for a stable window. The LLM emits tool
-        // calls faster than TTS drains, so without this guard the
-        // user sees the next page while still hearing about the
-        // previous one. With expects_response: true on the tool,
-        // ElevenLabs holds the agent's next utterance until we
-        // return — so the cadence becomes: agent finishes sentence,
-        // audio drains, scroll applies, agent narrates new page.
+        // Coalesce: if the agent emits multiple ScrollTo calls before
+        // audio drains (common pattern — it "previews" the tour by
+        // firing ScrollTo for every page it plans to mention), they'd
+        // each wait for silence and then fire serially, marching the
+        // viewport past the narration. Instead, only the LATEST target
+        // wins. Earlier calls return immediately with a superseded
+        // marker; the most-recent call is the one that awaits silence
+        // and applies. Result: no matter how many scrolls queue up,
+        // exactly one viewport movement lands per sentence boundary.
+        const myGen = ++scrollGen;
+        pendingScrollTarget = { path: targetPath, anchor };
         await waitForAudioSilence();
-        useStore.getState().requestScrollAnchor(targetPath, anchor);
-        return `Scrolled to ${anchor} in ${targetPath}`;
+        if (myGen !== scrollGen) {
+          return `Superseded by later ScrollTo`;
+        }
+        const target = pendingScrollTarget;
+        pendingScrollTarget = null;
+        if (!target) {
+          return `Superseded by later ScrollTo`;
+        }
+        useStore.getState().requestScrollAnchor(target.path, target.anchor);
+        return `Scrolled to ${target.anchor} in ${target.path}`;
       },
     ),
     ListNotes: withTracking(
