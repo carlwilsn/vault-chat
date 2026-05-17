@@ -1402,6 +1402,7 @@ async fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
             depth: 0,
             hidden: false,
             denied: false,
+            humanized: false,
         });
     }
     entries.sort_by(|a, b| {
