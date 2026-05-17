@@ -4,7 +4,7 @@ import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./sto
 import { buildNote } from "./notes";
 import { gitCommitAll } from "./git";
 import { loadMetaVoicePrompt } from "./meta";
-import { applyNotebookEdit, extractPdfText, stripNotebook } from "./tools";
+import { applyNotebookEdit, extractPdfText, stripNotebook, assertCanWrite } from "./tools";
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
 // platform owns the audio loop (STT + LLM + TTS) and we provide the
@@ -1579,6 +1579,14 @@ function buildClientToolHandlers(): Record<
       "Write",
       async (args: { path: string; contents: string }) => {
         try {
+          const v = useStore.getState().vaultPath;
+          if (v) {
+            try {
+              await assertCanWrite(args.path, v);
+            } catch (e) {
+              return (e as Error).message;
+            }
+          }
           await invoke("write_text_file", {
             path: args.path,
             contents: args.contents,
@@ -1634,6 +1642,14 @@ function buildClientToolHandlers(): Record<
         replace_all?: boolean;
       }) => {
         try {
+          const v = useStore.getState().vaultPath;
+          if (v) {
+            try {
+              await assertCanWrite(args.path, v);
+            } catch (e) {
+              return (e as Error).message;
+            }
+          }
           const summary = await invoke<string>("edit_text_file", {
             path: args.path,
             oldString: args.old_string,
@@ -1662,6 +1678,14 @@ function buildClientToolHandlers(): Record<
         cell_type?: "code" | "markdown" | "raw";
       }) => {
         try {
+          const v = useStore.getState().vaultPath;
+          if (v) {
+            try {
+              await assertCanWrite(args.path, v);
+            } catch (e) {
+              return (e as Error).message;
+            }
+          }
           const raw = await invoke<string>("read_text_file", { path: args.path });
           const result = applyNotebookEdit(
             raw,

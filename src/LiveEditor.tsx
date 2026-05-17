@@ -22,6 +22,7 @@ import {
   type InlineEditMode,
   type InlineEditRequest,
 } from "./InlineEditPrompt";
+import { useStore } from "./store";
 
 const hideDeco = Decoration.replace({});
 
@@ -819,6 +820,12 @@ export function LiveEditor({
 
   const [inlineEdit, setInlineEdit] = useState<InlineEditContext | null>(null);
 
+  const isHumanized = useStore((s) =>
+    file ? s.files.some((e) => e.path === file && e.humanized) : false,
+  );
+  const isHumanizedRef = useRef(isHumanized);
+  isHumanizedRef.current = isHumanized;
+
   const extensions = useMemo<Extension[]>(
     () => [
       history(),
@@ -827,6 +834,8 @@ export function LiveEditor({
           key: "Mod-k",
           preventDefault: true,
           run: (view) => {
+            // Humanized files suppress Ctrl+K entirely.
+            if (isHumanizedRef.current) return true;
             setInlineEdit(buildInlineEditContext(view, "md", "edit"));
             return true;
           },

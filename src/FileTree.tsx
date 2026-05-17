@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff, FolderOpen, Plus, Upload, Lock, Unlock } from "lucide-react";
+import { FileText, ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, EyeOff, FolderOpen, Plus, Upload, Lock, Unlock, Hand } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { VAULT_PATH_MIME, VAULT_PATHS_MIME, isExternalFileDrop, copyExternalFilesInto } from "./dnd";
 import { cn } from "./lib/utils";
@@ -34,6 +34,7 @@ export function FileTree() {
   const [menu, setMenu] = useState<Menu>(null);
   const [confirmDelete, setConfirmDelete] = useState<FileEntry | null>(null);
   const [confirmDeleteMulti, setConfirmDeleteMulti] = useState<string[] | null>(null);
+  const [confirmHumanize, setConfirmHumanize] = useState<FileEntry | null>(null);
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
   // Multi-select (Shift+Click). Holds absolute paths. `anchor` is the
   // last plain-click, used as the range start for shift-extend.
@@ -85,16 +86,17 @@ export function FileTree() {
   }, [addMenuOpen]);
 
   useEffect(() => {
-    if (!confirmDelete && !confirmDeleteMulti) return;
+    if (!confirmDelete && !confirmDeleteMulti && !confirmHumanize) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setConfirmDelete(null);
         setConfirmDeleteMulti(null);
+        setConfirmHumanize(null);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [confirmDelete, confirmDeleteMulti]);
+  }, [confirmDelete, confirmDeleteMulti, confirmHumanize]);
 
   const openFile = async (f: FileEntry) => {
     if (f.is_dir) return;
@@ -206,6 +208,15 @@ export function FileTree() {
             });
           } catch (e) {
             console.error("[move] update ignore failed:", e);
+          }
+          try {
+            await invoke("rename_in_humanized", {
+              vault: vaultPath,
+              oldRelative: oldRel,
+              newRelative: newRel,
+            });
+          } catch (e) {
+            console.error("[move] update humanized failed:", e);
           }
         }
       }
@@ -448,6 +459,15 @@ export function FileTree() {
         } catch (e) {
           console.error("[rename] update ignore failed:", e);
         }
+        try {
+          await invoke("rename_in_humanized", {
+            vault: vaultPath,
+            oldRelative: oldRel,
+            newRelative: newRel,
+          });
+        } catch (e) {
+          console.error("[rename] update humanized failed:", e);
+        }
       }
       // Rewrite panes, currentFile, and note anchors that pointed at
       // the renamed path or any descendant. Re-read currentFile from
@@ -527,6 +547,14 @@ export function FileTree() {
           } catch (e) {
             console.error("[delete] prune deny failed:", e);
           }
+          try {
+            await invoke("remove_prefix_from_humanized", {
+              vault: vaultPath,
+              relativePrefixes: rels,
+            });
+          } catch (e) {
+            console.error("[delete] prune humanized failed:", e);
+          }
         }
       }
       await applyDeleteCascade(deletedOk);
@@ -580,6 +608,21 @@ export function FileTree() {
     }
   };
 
+  // Add the entry to <vault>/.vault-chat/humanized.json. Agent write
+  // tools refuse it from this point on; there's no UI to revoke (spec:
+  // hand-edit the file to unlock).
+  const humanizeEntry = async (f: FileEntry) => {
+    if (!vaultPath || !f.path.startsWith(vaultPath + "/")) return;
+    if (f.is_dir) return;
+    const rel = f.path.slice(vaultPath.length + 1);
+    try {
+      await invoke("add_to_humanized", { vault: vaultPath, relativePath: rel });
+      await refreshFiles();
+    } catch (e) {
+      console.error("[humanize]", e);
+    }
+  };
+
   // Remove the entry from .vaultchatdeny. No-op if the deny was via an
   // ancestor — the user has to right-click the ancestor to revoke that
   // case, since the lock at this row is inherited.
@@ -614,6 +657,14 @@ export function FileTree() {
           });
         } catch (e) {
           console.error("[delete] prune deny failed:", e);
+        }
+        try {
+          await invoke("remove_prefix_from_humanized", {
+            vault: vaultPath,
+            relativePrefixes: [rel],
+          });
+        } catch (e) {
+          console.error("[delete] prune humanized failed:", e);
         }
       }
       await applyDeleteCascade([f.path]);
@@ -893,7 +944,13 @@ export function FileTree() {
                     <FileText className="h-3.5 w-3.5 shrink-0 opacity-70 ml-3.5" />
                   )}
                   <span className="truncate">{f.name.replace(/\.md$/, "")}</span>
-                  {f.denied && (
+                  {f.humanized && (
+                    <Hand
+                      className="h-3 w-3 shrink-0 ml-auto text-muted-foreground/70"
+                      aria-label="Humanized — AI cannot edit"
+                    />
+                  )}
+                  {f.denied && !f.humanized && (
                     <Lock
                       className="h-3 w-3 shrink-0 ml-auto text-muted-foreground/70"
                       aria-label="Restricted from agent"
@@ -1041,6 +1098,17 @@ export function FileTree() {
                   <Lock className="h-3.5 w-3.5 opacity-70" /> Restrict from agent
                 </button>
               )}
+              {!menu.entry!.is_dir && !menu.entry!.humanized && (
+                <button
+                  className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-foreground whitespace-nowrap"
+                  onClick={() => {
+                    setConfirmHumanize(menu.entry);
+                    setMenu(null);
+                  }}
+                >
+                  <Hand className="h-3.5 w-3.5 opacity-70" /> Humanize…
+                </button>
+              )}
               <button
                 className="w-full flex items-center gap-2 px-3 py-1 hover:bg-accent/60 text-left text-destructive whitespace-nowrap"
                 onClick={() => {
@@ -1140,6 +1208,51 @@ export function FileTree() {
                 }}
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmHumanize && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setConfirmHumanize(null);
+          }}
+        >
+          <div
+            className="w-[400px] rounded-md border border-border bg-card shadow-xl p-4"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="text-[13px] font-semibold text-foreground">
+              Humanize this file?
+            </div>
+            <div className="text-[12px] text-muted-foreground mt-1 break-all font-mono">
+              {confirmHumanize.name}
+            </div>
+            <div className="text-[12px] text-muted-foreground mt-3 leading-relaxed">
+              The AI will be able to read it but not edit it. Inline edit,
+              voice edits, and agent writes will all be refused. This is
+              meant to be permanent — the only way back is hand-editing
+              hidden config.
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                className="px-3 py-1 rounded text-[12px] hover:bg-accent/60 text-foreground"
+                onClick={() => setConfirmHumanize(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-3 py-1 rounded text-[12px] bg-primary text-primary-foreground hover:bg-primary/90"
+                autoFocus
+                onClick={() => {
+                  const f = confirmHumanize;
+                  setConfirmHumanize(null);
+                  humanizeEntry(f);
+                }}
+              >
+                Humanize
               </button>
             </div>
           </div>

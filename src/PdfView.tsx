@@ -25,6 +25,9 @@ function clampZoom(z: number) {
 
 export function PdfView({ path, relPath, paneId }: { path: string; relPath?: string; paneId?: string | null }) {
   const closePane = useStore((s) => s.closePane);
+  const isHumanized = useStore((s) =>
+    s.files.some((e) => e.path === path && e.humanized),
+  );
   const hostRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // Per-page plain-text dump of the PDF (index = page-1). Used to build
@@ -858,6 +861,14 @@ export function PdfView({ path, relPath, paneId }: { path: string; relPath?: str
       <div className="sticky top-0 z-10 bg-muted/80 backdrop-blur border-b border-border/60 px-6 py-2 flex items-center gap-3 text-[11px] text-muted-foreground shrink-0">
         {relPath && (
           <span className="font-mono truncate select-none">{relPath}</span>
+        )}
+        {isHumanized && (
+          <span
+            className="rounded px-1.5 py-px text-[10px] bg-primary/15 text-primary font-mono shrink-0"
+            title="Humanized — AI can read but not edit this file. Unlock by hand-editing .vault-chat/humanized.json."
+          >
+            humanized
+          </span>
         )}
         {pages > 0 && (
           <span className="font-mono shrink-0">{pages} page{pages === 1 ? "" : "s"}</span>

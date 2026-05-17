@@ -254,6 +254,9 @@ export function MarkdownView({ paneId }: Props) {
   const pane = paneId ? panes.find((p) => p.id === paneId) : null;
   const file = pane ? pane.file : currentFile;
   const content = pane ? pane.content : currentContent;
+  const isHumanized = useStore((s) =>
+    file ? s.files.some((e) => e.path === file && e.humanized) : false,
+  );
   // Each pane carries its own view/edit mode so split panes can show
   // one rendered + one editor at the same time.
   const mode = pane ? pane.mode : globalMode;
@@ -578,8 +581,16 @@ export function MarkdownView({ paneId }: Props) {
         draggable={!!paneId}
         onDragStart={onHeaderDragStart}
       >
-        <div className="text-[11px] font-mono text-muted-foreground truncate select-none">
-          {relPath}
+        <div className="text-[11px] font-mono text-muted-foreground truncate select-none flex items-center gap-2">
+          <span className="truncate">{relPath}</span>
+          {isHumanized && (
+            <span
+              className="rounded px-1.5 py-px text-[10px] bg-primary/15 text-primary font-mono shrink-0"
+              title="Humanized — AI can read but not edit this file. Unlock by hand-editing .vault-chat/humanized.json."
+            >
+              humanized
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3">
           {showToggle && (

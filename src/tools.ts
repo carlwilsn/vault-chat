@@ -314,6 +314,34 @@ function assertGlobAllowed(pattern: string, strict: boolean): void {
   }
 }
 
+// Throw if `absPath` is in the vault's humanized.json (exact match
+// only, no ancestor inheritance). Humanized files are AI-readable but
+// every write tool refuses them. Phrased exactly as the spec requires
+// so the model doesn't try alternate write strategies.
+export const HUMANIZED_REFUSAL =
+  "File is humanized — user has chosen to hand-edit this file. Do not retry.";
+
+export async function assertCanWrite(absPath: string, vault: string): Promise<void> {
+  const np = absPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!nv) return;
+  if (np !== nv && !np.startsWith(nv + "/")) return;
+  const rel = np === nv ? "" : np.slice(nv.length + 1);
+  if (!rel) return;
+  let list: string[];
+  try {
+    list = await invoke<string[]>("read_humanized", { vault });
+  } catch {
+    return;
+  }
+  for (const entry of list) {
+    const e = entry.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    if (e && e === rel) {
+      throw new Error(HUMANIZED_REFUSAL);
+    }
+  }
+}
+
 // Throw if `absPath` lives under (or is) any entry in the vault's
 // .vaultchatdeny file. Read fresh per call so a user toggling
 // "Restrict from agent" mid-chat takes effect on the very next tool
@@ -347,6 +375,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   const { metaPath = null, tavilyKey, strictVault = false, bashDisabled = false } = options;
   const guardPath = (path: string) => assertAllowed(path, vault, metaPath, strictVault);
   const guardDenied = (path: string) => assertNotDenied(path, vault);
+  const guardWritable = (path: string) => assertCanWrite(path, vault);
   const base = {
     Read: tool({
       description:
@@ -373,6 +402,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       execute: async ({ path, contents }) => {
         guardPath(path);
         await guardDenied(path);
+        await guardWritable(path);
         await invoke("write_text_file", { path, contents });
         return `wrote ${path}`;
       },
@@ -387,6 +417,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       execute: async ({ path }) => {
         guardPath(path);
         await guardDenied(path);
+        await guardWritable(path);
         await invoke("delete_file", { path });
         return `deleted ${path}`;
       },
@@ -404,6 +435,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       execute: async ({ path, old_string, new_string, replace_all }) => {
         guardPath(path);
         await guardDenied(path);
+        await guardWritable(path);
         return await invoke<string>("edit_text_file", {
           path,
           oldString: old_string,
@@ -502,6 +534,22 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         } catch {
           // No deny file or read failed — fall through, original behaviour.
         }
+        // Same best-effort gate for humanized files. Bash can still
+        // smuggle writes through indirection — accepted, same caveat.
+        try {
+          const humanized = await invoke<string[]>("read_humanized", { vault });
+          const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
+          for (const raw of humanized) {
+            const rel = raw.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+            if (!rel) continue;
+            const abs = `${nv}/${rel}`;
+            if (command.includes(rel) || command.includes(abs)) {
+              return HUMANIZED_REFUSAL;
+            }
+          }
+        } catch {
+          // fall through
+        }
         const result = await invoke<{
           stdout: string;
           stderr: string;
@@ -543,6 +591,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         try {
           guardPath(path);
           await guardDenied(path);
+          await guardWritable(path);
           const raw = await invoke<string>("read_text_file", { path });
           const result = applyNotebookEdit(raw, action, cell_index, source, cell_type);
           if (!result.ok) return `${result.error}: ${path}`;

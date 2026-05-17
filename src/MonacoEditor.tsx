@@ -25,6 +25,11 @@ export function MonacoEditor({
   ext: string;
   path?: string;
 }) {
+  const isHumanized = useStore((s) =>
+    path ? s.files.some((e) => e.path === path && e.humanized) : false,
+  );
+  const isHumanizedRef = useRef(isHumanized);
+  isHumanizedRef.current = isHumanized;
   const theme = useStore((s) => s.theme);
   const monacoTheme = theme === "light" ? "vault-light" : "vault-graphite";
   const language = extToMonacoLang[ext.toLowerCase()] ?? "plaintext";
@@ -60,6 +65,9 @@ export function MonacoEditor({
   ) => {
     editorRef.current = editor;
     const openInline = (mode: InlineEditMode) => {
+      // Humanized files suppress Ctrl+K entirely. Ctrl+L (ask) is
+      // read-only so it stays.
+      if (mode === "edit" && isHumanizedRef.current) return;
       const model = editor.getModel();
       if (!model) return;
       const selection = editor.getSelection();

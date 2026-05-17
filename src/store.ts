@@ -23,6 +23,9 @@ export type FileEntry = {
   // True when this path (or an ancestor) is in `.vaultchatdeny`. The
   // file tree shows a lock badge; agent file-touching tools refuse it.
   denied: boolean;
+  // True when this exact path is in <vault>/.vault-chat/humanized.json.
+  // Agent write tools refuse it; the user can still edit by hand.
+  humanized: boolean;
 };
 
 export type ChatRole = "user" | "assistant";

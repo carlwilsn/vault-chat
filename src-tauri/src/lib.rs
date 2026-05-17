@@ -14,6 +14,7 @@ const IGNORE_FILE: &str = ".vaultchatignore";
 const DENY_FILE: &str = ".vaultchatdeny";
 const NOTES_DIR: &str = ".vault-chat";
 const NOTES_FILE: &str = "notes.jsonl";
+const HUMANIZED_FILE: &str = "humanized.json";
 
 #[derive(Serialize)]
 struct FileEntry {
@@ -23,6 +24,7 @@ struct FileEntry {
     depth: usize,
     hidden: bool,
     denied: bool,
+    humanized: bool,
 }
 
 // Extensions we hide from the file tree even though they exist on disk —
@@ -82,6 +84,65 @@ fn load_deny_set(vault: &std::path::Path) -> HashSet<String> {
     load_list_set(vault, DENY_FILE)
 }
 
+// Per-file capability mask. MVP only has one preset ("humanized" =
+// AI-read on, all writes off), stored as a JSON array of vault-relative
+// paths under <vault>/.vault-chat/humanized.json. Future presets (e.g.
+// "secret" = read also off) will land as object entries instead of bare
+// strings, which is why we accept both shapes when reading.
+fn humanized_path(vault: &std::path::Path) -> PathBuf {
+    vault.join(NOTES_DIR).join(HUMANIZED_FILE)
+}
+
+fn load_humanized_set(vault: &std::path::Path) -> HashSet<String> {
+    let path = humanized_path(vault);
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return HashSet::new();
+    };
+    let mut set = HashSet::new();
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return set;
+    };
+    let Some(arr) = value.as_array() else {
+        return set;
+    };
+    for item in arr {
+        let rel_opt = if let Some(s) = item.as_str() {
+            Some(s.to_string())
+        } else if let Some(obj) = item.as_object() {
+            obj.get("path").and_then(|v| v.as_str()).map(|s| s.to_string())
+        } else {
+            None
+        };
+        if let Some(rel) = rel_opt {
+            let norm = rel
+                .trim_start_matches('/')
+                .trim_end_matches('/')
+                .replace('\\', "/");
+            if !norm.is_empty() {
+                set.insert(norm);
+            }
+        }
+    }
+    set
+}
+
+fn read_humanized_list(vault: &str) -> Vec<String> {
+    let root = std::path::Path::new(vault);
+    let mut list: Vec<String> = load_humanized_set(root).into_iter().collect();
+    list.sort();
+    list
+}
+
+fn write_humanized_set(vault: &str, set: &HashSet<String>) -> Result<(), String> {
+    let root = std::path::Path::new(vault);
+    let dir = root.join(NOTES_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
+    let mut list: Vec<&String> = set.iter().collect();
+    list.sort();
+    let json = serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?;
+    std::fs::write(humanized_path(root), json + "\n").map_err(|e| e.to_string())
+}
+
 // True when `rel_path` itself is in the set, OR any ancestor
 // directory of `rel_path` is in the set. Lets a single entry cover
 // a whole subtree without listing every descendant.
@@ -115,6 +176,7 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
     }
     let ignored = load_ignore_set(&root);
     let denied = load_deny_set(&root);
+    let humanized = load_humanized_set(&root);
     let mut entries: Vec<FileEntry> = Vec::new();
     for entry in WalkDir::new(&root)
         .sort_by(|a, b| {
@@ -154,6 +216,7 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
         let rel_str = rel.to_string_lossy().replace('\\', "/");
         let hidden = is_hidden_path(&rel_str, &ignored);
         let is_denied = is_listed_path(&rel_str, &denied);
+        let is_humanized = humanized.contains(&rel_str);
         entries.push(FileEntry {
             path: path.to_string_lossy().replace('\\', "/"),
             name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
@@ -161,6 +224,7 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
             depth: rel.components().count().saturating_sub(1),
             hidden,
             denied: is_denied,
+            humanized: is_humanized,
         });
     }
     Ok(entries)
@@ -464,6 +528,123 @@ async fn remove_prefix_from_deny(
 async fn remove_from_deny(vault: String, relative_paths: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         remove_from_list_sync(&vault, DENY_FILE, &relative_paths)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------- humanized.json (per-file write lock) ----------
+//
+// Each entry is a vault-relative path. A humanized file is AI-readable
+// but agent writes (Write, Edit, NotebookEdit, Delete) are refused.
+// Membership is exact-match — humanizing a folder does NOT cascade to
+// children. The user opts files in one at a time via a right-click
+// "Humanize…" entry. Meant to be near-permanent; unlock is hand-edit
+// only.
+
+#[tauri::command]
+async fn read_humanized(vault: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || Ok(read_humanized_list(&vault)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn add_to_humanized(vault: String, relative_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let normalized = relative_path
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .replace('\\', "/");
+        if normalized.is_empty() {
+            return Err("cannot humanize vault root".to_string());
+        }
+        let mut set = load_humanized_set(std::path::Path::new(&vault));
+        set.insert(normalized);
+        write_humanized_set(&vault, &set)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn rename_in_humanized(
+    vault: String,
+    old_relative: String,
+    new_relative: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let normalize = |p: &str| -> String {
+            p.trim_start_matches('/')
+                .trim_end_matches('/')
+                .replace('\\', "/")
+        };
+        let old_n = normalize(&old_relative);
+        let new_n = normalize(&new_relative);
+        if old_n.is_empty() || new_n.is_empty() || old_n == new_n {
+            return Ok(());
+        }
+        let mut set = load_humanized_set(std::path::Path::new(&vault));
+        let prefix = format!("{}/", old_n);
+        let mut changed = false;
+        let mut next: HashSet<String> = HashSet::new();
+        for entry in set.drain() {
+            if entry == old_n {
+                next.insert(new_n.clone());
+                changed = true;
+            } else if entry.starts_with(&prefix) {
+                let suffix = &entry[prefix.len()..];
+                next.insert(format!("{}/{}", new_n, suffix));
+                changed = true;
+            } else {
+                next.insert(entry);
+            }
+        }
+        if !changed {
+            return Ok(());
+        }
+        write_humanized_set(&vault, &next)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn remove_prefix_from_humanized(
+    vault: String,
+    relative_prefixes: Vec<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let prefixes: Vec<String> = relative_prefixes
+            .iter()
+            .map(|p| {
+                p.trim_start_matches('/')
+                    .trim_end_matches('/')
+                    .replace('\\', "/")
+            })
+            .filter(|p| !p.is_empty())
+            .collect();
+        if prefixes.is_empty() {
+            return Ok(());
+        }
+        let set = load_humanized_set(std::path::Path::new(&vault));
+        let mut changed = false;
+        let kept: HashSet<String> = set
+            .into_iter()
+            .filter(|entry| {
+                let drop = prefixes
+                    .iter()
+                    .any(|p| entry == p || entry.starts_with(&format!("{}/", p)));
+                if drop {
+                    changed = true;
+                }
+                !drop
+            })
+            .collect();
+        if !changed {
+            return Ok(());
+        }
+        write_humanized_set(&vault, &kept)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2427,6 +2608,10 @@ pub fn run() {
             rename_in_deny,
             remove_prefix_from_deny,
             remove_from_deny,
+            read_humanized,
+            add_to_humanized,
+            rename_in_humanized,
+            remove_prefix_from_humanized,
             notes_read,
             notes_append,
             notes_write_all,
