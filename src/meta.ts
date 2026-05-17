@@ -59,7 +59,7 @@ export async function saveVaultNorthStar(vault: string, contents: string): Promi
 function formatNorthStarBlock(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) return "";
-  return `## Vault north star\n\nThe user has declared this brief for the vault you're working in. Treat it as load-bearing — it tells you what kind of help the user wants here (tutor / co-engineer / from-scratch / etc.). When the brief conflicts with your default behavior, the brief wins.\n\n${trimmed}`;
+  return `## Vault north star\n\nThe user has declared this brief for the vault you're working in. Treat it as load-bearing — it tells you what kind of help the user wants here (tutor / co-engineer / from-scratch / etc.). When the brief conflicts with your default behavior, the brief wins.\n\nThe brief lives at \`<vault>/.vault-chat/north-star.md\`. If the user asks you to update, append to, or revise it, edit that file directly with the Edit or Write tool — the modal in the titlebar reads from the same place and will reflect your changes when reopened.\n\n${trimmed}`;
 }
 
 export function northStarPromptBlock(text: string): string {
