@@ -1,7 +1,12 @@
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { buildModel, findModel, DEFAULT_MODEL_ID } from "./providers";
 import { buildTools } from "./tools";
-import { getMetaVaultPath } from "./meta";
+import { getMetaVaultPath, northStarPromptBlock } from "./meta";
+
+function prependNorthStar(base: string, northStar?: string): string {
+  const block = northStarPromptBlock(northStar ?? "");
+  return block ? `${block}\n\n${base}` : base;
+}
 
 const SYSTEM = `You are an inline editor inside a text/code file. The user presses Ctrl+K and gives you an instruction plus context from the surrounding file.
 
@@ -33,6 +38,9 @@ export type InlineEditParams = {
    *  — prevents the agent from asking where a loose image came from. */
   extraImages?: CapturedExtra[];
   abortSignal?: AbortSignal;
+  /** Per-vault north-star brief, prepended to the system prompt so the
+   *  inline editor honors the vault's declared mode. */
+  northStar?: string;
 };
 
 export type CapturedExtra = {
@@ -90,7 +98,7 @@ export async function* runInlineEdit(
 
   const result = streamText({
     model,
-    system: SYSTEM,
+    system: prependNorthStar(SYSTEM, p.northStar),
     messages,
     abortSignal: p.abortSignal,
   });
@@ -275,7 +283,7 @@ export async function* runInlineAsk(
 
   const result = streamText({
     model,
-    system: ASK_SYSTEM,
+    system: prependNorthStar(ASK_SYSTEM, p.northStar),
     messages,
     tools: tools as any,
     stopWhen: stepCountIs(8),

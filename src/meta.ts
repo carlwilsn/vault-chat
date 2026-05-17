@@ -33,6 +33,39 @@ export async function loadMetaSystemPrompt(): Promise<string> {
   }
 }
 
+/** Read the per-vault north-star brief (the user's declaration of
+ *  what the vault is for). Stored at <vault>/.vault-chat/north-star.md.
+ *  Prepended to every agent system prompt (chat, voice, inline) so the
+ *  agent enters every turn pre-briefed on the vault's purpose. Returns
+ *  "" when the file is missing or no vault is open. */
+export async function loadVaultNorthStar(vault: string | null): Promise<string> {
+  if (!vault) return "";
+  try {
+    return await invoke<string>("read_text_file", {
+      path: `${vault}/.vault-chat/north-star.md`,
+    });
+  } catch {
+    return "";
+  }
+}
+
+export async function saveVaultNorthStar(vault: string, contents: string): Promise<void> {
+  await invoke("write_text_file", {
+    path: `${vault}/.vault-chat/north-star.md`,
+    contents,
+  });
+}
+
+function formatNorthStarBlock(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  return `## Vault north star\n\nThe user has declared this brief for the vault you're working in. Treat it as load-bearing — it tells you what kind of help the user wants here (tutor / co-engineer / from-scratch / etc.). When the brief conflicts with your default behavior, the brief wins.\n\n${trimmed}`;
+}
+
+export function northStarPromptBlock(text: string): string {
+  return formatNorthStarBlock(text);
+}
+
 /** Read the voice-mode personality prompt from the meta vault.
  *  voice.md is the user-editable header that controls how the voice
  *  agent talks (tone, length, persona, speech rules). Returns ""

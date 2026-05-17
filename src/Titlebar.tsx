@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, History, RefreshCw, StickyNote, Mic } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, History, RefreshCw, StickyNote, Mic, Compass } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
@@ -13,6 +13,7 @@ import {
 } from "./voice-elevenlabs";
 import { VoiceCockpit } from "./VoiceCockpit";
 import { HistoryModal } from "./HistoryModal";
+import { NorthStarModal } from "./NorthStarModal";
 
 export function Titlebar() {
   const {
@@ -34,6 +35,7 @@ export function Titlebar() {
     voiceMode,
   } = useStore();
   const [maximized, setMaximized] = useState(false);
+  const [northStarOpen, setNorthStarOpen] = useState(false);
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const [hiddenLines, setHiddenLines] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -291,6 +293,18 @@ export function Titlebar() {
           <Terminal className="h-3.5 w-3.5" />
         </button>
         <button
+          onClick={() => setNorthStarOpen(true)}
+          disabled={!vaultPath}
+          className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1 disabled:opacity-40 disabled:cursor-not-allowed"
+          title={
+            vaultPath
+              ? "North star — declare what this vault is for"
+              : "North star (open a vault first)"
+          }
+        >
+          <Compass className="h-3.5 w-3.5" />
+        </button>
+        <button
           onClick={() => setShowSettings(!showSettings)}
           className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1"
           title="Settings"
@@ -383,6 +397,11 @@ export function Titlebar() {
       </div>
     )}
     <HistoryModal open={showHistory} onClose={() => setShowHistory(false)} />
+    <NorthStarModal
+      vault={vaultPath}
+      open={northStarOpen}
+      onClose={() => setNorthStarOpen(false)}
+    />
     </>
   );
 }

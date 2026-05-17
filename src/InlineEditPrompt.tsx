@@ -19,6 +19,7 @@ import {
   stripCodeFence,
   type InlineTurn,
 } from "./inlineEdit";
+import { loadVaultNorthStar } from "./meta";
 
 const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
 
@@ -96,7 +97,17 @@ export function InlineEditPrompt({
   const files = useStore((s) => s.files);
   const currentFile = useStore((s) => s.currentFile);
   const openNoteComposer = useStore((s) => s.openNoteComposer);
-  const [mode, setMode] = useState<InlineEditMode>(initialMode);
+  const [mode, setMode] = useState<InlineEditMode>(askOnly ? "ask" : initialMode);
+  const northStarRef = useRef<string>("");
+  useEffect(() => {
+    let cancelled = false;
+    loadVaultNorthStar(vaultPath).then((s) => {
+      if (!cancelled) northStarRef.current = s;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultPath]);
   const [prompt, setPrompt] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [thinking, setThinking] = useState(false);
@@ -344,6 +355,7 @@ export function InlineEditPrompt({
           language: request.language,
           priorTurns: nextPrior,
           extraImages,
+          northStar: northStarRef.current,
           abortSignal: ac.signal,
         })) {
           acc += chunk;
@@ -376,6 +388,7 @@ export function InlineEditPrompt({
           priorTurns: nextPrior,
           extraImages,
           chatPaneHistory,
+          northStar: northStarRef.current,
           abortSignal: ac.signal,
         })) {
           if (ev.kind === "text") {

@@ -206,6 +206,7 @@ export function MonacoEditor({
         <InlineEditPrompt
           request={inlineEdit}
           initialMode={inlineEdit.mode}
+          askOnly={isHumanized}
           onAccept={acceptInlineEdit}
           onCancel={cancelInlineEdit}
         />

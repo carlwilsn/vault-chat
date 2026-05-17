@@ -5,7 +5,7 @@ import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./provi
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
-import { loadMetaSystemPrompt, loadMetaTools, getMetaVaultPath } from "./meta";
+import { loadMetaSystemPrompt, loadMetaTools, getMetaVaultPath, loadVaultNorthStar, northStarPromptBlock } from "./meta";
 
 export type TokenUsage = {
   prompt: number;
@@ -62,12 +62,13 @@ export async function runAgent(params: {
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey);
 
-    const [sessionContext, skills, metaSystem, metaTools, metaPath] = await Promise.all([
+    const [sessionContext, skills, metaSystem, metaTools, metaPath, northStar] = await Promise.all([
       loadSessionContext(vault),
       loadSkills(vault),
       loadMetaSystemPrompt(),
       loadMetaTools(),
       getMetaVaultPath().catch(() => null),
+      loadVaultNorthStar(vault),
     ]);
 
     const { body: expandedMessage } = expandSkillInvocation(userMessage, skills);
@@ -87,10 +88,13 @@ export async function runAgent(params: {
       ? `\n## Voice mode\n\nThe user is speaking to you and listening to your replies via text-to-speech. Your output IS audio.\n\n- Keep replies short and conversational — like talking to a friend, not writing a doc. A few sentences usually beats paragraphs.\n- Plain prose only: no markdown formatting (no \`**bold**\`, \`*italic*\`, \`#\` headers, \`-\` bullets, code fences) for spoken content. They get pronounced literally and sound bad.\n- No emoji.\n- "Read this to me" / "what does this say" means: call Read (or PdfExtract for PDFs), then speak the content as natural prose. You CAN read content aloud — your text becomes audio. Don't say "I can't do audio."\n- If the user is following along with a document (the active-file context will be included on their turn), assume their question is about that document unless they say otherwise.\n- For things that genuinely need visual presentation (long code, big tables), say so briefly and write to a file with Write — don't dump the raw content into the voice channel.`
       : "";
 
+    const northStarBlock = northStarPromptBlock(northStar);
+
     const system = [
       baseSystem,
       `\nVault root: ${vault}`,
       `\n${shellNote}`,
+      northStarBlock ? `\n${northStarBlock}` : "",
       sessionContext ? `\n${sessionContext}` : "",
       skills.length ? `\n${skillPromptIndex(skills)}` : "",
       metaToolNames.length

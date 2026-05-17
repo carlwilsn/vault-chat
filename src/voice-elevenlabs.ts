@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./store";
 import { buildNote } from "./notes";
 import { gitCommitAll } from "./git";
-import { loadMetaVoicePrompt } from "./meta";
+import { loadMetaVoicePrompt, loadVaultNorthStar, northStarPromptBlock } from "./meta";
 import { applyNotebookEdit, extractPdfText, stripNotebook, assertCanWrite } from "./tools";
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
@@ -474,7 +474,8 @@ export async function startElevenLabsSession(): Promise<void> {
   // string when the file is missing → buildSystemPrompt falls back
   // to the built-in default header.
   const customHeader = await loadMetaVoicePrompt();
-  const systemPrompt = buildSystemPrompt(state, customHeader);
+  const northStar = await loadVaultNorthStar(state.vaultPath);
+  const systemPrompt = buildSystemPrompt(state, customHeader, northStar);
   const dynamicVariables = buildDynamicVariables(state);
 
   try {
@@ -1024,6 +1025,7 @@ function buildVaultIndex(
 function buildSystemPrompt(
   state: ReturnType<typeof useStore.getState>,
   customHeader: string,
+  northStar: string,
 ): string {
   const vault = state.vaultPath ?? "(no vault)";
   const recentHistory = formatRecentHistory(state.messages, 32);
@@ -1031,6 +1033,7 @@ function buildSystemPrompt(
     ? "Follow-along is on. The active document and viewport are in dynamic variables and will refresh via contextual updates as the user scrolls."
     : "Follow-along is off. The user is not asking about a specific document unless they name one.";
   const header = customHeader.trim() || DEFAULT_VOICE_PROMPT_HEADER;
+  const northStarBlock = northStarPromptBlock(northStar);
   const vaultIndex = buildVaultIndex(state);
   const gemini = isGeminiLlm(getCurrentLlm());
   // For Gemini the PDF blob is in the multimodal context — no
@@ -1045,6 +1048,7 @@ function buildSystemPrompt(
     "",
     `Vault root (absolute): ${vault}`,
     "",
+    northStarBlock ? `${northStarBlock}\n` : "",
     "Tools available to you:",
     "",
     "Reading & navigating files:",
