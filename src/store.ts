@@ -8,7 +8,6 @@ import { readNotes, appendNote, writeAllNotes } from "./notes";
 import { formatNote } from "./notes-format";
 import { findModel } from "./providers";
 import { keychainGet, keychainSet, keychainDelete, KEY } from "./keychain";
-import { testGithubToken } from "./feedback";
 import {
   fetchAllCatalog,
   loadCatalogFromLocalStorage,
@@ -120,7 +119,7 @@ const newPaneId = () =>
     : `p_${Math.random().toString(36).slice(2)}`);
 
 type ApiKeys = Partial<Record<ProviderId, string>>;
-export type ServiceKeys = { tavily?: string; github_pat?: string; elevenlabs?: string };
+export type ServiceKeys = { tavily?: string; elevenlabs?: string };
 
 const MODEL_STORAGE = "vault_chat_model";
 const THEME_STORAGE = "vault_chat_theme";
@@ -197,13 +196,12 @@ async function fetchAllFromKeychain(): Promise<{
   apiKeys: ApiKeys;
   serviceKeys: ServiceKeys;
 }> {
-  const [anthropic, openai, google, openrouter, tavily, github_pat, elevenlabs] = await Promise.all([
+  const [anthropic, openai, google, openrouter, tavily, elevenlabs] = await Promise.all([
     keychainGet(KEY.anthropic),
     keychainGet(KEY.openai),
     keychainGet(KEY.google),
     keychainGet(KEY.openrouter),
     keychainGet(KEY.tavily),
-    keychainGet(KEY.github_pat),
     keychainGet(KEY.elevenlabs),
   ]);
   const apiKeys: ApiKeys = {};
@@ -213,7 +211,6 @@ async function fetchAllFromKeychain(): Promise<{
   if (openrouter) apiKeys.openrouter = openrouter;
   const serviceKeys: ServiceKeys = {};
   if (tavily) serviceKeys.tavily = tavily;
-  if (github_pat) serviceKeys.github_pat = github_pat;
   if (elevenlabs) serviceKeys.elevenlabs = elevenlabs;
   return { apiKeys, serviceKeys };
 }
@@ -242,7 +239,6 @@ async function migrateLocalStorageKeys(): Promise<void> {
     if (rawService) {
       const parsed = JSON.parse(rawService) as ServiceKeys;
       if (parsed.tavily) await keychainSet(KEY.tavily, parsed.tavily);
-      if (parsed.github_pat) await keychainSet(KEY.github_pat, parsed.github_pat);
       localStorage.removeItem(OLD_SERVICE);
     }
   } catch (e) {
@@ -257,12 +253,6 @@ export async function hydrateKeychain(): Promise<void> {
   await migrateLocalStorageKeys();
   const { apiKeys, serviceKeys } = await fetchAllFromKeychain();
   useStore.setState({ apiKeys, serviceKeys });
-  // Resolve the GitHub PAT to its login so the feedback popup knows
-  // whether the current user is the project owner. Background only —
-  // boot must not block on a network call.
-  if (serviceKeys.github_pat) {
-    void resolveGithubLogin(serviceKeys.github_pat);
-  }
   // Seed the live model catalog from last session's cache so the
   // dropdown isn't empty on boot.
   const cached = loadCatalogFromLocalStorage();
@@ -273,15 +263,6 @@ export async function hydrateKeychain(): Promise<void> {
     // New install with keys already in the keychain (e.g. migrated):
     // kick off a background refresh so the dropdown populates.
     void useStore.getState().refreshCatalog();
-  }
-}
-
-async function resolveGithubLogin(token: string): Promise<void> {
-  try {
-    const login = await testGithubToken(token);
-    useStore.setState({ githubLogin: login });
-  } catch {
-    useStore.setState({ githubLogin: undefined });
   }
 }
 
@@ -319,11 +300,6 @@ type State = {
   messages: ChatMessage[];
   apiKeys: ApiKeys;
   serviceKeys: ServiceKeys;
-  // Resolved GitHub login of the configured PAT (undefined if no PAT
-  // or the PAT is invalid/unreachable). Used by FeedbackPopup to gate
-  // composition on `login === VAULT_CHAT_OWNER` — friends running the
-  // app see an "email Carl" panel instead of a broken submit flow.
-  githubLogin?: string;
   catalog: ModelSpec[];
   catalogRefreshing: boolean;
   catalogErrors: Partial<Record<ProviderId, string>>;
@@ -445,16 +421,6 @@ type State = {
     initialAnchors?: import("./notes").NoteAnchor[];
     initialTurns?: import("./notes").NoteTurn[];
   };
-  // Feedback composer — same anchor + image plumbing as notes, but
-  // submits a GitHub issue (label `auto-fix:queued`) instead of writing
-  // to notes.jsonl. The cloud auto-fix agent picks queued issues up
-  // nightly and lands fixes on main.
-  feedbackComposer: {
-    open: boolean;
-    initialDraft?: string;
-    initialAnchors?: import("./notes").NoteAnchor[];
-  };
-  feedbackCapturePending: boolean;
   // Rolling buffer of finished conversations, capped to the last
   // SAVED_CHATS_MAX. Auto-snapshotted whenever the user clears or
   // loads another saved chat. UI shows entries matching the current
@@ -549,16 +515,6 @@ type State = {
     initialTurns?: import("./notes").NoteTurn[];
   }) => void;
   closeNoteComposer: () => void;
-  openFeedbackComposer: (payload?: {
-    initialDraft?: string;
-    initialAnchors?: import("./notes").NoteAnchor[];
-  }) => void;
-  closeFeedbackComposer: () => void;
-  stashFeedbackForCapture: (payload: {
-    draft: string;
-    anchors: import("./notes").NoteAnchor[];
-  }) => void;
-  setFeedbackCapturePending: (b: boolean) => void;
   resetStreaming: () => void;
   applyChatState: (s: {
     vaultPath: string | null;
@@ -639,8 +595,6 @@ export const useStore = create<State>((set) => ({
   chatPaneLastCapture: null,
   editorSelection: null,
   noteComposer: { open: false },
-  feedbackComposer: { open: false },
-  feedbackCapturePending: false,
   savedChats: loadSavedChats(),
 
   setVault: (p) =>
@@ -1002,18 +956,13 @@ export const useStore = create<State>((set) => ({
     const keyName =
       name === "tavily"
         ? KEY.tavily
-        : name === "github_pat"
-          ? KEY.github_pat
-          : name === "elevenlabs"
-            ? KEY.elevenlabs
-            : null;
+        : name === "elevenlabs"
+          ? KEY.elevenlabs
+          : null;
     if (keyName) {
       keychainSet(keyName, k).catch((e) =>
         console.error(`[keys] keychain set ${name} failed:`, e),
       );
-    }
-    if (name === "github_pat") {
-      void resolveGithubLogin(k);
     }
   },
   clearServiceKey: (name) => {
@@ -1025,18 +974,13 @@ export const useStore = create<State>((set) => ({
     const keyName =
       name === "tavily"
         ? KEY.tavily
-        : name === "github_pat"
-          ? KEY.github_pat
-          : name === "elevenlabs"
-            ? KEY.elevenlabs
-            : null;
+        : name === "elevenlabs"
+          ? KEY.elevenlabs
+          : null;
     if (keyName) {
       keychainDelete(keyName).catch((e) =>
         console.error(`[keys] keychain delete ${name} failed:`, e),
       );
-    }
-    if (name === "github_pat") {
-      set({ githubLogin: undefined });
     }
   },
   refreshCatalog: async () => {
@@ -1297,25 +1241,6 @@ export const useStore = create<State>((set) => ({
       },
     }),
   closeNoteComposer: () => set({ noteComposer: { open: false } }),
-  openFeedbackComposer: (payload) =>
-    set({
-      feedbackComposer: {
-        open: true,
-        initialDraft: payload?.initialDraft,
-        initialAnchors: payload?.initialAnchors,
-      },
-    }),
-  closeFeedbackComposer: () => set({ feedbackComposer: { open: false } }),
-  stashFeedbackForCapture: (payload) =>
-    set({
-      feedbackComposer: {
-        open: false,
-        initialDraft: payload.draft,
-        initialAnchors: payload.anchors,
-      },
-      feedbackCapturePending: true,
-    }),
-  setFeedbackCapturePending: (b) => set({ feedbackCapturePending: b }),
   resetStreaming: () => {
     cancelStreamFlush();
     cancelReasoningFlush();

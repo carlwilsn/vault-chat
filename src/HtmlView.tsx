@@ -175,11 +175,10 @@ export function HtmlView({ content }: { content: string }) {
         // Marquee output is owned by whichever popup it feeds. Don't
         // stash in lastCapture — Ctrl+N stays vault-context-only.
         const store = useStore.getState();
-        if ((store.noteCapturePending || store.feedbackCapturePending) && curPath) {
+        if (store.noteCapturePending && curPath) {
           // HTML doesn't snapshot pixels — just pipe the selection text
           // into the composer's primary anchor and come back.
-          const isFeedback = store.feedbackCapturePending;
-          const stashed = isFeedback ? store.feedbackComposer : store.noteComposer;
+          const stashed = store.noteComposer;
           const prev = stashed.initialAnchors ?? [];
           const hasPrimary = prev.some((a) => a.primary);
           const updated = prev.length > 0
@@ -199,20 +198,12 @@ export function HtmlView({ content }: { content: string }) {
                   primary: true,
                 },
               ];
-          if (isFeedback) {
-            store.openFeedbackComposer({
-              initialDraft: stashed.initialDraft,
-              initialAnchors: anchors,
-            });
-            store.setFeedbackCapturePending(false);
-          } else {
-            store.openNoteComposer({
-              initialDraft: stashed.initialDraft,
-              initialAnchors: anchors,
-              initialTurns: (stashed as typeof store.noteComposer).initialTurns,
-            });
-            store.setNoteCapturePending(false);
-          }
+          store.openNoteComposer({
+            initialDraft: stashed.initialDraft,
+            initialAnchors: anchors,
+            initialTurns: stashed.initialTurns,
+          });
+          store.setNoteCapturePending(false);
           return;
         }
         setInlineAsk({

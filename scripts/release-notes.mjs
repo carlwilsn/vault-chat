@@ -49,7 +49,7 @@ Rules:
 - Output ONLY bullets starting with "- ", no preamble or heading.
 - Group related commits into a single bullet when they describe one user-visible change.
 - Skip CI, build, workflow, scripts, version bumps, and other plumbing the user doesn't see.
-- Each bullet under 80 characters, plain English, no commit prefixes like "feedback(#45):" or "implementer:".
+- Each bullet under 80 characters, plain English, no commit prefixes like "fix:" or "feat:".
 - If a commit fixes a bug the user reported, lead with "Fixed" or "Fix".
 - 6 bullets max. If there's truly nothing user-facing, output a single bullet "- Internal improvements".
 

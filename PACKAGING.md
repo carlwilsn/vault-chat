@@ -3,13 +3,12 @@
 vault-chat ships as a packaged Tauri app with auto-updates. Once set up, the
 loop is fully hands-off:
 
-1. You file feedback or talk to the cloud agent.
-2. Cloud agent commits fixes directly to `main` (no PRs — you don't review).
-3. **Every morning at 7am EDT, the `ship` workflow** wakes up, sees there
-   are new commits since the last release, bumps the patch version, builds
-   + signs the Windows installer, and publishes a GitHub Release with the
-   updater manifest.
-4. Installed app sees the update on next launch and offers an "Install &
+1. Commits land on `main`.
+2. **The `ship` workflow** wakes on push (or every morning at 7am EDT), sees
+   there are new commits since the last release, bumps the patch version,
+   builds + signs the Windows installer, and publishes a GitHub Release
+   with the updater manifest.
+3. Installed app sees the update on next launch and offers an "Install &
    restart" prompt (the Claude-branded card in the bottom-right).
 
 If nothing changed overnight, the workflow no-ops. No empty releases, no

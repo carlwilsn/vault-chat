@@ -16,8 +16,8 @@ on:
   push:
     branches: [main]
     # Only ship when something that actually goes into the bundled app
-    # changes. Workflow tweaks, READMEs, the meta-tools-staging area,
-    # and feedback images don't justify a 15-minute build.
+    # changes. Workflow tweaks, READMEs, and the meta-tools-staging
+    # area don't justify a 15-minute build.
     paths:
       - "src/**"
       - "src-tauri/**"
@@ -29,10 +29,10 @@ on:
       - "tsconfig.json"
   workflow_dispatch:
 
-# Coalesce a flurry of pushes (e.g. the auto-fix agent landing four
-# fixes back-to-back) into a single build. cancel-in-progress kills the
-# running build when a fresh commit arrives so we always ship the tip
-# of main rather than a stale interim state.
+# Coalesce a flurry of pushes (e.g. several commits back-to-back) into
+# a single build. cancel-in-progress kills the running build when a
+# fresh commit arrives so we always ship the tip of main rather than a
+# stale interim state.
 concurrency:
   group: ship
   cancel-in-progress: true

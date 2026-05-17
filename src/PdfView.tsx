@@ -693,9 +693,9 @@ export function PdfView({ path, relPath, paneId }: { path: string; relPath?: str
             }
           : undefined;
       // Marquee output is owned by whichever popup it feeds (chat
-      // capture, edit-prompt, note, feedback, or a fresh inline-ask).
-      // Don't stash in the global lastCapture — Ctrl+N is supposed to
-      // be vault-context-only and shouldn't pick up popup leftovers.
+      // capture, edit-prompt, note, or a fresh inline-ask). Don't
+      // stash in the global lastCapture — Ctrl+N is supposed to be
+      // vault-context-only and shouldn't pick up popup leftovers.
       const store = useStore.getState();
       if (store.chatPaneCapturePending && image) {
         store.setChatPaneLastCapture({
@@ -715,9 +715,8 @@ export function PdfView({ path, relPath, paneId }: { path: string; relPath?: str
         store.setEditPromptCapturePending(false);
         return;
       }
-      if (store.noteCapturePending || store.feedbackCapturePending) {
-        const isFeedback = store.feedbackCapturePending;
-        const stashed = isFeedback ? store.feedbackComposer : store.noteComposer;
+      if (store.noteCapturePending) {
+        const stashed = store.noteComposer;
         const prev = stashed.initialAnchors ?? [];
         const hasPrimary = prev.some((a) => a.primary);
         const appendImage = (a: typeof prev[number]) => {
@@ -752,20 +751,12 @@ export function PdfView({ path, relPath, paneId }: { path: string; relPath?: str
                 primary: true,
               },
             ];
-        if (isFeedback) {
-          store.openFeedbackComposer({
-            initialDraft: stashed.initialDraft,
-            initialAnchors: anchors,
-          });
-          store.setFeedbackCapturePending(false);
-        } else {
-          store.openNoteComposer({
-            initialDraft: stashed.initialDraft,
-            initialAnchors: anchors,
-            initialTurns: (stashed as typeof store.noteComposer).initialTurns,
-          });
-          store.setNoteCapturePending(false);
-        }
+        store.openNoteComposer({
+          initialDraft: stashed.initialDraft,
+          initialAnchors: anchors,
+          initialTurns: stashed.initialTurns,
+        });
+        store.setNoteCapturePending(false);
         return;
       }
       setInlineAsk({
