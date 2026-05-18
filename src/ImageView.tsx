@@ -173,6 +173,15 @@ export function ImageView({ path }: { path: string }) {
       // Marquee output is owned by whichever popup it feeds. Don't
       // stash in lastCapture — Ctrl+N stays vault-context-only.
       const store = useStore.getState();
+      if (store.voiceCapturePending) {
+        store.setVoiceLastCapture({
+          imageDataUrl: image,
+          sourcePath: path,
+          sourceAnchor: null,
+        });
+        store.setVoiceCapturePending(false);
+        return;
+      }
       if (store.chatPaneCapturePending) {
         store.setChatPaneLastCapture({
           imageDataUrl: image,
@@ -255,6 +264,7 @@ export function ImageView({ path }: { path: string }) {
         s.setChatPaneCapturePending(false);
         s.setEditPromptCapturePending(false);
         s.setNoteCapturePending(false);
+        s.setVoiceCapturePending(false);
       }
     };
 

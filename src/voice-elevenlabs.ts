@@ -946,6 +946,97 @@ export function pushViewportContextDebounced(): void {
   }, SCROLL_DEBOUNCE_MS);
 }
 
+// Voice text panel uses these to send a typed reply into the live
+// session (instead of speaking aloud) and to silence the mic while
+// the panel is open. The agent still responds with TTS — only the
+// user side flips from voice to text.
+
+export function isVoiceSessionActive(): boolean {
+  return activeConversation !== null;
+}
+
+export function setVoiceMicMuted(muted: boolean): void {
+  const conv = activeConversation;
+  if (!conv) return;
+  try {
+    conv.setMicMuted(muted);
+  } catch (e) {
+    console.warn("[voice-eleven] setMicMuted failed:", e);
+  }
+}
+
+// Cut / restore the agent's TTS volume. Used by the text panel as a
+// barge-in: the moment the user has typed enough characters to count
+// as "intentionally interrupting" (>=2), we silence the agent so they
+// can finish typing in peace. The server is still on its turn — when
+// the user hits Enter, sendUserMessage triggers a real server-side
+// interruption + new turn, and we restore volume so the next reply
+// is audible.
+export function setVoiceOutputMuted(muted: boolean): void {
+  const conv = activeConversation;
+  if (!conv) return;
+  try {
+    conv.setVolume({ volume: muted ? 0 : 1 });
+  } catch (e) {
+    console.warn("[voice-eleven] setVolume failed:", e);
+  }
+}
+
+// Typed user turn. Mirrors what the SDK would emit when the user
+// finishes speaking: append to chat, signal the "thinking" gate, and
+// fire the user_message frame that triggers the agent's next turn
+// (which naturally interrupts any TTS still playing).
+export function sendVoiceUserText(text: string): boolean {
+  const conv = activeConversation;
+  if (!conv) return false;
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  try {
+    conv.sendUserMessage(trimmed);
+  } catch (e) {
+    console.warn("[voice-eleven] sendUserMessage failed:", e);
+    return false;
+  }
+  if (sessionFirstUserText === null) sessionFirstUserText = trimmed;
+  useStore.getState().appendMessage({ role: "user", content: trimmed });
+  useStore.getState().setVoiceThinking(true);
+  armThinkingSafetyTimeout();
+  return true;
+}
+
+// Typed user turn with an attached image (marquee capture). Uploads
+// the blob, then sends a multimodal_message — same path pushPdfIfNeeded
+// uses for ambient PDFs, but here it's a user turn that expects a
+// reply rather than silent context.
+export async function sendVoiceUserMultimodal(
+  text: string,
+  imageDataUrl: string,
+): Promise<boolean> {
+  const conv = activeConversation;
+  if (!conv) return false;
+  const trimmed = text.trim();
+  try {
+    const res = await fetch(imageDataUrl);
+    const blob = await res.blob();
+    if (!activeConversation || activeConversation !== conv) return false;
+    const { fileId } = await conv.uploadFile(blob);
+    if (!activeConversation || activeConversation !== conv) return false;
+    conv.sendMultimodalMessage({
+      text: trimmed || undefined,
+      fileId,
+    });
+  } catch (e) {
+    console.warn("[voice-eleven] sendVoiceUserMultimodal failed:", e);
+    return false;
+  }
+  const display = trimmed || "[image]";
+  if (sessionFirstUserText === null) sessionFirstUserText = display;
+  useStore.getState().appendMessage({ role: "user", content: display });
+  useStore.getState().setVoiceThinking(true);
+  armThinkingSafetyTimeout();
+  return true;
+}
+
 export function getInputLevels(n: number): number[] {
   if (!activeConversation) return new Array(n).fill(0);
   try {

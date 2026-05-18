@@ -700,6 +700,15 @@ export function PdfView({ path, relPath, paneId }: { path: string; relPath?: str
       // stash in the global lastCapture — Ctrl+N is supposed to be
       // vault-context-only and shouldn't pick up popup leftovers.
       const store = useStore.getState();
+      if (store.voiceCapturePending && image) {
+        store.setVoiceLastCapture({
+          imageDataUrl: image,
+          sourcePath: path,
+          sourceAnchor: sourceAnchor,
+        });
+        store.setVoiceCapturePending(false);
+        return;
+      }
       if (store.chatPaneCapturePending && image) {
         store.setChatPaneLastCapture({
           imageDataUrl: image,
@@ -793,6 +802,7 @@ export function PdfView({ path, relPath, paneId }: { path: string; relPath?: str
         s.setChatPaneCapturePending(false);
         s.setEditPromptCapturePending(false);
         s.setNoteCapturePending(false);
+        s.setVoiceCapturePending(false);
       }
     };
 

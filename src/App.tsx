@@ -9,6 +9,7 @@ import { ChatPane } from "./ChatPane";
 import { SettingsPane } from "./SettingsPane";
 import { Titlebar } from "./Titlebar";
 import { NotePopup } from "./NotePopup";
+import { VoiceTextPanel } from "./VoiceTextPanel";
 import { NotesPanel } from "./NotesPanel";
 import { UpdateBanner } from "./UpdateBanner";
 import { fileKind } from "./fileKind";
@@ -320,6 +321,7 @@ export default function App() {
         onClose={closeNoteComposer}
       />
       <NotesPanel open={showNotesPanel} onClose={() => setShowNotesPanel(false)} />
+      <VoiceTextPanel />
       <UpdateBanner />
     </div>
   );

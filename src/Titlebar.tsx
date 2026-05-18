@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, History, RefreshCw, StickyNote, Mic, Compass } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, History, RefreshCw, StickyNote, Mic, Compass, Keyboard } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
@@ -34,6 +34,8 @@ export function Titlebar() {
     setShowHistory,
     voiceMode,
   } = useStore();
+  const voiceTextPanelOpen = useStore((s) => s.voiceTextPanelOpen);
+  const setVoiceTextPanelOpen = useStore((s) => s.setVoiceTextPanelOpen);
   const [maximized, setMaximized] = useState(false);
   const [northStarOpen, setNorthStarOpen] = useState(false);
   const [hiddenOpen, setHiddenOpen] = useState(false);
@@ -241,19 +243,49 @@ export function Titlebar() {
                 <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
               )}
             </button>
-            <button
-              onClick={toggleVoice}
-              className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${
-                voiceMode ? "text-foreground" : "text-muted-foreground"
-              }`}
-              title={
-                voiceMode
-                  ? "Voice mode (on) — Ctrl+D to turn off"
-                  : "Voice mode (off) — Ctrl+D to turn on"
-              }
-            >
-              <Mic className="h-3.5 w-3.5" strokeWidth={voiceMode ? 2.5 : 2} />
-            </button>
+            <div className="relative flex items-center group">
+              <button
+                onClick={toggleVoice}
+                className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 relative z-10 bg-card ${
+                  voiceMode ? "text-foreground" : "text-muted-foreground"
+                }`}
+                title={
+                  voiceMode
+                    ? "Voice mode (on) — Ctrl+D to turn off"
+                    : "Voice mode (off) — Ctrl+D to turn on"
+                }
+              >
+                <Mic className="h-3.5 w-3.5" strokeWidth={voiceMode ? 2.5 : 2} />
+              </button>
+              {/* Keyboard slide-out: starts tucked behind the mic (lower
+                  z + translated back under it), slides out to the right
+                  on hover or whenever the panel is open. Wrapper has
+                  fixed width so the rest of the titlebar doesn't shift
+                  as the button reveals. */}
+              {voiceMode && (
+                <div
+                  className={`overflow-hidden transition-[max-width] duration-200 ease-out ${
+                    voiceTextPanelOpen ? "max-w-7" : "max-w-0 group-hover:max-w-7"
+                  }`}
+                >
+                  <button
+                    onClick={() => setVoiceTextPanelOpen(!voiceTextPanelOpen)}
+                    className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${
+                      voiceTextPanelOpen
+                        ? "text-foreground"
+                        : "text-muted-foreground"
+                    }`}
+                    title={
+                      voiceTextPanelOpen
+                        ? "Close text input"
+                        : "Type to the voice agent instead of speaking"
+                    }
+                  >
+                    <Keyboard className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
           </>
         )}
       </div>

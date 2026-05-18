@@ -407,6 +407,20 @@ type State = {
     sourcePath: string;
     sourceAnchor: string | null;
   } | null;
+  // Voice mode's typed-input panel: a floating popup that lets the
+  // user reply by text instead of speaking aloud (libraries, commute,
+  // etc.). Open ⇒ mic is muted; submitting sends a user turn into the
+  // live ElevenLabs session and the agent replies with TTS as normal.
+  voiceTextPanelOpen: boolean;
+  // Marquee capture routing for the voice text panel — same pattern as
+  // chatPaneCapturePending / chatPaneLastCapture so we don't fight the
+  // ChatPane for the same capture queue while voice mode is on.
+  voiceCapturePending: boolean;
+  voiceLastCapture: {
+    imageDataUrl: string;
+    sourcePath: string;
+    sourceAnchor: string | null;
+  } | null;
   // Current selection inside any code / monaco editor in the app.
   // Ctrl+N prefers this over window.getSelection() because
   // Monaco's selection lives outside the native browser selection
@@ -511,6 +525,9 @@ type State = {
   setEditPromptLastCapture: (cap: State["editPromptLastCapture"]) => void;
   setChatPaneCapturePending: (b: boolean) => void;
   setChatPaneLastCapture: (cap: State["chatPaneLastCapture"]) => void;
+  setVoiceTextPanelOpen: (b: boolean) => void;
+  setVoiceCapturePending: (b: boolean) => void;
+  setVoiceLastCapture: (cap: State["voiceLastCapture"]) => void;
   setEditorSelection: (sel: State["editorSelection"]) => void;
   openNoteComposer: (payload?: {
     initialDraft?: string;
@@ -596,6 +613,9 @@ export const useStore = create<State>((set) => ({
   editPromptLastCapture: null,
   chatPaneCapturePending: false,
   chatPaneLastCapture: null,
+  voiceTextPanelOpen: false,
+  voiceCapturePending: false,
+  voiceLastCapture: null,
   editorSelection: null,
   noteComposer: { open: false },
   savedChats: loadSavedChats(),
@@ -1233,6 +1253,9 @@ export const useStore = create<State>((set) => ({
   setEditPromptLastCapture: (cap) => set({ editPromptLastCapture: cap }),
   setChatPaneCapturePending: (b) => set({ chatPaneCapturePending: b }),
   setChatPaneLastCapture: (cap) => set({ chatPaneLastCapture: cap }),
+  setVoiceTextPanelOpen: (b) => set({ voiceTextPanelOpen: b }),
+  setVoiceCapturePending: (b) => set({ voiceCapturePending: b }),
+  setVoiceLastCapture: (cap) => set({ voiceLastCapture: cap }),
   setEditorSelection: (sel) => set({ editorSelection: sel }),
   openNoteComposer: (payload) =>
     set({

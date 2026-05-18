@@ -323,6 +323,7 @@ export function HtmlView({ content }: { content: string }) {
         s.setChatPaneCapturePending(false);
         s.setEditPromptCapturePending(false);
         s.setNoteCapturePending(false);
+        s.setVoiceCapturePending(false);
       }
     };
 
