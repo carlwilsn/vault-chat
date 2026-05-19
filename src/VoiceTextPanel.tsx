@@ -9,6 +9,7 @@ import {
   setVoiceOutputMuted,
   sendVoiceUserText,
   sendVoiceUserMultimodal,
+  sendVoiceTypingHint,
 } from "./voice-elevenlabs";
 
 // Plug-replacement for talking back to the voice agent: a floating
@@ -59,15 +60,32 @@ export function VoiceTextPanel() {
   // doesn't want ambient room noise treated as speech. On close we
   // unmute (and unmute output too, belt-and-suspenders) so a hand-off
   // back to voice picks up immediately.
+  //
+  // Also tell the agent we're typing. Without the heads-up it reads
+  // the muted silence as a drop-off and escalates to end_call after
+  // three check-ins.
   useEffect(() => {
     if (!open) return;
     if (!isVoiceSessionActive()) return;
     setVoiceMicMuted(true);
+    sendVoiceTypingHint("opened");
     return () => {
       setVoiceMicMuted(false);
       setVoiceOutputMuted(false);
     };
   }, [open]);
+
+  // Re-send the hint if the user's drafting drags on. The first hint
+  // arrived before they started writing — by the time they're 90s in
+  // on a long question the agent may have drifted back toward filling
+  // silence. Resets on every keystroke so it only fires during a
+  // genuine long pause inside the panel.
+  useEffect(() => {
+    if (!open) return;
+    if (!isVoiceSessionActive()) return;
+    const id = setTimeout(() => sendVoiceTypingHint("still-typing"), 60_000);
+    return () => clearTimeout(id);
+  }, [open, text]);
 
   // Barge-in via typing: once the draft crosses 2 characters, the
   // user is clearly intending to take the turn — cut the agent's TTS

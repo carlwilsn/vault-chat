@@ -951,6 +951,26 @@ export function pushViewportContextDebounced(): void {
 // the panel is open. The agent still responds with TTS — only the
 // user side flips from voice to text.
 
+// Heads-up to the agent that we're composing a typed reply. Without
+// this, the agent reads the muted-mic silence as a drop-off and
+// escalates: a single "..." → "you still there?" → "I'll assume
+// you've stepped away" → end_call. The contextual update is a system
+// message in the SDK's vocabulary — the agent sees it but doesn't
+// treat it as a user turn, so it just sits still and waits.
+export function sendVoiceTypingHint(kind: "opened" | "still-typing"): void {
+  const conv = activeConversation;
+  if (!conv) return;
+  const text =
+    kind === "opened"
+      ? "The user has opened the typed-input panel and is composing a reply. Stay silent. Do not check in, do not fill the silence, do not call end_call. Their typed message will arrive as a normal user turn — wait for it."
+      : "The user is still typing in the panel. Keep waiting silently.";
+  try {
+    conv.sendContextualUpdate(text);
+  } catch (e) {
+    console.warn("[voice-eleven] typing-hint contextual update failed:", e);
+  }
+}
+
 export function isVoiceSessionActive(): boolean {
   return activeConversation !== null;
 }
