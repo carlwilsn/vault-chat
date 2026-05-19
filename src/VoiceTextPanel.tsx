@@ -48,6 +48,13 @@ export function VoiceTextPanel() {
     sourceAnchor: string | null;
   } | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  // Tracks whether the textarea has grown beyond a single line. Drives
+  // send-button positioning: vertically centered for one-liners, glued
+  // to bottom-right once the draft wraps. Math-based "bottom-1.5"
+  // approximation drifts ~2px from the visual text center because text
+  // baseline ≠ content-box center, so we just switch positions
+  // explicitly instead.
+  const [multiLine, setMultiLine] = useState(false);
   const dragState = useRef<{ dx: number; dy: number } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -139,6 +146,10 @@ export function VoiceTextPanel() {
     const next = Math.min(TEXTAREA_MAX_H, Math.max(TEXTAREA_MIN_H, measured));
     el.style.height = `${next}px`;
     el.style.overflowY = measured > TEXTAREA_MAX_H ? "auto" : "hidden";
+    // 2px slack: scrollHeight can wobble by a pixel as the browser
+    // settles after focus / font load. Only flip to "multi-line"
+    // once we're meaningfully past one row.
+    setMultiLine(measured > TEXTAREA_MIN_H + 2);
   }, [text, open]);
 
   if (!open) return null;
@@ -304,7 +315,9 @@ export function VoiceTextPanel() {
           <button
             onClick={() => void send()}
             disabled={!canSend}
-            className="absolute right-1.5 bottom-1.5 h-6 w-6 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/60 disabled:opacity-40 disabled:cursor-not-allowed"
+            className={`absolute right-1.5 h-6 w-6 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/60 disabled:opacity-40 disabled:cursor-not-allowed ${
+              multiLine ? "bottom-1.5" : "top-1/2 -translate-y-1/2"
+            }`}
             title="Send (Enter)"
           >
             <ArrowRight className="h-4 w-4" />
