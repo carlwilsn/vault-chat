@@ -49,7 +49,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v13-one-scroll-per-turn";
+const AGENT_CONFIG_VERSION = "v14-no-checkins";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -1185,7 +1185,7 @@ function buildSystemPrompt(
     "- Before guessing or Globbing, scan the Vault file index below — it has the real relative paths.",
     "- If Read errors 'No such file', Glob('**/<filename>') first, then Read the path Glob returns.",
     "- If a Read response ends with '…[truncated]' and you need more, narrow the target — don't pretend the tail doesn't exist.",
-    "- end_call hangs up when the user clearly wraps things up ('we're done', 'thanks, bye', 'I'm good'). Don't end on ambiguous pauses.",
+    "- The user often goes silent for long stretches while reading or thinking — that is the normal mode of a study session, not a drop-off. If you are re-engaged after silence, do NOT produce a 'you still there?' / 'I'm here whenever' / 'I'll assume you've stepped away' check-in. Stay silent (a single short ack like 'mm' is acceptable, but only once). You have no way to end the call yourself; the user ends it when they're done.",
     "- If they speak while you're running a tool, briefly acknowledge ('one sec, still searching') and finish. Only abandon if they explicitly redirect.",
     "",
     `Examples for THIS vault:`,
@@ -1346,12 +1346,11 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
                   expects_response: true,
                   response_timeout_secs: 30,
                 })),
-                // Built-in system tool — lets the agent hang up the
-                // call when the user signals they're done ("bye",
-                // "we're done for now", "thanks, that's all"). No
-                // implementation needed on our side; ElevenLabs
-                // closes the WebSocket and onDisconnect fires.
-                { type: "system" as const, name: "end_call" },
+                // NB: end_call is intentionally omitted. The agent
+                // kept calling it after a few "you still there?"
+                // check-ins on long study silences. Manual mic-off
+                // + the client-side looksLikeEnd whitelist handle
+                // every real "we're done" path.
               ],
             },
           },
@@ -1372,6 +1371,16 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
           conversation: {
             max_duration_seconds: 7200,
             silence_end_call_timeout: -1,
+          },
+          // turn_timeout is the duration ElevenLabs waits on user
+          // silence before "re-engaging" the agent (prompting it for
+          // another turn — which the LLM tends to fill with "you
+          // still there?" check-ins, then escalates). Platform range
+          // is 1-30s; not disable-able. Max it out so study pauses
+          // breathe; the prompt also tells the agent to stay silent
+          // when it IS re-engaged.
+          turn: {
+            turn_timeout: 30,
           },
           // Required for sendMultimodalMessage / file uploads to reach
           // the agent's LLM. Without `enabled: true` ElevenLabs accepts

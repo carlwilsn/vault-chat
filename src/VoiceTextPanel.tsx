@@ -23,8 +23,11 @@ import {
 // handle is the lightest version of that.
 
 const PANEL_W = 360;
-const TEXTAREA_MIN_H = 36;
-const TEXTAREA_MAX_H = 200;
+// Inner textarea size — the wrapper adds its own vertical padding,
+// so this is just the content row. One line of leading-snug 13px
+// text lands at ~18px; 20px keeps placeholders from clipping.
+const TEXTAREA_MIN_H = 20;
+const TEXTAREA_MAX_H = 184;
 
 export function VoiceTextPanel() {
   const open = useStore((s) => s.voiceTextPanelOpen);
@@ -280,12 +283,12 @@ export function VoiceTextPanel() {
         </div>
       )}
 
-      {/* Textarea + trailing send button. Plain transparent button
-          (no primary fill — that read as a heavy claim on the eye for
-          a 360px panel). Vertically centered on the textarea; padding-
-          right reserves room so long lines don't slide under it. */}
+      {/* Wrapper carries the border + padding; textarea sits flat
+          inside with no inner padding. This keeps the text baseline
+          and the absolutely-positioned send button on the same
+          vertical center for the common single-line case. */}
       <div className="p-2">
-        <div className="relative">
+        <div className="relative flex items-center min-h-[40px] rounded-md border border-border bg-background pl-3 pr-9 py-2 focus-within:border-primary/60">
           <textarea
             ref={textareaRef}
             value={text}
@@ -293,7 +296,7 @@ export function VoiceTextPanel() {
             onKeyDown={onTextareaKey}
             placeholder="Type a reply…"
             spellCheck={false}
-            className="w-full resize-none rounded-md border border-border bg-background pl-2 pr-9 py-1.5 text-[13px] leading-snug outline-none focus:border-primary/60"
+            className="w-full resize-none bg-transparent border-0 p-0 text-[13px] leading-snug outline-none placeholder:text-muted-foreground"
             style={{ minHeight: TEXTAREA_MIN_H, maxHeight: TEXTAREA_MAX_H, overflowY: "hidden" }}
           />
           <button
