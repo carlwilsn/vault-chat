@@ -284,11 +284,13 @@ export function VoiceTextPanel() {
       )}
 
       {/* Wrapper carries the border + padding; textarea sits flat
-          inside with no inner padding. This keeps the text baseline
-          and the absolutely-positioned send button on the same
-          vertical center for the common single-line case. */}
+          inside with no inner padding so the text baseline lines up
+          with the send button. Button anchored to bottom-right: with
+          py-2 + h-6 button + bottom-1.5, single-line draft puts the
+          button visually centered on the row, but as the textarea
+          auto-grows the button stays glued to the bottom-right. */}
       <div className="p-2">
-        <div className="relative flex items-center min-h-[40px] rounded-md border border-border bg-background pl-3 pr-9 py-2 focus-within:border-primary/60">
+        <div className="relative rounded-md border border-border bg-background pl-3 pr-9 py-2 focus-within:border-primary/60">
           <textarea
             ref={textareaRef}
             value={text}
@@ -296,13 +298,13 @@ export function VoiceTextPanel() {
             onKeyDown={onTextareaKey}
             placeholder="Type a reply…"
             spellCheck={false}
-            className="w-full resize-none bg-transparent border-0 p-0 text-[13px] leading-snug outline-none placeholder:text-muted-foreground"
+            className="block w-full resize-none bg-transparent border-0 p-0 text-[13px] leading-snug outline-none placeholder:text-muted-foreground"
             style={{ minHeight: TEXTAREA_MIN_H, maxHeight: TEXTAREA_MAX_H, overflowY: "hidden" }}
           />
           <button
             onClick={() => void send()}
             disabled={!canSend}
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 h-6 w-6 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/60 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="absolute right-1.5 bottom-1.5 h-6 w-6 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/60 disabled:opacity-40 disabled:cursor-not-allowed"
             title="Send (Enter)"
           >
             <ArrowRight className="h-4 w-4" />
