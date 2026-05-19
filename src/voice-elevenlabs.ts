@@ -71,18 +71,6 @@ let sessionFirstUserText: string | null = null;
 // start, torn down at session end.
 let unsubscribeViewportWatch: (() => void) | null = null;
 
-// Buffered agent text awaiting audio playback. ElevenLabs fires
-// onMessage when the LLM finishes emitting tokens, which is well
-// before TTS audio drains. Appending immediately makes the chat
-// transcript race ahead of what the user actually hears — full
-// multi-paragraph responses appear in the panel while the first
-// sentence is still playing. We hold the text here and flush it
-// when audio silence is detected (TTS done) or when the user barges
-// in (so the partial-heard turn is still recorded). Reset on
-// session end. Same waitForSpeechEnd helper that ScrollTo uses
-// to gate visual changes.
-let pendingAgentMessage: string | null = null;
-
 // FIFO queue of agent messages that haven't been flushed to the chat
 // pane yet, plus a flag tracking whether a silence-wait is currently
 // in flight. Multiple agent messages in rapid succession would
@@ -96,9 +84,17 @@ let agentQueueDraining = false;
 async function drainAgentQueue(): Promise<void> {
   if (agentQueueDraining) return;
   agentQueueDraining = true;
+  // Pin the conversation we started for. If the session swaps mid-
+  // drain (disconnect → user re-toggles voice → new session), the
+  // post-await iteration would otherwise consume the new session's
+  // queued messages and append them under a stale silence-wait. Bail
+  // out instead — onDisconnect's flushAgentQueueImmediate already
+  // handled the old queue.
+  const ownerConv = activeConversation;
   try {
     while (pendingAgentQueue.length > 0) {
       await waitForSpeechEnd();
+      if (activeConversation !== ownerConv) break;
       const next = pendingAgentQueue.shift();
       if (next === undefined) break;
       useStore.getState().appendMessage({ role: "assistant", content: next });
@@ -123,16 +119,6 @@ function flushAgentQueueImmediate(): void {
 // handler for the why.
 let scrollGen = 0;
 let pendingScrollTarget: { path: string; anchor: string } | null = null;
-
-function flushPendingAgentMessage(expected?: string): void {
-  const text = pendingAgentMessage;
-  if (text === null) return;
-  // If a newer agent turn replaced the pending text before this
-  // callback fired, do nothing — the next flush will handle it.
-  if (expected !== undefined && expected !== text) return;
-  pendingAgentMessage = null;
-  useStore.getState().appendMessage({ role: "assistant", content: text });
-}
 
 // Matched to text-mode tools so the voice agent gets enough context to
 // answer questions about a real-sized file. 8k was too small for
@@ -467,7 +453,6 @@ export async function startElevenLabsSession(): Promise<void> {
   sentPdfPaths.clear();
   sessionMutationCount = 0;
   sessionFirstUserText = null;
-  pendingAgentMessage = null;
   startViewportWatch();
 
   // Load the user-editable voice header from the meta vault. Empty
@@ -504,7 +489,6 @@ export async function startElevenLabsSession(): Promise<void> {
         // Drain any agent text that was waiting for audio silence
         // before stamping the "session ended" marker — preserves
         // ordering between the last spoken turn and the end notice.
-        flushPendingAgentMessage();
         flushAgentQueueImmediate();
         useStore.getState().appendMessage({
           role: "assistant",
@@ -583,7 +567,6 @@ export async function startElevenLabsSession(): Promise<void> {
         // turn that was actually heard, and clear thinking since the
         // agent's response (if any) is no longer in flight.
         if (mode === "listening") {
-          flushPendingAgentMessage();
           flushAgentQueueImmediate();
           useStore.getState().setVoiceThinking(false);
           stopThinkingWatcher();
@@ -748,7 +731,6 @@ export async function endElevenLabsSession(): Promise<void> {
   // Commit any buffered agent text before tearing down — otherwise a
   // turn whose audio was still draining when the user hit "end" gets
   // dropped from the transcript.
-  flushPendingAgentMessage();
   flushAgentQueueImmediate();
   const conv = activeConversation;
   activeConversation = null;
@@ -762,21 +744,23 @@ export async function endElevenLabsSession(): Promise<void> {
       conv.setMicMuted(true);
     } catch {}
   }
-  // voiceMode is the source of truth for "is voice active". Set it
-  // false here for both manual click-off and the looksLikeEnd /
-  // end_call paths. onDisconnect also sets it (idempotent).
+  // Clear voice state synchronously BEFORE the async endSession()
+  // runs. Anything observing voiceMode flipping false (e.g.
+  // waitForSpeechEnd's evaluate) now sees consistent state — no
+  // window where voiceMode=false but voiceSpeaking is still true
+  // from the prior turn.
   useStore.setState({ voiceMode: false });
+  useStore.getState().setVoiceListening(false);
+  useStore.getState().setVoiceSpeaking(false);
+  useStore.getState().setVoiceConnecting(false);
+  useStore.getState().setVoiceCurrentTool(null);
+  stopViewportWatch();
   if (!conv) return;
   try {
     await conv.endSession();
   } catch (e) {
     console.warn("[voice-eleven] end session failed:", e);
   }
-  stopViewportWatch();
-  useStore.getState().setVoiceListening(false);
-  useStore.getState().setVoiceSpeaking(false);
-  useStore.getState().setVoiceConnecting(false);
-  useStore.getState().setVoiceCurrentTool(null);
 }
 
 // Gate primitive for "the agent has finished speaking this turn."
@@ -829,8 +813,18 @@ function waitForSpeechEnd(
     };
 
     const evaluate = () => {
-      const speaking = useStore.getState().voiceSpeaking;
-      if (speaking) {
+      const state = useStore.getState();
+      // Session ended (manual end / disconnect / end_call). Don't sit
+      // on the 30s hard timeout — there's no audio to wait for, and
+      // any caller still parked here is blocking work that belongs to
+      // a freshly-started next session. voiceMode is the source-of-
+      // truth flag, flipped synchronously in endElevenLabsSession and
+      // in onDisconnect.
+      if (!state.voiceMode) {
+        finish();
+        return;
+      }
+      if (state.voiceSpeaking) {
         sawSpeaking = true;
         if (armTimer) {
           clearTimeout(armTimer);
