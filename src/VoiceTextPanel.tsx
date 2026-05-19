@@ -84,15 +84,16 @@ export function VoiceTextPanel() {
     };
   }, [open]);
 
-  // Re-send the hint if the user's drafting drags on. The first hint
-  // arrived before they started writing — by the time they're 90s in
-  // on a long question the agent may have drifted back toward filling
-  // silence. Resets on every keystroke so it only fires during a
-  // genuine long pause inside the panel.
+  // Re-send the hint if the user's drafting drags on. Fires at 25s so
+  // it lands BEFORE the platform's turn_timeout (capped at 30s) would
+  // prompt the agent for another turn — the hint sits as the most
+  // recent system message when the agent is re-engaged, so "user is
+  // still typing, stay quiet" is fresh in context. Resets on every
+  // keystroke so it only fires during a genuine long pause.
   useEffect(() => {
     if (!open) return;
     if (!isVoiceSessionActive()) return;
-    const id = setTimeout(() => sendVoiceTypingHint("still-typing"), 60_000);
+    const id = setTimeout(() => sendVoiceTypingHint("still-typing"), 25_000);
     return () => clearTimeout(id);
   }, [open, text]);
 

@@ -49,7 +49,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v14-no-checkins";
+const AGENT_CONFIG_VERSION = "v15-skip-turn";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -1091,6 +1091,8 @@ export const DEFAULT_VOICE_PROMPT_HEADER = `You are vault-chat. The user is talk
 
 You're a study companion, not a tour guide. The user is in charge of the session — you respond to where they take it. Be terse. Talk like a friend who happens to know the material, not like a teaching assistant filling time. It's fine to be quiet between turns. Real conversation tolerates silence.
 
+CRITICAL — handling silence: the platform will prompt you to take a turn every ~30 seconds of user silence. This is automatic, NOT a signal that the user has left. Study sessions involve long reading and typing pauses. When you are prompted to speak but the user hasn't said anything new, call the skip_turn tool. Do not produce "you still there?" / "I'm here whenever" / "let me know when you're ready" / "I'll assume you've stepped away" filler. The user types replies in a side panel sometimes, which mutes their mic; that is not the user leaving. Only speak when the user has actually said or typed something for you to respond to.
+
 Speech rules:
 - Plain prose. No markdown — no asterisks, headers, bullets, code fences. No emoji.
 - Short answers by default. Long-form is for when the user asks for depth.
@@ -1185,7 +1187,6 @@ function buildSystemPrompt(
     "- Before guessing or Globbing, scan the Vault file index below — it has the real relative paths.",
     "- If Read errors 'No such file', Glob('**/<filename>') first, then Read the path Glob returns.",
     "- If a Read response ends with '…[truncated]' and you need more, narrow the target — don't pretend the tail doesn't exist.",
-    "- The user often goes silent for long stretches while reading or thinking — that is the normal mode of a study session, not a drop-off. If you are re-engaged after silence, do NOT produce a 'you still there?' / 'I'm here whenever' / 'I'll assume you've stepped away' check-in. Stay silent (a single short ack like 'mm' is acceptable, but only once). You have no way to end the call yourself; the user ends it when they're done.",
     "- If they speak while you're running a tool, briefly acknowledge ('one sec, still searching') and finish. Only abandon if they explicitly redirect.",
     "",
     `Examples for THIS vault:`,
@@ -1351,6 +1352,16 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
                 // check-ins on long study silences. Manual mic-off
                 // + the client-side looksLikeEnd whitelist handle
                 // every real "we're done" path.
+                //
+                // skip_turn: the actual lever for the check-in
+                // problem. turn_timeout (max 30s) is platform-
+                // enforced, so the agent gets prompted to take a
+                // turn every 30s of user silence; the prompt rule
+                // "don't produce a check-in" wasn't strong enough.
+                // With skip_turn the agent has a concrete action to
+                // take ("I have nothing to add → call skip_turn")
+                // that produces actual silence instead of filler.
+                { type: "system" as const, name: "skip_turn" },
               ],
             },
           },
