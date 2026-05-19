@@ -1,26 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Camera, X, GripHorizontal } from "lucide-react";
-
-// Inline send glyph: right across the top, down the right side, left
-// across the bottom with the arrowhead. Lucide's CornerDownLeft only
-// has two segments (down + left) — we want three (the "backwards-C"
-// shape).
-function SendGlyph({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M14 6h3a3 3 0 0 1 3 3v3a3 3 0 0 1-3 3H4" />
-      <polyline points="7 12 4 15 7 18" />
-    </svg>
-  );
-}
+import { Camera, X, GripHorizontal, ArrowUp } from "lucide-react";
+import { Button } from "./ui";
 import { useStore } from "./store";
 import { fileKind } from "./fileKind";
 import {
@@ -128,12 +108,17 @@ export function VoiceTextPanel() {
   }, [open, voiceLastCapture, setVoiceLastCapture]);
 
   // Auto-grow the textarea up to TEXTAREA_MAX_H, then scroll inside.
+  // Toggle overflow-y to hidden until we're actually capped — on
+  // Windows the scrollbar reserves visible space even when nothing
+  // overflows, which reads as a useless permanent gutter.
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "0px";
-    const next = Math.min(TEXTAREA_MAX_H, Math.max(TEXTAREA_MIN_H, el.scrollHeight));
+    const measured = el.scrollHeight;
+    const next = Math.min(TEXTAREA_MAX_H, Math.max(TEXTAREA_MIN_H, measured));
     el.style.height = `${next}px`;
+    el.style.overflowY = measured > TEXTAREA_MAX_H ? "auto" : "hidden";
   }, [text, open]);
 
   if (!open) return null;
@@ -278,9 +263,10 @@ export function VoiceTextPanel() {
         </div>
       )}
 
-      {/* Textarea with the send arrow floating bottom-right inside it.
-          Padding-right reserves space for the button so long lines don't
-          slide under it. */}
+      {/* Textarea + trailing send button, matching the main composer:
+          a real rounded primary button at bottom-right (claude-code
+          style), not an inline glyph. Padding-right reserves space so
+          long lines don't slide under it. */}
       <div className="p-2">
         <div className="relative">
           <textarea
@@ -290,17 +276,18 @@ export function VoiceTextPanel() {
             onKeyDown={onTextareaKey}
             placeholder="Type a reply…"
             spellCheck={false}
-            className="w-full resize-none rounded-md border border-border bg-background pl-2 pr-9 py-1.5 text-[13px] leading-snug outline-none focus:border-primary/60"
-            style={{ minHeight: TEXTAREA_MIN_H, maxHeight: TEXTAREA_MAX_H }}
+            className="w-full resize-none rounded-md border border-border bg-background pl-2 pr-10 py-1.5 text-[13px] leading-snug outline-none focus:border-primary/60"
+            style={{ minHeight: TEXTAREA_MIN_H, maxHeight: TEXTAREA_MAX_H, overflowY: "hidden" }}
           />
-          <button
+          <Button
+            size="icon"
             onClick={() => void send()}
             disabled={!canSend}
-            className="absolute right-1.5 bottom-1.5 h-5 w-5 flex items-center justify-center bg-transparent text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
+            className="absolute right-1.5 bottom-1.5 h-7 w-7 rounded-lg"
             title="Send (Enter)"
           >
-            <SendGlyph className="h-3.5 w-3.5" />
-          </button>
+            <ArrowUp className="h-3.5 w-3.5" />
+          </Button>
         </div>
       </div>
     </div>

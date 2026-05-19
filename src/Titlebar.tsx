@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -36,6 +36,23 @@ export function Titlebar() {
   } = useStore();
   const voiceTextPanelOpen = useStore((s) => s.voiceTextPanelOpen);
   const setVoiceTextPanelOpen = useStore((s) => s.setVoiceTextPanelOpen);
+  // The keyboard slide-out hugs the mic button, so right after the
+  // user clicks the mic to enter voice mode their cursor is sitting
+  // on top of the trigger — the button would slide out immediately,
+  // unprompted. Suppress hover-expand until the cursor has left the
+  // group at least once (or until we observe voice mode flipping on
+  // with the cursor already elsewhere, e.g. Ctrl+D).
+  const micGroupRef = useRef<HTMLDivElement | null>(null);
+  const [kbArmed, setKbArmed] = useState(false);
+  useEffect(() => {
+    if (!voiceMode) {
+      setKbArmed(false);
+      return;
+    }
+    const el = micGroupRef.current;
+    const hoveringNow = !!el && el.matches(":hover");
+    if (!hoveringNow) setKbArmed(true);
+  }, [voiceMode]);
   const [maximized, setMaximized] = useState(false);
   const [northStarOpen, setNorthStarOpen] = useState(false);
   const [hiddenOpen, setHiddenOpen] = useState(false);
@@ -243,7 +260,13 @@ export function Titlebar() {
                 <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
               )}
             </button>
-            <div className="relative flex items-center group">
+            <div
+              ref={micGroupRef}
+              className="relative flex items-center group"
+              onMouseLeave={() => {
+                if (voiceMode) setKbArmed(true);
+              }}
+            >
               <button
                 onClick={toggleVoice}
                 className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 relative z-10 bg-card ${
@@ -265,7 +288,11 @@ export function Titlebar() {
               {voiceMode && (
                 <div
                   className={`overflow-hidden transition-[max-width] duration-200 ease-out ${
-                    voiceTextPanelOpen ? "max-w-7" : "max-w-0 group-hover:max-w-7"
+                    voiceTextPanelOpen
+                      ? "max-w-7"
+                      : kbArmed
+                        ? "max-w-0 group-hover:max-w-7"
+                        : "max-w-0"
                   }`}
                 >
                   <button
