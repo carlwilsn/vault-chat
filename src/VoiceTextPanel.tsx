@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Camera, X, GripHorizontal, ArrowUp } from "lucide-react";
-import { Button } from "./ui";
+import { Camera, X, GripHorizontal, ArrowRight } from "lucide-react";
 import { useStore } from "./store";
 import { fileKind } from "./fileKind";
 import {
@@ -281,10 +280,10 @@ export function VoiceTextPanel() {
         </div>
       )}
 
-      {/* Textarea + trailing send button, matching the main composer:
-          a real rounded primary button at bottom-right (claude-code
-          style), not an inline glyph. Padding-right reserves space so
-          long lines don't slide under it. */}
+      {/* Textarea + trailing send button. Plain transparent button
+          (no primary fill — that read as a heavy claim on the eye for
+          a 360px panel). Vertically centered on the textarea; padding-
+          right reserves room so long lines don't slide under it. */}
       <div className="p-2">
         <div className="relative">
           <textarea
@@ -294,18 +293,17 @@ export function VoiceTextPanel() {
             onKeyDown={onTextareaKey}
             placeholder="Type a reply…"
             spellCheck={false}
-            className="w-full resize-none rounded-md border border-border bg-background pl-2 pr-10 py-1.5 text-[13px] leading-snug outline-none focus:border-primary/60"
+            className="w-full resize-none rounded-md border border-border bg-background pl-2 pr-9 py-1.5 text-[13px] leading-snug outline-none focus:border-primary/60"
             style={{ minHeight: TEXTAREA_MIN_H, maxHeight: TEXTAREA_MAX_H, overflowY: "hidden" }}
           />
-          <Button
-            size="icon"
+          <button
             onClick={() => void send()}
             disabled={!canSend}
-            className="absolute right-1.5 bottom-1.5 h-7 w-7 rounded-lg"
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 h-6 w-6 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/60 disabled:opacity-40 disabled:cursor-not-allowed"
             title="Send (Enter)"
           >
-            <ArrowUp className="h-3.5 w-3.5" />
-          </Button>
+            <ArrowRight className="h-4 w-4" />
+          </button>
         </div>
       </div>
     </div>
