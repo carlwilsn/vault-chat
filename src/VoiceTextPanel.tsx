@@ -9,6 +9,7 @@ import {
   sendVoiceUserText,
   sendVoiceUserMultimodal,
   sendVoiceTypingHint,
+  endElevenLabsSession,
 } from "./voice-elevenlabs";
 
 // Plug-replacement for talking back to the voice agent: a floating
@@ -268,9 +269,12 @@ export function VoiceTextPanel() {
         </button>
         <button
           onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => setOpen(false)}
+          onClick={() => {
+            setOpen(false);
+            void endElevenLabsSession();
+          }}
           className="h-5 w-5 flex items-center justify-center rounded hover:bg-accent/60 hover:text-foreground"
-          title="Close (Esc)"
+          title="End voice mode"
         >
           <X className="h-3 w-3" />
         </button>
