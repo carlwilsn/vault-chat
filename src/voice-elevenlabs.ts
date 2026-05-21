@@ -49,7 +49,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v15-skip-turn";
+const AGENT_CONFIG_VERSION = "v16-web";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -386,6 +386,44 @@ const CLIENT_TOOL_DEFINITIONS = [
         },
       },
       required: ["id"],
+    },
+  },
+  {
+    name: "WebFetch",
+    description:
+      "Fetch a URL over HTTPS and return the body as text. HTML is stripped to readable text. Use for documentation, articles, and API responses when you already know the URL. Follows redirects. Output is truncated.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        url: {
+          type: "string",
+          description: "Fully-qualified URL starting with http:// or https://.",
+        },
+        max_chars: {
+          type: "number",
+          description: "Optional cap on returned text length. Defaults to 24000 for voice mode.",
+        },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "WebSearch",
+    description:
+      "Search the web and return the top results (title, URL, snippet) plus a synthesized answer. Use when the user asks about current information or you don't know a specific URL. Prefer WebFetch if you already have the URL. Requires a Tavily API key configured in Settings.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        query: {
+          type: "string",
+          description: "The search query.",
+        },
+        max_results: {
+          type: "number",
+          description: "Optional. Default 5, max 10.",
+        },
+      },
+      required: ["query"],
     },
   },
 ];
@@ -1173,6 +1211,10 @@ function buildSystemPrompt(
     "- CreateNote saves a quick reminder when the user says 'remember', 'jot that down'. Keep notes brief.",
     "- ListNotes shows flagged items. ResolveNote closes one when it's been addressed.",
     "",
+    "Web:",
+    "- WebFetch when you have a URL — reads the page as text.",
+    "- WebSearch for current info or to find a URL. Requires a Tavily key; if missing the tool returns an error you can relay to the user.",
+    "",
     "Document context (when a file is open):",
     "- You can see the full PDF the user has open — text, equations, diagrams, layout, all of it. Answer visual questions directly. Don't claim you can't see the screen.",
     "- The viewport context tells you which page they're currently on. When they say 'this', 'that math', 'explain this' — they mean their current page, not pages you recently discussed or pages that seem related. If they want a different page they'll name it.",
@@ -1567,6 +1609,10 @@ function formatToolMarker(name: string, args: any): string {
       const snip = text.length > 50 ? text.slice(0, 47) + "…" : text;
       return `*Saved note "${snip}"*`;
     }
+    case "WebFetch":
+      return `*Fetched ${args.url ?? ""}*`;
+    case "WebSearch":
+      return `*Searched web for "${args.query ?? ""}"*`;
     default:
       return `*${name}*`;
   }
@@ -1924,6 +1970,41 @@ function buildClientToolHandlers(): Record<
           await useStore.getState().setNoteStatus(args.id, "resolved");
           sessionMutationCount++;
           return `Resolved note ${args.id}.`;
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    WebFetch: withTracking(
+      "WebFetch",
+      async (args: { url: string; max_chars?: number }) => {
+        try {
+          // Voice context is smaller than text — cap tighter by default
+          // so a long page doesn't blow the prompt budget.
+          const cap = args.max_chars ?? 24_000;
+          return await invoke<string>("http_fetch", {
+            url: args.url,
+            maxChars: cap,
+          });
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    WebSearch: withTracking(
+      "WebSearch",
+      async (args: { query: string; max_results?: number }) => {
+        const tavilyKey = useStore.getState().serviceKeys.tavily;
+        if (!tavilyKey) {
+          return "Error: WebSearch needs a Tavily API key — the user can add one in Settings.";
+        }
+        try {
+          return await invoke<string>("tavily_search", {
+            query: args.query,
+            apiKey: tavilyKey,
+            maxResults: args.max_results ?? null,
+            includeAnswer: true,
+          });
         } catch (e) {
           return `Error: ${(e as any)?.message ?? String(e)}`;
         }
