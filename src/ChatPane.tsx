@@ -30,8 +30,19 @@ const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
 // Pass data:image/… URLs through; everything else falls back to the
 // built-in sanitizer. react-markdown's default strips data: URLs as
 // unsafe, which kills images promoted from marquee asks into chat.
-const allowImageDataUrls = (url: string): string =>
-  url.startsWith("data:image/") ? url : defaultUrlTransform(url);
+//
+// Also rescue Windows absolute paths (`C:/Users/...`, `C:\Users\...`).
+// defaultUrlTransform sees the `C:` prefix as a protocol — and `c` is
+// not in its safelist (`http|https|ircs?|mailto|xmpp`) — so it strips
+// the URL to empty. That's the most common shape an agent emits for an
+// image in a local-files app: the absolute path to a PNG it just
+// generated. ChatImage handles the actual bytes-from-disk load via
+// read_binary_file, so passing the string through here is harmless.
+const allowImageDataUrls = (url: string): string => {
+  if (url.startsWith("data:image/")) return url;
+  if (/^[a-zA-Z]:[\\/]/.test(url)) return url;
+  return defaultUrlTransform(url);
+};
 
 // Render images in chat bubbles the same way MarkdownView does for
 // vault files: data:/blob:/http(s) URLs go straight to the DOM; file
