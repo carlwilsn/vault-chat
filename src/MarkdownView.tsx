@@ -31,8 +31,15 @@ import { pushViewportContextDebounced } from "./voice-elevenlabs";
 // remark-math renders $$…$$ as block (centered/large) display math only
 // when the $$ delimiters sit on their own lines with the body between
 // them. A single-line $$x^2$$ — even surrounded by blank lines — parses
-// as inline math. Reshape every $$…$$ run into the multi-line form so
-// the user always gets centered display math.
+// as inline math. For $$…$$ runs that stand alone on their line(s),
+// reshape into the multi-line form so the user gets centered display
+// math.
+//
+// Mid-line uses like `# $$N_0$$ — Computation Reference` or
+// "produces $$N_0$$ bins" are *intentionally* inline — promoting them
+// to block would mangle the surrounding heading/paragraph. Leave those
+// alone and let remark-math render them as inline math, matching the
+// behavior LiveEditor already implements via its `standsAlone` check.
 //
 // Skip code fences (``` … ``` and ~~~ … ~~~) so a `$$` inside a code
 // block isn't mistaken for math and paired with a later real `$$`,
@@ -57,7 +64,20 @@ function isolateDisplayMath(src: string): string {
   masked = masked.replace(/(^|\n)([ \t]*\|[^\n]*)/g, (_m, nl, line) => mask(line, nl));
   const transformed = masked.replace(
     /\$\$([\s\S]+?)\$\$/g,
-    (_m, body) => `\n\n$$\n${body.trim()}\n$$\n\n`,
+    (m, body, offset: number) => {
+      // Stand-alone check: opening $$ has only whitespace to the start
+      // of its line, closing $$ has only whitespace to the end of its
+      // line. Same rule LiveEditor uses to pick block vs inline math,
+      // so the two modes agree on which $$…$$ becomes display math.
+      const openLineStart = masked.lastIndexOf("\n", offset - 1) + 1;
+      const closeEnd = offset + m.length;
+      const nextNl = masked.indexOf("\n", closeEnd);
+      const closeLineEnd = nextNl === -1 ? masked.length : nextNl;
+      const leading = masked.slice(openLineStart, offset);
+      const trailing = masked.slice(closeEnd, closeLineEnd);
+      if (!/^\s*$/.test(leading) || !/^\s*$/.test(trailing)) return m;
+      return `\n\n$$\n${body.trim()}\n$$\n\n`;
+    },
   );
   return transformed.replace(/\u0000MASK(\d+)\u0000/g, (_m, i) => placeholders[Number(i)]);
 }
