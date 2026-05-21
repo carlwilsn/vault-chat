@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -32,6 +32,80 @@ const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
 // unsafe, which kills images promoted from marquee asks into chat.
 const allowImageDataUrls = (url: string): string =>
   url.startsWith("data:image/") ? url : defaultUrlTransform(url);
+
+// Render images in chat bubbles the same way MarkdownView does for
+// vault files: data:/blob:/http(s) URLs go straight to the DOM; file
+// paths get read off disk and turned into blob URLs so the Tauri
+// webview can actually display them (file:// is blocked). Relative
+// paths are resolved against the active vault root, so an agent reply
+// like `![chart](./assets/forecast.png)` or `![cap](.vault-chat/
+// captures/foo.png)` renders. Without this override, react-markdown
+// handed the raw src to the DOM and the image silently failed to load.
+const ChatImage = memo(function ChatImage({
+  src,
+  alt,
+  ...rest
+}: ComponentPropsWithoutRef<"img">) {
+  const vaultPath = useStore((s) => s.vaultPath);
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!src) return;
+    if (/^(https?:|data:|blob:)/i.test(src)) {
+      setUrl(src);
+      return;
+    }
+    const cleaned = src.replace(/^file:\/\/\/?/, "").split("#")[0].split("?")[0];
+    const isAbs = /^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned);
+    if (!isAbs && !vaultPath) return;
+    const sep = (vaultPath ?? "").includes("\\") ? "\\" : "/";
+    const resolved = isAbs
+      ? cleaned
+      : `${vaultPath}${sep}${cleaned.replace(/^\.\/+/, "")}`;
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    (async () => {
+      try {
+        const bytes = await invoke<number[]>("read_binary_file", { path: resolved });
+        if (cancelled) return;
+        const dot = resolved.lastIndexOf(".");
+        const ext = dot > 0 ? resolved.slice(dot + 1).toLowerCase() : "";
+        const mime =
+          ext === "svg"
+            ? "image/svg+xml"
+            : ext === "jpg" || ext === "jpeg"
+              ? "image/jpeg"
+              : ext === "png"
+                ? "image/png"
+                : ext === "gif"
+                  ? "image/gif"
+                  : ext === "webp"
+                    ? "image/webp"
+                    : ext === "bmp"
+                      ? "image/bmp"
+                      : ext === "ico"
+                        ? "image/x-icon"
+                        : `image/${ext || "png"}`;
+        const blob = new Blob([new Uint8Array(bytes)], { type: mime });
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      } catch (err) {
+        console.warn("[chat] image load failed:", resolved, err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [src, vaultPath]);
+
+  if (!url) {
+    return <span className="text-muted-foreground italic">[{alt || src}]</span>;
+  }
+  return <img src={url} alt={alt} {...rest} />;
+});
+
+const chatComponents = { img: ChatImage } as const;
 
 // Persist a chat-pane capture's PNG bytes to disk so the agent can
 // reference it from tools like `Write` (e.g. building a markdown file
@@ -1013,6 +1087,7 @@ const MessageBubble = memo(function MessageBubble({
             remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
             rehypePlugins={[[rehypeKatex, KATEX_OPTIONS]]}
             urlTransform={allowImageDataUrls}
+            components={chatComponents}
           >
             {stripAttachedFooter(message.content)}
           </ReactMarkdown>
@@ -1023,6 +1098,8 @@ const MessageBubble = memo(function MessageBubble({
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath]}
               rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
+              urlTransform={allowImageDataUrls}
+              components={chatComponents}
             >
               {message.content}
             </ReactMarkdown>
