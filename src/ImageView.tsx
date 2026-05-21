@@ -30,7 +30,16 @@ export function ImageView({ path }: { path: string }) {
   const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const [inlineAsk, setInlineAsk] = useState<InlineEditRequest | null>(null);
+  // Two-finger pinch zoom + pan. On Windows touchpads the webview
+  // translates a pinch into a `wheel` event with ctrlKey set; regular
+  // two-finger scroll arrives as a wheel without ctrl. State is per-file
+  // so opening a new image resets the view back to fit-to-screen.
+  const [zoom, setZoom] = useState({ scale: 1, tx: 0, ty: 0 });
+  useEffect(() => {
+    setZoom({ scale: 1, tx: 0, ty: 0 });
+  }, [path]);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,6 +72,66 @@ export function ImageView({ path }: { path: string }) {
     window.addEventListener("vc-marquee-toggle", onToggle);
     return () => window.removeEventListener("vc-marquee-toggle", onToggle);
   }, []);
+
+  // Touchpad pinch-to-zoom. The wheel listener has to be registered
+  // non-passive so preventDefault() actually stops the webview from
+  // also page-zooming or scrolling underneath us. React's onWheel
+  // attaches passive by default in some versions, so we go through
+  // addEventListener directly.
+  //
+  // Zoom math: keep the image pixel under the cursor anchored to the
+  // cursor as scale changes. Working in container-local coords with
+  // transform-origin: 0 0, an image point originally at offset (u, v)
+  // from the img's layout top-left maps to (offsetLeft + tx + u*scale,
+  // ...). Setting the new container-relative cursor equal across old
+  // and new state gives newTx = u − (u − oldTx) * (newScale/oldScale).
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const onWheel = (e: WheelEvent) => {
+      const img = imgRef.current;
+      if (!img) return;
+      if (e.ctrlKey) {
+        e.preventDefault();
+        const stageRect = stage.getBoundingClientRect();
+        const cx = e.clientX - stageRect.left;
+        const cy = e.clientY - stageRect.top;
+        // Exponential step so equal touchpad deltas produce equal
+        // multiplicative zoom — feels right whether you're at 1x or 4x.
+        const factor = Math.exp(-e.deltaY * 0.01);
+        setZoom((z) => {
+          const next = Math.max(0.2, Math.min(8, z.scale * factor));
+          const ratio = next / z.scale;
+          const u = cx - img.offsetLeft;
+          const v = cy - img.offsetTop;
+          // If we ratio'd back to 1x exactly, snap translation to 0 so
+          // the image returns to its fit-to-screen layout position.
+          if (Math.abs(next - 1) < 0.01) {
+            return { scale: 1, tx: 0, ty: 0 };
+          }
+          return {
+            scale: next,
+            tx: u - (u - z.tx) * ratio,
+            ty: v - (v - z.ty) * ratio,
+          };
+        });
+        return;
+      }
+      // Regular two-finger scroll: pan when zoomed in. Leave it alone
+      // at 1x so the rest of the app behaves normally.
+      setZoom((z) => {
+        if (z.scale <= 1) return z;
+        e.preventDefault();
+        return { ...z, tx: z.tx - e.deltaX, ty: z.ty - e.deltaY };
+      });
+    };
+    stage.addEventListener("wheel", onWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // Double-click to reset zoom — quick escape hatch when the user
+  // pinched too far in or lost the image off-screen.
+  const onDoubleClick = () => setZoom({ scale: 1, tx: 0, ty: 0 });
 
   // Crop a viewport-space rect out of the rendered image and return the
   // crop as a PNG data URL. Maps client rect → displayed-image rect →
@@ -298,13 +367,22 @@ export function ImageView({ path }: { path: string }) {
   }
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-muted/20 relative">
-      <div className="flex-1 overflow-auto flex items-center justify-center p-4 relative">
+      <div
+        ref={stageRef}
+        onDoubleClick={onDoubleClick}
+        className="flex-1 overflow-hidden flex items-center justify-center p-4 relative"
+      >
         <img
           ref={imgRef}
           src={url}
           alt={path.split("/").pop() ?? "image"}
           className="max-w-full max-h-full object-contain pointer-events-none"
           draggable={false}
+          style={{
+            transform: `translate(${zoom.tx}px, ${zoom.ty}px) scale(${zoom.scale})`,
+            transformOrigin: "0 0",
+            willChange: "transform",
+          }}
         />
         {marqueeOn && (
           <div
