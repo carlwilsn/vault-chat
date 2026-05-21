@@ -1564,17 +1564,19 @@ function relPath(path: string): string {
   return tail || path;
 }
 
-// Render a one-line italic marker per tool — verb + target only,
-// no JSON args, no result. Reads like a journal entry in the chat
-// pane. The full result still goes to console.log for debugging.
+// Render a one-line marker per tool — verb + target only, no JSON
+// args, no result. Reads like a journal entry in the chat pane. No
+// asterisks: ChatPane already wraps system messages in an italic
+// span, so literal `*` would just render as text. Full result still
+// goes to console.log for debugging.
 function formatToolMarker(name: string, args: any): string {
   switch (name) {
     case "Read":
-      return `*Read ${relPath(args.path ?? "")}*`;
+      return `Read ${relPath(args.path ?? "")}`;
     case "Write":
-      return `*Wrote ${relPath(args.path ?? "")}*`;
+      return `Wrote ${relPath(args.path ?? "")}`;
     case "Edit":
-      return `*Edited ${relPath(args.path ?? "")}*`;
+      return `Edited ${relPath(args.path ?? "")}`;
     case "NotebookEdit": {
       const verb =
         args.action === "delete"
@@ -1584,37 +1586,37 @@ function formatToolMarker(name: string, args: any): string {
             : args.action === "append"
               ? "Appended to cell"
               : "Edited cell";
-      return `*${verb} ${args.cell_index ?? "?"} in ${relPath(args.path ?? "")}*`;
+      return `${verb} ${args.cell_index ?? "?"} in ${relPath(args.path ?? "")}`;
     }
     case "ListDir":
-      return `*Listed ${relPath(args.path ?? "")}*`;
+      return `Listed ${relPath(args.path ?? "")}`;
     case "Glob":
-      return `*Searched files matching "${args.pattern ?? ""}"*`;
+      return `Searched files matching "${args.pattern ?? ""}"`;
     case "Grep":
-      return `*Searched "${args.pattern ?? ""}"*`;
+      return `Searched "${args.pattern ?? ""}"`;
     case "PdfExtract": {
       const pages = args.pages ? ` (pages ${args.pages})` : "";
-      return `*Extracted ${relPath(args.path ?? "")}${pages}*`;
+      return `Extracted ${relPath(args.path ?? "")}${pages}`;
     }
     case "ScrollTo": {
       const where = typeof args.page === "number" ? `page ${args.page}` : (args.anchor ?? "?");
-      return `*Scrolled to ${where}*`;
+      return `Scrolled to ${where}`;
     }
     case "ListNotes":
-      return `*Listed ${args.status ?? "open"} notes*`;
+      return `Listed ${args.status ?? "open"} notes`;
     case "ResolveNote":
-      return `*Resolved note ${args.id ?? ""}*`;
+      return `Resolved note ${args.id ?? ""}`;
     case "CreateNote": {
       const text = (args.text ?? "").trim();
       const snip = text.length > 50 ? text.slice(0, 47) + "…" : text;
-      return `*Saved note "${snip}"*`;
+      return `Saved note "${snip}"`;
     }
     case "WebFetch":
-      return `*Fetched ${args.url ?? ""}*`;
+      return `Fetched ${args.url ?? ""}`;
     case "WebSearch":
-      return `*Searched web for "${args.query ?? ""}"*`;
+      return `Searched web for "${args.query ?? ""}"`;
     default:
-      return `*${name}*`;
+      return name;
   }
 }
 
