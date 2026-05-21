@@ -49,7 +49,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v16-web";
+const AGENT_CONFIG_VERSION = "v17-bash";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -424,6 +424,29 @@ const CLIENT_TOOL_DEFINITIONS = [
         },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "Bash",
+    description:
+      "Execute a shell command. Runs with the vault as the working directory by default. Returns stdout, stderr, and exit code. Voice mode has a hard ~30s ceiling per tool call (ElevenLabs response timeout) — for anything longer (git clone of a big repo, training, long pip install), background it: `nohup <cmd> > /tmp/run.log 2>&1 &` then poll the log file with separate Bash calls. May be disabled by the user (returns an error explaining how to enable).",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        command: {
+          type: "string",
+          description: "The shell command to run.",
+        },
+        cwd: {
+          type: "string",
+          description: "Optional working directory. Defaults to the vault root.",
+        },
+        timeout_ms: {
+          type: "number",
+          description: "Optional timeout in milliseconds. Default 20000. Cap at ~25000 to stay under the platform tool-response ceiling.",
+        },
+      },
+      required: ["command"],
     },
   },
 ];
@@ -1215,6 +1238,10 @@ function buildSystemPrompt(
     "- WebFetch when you have a URL — reads the page as text.",
     "- WebSearch for current info or to find a URL. Requires a Tavily key; if missing the tool returns an error you can relay to the user.",
     "",
+    "Shell:",
+    "- Bash runs commands with the vault as cwd. Default timeout 20s; hard ceiling ~25s because the platform cuts off tool responses at 30s. For long-running things (cloning big repos, training runs, long installs), background with `nohup <cmd> > /tmp/run.log 2>&1 &` and poll the log file in later Bash calls.",
+    "- Bash may be disabled in settings — if it returns an error to that effect, relay it to the user instead of trying to work around it.",
+    "",
     "Document context (when a file is open):",
     "- You can see the full PDF the user has open — text, equations, diagrams, layout, all of it. Answer visual questions directly. Don't claim you can't see the screen.",
     "- The viewport context tells you which page they're currently on. When they say 'this', 'that math', 'explain this' — they mean their current page, not pages you recently discussed or pages that seem related. If they want a different page they'll name it.",
@@ -1615,6 +1642,11 @@ function formatToolMarker(name: string, args: any): string {
       return `Fetched ${args.url ?? ""}`;
     case "WebSearch":
       return `Searched web for "${args.query ?? ""}"`;
+    case "Bash": {
+      const cmd = String(args.command ?? "").trim().replace(/\s+/g, " ");
+      const snip = cmd.length > 80 ? cmd.slice(0, 77) + "…" : cmd;
+      return `$ ${snip}`;
+    }
     default:
       return name;
   }
@@ -2007,6 +2039,73 @@ function buildClientToolHandlers(): Record<
             maxResults: args.max_results ?? null,
             includeAnswer: true,
           });
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    Bash: withTracking(
+      "Bash",
+      async (args: { command: string; cwd?: string; timeout_ms?: number }) => {
+        const state = useStore.getState();
+        if (state.bashDisabled) {
+          return "Error: Bash is disabled in this app's settings. The user can enable it in Settings → Agent.";
+        }
+        const vault = state.vaultPath;
+        if (!vault) return "Error: no active vault";
+        // Mirror text-mode's best-effort path gates so the voice agent
+        // can't trivially read denylisted or humanized files via shell
+        // tricks. Same caveat as text mode: shell indirection can still
+        // smuggle these — the gate is a tripwire, not a sandbox.
+        try {
+          const denyLines = await invoke<string[]>("read_deny_lines", { vault });
+          const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
+          for (const raw of denyLines) {
+            const rel = raw.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+            if (!rel) continue;
+            if (args.command.includes(rel) || args.command.includes(`${nv}/${rel}`)) {
+              return `Refused: command references restricted path '${rel}'.`;
+            }
+          }
+        } catch {
+          // No deny file or read failed — proceed.
+        }
+        try {
+          const humanized = await invoke<string[]>("read_humanized", { vault });
+          const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
+          for (const raw of humanized) {
+            const rel = raw.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+            if (!rel) continue;
+            if (args.command.includes(rel) || args.command.includes(`${nv}/${rel}`)) {
+              return "Refused: command references a humanized file.";
+            }
+          }
+        } catch {
+          // proceed
+        }
+        // ElevenLabs caps tool response at 30s. Default 20s leaves
+        // headroom; clamp at 25s so the agent can't accidentally
+        // request a timeout that exceeds the platform ceiling.
+        const timeout = Math.min(args.timeout_ms ?? 20_000, 25_000);
+        try {
+          const result = await invoke<{
+            stdout: string;
+            stderr: string;
+            code: number;
+            timed_out: boolean;
+          }>("bash_exec", {
+            command: args.command,
+            cwd: args.cwd ?? vault,
+            timeoutMs: timeout,
+          });
+          const cap = 8_000;
+          const clip = (s: string) =>
+            s.length > cap ? s.slice(0, cap) + "\n…[truncated]" : s;
+          const parts: string[] = [];
+          parts.push(`exit: ${result.code}${result.timed_out ? " (TIMED OUT)" : ""}`);
+          if (result.stdout) parts.push(`stdout:\n${clip(result.stdout)}`);
+          if (result.stderr) parts.push(`stderr:\n${clip(result.stderr)}`);
+          return parts.join("\n");
         } catch (e) {
           return `Error: ${(e as any)?.message ?? String(e)}`;
         }
