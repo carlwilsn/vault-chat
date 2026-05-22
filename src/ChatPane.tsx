@@ -58,10 +58,13 @@ const ChatImage = memo(function ChatImage({
   ...rest
 }: ComponentPropsWithoutRef<"img">) {
   const vaultPath = useStore((s) => s.vaultPath);
+  const files = useStore((s) => s.files);
   const [url, setUrl] = useState<string | null>(null);
+  const [failedPath, setFailedPath] = useState<string | null>(null);
 
   useEffect(() => {
     if (!src) return;
+    setFailedPath(null);
     if (/^(https?:|data:|blob:)/i.test(src)) {
       setUrl(src);
       return;
@@ -70,48 +73,85 @@ const ChatImage = memo(function ChatImage({
     const isAbs = /^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned);
     if (!isAbs && !vaultPath) return;
     const sep = (vaultPath ?? "").includes("\\") ? "\\" : "/";
-    const resolved = isAbs
+    const primary = isAbs
       ? cleaned
       : `${vaultPath}${sep}${cleaned.replace(/^\.\/+/, "")}`;
+
+    // Fallback candidates for relative paths whose direct resolution
+    // misses. The common shape: the agent ran a script in a subdir of
+    // the vault, then emitted `![alt](output.png)` — relative to its
+    // cwd, not the vault root. Search the vault file index by basename
+    // and try those locations too. Cheap (single linear scan of an
+    // already-cached list) and bounded (we take at most a few hits).
+    const candidates: string[] = [primary];
+    if (!isAbs) {
+      const basename = cleaned.replace(/^\.\/+/, "").split(/[\\/]/).pop() ?? "";
+      if (basename) {
+        const hits = files
+          .filter((f) => !f.is_dir && f.name === basename)
+          .slice(0, 5)
+          .map((f) => f.path);
+        for (const h of hits) {
+          if (!candidates.includes(h)) candidates.push(h);
+        }
+      }
+    }
+
     let cancelled = false;
     let objectUrl: string | null = null;
     (async () => {
-      try {
-        const bytes = await invoke<number[]>("read_binary_file", { path: resolved });
-        if (cancelled) return;
-        const dot = resolved.lastIndexOf(".");
-        const ext = dot > 0 ? resolved.slice(dot + 1).toLowerCase() : "";
-        const mime =
-          ext === "svg"
-            ? "image/svg+xml"
-            : ext === "jpg" || ext === "jpeg"
-              ? "image/jpeg"
-              : ext === "png"
-                ? "image/png"
-                : ext === "gif"
-                  ? "image/gif"
-                  : ext === "webp"
-                    ? "image/webp"
-                    : ext === "bmp"
-                      ? "image/bmp"
-                      : ext === "ico"
-                        ? "image/x-icon"
-                        : `image/${ext || "png"}`;
-        const blob = new Blob([new Uint8Array(bytes)], { type: mime });
-        objectUrl = URL.createObjectURL(blob);
-        setUrl(objectUrl);
-      } catch (err) {
-        console.warn("[chat] image load failed:", resolved, err);
+      for (const path of candidates) {
+        try {
+          const bytes = await invoke<number[]>("read_binary_file", { path });
+          if (cancelled) return;
+          const dot = path.lastIndexOf(".");
+          const ext = dot > 0 ? path.slice(dot + 1).toLowerCase() : "";
+          const mime =
+            ext === "svg"
+              ? "image/svg+xml"
+              : ext === "jpg" || ext === "jpeg"
+                ? "image/jpeg"
+                : ext === "png"
+                  ? "image/png"
+                  : ext === "gif"
+                    ? "image/gif"
+                    : ext === "webp"
+                      ? "image/webp"
+                      : ext === "bmp"
+                        ? "image/bmp"
+                        : ext === "ico"
+                          ? "image/x-icon"
+                          : `image/${ext || "png"}`;
+          const blob = new Blob([new Uint8Array(bytes)], { type: mime });
+          objectUrl = URL.createObjectURL(blob);
+          setUrl(objectUrl);
+          return;
+        } catch {
+          // try next candidate
+        }
+      }
+      if (!cancelled) {
+        console.warn("[chat] image load failed:", primary);
+        setFailedPath(primary);
       }
     })();
     return () => {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [src, vaultPath]);
+  }, [src, vaultPath, files]);
 
   if (!url) {
-    return <span className="text-muted-foreground italic">[{alt || src}]</span>;
+    // Honest fallback: make it obvious this is a failed image load, not
+    // intentional bracket text. The old `[alt]` rendering was visually
+    // indistinguishable from a literal markdown footnote/reference and
+    // gave no signal that anything went wrong.
+    return (
+      <span className="text-muted-foreground italic text-[11.5px] border border-dashed border-border/60 rounded px-1.5 py-0.5 inline-block">
+        ⚠ image not found: {failedPath ?? src}
+        {alt ? ` (${alt})` : ""}
+      </span>
+    );
   }
   return <img src={url} alt={alt} {...rest} />;
 });
