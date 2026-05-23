@@ -127,7 +127,7 @@ export function ImageView({ path }: { path: string }) {
     };
     stage.addEventListener("wheel", onWheel, { passive: false });
     return () => stage.removeEventListener("wheel", onWheel);
-  }, []);
+  }, [url]);
 
   // Double-click to reset zoom — quick escape hatch when the user
   // pinched too far in or lost the image off-screen.
