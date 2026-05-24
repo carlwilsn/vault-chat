@@ -768,10 +768,33 @@ fn open_terminal(cwd: Option<String>) -> Result<(), String> {
 #[tauri::command]
 async fn read_text_file(path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        std::fs::read_to_string(&path).map_err(|e| e.to_string())
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        decode_text(&bytes)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn decode_text(bytes: &[u8]) -> Result<String, String> {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8(bytes[3..].to_vec())
+            .map_err(|e| format!("invalid UTF-8: {e}"));
+    }
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16(&units).map_err(|e| format!("invalid UTF-16LE: {e}"));
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16(&units).map_err(|e| format!("invalid UTF-16BE: {e}"));
+    }
+    String::from_utf8(bytes.to_vec()).map_err(|e| format!("invalid UTF-8: {e}"))
 }
 
 #[tauri::command]
