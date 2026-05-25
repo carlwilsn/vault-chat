@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { FileCode2 } from "lucide-react";
 import { PdfView } from "./PdfView";
 
@@ -41,30 +42,67 @@ export function TexView({
   const [compiling, setCompiling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const compilingRef = useRef(false);
+  // Set when a fresh edit arrives during a running compile. After the
+  // current compile finishes we kick off exactly one more so the
+  // displayed PDF eventually matches the latest source. Without this,
+  // the last edit in a burst could be dropped if it landed mid-compile.
+  const queuedRef = useRef(false);
   // Latest content goes into a ref so the compile call always reads
   // fresh source — closure capture at the effect's setup time would
   // otherwise compile a stale snapshot.
   const contentRef = useRef(content);
   contentRef.current = content;
+  const pathRef = useRef(path);
+  pathRef.current = path;
 
   const compile = async () => {
-    if (compilingRef.current) return;
+    if (compilingRef.current) {
+      // Already compiling — mark that we want a follow-up. The finally
+      // block at the bottom will fire one more compile when this one
+      // settles. Multiple edits during a single compile collapse into
+      // exactly one extra run.
+      queuedRef.current = true;
+      return;
+    }
     compilingRef.current = true;
     setCompiling(true);
     setError(null);
     try {
+      // Re-read latest source + path at the moment we actually compile,
+      // not at the time the call was scheduled. A burst of edits during
+      // the debounce window all settle before this fires.
       const res = await invoke<CompileResult>("compile_tex", {
-        sourcePath: path,
+        sourcePath: pathRef.current,
         contents: contentRef.current,
       });
       setPdfPath(res.pdf_path);
+      setError(null);
     } catch (e) {
       setError(String(e));
       setPdfPath(null);
     } finally {
       compilingRef.current = false;
       setCompiling(false);
+      if (queuedRef.current) {
+        queuedRef.current = false;
+        void compile();
+      }
     }
+  };
+
+  // Debounce wrapper: coalesces a burst of file-changed events (e.g.
+  // the agent edits one .tex three times in a single reply) into a
+  // single compile that fires once the edits go quiet. Together with
+  // queuedRef above, this gives: "burst of edits → one compile when
+  // settled; if another edit lands mid-compile, exactly one more
+  // compile when that finishes."
+  const debounceTimer = useRef<number | null>(null);
+  const requestCompile = () => {
+    if (debounceTimer.current !== null) window.clearTimeout(debounceTimer.current);
+    debounceTimer.current = window.setTimeout(() => {
+      debounceTimer.current = null;
+      void compile();
+    }, 600);
   };
 
   // Auto-compile on mount and on file switch. Toggling source → preview
@@ -76,6 +114,37 @@ export function TexView({
     void compile();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
+
+  // Listen for Tauri-side `file-changed` events fired after every
+  // text-file write. Recompile if it's our file. Covers the agent
+  // editing the open .tex during its reply *and* external edits
+  // from another editor (Obsidian, vim, etc.).
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void (async () => {
+      const off = await listen<string>("file-changed", (evt) => {
+        if (cancelled) return;
+        // Normalize separators so the Windows backslash path the agent
+        // tools hand us still matches the forward-slash path TexView
+        // received from the file tree.
+        const a = (evt.payload ?? "").replace(/\\/g, "/");
+        const b = pathRef.current.replace(/\\/g, "/");
+        if (a === b) requestCompile();
+      });
+      if (cancelled) off();
+      else unlisten = off;
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+      if (debounceTimer.current !== null) {
+        window.clearTimeout(debounceTimer.current);
+        debounceTimer.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Single source-toggle button injected into PdfView's toolbar (left
   // of the marquee). Same icon-button shape as PdfView's own controls

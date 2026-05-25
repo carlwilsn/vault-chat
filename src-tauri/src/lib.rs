@@ -2,7 +2,17 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
+use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
+
+// Fire a `file-changed` event with the absolute path. Subscribed to by
+// viewers that need to react to disk mutations they didn't initiate —
+// currently just TexView, which uses it to debounce-recompile when the
+// agent edits the .tex file backing the open preview, but the channel
+// is intentionally generic so future viewers can opt in.
+fn emit_file_changed(app: &AppHandle, path: &str) {
+    let _ = app.emit("file-changed", path.to_string());
+}
 
 const IGNORE_FILE: &str = ".vaultchatignore";
 // Sibling list to .vaultchatignore. Same line format (one relative
@@ -798,8 +808,13 @@ fn decode_text(bytes: &[u8]) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn write_text_file(path: String, contents: String) -> Result<(), String> {
+async fn write_text_file(
+    app: AppHandle,
+    path: String,
+    contents: String,
+) -> Result<(), String> {
     git_guard(&path)?;
+    let emit_path = path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(parent) = std::path::Path::new(&path).parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -807,7 +822,9 @@ async fn write_text_file(path: String, contents: String) -> Result<(), String> {
         std::fs::write(&path, contents).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    emit_file_changed(&app, &emit_path);
+    Ok(())
 }
 
 /// Prune the `<vault>/.vault-chat/captures/` folder of files whose
@@ -1013,6 +1030,7 @@ async fn delete_file(path: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn edit_text_file(
+    app: AppHandle,
     path: String,
     old_string: String,
     new_string: String,
@@ -1051,6 +1069,7 @@ async fn edit_text_file(
     let (body, count) = new_contents_lf;
     let out = if had_crlf { body.replace('\n', "\r\n") } else { body };
     std::fs::write(&path, out).map_err(|e| e.to_string())?;
+    emit_file_changed(&app, &path);
     if all {
         Ok(format!("replaced {} occurrence(s) in {}", count, path))
     } else {
