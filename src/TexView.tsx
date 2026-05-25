@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FileCode2 } from "lucide-react";
 import { PdfView } from "./PdfView";
+import { useStore } from "./store";
 
 type CompileResult = { pdf_path: string; log: string };
 
@@ -126,18 +127,52 @@ export function TexView({
   // text-file write. Recompile if it's our file. Covers the agent
   // editing the open .tex during its reply *and* external edits
   // from another editor (Obsidian, vim, etc.).
+  //
+  // Critical: re-read disk and push into the React store BEFORE
+  // triggering compile. When the agent writes the .tex, the bytes hit
+  // disk but the in-memory store (the source of `content` / contentRef)
+  // is untouched — only user edits flow through the autosave path that
+  // updates the store. Without this refresh, compile_tex would receive
+  // contentRef's stale snapshot and faithfully re-typeset the old text,
+  // producing a "new" PDF that looks identical to the previous one
+  // (the user-reported "had to click twice" symptom).
+  const paneIdRef = useRef(paneId);
+  paneIdRef.current = paneId;
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
     void (async () => {
-      const off = await listen<string>("file-changed", (evt) => {
+      const off = await listen<string>("file-changed", async (evt) => {
         if (cancelled) return;
         // Normalize separators so the Windows backslash path the agent
         // tools hand us still matches the forward-slash path TexView
         // received from the file tree.
         const a = (evt.payload ?? "").replace(/\\/g, "/");
         const b = pathRef.current.replace(/\\/g, "/");
-        if (a === b) requestCompile();
+        if (a !== b) return;
+        try {
+          const fresh = await invoke<string>("read_text_file", {
+            path: pathRef.current,
+          });
+          if (cancelled) return;
+          // Set ref directly so the very next compile (about to be
+          // scheduled below) sees the new bytes even if React hasn't
+          // re-rendered yet.
+          contentRef.current = fresh;
+          // Push into the store too, so source-mode (Monaco) and any
+          // other reader see the updated content. getState() always
+          // returns the fresh actions / current file value.
+          const store = useStore.getState();
+          const pid = paneIdRef.current;
+          if (pid) {
+            store.setPaneFile(pid, pathRef.current, fresh);
+          } else if (store.currentFile === pathRef.current) {
+            store.setCurrentFile(pathRef.current, fresh);
+          }
+        } catch (e) {
+          console.error("[tex] read-after-file-changed failed:", e);
+        }
+        requestCompile();
       });
       if (cancelled) off();
       else unlisten = off;
