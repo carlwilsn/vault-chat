@@ -10,7 +10,7 @@ import rehypeHighlight from "rehype-highlight";
 import rehypeSlug from "rehype-slug";
 import "katex/dist/katex.min.css";
 import { invoke } from "@tauri-apps/api/core";
-import { FileText, Eye, Pencil, X } from "lucide-react";
+import { FileText, Eye, Pencil, X, RefreshCw } from "lucide-react";
 import { useStore } from "./store";
 import { MonacoEditor } from "./MonacoEditor";
 import { LiveEditor } from "./LiveEditor";
@@ -290,6 +290,20 @@ export function MarkdownView({ paneId }: Props) {
   const scrollRatioRef = useRef(0);
   const viewScrollRef = useRef<HTMLDivElement | null>(null);
   const [inlineAsk, setInlineAsk] = useState<InlineEditRequest | null>(null);
+  // Mirror of TexView's compile lifecycle. Drives the header recompile
+  // button's spinner / error tint. Updated via a window event so we
+  // don't have to thread state through props or a store slice.
+  const [texCompiling, setTexCompiling] = useState(false);
+  const [texError, setTexError] = useState(false);
+  useEffect(() => {
+    const onStatus = (e: Event) => {
+      const detail = (e as CustomEvent<{ state: string }>).detail;
+      setTexCompiling(detail?.state === "compiling");
+      setTexError(detail?.state === "error");
+    };
+    window.addEventListener("vc-tex-status", onStatus);
+    return () => window.removeEventListener("vc-tex-status", onStatus);
+  }, []);
 
   useEffect(() => {
     lastSaved.current = content;
@@ -617,6 +631,23 @@ export function MarkdownView({ paneId }: Props) {
           )}
         </div>
         <div className="flex items-center gap-3">
+          {kind === "tex" && mode === "view" && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (paneId && !isActive) setActivePane(paneId);
+                window.dispatchEvent(new CustomEvent("vc-tex-recompile"));
+              }}
+              disabled={texCompiling}
+              className={`flex items-center justify-center h-5 w-5 rounded hover:bg-accent/60 transition-colors disabled:opacity-50 ${
+                texError ? "text-destructive" : "text-muted-foreground hover:text-foreground"
+              }`}
+              title={texCompiling ? "Compiling…" : "Recompile (re-run Tectonic)"}
+              draggable={false}
+            >
+              <RefreshCw className={`h-3 w-3 ${texCompiling ? "animate-spin" : ""}`} />
+            </button>
+          )}
           {showToggle && (
             <button
               onClick={(e) => {

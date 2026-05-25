@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Loader2, AlertCircle, RefreshCw } from "lucide-react";
 import { PdfView } from "./PdfView";
 
 type CompileResult = { pdf_path: string; log: string };
@@ -16,11 +15,11 @@ type CompileResult = { pdf_path: string; log: string };
 // Rust side reuses a per-document scratch directory keyed by source
 // path so the package cache and .aux state survive between compiles.
 //
-// Recompile is manual via a refresh button rather than triggered on
-// every edit: even cached compiles cost ~1-3s, and continuous
-// recompilation as the user types would feel laggier than a deliberate
-// "show me the result now" click. The .tex source is autosaved upstream
-// (MarkdownView's autosave path), so the disk copy is always fresh.
+// Recompile is manual: the parent MarkdownView header renders a refresh
+// button next to the source/preview toggle that dispatches a
+// `vc-tex-recompile` window event; this view listens for it and triggers
+// a fresh compile. Reverse channel `vc-tex-status` keeps the header's
+// spinner in sync.
 export function TexView({
   path,
   content,
@@ -41,22 +40,40 @@ export function TexView({
   // notice that the bytes on disk changed).
   const [version, setVersion] = useState(0);
   const compilingRef = useRef(false);
+  // Latest content goes into a ref so the global recompile listener
+  // (set up once on mount) always reads fresh source — the closure
+  // captured at addEventListener time would otherwise re-compile the
+  // version of `content` that was current the first time TexView
+  // mounted, ignoring every keystroke since.
+  const contentRef = useRef(content);
+  contentRef.current = content;
+  const pathRef = useRef(path);
+  pathRef.current = path;
 
   const compile = async () => {
     if (compilingRef.current) return;
     compilingRef.current = true;
     setCompiling(true);
     setError(null);
+    window.dispatchEvent(
+      new CustomEvent("vc-tex-status", { detail: { state: "compiling" } }),
+    );
     try {
       const res = await invoke<CompileResult>("compile_tex", {
-        sourcePath: path,
-        contents: content,
+        sourcePath: pathRef.current,
+        contents: contentRef.current,
       });
       setPdfPath(res.pdf_path);
       setVersion((v) => v + 1);
+      window.dispatchEvent(
+        new CustomEvent("vc-tex-status", { detail: { state: "idle" } }),
+      );
     } catch (e) {
       setError(String(e));
       setPdfPath(null);
+      window.dispatchEvent(
+        new CustomEvent("vc-tex-status", { detail: { state: "error" } }),
+      );
     } finally {
       compilingRef.current = false;
       setCompiling(false);
@@ -65,7 +82,7 @@ export function TexView({
 
   // Auto-compile on first mount and whenever the user switches to a
   // different .tex file. Subsequent edits don't auto-recompile — the
-  // refresh button or a fresh switch is the trigger.
+  // header's refresh button or a fresh switch is the trigger.
   useEffect(() => {
     setPdfPath(null);
     setError(null);
@@ -73,32 +90,16 @@ export function TexView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
 
+  // Header refresh button → window event → here.
+  useEffect(() => {
+    const onRecompile = () => void compile();
+    window.addEventListener("vc-tex-recompile", onRecompile);
+    return () => window.removeEventListener("vc-tex-recompile", onRecompile);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div className="flex-1 flex flex-col min-h-0 relative bg-muted/20">
-      <div className="sticky top-0 z-20 bg-muted/80 backdrop-blur border-b border-border/60 px-4 py-1.5 flex items-center gap-2 text-[11px] text-muted-foreground shrink-0">
-        {compiling && (
-          <span className="flex items-center gap-1.5 text-primary">
-            <Loader2 className="h-3 w-3 animate-spin" /> compiling…
-          </span>
-        )}
-        {!compiling && pdfPath && !error && (
-          <span className="text-muted-foreground">compiled</span>
-        )}
-        {!compiling && error && (
-          <span className="text-destructive flex items-center gap-1.5">
-            <AlertCircle className="h-3 w-3" /> compile failed
-          </span>
-        )}
-        <button
-          onClick={() => void compile()}
-          disabled={compiling}
-          className="ml-auto h-6 px-2 flex items-center gap-1.5 rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground disabled:opacity-40"
-          title="Recompile (re-run Tectonic)"
-        >
-          <RefreshCw className={`h-3 w-3 ${compiling ? "animate-spin" : ""}`} />
-          recompile
-        </button>
-      </div>
       {error ? (
         <div className="flex-1 overflow-auto p-4">
           <pre className="text-[11.5px] font-mono text-destructive whitespace-pre-wrap break-words">
