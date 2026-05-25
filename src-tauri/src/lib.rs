@@ -2612,9 +2612,10 @@ fn compile_tex_sync(
         .map_err(|e| format!("write {}: {}", input.display(), e))?;
 
     // Tectonic CLI: `compile <file> --outdir <dir> --keep-logs --chatter minimal`.
-    // --keep-logs leaves input.log on disk so we can show it on failure.
-    // --chatter minimal keeps stdout/stderr from drowning the diagnostic
-    // path with progress chatter.
+    // Tectonic V2 CLI: `tectonic -X compile <file> --outdir <dir> --keep-logs`.
+    // --keep-logs leaves input.log on disk so we can show its tail on
+    // failure. (`--chatter` lives on the legacy V1 entry point, not on
+    // the V2 `compile` subcommand — passing it errors out.)
     #[cfg(windows)]
     let mut cmd = {
         use std::os::windows::process::CommandExt;
@@ -2631,8 +2632,6 @@ fn compile_tex_sync(
         .arg("--outdir")
         .arg(&work_dir)
         .arg("--keep-logs")
-        .arg("--chatter")
-        .arg("minimal")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
