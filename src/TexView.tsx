@@ -41,6 +41,12 @@ export function TexView({
   const [pdfPath, setPdfPath] = useState<string | null>(null);
   const [compiling, setCompiling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Bumps on every successful compile. Used as a key suffix on PdfView
+  // so React remounts it after a recompile — Tectonic writes to a
+  // deterministic per-source scratch path, so the path string is the
+  // same string each time and PdfView's `useEffect([path])` would
+  // otherwise miss that the bytes on disk just changed.
+  const [compileGen, setCompileGen] = useState(0);
   const compilingRef = useRef(false);
   // Set when a fresh edit arrives during a running compile. After the
   // current compile finishes we kick off exactly one more so the
@@ -76,6 +82,7 @@ export function TexView({
         contents: contentRef.current,
       });
       setPdfPath(res.pdf_path);
+      setCompileGen((g) => g + 1);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -201,6 +208,7 @@ export function TexView({
   // path (not the temp PDF's) and the pane close button still works.
   return (
     <PdfView
+      key={`${pdfPath}#${compileGen}`}
       path={pdfPath}
       relPath={relPath}
       paneId={paneId}
