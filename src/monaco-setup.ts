@@ -82,6 +82,102 @@ monaco.editor.defineTheme("vault-light", {
   },
 });
 
+// Monaco's basic-languages bundle does not ship a LaTeX grammar — we
+// register a Monarch tokenizer here so .tex / .bib files get colored
+// instead of falling back to plaintext. Light pass: comments, control
+// sequences, \begin{env} / \end{env} headers, inline/display math,
+// and the usual special characters. Good enough for reading;
+// intentionally not a full lexer (no @-handling for class files, no
+// verbatim envs, etc.) — those can layer on later if they matter.
+monaco.languages.register({ id: "latex", extensions: [".tex", ".bib"] });
+monaco.languages.setMonarchTokensProvider("latex", {
+  defaultToken: "",
+  tokenPostfix: ".tex",
+  brackets: [
+    { open: "{", close: "}", token: "delimiter.curly" },
+    { open: "[", close: "]", token: "delimiter.square" },
+  ],
+  tokenizer: {
+    root: [
+      // Line comments — `%` to end of line. `\%` is a literal percent
+      // sign and handled by the command rule below (it tokens as a
+      // command), so the comment rule only fires for an unescaped %.
+      [/(^|[^\\])(%.*$)/, ["", "comment"]],
+      [/^%.*$/, "comment"],
+
+      // \begin{env} / \end{env} — color the env name as a type so
+      // documents read as "I'm entering an environment", not "I'm
+      // saying a command".
+      [/(\\(?:begin|end))(\s*)(\{)([^}]*)(\})/, [
+        "keyword.control",
+        "",
+        "delimiter.curly",
+        "type",
+        "delimiter.curly",
+      ]],
+
+      // \cite, \ref, \label, \include, \input — same shape, same idea.
+      [/(\\(?:cite|citep|citet|ref|eqref|pageref|label|include|input|usepackage|documentclass))(\s*)(\{)([^}]*)(\})/, [
+        "keyword",
+        "",
+        "delimiter.curly",
+        "string.link",
+        "delimiter.curly",
+      ]],
+
+      // Display math $$...$$ — push a sub-state so the body tokens
+      // as math without re-matching dollar signs as openers.
+      [/\$\$/, { token: "string", next: "@displayMath" }],
+      // Inline math $...$
+      [/\$/, { token: "string", next: "@inlineMath" }],
+
+      // Multi-letter and single-char control sequences.
+      [/\\[a-zA-Z@]+\*?/, "keyword"],
+      [/\\./, "keyword"],
+
+      // Alignment / sub-sup / non-break space / active chars.
+      [/[&~^_]/, "operator"],
+
+      // Brackets.
+      [/[{}[\]]/, "@brackets"],
+    ],
+
+    displayMath: [
+      [/\$\$/, { token: "string", next: "@pop" }],
+      [/\\[a-zA-Z@]+\*?/, "keyword"],
+      [/\\./, "keyword"],
+      [/[{}[\]]/, "delimiter"],
+      [/[^\\$]+/, "string"],
+    ],
+
+    inlineMath: [
+      [/\$/, { token: "string", next: "@pop" }],
+      [/\\[a-zA-Z@]+\*?/, "keyword"],
+      [/\\./, "keyword"],
+      [/[{}[\]]/, "delimiter"],
+      [/[^\\$]+/, "string"],
+    ],
+  },
+});
+
+monaco.languages.setLanguageConfiguration("latex", {
+  comments: { lineComment: "%" },
+  brackets: [
+    ["{", "}"],
+    ["[", "]"],
+  ],
+  autoClosingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "$", close: "$" },
+  ],
+  surroundingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "$", close: "$" },
+  ],
+});
+
 loader.config({ monaco });
 
 export const extToMonacoLang: Record<string, string> = {

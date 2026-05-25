@@ -23,7 +23,21 @@ function clampZoom(z: number) {
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
 }
 
-export function PdfView({ path, relPath, paneId }: { path: string; relPath?: string; paneId?: string | null }) {
+export function PdfView({
+  path,
+  relPath,
+  paneId,
+  extraToolbar,
+}: {
+  path: string;
+  relPath?: string;
+  paneId?: string | null;
+  // Optional cluster of buttons inserted into the right-side toolbar
+  // immediately before the marquee toggle. TexView uses this slot to
+  // render its source/preview toggle so .tex preview has one bar (not
+  // two) and stays visually identical to a plain PDF.
+  extraToolbar?: React.ReactNode;
+}) {
   const closePane = useStore((s) => s.closePane);
   const isHumanized = useStore((s) =>
     s.files.some((e) => e.path === path && e.humanized),
@@ -884,6 +898,7 @@ export function PdfView({ path, relPath, paneId }: { path: string; relPath?: str
           <span className="font-mono shrink-0">{pages} page{pages === 1 ? "" : "s"}</span>
         )}
         <div className="ml-auto flex items-center gap-1">
+          {extraToolbar}
           <button
             onClick={() => {
               if (loading) return;

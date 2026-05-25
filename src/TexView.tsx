@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { FileCode2 } from "lucide-react";
 import { PdfView } from "./PdfView";
 
 type CompileResult = { pdf_path: string; log: string };
@@ -11,78 +12,64 @@ type CompileResult = { pdf_path: string; log: string };
 //
 // First compile of a new document is slow (Tectonic fetches CTAN
 // packages on demand into a local cache, typically 5-30s depending on
-// what's used). Subsequent compiles of the same document are 1-3s — the
-// Rust side reuses a per-document scratch directory keyed by source
-// path so the package cache and .aux state survive between compiles.
+// what's used). Subsequent compiles are 1-3s — the Rust side reuses a
+// per-document scratch directory keyed by source path so the package
+// cache and .aux state survive between compiles.
 //
-// Recompile is manual: the parent MarkdownView header renders a refresh
-// button next to the source/preview toggle that dispatches a
-// `vc-tex-recompile` window event; this view listens for it and triggers
-// a fresh compile. Reverse channel `vc-tex-status` keeps the header's
-// spinner in sync.
+// No explicit recompile button: every toggle into preview mode
+// remounts this view (MarkdownView swaps in the Monaco editor for the
+// source side), which fires the [path] effect and runs a fresh
+// compile. The user sees an "edit → toggle preview → fresh PDF" loop
+// without thinking about it.
 export function TexView({
   path,
   content,
-  relPath: _relPath,
-  paneId: _paneId,
+  relPath,
+  paneId,
+  onToggleMode,
 }: {
   path: string;
   content: string;
   relPath?: string;
   paneId?: string | null;
+  // Click on the source/preview toggle inside the PdfView toolbar.
+  // Provided by the parent MarkdownView so the toggle flips the
+  // pane's view mode without TexView having to know about the store.
+  onToggleMode?: () => void;
 }) {
   const [pdfPath, setPdfPath] = useState<string | null>(null);
   const [compiling, setCompiling] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Bump on every successful compile so PdfView, which keys its setup
-  // effect on `path`, gets re-mounted and rereads the temp PDF (the
-  // path string is the same per-document, so React wouldn't otherwise
-  // notice that the bytes on disk changed).
-  const [version, setVersion] = useState(0);
   const compilingRef = useRef(false);
-  // Latest content goes into a ref so the global recompile listener
-  // (set up once on mount) always reads fresh source — the closure
-  // captured at addEventListener time would otherwise re-compile the
-  // version of `content` that was current the first time TexView
-  // mounted, ignoring every keystroke since.
+  // Latest content goes into a ref so the compile call always reads
+  // fresh source — closure capture at the effect's setup time would
+  // otherwise compile a stale snapshot.
   const contentRef = useRef(content);
   contentRef.current = content;
-  const pathRef = useRef(path);
-  pathRef.current = path;
 
   const compile = async () => {
     if (compilingRef.current) return;
     compilingRef.current = true;
     setCompiling(true);
     setError(null);
-    window.dispatchEvent(
-      new CustomEvent("vc-tex-status", { detail: { state: "compiling" } }),
-    );
     try {
       const res = await invoke<CompileResult>("compile_tex", {
-        sourcePath: pathRef.current,
+        sourcePath: path,
         contents: contentRef.current,
       });
       setPdfPath(res.pdf_path);
-      setVersion((v) => v + 1);
-      window.dispatchEvent(
-        new CustomEvent("vc-tex-status", { detail: { state: "idle" } }),
-      );
     } catch (e) {
       setError(String(e));
       setPdfPath(null);
-      window.dispatchEvent(
-        new CustomEvent("vc-tex-status", { detail: { state: "error" } }),
-      );
     } finally {
       compilingRef.current = false;
       setCompiling(false);
     }
   };
 
-  // Auto-compile on first mount and whenever the user switches to a
-  // different .tex file. Subsequent edits don't auto-recompile — the
-  // header's refresh button or a fresh switch is the trigger.
+  // Auto-compile on mount and on file switch. Toggling source → preview
+  // re-mounts this view (Monaco owns the source side) so this effect
+  // fires there too, giving the user a fresh PDF every time.
   useEffect(() => {
     setPdfPath(null);
     setError(null);
@@ -90,32 +77,65 @@ export function TexView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
 
-  // Header refresh button → window event → here.
-  useEffect(() => {
-    const onRecompile = () => void compile();
-    window.addEventListener("vc-tex-recompile", onRecompile);
-    return () => window.removeEventListener("vc-tex-recompile", onRecompile);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Single source-toggle button injected into PdfView's toolbar (left
+  // of the marquee). Same icon-button shape as PdfView's own controls
+  // so visually nothing distinguishes a .tex preview from a real PDF.
+  const toolbarExtras = onToggleMode ? (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggleMode();
+      }}
+      className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground mr-1"
+      title="Source (Ctrl+E)"
+    >
+      <FileCode2 className="h-3 w-3" />
+    </button>
+  ) : null;
 
-  return (
-    <div className="flex-1 flex flex-col min-h-0 relative bg-muted/20">
-      {error ? (
+  if (error) {
+    return (
+      <div className="flex-1 flex flex-col min-h-0 bg-muted/20">
+        <div className="sticky top-0 z-10 bg-muted/80 backdrop-blur border-b border-border/60 px-6 py-2 flex items-center gap-3 text-[11px] text-muted-foreground shrink-0">
+          {relPath && (
+            <span className="font-mono truncate select-none">{relPath}</span>
+          )}
+          <div className="ml-auto flex items-center gap-1">{toolbarExtras}</div>
+        </div>
         <div className="flex-1 overflow-auto p-4">
           <pre className="text-[11.5px] font-mono text-destructive whitespace-pre-wrap break-words">
             {error}
           </pre>
         </div>
-      ) : pdfPath ? (
-        // paneId is intentionally null — the parent MarkdownView header
-        // already owns the close-pane button, so we don't want PdfView
-        // to render a second one.
-        <PdfView key={`${pdfPath}#${version}`} path={pdfPath} paneId={null} />
-      ) : (
+      </div>
+    );
+  }
+
+  if (!pdfPath) {
+    return (
+      <div className="flex-1 flex flex-col min-h-0 bg-muted/20">
+        <div className="sticky top-0 z-10 bg-muted/80 backdrop-blur border-b border-border/60 px-6 py-2 flex items-center gap-3 text-[11px] text-muted-foreground shrink-0">
+          {relPath && (
+            <span className="font-mono truncate select-none">{relPath}</span>
+          )}
+          <div className="ml-auto flex items-center gap-1">{toolbarExtras}</div>
+        </div>
         <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
           {compiling ? "Compiling LaTeX…" : "Preparing preview…"}
         </div>
-      )}
-    </div>
+      </div>
+    );
+  }
+
+  // Once the PDF is on disk, defer entirely to PdfView. Pass our
+  // relPath + paneId through so the toolbar shows the .tex file's
+  // path (not the temp PDF's) and the pane close button still works.
+  return (
+    <PdfView
+      path={pdfPath}
+      relPath={relPath}
+      paneId={paneId}
+      extraToolbar={toolbarExtras}
+    />
   );
 }
