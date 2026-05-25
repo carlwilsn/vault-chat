@@ -1135,7 +1135,7 @@ const MessageBubble = memo(function MessageBubble({
             </div>
           )}
           <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+            remarkPlugins={[remarkGfm, remarkBreaks, [remarkMath, { singleDollarTextMath: false }]]}
             rehypePlugins={[[rehypeKatex, KATEX_OPTIONS]]}
             urlTransform={allowImageDataUrls}
             components={chatComponents}
@@ -1147,7 +1147,7 @@ const MessageBubble = memo(function MessageBubble({
         <div className="w-full space-y-2">
           <div className="prose-chat text-foreground/95">
             <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath]}
+              remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
               rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
               urlTransform={allowImageDataUrls}
               components={chatComponents}

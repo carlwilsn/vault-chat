@@ -91,7 +91,7 @@ function Cell({ cell, lang }: { cell: NbCell; lang: string }) {
     return (
       <div className="prose-md">
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath]}
+          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
           rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
         >
           {joinSource(cell.source)}
@@ -176,7 +176,7 @@ function renderMime(mime: string, value: string) {
     return (
       <div className="prose-md">
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath]}
+          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
           rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
         >
           {value}

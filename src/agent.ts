@@ -315,82 +315,147 @@ Be terse. If the task is research, return findings as a structured list with fil
       providerOptions = { google: { thinkingConfig: { thinkingBudget: 3000 } } };
     }
 
-    const result = streamText({
-      model,
-      messages,
-      tools,
-      stopWhen: stepCountIs(25),
-      abortSignal,
-      ...(providerOptions ? { providerOptions } : {}),
-    });
+    // Detect failures that are safe to retry. Conservative — only the
+     // shapes we've actually seen for transient upstream blips:
+     // - browser-level "Failed to fetch" (network couldn't reach the API)
+     // - Vercel AI SDK's "No output generated" (stream returned nothing)
+     // - explicit 5xx markers and known "overloaded" / network strings.
+     // We intentionally do NOT retry on 4xx, auth errors, or anything
+     // that mentions the prompt — those won't fix themselves.
+    const isTransient = (err: any): boolean => {
+      const msg = String(err?.message ?? err ?? "").toLowerCase();
+      if (!msg) return false;
+      return (
+        msg.includes("failed to fetch") ||
+        msg.includes("no output generated") ||
+        msg.includes("network") ||
+        msg.includes("econnreset") ||
+        msg.includes("etimedout") ||
+        msg.includes("socket hang up") ||
+        msg.includes("overloaded") ||
+        / 5\d\d\b/.test(msg)
+      );
+    };
 
-    for await (const part of result.fullStream) {
-      switch (part.type) {
-        case "text-delta":
-          if ("text" in part && typeof part.text === "string") {
-            onEvent({ kind: "text", delta: part.text });
+    // Single attempt at the stream. Returns whether anything user-visible
+    // was emitted (`gotOutput`) so the caller can decide if a retry is
+    // safe — retrying after tokens have been delivered would double-emit.
+    type AttemptResult =
+      | { ok: true; usage: any }
+      | { ok: false; error: any; gotOutput: boolean };
+
+    const attempt = async (): Promise<AttemptResult> => {
+      let gotOutput = false;
+      try {
+        const result = streamText({
+          model,
+          messages,
+          tools,
+          stopWhen: stepCountIs(25),
+          abortSignal,
+          ...(providerOptions ? { providerOptions } : {}),
+        });
+
+        for await (const part of result.fullStream) {
+          switch (part.type) {
+            case "text-delta":
+              if ("text" in part && typeof part.text === "string") {
+                gotOutput = true;
+                onEvent({ kind: "text", delta: part.text });
+              }
+              break;
+            case "reasoning-start":
+              gotOutput = true;
+              onEvent({ kind: "reasoning_start" });
+              break;
+            case "reasoning-delta":
+              if ("text" in part && typeof part.text === "string") {
+                gotOutput = true;
+                onEvent({ kind: "reasoning", delta: part.text });
+              }
+              break;
+            case "tool-input-start":
+              gotOutput = true;
+              onEvent({
+                kind: "tool_input_start",
+                id: part.id,
+                name: (part as any).toolName,
+              });
+              break;
+            case "tool-input-delta": {
+              const delta = (part as any).delta;
+              if (typeof delta === "string" && delta.length > 0) {
+                gotOutput = true;
+                onEvent({ kind: "tool_input_delta", id: (part as any).id, delta });
+              }
+              break;
+            }
+            case "tool-call":
+              gotOutput = true;
+              onEvent({
+                kind: "tool_use",
+                id: part.toolCallId,
+                name: part.toolName,
+                input: part.input,
+              });
+              break;
+            case "tool-result": {
+              const output = (part as any).output;
+              const text =
+                typeof output === "string" ? output : JSON.stringify(output, null, 2);
+              onEvent({ kind: "tool_result", id: part.toolCallId, result: text });
+              break;
+            }
+            case "tool-error": {
+              const err = (part as any).error;
+              const msg = err?.message ?? String(err);
+              console.error(`[agent] tool-error id=${part.toolCallId}:`, err);
+              onEvent({
+                kind: "tool_result",
+                id: part.toolCallId,
+                result: `ERROR: ${msg}`,
+              });
+              break;
+            }
+            case "error": {
+              // Mid-stream SDK error event. Surface as a structured
+              // attempt failure so the outer loop can decide whether to
+              // retry (safe only if nothing was emitted yet).
+              return { ok: false, error: (part as any).error, gotOutput };
+            }
           }
-          break;
-        case "reasoning-start":
-          onEvent({ kind: "reasoning_start" });
-          break;
-        case "reasoning-delta":
-          if ("text" in part && typeof part.text === "string") {
-            onEvent({ kind: "reasoning", delta: part.text });
-          }
-          break;
-        case "tool-input-start":
-          onEvent({
-            kind: "tool_input_start",
-            id: part.id,
-            name: (part as any).toolName,
-          });
-          break;
-        case "tool-input-delta": {
-          const delta = (part as any).delta;
-          if (typeof delta === "string" && delta.length > 0) {
-            onEvent({ kind: "tool_input_delta", id: (part as any).id, delta });
-          }
-          break;
         }
-        case "tool-call":
-          onEvent({
-            kind: "tool_use",
-            id: part.toolCallId,
-            name: part.toolName,
-            input: part.input,
-          });
-          break;
-        case "tool-result": {
-          const output = (part as any).output;
-          const text =
-            typeof output === "string" ? output : JSON.stringify(output, null, 2);
-          onEvent({ kind: "tool_result", id: part.toolCallId, result: text });
-          break;
-        }
-        case "tool-error": {
-          const err = (part as any).error;
-          const msg = err?.message ?? String(err);
-          console.error(`[agent] tool-error id=${part.toolCallId}:`, err);
-          onEvent({
-            kind: "tool_result",
-            id: part.toolCallId,
-            result: `ERROR: ${msg}`,
-          });
-          break;
-        }
-        case "error": {
-          const err = (part as any).error;
-          onEvent({
-            kind: "error",
-            message: err?.message ?? String(err),
-          });
-          break;
-        }
+
+        const usage = await result.usage;
+        return { ok: true, usage };
+      } catch (e) {
+        return { ok: false, error: e, gotOutput };
       }
+    };
+
+    // First try. If it fails before any token reaches the user AND the
+    // failure looks transient (upstream blip, network hiccup), retry
+    // exactly once after a short backoff. The user sees a brief pause
+    // instead of an error toast for the common Anthropic flake.
+    let res = await attempt();
+    if (!res.ok && !res.gotOutput && isTransient(res.error)) {
+      console.warn(
+        "[agent] initial stream failed, retrying once:",
+        res.error?.message ?? res.error,
+      );
+      await new Promise((r) => setTimeout(r, 1200));
+      res = await attempt();
     }
 
-    const usage = await result.usage;
+    if (!res.ok) {
+      onEvent({
+        kind: "error",
+        message: res.error?.message ?? String(res.error),
+      });
+      return;
+    }
+
+    const usage = res.usage;
     if (usage) {
       const prompt = usage.inputTokens ?? 0;
       const completion = usage.outputTokens ?? 0;

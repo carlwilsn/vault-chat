@@ -688,7 +688,7 @@ export function MarkdownView({ paneId }: Props) {
         >
           <div className="prose-md mx-auto">
             <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
+              remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks]}
               rehypePlugins={[rehypeRaw, rehypeSlug, [rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
               components={markdownComponents}
             >

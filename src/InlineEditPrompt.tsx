@@ -919,7 +919,7 @@ export function InlineEditPrompt({
               )}
               {result && (
                 <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkMath]}
+                  remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
                   rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
                 >
                   {result}

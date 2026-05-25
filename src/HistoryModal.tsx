@@ -69,7 +69,7 @@ function HistoricalPreview({ path, content }: { path: string; content: string })
     return (
       <div className="prose-chat px-4 py-3">
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
+          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks]}
           rehypePlugins={[rehypeRaw, [rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
         >
           {content}
