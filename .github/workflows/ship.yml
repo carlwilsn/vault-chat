@@ -68,6 +68,13 @@ jobs:
 
       - run: npm ci
 
+      # Download the bundled Tectonic LaTeX engine before the build.
+      # tauri.conf.json `bundle.resources` references the file, so a
+      # missing binary would fail the build later with a less-obvious
+      # error. The script is a no-op when the binary is already present.
+      - name: Download Tectonic LaTeX engine
+        run: node scripts/download-tectonic.mjs
+
       - name: Check for new commits since last release
         id: changes
         shell: bash

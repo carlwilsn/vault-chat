@@ -17,6 +17,7 @@ import { LiveEditor } from "./LiveEditor";
 import { CodeView } from "./CodeView";
 import { NotebookView } from "./NotebookView";
 import { PdfView } from "./PdfView";
+import { TexView } from "./TexView";
 import { HtmlView } from "./HtmlView";
 import { ImageView } from "./ImageView";
 import { VideoView } from "./VideoView";
@@ -571,9 +572,10 @@ export function MarkdownView({ paneId }: Props) {
   const showActiveOutline = inSplit && isActive;
   const { kind, ext } = fileKind(file);
   // Code files are edit-only — Monaco renders them fine and the toggle
-  // would just flip to a near-identical view. Only markdown has a
-  // meaningful view/edit split.
-  const showToggle = kind === "markdown";
+  // would just flip to a near-identical view. Markdown and .tex have a
+  // meaningful view/edit split (rendered prose / compiled PDF vs. raw
+  // source).
+  const showToggle = kind === "markdown" || kind === "tex";
   // Editor visibility tracks the pane's own mode. The previous
   // `&& isActive` gate (kept editor mounted only on the active pane)
   // unmounted LiveEditor whenever focus moved elsewhere — which broke
@@ -581,7 +583,9 @@ export function MarkdownView({ paneId }: Props) {
   // editor, but its dispatch had no view to dispatch into and silently
   // no-op'd. Per-pane mode is the user's intent for what each pane
   // shows; activation is a separate axis.
-  const showingEditor = kind === "code" || (kind === "markdown" && mode === "edit");
+  const showingEditor =
+    kind === "code" ||
+    ((kind === "markdown" || kind === "tex") && mode === "edit");
 
   return (
     <div
@@ -621,16 +625,24 @@ export function MarkdownView({ paneId }: Props) {
                 toggleMode();
               }}
               className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-              title={mode === "view" ? "Edit (Ctrl+E)" : "View (Ctrl+E)"}
+              title={
+                kind === "tex"
+                  ? mode === "view"
+                    ? "Source (Ctrl+E)"
+                    : "Preview PDF (Ctrl+E)"
+                  : mode === "view"
+                    ? "Edit (Ctrl+E)"
+                    : "View (Ctrl+E)"
+              }
               draggable={false}
             >
               {mode === "view" ? (
                 <>
-                  <Eye className="h-3 w-3" /> view
+                  <Eye className="h-3 w-3" /> {kind === "tex" ? "preview" : "view"}
                 </>
               ) : (
                 <>
-                  <Pencil className="h-3 w-3" /> editing
+                  <Pencil className="h-3 w-3" /> {kind === "tex" ? "source" : "editing"}
                 </>
               )}
             </button>
@@ -688,6 +700,8 @@ export function MarkdownView({ paneId }: Props) {
         <NotebookView content={content} />
       ) : kind === "pdf" ? (
         <PdfView path={file} relPath={relPath} paneId={paneId} />
+      ) : kind === "tex" ? (
+        <TexView path={file} content={content} relPath={relPath} paneId={paneId} />
       ) : kind === "html" ? (
         <HtmlView content={content} />
       ) : kind === "image" ? (

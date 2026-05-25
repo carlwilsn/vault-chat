@@ -4,9 +4,9 @@
   "version": "0.2.32",
   "identifier": "com.vault-chat.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run predev:tauri && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run predev:tauri && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -45,6 +45,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "resources": [
+      "binaries/tectonic.exe"
     ]
   },
   "plugins": {

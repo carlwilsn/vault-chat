@@ -2,6 +2,7 @@ export type FileKind =
   | "markdown"
   | "notebook"
   | "pdf"
+  | "tex"
   | "html"
   | "image"
   | "video"
@@ -38,6 +39,7 @@ export function fileKind(path: string): { kind: FileKind; ext: string } {
   if (ext === "md" || ext === "markdown") return { kind: "markdown", ext };
   if (ext === "ipynb") return { kind: "notebook", ext };
   if (ext === "pdf") return { kind: "pdf", ext };
+  if (ext === "tex") return { kind: "tex", ext };
   if (ext === "html" || ext === "htm") return { kind: "html", ext };
   if (IMAGE_EXTS.has(ext)) return { kind: "image", ext };
   if (VIDEO_EXTS.has(ext)) return { kind: "video", ext };

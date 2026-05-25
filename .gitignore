@@ -28,3 +28,7 @@ dist-ssr
 # Agent scratch files — created by in-app agent tool calls
 _check.*
 _scratch.*
+
+# Bundled sidecar binaries (Tectonic LaTeX engine). Downloaded at build
+# time by scripts/download-tectonic.mjs and bundled as a Tauri resource.
+src-tauri/binaries/

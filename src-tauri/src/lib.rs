@@ -2546,6 +2546,142 @@ fn app_ready(window: tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Serialize)]
+struct TexCompileResult {
+    pdf_path: String,
+    log: String,
+}
+
+// Compile a LaTeX source string to PDF via the bundled Tectonic engine.
+// Writes the source + any sibling assets the user opened from go into a
+// per-document scratch directory under the OS temp folder, keyed by the
+// source file path's hash so repeat compiles reuse Tectonic's downloaded
+// bundle / aux file cache instead of re-fetching every time.
+//
+// Errors include the engine's stderr tail so the frontend can show a
+// readable diagnostic when the document fails to typeset (the LaTeX
+// error model is line-noisy — a 4 KB tail is usually enough to find the
+// `! Undefined control sequence.` line).
+#[tauri::command]
+async fn compile_tex(
+    app: tauri::AppHandle,
+    source_path: String,
+    contents: String,
+) -> Result<TexCompileResult, String> {
+    use tauri::Manager;
+    use tauri::path::BaseDirectory;
+
+    let tectonic_path = app
+        .path()
+        .resolve("binaries/tectonic.exe", BaseDirectory::Resource)
+        .map_err(|e| format!("locate tectonic binary: {e}"))?;
+    if !tectonic_path.exists() {
+        return Err(format!(
+            "tectonic binary missing at {} — try rebuilding (the download-tectonic script populates this)",
+            tectonic_path.display()
+        ));
+    }
+
+    tauri::async_runtime::spawn_blocking(move || compile_tex_sync(tectonic_path, source_path, contents))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn compile_tex_sync(
+    tectonic_path: PathBuf,
+    source_path: String,
+    contents: String,
+) -> Result<TexCompileResult, String> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::io::Read;
+
+    // Per-document scratch directory keyed by a hash of the source path.
+    // Reusing the same directory across compiles lets Tectonic skip
+    // re-fetching downloaded packages and reuse .aux state, so an edit
+    // loop stays fast after the first compile.
+    let mut hasher = DefaultHasher::new();
+    source_path.hash(&mut hasher);
+    let key = format!("{:x}", hasher.finish());
+    let work_dir = std::env::temp_dir().join("vault-chat-tex").join(&key);
+    std::fs::create_dir_all(&work_dir)
+        .map_err(|e| format!("create scratch dir {}: {}", work_dir.display(), e))?;
+
+    let input = work_dir.join("input.tex");
+    std::fs::write(&input, &contents)
+        .map_err(|e| format!("write {}: {}", input.display(), e))?;
+
+    // Tectonic CLI: `compile <file> --outdir <dir> --keep-logs --chatter minimal`.
+    // --keep-logs leaves input.log on disk so we can show it on failure.
+    // --chatter minimal keeps stdout/stderr from drowning the diagnostic
+    // path with progress chatter.
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new(&tectonic_path);
+        c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = Command::new(&tectonic_path);
+
+    cmd.arg("-X")
+        .arg("compile")
+        .arg(&input)
+        .arg("--outdir")
+        .arg(&work_dir)
+        .arg("--keep-logs")
+        .arg("--chatter")
+        .arg("minimal")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| format!("spawn tectonic: {e}"))?;
+    let mut stderr_buf = String::new();
+    if let Some(mut s) = child.stderr.take() {
+        let _ = s.read_to_string(&mut stderr_buf);
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+
+    let log_path = work_dir.join("input.log");
+    let log_tail = std::fs::read_to_string(&log_path)
+        .ok()
+        .map(|s| {
+            // Last ~6 KB of the log usually carries the error site.
+            let bytes = s.as_bytes();
+            if bytes.len() > 6_000 {
+                String::from_utf8_lossy(&bytes[bytes.len() - 6_000..]).to_string()
+            } else {
+                s
+            }
+        })
+        .unwrap_or_default();
+
+    if !status.success() {
+        return Err(format!(
+            "tectonic exit {}\n\n--- stderr ---\n{}\n\n--- log tail ---\n{}",
+            status.code().unwrap_or(-1),
+            stderr_buf.trim(),
+            log_tail.trim()
+        ));
+    }
+
+    let pdf = work_dir.join("input.pdf");
+    if !pdf.exists() {
+        return Err(format!(
+            "tectonic reported success but no PDF at {}\n\n--- stderr ---\n{}\n\n--- log tail ---\n{}",
+            pdf.display(),
+            stderr_buf.trim(),
+            log_tail.trim()
+        ));
+    }
+
+    Ok(TexCompileResult {
+        pdf_path: pdf.to_string_lossy().replace('\\', "/"),
+        log: log_tail,
+    })
+}
+
 #[cfg(windows)]
 fn apply_titlebar_color(window: &tauri::WebviewWindow) {
     use windows_sys::Win32::Foundation::HWND;
@@ -2658,6 +2794,7 @@ pub fn run() {
             keychain_get,
             keychain_set,
             keychain_delete,
+            compile_tex,
             app_ready
         ])
         .run(tauri::generate_context!())
