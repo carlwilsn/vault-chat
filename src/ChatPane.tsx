@@ -1260,6 +1260,11 @@ function LiveToolTicker({ tools }: { tools: LiveTool[] }) {
         </span>
       </span>
       {running && latest.startedAt && <ToolElapsed startedAt={latest.startedAt} />}
+      {running && latest.etaSeconds && latest.etaSeconds >= 15 && (
+        <span className="shrink-0 tabular-nums opacity-50" title="Estimated by Haiku">
+          ~{formatEta(latest.etaSeconds)} expected
+        </span>
+      )}
       {total > 1 && (
         <span className="shrink-0 opacity-50">
           {done}/{total}
@@ -1383,6 +1388,15 @@ function formatTokens(n: number): string {
   if (n < 1000) return String(n);
   if (n < 100_000) return `${(n / 1000).toFixed(1)}k`;
   return `${Math.round(n / 1000)}k`;
+}
+
+function formatEta(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.round(seconds / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem === 0 ? `${h}h` : `${h}h${rem}m`;
 }
 
 function ModelPicker({

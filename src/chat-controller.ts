@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { runAgent } from "./agent";
 import { findModel } from "./providers";
 import { compactConversation } from "./compactor";
+import { estimateBashEta } from "./eta-estimator";
 import { gitCommitAll } from "./git";
 import { flushEditCommit } from "./commit-controller";
 import {
@@ -143,6 +144,25 @@ export async function sendMessage(
         const t: LiveTool = { id: e.id, name: e.name, input: e.input, startedAt: Date.now() };
         tools.push(t);
         store.pushLiveTool(t);
+        // Fire-and-forget ETA estimate for Bash. Updates the live tool
+        // if Haiku comes back before the command finishes; ignored
+        // otherwise. Bounded by the agent's abort signal.
+        if (e.name === "Bash" && typeof e.input?.command === "string") {
+          const cmd = e.input.command as string;
+          const toolId = e.id;
+          estimateBashEta({
+            command: cmd,
+            apiKeys: useStore.getState().apiKeys,
+            signal,
+          })
+            .then((secs) => {
+              if (secs == null) return;
+              const live = useStore.getState().liveTools.find((x) => x.id === toolId);
+              if (!live || live.result) return;
+              useStore.getState().setLiveToolEta(toolId, secs);
+            })
+            .catch(() => {});
+        }
       } else if (e.kind === "tool_result") {
         const t = tools.find((x) => x.id === e.id);
         if (t) t.result = e.result;

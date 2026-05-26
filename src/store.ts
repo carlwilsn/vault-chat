@@ -81,7 +81,7 @@ function messagesEqual(a: ChatMessage[], b: ChatMessage[]): boolean {
 
 export const MODEL_CONTEXT_LIMIT = 200_000;
 
-export type LiveTool = { id: string; name: string; input: any; result?: string; startedAt?: number; inputChars?: number };
+export type LiveTool = { id: string; name: string; input: any; result?: string; startedAt?: number; inputChars?: number; etaSeconds?: number };
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 export type TodoItem = { content: string; status: TodoStatus; activeForm?: string };
@@ -96,7 +96,8 @@ function liveToolsEqual(a: LiveTool[], b: LiveTool[]): boolean {
       x.id !== y.id ||
       x.name !== y.name ||
       x.result !== y.result ||
-      (x.inputChars ?? 0) !== (y.inputChars ?? 0)
+      (x.inputChars ?? 0) !== (y.inputChars ?? 0) ||
+      (x.etaSeconds ?? 0) !== (y.etaSeconds ?? 0)
     )
       return false;
   }
@@ -502,6 +503,7 @@ type State = {
   startLiveToolInput: (id: string, name: string) => void;
   appendLiveToolInputDelta: (id: string, delta: string) => void;
   updateLiveToolResult: (id: string, result: string) => void;
+  setLiveToolEta: (id: string, seconds: number) => void;
   setAgentTodos: (todos: TodoItem[]) => void;
   loadNotes: () => Promise<void>;
   addNote: (note: Note) => Promise<void>;
@@ -1164,6 +1166,12 @@ export const useStore = create<State>((set) => ({
   updateLiveToolResult: (id, result) =>
     set((prev) => ({
       liveTools: prev.liveTools.map((t) => (t.id === id ? { ...t, result } : t)),
+    })),
+  setLiveToolEta: (id, seconds) =>
+    set((prev) => ({
+      liveTools: prev.liveTools.map((t) =>
+        t.id === id ? { ...t, etaSeconds: seconds } : t,
+      ),
     })),
   setAgentTodos: (todos) => set({ agentTodos: todos }),
   loadNotes: async () => {
