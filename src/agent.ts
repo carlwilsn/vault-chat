@@ -134,12 +134,25 @@ export async function runAgent(params: {
     // conversation prefix as cacheable. The current user turn is never
     // cached — it changes every call. On a 10-turn conversation this
     // cuts input-token cost ~10x for cached reads ($0.30/M vs $3/M on
-    // Sonnet), 5-minute TTL while the session is active.
+    // Sonnet).
+    //
+    // Two TTL tiers:
+    //  - systemCache (1h): the system prompt is stable for the whole
+    //    session — vault path, north star, skills index, shell probe.
+    //    Long debug sessions where the user steps away for 20 min
+    //    otherwise re-bill this prefix on resume. The 1h write is 2x
+    //    cost but pays for itself after one hit beyond the 5-min mark.
+    //  - historyCache (5m, default): the breakpoint moves each turn
+    //    (always on the last message). 1h here would just cost more
+    //    to write without ever being read past one turn.
     //
     // Up to 4 breakpoints are allowed; we use 2: after the system, and
     // on the last history message. Other providers (OpenAI, Google)
     // silently ignore providerOptions.anthropic.
-    const cacheControl = {
+    const systemCache = {
+      anthropic: { cacheControl: { type: "ephemeral" as const, ttl: "1h" as const } },
+    };
+    const historyCache = {
       anthropic: { cacheControl: { type: "ephemeral" as const } },
     };
 
@@ -170,14 +183,14 @@ export async function runAgent(params: {
         return {
           role: h.role,
           content: scrubbed,
-          ...(cacheable ? { providerOptions: cacheControl } : {}),
+          ...(cacheable ? { providerOptions: historyCache } : {}),
         };
       });
 
     const systemMessage: ModelMessage = {
       role: "system",
       content: system,
-      ...(system.trim().length > 0 ? { providerOptions: cacheControl } : {}),
+      ...(system.trim().length > 0 ? { providerOptions: systemCache } : {}),
     };
 
     // Attach captured images to the final user turn as structured

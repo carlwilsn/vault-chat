@@ -38,7 +38,22 @@ export const PROVIDER_LABEL: Record<ProviderId, string> = {
 export function buildModel(spec: ModelSpec, apiKey: string): LanguageModel {
   switch (spec.provider) {
     case "anthropic": {
-      const a = createAnthropic({ apiKey, headers: { "anthropic-dangerous-direct-browser-access": "true" } });
+      // anthropic-beta:
+      //  - interleaved-thinking-2025-05-14: lets Claude 4.x think
+      //    BETWEEN tool calls within a turn (not just at the start).
+      //    Big lift on multi-step debug / search-then-act flows.
+      //    Auto-on for Opus 4.7 adaptive, beta-flagged for 4.5/4.6.
+      //  - extended-cache-ttl-2025-04-11: unlocks the 1-hour cache
+      //    TTL option on cache_control blocks. We use it on the
+      //    stable system prompt so long sessions stop re-billing the
+      //    prefix every time the 5-min idle window lapses.
+      const a = createAnthropic({
+        apiKey,
+        headers: {
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-beta": "interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11",
+        },
+      });
       return a(spec.id);
     }
     case "openai": {
