@@ -1324,8 +1324,17 @@ fn bash_exec_sync(
             // already passes through Rust's CreateProcess arg
             // escaping cleanly because bash.exe's arg parsing matches
             // C runtime conventions.
+            // MSYS_NO_PATHCONV + MSYS2_ARG_CONV_EXCL disable Git Bash's
+            // auto path-rewriting heuristic, which otherwise mangles
+            // any arg starting with `/` into a Windows path under the
+            // Git install dir. Without this, `gh api /repos/foo`
+            // silently becomes `gh api C:\Program Files\Git\repos\foo`
+            // and the request 404s. Standard hygiene when using Git
+            // Bash as a script host.
             let mut c = Command::new(&bash);
             c.arg("-c").arg(&command);
+            c.env("MSYS_NO_PATHCONV", "1");
+            c.env("MSYS2_ARG_CONV_EXCL", "*");
             c.creation_flags(0x08000000);
             c
         } else {
