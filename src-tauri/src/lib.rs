@@ -5,6 +5,97 @@ use std::process::Command;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
 
+#[cfg(windows)]
+use std::sync::OnceLock;
+
+// Windows: probe once for Git Bash and reuse the result for every
+// bash_exec call. Picking bash.exe over `cmd /C` makes the Bash tool
+// usable for agents — cmd's quote handling mangles any command with
+// embedded quotes (e.g. `gh repo create --description "foo bar"`
+// becomes two args), and POSIX commands the agent reaches for by
+// default (head/ls/sed/awk) just don't exist. If Git for Windows
+// isn't installed, fall back to cmd so we degrade rather than break.
+#[cfg(windows)]
+static GIT_BASH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+#[cfg(windows)]
+fn find_git_bash() -> Option<PathBuf> {
+    GIT_BASH_PATH
+        .get_or_init(|| {
+            // Check the canonical install locations first — fastest
+            // path, no subprocess. Order: 64-bit machine install,
+            // 32-bit machine install, per-user install.
+            let candidates = [
+                std::env::var("ProgramFiles")
+                    .ok()
+                    .map(|p| PathBuf::from(p).join("Git").join("bin").join("bash.exe")),
+                std::env::var("ProgramFiles(x86)")
+                    .ok()
+                    .map(|p| PathBuf::from(p).join("Git").join("bin").join("bash.exe")),
+                std::env::var("LocalAppData").ok().map(|p| {
+                    PathBuf::from(p)
+                        .join("Programs")
+                        .join("Git")
+                        .join("bin")
+                        .join("bash.exe")
+                }),
+            ];
+            for c in candidates.into_iter().flatten() {
+                if c.is_file() {
+                    return Some(c);
+                }
+            }
+            // Last resort: ask PATH. `where bash` returns 0 + a list
+            // of matching paths if found. Skipped silently if `where`
+            // itself isn't available (vanishingly rare on Windows).
+            use std::os::windows::process::CommandExt;
+            let out = Command::new("where")
+                .arg("bash")
+                .creation_flags(0x08000000)
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let first = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())?
+                .to_string();
+            let p = PathBuf::from(first);
+            if p.is_file() {
+                Some(p)
+            } else {
+                None
+            }
+        })
+        .clone()
+}
+
+#[derive(Serialize)]
+struct ShellKind {
+    kind: String,        // "git-bash" | "cmd" | "bash"
+    path: Option<String>,
+}
+
+#[tauri::command]
+fn bash_shell_kind() -> ShellKind {
+    #[cfg(windows)]
+    {
+        if let Some(p) = find_git_bash() {
+            return ShellKind {
+                kind: "git-bash".into(),
+                path: Some(p.to_string_lossy().to_string()),
+            };
+        }
+        ShellKind { kind: "cmd".into(), path: None }
+    }
+    #[cfg(not(windows))]
+    {
+        ShellKind { kind: "bash".into(), path: None }
+    }
+}
+
 // Fire a `file-changed` event with the absolute path. Subscribed to by
 // viewers that need to react to disk mutations they didn't initiate —
 // currently just TexView, which uses it to debounce-recompile when the
@@ -1226,10 +1317,23 @@ fn bash_exec_sync(
     #[cfg(windows)]
     let mut cmd = {
         use std::os::windows::process::CommandExt;
-        let mut c = Command::new("cmd");
-        c.arg("/C").arg(&command);
-        c.creation_flags(0x08000000);
-        c
+        if let Some(bash) = find_git_bash() {
+            // Git Bash. Use `-c` (not `-lc`) — login mode loads
+            // /etc/profile which can be slow and prints MOTD-style
+            // junk into the agent's view. The command string itself
+            // already passes through Rust's CreateProcess arg
+            // escaping cleanly because bash.exe's arg parsing matches
+            // C runtime conventions.
+            let mut c = Command::new(&bash);
+            c.arg("-c").arg(&command);
+            c.creation_flags(0x08000000);
+            c
+        } else {
+            let mut c = Command::new("cmd");
+            c.arg("/C").arg(&command);
+            c.creation_flags(0x08000000);
+            c
+        }
     };
     #[cfg(not(windows))]
     let mut cmd = {
@@ -2773,6 +2877,7 @@ pub fn run() {
             glob_files,
             grep_files,
             bash_exec,
+            bash_shell_kind,
             list_dir,
             http_fetch,
             tavily_search,

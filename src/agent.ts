@@ -1,5 +1,6 @@
 import { streamText, stepCountIs, tool, type ModelMessage } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
+import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./providers";
 import { buildTools } from "./tools";
@@ -41,6 +42,24 @@ function detectPlatform(): "windows" | "mac" | "linux" {
   return "linux";
 }
 
+// Probe the actual shell the Rust bash_exec command will use, once,
+// and reuse forever. On Windows this differs from the user's terminal:
+// the agent's Bash tool uses Git Bash if installed (POSIX commands
+// work), and only falls back to `cmd /C` when Git for Windows is
+// missing. The system prompt needs the truth so the agent doesn't
+// reach for cmd-style syntax inside a POSIX shell or vice versa.
+type ShellKind = { kind: "git-bash" | "cmd" | "bash"; path: string | null };
+let shellKindPromise: Promise<ShellKind> | null = null;
+function getShellKind(): Promise<ShellKind> {
+  if (!shellKindPromise) {
+    shellKindPromise = invoke<ShellKind>("bash_shell_kind").catch(() => ({
+      kind: "bash" as const,
+      path: null,
+    }));
+  }
+  return shellKindPromise;
+}
+
 export async function runAgent(params: {
   modelId: string;
   apiKey: string;
@@ -62,13 +81,14 @@ export async function runAgent(params: {
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey);
 
-    const [sessionContext, skills, metaSystem, metaTools, metaPath, northStar] = await Promise.all([
+    const [sessionContext, skills, metaSystem, metaTools, metaPath, northStar, shellKind] = await Promise.all([
       loadSessionContext(vault),
       loadSkills(vault),
       loadMetaSystemPrompt(),
       loadMetaTools(),
       getMetaVaultPath().catch(() => null),
       loadVaultNorthStar(vault),
+      getShellKind(),
     ]);
 
     const { body: expandedMessage } = expandSkillInvocation(userMessage, skills);
@@ -77,9 +97,14 @@ export async function runAgent(params: {
     const metaToolNames = Object.keys(metaTools);
 
     const platform = detectPlatform();
+    // Windows splits two ways now. Git Bash (when installed) gives you
+    // a real POSIX shell; cmd is the legacy fallback for stripped-down
+    // installs. Tell the agent which it actually has so commands match.
     const shellNote =
       platform === "windows"
-        ? "Host OS: Windows. The Bash tool runs commands via `cmd /C` — use Windows-compatible syntax. For the current date use `date /T` (plain `date` is interactive and will hang). For the time use `time /T`. Prefer PowerShell one-liners via `powershell -NoProfile -Command \"...\"` when you need Unix-y behavior."
+        ? shellKind.kind === "git-bash"
+          ? "Host OS: Windows. The Bash tool runs commands via Git Bash (`bash -c`) — use POSIX shell syntax (`ls`, `head`, `grep`, single-quoted strings, `$VAR`). Paths under the user's home are reachable via either `C:/Users/...` or `/c/Users/...` — both work. Avoid `cmd`-only constructs (`dir`, `&&` chained with `if not exist`, `%VAR%`)."
+          : "Host OS: Windows. The Bash tool runs commands via `cmd /C` — use Windows-compatible syntax. For the current date use `date /T` (plain `date` is interactive and will hang). For the time use `time /T`. Be sparing with embedded quotes — cmd's quoting rules are unforgiving; prefer one short command per call over long pipelines."
         : platform === "mac"
           ? "Host OS: macOS. The Bash tool runs commands via `bash -lc`."
           : "Host OS: Linux. The Bash tool runs commands via `bash -lc`.";
