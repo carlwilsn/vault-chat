@@ -1,5 +1,6 @@
 import { generateText } from "ai";
 import { buildModel, findModel, MODELS, type ProviderId } from "./providers";
+import { machineSummary } from "./machine-info";
 
 // Provider preference order when picking a "fast" model for the ETA call.
 // Anthropic Haiku first since the app is Anthropic-default; then any
@@ -21,16 +22,21 @@ function pickFastModel(apiKeys: Partial<Record<ProviderId, string>>) {
   return null;
 }
 
-const SYSTEM = `You estimate how long a shell command will take to execute, in seconds.
+const SYSTEM = `You estimate how long a shell command will take to execute on the user's machine, in seconds.
 
 Reply with a single integer. No units, no words, no explanation. Just the number.
 
-Calibration:
+Calibration (adjust for the host machine described in the prompt — fewer cores / Windows / older hardware → push higher; many cores / Linux / SSD → push lower):
 - Trivial commands (ls, pwd, echo, git status on a small repo): 1
 - Quick git / small greps / single-file reads: 2-5
 - Moderate work (small test run, light build): 10-30
-- Heavy installs (winget, brew, apt, pip install large packages): 120-600
-- Big builds (cargo build, full test suite, docker build): 60-600
+- Package installs:
+  - apt / brew small package: 10-60
+  - pip install single package: 15-90
+  - pip install large package (torch, tensorflow): 60-300
+  - winget with RubyInstaller / Python / large dev toolchain: 300-1200 (Windows installers + post-install scripts like ridk install are slow)
+  - npm install on a fresh project: 30-180
+- Big builds (cargo build release, full test suite, docker build): 60-600
 - Network downloads of large packages: 60-300
 
 If you genuinely cannot guess, output 0.`;
@@ -44,10 +50,11 @@ export async function estimateBashEta(params: {
   if (!picked) return null;
   try {
     const model = buildModel(picked.spec, picked.apiKey);
+    const prompt = `Host: ${machineSummary()}\n\nCommand:\n${params.command.slice(0, 2000)}`;
     const res = await generateText({
       model,
       system: SYSTEM,
-      prompt: params.command.slice(0, 2000),
+      prompt,
       abortSignal: params.signal,
     });
     const m = res.text.trim().match(/-?\d+/);
