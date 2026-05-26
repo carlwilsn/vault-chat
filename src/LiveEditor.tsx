@@ -44,27 +44,62 @@ function parseTableAlign(line: string): (string | null)[] {
   });
 }
 
-// Render markdown table-cell content into a DOM node: inline math
-// ($$..$$ treated as inline here because a table cell is always
-// inline flow) + plain text segments. Escaped `\|` was already turned
-// into a pipe by parseTableRow, so we don't handle it again.
+// Render markdown table-cell content into a DOM node. Handles the
+// inline phrasing that view mode (ReactMarkdown + remark-gfm) renders
+// inside cells: inline math ($$..$$ only — single-$ is disabled to
+// match view's `singleDollarTextMath: false`), inline code, links,
+// bold, italic. Escaped `\|` was already turned into a pipe by
+// parseTableRow, so we don't handle it again.
+//
+// Renders inline as a table cell is always inline flow — $$..$$ in a
+// cell becomes inline math, mirroring remark-math's fallback for $$
+// runs that can't stand alone on their own lines.
+const CELL_INLINE_RE =
+  /`([^`\n]+?)`|\$\$([^$\n]+?)\$\$|\[([^\]\n]+?)\]\(([^)\n]+?)\)|\*\*([\s\S]+?)\*\*|\*([^*\n]+?)\*/g;
 function renderCellInto(el: HTMLElement, src: string) {
-  const re = /\$\$([^$\n]+?)\$\$|\$([^$\n]+?)\$/g;
+  CELL_INLINE_RE.lastIndex = 0;
   let last = 0;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(src))) {
+  while ((m = CELL_INLINE_RE.exec(src))) {
     if (m.index > last) {
       el.appendChild(document.createTextNode(src.slice(last, m.index)));
     }
-    const tex = (m[1] ?? m[2] ?? "").trim();
-    const span = document.createElement("span");
-    span.className = "cm-math-inline";
-    try {
-      katex.render(tex, span, { displayMode: false, throwOnError: false, strict: "ignore" });
-    } catch {
-      span.textContent = m[0];
+    if (m[1] !== undefined) {
+      const code = document.createElement("code");
+      code.className = "cm-code";
+      code.textContent = m[1];
+      el.appendChild(code);
+    } else if (m[2] !== undefined) {
+      const span = document.createElement("span");
+      span.className = "cm-math-inline";
+      try {
+        katex.render(m[2].trim(), span, {
+          displayMode: false,
+          throwOnError: false,
+          strict: "ignore",
+        });
+      } catch {
+        span.textContent = m[0];
+      }
+      el.appendChild(span);
+    } else if (m[3] !== undefined && m[4] !== undefined) {
+      const a = document.createElement("a");
+      a.className = "cm-link";
+      a.setAttribute("data-href", m[4]);
+      a.setAttribute("href", m[4]);
+      a.textContent = m[3];
+      el.appendChild(a);
+    } else if (m[5] !== undefined) {
+      const strong = document.createElement("strong");
+      strong.className = "cm-strong";
+      renderCellInto(strong, m[5]);
+      el.appendChild(strong);
+    } else if (m[6] !== undefined) {
+      const em = document.createElement("em");
+      em.className = "cm-em";
+      renderCellInto(em, m[6]);
+      el.appendChild(em);
     }
-    el.appendChild(span);
     last = m.index + m[0].length;
   }
   if (last < src.length) {
@@ -544,25 +579,12 @@ function buildDecorations(state: EditorState): DecorationSet {
   const hasDollar = text.indexOf("$") !== -1;
 
   if (hasDollar) {
-    const inlineMathRe = /(?<!\$)\$([^$\n]+?)\$(?!\$)/g;
-    for (let ln = 1; ln <= doc.lines; ln++) {
-      const line = doc.line(ln);
-      if (line.text.indexOf("$") === -1) continue;
-      inlineMathRe.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = inlineMathRe.exec(line.text))) {
-        const s = line.from + m.index;
-        const e = s + m[0].length;
-        if (spanActive(s, e)) {
-          applyTexTokens(builder, doc, s, e);
-        } else {
-          builder.push(
-            Decoration.replace({ widget: new MathWidget(m[1], false) }).range(s, e)
-          );
-        }
-      }
-    }
-
+    // Single-dollar `$x$` inline math is intentionally NOT rendered
+    // here — every view-mode renderer in the app passes
+    // `singleDollarTextMath: false` to remark-math, so `$x$` is plain
+    // text on the read side. Rendering it as live math in edit mode
+    // would make a buffer look different the moment you toggle to
+    // view. Only `$$..$$` is supported on both sides.
     if (text.indexOf("$$") !== -1) {
       const blockRe = /\$\$([\s\S]*?)\$\$/g;
       let bm: RegExpExecArray | null;
@@ -684,7 +706,11 @@ const liveTheme = EditorView.theme({
     overflow: "auto",
     fontFamily: "inherit",
   },
-  ".cm-h": { fontWeight: "600" },
+  // Headings use the same weight as `**bold**` (cm-strong: 700) so a
+  // heading that contains a bolded span doesn't get a visible weight
+  // jump in the middle. View mode renders ATX headings at the same
+  // weight as nested strong, and edit should match.
+  ".cm-h": { fontWeight: "700" },
   ".cm-h1": { fontSize: "1.7em" },
   ".cm-h2": { fontSize: "1.4em" },
   ".cm-h3": { fontSize: "1.2em" },
@@ -768,18 +794,21 @@ const liveTheme = EditorView.theme({
     display: "block",
     padding: "0.25em 0",
   },
+  // Table styling mirrors `.prose-md table` in App.css so the rendered
+  // view and the in-editor widget look identical when toggling modes.
   ".cm-table": {
     borderCollapse: "collapse",
     display: "table",
-    fontSize: "0.95em",
+    margin: "0.75em 0",
+    fontSize: "13px",
   },
   ".cm-table th, .cm-table td": {
     border: "1px solid hsl(var(--border))",
-    padding: "4px 10px",
+    padding: "6px 12px",
   },
   ".cm-table th": {
-    background: "hsl(var(--muted) / 0.5)",
-    fontWeight: "600",
+    background: "hsl(var(--muted))",
+    fontWeight: "700",
     textAlign: "left",
   },
   ".cm-math-inline": { display: "inline" },
