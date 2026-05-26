@@ -134,7 +134,7 @@ const BASH_DISABLED_STORAGE = "vault_chat_bash_disabled";
 // SAVED_CHATS_MAX entries (newest first), shared across vaults — the
 // UI filters to the active vault on display.
 const SAVED_CHATS_STORAGE = "vault_chat_saved";
-const SAVED_CHATS_MAX = 3;
+const SAVED_CHATS_MAX = 20;
 
 export type Theme = "graphite" | "light";
 
@@ -629,11 +629,34 @@ export const useStore = create<State>((set) => ({
       if (s.vaultPath === p) {
         return { vaultPath: p };
       }
+      // Snapshot the about-to-be-dropped chat into savedChats so
+      // bouncing back to the old vault can recover it via the recents
+      // popover. Same rolling-buffer logic as Clear / Pick Recent
+      // (saveCurrentChat), inlined here because we need it to land in
+      // the same set() as the vault swap. No-op if empty.
+      let nextSavedChats = s.savedChats;
+      if (s.messages.length > 0) {
+        const entry: SavedChat = {
+          id: `${Date.now().toString(36)}-${Math.random()
+            .toString(36)
+            .slice(2, 8)}`,
+          vaultPath: s.vaultPath,
+          title: deriveSavedChatTitle(s.messages),
+          savedAt: Date.now(),
+          messages: s.messages,
+          compactionSummary: s.compactionSummary,
+          lastContext: s.lastContext,
+          tokenUsage: s.tokenUsage,
+        };
+        const trimmed = s.savedChats.filter((c) => c.messages !== entry.messages);
+        nextSavedChats = [entry, ...trimmed].slice(0, SAVED_CHATS_MAX);
+      }
       // Open files / panes are tied to the prior vault. Leaving them
       // up after the switch would point at paths that don't exist in
       // the new vault, breaking save and reload.
       return {
         vaultPath: p,
+        savedChats: nextSavedChats,
         messages: [],
         tokenUsage: { prompt: 0, completion: 0, total: 0 },
         lastContext: 0,
