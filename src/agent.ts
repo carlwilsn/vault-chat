@@ -276,7 +276,7 @@ Be terse. If the task is research, return findings as a structured list with fil
               { role: "user", content: subPrompt },
             ],
             tools: innerTools,
-            stopWhen: stepCountIs(20),
+            stopWhen: stepCountIs(30),
             abortSignal,
           });
           let final = "";
@@ -376,7 +376,7 @@ Be terse. If the task is research, return findings as a structured list with fil
           model,
           messages,
           tools,
-          stopWhen: stepCountIs(25),
+          stopWhen: stepCountIs(50),
           abortSignal,
           ...(providerOptions ? { providerOptions } : {}),
         });
