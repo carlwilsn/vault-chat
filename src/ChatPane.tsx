@@ -5,6 +5,7 @@ import remarkMath from "remark-math";
 import remarkBreaks from "remark-breaks";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
+import { preprocessMarkdownMath } from "./mdMath";
 import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, History } from "lucide-react";
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
@@ -1135,24 +1136,24 @@ const MessageBubble = memo(function MessageBubble({
             </div>
           )}
           <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkBreaks, [remarkMath, { singleDollarTextMath: false }]]}
+            remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
             rehypePlugins={[[rehypeKatex, KATEX_OPTIONS]]}
             urlTransform={allowImageDataUrls}
             components={chatComponents}
           >
-            {stripAttachedFooter(message.content)}
+            {preprocessMarkdownMath(stripAttachedFooter(message.content))}
           </ReactMarkdown>
         </div>
       ) : (
         <div className="w-full space-y-2">
           <div className="prose-chat text-foreground/95">
             <ReactMarkdown
-              remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
+              remarkPlugins={[remarkGfm, remarkMath]}
               rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
               urlTransform={allowImageDataUrls}
               components={chatComponents}
             >
-              {message.content}
+              {preprocessMarkdownMath(message.content)}
             </ReactMarkdown>
           </div>
           {message.toolCalls && message.toolCalls.length > 0 && (

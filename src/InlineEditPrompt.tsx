@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
+import { preprocessMarkdownMath } from "./mdMath";
 import { Check, X, Loader2, CornerDownLeft, MessageSquare, StickyNote, Camera } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
@@ -919,10 +920,10 @@ export function InlineEditPrompt({
               )}
               {result && (
                 <ReactMarkdown
-                  remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
+                  remarkPlugins={[remarkGfm, remarkMath]}
                   rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
                 >
-                  {result}
+                  {preprocessMarkdownMath(result)}
                 </ReactMarkdown>
               )}
               {streaming && result && (

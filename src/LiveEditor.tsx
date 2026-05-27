@@ -23,6 +23,7 @@ import {
   type InlineEditRequest,
 } from "./InlineEditPrompt";
 import { useStore } from "./store";
+import { isMathLike } from "./mdMath";
 
 const hideDeco = Decoration.replace({});
 
@@ -579,18 +580,19 @@ function buildDecorations(state: EditorState): DecorationSet {
   const hasDollar = text.indexOf("$") !== -1;
 
   if (hasDollar) {
-    // Single-dollar `$x$` inline math is intentionally NOT rendered
-    // here — every view-mode renderer in the app passes
-    // `singleDollarTextMath: false` to remark-math, so `$x$` is plain
-    // text on the read side. Rendering it as live math in edit mode
-    // would make a buffer look different the moment you toggle to
-    // view. Only `$$..$$` is supported on both sides.
+    // Two passes: collect $$…$$ ranges first (block or inline math
+    // depending on whether they stand alone on their line), then scan
+    // for single-dollar $x$ inline math using the same isMathLike
+    // heuristic the view-mode preprocessor uses. Both passes mirror
+    // what ReactMarkdown + remark-math produce on the read side.
+    const blockRanges: { s: number; e: number }[] = [];
     if (text.indexOf("$$") !== -1) {
       const blockRe = /\$\$([\s\S]*?)\$\$/g;
       let bm: RegExpExecArray | null;
       while ((bm = blockRe.exec(text))) {
         const s = bm.index;
         const e = s + bm[0].length;
+        blockRanges.push({ s, e });
         // remark-math (view mode) renders $$…$$ as display math only when
         // it stands alone on its own lines. If it's mid-line, view mode
         // still renders the TeX but as inline math — tiny, squeezed into
@@ -620,6 +622,31 @@ function buildDecorations(state: EditorState): DecorationSet {
           );
         }
       }
+    }
+    // Single-dollar inline math. Skips runs that overlap a $$…$$
+    // block, and rejects content that does not look like math
+    // (currency, prose with stray $ signs).
+    const singleRe = /\$([^\n$]+?)\$/g;
+    let sm: RegExpExecArray | null;
+    while ((sm = singleRe.exec(text))) {
+      const s = sm.index;
+      const e = s + sm[0].length;
+      if (s > 0 && text[s - 1] === "$") continue;
+      if (e < text.length && text[e] === "$") continue;
+      if (s > 0 && text[s - 1] === "\\") continue;
+      if (blockRanges.some((r) => s < r.e && e > r.s)) continue;
+      const content = sm[1];
+      if (!isMathLike(content)) continue;
+      if (spanActive(s, e)) {
+        applyTexTokens(builder, doc, s, e);
+        continue;
+      }
+      if (lineActive(s)) continue;
+      builder.push(
+        Decoration.replace({
+          widget: new MathWidget(content.trim(), false),
+        }).range(s, e),
+      );
     }
   }
 

@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
+import { preprocessMarkdownMath } from "./mdMath";
 import { Eye } from "lucide-react";
 import "katex/dist/katex.min.css";
 
@@ -91,10 +92,10 @@ function Cell({ cell, lang }: { cell: NbCell; lang: string }) {
     return (
       <div className="prose-md">
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
+          remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
         >
-          {joinSource(cell.source)}
+          {preprocessMarkdownMath(joinSource(cell.source))}
         </ReactMarkdown>
       </div>
     );
@@ -176,10 +177,10 @@ function renderMime(mime: string, value: string) {
     return (
       <div className="prose-md">
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
+          remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
         >
-          {value}
+          {preprocessMarkdownMath(value)}
         </ReactMarkdown>
       </div>
     );

@@ -29,59 +29,7 @@ import { tryOpenLink } from "./linkNav";
 import { noteEditedFile } from "./commit-controller";
 import { pushViewportContextDebounced } from "./voice-elevenlabs";
 
-// remark-math renders $$…$$ as block (centered/large) display math only
-// when the $$ delimiters sit on their own lines with the body between
-// them. A single-line $$x^2$$ — even surrounded by blank lines — parses
-// as inline math. For $$…$$ runs that stand alone on their line(s),
-// reshape into the multi-line form so the user gets centered display
-// math.
-//
-// Mid-line uses like `# $$N_0$$ — Computation Reference` or
-// "produces $$N_0$$ bins" are *intentionally* inline — promoting them
-// to block would mangle the surrounding heading/paragraph. Leave those
-// alone and let remark-math render them as inline math, matching the
-// behavior LiveEditor already implements via its `standsAlone` check.
-//
-// Skip code fences (``` … ``` and ~~~ … ~~~) so a `$$` inside a code
-// block isn't mistaken for math and paired with a later real `$$`,
-// which would mangle both regions.
-//
-// Also skip GFM table rows: a row must stay on one line, so injecting
-// newlines breaks the table. Inside cells, $$…$$ falls back to remark-
-// math's single-line behavior (inline-style display math), which is the
-// only thing that fits in a cell anyway.
-function isolateDisplayMath(src: string): string {
-  const fenceRe = /(^|\n)(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g;
-  const placeholders: string[] = [];
-  const mask = (m: string, prefix: string) => {
-    const token = `\u0000MASK${placeholders.length}\u0000`;
-    placeholders.push(m);
-    return prefix + token;
-  };
-  let masked = src.replace(fenceRe, (m) => mask(m, ""));
-  // Mask table rows (lines starting with optional whitespace then `|`).
-  // The GFM separator row is just another line that starts with `|`, so
-  // this single rule catches header, separator, and body rows alike.
-  masked = masked.replace(/(^|\n)([ \t]*\|[^\n]*)/g, (_m, nl, line) => mask(line, nl));
-  const transformed = masked.replace(
-    /\$\$([\s\S]+?)\$\$/g,
-    (m, body, offset: number) => {
-      // Stand-alone check: opening $$ has only whitespace to the start
-      // of its line, closing $$ has only whitespace to the end of its
-      // line. Same rule LiveEditor uses to pick block vs inline math,
-      // so the two modes agree on which $$…$$ becomes display math.
-      const openLineStart = masked.lastIndexOf("\n", offset - 1) + 1;
-      const closeEnd = offset + m.length;
-      const nextNl = masked.indexOf("\n", closeEnd);
-      const closeLineEnd = nextNl === -1 ? masked.length : nextNl;
-      const leading = masked.slice(openLineStart, offset);
-      const trailing = masked.slice(closeEnd, closeLineEnd);
-      if (!/^\s*$/.test(leading) || !/^\s*$/.test(trailing)) return m;
-      return `\n\n$$\n${body.trim()}\n$$\n\n`;
-    },
-  );
-  return transformed.replace(/\u0000MASK(\d+)\u0000/g, (_m, i) => placeholders[Number(i)]);
-}
+import { preprocessMarkdownMath } from "./mdMath";
 
 // Lenient KaTeX options shared across every renderer in the app:
 // `strict: "ignore"` silences "unicode in math mode" and similar
@@ -555,7 +503,7 @@ export function MarkdownView({ paneId }: Props) {
   // changes one byte of `content` — doesn't reparse fence regions and
   // re-run the $$ regex on every keystroke. Cheap to keep this even
   // when not in markdown view; the memo just no-ops.
-  const processedMarkdown = useMemo(() => isolateDisplayMath(content), [content]);
+  const processedMarkdown = useMemo(() => preprocessMarkdownMath(content), [content]);
 
   if (!file) {
     return (
@@ -688,7 +636,7 @@ export function MarkdownView({ paneId }: Props) {
         >
           <div className="prose-md mx-auto">
             <ReactMarkdown
-              remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks]}
+              remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
               rehypePlugins={[rehypeRaw, rehypeSlug, [rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
               components={markdownComponents}
             >

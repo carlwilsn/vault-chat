@@ -7,6 +7,7 @@ import remarkBreaks from "remark-breaks";
 import rehypeRaw from "rehype-raw";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
+import { preprocessMarkdownMath } from "./mdMath";
 import { History as HistoryIcon, Undo2, FileText, FilePlus, FileX, Pencil } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import {
@@ -69,10 +70,10 @@ function HistoricalPreview({ path, content }: { path: string; content: string })
     return (
       <div className="prose-chat px-4 py-3">
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks]}
+          remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
           rehypePlugins={[rehypeRaw, [rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
         >
-          {content}
+          {preprocessMarkdownMath(content)}
         </ReactMarkdown>
       </div>
     );
