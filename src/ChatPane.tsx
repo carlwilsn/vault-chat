@@ -323,7 +323,12 @@ export function ChatPane() {
   const showChatsPanel = useStore((s) => s.showChatsPanel);
   const conversations = useStore((s) => s.conversations);
   const activeConversationId = useStore((s) => s.activeConversationId);
-  const anyRunning = conversations.some((c) => c.status === "running");
+  // Indicator is for chats you *can't see* — alerting about background
+  // activity in conversations off-screen. Suppress on the active chat
+  // since the user is already watching it.
+  const anyRunning = conversations.some(
+    (c) => c.status === "running" && c.id !== activeConversationId,
+  );
   const toggleChatsPanel = () => setShowChatsPanel(!showChatsPanel);
   const [asyncStatus, setAsyncStatus] = useState<AsyncStatus>({
     active: false,
@@ -990,7 +995,11 @@ export function ChatPane() {
                     }}
                     disabled={!ready || !activeConversationId || messages.length === 0}
                     className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
-                    title="Let it run — agent keeps going on its own"
+                    title={
+                      "Let it run — walk away; the agent keeps generating its own next turns on this chat until it hits (done), the step/time cap, or you stop it. " +
+                      "Use it when the agent has clear pre-staging work to do and you don't want to babysit. " +
+                      "Pings the matching Telegram chat on finish if one is linked."
+                    }
                   >
                     <Play className="h-3.5 w-3.5" />
                   </button>

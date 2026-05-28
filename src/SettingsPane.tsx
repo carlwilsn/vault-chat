@@ -145,7 +145,7 @@ export function SettingsPane() {
     return () => document.removeEventListener("mousedown", onDown);
   }, []);
   const [elevenlabsLlmDraft, setElevenlabsLlmDraft] = useState(
-    localStorage.getItem("vault_chat_elevenlabs_llm") ?? "claude-sonnet-4-6",
+    localStorage.getItem("vault_chat_elevenlabs_llm") ?? "gemini-2.5-flash",
   );
   const [savedFlash, setSavedFlash] = useState<
     | ProviderId
@@ -657,23 +657,30 @@ export function SettingsPane() {
             onChange={(e) => saveElevenlabsLlm(e.target.value)}
             className="w-full h-8 px-2 rounded border border-border bg-background text-[12px] font-mono"
           >
-            <optgroup label="Sonnet (recommended for voice)">
+            <optgroup label="Gemini (default — native PDF vision)">
+              <option value="gemini-2.5-flash">gemini-2.5-flash (default)</option>
+              <option value="gemini-2.5-pro">gemini-2.5-pro (deeper reasoning)</option>
+            </optgroup>
+            <optgroup label="Claude — Sonnet">
               <option value="claude-sonnet-4-6">claude-sonnet-4-6 (newest)</option>
               <option value="claude-sonnet-4-5@20250929">claude-sonnet-4-5</option>
               <option value="claude-sonnet-4@20250514">claude-sonnet-4</option>
               <option value="claude-3-7-sonnet">claude-3-7-sonnet</option>
             </optgroup>
-            <optgroup label="Opus (smartest, slower)">
+            <optgroup label="Claude — Opus (smartest, slower)">
               <option value="claude-opus-4-7">claude-opus-4-7</option>
             </optgroup>
-            <optgroup label="Haiku (fastest, cheapest)">
+            <optgroup label="Claude — Haiku (fastest)">
               <option value="claude-haiku-4-5">claude-haiku-4-5</option>
             </optgroup>
           </select>
           <p className="text-[11px] text-muted-foreground/80">
-            Brain that handles voice turns. Sonnet 4.6 is the default — Opus
-            adds noticeable latency, Haiku is less reliable with tools. Changes
-            re-provision the agent on next session.
+            Brain that handles voice turns. Gemini 2.5 Flash is the default —
+            it sees PDFs natively (every page, diagram, equation) with the
+            snappiest TTFT. Switch to gemini-2.5-pro for deep math. Claude
+            variants don't get the PDF blob piped in, so they fall back to
+            the PdfExtract tool. Changes re-provision the agent on next
+            session.
           </p>
         </section>
 
@@ -1395,7 +1402,13 @@ function AsyncSection() {
           Async background tasks
         </h3>
         <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
-          Defaults for when a chat is set to "let it run" — the agent keeps going without prompting until it hits a stop.
+          "Let it run" turns a chat into a self-driving agent so you can walk
+          away. After each reply it nudges itself with a hidden "keep going"
+          turn — no typing required — until the agent ends with{" "}
+          <span className="font-mono text-foreground/80">(done)</span>, the
+          step or time cap trips, or you click Stop. Use it for pre-staging
+          work that doesn't need supervision (drafts, scans, sweeps) so
+          weekday daytime stops being dead time.
         </p>
       </div>
       <div className="space-y-2">
@@ -1456,9 +1469,14 @@ function AsyncSection() {
           </div>
         </label>
         <div className="rounded-md border border-border/60 bg-muted/30 p-2.5 text-[11px] text-muted-foreground">
-          <div className="font-medium text-foreground/85 mb-1">Per-chat trigger</div>
+          <div className="font-medium text-foreground/85 mb-1">How to start one</div>
           <div>
-            Each chat has a small <span className="text-foreground/85 font-mono">▶ Let it run</span> button in the composer footer. Click → the agent keeps going on its own; the Chats panel shows the pulsing "running" indicator.
+            Send your kickoff message (define the task + how the agent should
+            know it's done), then click the small{" "}
+            <span className="text-foreground/85 font-mono">▶</span> in the
+            composer footer. Switching to another chat pauses the run on this
+            one; come back and click <span className="text-foreground/85 font-mono">▶</span> again to resume.
+            Other chats show the pulsing indicator while they're working in the background.
           </div>
         </div>
       </div>

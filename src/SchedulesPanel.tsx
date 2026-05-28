@@ -55,23 +55,6 @@ export function SchedulesPanel({ open, onClose }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose, editing]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      const el = panelRef.current;
-      if (!el) return;
-      if (el.contains(e.target as Node)) return;
-      onClose();
-    };
-    const id = window.setTimeout(() => {
-      window.addEventListener("mousedown", onDown);
-    }, 0);
-    return () => {
-      window.clearTimeout(id);
-      window.removeEventListener("mousedown", onDown);
-    };
-  }, [open, onClose]);
-
   const sorted = useMemo(
     () =>
       list.slice().sort((a, b) => {
