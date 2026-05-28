@@ -67,6 +67,17 @@ export function conversationPreview(c: Conversation): string {
 }
 
 export async function readConversations(vault: string): Promise<Conversation[]> {
+  // In cross-sync client mode the conversations live on the daemon —
+  // read those instead so both machines stay in sync.
+  try {
+    const { isClientMode, clientFetchConversations } = await import("./crossSync");
+    if (isClientMode()) {
+      return await clientFetchConversations();
+    }
+  } catch {
+    // crossSync module unavailable or daemon unreachable — fall back
+    // to local disk so the app degrades gracefully.
+  }
   const lines = await invoke<string[]>("conversations_read", { vault });
   const out: Conversation[] = [];
   for (const line of lines) {
@@ -102,5 +113,14 @@ export async function writeConversations(
   // Persist messages, not in-flight stream state. The `status` field is
   // forced to 'idle' on read anyway.
   const lines = conversations.map((c) => JSON.stringify(c));
+  try {
+    const { isClientMode, clientPushConversations } = await import("./crossSync");
+    if (isClientMode()) {
+      await clientPushConversations(conversations);
+      return;
+    }
+  } catch {
+    // fall through to local write
+  }
   await invoke("conversations_write_all", { vault, lines });
 }

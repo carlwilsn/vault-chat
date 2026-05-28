@@ -11,6 +11,7 @@ import {
   Shield,
   RefreshCw,
   Send,
+  Monitor,
 } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { PROVIDER_LABEL, type ProviderId } from "./providers";
@@ -46,6 +47,16 @@ import {
   refreshTelegramSnapshot,
   type TelegramSnapshot,
 } from "./telegram";
+import {
+  readCrossSyncConfig,
+  writeCrossSyncConfig,
+  startCrossSync,
+  stopCrossSync,
+  subscribeCrossSyncStatus,
+  probeTailscaleHostname,
+  type CrossSyncConfig,
+  type CrossSyncSnapshot,
+} from "./crossSync";
 
 const PROVIDERS: ProviderId[] = ["anthropic", "openai", "google", "openrouter"];
 
@@ -776,6 +787,10 @@ export function SettingsPane() {
 
         <div className="h-px bg-border" />
 
+        <CrossSyncSection />
+
+        <div className="h-px bg-border" />
+
         <VaultSyncSection />
 
         <div className="h-px bg-border" />
@@ -1143,6 +1158,217 @@ function relativeAgo(ts: number): string {
   if (hr < 24) return `${hr}h`;
   const day = Math.floor(hr / 24);
   return `${day}d`;
+}
+
+function CrossSyncSection() {
+  const vaultPath = useStore((s) => s.vaultPath);
+  const [config, setConfig] = useState<CrossSyncConfig>(() => readCrossSyncConfig());
+  const [snapshot, setSnapshot] = useState<CrossSyncSnapshot>({
+    mode: config.mode,
+    running: false,
+    clients: 0,
+    listen: null,
+    error: null,
+    tailscaleHostname: null,
+  });
+  const [tailscaleProbed, setTailscaleProbed] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsub = subscribeCrossSyncStatus(setSnapshot);
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void probeTailscaleHostname().then((h) => {
+      if (cancelled) return;
+      setTailscaleProbed(h);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const update = async (patch: Partial<CrossSyncConfig>) => {
+    const next = writeCrossSyncConfig(patch);
+    setConfig(next);
+    if (vaultPath) {
+      await stopCrossSync();
+      await startCrossSync(vaultPath);
+    }
+  };
+
+  return (
+    <section className="space-y-3">
+      <div>
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+          <Monitor className="h-3 w-3" />
+          Cross-machine sync
+        </h3>
+        <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
+          Run vault-chat as a daemon at home; connect to it from another machine over Tailscale.
+        </p>
+      </div>
+      <div className="space-y-2">
+        <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
+          This machine is
+        </label>
+        <div className="space-y-1">
+          <ModeRow
+            label="Standalone"
+            sublabel="no sync (default)"
+            active={config.mode === "standalone"}
+            onSelect={() => update({ mode: "standalone" })}
+          />
+          <ModeRow
+            label="Daemon (the home box)"
+            sublabel="listens for clients"
+            active={config.mode === "daemon"}
+            onSelect={() => update({ mode: "daemon" })}
+          />
+          <ModeRow
+            label="Client (this is the portable)"
+            sublabel="connects to a daemon"
+            active={config.mode === "client"}
+            onSelect={() => update({ mode: "client" })}
+          />
+        </div>
+        {config.mode === "daemon" && (
+          <div className="pt-2 grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
+                Listen on
+              </label>
+              <Input
+                type="text"
+                value={config.daemonListen}
+                onChange={(e) => update({ daemonListen: e.target.value })}
+                className="font-mono"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
+                Tailscale hostname
+              </label>
+              <Input
+                type="text"
+                value={config.tailscaleHostname || tailscaleProbed || ""}
+                onChange={(e) => update({ tailscaleHostname: e.target.value })}
+                placeholder={tailscaleProbed ?? "home-box.tail-scale.ts.net"}
+                className="font-mono"
+              />
+            </div>
+          </div>
+        )}
+        {config.mode === "client" && (
+          <div className="pt-2 space-y-1">
+            <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
+              Daemon URL
+            </label>
+            <Input
+              type="text"
+              value={config.daemonUrl}
+              onChange={(e) => update({ daemonUrl: e.target.value })}
+              placeholder="http://home-box.tail-scale.ts.net:4173"
+              className="font-mono"
+            />
+          </div>
+        )}
+        {!tailscaleProbed && config.mode !== "standalone" && (
+          <p className="text-[10.5px] text-muted-foreground/80">
+            Tailscale not detected.{" "}
+            <a
+              href="https://tailscale.com/download"
+              target="_blank"
+              rel="noreferrer"
+              className="underline hover:text-foreground"
+            >
+              Install Tailscale
+            </a>{" "}
+            to expose this machine over a private mesh.
+          </p>
+        )}
+        <CrossSyncStatusRow snapshot={snapshot} config={config} />
+      </div>
+    </section>
+  );
+}
+
+function ModeRow({
+  label,
+  sublabel,
+  active,
+  onSelect,
+}: {
+  label: string;
+  sublabel: string;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <label
+      className={
+        active
+          ? "flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-primary/60 bg-primary/10 cursor-pointer"
+          : "flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-border hover:bg-accent/40 cursor-pointer"
+      }
+    >
+      <input
+        type="radio"
+        name="cross-sync-mode"
+        className="vc-radio"
+        checked={active}
+        onChange={onSelect}
+      />
+      <span className="text-[12px] text-foreground">{label}</span>
+      <span className="ml-auto text-[10.5px] text-muted-foreground">{sublabel}</span>
+    </label>
+  );
+}
+
+function CrossSyncStatusRow({
+  snapshot,
+  config,
+}: {
+  snapshot: CrossSyncSnapshot;
+  config: CrossSyncConfig;
+}) {
+  if (config.mode === "standalone") {
+    return null;
+  }
+  if (snapshot.error) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-destructive pt-1">
+        <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
+        {snapshot.error}
+      </span>
+    );
+  }
+  if (config.mode === "daemon" && snapshot.running) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground pt-1">
+        <span className="relative inline-flex h-1.5 w-1.5">
+          <span className="absolute inset-0 rounded-full bg-emerald-500 opacity-60 animate-ping" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+        </span>
+        daemon running on {snapshot.listen ?? config.daemonListen}
+      </span>
+    );
+  }
+  if (config.mode === "client") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground pt-1">
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/60" />
+        client · {config.daemonUrl || "no URL"}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground pt-1">
+      <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
+      idle
+    </span>
+  );
 }
 
 function TelegramSection() {

@@ -22,6 +22,7 @@ import { useGlobalAnchorClickHandler } from "./linkNav";
 import { applyHljsTheme } from "./main";
 import { startVaultSyncLoop, stopVaultSyncLoop } from "./vaultSync";
 import { startSchedulerLoop, stopSchedulerLoop } from "./schedulerLoop";
+import { startCrossSync, stopCrossSync } from "./crossSync";
 import {
   readTelegramEnabled,
   startTelegramService,
@@ -291,6 +292,16 @@ export default function App() {
     void startSchedulerLoop(vaultPath);
     return () => {
       stopSchedulerLoop();
+    };
+  }, [vaultPath]);
+
+  // Cross-machine sync — daemon (server) or client (consumer) per the
+  // user's mode setting in Settings.
+  useEffect(() => {
+    if (!vaultPath) return;
+    void startCrossSync(vaultPath);
+    return () => {
+      void stopCrossSync();
     };
   }, [vaultPath]);
 
