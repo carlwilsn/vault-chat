@@ -13,6 +13,13 @@ export type Conversation = {
   lastActivityAt: number;
   source: ConversationSource;
   unread: boolean;
+  // Telegram-source conversations remember the chat_id so outbound
+  // assistant replies can be routed back to the same Telegram thread.
+  telegramChatId?: number;
+  // True when the chat is running autonomously (piece #4 — "let it
+  // run"). Persisted so a restart doesn't lose the flag, though the
+  // background loop itself is in-process and stops on exit.
+  autoMode?: boolean;
 };
 
 export function newConversationId(): string {
@@ -35,6 +42,7 @@ export function emptyConversation(): Conversation {
     unread: false,
   };
 }
+
 
 export function deriveConversationTitle(messages: ChatMessage[]): string {
   for (const m of messages) {
@@ -77,6 +85,8 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         lastActivityAt: parsed.lastActivityAt ?? parsed.createdAt ?? Date.now(),
         source: parsed.source ?? "manual",
         unread: parsed.unread ?? false,
+        telegramChatId: parsed.telegramChatId,
+        autoMode: parsed.autoMode ?? false,
       });
     } catch {
       // skip

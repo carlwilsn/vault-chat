@@ -8,6 +8,9 @@ use walkdir::WalkDir;
 #[cfg(windows)]
 use std::sync::OnceLock;
 
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 // Windows: probe once for Git Bash and reuse the result for every
 // bash_exec call. Picking bash.exe over `cmd /C` makes the Bash tool
 // usable for agents — cmd's quote handling mangles any command with
@@ -3081,6 +3084,344 @@ fn run_script_sync(
     })
 }
 
+// ----- Telegram bot -----
+//
+// Inbound: a background task long-polls Bot API's getUpdates, filters
+// messages to the configured user_id, and emits a `telegram:message`
+// event each time a new message arrives. The frontend listens for that
+// event and routes the message into the conversations store.
+//
+// Outbound: `telegram_send_message` posts a text reply via the Bot
+// API. The frontend invokes this when the user sends an assistant
+// reply in a telegram-sourced conversation.
+
+static TELEGRAM_RUNNING: AtomicBool = AtomicBool::new(false);
+static TELEGRAM_STOP: Mutex<Option<std::sync::Arc<AtomicBool>>> = Mutex::new(None);
+
+#[derive(Serialize, Clone)]
+struct TelegramInbound {
+    chat_id: i64,
+    from_user_id: i64,
+    from_username: Option<String>,
+    text: String,
+    message_id: i64,
+    timestamp: i64,
+}
+
+#[derive(Serialize, Clone)]
+struct TelegramStatus {
+    running: bool,
+    bot_username: Option<String>,
+    error: Option<String>,
+}
+
+fn emit_telegram_status(app: &AppHandle, status: TelegramStatus) {
+    let _ = app.emit("telegram:status", status);
+}
+
+#[tauri::command]
+fn telegram_running() -> bool {
+    TELEGRAM_RUNNING.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+async fn telegram_start(
+    app: AppHandle,
+    bot_token: String,
+    user_id: String,
+) -> Result<(), String> {
+    if TELEGRAM_RUNNING.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    let allowed_id: i64 = user_id
+        .trim()
+        .parse()
+        .map_err(|_| "telegram user_id must be a number".to_string())?;
+
+    // First, validate the token by calling getMe — surfaces auth errors
+    // immediately instead of after a long-poll timeout.
+    let me_status = telegram_get_me(&bot_token).await;
+    match me_status {
+        Ok(name) => {
+            emit_telegram_status(
+                &app,
+                TelegramStatus {
+                    running: true,
+                    bot_username: Some(name),
+                    error: None,
+                },
+            );
+        }
+        Err(e) => {
+            TELEGRAM_RUNNING.store(false, Ordering::SeqCst);
+            emit_telegram_status(
+                &app,
+                TelegramStatus {
+                    running: false,
+                    bot_username: None,
+                    error: Some(e.clone()),
+                },
+            );
+            return Err(e);
+        }
+    }
+
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = TELEGRAM_STOP.lock().unwrap();
+        *slot = Some(stop.clone());
+    }
+
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        telegram_poll_loop(app_clone, bot_token, allowed_id, stop).await;
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn telegram_stop(app: AppHandle) -> Result<(), String> {
+    if let Some(stop) = TELEGRAM_STOP.lock().unwrap().take() {
+        stop.store(true, Ordering::SeqCst);
+    }
+    TELEGRAM_RUNNING.store(false, Ordering::SeqCst);
+    emit_telegram_status(
+        &app,
+        TelegramStatus {
+            running: false,
+            bot_username: None,
+            error: None,
+        },
+    );
+    Ok(())
+}
+
+#[tauri::command]
+async fn telegram_test(bot_token: String) -> Result<String, String> {
+    telegram_get_me(&bot_token).await
+}
+
+#[tauri::command]
+async fn telegram_send_message(
+    bot_token: String,
+    chat_id: i64,
+    text: String,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .user_agent("vault-chat/0.1")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);
+    // Telegram limits text to 4096 chars per message. Chunk so long
+    // assistant replies still go through.
+    const MAX_LEN: usize = 4000;
+    let body = text.chars().collect::<Vec<_>>();
+    let mut i = 0;
+    while i < body.len() {
+        let end = std::cmp::min(i + MAX_LEN, body.len());
+        let chunk: String = body[i..end].iter().collect();
+        let payload = serde_json::json!({
+            "chat_id": chat_id,
+            "text": chunk,
+        });
+        let resp = client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(format!(
+                "telegram send {}: {}",
+                status,
+                body_text.chars().take(200).collect::<String>()
+            ));
+        }
+        i = end;
+    }
+    Ok(())
+}
+
+async fn telegram_get_me(bot_token: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("vault-chat/0.1")
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("https://api.telegram.org/bot{}/getMe", bot_token);
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "telegram getMe {}: {}",
+            status,
+            body.chars().take(200).collect::<String>()
+        ));
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let username = json
+        .get("result")
+        .and_then(|r| r.get("username"))
+        .and_then(|u| u.as_str())
+        .ok_or_else(|| "no username in getMe response".to_string())?
+        .to_string();
+    Ok(format!("@{}", username))
+}
+
+async fn telegram_poll_loop(
+    app: AppHandle,
+    bot_token: String,
+    allowed_id: i64,
+    stop: std::sync::Arc<AtomicBool>,
+) {
+    let client = match reqwest::Client::builder()
+        .user_agent("vault-chat/0.1")
+        // Long-poll timeout is server-side (~25s). Allow our HTTP timeout
+        // to extend past that with a small buffer for network jitter.
+        .timeout(std::time::Duration::from_secs(40))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            emit_telegram_status(
+                &app,
+                TelegramStatus {
+                    running: false,
+                    bot_username: None,
+                    error: Some(format!("http client init: {}", e)),
+                },
+            );
+            TELEGRAM_RUNNING.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+
+    let mut offset: i64 = 0;
+    let url = format!("https://api.telegram.org/bot{}/getUpdates", bot_token);
+    let mut consecutive_errors = 0u32;
+
+    while !stop.load(Ordering::SeqCst) {
+        let params = [
+            ("timeout", "25".to_string()),
+            ("offset", offset.to_string()),
+            ("allowed_updates", "[\"message\"]".to_string()),
+        ];
+        let resp = match client.get(&url).query(&params).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= 5 {
+                    emit_telegram_status(
+                        &app,
+                        TelegramStatus {
+                            running: true,
+                            bot_username: None,
+                            error: Some(format!("network: {}", e)),
+                        },
+                    );
+                }
+                tokio_sleep(2000).await;
+                continue;
+            }
+        };
+        consecutive_errors = 0;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            emit_telegram_status(
+                &app,
+                TelegramStatus {
+                    running: false,
+                    bot_username: None,
+                    error: Some(format!(
+                        "getUpdates {}: {}",
+                        status,
+                        body.chars().take(200).collect::<String>()
+                    )),
+                },
+            );
+            // Auth / invalid token errors aren't transient — stop.
+            TELEGRAM_RUNNING.store(false, Ordering::SeqCst);
+            return;
+        }
+        let json: serde_json::Value = match resp.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                emit_telegram_status(
+                    &app,
+                    TelegramStatus {
+                        running: true,
+                        bot_username: None,
+                        error: Some(format!("json parse: {}", e)),
+                    },
+                );
+                tokio_sleep(1000).await;
+                continue;
+            }
+        };
+        let Some(updates) = json.get("result").and_then(|r| r.as_array()) else {
+            tokio_sleep(500).await;
+            continue;
+        };
+        for upd in updates {
+            let update_id = upd
+                .get("update_id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if update_id >= offset {
+                offset = update_id + 1;
+            }
+            let Some(msg) = upd.get("message") else { continue };
+            let from_id = msg
+                .get("from")
+                .and_then(|f| f.get("id"))
+                .and_then(|i| i.as_i64())
+                .unwrap_or(0);
+            if from_id != allowed_id {
+                continue;
+            }
+            let chat_id = msg
+                .get("chat")
+                .and_then(|c| c.get("id"))
+                .and_then(|i| i.as_i64())
+                .unwrap_or(0);
+            let text = msg
+                .get("text")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+            if text.is_empty() {
+                continue;
+            }
+            let from_username = msg
+                .get("from")
+                .and_then(|f| f.get("username"))
+                .and_then(|u| u.as_str())
+                .map(|s| s.to_string());
+            let message_id = msg.get("message_id").and_then(|i| i.as_i64()).unwrap_or(0);
+            let timestamp = msg.get("date").and_then(|d| d.as_i64()).unwrap_or(0);
+            let payload = TelegramInbound {
+                chat_id,
+                from_user_id: from_id,
+                from_username,
+                text,
+                message_id,
+                timestamp,
+            };
+            let _ = app.emit("telegram:message", payload);
+        }
+    }
+    TELEGRAM_RUNNING.store(false, Ordering::SeqCst);
+}
+
+async fn tokio_sleep(ms: u64) {
+    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+}
+
 // Show the calling window. Paired with the `visible: false` startup
 // state set on the main window in `setup()` and on the popout in
 // sync.ts: the frontend invokes this once React has mounted and the
@@ -3343,6 +3684,11 @@ pub fn run() {
             vault_sync_pull,
             vault_sync_push,
             vault_sync_gh_create_repo,
+            telegram_running,
+            telegram_start,
+            telegram_stop,
+            telegram_test,
+            telegram_send_message,
             meta_vault_init,
             meta_vault_path,
             run_script,

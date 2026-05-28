@@ -10,6 +10,7 @@ import {
   Lock,
   Shield,
   RefreshCw,
+  Send,
 } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { PROVIDER_LABEL, type ProviderId } from "./providers";
@@ -32,6 +33,19 @@ import {
   DEFAULT_SYNC_CONFIG,
   type VaultSyncConfig,
 } from "./vaultSync";
+import {
+  getTelegramCredentials,
+  setTelegramCredentials,
+  clearTelegramCredentials,
+  startTelegramService,
+  stopTelegramService,
+  testTelegramConnection,
+  subscribeTelegramStatus,
+  readTelegramEnabled,
+  writeTelegramEnabled,
+  refreshTelegramSnapshot,
+  type TelegramSnapshot,
+} from "./telegram";
 
 const PROVIDERS: ProviderId[] = ["anthropic", "openai", "google", "openrouter"];
 
@@ -477,6 +491,10 @@ export function SettingsPane() {
             Enables WebSearch. Get a free key at tavily.com.
           </p>
         </section>
+
+        <div className="h-px bg-border" />
+
+        <TelegramSection />
 
         <div className="h-px bg-border" />
 
@@ -1125,4 +1143,236 @@ function relativeAgo(ts: number): string {
   if (hr < 24) return `${hr}h`;
   const day = Math.floor(hr / 24);
   return `${day}d`;
+}
+
+function TelegramSection() {
+  const [enabled, setEnabled] = useState(() => readTelegramEnabled());
+  const [tokenDraft, setTokenDraft] = useState("");
+  const [userIdDraft, setUserIdDraft] = useState("");
+  const [snapshot, setSnapshot] = useState<TelegramSnapshot>({
+    running: false,
+    botUsername: null,
+    error: null,
+    hasCredentials: false,
+  });
+  const [testStatus, setTestStatus] = useState<
+    | { kind: "idle" }
+    | { kind: "testing" }
+    | { kind: "ok"; message: string }
+    | { kind: "err"; message: string }
+  >({ kind: "idle" });
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { token, userId } = await getTelegramCredentials();
+      if (cancelled) return;
+      if (token) setTokenDraft(token);
+      if (userId) setUserIdDraft(userId);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsub = subscribeTelegramStatus(setSnapshot);
+    void refreshTelegramSnapshot();
+    return unsub;
+  }, []);
+
+  const toggleEnabled = async (next: boolean) => {
+    setEnabled(next);
+    writeTelegramEnabled(next);
+    if (next) {
+      const tok = tokenDraft.trim();
+      const uid = userIdDraft.trim();
+      if (tok && uid) {
+        await setTelegramCredentials(tok, uid);
+      }
+      await startTelegramService();
+    } else {
+      await stopTelegramService();
+    }
+  };
+
+  const saveCredentials = async () => {
+    const tok = tokenDraft.trim();
+    const uid = userIdDraft.trim();
+    if (!tok || !uid) return;
+    await setTelegramCredentials(tok, uid);
+    if (enabled) {
+      await stopTelegramService();
+      await startTelegramService();
+    }
+  };
+
+  const removeCredentials = async () => {
+    await stopTelegramService();
+    await clearTelegramCredentials();
+    setTokenDraft("");
+    setUserIdDraft("");
+    setEnabled(false);
+    writeTelegramEnabled(false);
+  };
+
+  const testConnection = async () => {
+    const tok = tokenDraft.trim();
+    if (!tok) return;
+    setTestStatus({ kind: "testing" });
+    const res = await testTelegramConnection(tok);
+    if (res.ok) {
+      setTestStatus({ kind: "ok", message: res.message });
+    } else {
+      setTestStatus({ kind: "err", message: res.message });
+    }
+  };
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+            <Send className="h-3 w-3" />
+            Telegram bot
+          </h3>
+          <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
+            Route phone messages into your chat list. Replies go back to Telegram.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 shrink-0 cursor-pointer">
+          <span className="text-[10.5px] text-muted-foreground">
+            {enabled ? "on" : "off"}
+          </span>
+          <input
+            type="checkbox"
+            className="vc-checkbox"
+            checked={enabled}
+            onChange={(e) => toggleEnabled(e.target.checked)}
+          />
+        </label>
+      </div>
+      <div className="space-y-2">
+        <div className="space-y-1">
+          <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
+            Bot token
+          </label>
+          <Input
+            type="password"
+            placeholder="123456:ABC-…"
+            value={tokenDraft}
+            onChange={(e) => setTokenDraft(e.target.value)}
+            className="font-mono text-[11.5px]"
+          />
+          <p className="text-[10.5px] text-muted-foreground/70">
+            From @BotFather on Telegram.
+          </p>
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
+            Your Telegram user ID
+          </label>
+          <Input
+            type="text"
+            placeholder="743210984"
+            value={userIdDraft}
+            onChange={(e) => setUserIdDraft(e.target.value)}
+            className="font-mono text-[11.5px]"
+          />
+          <p className="text-[10.5px] text-muted-foreground/70">
+            From @userinfobot. Locks the bot to only your messages.
+          </p>
+        </div>
+        <div className="pt-1 flex items-center gap-2 flex-wrap">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={testConnection}
+            disabled={!tokenDraft.trim() || testStatus.kind === "testing"}
+          >
+            {testStatus.kind === "testing" ? "Testing…" : "Test connection"}
+          </Button>
+          <Button
+            size="sm"
+            onClick={saveCredentials}
+            disabled={!tokenDraft.trim() || !userIdDraft.trim()}
+          >
+            Save
+          </Button>
+          {(tokenDraft || userIdDraft) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={removeCredentials}
+              title="Remove credentials from the OS keychain"
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          )}
+          <TelegramStatusRow snapshot={snapshot} testStatus={testStatus} enabled={enabled} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function TelegramStatusRow({
+  snapshot,
+  testStatus,
+  enabled,
+}: {
+  snapshot: TelegramSnapshot;
+  testStatus:
+    | { kind: "idle" }
+    | { kind: "testing" }
+    | { kind: "ok"; message: string }
+    | { kind: "err"; message: string };
+  enabled: boolean;
+}) {
+  if (testStatus.kind === "ok") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-500">
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+        connected as {testStatus.message}
+      </span>
+    );
+  }
+  if (testStatus.kind === "err") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-destructive">
+        <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
+        {testStatus.message}
+      </span>
+    );
+  }
+  if (snapshot.error) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-destructive">
+        <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
+        {snapshot.error}
+      </span>
+    );
+  }
+  if (enabled && snapshot.running) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-500">
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+        {snapshot.botUsername ? `connected as ${snapshot.botUsername}` : "polling"}
+      </span>
+    );
+  }
+  if (!snapshot.hasCredentials) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
+        no credentials
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
+      idle
+    </span>
+  );
 }

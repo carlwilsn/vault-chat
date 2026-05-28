@@ -20,6 +20,12 @@ import { gitInitIfNeeded } from "./git";
 import { useGlobalAnchorClickHandler } from "./linkNav";
 import { applyHljsTheme } from "./main";
 import { startVaultSyncLoop, stopVaultSyncLoop } from "./vaultSync";
+import {
+  readTelegramEnabled,
+  startTelegramService,
+  subscribeTelegramInbound,
+  refreshTelegramSnapshot,
+} from "./telegram";
 import "./App.css";
 
 export default function App() {
@@ -235,6 +241,28 @@ export default function App() {
       loadConversations();
     }
   }, [vaultPath, conversationsLoaded, loadConversations]);
+
+  // Telegram bot — start the long-poll loop and route inbound messages
+  // into the conversations store. The service idles silently when no
+  // credentials are configured.
+  useEffect(() => {
+    void refreshTelegramSnapshot();
+    if (readTelegramEnabled()) {
+      void startTelegramService();
+    }
+    const unsub = subscribeTelegramInbound((m) => {
+      const s = useStore.getState();
+      if (!s.conversationsLoaded) return;
+      s.ingestExternalMessage({
+        text: m.text,
+        source: "telegram",
+        telegramChatId: m.chat_id,
+        matchByTelegramChatId: m.chat_id,
+        titleHint: m.from_username ? `Telegram · @${m.from_username}` : undefined,
+      });
+    });
+    return unsub;
+  }, []);
 
   // Vault auto-sync — start a per-vault loop when a vault is active.
   // The loop reads its own opt-in config from <vault>/.vault-chat/

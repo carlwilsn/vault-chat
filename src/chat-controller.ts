@@ -5,6 +5,7 @@ import { compactConversation } from "./compactor";
 import { estimateBashEta } from "./eta-estimator";
 import { gitCommitAll } from "./git";
 import { flushEditCommit } from "./commit-controller";
+import { sendTelegramMessage } from "./telegram";
 import {
   useStore,
   MODEL_CONTEXT_LIMIT,
@@ -108,6 +109,13 @@ export async function sendMessage(
   const modelId = cur.modelId;
   const currentFile = cur.currentFile;
   const openPaneIds = cur.panes.map((p) => p.id);
+  // If the active conversation is telegram-sourced, mirror the
+  // assistant's final reply back to Telegram on completion.
+  const activeConv = cur.conversations.find(
+    (c) => c.id === cur.activeConversationId,
+  );
+  const telegramChatId =
+    activeConv?.source === "telegram" ? activeConv.telegramChatId : undefined;
 
   abortRef = new AbortController();
   const signal = abortRef.signal;
@@ -180,6 +188,12 @@ export async function sendMessage(
         });
         store.resetStreaming();
         store.setBusy(false);
+
+        if (telegramChatId !== undefined && acc.trim()) {
+          sendTelegramMessage(telegramChatId, acc).catch((err) =>
+            console.warn("[telegram] outbound reply failed:", err),
+          );
+        }
 
         // If the agent wrote / edited / deleted / ran bash, auto-commit
         // the result. The commit message is a short summary of the

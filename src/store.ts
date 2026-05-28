@@ -580,6 +580,19 @@ type State = {
   selectConversation: (id: string) => void;
   deleteConversation: (id: string) => void;
   setShowChatsPanel: (b: boolean) => void;
+  // Ingest a user message from an external source (Telegram, scheduled
+  // run) into an existing conversation or a new one. Activates the
+  // chat only if `activate` is set; otherwise just appends + marks
+  // unread so the user can notice it in the Chats panel.
+  ingestExternalMessage: (payload: {
+    text: string;
+    source: "telegram" | "scheduled";
+    telegramChatId?: number;
+    matchByTelegramChatId?: number;
+    titleHint?: string;
+    activate?: boolean;
+  }) => { conversationId: string; isNew: boolean };
+  setConversationAutoMode: (id: string, on: boolean) => void;
 };
 
 export const useStore = create<State>((set) => ({
@@ -1574,6 +1587,85 @@ export const useStore = create<State>((set) => ({
       };
     }),
   setShowChatsPanel: (b) => set({ showChatsPanel: b }),
+  ingestExternalMessage: (payload) => {
+    let assigned = { conversationId: "", isNew: false };
+    set((s) => {
+      const now = Date.now();
+      const newUserMsg: ChatMessage = {
+        role: "user",
+        content: payload.text,
+      };
+      // Find an existing conversation to append to.
+      let targetIdx = -1;
+      if (payload.matchByTelegramChatId != null) {
+        targetIdx = s.conversations.findIndex(
+          (c) => c.telegramChatId === payload.matchByTelegramChatId,
+        );
+      }
+      if (targetIdx >= 0) {
+        const target = s.conversations[targetIdx]!;
+        const isActive = s.activeConversationId === target.id;
+        const updatedTarget: Conversation = {
+          ...target,
+          messages: [...target.messages, newUserMsg],
+          lastActivityAt: now,
+          unread: !isActive,
+          title:
+            target.title === "New chat"
+              ? deriveConversationTitle([...target.messages, newUserMsg])
+              : target.title,
+        };
+        const conversations = s.conversations.map((c, i) =>
+          i === targetIdx ? updatedTarget : c,
+        );
+        assigned = { conversationId: target.id, isNew: false };
+        if (isActive) {
+          return {
+            conversations,
+            messages: updatedTarget.messages,
+          };
+        }
+        return { conversations };
+      }
+      // Make a new conversation. Snapshot the prior active one's
+      // messages first so we don't lose them when switching.
+      const fresh: Conversation = {
+        ...emptyConversation(),
+        source: payload.source,
+        telegramChatId: payload.telegramChatId,
+        unread: !payload.activate,
+        messages: [newUserMsg],
+        title: payload.titleHint ?? deriveConversationTitle([newUserMsg]),
+        lastActivityAt: now,
+      };
+      const synced = payload.activate ? syncActiveMessages(s) : s.conversations;
+      assigned = { conversationId: fresh.id, isNew: true };
+      if (payload.activate) {
+        return {
+          conversations: [fresh, ...synced],
+          activeConversationId: fresh.id,
+          messages: fresh.messages,
+          compactionSummary: null,
+          lastContext: 0,
+          tokenUsage: { prompt: 0, completion: 0, total: 0 },
+          agentTodos: [],
+          streamingText: "",
+          streamingReasoning: "",
+          liveTools: [],
+        };
+      }
+      return {
+        conversations: [fresh, ...synced],
+      };
+    });
+    return assigned;
+  },
+  setConversationAutoMode: (id, on) =>
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === id ? { ...c, autoMode: on } : c,
+      ),
+    })),
 }));
 
 // Mirror the live `messages` / `busy` view back into the active

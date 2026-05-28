@@ -35,6 +35,8 @@ export const KEY = {
   openrouter: "api.openrouter",
   tavily: "service.tavily",
   elevenlabs: "service.elevenlabs",
+  telegram_bot_token: "service.telegram_bot_token",
+  telegram_user_id: "service.telegram_user_id",
 } as const;
 
 // ----- user-managed custom keys -----
