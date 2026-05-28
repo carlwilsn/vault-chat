@@ -113,10 +113,16 @@ export async function sendMessage(
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
     });
   }
-  cur.setBusy(true);
-  if (!isOffTarget) cur.resetStreaming();
   if (isOffTarget && targetConvId) {
+    // Off-target: don't flip the global busy flag — the user's
+    // current chat shouldn't show timer / heartbeat / stop button
+    // for a background run that doesn't belong to it. The target
+    // conversation gets its own per-conv "running" status which
+    // surfaces as the pulse in the Chats panel.
     cur.setConversationStatus(targetConvId, "running");
+  } else {
+    cur.setBusy(true);
+    cur.resetStreaming();
   }
 
   // Flush any pending user-edit-debounce commit before we hand off to
@@ -158,8 +164,13 @@ export async function sendMessage(
   const telegramChatId =
     targetConv?.source === "telegram" ? targetConv.telegramChatId : undefined;
 
-  abortRef = new AbortController();
-  const signal = abortRef.signal;
+  // For off-target runs use a local AbortController — don't clobber
+  // the singleton abortRef that the active conversation's Stop button
+  // controls. Means there's no way to abort a background run from
+  // the UI, but Stop button doesn't render in that case anyway.
+  const controller = new AbortController();
+  if (!isOffTarget) abortRef = controller;
+  const signal = controller.signal;
 
   let acc = "";
   const tools: LiveTool[] = [];
