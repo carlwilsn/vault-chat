@@ -3544,10 +3544,30 @@ use std::sync::Arc;
 static DAEMON_RUNNING: AtomicBool = AtomicBool::new(false);
 static DAEMON_STOP: Mutex<Option<tokio::sync::oneshot::Sender<()>>> = Mutex::new(None);
 
+// Vault-id → absolute path. Each vault that's ever been opened on
+// this machine registers itself. The daemon serves any registered
+// vault by id over HTTP. Survives across daemon restarts (rebuilt
+// on app launch from each vault's opens).
 #[derive(Clone)]
 struct DaemonState {
-    vault: Arc<Mutex<Option<String>>>,
+    vaults: Arc<Mutex<std::collections::HashMap<String, String>>>,
     clients: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+// Daemon state is also accessible outside of the running server so
+// the JS side can register vaults via tauri commands even when the
+// daemon isn't currently running. We keep one global instance.
+static DAEMON_STATE: Mutex<Option<DaemonState>> = Mutex::new(None);
+
+fn daemon_state() -> DaemonState {
+    let mut g = DAEMON_STATE.lock().unwrap();
+    if g.is_none() {
+        *g = Some(DaemonState {
+            vaults: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            clients: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+    }
+    g.as_ref().unwrap().clone()
 }
 
 #[derive(Serialize, Clone)]
@@ -3572,7 +3592,6 @@ fn daemon_status() -> DaemonStatus {
 async fn daemon_start(
     app: AppHandle,
     listen: String,
-    vault: String,
 ) -> Result<(), String> {
     if DAEMON_RUNNING.swap(true, Ordering::SeqCst) {
         return Ok(());
@@ -3580,10 +3599,7 @@ async fn daemon_start(
     let addr: std::net::SocketAddr = listen
         .parse()
         .map_err(|e| format!("invalid listen address {}: {}", listen, e))?;
-    let state = DaemonState {
-        vault: Arc::new(Mutex::new(Some(vault))),
-        clients: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-    };
+    let state = daemon_state();
     let state_clone = state.clone();
 
     use axum::{
@@ -3593,8 +3609,8 @@ async fn daemon_start(
 
     let app_router: Router = Router::new()
         .route("/health", get(|| async { "ok" }))
-        .route("/conversations", get(daemon_get_conversations))
-        .route("/conversations", post(daemon_put_conversations))
+        .route("/vaults/:id/conversations", get(daemon_get_conversations_by_id))
+        .route("/vaults/:id/conversations", post(daemon_put_conversations_by_id))
         .with_state(state_clone);
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
@@ -3660,15 +3676,17 @@ fn daemon_stop() -> Result<(), String> {
     Ok(())
 }
 
-async fn daemon_get_conversations(
+async fn daemon_get_conversations_by_id(
     axum::extract::State(state): axum::extract::State<DaemonState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<axum::Json<Vec<String>>, (axum::http::StatusCode, String)> {
     let vault = state
-        .vault
+        .vaults
         .lock()
         .unwrap()
-        .clone()
-        .ok_or((axum::http::StatusCode::SERVICE_UNAVAILABLE, "no vault".into()))?;
+        .get(&id)
+        .cloned()
+        .ok_or((axum::http::StatusCode::NOT_FOUND, format!("unknown vault id: {}", id)))?;
     let path = std::path::Path::new(&vault)
         .join(NOTES_DIR)
         .join(CONVERSATIONS_FILE);
@@ -3693,16 +3711,18 @@ async fn daemon_get_conversations(
     Ok(axum::Json(lines))
 }
 
-async fn daemon_put_conversations(
+async fn daemon_put_conversations_by_id(
     axum::extract::State(state): axum::extract::State<DaemonState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
     axum::Json(lines): axum::Json<Vec<String>>,
 ) -> Result<axum::http::StatusCode, (axum::http::StatusCode, String)> {
     let vault = state
-        .vault
+        .vaults
         .lock()
         .unwrap()
-        .clone()
-        .ok_or((axum::http::StatusCode::SERVICE_UNAVAILABLE, "no vault".into()))?;
+        .get(&id)
+        .cloned()
+        .ok_or((axum::http::StatusCode::NOT_FOUND, format!("unknown vault id: {}", id)))?;
     let dir = std::path::Path::new(&vault).join(NOTES_DIR);
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return Err((
@@ -3732,12 +3752,27 @@ async fn daemon_put_conversations(
 }
 
 #[tauri::command]
-async fn daemon_set_vault(vault: String) -> Result<(), String> {
-    // Updating the daemon's vault while running is fine — subsequent
-    // requests just hit the new path. No client-side coordination
-    // required since we serve the whole snapshot each time.
-    let _ = vault;
+async fn daemon_register_vault(vault_id: String, vault_path: String) -> Result<(), String> {
+    // Register a vault so the daemon can serve it over HTTP. Called
+    // by the JS side whenever a vault gets opened locally. Safe to
+    // call repeatedly — idempotent on the id.
+    let state = daemon_state();
+    state.vaults.lock().unwrap().insert(vault_id, vault_path);
     Ok(())
+}
+
+#[tauri::command]
+async fn daemon_unregister_vault(vault_id: String) -> Result<(), String> {
+    let state = daemon_state();
+    state.vaults.lock().unwrap().remove(&vault_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn daemon_registered_vaults() -> Result<Vec<String>, String> {
+    let state = daemon_state();
+    let ids: Vec<String> = state.vaults.lock().unwrap().keys().cloned().collect();
+    Ok(ids)
 }
 
 #[tauri::command]
@@ -4044,7 +4079,9 @@ pub fn run() {
             daemon_status,
             daemon_start,
             daemon_stop,
-            daemon_set_vault,
+            daemon_register_vault,
+            daemon_unregister_vault,
+            daemon_registered_vaults,
             tailscale_hostname,
             meta_vault_init,
             meta_vault_path,

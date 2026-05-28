@@ -478,9 +478,25 @@ export default function App() {
   }, [vaultPath]);
 
   // Cross-machine sync — daemon (server) or client (consumer) per the
-  // user's mode setting in Settings.
+  // user's mode setting in Settings. Also registers this vault with
+  // the local daemon-state map (idempotent) so the daemon can serve
+  // it by vault-id even if cross-sync is later enabled. The vault-id
+  // file gets created on first read; auto-sync (item #6) propagates
+  // it to other machines via git so both sides converge.
   useEffect(() => {
     if (!vaultPath) return;
+    void (async () => {
+      try {
+        const { ensureVaultId } = await import("./vaultId");
+        const id = await ensureVaultId(vaultPath);
+        await invoke("daemon_register_vault", {
+          vaultId: id,
+          vaultPath,
+        });
+      } catch (e) {
+        console.warn("[vault-id] register failed:", e);
+      }
+    })();
     void startCrossSync(vaultPath);
     return () => {
       void stopCrossSync();

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Conversation } from "./conversations";
+import { ensureVaultId, readVaultId } from "./vaultId";
 
 // Cross-machine sync. One machine runs in "daemon" mode (HTTP server
 // hosting conversations.jsonl); other machines connect as "client",
@@ -102,9 +103,19 @@ export async function startCrossSync(vault: string): Promise<void> {
   const config = readCrossSyncConfig();
   snapshot = { ...snapshot, mode: config.mode };
   emit();
+  // Ensure this vault has a stable id and register it with the local
+  // daemon state map. The daemon may not be running yet — registration
+  // is idempotent and lives in a separate static, so daemon_start
+  // later picks it up automatically.
+  try {
+    const id = await ensureVaultId(vault);
+    await invoke("daemon_register_vault", { vaultId: id, vaultPath: vault });
+  } catch (e) {
+    console.warn("[crosssync] vault registration failed:", e);
+  }
   if (config.mode === "daemon") {
     try {
-      await invoke("daemon_start", { listen: config.daemonListen, vault });
+      await invoke("daemon_start", { listen: config.daemonListen });
     } catch (e) {
       snapshot = { ...snapshot, error: String(e), running: false };
       emit();
@@ -142,12 +153,35 @@ export function getClientDaemonUrl(): string {
   return readCrossSyncConfig().daemonUrl;
 }
 
-// Client-side: fetch the remote conversations snapshot. Used by the
-// frontend when mode === "client" instead of reading local disk.
-export async function clientFetchConversations(): Promise<Conversation[]> {
+// Indicates the daemon doesn't know this vault. Caller should fall
+// back to local disk rather than treating it as a hard failure.
+export class DaemonVaultNotFound extends Error {
+  constructor(public vaultId: string) {
+    super(`daemon does not serve vault id ${vaultId}`);
+    this.name = "DaemonVaultNotFound";
+  }
+}
+
+// Client-side: fetch the remote conversations snapshot for a
+// specific vault. Used by readConversations when mode === "client".
+// Throws DaemonVaultNotFound if the daemon doesn't know this vault
+// — caller falls back to local disk.
+export async function clientFetchConversations(
+  vault: string,
+): Promise<Conversation[]> {
   const url = getClientDaemonUrl();
   if (!url) throw new Error("daemon URL not configured");
-  const res = await fetch(stripSlash(url) + "/conversations");
+  const id = await readVaultId(vault);
+  if (!id) {
+    // No id locally yet → can't ask the daemon for it. Caller falls
+    // back to local disk; an id will be generated and propagated via
+    // git auto-sync over time.
+    throw new DaemonVaultNotFound("(no local vault-id)");
+  }
+  const res = await fetch(
+    stripSlash(url) + `/vaults/${encodeURIComponent(id)}/conversations`,
+  );
+  if (res.status === 404) throw new DaemonVaultNotFound(id);
   if (!res.ok) throw new Error(`daemon ${res.status}`);
   const lines = (await res.json()) as string[];
   const out: Conversation[] = [];
@@ -163,16 +197,23 @@ export async function clientFetchConversations(): Promise<Conversation[]> {
 }
 
 export async function clientPushConversations(
+  vault: string,
   conversations: Conversation[],
 ): Promise<void> {
   const url = getClientDaemonUrl();
   if (!url) throw new Error("daemon URL not configured");
+  const id = await readVaultId(vault);
+  if (!id) throw new DaemonVaultNotFound("(no local vault-id)");
   const lines = conversations.map((c) => JSON.stringify(c));
-  const res = await fetch(stripSlash(url) + "/conversations", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(lines),
-  });
+  const res = await fetch(
+    stripSlash(url) + `/vaults/${encodeURIComponent(id)}/conversations`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(lines),
+    },
+  );
+  if (res.status === 404) throw new DaemonVaultNotFound(id);
   if (!res.ok) throw new Error(`daemon ${res.status}`);
 }
 
