@@ -304,7 +304,11 @@ export async function sendMessage(
         const mutating = new Set(["Write", "Edit", "Delete", "Bash", "NotebookEdit"]);
         const touched = tools.filter((t) => mutating.has(t.name));
         if (touched.length > 0) {
-          const subject = commitSubject(trimmed, touched);
+          // `[agent]` prefix on the subject so `git log --grep='^\[agent\]'`
+          // cleanly separates what the agent wrote from what the user
+          // wrote. The file-watcher / editor auto-commits leave subjects
+          // un-prefixed, which is the user's implicit bucket.
+          const subject = `[agent] ${commitSubject(trimmed, touched)}`;
           const body = touchedFilesBody(touched);
           const msg = body ? `${subject}\n\n${body}` : subject;
           // Second flush for edits the user made WHILE the agent was
