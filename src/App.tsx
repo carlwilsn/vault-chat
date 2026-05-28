@@ -11,6 +11,7 @@ import { Titlebar } from "./Titlebar";
 import { NotePopup } from "./NotePopup";
 import { VoiceTextPanel } from "./VoiceTextPanel";
 import { NotesPanel } from "./NotesPanel";
+import { ChatsPanel } from "./ChatsPanel";
 import { UpdateBanner } from "./UpdateBanner";
 import { fileKind } from "./fileKind";
 import type { NoteAnchor } from "./notes";
@@ -35,6 +36,11 @@ export default function App() {
   const setShowHistory = useStore((s) => s.setShowHistory);
   const loadNotes = useStore((s) => s.loadNotes);
   const notesLoaded = useStore((s) => s.notesLoaded);
+  const showChatsPanel = useStore((s) => s.showChatsPanel);
+  const setShowChatsPanel = useStore((s) => s.setShowChatsPanel);
+  const loadConversations = useStore((s) => s.loadConversations);
+  const conversationsLoaded = useStore((s) => s.conversationsLoaded);
+  const newConversation = useStore((s) => s.newConversation);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -193,6 +199,15 @@ export default function App() {
       } else if (k === "h" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         setShowHistory(true);
+      } else if (k === "t" && !e.shiftKey && !e.altKey) {
+        // Ctrl+T — start a fresh chat. The browser/webview's native
+        // "new tab" is already swallowed by Tauri, so we don't fight
+        // any platform shortcut here.
+        const s = useStore.getState();
+        if (!s.vaultPath || !s.conversationsLoaded) return;
+        e.preventDefault();
+        s.newConversation();
+        if (s.rightCollapsed) s.toggleRight();
       } else if (k === "j" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         invoke("open_terminal", {
@@ -202,7 +217,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleMode, toggleLeft, toggleRight, currentFile, setTheme, openNoteComposer, setShowHistory]);
+  }, [toggleMode, toggleLeft, toggleRight, currentFile, setTheme, openNoteComposer, setShowHistory, newConversation]);
 
   // Lazy-load notes the first time a vault is active (or after a vault
   // switch, which resets notesLoaded).
@@ -211,6 +226,14 @@ export default function App() {
       loadNotes();
     }
   }, [vaultPath, notesLoaded, loadNotes]);
+
+  // Same shape for the multi-chat conversations list — load lazily
+  // per-vault, then store mirrors keep it in sync to disk.
+  useEffect(() => {
+    if (vaultPath && !conversationsLoaded) {
+      loadConversations();
+    }
+  }, [vaultPath, conversationsLoaded, loadConversations]);
 
   // Sweep stale chat-pane captures on every vault activation. The
   // user's mental model is "captures are for this session" — once a
@@ -321,6 +344,15 @@ export default function App() {
         onClose={closeNoteComposer}
       />
       <NotesPanel open={showNotesPanel} onClose={() => setShowNotesPanel(false)} />
+      <ChatsPanel
+        open={showChatsPanel}
+        onClose={() => setShowChatsPanel(false)}
+        onFocusComposer={() => {
+          // Composer focus is owned by ChatPane; emit a custom event so
+          // we don't have to thread a ref through the Allotment tree.
+          window.dispatchEvent(new CustomEvent("vc-focus-composer"));
+        }}
+      />
       <VoiceTextPanel />
       <UpdateBanner />
     </div>

@@ -6,7 +6,7 @@ import remarkBreaks from "remark-breaks";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import { preprocessMarkdownMath } from "./mdMath";
-import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, History } from "lucide-react";
+import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare } from "lucide-react";
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
@@ -313,16 +313,11 @@ export function ChatPane() {
   // require the same hook-call order on every render, and putting these
   // after the returns means they get skipped when settings is open then
   // run when it closes (React error #310).
-  const saveCurrentChat = useStore((s) => s.saveCurrentChat);
-  const loadSavedChat = useStore((s) => s.loadSavedChat);
-  const savedChats = useStore((s) => s.savedChats);
-  const [recentsOpen, setRecentsOpen] = useState(false);
-  useEffect(() => {
-    if (!recentsOpen) return;
-    const close = () => setRecentsOpen(false);
-    window.addEventListener("mousedown", close);
-    return () => window.removeEventListener("mousedown", close);
-  }, [recentsOpen]);
+  const setShowChatsPanel = useStore((s) => s.setShowChatsPanel);
+  const showChatsPanel = useStore((s) => s.showChatsPanel);
+  const conversations = useStore((s) => s.conversations);
+  const anyRunning = conversations.some((c) => c.status === "running");
+  const toggleChatsPanel = () => setShowChatsPanel(!showChatsPanel);
   const [pendingImages, setPendingImages] = useState<
     Array<{
       imageDataUrl: string;
@@ -430,6 +425,12 @@ export function ChatPane() {
       setSkills([]);
     }
   }, [vaultPath, setSkills]);
+
+  useEffect(() => {
+    const onFocus = () => inputRef.current?.focus();
+    window.addEventListener("vc-focus-composer", onFocus);
+    return () => window.removeEventListener("vc-focus-composer", onFocus);
+  }, []);
 
   useEffect(() => {
     const el = inputRef.current;
@@ -564,15 +565,6 @@ export function ChatPane() {
       const additions = urls.filter(Boolean).map((u) => ({ imageDataUrl: u }));
       if (additions.length > 0) setPendingImages((prev) => [...prev, ...additions]);
     });
-  };
-  // Defensive `?? []` in case the store field is ever missing.
-  const savedForVault = (savedChats ?? []).filter((c) => c.vaultPath === vaultPath);
-  const onPickRecent = (id: string) => {
-    setRecentsOpen(false);
-    // Snapshot what's currently on screen first so the user can come
-    // back to it — same rolling-buffer behaviour as Clear.
-    saveCurrentChat();
-    loadSavedChat(id);
   };
   const onSelectModel = (id: string) => dispatchChatAction({ kind: "setModel", id });
 
@@ -999,42 +991,21 @@ export function ChatPane() {
                   <span>{formatTokens(lastContext)}</span>
                 </div>
               )}
-              {savedForVault.length > 0 && (
-                <div className="relative">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setRecentsOpen((v) => !v);
-                    }}
-                    className="hover:text-foreground transition-colors"
-                    title={`Recent conversations (${savedForVault.length})`}
-                  >
-                    <History className="h-3 w-3" />
-                  </button>
-                  {recentsOpen && (
-                    <div
-                      className="absolute right-0 bottom-5 z-40 w-[280px] rounded-md border border-border bg-card shadow-lg py-1 text-[12px]"
-                      onMouseDown={(e) => e.stopPropagation()}
-                    >
-                      <div className="px-3 py-1 text-[10.5px] uppercase tracking-wider text-muted-foreground/80">
-                        Recent conversations
-                      </div>
-                      {savedForVault.map((c) => (
-                        <button
-                          key={c.id}
-                          onClick={() => onPickRecent(c.id)}
-                          className="w-full text-left px-3 py-1.5 hover:bg-accent/60 flex flex-col gap-0.5"
-                        >
-                          <span className="truncate text-foreground">{c.title}</span>
-                          <span className="text-[10.5px] text-muted-foreground/80">
-                            {savedRelativeTime(c.savedAt)} · {c.messages.length} message
-                            {c.messages.length === 1 ? "" : "s"}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+              {!isPopout && (
+                <button
+                  onClick={toggleChatsPanel}
+                  className="relative flex items-center gap-1 text-[11px] text-foreground hover:text-foreground transition-colors"
+                  title="Chats — switch, see history, see what's running"
+                >
+                  <MessageSquare className="h-3 w-3" />
+                  <span>Chats</span>
+                  {anyRunning && (
+                    <span className="relative inline-flex h-1.5 w-1.5 ml-0.5" title="A chat is running">
+                      <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
+                      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+                    </span>
                   )}
-                </div>
+                </button>
               )}
               {messages.length > 0 && (
                 <button
@@ -1051,18 +1022,6 @@ export function ChatPane() {
       </div>
     </div>
   );
-}
-
-function savedRelativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const sec = Math.round(diff / 1000);
-  if (sec < 60) return "just now";
-  const min = Math.round(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.round(hr / 24);
-  return `${day}d ago`;
 }
 
 function toolSummary(input: any): string {

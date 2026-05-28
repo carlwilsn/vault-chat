@@ -116,6 +116,7 @@ const DENY_FILE: &str = ".vaultchatdeny";
 const NOTES_DIR: &str = ".vault-chat";
 const NOTES_FILE: &str = "notes.jsonl";
 const HUMANIZED_FILE: &str = "humanized.json";
+const CONVERSATIONS_FILE: &str = "conversations.jsonl";
 
 #[derive(Serialize)]
 struct FileEntry {
@@ -811,6 +812,49 @@ async fn notes_write_all(vault: String, lines: Vec<String>) -> Result<(), String
             body.push('\n');
         }
         std::fs::write(&path, body).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn conversations_read(vault: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = std::path::Path::new(&vault)
+            .join(NOTES_DIR)
+            .join(CONVERSATIONS_FILE);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let contents = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        Ok(contents
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(String::from)
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = std::path::Path::new(&vault).join(NOTES_DIR);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
+        let path = dir.join(CONVERSATIONS_FILE);
+        let tmp = dir.join(format!("{}.tmp", CONVERSATIONS_FILE));
+        let mut body = lines.join("\n");
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        // Write-temp-then-rename so a crash mid-write leaves the previous
+        // good file in place rather than a half-written one.
+        std::fs::write(&tmp, body)
+            .map_err(|e| format!("write {}: {}", tmp.display(), e))?;
+        std::fs::rename(&tmp, &path)
+            .map_err(|e| format!("rename {} -> {}: {}", tmp.display(), path.display(), e))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2907,6 +2951,8 @@ pub fn run() {
             notes_read,
             notes_append,
             notes_write_all,
+            conversations_read,
+            conversations_write_all,
             open_terminal,
             git_init_if_needed,
             git_commit_all,

@@ -5,6 +5,13 @@ import { DEFAULT_MODEL_ID, setLiveCatalog } from "./providers";
 import type { Skill } from "./skills";
 import type { Note } from "./notes";
 import { readNotes, appendNote, writeAllNotes } from "./notes";
+import {
+  type Conversation,
+  deriveConversationTitle,
+  emptyConversation,
+  readConversations,
+  writeConversations,
+} from "./conversations";
 import { formatNote } from "./notes-format";
 import { findModel } from "./providers";
 import { keychainGet, keychainSet, keychainDelete, KEY } from "./keychain";
@@ -444,6 +451,14 @@ type State = {
   // loads another saved chat. UI shows entries matching the current
   // vaultPath.
   savedChats: SavedChat[];
+  // Multi-chat inbox (piece #1). Persisted per-vault to
+  // <vault>/.vault-chat/conversations.jsonl. The active conversation's
+  // messages mirror the top-level `messages` field — switching
+  // conversations swaps `messages` in/out of the active entry.
+  conversations: Conversation[];
+  activeConversationId: string | null;
+  conversationsLoaded: boolean;
+  showChatsPanel: boolean;
 
   setVault: (p: string) => void;
   setFiles: (f: FileEntry[]) => void;
@@ -560,6 +575,11 @@ type State = {
     agentTodos?: TodoItem[];
   }) => void;
   clearMessages: () => void;
+  loadConversations: () => Promise<void>;
+  newConversation: () => string;
+  selectConversation: (id: string) => void;
+  deleteConversation: (id: string) => void;
+  setShowChatsPanel: (b: boolean) => void;
 };
 
 export const useStore = create<State>((set) => ({
@@ -621,6 +641,10 @@ export const useStore = create<State>((set) => ({
   editorSelection: null,
   noteComposer: { open: false },
   savedChats: loadSavedChats(),
+  conversations: [],
+  activeConversationId: null,
+  conversationsLoaded: false,
+  showChatsPanel: false,
 
   setVault: (p) =>
     set((s) => {
@@ -669,6 +693,10 @@ export const useStore = create<State>((set) => ({
         agentTodos: [],
         notes: [],
         notesLoaded: false,
+        conversations: [],
+        activeConversationId: null,
+        conversationsLoaded: false,
+        showChatsPanel: false,
         currentFile: null,
         currentContent: "",
         panes: [],
@@ -1390,7 +1418,192 @@ export const useStore = create<State>((set) => ({
         liveTools: [],
       };
     }),
+  loadConversations: async () => {
+    const vault = useStore.getState().vaultPath;
+    if (!vault) return;
+    try {
+      const list = await readConversations(vault);
+      const state = useStore.getState();
+      // First-run migration: if conversations.jsonl is empty but the
+      // user has live messages from the legacy single-chat path,
+      // promote them into a first conversation entry so nothing is
+      // lost across the upgrade.
+      if (list.length === 0 && state.messages.length > 0) {
+        const seeded: Conversation = {
+          ...emptyConversation(),
+          messages: state.messages,
+          title: deriveConversationTitle(state.messages),
+          lastActivityAt: Date.now(),
+        };
+        const next = [seeded];
+        useStore.setState({
+          conversations: next,
+          activeConversationId: seeded.id,
+          conversationsLoaded: true,
+        });
+        try {
+          await writeConversations(vault, next);
+        } catch (e) {
+          console.warn("[conversations] seed-write failed:", e);
+        }
+        return;
+      }
+      if (list.length === 0) {
+        // Brand-new vault — start with one empty conversation so the
+        // chat surface always has something selected.
+        const fresh = emptyConversation();
+        useStore.setState({
+          conversations: [fresh],
+          activeConversationId: fresh.id,
+          conversationsLoaded: true,
+          messages: [],
+        });
+        return;
+      }
+      // Sort by most-recent first; pick the most recent as the active
+      // entry so the user lands on what they were last looking at.
+      const sorted = list
+        .slice()
+        .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+      const active = sorted[0];
+      useStore.setState({
+        conversations: sorted,
+        activeConversationId: active.id,
+        conversationsLoaded: true,
+        messages: active.messages,
+        compactionSummary: null,
+        lastContext: 0,
+        tokenUsage: { prompt: 0, completion: 0, total: 0 },
+        agentTodos: [],
+        streamingText: "",
+        streamingReasoning: "",
+        liveTools: [],
+      });
+    } catch (e) {
+      console.error("[conversations] load failed:", e);
+      useStore.setState({ conversationsLoaded: true });
+    }
+  },
+  newConversation: () => {
+    const fresh = emptyConversation();
+    set((s) => {
+      // Snapshot whatever is in-flight into the prior active entry
+      // before swapping.
+      const synced = syncActiveMessages(s);
+      return {
+        conversations: [fresh, ...synced],
+        activeConversationId: fresh.id,
+        messages: [],
+        compactionSummary: null,
+        lastContext: 0,
+        tokenUsage: { prompt: 0, completion: 0, total: 0 },
+        agentTodos: [],
+        streamingText: "",
+        streamingReasoning: "",
+        liveTools: [],
+      };
+    });
+    return fresh.id;
+  },
+  selectConversation: (id) =>
+    set((s) => {
+      if (s.activeConversationId === id) {
+        // Selecting the already-active chat is just a clear-unread.
+        return {
+          conversations: s.conversations.map((c) =>
+            c.id === id ? { ...c, unread: false } : c,
+          ),
+        };
+      }
+      const target = s.conversations.find((c) => c.id === id);
+      if (!target) return {};
+      const synced = syncActiveMessages(s).map((c) =>
+        c.id === id ? { ...c, unread: false } : c,
+      );
+      return {
+        conversations: synced,
+        activeConversationId: id,
+        messages: target.messages,
+        compactionSummary: null,
+        lastContext: 0,
+        tokenUsage: { prompt: 0, completion: 0, total: 0 },
+        agentTodos: [],
+        streamingText: "",
+        streamingReasoning: "",
+        liveTools: [],
+      };
+    }),
+  deleteConversation: (id) =>
+    set((s) => {
+      const next = s.conversations.filter((c) => c.id !== id);
+      if (s.activeConversationId !== id) {
+        return { conversations: next };
+      }
+      // The active chat was just deleted — fall back to the most
+      // recent surviving conversation, or seed a fresh empty one.
+      if (next.length === 0) {
+        const fresh = emptyConversation();
+        return {
+          conversations: [fresh],
+          activeConversationId: fresh.id,
+          messages: [],
+          compactionSummary: null,
+          lastContext: 0,
+          tokenUsage: { prompt: 0, completion: 0, total: 0 },
+          agentTodos: [],
+          streamingText: "",
+          streamingReasoning: "",
+          liveTools: [],
+        };
+      }
+      const sorted = next
+        .slice()
+        .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+      const target = sorted[0];
+      return {
+        conversations: next,
+        activeConversationId: target.id,
+        messages: target.messages,
+        compactionSummary: null,
+        lastContext: 0,
+        tokenUsage: { prompt: 0, completion: 0, total: 0 },
+        agentTodos: [],
+        streamingText: "",
+        streamingReasoning: "",
+        liveTools: [],
+      };
+    }),
+  setShowChatsPanel: (b) => set({ showChatsPanel: b }),
 }));
+
+// Mirror the live `messages` / `busy` view back into the active
+// conversation entry. Called from any action that swaps the active
+// conversation so the about-to-be-replaced entry keeps its messages.
+function syncActiveMessages(s: State): Conversation[] {
+  if (!s.activeConversationId) return s.conversations;
+  return s.conversations.map((c) => {
+    if (c.id !== s.activeConversationId) return c;
+    const messagesChanged = c.messages !== s.messages;
+    const nextTitle =
+      c.title === "New chat" && s.messages.length > 0
+        ? deriveConversationTitle(s.messages)
+        : c.title;
+    if (
+      !messagesChanged &&
+      nextTitle === c.title &&
+      c.status === (s.busy ? "running" : "idle")
+    ) {
+      return c;
+    }
+    return {
+      ...c,
+      messages: s.messages,
+      title: nextTitle,
+      status: s.busy ? "running" : "idle",
+      lastActivityAt: messagesChanged ? Date.now() : c.lastActivityAt,
+    };
+  });
+}
 
 function deriveSavedChatTitle(messages: ChatMessage[]): string {
   for (const m of messages) {
@@ -1415,6 +1628,52 @@ function loadSavedChats(): SavedChat[] {
     return [];
   }
 }
+
+// Mirror live `messages` + busy state into the active conversation
+// entry, debounce-write the conversations list to disk. Skip while
+// the conversations list is empty (not yet loaded) so we don't write
+// over a real on-disk file with a no-op empty.
+let conversationsPersistTimer: ReturnType<typeof setTimeout> | null = null;
+let conversationsPersistVault: string | null = null;
+function scheduleConversationsPersist(vault: string) {
+  conversationsPersistVault = vault;
+  if (conversationsPersistTimer !== null) return;
+  conversationsPersistTimer = setTimeout(() => {
+    conversationsPersistTimer = null;
+    const v = conversationsPersistVault;
+    if (!v) return;
+    const state = useStore.getState();
+    if (state.vaultPath !== v) return;
+    writeConversations(v, state.conversations).catch((e) =>
+      console.warn("[conversations] persist failed:", e),
+    );
+  }, 500);
+}
+
+let conversationsLastMessagesRef: ChatMessage[] | null = null;
+let conversationsLastBusy = false;
+let conversationsLastListRef: Conversation[] | null = null;
+useStore.subscribe((state) => {
+  if (!state.conversationsLoaded) return;
+  const activeId = state.activeConversationId;
+  const messagesChanged = state.messages !== conversationsLastMessagesRef;
+  const busyChanged = state.busy !== conversationsLastBusy;
+  const listChanged = state.conversations !== conversationsLastListRef;
+  if (!messagesChanged && !busyChanged && !listChanged) return;
+  conversationsLastMessagesRef = state.messages;
+  conversationsLastBusy = state.busy;
+  if (activeId && (messagesChanged || busyChanged)) {
+    const synced = syncActiveMessages(state);
+    if (synced !== state.conversations) {
+      useStore.setState({ conversations: synced });
+      conversationsLastListRef = synced;
+      if (state.vaultPath) scheduleConversationsPersist(state.vaultPath);
+      return;
+    }
+  }
+  conversationsLastListRef = state.conversations;
+  if (state.vaultPath) scheduleConversationsPersist(state.vaultPath);
+});
 
 let savedChatsLastSig = "";
 useStore.subscribe((state) => {

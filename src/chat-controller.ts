@@ -270,12 +270,16 @@ export async function interruptAndSend(
 
 export function clearChat() {
   const s = useStore.getState();
-  // Roll the conversation we're about to drop into the rolling
-  // saved-chats buffer so the user can pull it back from the recents
-  // popover. No-op if there's nothing to save.
+  // With multi-chat, "Delete" removes the active conversation entirely
+  // — the user explicitly clicked the trash. The legacy savedChats
+  // rolling buffer is still updated for cross-vault recovery.
   s.saveCurrentChat();
-  s.clearMessages();
   s.resetStreaming();
+  if (s.activeConversationId) {
+    s.deleteConversation(s.activeConversationId);
+  } else {
+    s.clearMessages();
+  }
 }
 
 export function setModel(id: string) {
