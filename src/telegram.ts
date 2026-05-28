@@ -443,10 +443,47 @@ export async function resolveImagePathForTelegram(
   return null;
 }
 
+// Strip markdown syntax from text destined for Telegram. Even with
+// "plain text only" in the system prompt, smaller models (Haiku) emit
+// markdown anyway; without this the phone sees literal asterisks /
+// hashes / backticks. Catches the common shapes — perfect parsing
+// not required, just less-broken output than raw.
+export function stripMarkdownForTelegram(text: string): string {
+  let s = text;
+  // Code fences: keep the inner code, drop the fence + language tag.
+  s = s.replace(/```[a-zA-Z0-9_-]*\n?([\s\S]*?)```/g, (_m, code) => code.trim());
+  // Inline code `foo` → foo
+  s = s.replace(/`([^`\n]+)`/g, "$1");
+  // Bold **foo** / __foo__ → foo
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, "$1");
+  s = s.replace(/__([^_\n]+)__/g, "$1");
+  // Italic *foo* / _foo_ → foo. Apply after bold so we don't munch
+  // bold's leftover singletons.
+  s = s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s.,;:!?)]|$)/g, "$1$2");
+  s = s.replace(/(^|[\s(])_([^_\n]+)_(?=[\s.,;:!?)]|$)/g, "$1$2");
+  // ATX headers `# foo`, `## foo` → foo
+  s = s.replace(/^#{1,6}\s+/gm, "");
+  // Blockquote `> foo` → foo
+  s = s.replace(/^>\s+/gm, "");
+  // Unordered list `- foo` / `* foo` / `+ foo` → • foo (one bullet
+  // char is more telegram-friendly than dropping it entirely, since
+  // it preserves the list visually)
+  s = s.replace(/^[\s]*[-*+]\s+/gm, "• ");
+  // Ordered list `1. foo` → 1. foo (leave alone — looks fine plain)
+  // Links [text](url) → text (url)
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url) =>
+    // Skip the image syntax — those should already be extracted
+    // before this runs.
+    label.startsWith("!") ? "" : `${label} (${url})`,
+  );
+  // Collapse extra blank lines that the strips may have left behind.
+  s = s.replace(/\n{3,}/g, "\n\n");
+  return s.trim();
+}
+
 // Convenience: take an agent's full reply text, split out any image
-// references, upload them as photos, and send the remaining text as
-// a regular message. Called from the Telegram outbound path so
-// markdown image syntax becomes real photos on the phone.
+// references, upload them as photos, strip markdown from the
+// remaining text, and send it as a regular message.
 export async function sendTelegramReplyWithImages(
   vault: string,
   chatId: number,
@@ -459,8 +496,6 @@ export async function sendTelegramReplyWithImages(
       console.warn(
         `[telegram] image not found, falling back to text: ${img.path}`,
       );
-      // Tell the user something rather than silently dropping the
-      // image reference.
       await sendTelegramMessage(
         vault,
         chatId,
@@ -473,7 +508,7 @@ export async function sendTelegramReplyWithImages(
     );
   }
   if (text) {
-    await sendTelegramMessage(vault, chatId, text);
+    await sendTelegramMessage(vault, chatId, stripMarkdownForTelegram(text));
   }
 }
 
