@@ -938,36 +938,103 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     }),
     Schedule: tool({
       description:
-        "Schedule a one-time prompt to fire at a future local time. The prompt runs as a new turn in the *current* conversation when it fires; if the conversation is Telegram-sourced, the reply is also sent to the user's phone. Use for reminders, follow-ups, or any 'come back to me at X' request. The schedule fires while vault-chat is running with this vault available; if the app is closed at fire time, the schedule fires on the next launch when the vault is loaded.",
+        "Schedule a prompt to fire at a future time, either once or recurring. The prompt runs as a new turn in the *current* conversation when it fires; if the conversation is Telegram-sourced, the reply is also sent to the user's phone. Use for reminders ('remind me at 9pm'), recurring briefs ('daily news at 8am'), or polling tasks ('check X every hour'). Exactly one of `when_iso`, `daily_at`, `weekdays_at`, or `every_minutes` must be set — that choice picks the recurrence. The schedule fires while vault-chat is running with this vault available; if the app is closed at fire time, the schedule fires on the next launch when the vault is loaded.",
       inputSchema: z.object({
-        when: z
-          .string()
-          .describe(
-            "ISO 8601 local datetime to fire at, e.g. '2026-05-29T21:30'. Compute from the current time. Must be in the future.",
-          ),
         prompt: z
           .string()
           .describe(
-            "The text that will be sent as the user's turn at fire time. Phrase it as what you want the agent (probably future-you) to do. Example: 'Remind me to take pizza out of the oven.'",
+            "The text that will be sent as the user's turn each time it fires. Phrase it as what you want the agent to do at fire time. Example for a daily brief: 'Give me the top 5 news stories of the day with one sentence analysis each.'",
           ),
         description: z
           .string()
           .optional()
-          .describe("Short label for the schedule (shown in the Schedules panel)."),
+          .describe("Short label shown in the Schedules panel."),
+        when_iso: z
+          .string()
+          .optional()
+          .describe(
+            "ONE-TIME fire. ISO 8601 local datetime e.g. '2026-05-29T21:30'. Compute from the current time.",
+          ),
+        daily_at: z
+          .string()
+          .optional()
+          .describe("DAILY fire. Time of day in 'HH:MM' 24h format, e.g. '08:00'."),
+        weekdays_at: z
+          .string()
+          .optional()
+          .describe("WEEKDAYS-ONLY fire (Mon-Fri). Time in 'HH:MM' 24h format."),
+        every_minutes: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            "EVERY-N-MINUTES fire. Integer minutes between fires, minimum 5. Use sparingly — at 60 you're calling the model 24 times a day; cheaper models / shorter prompts help. Warn the user about cost if they ask for something <30 minutes.",
+          ),
       }),
-      execute: async ({ when, prompt, description }) => {
+      execute: async ({
+        prompt,
+        description,
+        when_iso,
+        daily_at,
+        weekdays_at,
+        every_minutes,
+      }) => {
         if (!conversationId) {
           return "Schedule tool unavailable: no current conversation id.";
         }
-        const dt = new Date(when);
-        if (isNaN(dt.getTime())) {
-          return `Invalid datetime '${when}'. Use ISO local format like 2026-05-29T21:30.`;
+        const recurrenceOptions = [
+          when_iso ? "when_iso" : null,
+          daily_at ? "daily_at" : null,
+          weekdays_at ? "weekdays_at" : null,
+          every_minutes ? "every_minutes" : null,
+        ].filter(Boolean);
+        if (recurrenceOptions.length === 0) {
+          return "Set exactly one of when_iso, daily_at, weekdays_at, or every_minutes.";
         }
-        if (dt.getTime() <= Date.now()) {
-          return `Refusing to schedule in the past (${when}). Pick a future time.`;
+        if (recurrenceOptions.length > 1) {
+          return `Set exactly one recurrence option (got ${recurrenceOptions.join(", ")}).`;
         }
-        const date = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
-        const time = `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+
+        let recurrence: import("./schedules").Recurrence;
+        let time = "08:00";
+        let date: string | undefined;
+        let fireDescription: string;
+
+        if (when_iso) {
+          const dt = new Date(when_iso);
+          if (isNaN(dt.getTime())) {
+            return `Invalid datetime '${when_iso}'. Use ISO local format like 2026-05-29T21:30.`;
+          }
+          if (dt.getTime() <= Date.now()) {
+            return `Refusing to schedule in the past (${when_iso}). Pick a future time.`;
+          }
+          recurrence = { kind: "once" };
+          date = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+          time = `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+          fireDescription = `once at ${dt.toLocaleString()}`;
+        } else if (daily_at) {
+          if (!/^\d{1,2}:\d{2}$/.test(daily_at)) {
+            return `Invalid daily_at '${daily_at}'. Use 'HH:MM' 24h format like 08:00.`;
+          }
+          recurrence = { kind: "daily" };
+          time = daily_at.padStart(5, "0");
+          fireDescription = `daily at ${time}`;
+        } else if (weekdays_at) {
+          if (!/^\d{1,2}:\d{2}$/.test(weekdays_at)) {
+            return `Invalid weekdays_at '${weekdays_at}'. Use 'HH:MM' 24h format like 08:00.`;
+          }
+          recurrence = { kind: "weekdays" };
+          time = weekdays_at.padStart(5, "0");
+          fireDescription = `weekdays at ${time}`;
+        } else {
+          const n = every_minutes!;
+          if (n < 5) {
+            return `every_minutes minimum is 5 (got ${n}). Anything finer is just burning API calls.`;
+          }
+          recurrence = { kind: "every", minutes: n };
+          fireDescription = `every ${n} minutes`;
+        }
+
         const { readSchedules, writeSchedules, emptySchedule } = await import("./schedules");
         const { useStore } = await import("./store");
         const store = useStore.getState();
@@ -976,7 +1043,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           ...emptySchedule(store.modelId),
           name: description ?? prompt.split(/\s+/).slice(0, 6).join(" "),
           prompt,
-          recurrence: { kind: "once" as const },
+          recurrence,
           time,
           date,
           target: { kind: "existing" as const, conversationId },
@@ -985,7 +1052,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           sendViaTelegram: isTelegramSourced,
         };
         await writeSchedules(vault, [...list, fresh]);
-        return `Scheduled for ${dt.toLocaleString()}. Will fire as a turn in this conversation${
+        return `Scheduled ${fireDescription}. Will fire as a turn in this conversation${
           isTelegramSourced ? " and send to Telegram." : "."
         }`;
       },
