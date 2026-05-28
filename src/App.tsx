@@ -410,12 +410,12 @@ export default function App() {
           ),
         });
       }
-      // Activate it so chat-controller picks it up as the target, then
-      // drive the inbound text through the normal send pipeline. The
-      // done-hook there mirrors the assistant reply back to Telegram.
-      s.selectConversation(convId);
+      // Don't yank focus to the Telegram chat. Run the agent against
+      // it as a background target — the mid-run-switch logic in
+      // chat-controller routes events to that conversation's stored
+      // messages while the user stays on whatever they had open.
       const { sendMessage } = await import("./chat-controller");
-      void sendMessage(m.text).catch((e) =>
+      void sendMessage(m.text, undefined, undefined, convId).catch((e) =>
         console.warn("[telegram] agent run failed:", e),
       );
     });

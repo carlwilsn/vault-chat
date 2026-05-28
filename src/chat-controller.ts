@@ -23,6 +23,13 @@ export async function sendMessage(
   text: string,
   contextPreamble?: string,
   attachments?: import("./store").ChatAttachment[],
+  // Optional override. When set, the run targets this conversation
+  // instead of whichever is currently active — used by the Telegram
+  // inbound handler so phone messages don't yank the user's focus.
+  // The user keeps looking at whatever they were on; the agent runs
+  // in the background and the off-screen path in the mid-run-switch
+  // logic routes events to the right place.
+  targetConvIdOverride?: string,
 ) {
   const s = useStore.getState();
   if (s.busy) return;
@@ -36,7 +43,23 @@ export async function sendMessage(
   const strictVault = s.strictVaultMode;
   const bashDisabled = s.bashDisabled;
 
+  const targetConvId = targetConvIdOverride ?? s.activeConversationId;
+  const isOffTarget = !!targetConvIdOverride && targetConvIdOverride !== s.activeConversationId;
+  // The conversation we're actually running against — read its
+  // stored messages so the history is correct even when off-target.
+  const targetConv = targetConvId
+    ? s.conversations.find((c) => c.id === targetConvId)
+    : null;
+  const targetMessages = isOffTarget
+    ? (targetConv?.messages ?? [])
+    : s.messages;
+
+  // Skip compaction for off-target runs — compaction reaches into
+  // the global s.messages view, which doesn't belong to the target.
+  // If a Telegram-driven background run grows past the threshold,
+  // we'll compact it the next time the user opens that chat.
   if (
+    !isOffTarget &&
     s.lastContext > COMPACT_THRESHOLD * MODEL_CONTEXT_LIMIT &&
     s.messages.length > KEEP_RECENT
   ) {
@@ -68,30 +91,48 @@ export async function sendMessage(
   }
 
   const cur = useStore.getState();
-  // Context preamble (e.g. @mention file contents) goes in as a hidden
-  // user message — present in the history sent to the agent, but not
-  // rendered in the UI so the visible bubble is just what the user typed.
+  // Append the user message. On-target → global view (current
+  // behavior). Off-target → directly into the target conversation
+  // entry so the user's currently-viewed chat is untouched.
+  const localHistory: ChatMessage[] = isOffTarget ? targetMessages.slice() : [];
+  const pushUserMsg = (m: ChatMessage) => {
+    if (isOffTarget && targetConvId) {
+      cur.appendMessageToConversation(targetConvId, m);
+      localHistory.push(m);
+    } else {
+      cur.appendMessage(m);
+    }
+  };
   if (preamble) {
-    cur.appendMessage({ role: "user", content: preamble, hidden: true });
+    pushUserMsg({ role: "user", content: preamble, hidden: true });
   }
   if (trimmed || (attachments && attachments.length > 0)) {
-    cur.appendMessage({
+    pushUserMsg({
       role: "user",
       content: trimmed,
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
     });
   }
   cur.setBusy(true);
-  cur.resetStreaming();
+  if (!isOffTarget) cur.resetStreaming();
+  if (isOffTarget && targetConvId) {
+    cur.setConversationStatus(targetConvId, "running");
+  }
 
   // Flush any pending user-edit-debounce commit before we hand off to
   // the agent. Otherwise stray uncommitted keystrokes get rolled into
   // the agent's end-of-turn commit with the agent's message.
   await flushEditCommit();
 
-  const filtered = cur.messages.filter((m) => !m.system);
+  // History source depends on target. On-target uses the global view
+  // (which was just appended into above). Off-target uses our local
+  // snapshot of the target conversation's messages plus the user
+  // message we pushed.
+  const filtered = (isOffTarget ? localHistory : useStore.getState().messages).filter(
+    (m) => !m.system,
+  );
   const baseHistory = filtered.map((m) => ({ role: m.role, content: m.content }));
-  const history = cur.compactionSummary
+  const history = cur.compactionSummary && !isOffTarget
     ? [
         {
           role: "user" as const,
@@ -109,21 +150,13 @@ export async function sendMessage(
   const modelId = cur.modelId;
   const currentFile = cur.currentFile;
   const openPaneIds = cur.panes.map((p) => p.id);
-  // Pin the conversation this run is for. If the user navigates away
-  // mid-stream, all live-UI updates (streamingText, liveTools, busy)
-  // are gated on the active conversation still being this one;
-  // otherwise the run's events would leak into whatever conversation
-  // the user is currently looking at.
-  const targetConvId = cur.activeConversationId;
   const isTargetActive = () =>
     useStore.getState().activeConversationId === targetConvId;
-  // If the active conversation is telegram-sourced, mirror the
-  // assistant's final reply back to Telegram on completion.
-  const activeConv = cur.conversations.find(
-    (c) => c.id === cur.activeConversationId,
-  );
+  // Mirror the assistant's final reply to Telegram if the target
+  // conversation is telegram-sourced — regardless of which conv the
+  // user is currently watching.
   const telegramChatId =
-    activeConv?.source === "telegram" ? activeConv.telegramChatId : undefined;
+    targetConv?.source === "telegram" ? targetConv.telegramChatId : undefined;
 
   abortRef = new AbortController();
   const signal = abortRef.signal;
