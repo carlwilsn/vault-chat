@@ -269,47 +269,93 @@ export default function App() {
       // an explicit "start over" trigger every phone message would
       // pile into the same growing thread forever.
       const trimmedText = m.text.trim();
-      if (/^\/(new|reset|start)\b/i.test(trimmedText)) {
-        // Detach the current conversation from this chat_id and start
-        // a fresh one bound to it. Old conversation stays in vault-chat
-        // history (now untethered from Telegram routing).
-        const prev = s.conversations.find(
-          (c) => c.telegramChatId === m.chat_id,
-        );
-        if (prev) {
-          useStore.setState({
-            conversations: useStore.getState().conversations.map((c) =>
-              c.id === prev.id ? { ...c, telegramChatId: undefined } : c,
-            ),
-          });
-        }
-        const freshId = useStore.getState().newConversation();
-        useStore.setState({
-          conversations: useStore.getState().conversations.map((c) =>
-            c.id === freshId
-              ? {
-                  ...c,
-                  source: "telegram",
-                  telegramChatId: m.chat_id,
-                  title: m.from_username
-                    ? `Telegram · @${m.from_username}`
-                    : c.title,
-                }
-              : c,
-          ),
+      const { sendTelegramMessage } = await import("./telegram");
+      // Detach the chat_id mapping from whatever conversation currently
+      // owns it, and attach it to the target instead.
+      const rebindChatIdTo = (targetId: string, titleFallback?: string) => {
+        const prev = useStore
+          .getState()
+          .conversations.find((c) => c.telegramChatId === m.chat_id);
+        let next = useStore.getState().conversations.map((c) => {
+          if (c.id === prev?.id && c.id !== targetId) {
+            return { ...c, telegramChatId: undefined };
+          }
+          if (c.id === targetId) {
+            return {
+              ...c,
+              source: "telegram" as const,
+              telegramChatId: m.chat_id,
+              title: c.title === "New chat" && titleFallback ? titleFallback : c.title,
+            };
+          }
+          return c;
         });
-        const { sendTelegramMessage } = await import("./telegram");
+        useStore.setState({ conversations: next });
+      };
+      if (/^\/(new|start)\b/i.test(trimmedText)) {
+        const freshId = useStore.getState().newConversation();
+        rebindChatIdTo(
+          freshId,
+          m.from_username ? `Telegram · @${m.from_username}` : undefined,
+        );
         sendTelegramMessage(
           m.chat_id,
           "Started a new chat — fresh context. The old conversation is still in vault-chat under Recent.",
         ).catch(() => {});
         return;
       }
-      if (/^\/help\b/i.test(trimmedText)) {
-        const { sendTelegramMessage } = await import("./telegram");
+      if (/^\/reset\b/i.test(trimmedText)) {
+        // /reset with no arg → list. /reset <N> → switch to that index.
+        const argMatch = trimmedText.match(/^\/reset\s+(\d+)\s*$/i);
+        const sorted = s.conversations
+          .slice()
+          .sort((a, b) => b.lastActivityAt - a.lastActivityAt)
+          .slice(0, 10);
+        if (argMatch) {
+          const idx = parseInt(argMatch[1]!, 10) - 1;
+          const target = sorted[idx];
+          if (!target) {
+            sendTelegramMessage(
+              m.chat_id,
+              `No conversation #${idx + 1}. Send /reset alone to see the list.`,
+            ).catch(() => {});
+            return;
+          }
+          rebindChatIdTo(target.id);
+          sendTelegramMessage(
+            m.chat_id,
+            `Reattached to: ${target.title || "New chat"}\nNext messages from your phone land in that conversation.`,
+          ).catch(() => {});
+          return;
+        }
+        if (sorted.length === 0) {
+          sendTelegramMessage(m.chat_id, "No conversations yet.").catch(() => {});
+          return;
+        }
+        const fmtAge = (ts: number) => {
+          const diff = Date.now() - ts;
+          const min = Math.floor(diff / 60_000);
+          if (min < 60) return `${Math.max(1, min)}m`;
+          const hr = Math.floor(min / 60);
+          if (hr < 24) return `${hr}h`;
+          return `${Math.floor(hr / 24)}d`;
+        };
+        const lines = sorted.map(
+          (c, i) =>
+            `${i + 1}. ${c.title || "New chat"} · ${fmtAge(c.lastActivityAt)}${
+              c.telegramChatId === m.chat_id ? " (current)" : ""
+            }`,
+        );
         sendTelegramMessage(
           m.chat_id,
-          "Commands:\n/new (or /reset, /start) — start a fresh conversation; the old one stays in vault-chat\n/help — this message\n\nNote: clearing chat history on your phone is invisible to the bot — use /new or /start to actually reset the conversation on the vault-chat side.",
+          `Recent conversations:\n${lines.join("\n")}\n\nReply /reset <N> to switch to one.`,
+        ).catch(() => {});
+        return;
+      }
+      if (/^\/help\b/i.test(trimmedText)) {
+        sendTelegramMessage(
+          m.chat_id,
+          "Commands:\n/new (or /start) — start a fresh conversation; the old one stays in vault-chat\n/reset — list recent conversations and switch back to one (/reset N)\n/help — this message\n\nNote: clearing chat history on your phone is invisible to the bot — use /new to actually reset on the vault-chat side.",
         ).catch(() => {});
         return;
       }
