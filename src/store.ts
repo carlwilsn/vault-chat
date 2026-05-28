@@ -1308,7 +1308,8 @@ export const useStore = create<State>((set) => ({
       console.error("[notes] reformat failed:", e);
     }
   },
-  setShowNotesPanel: (b) => set({ showNotesPanel: b }),
+  setShowNotesPanel: (b) =>
+    set(b ? { showNotesPanel: true, showChatsPanel: false, showSchedulesPanel: false } : { showNotesPanel: false }),
   setShowHistory: (b) => set({ showHistory: b }),
   requestScrollAnchor: (path, anchor) => set({ pendingScrollAnchor: { path, anchor } }),
   clearScrollAnchor: () => set({ pendingScrollAnchor: null }),
@@ -1590,8 +1591,10 @@ export const useStore = create<State>((set) => ({
         liveTools: [],
       };
     }),
-  setShowChatsPanel: (b) => set({ showChatsPanel: b }),
-  setShowSchedulesPanel: (b) => set({ showSchedulesPanel: b }),
+  setShowChatsPanel: (b) =>
+    set(b ? { showChatsPanel: true, showNotesPanel: false, showSchedulesPanel: false } : { showChatsPanel: false }),
+  setShowSchedulesPanel: (b) =>
+    set(b ? { showSchedulesPanel: true, showNotesPanel: false, showChatsPanel: false } : { showSchedulesPanel: false }),
   ingestExternalMessage: (payload) => {
     let assigned = { conversationId: "", isNew: false };
     set((s) => {

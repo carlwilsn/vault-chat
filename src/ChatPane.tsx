@@ -6,7 +6,7 @@ import remarkBreaks from "remark-breaks";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import { preprocessMarkdownMath } from "./mdMath";
-import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare, Play } from "lucide-react";
+import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare, Play } from "lucide-react";
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
@@ -557,7 +557,6 @@ export function ChatPane() {
   };
 
   const stop = () => dispatchChatAction({ kind: "stop" });
-  const onClear = () => dispatchChatAction({ kind: "clear" });
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     // Snapshot items synchronously — clipboardData is invalidated as
@@ -1035,7 +1034,9 @@ export function ChatPane() {
               {!isPopout && (
                 <button
                   onClick={toggleChatsPanel}
-                  className="relative flex items-center gap-1 text-[11px] text-foreground hover:text-foreground transition-colors"
+                  className={`relative flex items-center gap-1 text-[11px] hover:text-foreground transition-colors ${
+                    showChatsPanel ? "text-foreground font-medium" : "text-muted-foreground"
+                  }`}
                   title="Chats — switch, see history, see what's running"
                 >
                   <MessageSquare className="h-3 w-3" />
@@ -1048,15 +1049,13 @@ export function ChatPane() {
                   )}
                 </button>
               )}
-              {messages.length > 0 && (
-                <button
-                  onClick={onClear}
-                  className="hover:text-foreground transition-colors"
-                  title="Clear conversation (saves it to recents)"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              )}
+              <button
+                onClick={() => useStore.getState().newConversation()}
+                className="hover:text-foreground transition-colors"
+                title="New chat"
+              >
+                <Plus className="h-3 w-3" />
+              </button>
             </div>
           </div>
         </div>

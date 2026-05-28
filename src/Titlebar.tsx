@@ -31,6 +31,7 @@ export function Titlebar() {
     toggleLeft,
     toggleRight,
     setShowNotesPanel,
+    showNotesPanel,
     notes,
     showHistory,
     setShowHistory,
@@ -292,8 +293,12 @@ export function Titlebar() {
               <History className="h-3.5 w-3.5" />
             </button>
             <button
-              onClick={() => setShowNotesPanel(true)}
-              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground relative"
+              onClick={() => setShowNotesPanel(!showNotesPanel)}
+              className={`h-7 w-7 flex items-center justify-center rounded relative ${
+                showNotesPanel
+                  ? "bg-accent text-foreground"
+                  : "hover:bg-accent/60 text-muted-foreground"
+              }`}
               title="Notes (Ctrl+N to create)"
             >
               <StickyNote className="h-3.5 w-3.5" />
@@ -303,7 +308,11 @@ export function Titlebar() {
             </button>
             <button
               onClick={() => setShowSchedulesPanel(!showSchedulesPanel)}
-              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground relative"
+              className={`h-7 w-7 flex items-center justify-center rounded relative ${
+                showSchedulesPanel
+                  ? "bg-accent text-foreground"
+                  : "hover:bg-accent/60 text-muted-foreground"
+              }`}
               title="Schedules (Ctrl+Shift+S)"
             >
               <Clock className="h-3.5 w-3.5" />
