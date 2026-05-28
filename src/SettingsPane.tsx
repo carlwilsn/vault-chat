@@ -9,6 +9,7 @@ import {
   Plus,
   Lock,
   Shield,
+  RefreshCw,
 } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { PROVIDER_LABEL, type ProviderId } from "./providers";
@@ -17,6 +18,20 @@ import { getMetaVaultPath } from "./meta";
 import { gitInitIfNeeded } from "./git";
 import { stopAgent } from "./chat-controller";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
+import {
+  readVaultSyncConfig,
+  writeVaultSyncConfig,
+  setVaultRemote,
+  vaultCommitLocal,
+  vaultPush,
+  vaultPull,
+  vaultGhCreateRepo,
+  subscribeSyncStatus,
+  startVaultSyncLoop,
+  stopVaultSyncLoop,
+  DEFAULT_SYNC_CONFIG,
+  type VaultSyncConfig,
+} from "./vaultSync";
 
 const PROVIDERS: ProviderId[] = ["anthropic", "openai", "google", "openrouter"];
 
@@ -743,6 +758,10 @@ export function SettingsPane() {
 
         <div className="h-px bg-border" />
 
+        <VaultSyncSection />
+
+        <div className="h-px bg-border" />
+
         <section className="space-y-1.5">
           <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Storage
@@ -760,4 +779,350 @@ export function SettingsPane() {
       </div>
     </div>
   );
+}
+
+function VaultSyncSection() {
+  const vaultPath = useStore((s) => s.vaultPath);
+  const [config, setConfig] = useState<VaultSyncConfig | null>(null);
+  const [remoteDraft, setRemoteDraft] = useState("");
+  const [snapshot, setSnapshot] = useState({
+    lastSyncedAt: null as number | null,
+    lastMessage: "",
+    lastError: null as string | null,
+    running: false,
+    remote: null as string | null,
+    hasChanges: false,
+    nestedRepos: [] as string[],
+  });
+  const [busy, setBusy] = useState(false);
+  const [repoNameDraft, setRepoNameDraft] = useState("");
+  const [creatingRepo, setCreatingRepo] = useState(false);
+
+  useEffect(() => {
+    if (!vaultPath) {
+      setConfig(null);
+      return;
+    }
+    let cancelled = false;
+    void readVaultSyncConfig(vaultPath).then((c) => {
+      if (cancelled) return;
+      setConfig(c);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultPath]);
+
+  useEffect(() => {
+    const unsub = subscribeSyncStatus((snap) => {
+      setSnapshot(snap);
+      if (snap.remote && remoteDraft === "") {
+        setRemoteDraft(snap.remote);
+      }
+    });
+    return unsub;
+  }, [remoteDraft]);
+
+  useEffect(() => {
+    if (snapshot.remote && !remoteDraft) {
+      setRemoteDraft(snapshot.remote);
+    }
+  }, [snapshot.remote, remoteDraft]);
+
+  if (!vaultPath || !config) {
+    return (
+      <section className="space-y-2">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+          <RefreshCw className="h-3 w-3" />
+          Vault sync (this vault)
+        </h3>
+        <p className="text-[11.5px] text-muted-foreground/80">
+          Open a vault to configure auto-sync.
+        </p>
+      </section>
+    );
+  }
+
+  const toggleEnabled = async (next: boolean) => {
+    const updated = await writeVaultSyncConfig(vaultPath, { enabled: next });
+    setConfig(updated);
+    if (next) {
+      await startVaultSyncLoop(vaultPath);
+    } else {
+      stopVaultSyncLoop();
+    }
+  };
+
+  const saveRemote = async () => {
+    setBusy(true);
+    try {
+      await setVaultRemote(vaultPath, remoteDraft.trim());
+      if (config.enabled) await startVaultSyncLoop(vaultPath);
+    } catch (e) {
+      console.warn("[vault-sync] set remote failed:", e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveIntervals = async (patch: Partial<VaultSyncConfig>) => {
+    const next = await writeVaultSyncConfig(vaultPath, patch);
+    setConfig(next);
+    if (next.enabled) await startVaultSyncLoop(vaultPath);
+  };
+
+  const forcePull = async () => {
+    setBusy(true);
+    try {
+      await vaultPull(vaultPath);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const forcePush = async () => {
+    setBusy(true);
+    try {
+      await vaultCommitLocal(vaultPath);
+      await vaultPush(vaultPath);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createGhRepo = async () => {
+    const name = repoNameDraft.trim();
+    if (!name) return;
+    setBusy(true);
+    try {
+      const result = await vaultGhCreateRepo(vaultPath, name, true);
+      if (result.ok) {
+        setRepoNameDraft("");
+        setCreatingRepo(false);
+        if (config.enabled) await startVaultSyncLoop(vaultPath);
+      } else {
+        console.warn("[vault-sync] gh repo create:", result.message);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+            <RefreshCw className="h-3 w-3" />
+            Vault sync (this vault)
+          </h3>
+          <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
+            Continuous auto-commit + push + pull against the vault's git remote.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 shrink-0 cursor-pointer">
+          <span className="text-[10.5px] text-muted-foreground">
+            {config.enabled ? "on" : "off"}
+          </span>
+          <input
+            type="checkbox"
+            className="vc-checkbox"
+            checked={config.enabled}
+            onChange={(e) => toggleEnabled(e.target.checked)}
+          />
+        </label>
+      </div>
+      <div className="space-y-2">
+        <div className="space-y-1">
+          <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
+            Git remote
+          </label>
+          <div className="flex gap-2">
+            <Input
+              type="text"
+              value={remoteDraft}
+              onChange={(e) => setRemoteDraft(e.target.value)}
+              placeholder="git@github.com:user/repo.git"
+              className="font-mono text-[11.5px]"
+            />
+            <Button size="sm" onClick={saveRemote} disabled={busy}>
+              Save
+            </Button>
+          </div>
+          {!snapshot.remote && !creatingRepo && (
+            <button
+              onClick={() => setCreatingRepo(true)}
+              className="text-[10.5px] text-muted-foreground/80 hover:text-foreground underline"
+            >
+              Create on GitHub (gh repo create)
+            </button>
+          )}
+          {creatingRepo && (
+            <div className="flex gap-2 pt-1">
+              <Input
+                type="text"
+                value={repoNameDraft}
+                onChange={(e) => setRepoNameDraft(e.target.value)}
+                placeholder="repo name (e.g. school)"
+                className="font-mono text-[11.5px]"
+              />
+              <Button size="sm" onClick={createGhRepo} disabled={busy || !repoNameDraft.trim()}>
+                Create
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setCreatingRepo(false);
+                  setRepoNameDraft("");
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          )}
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="space-y-1">
+            <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
+              Pull every
+            </label>
+            <div className="flex items-center gap-1">
+              <Input
+                type="number"
+                min={5}
+                value={config.pullIntervalSec}
+                onChange={(e) =>
+                  saveIntervals({
+                    pullIntervalSec: Math.max(5, Number(e.target.value) || DEFAULT_SYNC_CONFIG.pullIntervalSec),
+                  })
+                }
+                className="flex-1 tabular-nums"
+              />
+              <span className="text-[10.5px] text-muted-foreground">seconds</span>
+            </div>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
+              Push after
+            </label>
+            <div className="flex items-center gap-1">
+              <Input
+                type="number"
+                min={1}
+                value={config.pushDebounceSec}
+                onChange={(e) =>
+                  saveIntervals({
+                    pushDebounceSec: Math.max(1, Number(e.target.value) || DEFAULT_SYNC_CONFIG.pushDebounceSec),
+                  })
+                }
+                className="flex-1 tabular-nums"
+              />
+              <span className="text-[10.5px] text-muted-foreground">seconds quiet</span>
+            </div>
+          </div>
+        </div>
+        {snapshot.nestedRepos.length > 0 && (
+          <div className="text-[10.5px] text-muted-foreground/80 pt-1">
+            Nested git repos in this vault sync independently against their own remotes:{" "}
+            {snapshot.nestedRepos.map((n, i) => (
+              <span key={n}>
+                {i > 0 && ", "}
+                <span className="font-mono text-foreground/85">{n}</span>
+              </span>
+            ))}{" "}
+            (skipped)
+          </div>
+        )}
+        <div className="pt-1 flex items-center gap-2 flex-wrap">
+          <SyncStatusRow snapshot={snapshot} enabled={config.enabled} />
+          <span className="text-[10.5px] text-muted-foreground/70">·</span>
+          <button
+            onClick={forcePull}
+            disabled={busy || !snapshot.remote}
+            className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            force pull
+          </button>
+          <button
+            onClick={forcePush}
+            disabled={busy || !snapshot.remote}
+            className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            force push
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SyncStatusRow({
+  snapshot,
+  enabled,
+}: {
+  snapshot: {
+    lastSyncedAt: number | null;
+    lastMessage: string;
+    lastError: string | null;
+    running: boolean;
+    remote: string | null;
+    hasChanges: boolean;
+  };
+  enabled: boolean;
+}) {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => force((n) => n + 1), 5000);
+    return () => window.clearInterval(id);
+  }, []);
+  if (!enabled) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
+        idle
+      </span>
+    );
+  }
+  if (snapshot.lastError) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-destructive">
+        <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
+        {snapshot.lastError}
+      </span>
+    );
+  }
+  if (snapshot.running) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <span className="relative inline-flex h-1.5 w-1.5">
+          <span className="absolute inset-0 rounded-full bg-emerald-500 opacity-60 animate-ping" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+        </span>
+        syncing…
+      </span>
+    );
+  }
+  const label = snapshot.lastSyncedAt
+    ? `synced · ${relativeAgo(snapshot.lastSyncedAt)} ago`
+    : snapshot.remote
+      ? "waiting"
+      : "no remote";
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+      {label}
+    </span>
+  );
+}
+
+function relativeAgo(ts: number): string {
+  const sec = Math.floor((Date.now() - ts) / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h`;
+  const day = Math.floor(hr / 24);
+  return `${day}d`;
 }

@@ -2338,6 +2338,377 @@ async fn git_diff_vs_current(
     .map_err(|e| e.to_string())?
 }
 
+// ----- vault auto-sync helpers -----
+//
+// Generic helpers used by the SettingsPane vault-sync section. Returns
+// structured results so the front-end can show "synced 18s ago" / error
+// strings without re-shelling git.
+
+#[derive(Serialize)]
+struct SyncStatus {
+    has_repo: bool,
+    remote: Option<String>,
+    has_changes: bool,
+    /// Newline-separated list of nested repos inside the vault root
+    /// (excluding the vault's own .git). One entry per nested .git
+    /// — the sync loop skips these.
+    nested_repos: Vec<String>,
+}
+
+#[tauri::command]
+async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = PathBuf::from(&vault);
+        let has_repo = root.join(".git").is_dir();
+        if !has_repo {
+            return Ok(SyncStatus {
+                has_repo: false,
+                remote: None,
+                has_changes: false,
+                nested_repos: Vec::new(),
+            });
+        }
+        let (remote_out, _, remote_code) =
+            run_git(&vault, &["remote", "get-url", "origin"])?;
+        let remote = if remote_code == 0 {
+            let s = remote_out.trim();
+            if s.is_empty() { None } else { Some(s.to_string()) }
+        } else {
+            None
+        };
+        let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
+        let has_changes = !status_out.trim().is_empty();
+        let nested_repos = find_nested_repos(&root);
+        Ok(SyncStatus {
+            has_repo,
+            remote,
+            has_changes,
+            nested_repos,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// Walk one level deep and identify directories that have their own
+// .git subdir. Used by the auto-sync loop to skip nested repos so they
+// don't get accidentally committed into the outer vault.
+fn find_nested_repos(root: &std::path::Path) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let name = match p.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        if p.join(".git").is_dir() {
+            found.push(name.to_string());
+        }
+    }
+    found.sort();
+    found
+}
+
+#[tauri::command]
+async fn vault_sync_set_remote(vault: String, url: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let url_t = url.trim();
+        if url_t.is_empty() {
+            // Clearing the remote — `remote remove origin` errors if
+            // origin doesn't exist, which is fine.
+            let _ = run_git(&vault, &["remote", "remove", "origin"]);
+            return Ok(());
+        }
+        let (_, _, code) = run_git(&vault, &["remote", "get-url", "origin"])?;
+        if code == 0 {
+            let (_, stderr, c) = run_git(&vault, &["remote", "set-url", "origin", url_t])?;
+            if c != 0 {
+                return Err(format!("set-url failed: {}", stderr.trim()));
+            }
+        } else {
+            let (_, stderr, c) = run_git(&vault, &["remote", "add", "origin", url_t])?;
+            if c != 0 {
+                return Err(format!("add origin failed: {}", stderr.trim()));
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
+struct SyncOpResult {
+    ok: bool,
+    /// Short summary suitable for the status row. e.g.
+    /// "pulled 3 commits", "nothing to push", "merge conflict in foo.md".
+    message: String,
+    /// True when there's a non-blocking error that should be surfaced
+    /// to the user (e.g. authentication, conflict). The sync loop keeps
+    /// running and retries on the next tick.
+    error: bool,
+}
+
+#[tauri::command]
+async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
+        if status_out.trim().is_empty() {
+            return Ok(SyncOpResult {
+                ok: true,
+                message: "no local changes".into(),
+                error: false,
+            });
+        }
+        // Stage everything outside nested repos. Git already refuses to
+        // recurse into nested .git directories on `add -A` (a nested
+        // repo is treated as a submodule pointer), so this is a no-op
+        // for those — but we add the explicit nested_repos check below
+        // when summarising the commit body.
+        let (_, stderr, code) = run_git(
+            &vault,
+            &[
+                "-c",
+                "user.email=vault-chat@local",
+                "-c",
+                "user.name=vault-chat",
+                "add",
+                "-A",
+            ],
+        )?;
+        if code != 0 {
+            return Ok(SyncOpResult {
+                ok: false,
+                message: format!("add failed: {}", stderr.trim()),
+                error: true,
+            });
+        }
+        let (_, stderr, code) = run_git(
+            &vault,
+            &[
+                "-c",
+                "user.email=vault-chat@local",
+                "-c",
+                "user.name=vault-chat",
+                "commit",
+                "-q",
+                "-m",
+                "vault-chat: auto-sync",
+            ],
+        )?;
+        if code != 0 {
+            return Ok(SyncOpResult {
+                ok: false,
+                message: format!("commit failed: {}", stderr.trim()),
+                error: true,
+            });
+        }
+        Ok(SyncOpResult {
+            ok: true,
+            message: "committed local changes".into(),
+            error: false,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Detect the local branch — most repos default to main, but a
+        // pre-existing vault may be on master or something else.
+        let (branch_out, _, branch_code) =
+            run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+        if branch_code != 0 {
+            return Ok(SyncOpResult {
+                ok: false,
+                message: "no current branch".into(),
+                error: true,
+            });
+        }
+        let branch = branch_out.trim();
+        if branch.is_empty() || branch == "HEAD" {
+            return Ok(SyncOpResult {
+                ok: false,
+                message: "detached HEAD".into(),
+                error: true,
+            });
+        }
+        let (_, _, code) = run_git(&vault, &["remote", "get-url", "origin"])?;
+        if code != 0 {
+            return Ok(SyncOpResult {
+                ok: false,
+                message: "no remote configured".into(),
+                error: false,
+            });
+        }
+        let (_, stderr, fetch_code) = run_git(&vault, &["fetch", "origin", branch])?;
+        if fetch_code != 0 {
+            return Ok(SyncOpResult {
+                ok: false,
+                message: format!("fetch failed: {}", stderr.trim()),
+                error: true,
+            });
+        }
+        // Try a fast-forward first — clean and never creates a merge
+        // commit. If FF isn't possible, fall back to a rebase. If that
+        // fails, abort cleanly and surface a non-blocking error.
+        let upstream = format!("origin/{}", branch);
+        let (_, _, ff_code) =
+            run_git(&vault, &["merge", "--ff-only", &upstream])?;
+        if ff_code == 0 {
+            return Ok(SyncOpResult {
+                ok: true,
+                message: "pulled".into(),
+                error: false,
+            });
+        }
+        let (_, stderr, rebase_code) = run_git(
+            &vault,
+            &[
+                "-c",
+                "user.email=vault-chat@local",
+                "-c",
+                "user.name=vault-chat",
+                "rebase",
+                &upstream,
+            ],
+        )?;
+        if rebase_code != 0 {
+            // Leave the working tree untouched — abort the half-applied
+            // rebase so the next attempt can start clean.
+            let _ = run_git(&vault, &["rebase", "--abort"]);
+            return Ok(SyncOpResult {
+                ok: false,
+                message: format!("merge conflict: {}", first_line(&stderr).trim()),
+                error: true,
+            });
+        }
+        Ok(SyncOpResult {
+            ok: true,
+            message: "rebased onto origin".into(),
+            error: false,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (branch_out, _, branch_code) =
+            run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+        if branch_code != 0 || branch_out.trim() == "HEAD" {
+            return Ok(SyncOpResult {
+                ok: false,
+                message: "no current branch".into(),
+                error: true,
+            });
+        }
+        let branch = branch_out.trim().to_string();
+        let (_, _, code) = run_git(&vault, &["remote", "get-url", "origin"])?;
+        if code != 0 {
+            return Ok(SyncOpResult {
+                ok: false,
+                message: "no remote configured".into(),
+                error: false,
+            });
+        }
+        let (_, stderr, push_code) =
+            run_git(&vault, &["push", "-u", "origin", &branch])?;
+        if push_code != 0 {
+            return Ok(SyncOpResult {
+                ok: false,
+                message: format!("push failed: {}", first_line(&stderr).trim()),
+                error: true,
+            });
+        }
+        Ok(SyncOpResult {
+            ok: true,
+            message: "pushed".into(),
+            error: false,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn vault_sync_gh_create_repo(
+    vault: String,
+    name: String,
+    private_repo: bool,
+) -> Result<SyncOpResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let n = name.trim();
+        if n.is_empty() {
+            return Ok(SyncOpResult {
+                ok: false,
+                message: "repo name required".into(),
+                error: true,
+            });
+        }
+        let visibility = if private_repo { "--private" } else { "--public" };
+        // `gh repo create <name> --source . --remote origin --push --private`
+        // creates the repo on GitHub, points origin at it, and pushes
+        // the current branch in one shot. Fails (non-fatally) if `gh`
+        // isn't installed or the user isn't logged in.
+        #[cfg(windows)]
+        let mut cmd = {
+            use std::os::windows::process::CommandExt;
+            let mut c = Command::new("gh");
+            c.creation_flags(0x08000000);
+            c
+        };
+        #[cfg(not(windows))]
+        let mut cmd = Command::new("gh");
+        cmd.current_dir(&vault);
+        cmd.args(["repo", "create", n, visibility, "--source", ".", "--remote", "origin", "--push"]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let out = match cmd.output() {
+            Ok(o) => o,
+            Err(e) => {
+                return Ok(SyncOpResult {
+                    ok: false,
+                    message: format!("gh CLI not available: {}", e),
+                    error: true,
+                });
+            }
+        };
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Ok(SyncOpResult {
+                ok: false,
+                message: format!("gh create failed: {}", first_line(&stderr).trim()),
+                error: true,
+            });
+        }
+        Ok(SyncOpResult {
+            ok: true,
+            message: "repo created".into(),
+            error: false,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn first_line(s: &str) -> &str {
+    s.lines().next().unwrap_or("")
+}
+
 /// Restore a single path to its content at `hash`, then commit so the
 /// rollback is itself an undoable step. Adds creates, applies edits,
 /// and removes paths that didn't exist at `hash`.
@@ -2966,6 +3337,12 @@ pub fn run() {
             git_file_at,
             git_diff_vs_current,
             git_restore_file_to,
+            vault_sync_status,
+            vault_sync_set_remote,
+            vault_sync_commit_local,
+            vault_sync_pull,
+            vault_sync_push,
+            vault_sync_gh_create_repo,
             meta_vault_init,
             meta_vault_path,
             run_script,

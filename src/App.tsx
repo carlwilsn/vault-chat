@@ -19,6 +19,7 @@ import { useStore } from "./store";
 import { gitInitIfNeeded } from "./git";
 import { useGlobalAnchorClickHandler } from "./linkNav";
 import { applyHljsTheme } from "./main";
+import { startVaultSyncLoop, stopVaultSyncLoop } from "./vaultSync";
 import "./App.css";
 
 export default function App() {
@@ -234,6 +235,18 @@ export default function App() {
       loadConversations();
     }
   }, [vaultPath, conversationsLoaded, loadConversations]);
+
+  // Vault auto-sync — start a per-vault loop when a vault is active.
+  // The loop reads its own opt-in config from <vault>/.vault-chat/
+  // config.json; if disabled, this is a fast no-op. Tear down on
+  // unmount or vault switch so two loops never run at once.
+  useEffect(() => {
+    if (!vaultPath) return;
+    void startVaultSyncLoop(vaultPath);
+    return () => {
+      stopVaultSyncLoop();
+    };
+  }, [vaultPath]);
 
   // Sweep stale chat-pane captures on every vault activation. The
   // user's mental model is "captures are for this session" — once a
