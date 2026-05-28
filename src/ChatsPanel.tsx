@@ -167,9 +167,29 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
                   ))}
                 </Section>
               )}
+              {sections.telegram.length > 0 && (
+                <CollapsibleSection
+                  label={`Telegram (${sections.telegram.length})`}
+                  defaultOpen={false}
+                >
+                  {sections.telegram.map((c) => (
+                    <Row
+                      key={c.id}
+                      conversation={c}
+                      active={c.id === activeId}
+                      onSelect={() => {
+                        selectConversation(c.id);
+                        onClose();
+                      }}
+                      onDelete={() => deleteConversation(c.id)}
+                    />
+                  ))}
+                </CollapsibleSection>
+              )}
               {sections.running.length === 0 &&
                 sections.recent.length === 0 &&
-                sections.earlier.length === 0 && (
+                sections.earlier.length === 0 &&
+                sections.telegram.length === 0 && (
                   <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
                     No matches.
                   </div>
@@ -189,6 +209,31 @@ function Section({ label, children }: { label: string; children: React.ReactNode
         {label}
       </div>
       {children}
+    </>
+  );
+}
+
+function CollapsibleSection({
+  label,
+  defaultOpen,
+  children,
+}: {
+  label: string;
+  defaultOpen: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-1.5 px-4 pt-3 pb-1 text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium hover:text-foreground transition-colors"
+      >
+        <span className="text-[10px] opacity-70">{open ? "▾" : "▸"}</span>
+        {label}
+      </button>
+      {open && children}
     </>
   );
 }
@@ -306,8 +351,17 @@ function groupConversations(list: Conversation[], query: string) {
   const running: Conversation[] = [];
   const recent: Conversation[] = [];
   const earlier: Conversation[] = [];
+  const telegram: Conversation[] = [];
   for (const c of sorted) {
     if (!filter(c)) continue;
+    // Telegram chats live on the phone by default — collapse them
+    // into their own section so they don't pollute the main Recent
+    // / Earlier views. Running-state telegram chats still bubble up
+    // into Running so background activity is visible.
+    if (c.source === "telegram" && c.status !== "running") {
+      telegram.push(c);
+      continue;
+    }
     if (c.status === "running") {
       running.push(c);
       continue;
@@ -315,7 +369,7 @@ function groupConversations(list: Conversation[], query: string) {
     if (now - c.lastActivityAt <= DAY) recent.push(c);
     else earlier.push(c);
   }
-  return { running, recent, earlier };
+  return { running, recent, earlier, telegram };
 }
 
 function relativeTime(ts: number): string {

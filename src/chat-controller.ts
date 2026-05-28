@@ -286,13 +286,21 @@ export async function sendMessage(
           if (kind) store.setConversationAttention(targetConvId, kind);
         }
 
-        if (telegramChatId !== undefined && acc.trim()) {
+        if (telegramChatId !== undefined) {
           // Markdown image refs in the reply get pulled out and sent
           // as photos via sendPhoto; the remaining text goes as a
           // regular message. Telegram doesn't render markdown for
           // sendMessage, so without this the agent's `![alt](path)`
           // arrives as literal text on the phone.
-          sendTelegramReplyWithImages(vault, telegramChatId, acc).catch((err) =>
+          // If acc is empty (model did a tool-only turn with no
+          // prose), fall back to a short "(done)" so the user gets
+          // some signal on the phone instead of silence.
+          const reply = acc.trim()
+            ? acc
+            : tools.length > 0
+              ? `(done — ran ${tools.map((t) => t.name).slice(0, 3).join(", ")}${tools.length > 3 ? "…" : ""})`
+              : "(no reply)";
+          sendTelegramReplyWithImages(vault, telegramChatId, reply).catch((err) =>
             console.warn("[telegram] outbound reply failed:", err),
           );
         }

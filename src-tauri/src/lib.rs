@@ -3418,17 +3418,46 @@ async fn telegram_send_message(
     while i < body.len() {
         let end = std::cmp::min(i + MAX_LEN, body.len());
         let chunk: String = body[i..end].iter().collect();
+        // Telegram per-chat rate limit is ~1 msg/sec. For replies that
+        // span multiple chunks (long agent outputs), pace them so the
+        // tail chunks don't get 429'd and silently dropped — which was
+        // making long responses arrive truncated to the first chunk
+        // while short replies got through cleanly.
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        }
         let payload = serde_json::json!({
             "chat_id": chat_id,
             "text": chunk,
         });
-        let resp = client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
+        // Retry once on 429 (rate-limited) using the retry_after hint
+        // from Telegram. Other failures are treated as fatal.
+        let mut attempt = 0u8;
+        loop {
+            let resp = client
+                .post(&url)
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if resp.status().is_success() {
+                break;
+            }
+            if resp.status().as_u16() == 429 && attempt < 1 {
+                let body_text = resp.text().await.unwrap_or_default();
+                // Parameters.retry_after is in seconds.
+                let wait_s: u64 = serde_json::from_str::<serde_json::Value>(&body_text)
+                    .ok()
+                    .and_then(|j| {
+                        j.get("parameters")
+                            .and_then(|p| p.get("retry_after"))
+                            .and_then(|r| r.as_u64())
+                    })
+                    .unwrap_or(2);
+                tokio::time::sleep(std::time::Duration::from_secs(wait_s.min(30))).await;
+                attempt += 1;
+                continue;
+            }
             let status = resp.status();
             let body_text = resp.text().await.unwrap_or_default();
             return Err(format!(

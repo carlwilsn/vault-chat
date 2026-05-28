@@ -1484,12 +1484,16 @@ export const useStore = create<State>((set) => ({
         });
         return;
       }
-      // Sort by most-recent first; pick the most recent as the active
-      // entry so the user lands on what they were last looking at.
+      // Sort by most-recent first; pick the most recent NON-telegram
+      // entry as the active one. Telegram chats live on the phone by
+      // default — they shouldn't grab the chat-pane on app open just
+      // because they were last touched. User can still click into one
+      // explicitly from the Chats panel.
       const sorted = list
         .slice()
         .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-      const active = sorted[0];
+      const active =
+        sorted.find((c) => c.source !== "telegram") ?? sorted[0];
       useStore.setState({
         conversations: sorted,
         activeConversationId: active.id,
@@ -1595,7 +1599,10 @@ export const useStore = create<State>((set) => ({
       const sorted = next
         .slice()
         .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-      const target = sorted[0];
+      // Same rule as initial load — prefer a non-telegram conv as
+      // the new active one after a delete; telegram chats stay tucked
+      // away unless explicitly opened.
+      const target = sorted.find((c) => c.source !== "telegram") ?? sorted[0];
       return {
         conversations: next,
         activeConversationId: target.id,
