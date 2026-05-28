@@ -468,13 +468,27 @@ export default function App() {
     };
   }, [vaultPath]);
 
-  // Scheduled agent runs — per-vault loop.
+  // Scheduled agent runs — multi-vault. On app launch, start a
+  // scheduler loop for every vault we've ever opened (tracked in
+  // localStorage). Whenever a new vault is opened, start its loop
+  // too. Loops persist across vault switches so a schedule for
+  // vault-B fires at its time even when you're working in vault-A.
+  useEffect(() => {
+    void (async () => {
+      const { getTrackedVaults, startSchedulerLoop } = await import("./schedulerLoop");
+      for (const v of getTrackedVaults()) {
+        void startSchedulerLoop(v);
+      }
+    })();
+    return () => {
+      // Stop all loops on app unmount.
+      stopSchedulerLoop();
+    };
+  }, []);
+  // When a new vault is opened, make sure its loop is running too.
   useEffect(() => {
     if (!vaultPath) return;
     void startSchedulerLoop(vaultPath);
-    return () => {
-      stopSchedulerLoop();
-    };
   }, [vaultPath]);
 
   // Cross-machine sync — daemon (server) or client (consumer) per the

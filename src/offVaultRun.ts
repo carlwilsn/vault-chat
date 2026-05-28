@@ -5,6 +5,7 @@ import {
   writeConversations,
   emptyConversation,
   deriveConversationTitle,
+  newConversationId,
   type Conversation,
 } from "./conversations";
 import { sendTelegramMessage, sendTelegramReplyWithImages } from "./telegram";
@@ -89,6 +90,8 @@ export async function handleOffVaultInbound(
       bashDisabled: store.bashDisabled,
       voiceMode: false,
       telegramMode: true,
+      conversationId: list[idx]?.id,
+      isTelegramSourced: true,
       onEvent: (e) => {
         if (e.kind === "text") {
           acc += e.delta;
@@ -146,6 +149,143 @@ export async function handleOffVaultInbound(
       console.warn("[off-vault] telegram send failed:", e),
     );
   }
+}
+
+// Scheduler fire for a non-active vault. Same disk-only contract as
+// handleOffVaultInbound but the trigger is a schedule, not a Telegram
+// message. If the target conversation is telegram-sourced and the
+// schedule has sendViaTelegram on, the reply also goes to the phone.
+export async function runScheduledHeadlessTurn(
+  vault: string,
+  conversationId: string,
+  prompt: string,
+  opts: { sendViaTelegram: boolean },
+): Promise<void> {
+  const store = useStore.getState();
+  const modelId = store.modelId;
+  const spec = findModel(modelId);
+  const apiKey = spec ? store.apiKeys[spec.provider] : undefined;
+  if (!spec || !apiKey) {
+    console.warn("[scheduler] headless run: no model/key configured");
+    return;
+  }
+
+  const list = await readConversations(vault);
+  let idx = list.findIndex((c) => c.id === conversationId);
+  if (idx < 0) {
+    // The schedule's target conversation no longer exists on disk —
+    // fall back to creating a fresh one rather than dropping the run.
+    const fresh: Conversation = {
+      ...emptyConversation(),
+      id: conversationId,
+      source: "scheduled",
+      title: deriveConversationTitle([{ role: "user", content: prompt }]),
+    };
+    list.unshift(fresh);
+    idx = 0;
+  }
+  const userMsg: ChatMessage = { role: "user", content: prompt };
+  list[idx] = {
+    ...list[idx]!,
+    messages: [...list[idx]!.messages, userMsg],
+    lastActivityAt: Date.now(),
+  };
+  await writeConversations(vault, list);
+
+  const isTelegramSourced = list[idx]!.source === "telegram";
+  const telegramChatId = list[idx]!.telegramChatId;
+
+  let acc = "";
+  const tools: LiveTool[] = [];
+  const baseHistory = list[idx]!.messages
+    .filter((m) => !m.system)
+    .map((m) => ({ role: m.role, content: m.content }));
+
+  try {
+    await runAgent({
+      modelId,
+      apiKey,
+      vault,
+      history: baseHistory,
+      userMessage: prompt,
+      tavilyKey: store.serviceKeys.tavily,
+      strictVault: store.strictVaultMode,
+      bashDisabled: store.bashDisabled,
+      voiceMode: false,
+      telegramMode: isTelegramSourced && opts.sendViaTelegram,
+      conversationId,
+      isTelegramSourced: isTelegramSourced && opts.sendViaTelegram,
+      onEvent: (e) => {
+        if (e.kind === "text") acc += e.delta;
+        else if (e.kind === "tool_use") {
+          tools.push({
+            id: e.id,
+            name: e.name,
+            input: e.input,
+            startedAt: Date.now(),
+          });
+        } else if (e.kind === "tool_result") {
+          const t = tools.find((x) => x.id === e.id);
+          if (t) t.result = e.result;
+        } else if (e.kind === "error") {
+          acc = (acc + `\n\n⚠️ ${e.message}`).trim();
+        }
+      },
+    });
+  } catch (e) {
+    acc = (acc + `\n\n⚠️ scheduled run failed: ${String(e)}`).trim();
+  }
+
+  const finalList = await readConversations(vault);
+  let fi = finalList.findIndex((c) => c.id === conversationId);
+  if (fi < 0) fi = 0;
+  if (finalList[fi]) {
+    const tail = acc.slice(-400);
+    const attention: "ask" | "error" | null =
+      /\(\s*error\s*:[^)]*\)\s*$/i.test(tail)
+        ? "error"
+        : /\(\s*ask\s*:[^)]*\)\s*$/i.test(tail)
+          ? "ask"
+          : null;
+    const assistantMsg: ChatMessage = {
+      role: "assistant",
+      content: acc,
+      toolCalls: tools.length ? tools : undefined,
+    };
+    finalList[fi] = {
+      ...finalList[fi]!,
+      messages: [...finalList[fi]!.messages, assistantMsg],
+      lastActivityAt: Date.now(),
+      unread: true,
+      attention,
+    };
+    await writeConversations(vault, finalList);
+  }
+
+  if (acc.trim() && opts.sendViaTelegram && telegramChatId !== undefined) {
+    await sendTelegramReplyWithImages(vault, telegramChatId, acc).catch((e) =>
+      console.warn("[scheduler] telegram send failed:", e),
+    );
+  }
+}
+
+// Create a fresh conversation entry on disk for a vault that's not
+// currently in memory. Returns the new conversation's id so the
+// scheduler can bind subsequent runs to it.
+export async function createScheduledConversationOnDisk(
+  vault: string,
+  title: string,
+): Promise<string> {
+  const list = await readConversations(vault);
+  const fresh: Conversation = {
+    ...emptyConversation(),
+    id: newConversationId(),
+    source: "scheduled",
+    title,
+  };
+  list.unshift(fresh);
+  await writeConversations(vault, list);
+  return fresh.id;
 }
 
 // Slash command handler for off-vault chats. Mirrors the active-

@@ -74,8 +74,10 @@ export async function runAgent(params: {
   bashDisabled?: boolean;
   voiceMode?: boolean;
   telegramMode?: boolean;
+  conversationId?: string;
+  isTelegramSourced?: boolean;
 }) {
-  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, telegramMode } = params;
+  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, telegramMode, conversationId, isTelegramSourced } = params;
 
   try {
     const spec = findModel(modelId) ?? findModel(DEFAULT_MODEL_ID);
@@ -257,6 +259,8 @@ export async function runAgent(params: {
       tavilyKey,
       strictVault: strictVault ?? false,
       bashDisabled: bashDisabled ?? false,
+      conversationId,
+      isTelegramSourced: isTelegramSourced ?? false,
     });
     const innerTools = { ...builtinTools, ...metaTools };
 

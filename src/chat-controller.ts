@@ -188,6 +188,8 @@ export async function sendMessage(
     bashDisabled,
     voiceMode: cur.voiceMode,
     telegramMode: targetConv?.source === "telegram",
+    conversationId: targetConvId ?? undefined,
+    isTelegramSourced: targetConv?.source === "telegram",
     onEvent: (e) => {
       const store = useStore.getState();
       const live = isTargetActive();

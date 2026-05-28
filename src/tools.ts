@@ -262,6 +262,12 @@ export type BuildToolsOptions = {
   strictVault?: boolean;
   // When true, the Bash tool is omitted from the agent's toolset.
   bashDisabled?: boolean;
+  // Current conversation context. Lets the Schedule tool bind new
+  // schedules to this conversation, so when the schedule fires the
+  // reply lands in (and routes from) the right chat — including
+  // back to Telegram if the conversation is telegram-sourced.
+  conversationId?: string;
+  isTelegramSourced?: boolean;
 };
 
 // Pure-string path containment check. Symlinks are NOT resolved — a
@@ -372,7 +378,14 @@ async function assertNotDenied(absPath: string, vault: string): Promise<void> {
 }
 
 export function buildTools(vault: string, options: BuildToolsOptions = {}) {
-  const { metaPath = null, tavilyKey, strictVault = false, bashDisabled = false } = options;
+  const {
+    metaPath = null,
+    tavilyKey,
+    strictVault = false,
+    bashDisabled = false,
+    conversationId,
+    isTelegramSourced = false,
+  } = options;
   const guardPath = (path: string) => assertAllowed(path, vault, metaPath, strictVault);
   const guardDenied = (path: string) => assertNotDenied(path, vault);
   const guardWritable = (path: string) => assertCanWrite(path, vault);
@@ -843,6 +856,60 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           maxResults: max_results ?? null,
           includeAnswer: true,
         });
+      },
+    }),
+    Schedule: tool({
+      description:
+        "Schedule a one-time prompt to fire at a future local time. The prompt runs as a new turn in the *current* conversation when it fires; if the conversation is Telegram-sourced, the reply is also sent to the user's phone. Use for reminders, follow-ups, or any 'come back to me at X' request. The schedule fires while vault-chat is running with this vault available; if the app is closed at fire time, the schedule fires on the next launch when the vault is loaded.",
+      inputSchema: z.object({
+        when: z
+          .string()
+          .describe(
+            "ISO 8601 local datetime to fire at, e.g. '2026-05-29T21:30'. Compute from the current time. Must be in the future.",
+          ),
+        prompt: z
+          .string()
+          .describe(
+            "The text that will be sent as the user's turn at fire time. Phrase it as what you want the agent (probably future-you) to do. Example: 'Remind me to take pizza out of the oven.'",
+          ),
+        description: z
+          .string()
+          .optional()
+          .describe("Short label for the schedule (shown in the Schedules panel)."),
+      }),
+      execute: async ({ when, prompt, description }) => {
+        if (!conversationId) {
+          return "Schedule tool unavailable: no current conversation id.";
+        }
+        const dt = new Date(when);
+        if (isNaN(dt.getTime())) {
+          return `Invalid datetime '${when}'. Use ISO local format like 2026-05-29T21:30.`;
+        }
+        if (dt.getTime() <= Date.now()) {
+          return `Refusing to schedule in the past (${when}). Pick a future time.`;
+        }
+        const date = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+        const time = `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+        const { readSchedules, writeSchedules, emptySchedule } = await import("./schedules");
+        const { useStore } = await import("./store");
+        const store = useStore.getState();
+        const list = await readSchedules(vault);
+        const fresh = {
+          ...emptySchedule(store.modelId),
+          name: description ?? prompt.split(/\s+/).slice(0, 6).join(" "),
+          prompt,
+          recurrence: { kind: "once" as const },
+          time,
+          date,
+          target: { kind: "existing" as const, conversationId },
+          enabled: true,
+          markUnreadOnFinish: true,
+          sendViaTelegram: isTelegramSourced,
+        };
+        await writeSchedules(vault, [...list, fresh]);
+        return `Scheduled for ${dt.toLocaleString()}. Will fire as a turn in this conversation${
+          isTelegramSourced ? " and send to Telegram." : "."
+        }`;
       },
     }),
   };
