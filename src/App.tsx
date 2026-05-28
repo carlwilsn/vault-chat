@@ -263,6 +263,56 @@ export default function App() {
     const unsub = subscribeTelegramInbound(async (m) => {
       const s = useStore.getState();
       if (!s.conversationsLoaded) return;
+      // Slash commands from the phone, intercepted before the agent
+      // sees them. A single Telegram thread (one chat_id between you
+      // and the bot) maps to one vault-chat conversation, so without
+      // an explicit "start over" trigger every phone message would
+      // pile into the same growing thread forever.
+      const trimmedText = m.text.trim();
+      if (/^\/(new|reset)\b/i.test(trimmedText)) {
+        // Detach the current conversation from this chat_id and start
+        // a fresh one bound to it. Old conversation stays in vault-chat
+        // history (now untethered from Telegram routing).
+        const prev = s.conversations.find(
+          (c) => c.telegramChatId === m.chat_id,
+        );
+        if (prev) {
+          useStore.setState({
+            conversations: useStore.getState().conversations.map((c) =>
+              c.id === prev.id ? { ...c, telegramChatId: undefined } : c,
+            ),
+          });
+        }
+        const freshId = useStore.getState().newConversation();
+        useStore.setState({
+          conversations: useStore.getState().conversations.map((c) =>
+            c.id === freshId
+              ? {
+                  ...c,
+                  source: "telegram",
+                  telegramChatId: m.chat_id,
+                  title: m.from_username
+                    ? `Telegram · @${m.from_username}`
+                    : c.title,
+                }
+              : c,
+          ),
+        });
+        const { sendTelegramMessage } = await import("./telegram");
+        sendTelegramMessage(
+          m.chat_id,
+          "Started a new chat — fresh context. The old conversation is still in vault-chat under Recent.",
+        ).catch(() => {});
+        return;
+      }
+      if (/^\/help\b/i.test(trimmedText)) {
+        const { sendTelegramMessage } = await import("./telegram");
+        sendTelegramMessage(
+          m.chat_id,
+          "Commands:\n/new (or /reset) — start a fresh conversation; the old one stays in vault-chat\n/help — this message",
+        ).catch(() => {});
+        return;
+      }
       // If the agent's already mid-turn, don't yank focus or interrupt.
       // Just record the message; the user can re-send / nudge once
       // the current run finishes.
