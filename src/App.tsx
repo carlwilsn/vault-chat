@@ -24,12 +24,13 @@ import { startVaultSyncLoop, stopVaultSyncLoop } from "./vaultSync";
 import { startSchedulerLoop, stopSchedulerLoop } from "./schedulerLoop";
 import { startCrossSync, stopCrossSync } from "./crossSync";
 import {
-  readTelegramEnabled,
   startTelegramService,
   stopTelegramService,
   subscribeTelegramInbound,
   refreshTelegramSnapshot,
+  getEnabledTelegramVaults,
 } from "./telegram";
+import { readConversations, writeConversations, emptyConversation, deriveConversationTitle } from "./conversations";
 import "./App.css";
 
 export default function App() {
@@ -253,31 +254,89 @@ export default function App() {
     }
   }, [vaultPath, conversationsLoaded, loadConversations]);
 
-  // Telegram bot — per-vault. Whichever vault is currently open, that
-  // vault's bot is the one we long-poll. Switching vaults stops the
-  // previous bot and starts the new vault's bot in its place. If a
-  // vault has no token saved, the service idles silently for that
-  // vault until the user pastes one.
+  // Per-vault status refresh when the active vault changes (so the
+  // settings UI reflects the right vault's poller state).
   useEffect(() => {
-    if (!vaultPath) return;
-    void refreshTelegramSnapshot(vaultPath);
-    if (readTelegramEnabled(vaultPath)) {
-      void startTelegramService(vaultPath);
-    }
+    if (vaultPath) void refreshTelegramSnapshot(vaultPath);
+  }, [vaultPath]);
+
+  // Telegram bot — multi-poller. On app launch, start a poller for
+  // every vault that has Telegram enabled. Pollers run concurrently
+  // and independently of which vault has UI focus. Inbound events
+  // are tagged with vault_id; the handler routes the message either
+  // to the in-memory store (if it's the currently-open vault) or
+  // writes to that vault's conversations.jsonl on disk (off-vault).
+  useEffect(() => {
+    void (async () => {
+      const enabledVaults = getEnabledTelegramVaults();
+      for (const v of enabledVaults) {
+        await startTelegramService(v);
+      }
+    })();
     const unsub = subscribeTelegramInbound(async (m) => {
       const s = useStore.getState();
+      // The Rust event tells us which vault's bot received this
+      // message. That, not the currently-open vault, is the target.
+      const inboundVault = m.vault_id;
+      if (!inboundVault) return;
+      const isCurrentVault = inboundVault === s.vaultPath;
+      const { sendTelegramMessage } = await import("./telegram");
+      const trimmedText = m.text.trim();
+
+      // Off-vault inbound: write the user message directly into the
+      // target vault's conversations.jsonl. No agent run yet — the
+      // user will see the queued message when they next open that
+      // vault. (Phase 2 will add off-vault agent runs so the bot
+      // replies in real time from any vault.)
+      if (!isCurrentVault) {
+        try {
+          const list = await readConversations(inboundVault);
+          let target = list.find((c) => c.telegramChatId === m.chat_id);
+          if (!target) {
+            target = {
+              ...emptyConversation(),
+              source: "telegram",
+              telegramChatId: m.chat_id,
+              title: m.from_username
+                ? `Telegram · @${m.from_username}`
+                : deriveConversationTitle([{ role: "user", content: m.text }]),
+              messages: [{ role: "user", content: m.text }],
+              unread: true,
+              lastActivityAt: Date.now(),
+            };
+            list.unshift(target);
+          } else {
+            const idx = list.indexOf(target);
+            list[idx] = {
+              ...target,
+              messages: [...target.messages, { role: "user", content: m.text }],
+              unread: true,
+              lastActivityAt: Date.now(),
+            };
+          }
+          await writeConversations(inboundVault, list);
+          // Tell the user we got it but the bot can't think on this
+          // vault right now since vault-chat isn't focused on it.
+          sendTelegramMessage(
+            inboundVault,
+            m.chat_id,
+            "Queued. (Bot replies on this vault only when vault-chat has it open. Open the vault to process.)",
+          ).catch(() => {});
+        } catch (e) {
+          console.warn("[telegram] off-vault queue failed:", e);
+        }
+        return;
+      }
+
+      // Current-vault path: rest of the handler operates on the
+      // in-memory conversations store.
       if (!s.conversationsLoaded) return;
-      // Capture the vault this run is bound to. If the user switches
-      // vaults mid-handler, we still reply to Telegram with the bot
-      // token of the vault that received the message.
-      const inboundVault = vaultPath;
+
       // Slash commands from the phone, intercepted before the agent
       // sees them. A single Telegram thread (one chat_id between you
       // and the bot) maps to one vault-chat conversation, so without
       // an explicit "start over" trigger every phone message would
       // pile into the same growing thread forever.
-      const trimmedText = m.text.trim();
-      const { sendTelegramMessage } = await import("./telegram");
       // Detach the chat_id mapping from whatever conversation currently
       // owns it, and attach it to the target instead.
       const rebindChatIdTo = (targetId: string, titleFallback?: string) => {
@@ -421,10 +480,10 @@ export default function App() {
     });
     return () => {
       unsub();
-      // Stop the previous vault's poller on vault switch / unmount.
-      void stopTelegramService();
+      // Stop every poller on app unmount.
+      void stopTelegramService(null);
     };
-  }, [vaultPath]);
+  }, []);
 
   // Vault auto-sync — start a per-vault loop when a vault is active.
   // The loop reads its own opt-in config from <vault>/.vault-chat/

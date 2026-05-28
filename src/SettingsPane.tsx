@@ -1415,7 +1415,7 @@ function TelegramSection() {
   }, [vaultPath]);
 
   useEffect(() => {
-    const unsub = subscribeTelegramStatus(setSnapshot);
+    const unsub = subscribeTelegramStatus(vaultPath, setSnapshot);
     void refreshTelegramSnapshot(vaultPath);
     return unsub;
   }, [vaultPath]);
@@ -1432,7 +1432,7 @@ function TelegramSection() {
       }
       await startTelegramService(vaultPath);
     } else {
-      await stopTelegramService();
+      await stopTelegramService(vaultPath);
     }
   };
 
@@ -1446,7 +1446,7 @@ function TelegramSection() {
     try {
       await setTelegramCredentials(vaultPath, tok, uid);
       if (enabled) {
-        await stopTelegramService();
+        await stopTelegramService(vaultPath);
         await startTelegramService(vaultPath);
       }
       setSaveState("saved");
@@ -1459,7 +1459,7 @@ function TelegramSection() {
 
   const removeCredentials = async () => {
     if (!vaultPath) return;
-    await stopTelegramService();
+    await stopTelegramService(vaultPath);
     await clearTelegramCredentials(vaultPath);
     setTokenDraft("");
     setUserIdDraft("");

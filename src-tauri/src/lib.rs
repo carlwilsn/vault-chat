@@ -3137,8 +3137,26 @@ fn run_script_sync(
 // API. The frontend invokes this when the user sends an assistant
 // reply in a telegram-sourced conversation.
 
-static TELEGRAM_RUNNING: AtomicBool = AtomicBool::new(false);
-static TELEGRAM_STOP: Mutex<Option<std::sync::Arc<AtomicBool>>> = Mutex::new(None);
+// Multi-poller: one entry per (bot_token, vault) pair so several
+// vaults' bots can long-poll concurrently. Keyed by bot_token since
+// that's what Telegram's API contract is at (one consumer per token).
+// Each handle carries the vault_id so emitted events can be routed
+// back to the correct vault's conversations on the JS side.
+struct TelegramPoller {
+    stop: std::sync::Arc<AtomicBool>,
+    vault_id: String,
+}
+
+static TELEGRAM_POLLERS: Mutex<Option<std::collections::HashMap<String, TelegramPoller>>> =
+    Mutex::new(None);
+
+fn pollers_lock() -> std::sync::MutexGuard<'static, Option<std::collections::HashMap<String, TelegramPoller>>> {
+    let mut g = TELEGRAM_POLLERS.lock().unwrap();
+    if g.is_none() {
+        *g = Some(std::collections::HashMap::new());
+    }
+    g
+}
 
 #[derive(Serialize, Clone)]
 struct TelegramInbound {
@@ -3148,6 +3166,7 @@ struct TelegramInbound {
     text: String,
     message_id: i64,
     timestamp: i64,
+    vault_id: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -3155,6 +3174,7 @@ struct TelegramStatus {
     running: bool,
     bot_username: Option<String>,
     error: Option<String>,
+    vault_id: String,
 }
 
 fn emit_telegram_status(app: &AppHandle, status: TelegramStatus) {
@@ -3162,8 +3182,13 @@ fn emit_telegram_status(app: &AppHandle, status: TelegramStatus) {
 }
 
 #[tauri::command]
-fn telegram_running() -> bool {
-    TELEGRAM_RUNNING.load(Ordering::SeqCst)
+fn telegram_running(bot_token: Option<String>) -> bool {
+    let g = pollers_lock();
+    let map = g.as_ref().unwrap();
+    match bot_token {
+        Some(t) => map.contains_key(&t),
+        None => !map.is_empty(),
+    }
 }
 
 #[tauri::command]
@@ -3171,9 +3196,14 @@ async fn telegram_start(
     app: AppHandle,
     bot_token: String,
     user_id: String,
+    vault_id: String,
 ) -> Result<(), String> {
-    if TELEGRAM_RUNNING.swap(true, Ordering::SeqCst) {
-        return Ok(());
+    {
+        let g = pollers_lock();
+        if g.as_ref().unwrap().contains_key(&bot_token) {
+            // Already polling this bot. Idempotent.
+            return Ok(());
+        }
     }
     let allowed_id: i64 = user_id
         .trim()
@@ -3191,17 +3221,18 @@ async fn telegram_start(
                     running: true,
                     bot_username: Some(name),
                     error: None,
+                    vault_id: vault_id.clone(),
                 },
             );
         }
         Err(e) => {
-            TELEGRAM_RUNNING.store(false, Ordering::SeqCst);
             emit_telegram_status(
                 &app,
                 TelegramStatus {
                     running: false,
                     bot_username: None,
                     error: Some(e.clone()),
+                    vault_id: vault_id.clone(),
                 },
             );
             return Err(e);
@@ -3210,31 +3241,53 @@ async fn telegram_start(
 
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     {
-        let mut slot = TELEGRAM_STOP.lock().unwrap();
-        *slot = Some(stop.clone());
+        let mut g = pollers_lock();
+        g.as_mut().unwrap().insert(
+            bot_token.clone(),
+            TelegramPoller {
+                stop: stop.clone(),
+                vault_id: vault_id.clone(),
+            },
+        );
     }
 
     let app_clone = app.clone();
+    let token_clone = bot_token.clone();
+    let vault_clone = vault_id.clone();
     tauri::async_runtime::spawn(async move {
-        telegram_poll_loop(app_clone, bot_token, allowed_id, stop).await;
+        telegram_poll_loop(app_clone, token_clone, allowed_id, vault_clone, stop).await;
     });
     Ok(())
 }
 
 #[tauri::command]
-fn telegram_stop(app: AppHandle) -> Result<(), String> {
-    if let Some(stop) = TELEGRAM_STOP.lock().unwrap().take() {
-        stop.store(true, Ordering::SeqCst);
+fn telegram_stop(app: AppHandle, bot_token: Option<String>) -> Result<(), String> {
+    let mut g = pollers_lock();
+    let map = g.as_mut().unwrap();
+    let to_remove: Vec<String> = match &bot_token {
+        Some(t) => {
+            if map.contains_key(t) {
+                vec![t.clone()]
+            } else {
+                vec![]
+            }
+        }
+        None => map.keys().cloned().collect(),
+    };
+    for t in to_remove {
+        if let Some(p) = map.remove(&t) {
+            p.stop.store(true, Ordering::SeqCst);
+            emit_telegram_status(
+                &app,
+                TelegramStatus {
+                    running: false,
+                    bot_username: None,
+                    error: None,
+                    vault_id: p.vault_id,
+                },
+            );
+        }
     }
-    TELEGRAM_RUNNING.store(false, Ordering::SeqCst);
-    emit_telegram_status(
-        &app,
-        TelegramStatus {
-            running: false,
-            bot_username: None,
-            error: None,
-        },
-    );
     Ok(())
 }
 
@@ -3318,6 +3371,7 @@ async fn telegram_poll_loop(
     app: AppHandle,
     bot_token: String,
     allowed_id: i64,
+    vault_id: String,
     stop: std::sync::Arc<AtomicBool>,
 ) {
     let client = match reqwest::Client::builder()
@@ -3335,9 +3389,10 @@ async fn telegram_poll_loop(
                     running: false,
                     bot_username: None,
                     error: Some(format!("http client init: {}", e)),
+                    vault_id: vault_id.clone(),
                 },
             );
-            TELEGRAM_RUNNING.store(false, Ordering::SeqCst);
+            pollers_lock().as_mut().unwrap().remove(&bot_token);
             return;
         }
     };
@@ -3363,6 +3418,7 @@ async fn telegram_poll_loop(
                             running: true,
                             bot_username: None,
                             error: Some(format!("network: {}", e)),
+                            vault_id: vault_id.clone(),
                         },
                     );
                 }
@@ -3384,10 +3440,11 @@ async fn telegram_poll_loop(
                         status,
                         body.chars().take(200).collect::<String>()
                     )),
+                    vault_id: vault_id.clone(),
                 },
             );
             // Auth / invalid token errors aren't transient — stop.
-            TELEGRAM_RUNNING.store(false, Ordering::SeqCst);
+            pollers_lock().as_mut().unwrap().remove(&bot_token);
             return;
         }
         let json: serde_json::Value = match resp.json().await {
@@ -3399,6 +3456,7 @@ async fn telegram_poll_loop(
                         running: true,
                         bot_username: None,
                         error: Some(format!("json parse: {}", e)),
+                        vault_id: vault_id.clone(),
                     },
                 );
                 tokio_sleep(1000).await;
@@ -3453,11 +3511,12 @@ async fn telegram_poll_loop(
                 text,
                 message_id,
                 timestamp,
+                vault_id: vault_id.clone(),
             };
             let _ = app.emit("telegram:message", payload);
         }
     }
-    TELEGRAM_RUNNING.store(false, Ordering::SeqCst);
+    pollers_lock().as_mut().unwrap().remove(&bot_token);
 }
 
 async fn tokio_sleep(ms: u64) {
