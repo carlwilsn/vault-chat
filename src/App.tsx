@@ -269,7 +269,7 @@ export default function App() {
       // an explicit "start over" trigger every phone message would
       // pile into the same growing thread forever.
       const trimmedText = m.text.trim();
-      if (/^\/(new|reset)\b/i.test(trimmedText)) {
+      if (/^\/(new|reset|start)\b/i.test(trimmedText)) {
         // Detach the current conversation from this chat_id and start
         // a fresh one bound to it. Old conversation stays in vault-chat
         // history (now untethered from Telegram routing).
@@ -309,7 +309,7 @@ export default function App() {
         const { sendTelegramMessage } = await import("./telegram");
         sendTelegramMessage(
           m.chat_id,
-          "Commands:\n/new (or /reset) — start a fresh conversation; the old one stays in vault-chat\n/help — this message",
+          "Commands:\n/new (or /reset, /start) — start a fresh conversation; the old one stays in vault-chat\n/help — this message\n\nNote: clearing chat history on your phone is invisible to the bot — use /new or /start to actually reset the conversation on the vault-chat side.",
         ).catch(() => {});
         return;
       }
