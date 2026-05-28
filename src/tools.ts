@@ -936,6 +936,52 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         return lines.join("\n\n");
       },
     }),
+    ListSchedules: tool({
+      description:
+        "List the scheduled prompts in this vault. Use to find a schedule's id before cancelling it, or to remind the user what they have set up. Returns id, name, prompt (truncated), recurrence, next-fire time, target conversation, and enabled state.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const { readSchedules, nextFireAt, recurrenceLabel } = await import("./schedules");
+        const list = await readSchedules(vault);
+        if (list.length === 0) return "(no schedules set)";
+        return list
+          .map((s) => {
+            const next = nextFireAt(s);
+            return JSON.stringify({
+              id: s.id,
+              name: s.name || "(unnamed)",
+              prompt: s.prompt.slice(0, 200),
+              recurrence: recurrenceLabel(s.recurrence),
+              time: s.time,
+              date: s.date,
+              nextFire: next ? new Date(next).toLocaleString() : "(none)",
+              target:
+                s.target.kind === "existing"
+                  ? `chat:${s.target.conversationId}`
+                  : "new chat",
+              enabled: s.enabled,
+              sendViaTelegram: s.sendViaTelegram,
+            });
+          })
+          .join("\n");
+      },
+    }),
+    CancelSchedule: tool({
+      description:
+        "Delete a schedule by id. Use when the user asks to cancel a reminder, stop a recurring brief, or undo a duplicate. Pair with ListSchedules to find the id. To temporarily pause without deleting, set enabled=false instead via UpdateSchedule (not implemented — for now CancelSchedule is the only option).",
+      inputSchema: z.object({
+        schedule_id: z.string().describe("The schedule id, from ListSchedules."),
+      }),
+      execute: async ({ schedule_id }) => {
+        const { readSchedules, writeSchedules } = await import("./schedules");
+        const list = await readSchedules(vault);
+        const target = list.find((s) => s.id === schedule_id);
+        if (!target) return `No schedule with id ${schedule_id}.`;
+        const next = list.filter((s) => s.id !== schedule_id);
+        await writeSchedules(vault, next);
+        return `Cancelled: ${target.name || target.prompt.slice(0, 60)}`;
+      },
+    }),
     Schedule: tool({
       description:
         "Schedule a prompt to fire at a future time, either once or recurring. The prompt runs as a new turn in the *current* conversation when it fires; if the conversation is Telegram-sourced, the reply is also sent to the user's phone. Use for reminders ('remind me at 9pm'), recurring briefs ('daily news at 8am'), or polling tasks ('check X every hour'). Exactly one of `when_iso`, `daily_at`, `weekdays_at`, or `every_minutes` must be set — that choice picks the recurrence. The schedule fires while vault-chat is running with this vault available; if the app is closed at fire time, the schedule fires on the next launch when the vault is loaded.",
