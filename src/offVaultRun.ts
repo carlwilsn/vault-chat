@@ -27,6 +27,7 @@ export async function handleOffVaultInbound(
   chatId: number,
   userText: string,
   fromUsername: string | null,
+  photoFileIds: string[] = [],
 ): Promise<void> {
   const trimmed = userText.trim();
   // Slash commands work for any vault — pure state mutation +
@@ -51,6 +52,23 @@ export async function handleOffVaultInbound(
 
   // First write: persist the user message so it isn't lost if the
   // agent run blows up partway through.
+  // Download phone-sent photos before persisting the user turn.
+  const attachments: import("./store").ChatAttachment[] = [];
+  if (photoFileIds.length > 0) {
+    const { downloadTelegramPhoto, readImageAsAttachment } = await import(
+      "./telegram"
+    );
+    for (const fid of photoFileIds) {
+      try {
+        const path = await downloadTelegramPhoto(vault, fid);
+        const att = await readImageAsAttachment(path);
+        attachments.push(att);
+      } catch (e) {
+        console.warn("[off-vault] photo download failed:", e);
+      }
+    }
+  }
+
   const list = await readConversations(vault);
   let idx = list.findIndex((c) => c.telegramChatId === chatId);
   if (idx < 0) {
@@ -65,7 +83,11 @@ export async function handleOffVaultInbound(
     list.unshift(fresh);
     idx = 0;
   }
-  const userMsg: ChatMessage = { role: "user", content: userText };
+  const userMsg: ChatMessage = {
+    role: "user",
+    content: userText || (attachments.length > 0 ? "(image)" : ""),
+    attachments: attachments.length > 0 ? attachments : undefined,
+  };
   list[idx] = {
     ...list[idx]!,
     messages: [...list[idx]!.messages, userMsg],
@@ -88,6 +110,7 @@ export async function handleOffVaultInbound(
       vault,
       history: baseHistory,
       userMessage: trimmed,
+      userAttachments: attachments.length > 0 ? attachments : undefined,
       tavilyKey: store.serviceKeys.tavily,
       strictVault: store.strictVaultMode,
       bashDisabled: store.bashDisabled,

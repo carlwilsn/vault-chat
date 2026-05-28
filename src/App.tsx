@@ -292,6 +292,7 @@ export default function App() {
           m.chat_id,
           m.text,
           m.from_username,
+          m.photo_file_ids,
         ).catch((e) =>
           console.warn("[telegram] off-vault run failed:", e),
         );
@@ -440,14 +441,35 @@ export default function App() {
         });
         convId = fresh.id;
       }
+      // Download any phone-sent images and convert to attachments
+      // before kicking the agent — so the model can see them, not
+      // just the caption.
+      const attachments: import("./store").ChatAttachment[] = [];
+      if (m.photo_file_ids.length > 0) {
+        const { downloadTelegramPhoto, readImageAsAttachment } = await import(
+          "./telegram"
+        );
+        for (const fid of m.photo_file_ids) {
+          try {
+            const path = await downloadTelegramPhoto(inboundVault, fid);
+            const att = await readImageAsAttachment(path);
+            attachments.push(att);
+          } catch (e) {
+            console.warn("[telegram] photo download failed:", e);
+          }
+        }
+      }
       // Don't yank focus to the Telegram chat. Run the agent against
       // it as a background target — the mid-run-switch logic in
       // chat-controller routes events to that conversation's stored
       // messages while the user stays on whatever they had open.
       const { sendMessage } = await import("./chat-controller");
-      void sendMessage(m.text, undefined, undefined, convId).catch((e) =>
-        console.warn("[telegram] agent run failed:", e),
-      );
+      void sendMessage(
+        m.text || (attachments.length > 0 ? "(image)" : ""),
+        undefined,
+        attachments.length > 0 ? attachments : undefined,
+        convId,
+      ).catch((e) => console.warn("[telegram] agent run failed:", e));
     });
     return () => {
       unsub();

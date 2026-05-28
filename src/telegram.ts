@@ -170,7 +170,61 @@ export type TelegramInbound = {
   message_id: number;
   timestamp: number;
   vault_id: string;
+  photo_file_ids: string[];
 };
+
+// Download a Telegram photo by file_id and save it inside the
+// target vault. Returns the absolute path. Caller can read the
+// bytes and build a ChatAttachment with imageDataUrl + capturedFilePath.
+export async function downloadTelegramPhoto(
+  vault: string,
+  fileId: string,
+): Promise<string> {
+  const { token } = await getTelegramCredentials(vault);
+  if (!token) throw new Error("telegram: no bot token configured for this vault");
+  return await invoke<string>("telegram_download_file", {
+    botToken: token,
+    fileId,
+    vault,
+  });
+}
+
+// Build a ChatAttachment from a downloaded image file. Reads the
+// bytes via read_binary_file and encodes as a base64 data URL.
+export async function readImageAsAttachment(
+  absPath: string,
+): Promise<{ imageDataUrl: string; capturedFilePath: string }> {
+  const bytes = await invoke<number[]>("read_binary_file", { path: absPath });
+  // Telegram defaults to jpeg for downsized photo sizes; cheap mime
+  // sniff on the magic bytes catches png/jpeg/webp without us
+  // shipping a real decoder.
+  const mime = sniffImageMime(bytes);
+  let bin = "";
+  const CHUNK = 8192;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.slice(i, i + CHUNK));
+  }
+  const b64 = btoa(bin);
+  return {
+    imageDataUrl: `data:${mime};base64,${b64}`,
+    capturedFilePath: absPath,
+  };
+}
+
+function sniffImageMime(bytes: number[]): string {
+  if (bytes.length >= 4) {
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+      return "image/png";
+    }
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+      return "image/jpeg";
+    }
+    if (bytes.length >= 12 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+      return "image/webp";
+    }
+  }
+  return "image/jpeg";
+}
 
 export type TelegramStatusEvent = {
   running: boolean;

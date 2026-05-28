@@ -3167,6 +3167,10 @@ struct TelegramInbound {
     message_id: i64,
     timestamp: i64,
     vault_id: String,
+    // file_id of the highest-resolution PhotoSize, if the message
+    // carried a photo. JS handler calls telegram_download_file to
+    // pull bytes into the vault and pass as a ChatAttachment.
+    photo_file_ids: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -3299,6 +3303,55 @@ async fn telegram_test(bot_token: String) -> Result<String, String> {
 #[tauri::command]
 fn path_exists(path: String) -> bool {
     std::path::Path::new(&path).exists()
+}
+
+// Download a Telegram file by file_id and save it to a vault-relative
+// path. Two HTTP roundtrips: getFile (returns file_path), then
+// /file/bot<token>/<file_path> for the bytes. Stores under
+// <vault>/.vault-chat/telegram-images/<timestamp>_<basename>.
+#[tauri::command]
+async fn telegram_download_file(
+    bot_token: String,
+    file_id: String,
+    vault: String,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("vault-chat/0.1")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let get_file_url = format!("https://api.telegram.org/bot{}/getFile?file_id={}", bot_token, file_id);
+    let resp = client.get(&get_file_url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("getFile {}: {}", resp.status(), resp.text().await.unwrap_or_default().chars().take(200).collect::<String>()));
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let file_path = json
+        .get("result")
+        .and_then(|r| r.get("file_path"))
+        .and_then(|p| p.as_str())
+        .ok_or_else(|| "no file_path in getFile response".to_string())?
+        .to_string();
+    let download_url = format!("https://api.telegram.org/file/bot{}/{}", bot_token, file_path);
+    let resp = client.get(&download_url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("file download {}: ", resp.status()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+
+    let dir = std::path::Path::new(&vault).join(".vault-chat").join("telegram-images");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {}", e))?;
+    let basename = std::path::Path::new(&file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("image.jpg");
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let out_path = dir.join(format!("{}_{}", ts, basename));
+    std::fs::write(&out_path, &bytes).map_err(|e| format!("write: {}", e))?;
+    Ok(out_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -3538,12 +3591,28 @@ async fn telegram_poll_loop(
                 .and_then(|c| c.get("id"))
                 .and_then(|i| i.as_i64())
                 .unwrap_or(0);
-            let text = msg
-                .get("text")
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .to_string();
-            if text.is_empty() {
+            // Telegram messages can carry text, a photo, or both
+            // (photo + caption). Collect both — caption becomes the
+            // text content, photo file_ids ride along for download.
+            let text = if let Some(t) = msg.get("text").and_then(|t| t.as_str()) {
+                t.to_string()
+            } else if let Some(c) = msg.get("caption").and_then(|t| t.as_str()) {
+                c.to_string()
+            } else {
+                String::new()
+            };
+            let photo_file_ids: Vec<String> = msg
+                .get("photo")
+                .and_then(|p| p.as_array())
+                .map(|arr| {
+                    arr.last()
+                        .and_then(|p| p.get("file_id"))
+                        .and_then(|s| s.as_str())
+                        .map(|s| vec![s.to_string()])
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
+            if text.is_empty() && photo_file_ids.is_empty() {
                 continue;
             }
             let from_username = msg
@@ -3561,6 +3630,7 @@ async fn telegram_poll_loop(
                 message_id,
                 timestamp,
                 vault_id: vault_id.clone(),
+                photo_file_ids,
             };
             let _ = app.emit("telegram:message", payload);
         }
@@ -4126,6 +4196,7 @@ pub fn run() {
             telegram_test,
             telegram_send_message,
             telegram_send_photo,
+            telegram_download_file,
             path_exists,
             daemon_status,
             daemon_start,
