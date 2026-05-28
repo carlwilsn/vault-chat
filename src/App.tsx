@@ -260,16 +260,55 @@ export default function App() {
     if (readTelegramEnabled()) {
       void startTelegramService();
     }
-    const unsub = subscribeTelegramInbound((m) => {
+    const unsub = subscribeTelegramInbound(async (m) => {
       const s = useStore.getState();
       if (!s.conversationsLoaded) return;
-      s.ingestExternalMessage({
-        text: m.text,
-        source: "telegram",
-        telegramChatId: m.chat_id,
-        matchByTelegramChatId: m.chat_id,
-        titleHint: m.from_username ? `Telegram · @${m.from_username}` : undefined,
-      });
+      // If the agent's already mid-turn, don't yank focus or interrupt.
+      // Just record the message; the user can re-send / nudge once
+      // the current run finishes.
+      if (s.busy) {
+        console.warn(
+          "[telegram] inbound while agent busy — queued, agent not auto-triggered",
+        );
+        s.ingestExternalMessage({
+          text: m.text,
+          source: "telegram",
+          telegramChatId: m.chat_id,
+          matchByTelegramChatId: m.chat_id,
+          titleHint: m.from_username
+            ? `Telegram · @${m.from_username}`
+            : undefined,
+        });
+        return;
+      }
+      // Find or create the Telegram-sourced conversation for this chat.
+      let convId =
+        s.conversations.find((c) => c.telegramChatId === m.chat_id)?.id ?? null;
+      if (!convId) {
+        convId = s.newConversation();
+        useStore.setState({
+          conversations: useStore.getState().conversations.map((c) =>
+            c.id === convId
+              ? {
+                  ...c,
+                  source: "telegram",
+                  telegramChatId: m.chat_id,
+                  title: m.from_username
+                    ? `Telegram · @${m.from_username}`
+                    : c.title,
+                }
+              : c,
+          ),
+        });
+      }
+      // Activate it so chat-controller picks it up as the target, then
+      // drive the inbound text through the normal send pipeline. The
+      // done-hook there mirrors the assistant reply back to Telegram.
+      s.selectConversation(convId);
+      const { sendMessage } = await import("./chat-controller");
+      void sendMessage(m.text).catch((e) =>
+        console.warn("[telegram] agent run failed:", e),
+      );
     });
     return unsub;
   }, []);
