@@ -26,6 +26,7 @@ import { startCrossSync, stopCrossSync } from "./crossSync";
 import {
   readTelegramEnabled,
   startTelegramService,
+  stopTelegramService,
   subscribeTelegramInbound,
   refreshTelegramSnapshot,
 } from "./telegram";
@@ -252,17 +253,24 @@ export default function App() {
     }
   }, [vaultPath, conversationsLoaded, loadConversations]);
 
-  // Telegram bot — start the long-poll loop and route inbound messages
-  // into the conversations store. The service idles silently when no
-  // credentials are configured.
+  // Telegram bot — per-vault. Whichever vault is currently open, that
+  // vault's bot is the one we long-poll. Switching vaults stops the
+  // previous bot and starts the new vault's bot in its place. If a
+  // vault has no token saved, the service idles silently for that
+  // vault until the user pastes one.
   useEffect(() => {
-    void refreshTelegramSnapshot();
-    if (readTelegramEnabled()) {
-      void startTelegramService();
+    if (!vaultPath) return;
+    void refreshTelegramSnapshot(vaultPath);
+    if (readTelegramEnabled(vaultPath)) {
+      void startTelegramService(vaultPath);
     }
     const unsub = subscribeTelegramInbound(async (m) => {
       const s = useStore.getState();
       if (!s.conversationsLoaded) return;
+      // Capture the vault this run is bound to. If the user switches
+      // vaults mid-handler, we still reply to Telegram with the bot
+      // token of the vault that received the message.
+      const inboundVault = vaultPath;
       // Slash commands from the phone, intercepted before the agent
       // sees them. A single Telegram thread (one chat_id between you
       // and the bot) maps to one vault-chat conversation, so without
@@ -299,6 +307,7 @@ export default function App() {
           m.from_username ? `Telegram · @${m.from_username}` : undefined,
         );
         sendTelegramMessage(
+          inboundVault,
           m.chat_id,
           "Started a new chat — fresh context. The old conversation is still in vault-chat under Recent.",
         ).catch(() => {});
@@ -316,6 +325,7 @@ export default function App() {
           const target = sorted[idx];
           if (!target) {
             sendTelegramMessage(
+              inboundVault,
               m.chat_id,
               `No conversation #${idx + 1}. Send /reset alone to see the list.`,
             ).catch(() => {});
@@ -323,13 +333,14 @@ export default function App() {
           }
           rebindChatIdTo(target.id);
           sendTelegramMessage(
+            inboundVault,
             m.chat_id,
             `Reattached to: ${target.title || "New chat"}\nNext messages from your phone land in that conversation.`,
           ).catch(() => {});
           return;
         }
         if (sorted.length === 0) {
-          sendTelegramMessage(m.chat_id, "No conversations yet.").catch(() => {});
+          sendTelegramMessage(inboundVault, m.chat_id, "No conversations yet.").catch(() => {});
           return;
         }
         const fmtAge = (ts: number) => {
@@ -347,6 +358,7 @@ export default function App() {
             }`,
         );
         sendTelegramMessage(
+          inboundVault,
           m.chat_id,
           `Recent conversations:\n${lines.join("\n")}\n\nReply /reset <N> to switch to one.`,
         ).catch(() => {});
@@ -354,6 +366,7 @@ export default function App() {
       }
       if (/^\/help\b/i.test(trimmedText)) {
         sendTelegramMessage(
+          inboundVault,
           m.chat_id,
           "Commands:\n/new (or /start) — start a fresh conversation; the old one stays in vault-chat\n/reset — list recent conversations and switch back to one (/reset N)\n/help — this message\n\nNote: clearing chat history on your phone is invisible to the bot — use /new to actually reset on the vault-chat side.",
         ).catch(() => {});
@@ -406,8 +419,12 @@ export default function App() {
         console.warn("[telegram] agent run failed:", e),
       );
     });
-    return unsub;
-  }, []);
+    return () => {
+      unsub();
+      // Stop the previous vault's poller on vault switch / unmount.
+      void stopTelegramService();
+    };
+  }, [vaultPath]);
 
   // Vault auto-sync — start a per-vault loop when a vault is active.
   // The loop reads its own opt-in config from <vault>/.vault-chat/

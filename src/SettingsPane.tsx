@@ -1379,7 +1379,8 @@ function CrossSyncStatusRow({
 
 
 function TelegramSection() {
-  const [enabled, setEnabled] = useState(() => readTelegramEnabled());
+  const vaultPath = useStore((s) => s.vaultPath);
+  const [enabled, setEnabled] = useState(() => readTelegramEnabled(vaultPath));
   const [tokenDraft, setTokenDraft] = useState("");
   const [userIdDraft, setUserIdDraft] = useState("");
   const [snapshot, setSnapshot] = useState<TelegramSnapshot>({
@@ -1399,8 +1400,11 @@ function TelegramSection() {
 
   useEffect(() => {
     let cancelled = false;
+    setTokenDraft("");
+    setUserIdDraft("");
+    setEnabled(readTelegramEnabled(vaultPath));
     void (async () => {
-      const { token, userId } = await getTelegramCredentials();
+      const { token, userId } = await getTelegramCredentials(vaultPath);
       if (cancelled) return;
       if (token) setTokenDraft(token);
       if (userId) setUserIdDraft(userId);
@@ -1408,40 +1412,42 @@ function TelegramSection() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [vaultPath]);
 
   useEffect(() => {
     const unsub = subscribeTelegramStatus(setSnapshot);
-    void refreshTelegramSnapshot();
+    void refreshTelegramSnapshot(vaultPath);
     return unsub;
-  }, []);
+  }, [vaultPath]);
 
   const toggleEnabled = async (next: boolean) => {
+    if (!vaultPath) return;
     setEnabled(next);
-    writeTelegramEnabled(next);
+    writeTelegramEnabled(vaultPath, next);
     if (next) {
       const tok = tokenDraft.trim();
       const uid = userIdDraft.trim();
       if (tok && uid) {
-        await setTelegramCredentials(tok, uid);
+        await setTelegramCredentials(vaultPath, tok, uid);
       }
-      await startTelegramService();
+      await startTelegramService(vaultPath);
     } else {
       await stopTelegramService();
     }
   };
 
   const saveCredentials = async () => {
+    if (!vaultPath) return;
     const tok = tokenDraft.trim();
     const uid = userIdDraft.trim();
     if (!tok || !uid) return;
     setSaveState("saving");
     setSaveError(null);
     try {
-      await setTelegramCredentials(tok, uid);
+      await setTelegramCredentials(vaultPath, tok, uid);
       if (enabled) {
         await stopTelegramService();
-        await startTelegramService();
+        await startTelegramService(vaultPath);
       }
       setSaveState("saved");
       setTimeout(() => setSaveState((s) => (s === "saved" ? "idle" : s)), 1800);
@@ -1452,12 +1458,13 @@ function TelegramSection() {
   };
 
   const removeCredentials = async () => {
+    if (!vaultPath) return;
     await stopTelegramService();
-    await clearTelegramCredentials();
+    await clearTelegramCredentials(vaultPath);
     setTokenDraft("");
     setUserIdDraft("");
     setEnabled(false);
-    writeTelegramEnabled(false);
+    writeTelegramEnabled(vaultPath, false);
   };
 
   const testConnection = async () => {
@@ -1479,9 +1486,15 @@ function TelegramSection() {
           <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
             <Send className="h-3 w-3" />
             Telegram bot
+            {vaultPath && (
+              <span className="ml-1 text-[10px] font-normal normal-case tracking-normal text-muted-foreground/70">
+                · {vaultPath.split(/[/\\]/).filter(Boolean).pop()}
+              </span>
+            )}
           </h3>
           <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
-            Route phone messages into your chat list. Replies go back to Telegram.
+            Per-vault: each vault gets its own bot (one token here = one bot
+            on Telegram). User ID is shared across all vaults.
           </p>
         </div>
         <label className="flex items-center gap-2 shrink-0 cursor-pointer">

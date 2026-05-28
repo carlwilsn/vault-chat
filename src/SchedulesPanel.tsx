@@ -293,9 +293,10 @@ function FormView({
   onSave: (s: Schedule) => void | Promise<void>;
   onDelete: (id: string) => void | Promise<void>;
 }) {
+  const vaultPath = useStore((s) => s.vaultPath);
   const [draft, setDraft] = useState<Schedule>(schedule);
   const isNew = !schedule.lastFiredAt && !schedule.name && !schedule.prompt;
-  const telegramAvailable = readTelegramEnabled();
+  const telegramAvailable = readTelegramEnabled(vaultPath);
   const next = nextFireAt(draft);
 
   const setRecurrence = (r: Recurrence) => {

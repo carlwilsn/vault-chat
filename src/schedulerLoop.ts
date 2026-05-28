@@ -169,7 +169,7 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
   if (s.sendViaTelegram && lastAssistant) {
     const tgChat = finalConv?.telegramChatId;
     if (tgChat !== undefined) {
-      sendTelegramMessage(tgChat, lastAssistant).catch((err) =>
+      sendTelegramMessage(vault, tgChat, lastAssistant).catch((err) =>
         console.warn("[scheduler] telegram send failed:", err),
       );
     } else {

@@ -228,7 +228,7 @@ export async function sendMessage(
         }
 
         if (telegramChatId !== undefined && acc.trim()) {
-          sendTelegramMessage(telegramChatId, acc).catch((err) =>
+          sendTelegramMessage(vault, telegramChatId, acc).catch((err) =>
             console.warn("[telegram] outbound reply failed:", err),
           );
         }
