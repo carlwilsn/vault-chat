@@ -5,7 +5,7 @@ import { compactConversation } from "./compactor";
 import { estimateBashEta } from "./eta-estimator";
 import { gitCommitAll } from "./git";
 import { flushEditCommit } from "./commit-controller";
-import { sendTelegramMessage } from "./telegram";
+import { sendTelegramReplyWithImages } from "./telegram";
 import {
   useStore,
   MODEL_CONTEXT_LIMIT,
@@ -273,7 +273,12 @@ export async function sendMessage(
         }
 
         if (telegramChatId !== undefined && acc.trim()) {
-          sendTelegramMessage(vault, telegramChatId, acc).catch((err) =>
+          // Markdown image refs in the reply get pulled out and sent
+          // as photos via sendPhoto; the remaining text goes as a
+          // regular message. Telegram doesn't render markdown for
+          // sendMessage, so without this the agent's `![alt](path)`
+          // arrives as literal text on the phone.
+          sendTelegramReplyWithImages(vault, telegramChatId, acc).catch((err) =>
             console.warn("[telegram] outbound reply failed:", err),
           );
         }

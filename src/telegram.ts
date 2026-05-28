@@ -306,6 +306,100 @@ export async function sendTelegramMessage(
   await invoke("telegram_send_message", { botToken: token, chatId, text });
 }
 
+export async function sendTelegramPhoto(
+  vault: string,
+  chatId: number,
+  filePath: string,
+  caption?: string,
+): Promise<void> {
+  const { token } = await getTelegramCredentials(vault);
+  if (!token) throw new Error("telegram: no bot token configured for this vault");
+  await invoke("telegram_send_photo", {
+    botToken: token,
+    chatId,
+    filePath,
+    caption: caption ?? null,
+  });
+}
+
+// Pull markdown image references out of an assistant reply so we can
+// upload them as Telegram photos instead of letting them ship as
+// literal `![alt](path)` text. Returns the cleaned text plus the
+// list of (alt, path) tuples to upload separately.
+export function extractTelegramImages(
+  reply: string,
+): { text: string; images: { alt: string; path: string }[] } {
+  const re = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
+  const images: { alt: string; path: string }[] = [];
+  const text = reply.replace(re, (_match, alt: string, path: string) => {
+    images.push({ alt: alt.trim(), path: path.trim() });
+    return "";
+  });
+  return { text: text.replace(/\n{3,}/g, "\n\n").trim(), images };
+}
+
+// Resolve an agent-emitted path against the vault root. The agent
+// might write absolute paths, paths relative to the vault root, or
+// (rarely) bare filenames. We try absolute first, then vault-rooted.
+// Returns the first one that exists on disk, or null if neither
+// resolves to a real file.
+export async function resolveImagePathForTelegram(
+  vault: string,
+  path: string,
+): Promise<string | null> {
+  const candidates: string[] = [];
+  const isAbsolute = /^([a-zA-Z]:[\\/]|[\\/])/.test(path);
+  if (isAbsolute) {
+    candidates.push(path);
+  } else {
+    candidates.push(`${vault}/${path}`);
+    candidates.push(`${vault}/${path.replace(/^\.\//, "")}`);
+  }
+  for (const p of candidates) {
+    try {
+      const exists = await invoke<boolean>("path_exists", { path: p });
+      if (exists) return p;
+    } catch {
+      // path_exists not available or threw — try next candidate
+    }
+  }
+  return null;
+}
+
+// Convenience: take an agent's full reply text, split out any image
+// references, upload them as photos, and send the remaining text as
+// a regular message. Called from the Telegram outbound path so
+// markdown image syntax becomes real photos on the phone.
+export async function sendTelegramReplyWithImages(
+  vault: string,
+  chatId: number,
+  reply: string,
+): Promise<void> {
+  const { text, images } = extractTelegramImages(reply);
+  for (const img of images) {
+    const resolved = await resolveImagePathForTelegram(vault, img.path);
+    if (!resolved) {
+      console.warn(
+        `[telegram] image not found, falling back to text: ${img.path}`,
+      );
+      // Tell the user something rather than silently dropping the
+      // image reference.
+      await sendTelegramMessage(
+        vault,
+        chatId,
+        `(image not found: ${img.path})`,
+      ).catch(() => {});
+      continue;
+    }
+    await sendTelegramPhoto(vault, chatId, resolved, img.alt).catch((e) =>
+      console.warn(`[telegram] photo upload failed for ${resolved}:`, e),
+    );
+  }
+  if (text) {
+    await sendTelegramMessage(vault, chatId, text);
+  }
+}
+
 export async function refreshTelegramSnapshot(
   vault: string | null,
 ): Promise<TelegramSnapshot> {

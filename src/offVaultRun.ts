@@ -7,7 +7,7 @@ import {
   deriveConversationTitle,
   type Conversation,
 } from "./conversations";
-import { sendTelegramMessage } from "./telegram";
+import { sendTelegramMessage, sendTelegramReplyWithImages } from "./telegram";
 import { useStore, type ChatMessage, type LiveTool } from "./store";
 
 // Off-vault inbound handler. Runs the full Telegram round-trip for
@@ -142,7 +142,7 @@ export async function handleOffVaultInbound(
   }
 
   if (acc.trim()) {
-    await sendTelegramMessage(vault, chatId, acc).catch((e) =>
+    await sendTelegramReplyWithImages(vault, chatId, acc).catch((e) =>
       console.warn("[off-vault] telegram send failed:", e),
     );
   }

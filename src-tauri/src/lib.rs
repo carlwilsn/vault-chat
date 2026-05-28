@@ -3297,6 +3297,55 @@ async fn telegram_test(bot_token: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn path_exists(path: String) -> bool {
+    std::path::Path::new(&path).exists()
+}
+
+#[tauri::command]
+async fn telegram_send_photo(
+    bot_token: String,
+    chat_id: i64,
+    file_path: String,
+    caption: Option<String>,
+) -> Result<(), String> {
+    let bytes = std::fs::read(&file_path)
+        .map_err(|e| format!("read {}: {}", file_path, e))?;
+    let filename = std::path::Path::new(&file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("image")
+        .to_string();
+    let client = reqwest::Client::builder()
+        .user_agent("vault-chat/0.1")
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("https://api.telegram.org/bot{}/sendPhoto", bot_token);
+    let part = reqwest::multipart::Part::bytes(bytes).file_name(filename);
+    let mut form = reqwest::multipart::Form::new()
+        .text("chat_id", chat_id.to_string())
+        .part("photo", part);
+    if let Some(c) = caption {
+        if !c.is_empty() {
+            // Telegram caption cap is 1024 chars.
+            let trimmed: String = c.chars().take(1024).collect();
+            form = form.text("caption", trimmed);
+        }
+    }
+    let resp = client.post(&url).multipart(form).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "telegram sendPhoto {}: {}",
+            status,
+            body.chars().take(200).collect::<String>()
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn telegram_send_message(
     bot_token: String,
     chat_id: i64,
@@ -4076,6 +4125,8 @@ pub fn run() {
             telegram_stop,
             telegram_test,
             telegram_send_message,
+            telegram_send_photo,
+            path_exists,
             daemon_status,
             daemon_start,
             daemon_stop,
