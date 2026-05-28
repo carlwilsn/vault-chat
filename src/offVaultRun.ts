@@ -88,6 +88,7 @@ export async function handleOffVaultInbound(
       strictVault: store.strictVaultMode,
       bashDisabled: store.bashDisabled,
       voiceMode: false,
+      telegramMode: true,
       onEvent: (e) => {
         if (e.kind === "text") {
           acc += e.delta;

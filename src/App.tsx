@@ -420,24 +420,25 @@ export default function App() {
         return;
       }
       // Find or create the Telegram-sourced conversation for this chat.
+      // Create it inline (no newConversation() — that would activate the
+      // chat and steal focus). Telegram convos always run in the
+      // background unless the user explicitly clicks on them.
       let convId =
         s.conversations.find((c) => c.telegramChatId === m.chat_id)?.id ?? null;
       if (!convId) {
-        convId = s.newConversation();
+        const { emptyConversation } = await import("./conversations");
+        const fresh = {
+          ...emptyConversation(),
+          source: "telegram" as const,
+          telegramChatId: m.chat_id,
+          title: m.from_username
+            ? `Telegram · @${m.from_username}`
+            : "Telegram",
+        };
         useStore.setState({
-          conversations: useStore.getState().conversations.map((c) =>
-            c.id === convId
-              ? {
-                  ...c,
-                  source: "telegram",
-                  telegramChatId: m.chat_id,
-                  title: m.from_username
-                    ? `Telegram · @${m.from_username}`
-                    : c.title,
-                }
-              : c,
-          ),
+          conversations: [fresh, ...useStore.getState().conversations],
         });
+        convId = fresh.id;
       }
       // Don't yank focus to the Telegram chat. Run the agent against
       // it as a background target — the mid-run-switch logic in

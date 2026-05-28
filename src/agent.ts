@@ -73,8 +73,9 @@ export async function runAgent(params: {
   strictVault?: boolean;
   bashDisabled?: boolean;
   voiceMode?: boolean;
+  telegramMode?: boolean;
 }) {
-  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode } = params;
+  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, telegramMode } = params;
 
   try {
     const spec = findModel(modelId) ?? findModel(DEFAULT_MODEL_ID);
@@ -119,6 +120,10 @@ export async function runAgent(params: {
       ? ""
       : "\n## Status markers (optional)\n\nChats can be run in the background — the user may not be watching this one when you finish replying. If you need their input or hit something you can't recover from, end your reply with one of these two markers on its own line so the chat tile flags them:\n\n- `(ask: brief one-line question)` — you need an answer before you can continue. Sets a yellow dot on the chat in their Chats panel.\n- `(error: brief one-line reason)` — you tried and failed and can't make further progress. Sets a red dot.\n\nNo marker means \"reply complete, no follow-up needed.\" Only use these when they genuinely apply; don't sprinkle `(ask: …)` on every clarifying-question reply.";
 
+    const telegramNote = telegramMode
+      ? `\n## Telegram mode\n\nYour reply will be sent verbatim to the user's phone via Telegram. Constraints that override your defaults:\n\n- **Short.** Aim for 1-3 sentences. A few well-chosen lines beat a wall of text the user has to scroll through on their phone.\n- **Plain text only.** No markdown — no \`**bold**\`, no \`*italic*\`, no \`#\` headers, no \`-\` bullet lists, no code fences. They render as literal asterisks/hashes on Telegram, which looks broken.\n- **No tables, no diagrams.** If something genuinely needs structure, just describe it in prose.\n- **Code:** if the user is asking for code, inline it with backticks for short snippets or post it as plain indented text. Skip language tags. If it's longer than ~15 lines, save it to a file with Write and tell the user the path in one sentence.\n- **Tool calls are fine** — they don't go to Telegram, just your final reply text does. Do whatever work the task requires, then summarize the outcome briefly.\n- **The status markers \`(ask: …)\` and \`(error: …)\` still apply** — they're text-only so they show up cleanly on the phone too.`
+      : "";
+
     const system = [
       baseSystem,
       `\nVault root: ${vault}`,
@@ -131,6 +136,7 @@ export async function runAgent(params: {
         : "",
       statusMarkerNote,
       voiceNote,
+      telegramNote,
     ]
       .filter(Boolean)
       .join("\n");

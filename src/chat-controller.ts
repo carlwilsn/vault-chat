@@ -176,6 +176,7 @@ export async function sendMessage(
     strictVault,
     bashDisabled,
     voiceMode: cur.voiceMode,
+    telegramMode: targetConv?.source === "telegram",
     onEvent: (e) => {
       const store = useStore.getState();
       const live = isTargetActive();
