@@ -152,10 +152,16 @@ export async function clearTelegramCredentials(vault: string): Promise<void> {
 // Settings → Telegram. Global, not per-vault — your phone is the
 // same constraint regardless of which vault is responding.
 const TELEGRAM_MODEL_KEY = "vault_chat_telegram_model";
-export const DEFAULT_TELEGRAM_MODEL = "claude-haiku-4-5";
+export const DEFAULT_TELEGRAM_MODEL = "claude-haiku-4-5-20251001";
 
 export function getTelegramModelId(): string {
-  return localStorage.getItem(TELEGRAM_MODEL_KEY) ?? DEFAULT_TELEGRAM_MODEL;
+  const raw = localStorage.getItem(TELEGRAM_MODEL_KEY) ?? DEFAULT_TELEGRAM_MODEL;
+  // Migrate the bare-alias I shipped in the previous Telegram-model
+  // commit to the catalog-correct dated id, so findModel resolves it.
+  // Without this, anyone who saved the broken default in localStorage
+  // before this fix would silently get no replies until they reset.
+  if (raw === "claude-haiku-4-5") return "claude-haiku-4-5-20251001";
+  return raw;
 }
 
 export function setTelegramModelId(modelId: string): void {

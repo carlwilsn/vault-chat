@@ -662,7 +662,7 @@ export function SettingsPane() {
               <option value="claude-opus-4-7">claude-opus-4-7</option>
             </optgroup>
             <optgroup label="Claude — Haiku (fastest)">
-              <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+              <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
             </optgroup>
           </select>
           <p className="text-[11px] text-muted-foreground/80">
@@ -1556,7 +1556,7 @@ function TelegramSection() {
             className="w-full h-8 px-2 rounded border border-border bg-background text-[12px] font-mono"
           >
             <optgroup label="Haiku (cheap, recommended)">
-              <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+              <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
             </optgroup>
             <optgroup label="Sonnet (heavier reasoning)">
               <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
