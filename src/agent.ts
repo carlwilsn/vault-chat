@@ -115,6 +115,10 @@ export async function runAgent(params: {
 
     const northStarBlock = northStarPromptBlock(northStar);
 
+    const statusMarkerNote = voiceMode
+      ? ""
+      : "\n## Status markers (optional)\n\nChats can be run in the background — the user may not be watching this one when you finish replying. If you need their input or hit something you can't recover from, end your reply with one of these two markers on its own line so the chat tile flags them:\n\n- `(ask: brief one-line question)` — you need an answer before you can continue. Sets a yellow dot on the chat in their Chats panel.\n- `(error: brief one-line reason)` — you tried and failed and can't make further progress. Sets a red dot.\n\nNo marker means \"reply complete, no follow-up needed.\" Only use these when they genuinely apply; don't sprinkle `(ask: …)` on every clarifying-question reply.";
+
     const system = [
       baseSystem,
       `\nVault root: ${vault}`,
@@ -125,6 +129,7 @@ export async function runAgent(params: {
       metaToolNames.length
         ? `\n## Meta-vault tools\n\nThese tools were loaded from the meta vault and are available in addition to the built-in set:\n${metaToolNames.map((n) => `- ${n}`).join("\n")}`
         : "",
+      statusMarkerNote,
       voiceNote,
     ]
       .filter(Boolean)

@@ -594,7 +594,7 @@ type State = {
     titleHint?: string;
     activate?: boolean;
   }) => { conversationId: string; isNew: boolean };
-  setConversationAutoMode: (id: string, on: boolean) => void;
+  setConversationAttention: (id: string, kind: "ask" | "error" | null) => void;
 };
 
 export const useStore = create<State>((set) => ({
@@ -1529,14 +1529,14 @@ export const useStore = create<State>((set) => ({
         // Selecting the already-active chat is just a clear-unread.
         return {
           conversations: s.conversations.map((c) =>
-            c.id === id ? { ...c, unread: false } : c,
+            c.id === id ? { ...c, unread: false, attention: null } : c,
           ),
         };
       }
       const target = s.conversations.find((c) => c.id === id);
       if (!target) return {};
       const synced = syncActiveMessages(s).map((c) =>
-        c.id === id ? { ...c, unread: false } : c,
+        c.id === id ? { ...c, unread: false, attention: null } : c,
       );
       return {
         conversations: synced,
@@ -1668,10 +1668,10 @@ export const useStore = create<State>((set) => ({
     });
     return assigned;
   },
-  setConversationAutoMode: (id, on) =>
+  setConversationAttention: (id, kind) =>
     set((s) => ({
       conversations: s.conversations.map((c) =>
-        c.id === id ? { ...c, autoMode: on } : c,
+        c.id === id ? { ...c, attention: kind } : c,
       ),
     })),
 }));

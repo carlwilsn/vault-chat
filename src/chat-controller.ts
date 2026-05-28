@@ -189,6 +189,21 @@ export async function sendMessage(
         store.resetStreaming();
         store.setBusy(false);
 
+        // Status markers: the agent can end with `(ask: …)` to signal
+        // it needs user input, or `(error: …)` to signal an
+        // unrecoverable failure. Drives the colored dot in the Chats
+        // panel for off-screen chats. Absence = assumed done.
+        const convId = cur.activeConversationId;
+        if (convId) {
+          const tail = acc.slice(-400);
+          const kind: "ask" | "error" | null = /\(\s*error\s*:[^)]*\)\s*$/i.test(tail)
+            ? "error"
+            : /\(\s*ask\s*:[^)]*\)\s*$/i.test(tail)
+              ? "ask"
+              : null;
+          if (kind) store.setConversationAttention(convId, kind);
+        }
+
         if (telegramChatId !== undefined && acc.trim()) {
           sendTelegramMessage(telegramChatId, acc).catch((err) =>
             console.warn("[telegram] outbound reply failed:", err),

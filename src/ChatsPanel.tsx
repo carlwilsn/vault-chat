@@ -231,8 +231,25 @@ function Row({
         onClick={onSelect}
         className="flex-1 text-left px-4 py-2.5 flex items-start gap-2 min-w-0"
       >
-        <span className="relative inline-flex h-1.5 w-1.5 mt-[7px] shrink-0">
-          {isRunning ? (
+        <span
+          className="relative inline-flex h-1.5 w-1.5 mt-[7px] shrink-0"
+          title={
+            c.attention === "error"
+              ? "Agent hit an error — needs you"
+              : c.attention === "ask"
+                ? "Agent has a question — needs you"
+                : isRunning
+                  ? "Running"
+                  : isUnread
+                    ? "Unread"
+                    : undefined
+          }
+        >
+          {c.attention === "error" ? (
+            <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+          ) : c.attention === "ask" ? (
+            <span className="h-1.5 w-1.5 rounded-full bg-yellow-500" />
+          ) : isRunning ? (
             <>
               <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
               <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />

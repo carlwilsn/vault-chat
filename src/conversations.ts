@@ -16,10 +16,12 @@ export type Conversation = {
   // Telegram-source conversations remember the chat_id so outbound
   // assistant replies can be routed back to the same Telegram thread.
   telegramChatId?: number;
-  // True when the chat is running autonomously (piece #4 — "let it
-  // run"). Persisted so a restart doesn't lose the flag, though the
-  // background loop itself is in-process and stops on exit.
-  autoMode?: boolean;
+  // Agent-signalled status from the most recent reply. "ask" means
+  // the agent ended with `(ask: …)` and needs user input; "error"
+  // means `(error: …)` and the agent couldn't recover. Cleared when
+  // the user opens the chat. Drives the colored dot in the Chats
+  // panel and the composer footer indicator.
+  attention?: "ask" | "error" | null;
 };
 
 export function newConversationId(): string {
@@ -97,7 +99,7 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         source: parsed.source ?? "manual",
         unread: parsed.unread ?? false,
         telegramChatId: parsed.telegramChatId,
-        autoMode: parsed.autoMode ?? false,
+        attention: parsed.attention ?? null,
       });
     } catch {
       // skip
