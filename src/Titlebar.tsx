@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, History, RefreshCw, StickyNote, Mic, Compass, Keyboard } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, History, RefreshCw, StickyNote, Mic, Compass, Keyboard, Clock } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
@@ -14,6 +14,8 @@ import {
 import { VoiceCockpit } from "./VoiceCockpit";
 import { HistoryModal } from "./HistoryModal";
 import { NorthStarModal } from "./NorthStarModal";
+import { subscribeSchedules } from "./schedulerLoop";
+import { nextFireAt } from "./schedules";
 
 export function Titlebar() {
   const {
@@ -36,6 +38,45 @@ export function Titlebar() {
   } = useStore();
   const voiceTextPanelOpen = useStore((s) => s.voiceTextPanelOpen);
   const setVoiceTextPanelOpen = useStore((s) => s.setVoiceTextPanelOpen);
+  const showSchedulesPanel = useStore((s) => s.showSchedulesPanel);
+  const setShowSchedulesPanel = useStore((s) => s.setShowSchedulesPanel);
+  // Drives the pulse dot when the next schedule fire is <5min away or
+  // currently in progress. Recomputed every 30s.
+  const [scheduleImminent, setScheduleImminent] = useState(false);
+  const [scheduleAny, setScheduleAny] = useState(false);
+  useEffect(() => {
+    const recompute = (list: ReturnType<typeof Object>) => {
+      void list;
+    };
+    void recompute;
+    const tick = () => {
+      const list = (window as any).__vc_schedules ?? [];
+      let any = false;
+      let imminent = false;
+      const now = Date.now();
+      for (const s of list) {
+        any = true;
+        if (!s.enabled) continue;
+        const n = nextFireAt(s);
+        if (n === null) continue;
+        if (n - now < 5 * 60_000) {
+          imminent = true;
+          break;
+        }
+      }
+      setScheduleAny(any);
+      setScheduleImminent(imminent);
+    };
+    const unsub = subscribeSchedules((list) => {
+      (window as any).__vc_schedules = list;
+      tick();
+    });
+    const id = window.setInterval(tick, 30_000);
+    return () => {
+      window.clearInterval(id);
+      unsub();
+    };
+  }, []);
   // The keyboard slide-out hugs the mic button, so right after the
   // user clicks the mic to enter voice mode their cursor is sitting
   // on top of the trigger — the button would slide out immediately,
@@ -258,6 +299,21 @@ export function Titlebar() {
               <StickyNote className="h-3.5 w-3.5" />
               {notes.filter((n) => n.status === "open").length > 0 && (
                 <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
+              )}
+            </button>
+            <button
+              onClick={() => setShowSchedulesPanel(!showSchedulesPanel)}
+              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground relative"
+              title="Schedules (Ctrl+Shift+S)"
+            >
+              <Clock className="h-3.5 w-3.5" />
+              {scheduleAny && scheduleImminent && (
+                <span className="absolute top-0.5 right-0.5">
+                  <span className="relative inline-flex h-1.5 w-1.5">
+                    <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+                  </span>
+                </span>
               )}
             </button>
             <div

@@ -459,6 +459,7 @@ type State = {
   activeConversationId: string | null;
   conversationsLoaded: boolean;
   showChatsPanel: boolean;
+  showSchedulesPanel: boolean;
 
   setVault: (p: string) => void;
   setFiles: (f: FileEntry[]) => void;
@@ -580,6 +581,7 @@ type State = {
   selectConversation: (id: string) => void;
   deleteConversation: (id: string) => void;
   setShowChatsPanel: (b: boolean) => void;
+  setShowSchedulesPanel: (b: boolean) => void;
   // Ingest a user message from an external source (Telegram, scheduled
   // run) into an existing conversation or a new one. Activates the
   // chat only if `activate` is set; otherwise just appends + marks
@@ -658,6 +660,7 @@ export const useStore = create<State>((set) => ({
   activeConversationId: null,
   conversationsLoaded: false,
   showChatsPanel: false,
+  showSchedulesPanel: false,
 
   setVault: (p) =>
     set((s) => {
@@ -710,6 +713,7 @@ export const useStore = create<State>((set) => ({
         activeConversationId: null,
         conversationsLoaded: false,
         showChatsPanel: false,
+        showSchedulesPanel: false,
         currentFile: null,
         currentContent: "",
         panes: [],
@@ -1587,6 +1591,7 @@ export const useStore = create<State>((set) => ({
       };
     }),
   setShowChatsPanel: (b) => set({ showChatsPanel: b }),
+  setShowSchedulesPanel: (b) => set({ showSchedulesPanel: b }),
   ingestExternalMessage: (payload) => {
     let assigned = { conversationId: "", isNew: false };
     set((s) => {

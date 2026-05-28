@@ -12,6 +12,7 @@ import { NotePopup } from "./NotePopup";
 import { VoiceTextPanel } from "./VoiceTextPanel";
 import { NotesPanel } from "./NotesPanel";
 import { ChatsPanel } from "./ChatsPanel";
+import { SchedulesPanel } from "./SchedulesPanel";
 import { UpdateBanner } from "./UpdateBanner";
 import { fileKind } from "./fileKind";
 import type { NoteAnchor } from "./notes";
@@ -20,6 +21,7 @@ import { gitInitIfNeeded } from "./git";
 import { useGlobalAnchorClickHandler } from "./linkNav";
 import { applyHljsTheme } from "./main";
 import { startVaultSyncLoop, stopVaultSyncLoop } from "./vaultSync";
+import { startSchedulerLoop, stopSchedulerLoop } from "./schedulerLoop";
 import {
   readTelegramEnabled,
   startTelegramService,
@@ -45,6 +47,8 @@ export default function App() {
   const notesLoaded = useStore((s) => s.notesLoaded);
   const showChatsPanel = useStore((s) => s.showChatsPanel);
   const setShowChatsPanel = useStore((s) => s.setShowChatsPanel);
+  const showSchedulesPanel = useStore((s) => s.showSchedulesPanel);
+  const setShowSchedulesPanel = useStore((s) => s.setShowSchedulesPanel);
   const loadConversations = useStore((s) => s.loadConversations);
   const conversationsLoaded = useStore((s) => s.conversationsLoaded);
   const newConversation = useStore((s) => s.newConversation);
@@ -220,6 +224,11 @@ export default function App() {
         invoke("open_terminal", {
           cwd: useStore.getState().vaultPath ?? undefined,
         }).catch((err) => console.error("[terminal] failed:", err));
+      } else if (k === "s" && e.shiftKey && !e.altKey) {
+        // Ctrl+Shift+S — toggle the schedules panel.
+        e.preventDefault();
+        const s = useStore.getState();
+        s.setShowSchedulesPanel(!s.showSchedulesPanel);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -273,6 +282,15 @@ export default function App() {
     void startVaultSyncLoop(vaultPath);
     return () => {
       stopVaultSyncLoop();
+    };
+  }, [vaultPath]);
+
+  // Scheduled agent runs — per-vault loop.
+  useEffect(() => {
+    if (!vaultPath) return;
+    void startSchedulerLoop(vaultPath);
+    return () => {
+      stopSchedulerLoop();
     };
   }, [vaultPath]);
 
@@ -393,6 +411,10 @@ export default function App() {
           // we don't have to thread a ref through the Allotment tree.
           window.dispatchEvent(new CustomEvent("vc-focus-composer"));
         }}
+      />
+      <SchedulesPanel
+        open={showSchedulesPanel}
+        onClose={() => setShowSchedulesPanel(false)}
       />
       <VoiceTextPanel />
       <UpdateBanner />
