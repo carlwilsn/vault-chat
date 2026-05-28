@@ -6,7 +6,7 @@ import remarkBreaks from "remark-breaks";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import { preprocessMarkdownMath } from "./mdMath";
-import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare } from "lucide-react";
+import { Trash2, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare, Play } from "lucide-react";
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
@@ -15,6 +15,12 @@ import { buildViewportContextText } from "./voice-elevenlabs";
 import { findModel } from "./providers";
 import { loadSkills } from "./skills";
 import { isUnreadableAsText } from "./fileKind";
+import {
+  startAsyncRun,
+  stopAsyncRun,
+  subscribeAsyncStatus,
+  type AsyncStatus,
+} from "./asyncRun";
 import { SettingsPane } from "./SettingsPane";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
@@ -316,8 +322,20 @@ export function ChatPane() {
   const setShowChatsPanel = useStore((s) => s.setShowChatsPanel);
   const showChatsPanel = useStore((s) => s.showChatsPanel);
   const conversations = useStore((s) => s.conversations);
+  const activeConversationId = useStore((s) => s.activeConversationId);
   const anyRunning = conversations.some((c) => c.status === "running");
   const toggleChatsPanel = () => setShowChatsPanel(!showChatsPanel);
+  const [asyncStatus, setAsyncStatus] = useState<AsyncStatus>({
+    active: false,
+    conversationId: null,
+    step: 0,
+    maxSteps: 0,
+    startedAt: 0,
+    maxWallClockMin: 0,
+  });
+  useEffect(() => subscribeAsyncStatus(setAsyncStatus), []);
+  const autoActiveHere =
+    asyncStatus.active && asyncStatus.conversationId === activeConversationId;
   const [pendingImages, setPendingImages] = useState<
     Array<{
       imageDataUrl: string;
@@ -964,6 +982,19 @@ export function ChatPane() {
                     <Square className="h-3 w-3 fill-current" />
                   </Button>
                 )}
+                {!busy && !autoActiveHere && (
+                  <button
+                    onClick={() => {
+                      if (!activeConversationId) return;
+                      void startAsyncRun(activeConversationId);
+                    }}
+                    disabled={!ready || !activeConversationId || messages.length === 0}
+                    className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                    title="Let it run — agent keeps going on its own"
+                  >
+                    <Play className="h-3.5 w-3.5" />
+                  </button>
+                )}
                 {!busy && (
                   <Button
                     size="icon"
@@ -977,6 +1008,7 @@ export function ChatPane() {
                 )}
               </div>
             </div>
+            {autoActiveHere && <AutoRunStrip status={asyncStatus} />}
           </div>
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
             <ModelPicker modelId={modelId} apiKeys={apiKeys} onSelect={onSelectModel} />
@@ -1020,6 +1052,39 @@ export function ChatPane() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function AutoRunStrip({ status }: { status: AsyncStatus }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const elapsed = Math.floor((now - status.startedAt) / 1000);
+  const mm = Math.floor(elapsed / 60);
+  const ss = elapsed % 60;
+  return (
+    <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-t border-border/60 text-[11px] text-muted-foreground bg-card">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="relative inline-flex h-1.5 w-1.5 shrink-0">
+          <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+        </span>
+        <span className="truncate">
+          Running autonomously · {status.step}/{status.maxSteps} ·{" "}
+          <span className="tabular-nums">
+            {mm}:{String(ss).padStart(2, "0")}
+          </span>
+        </span>
+      </div>
+      <button
+        onClick={() => stopAsyncRun()}
+        className="h-6 px-2 rounded text-[11px] border border-border hover:bg-accent/60"
+      >
+        Stop
+      </button>
     </div>
   );
 }

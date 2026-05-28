@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Send,
   Monitor,
+  Clock,
 } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { PROVIDER_LABEL, type ProviderId } from "./providers";
@@ -57,6 +58,11 @@ import {
   type CrossSyncConfig,
   type CrossSyncSnapshot,
 } from "./crossSync";
+import {
+  readAsyncConfig,
+  writeAsyncConfig,
+  type AsyncConfig,
+} from "./asyncRun";
 
 const PROVIDERS: ProviderId[] = ["anthropic", "openai", "google", "openrouter"];
 
@@ -506,6 +512,10 @@ export function SettingsPane() {
         <div className="h-px bg-border" />
 
         <TelegramSection />
+
+        <div className="h-px bg-border" />
+
+        <AsyncSection />
 
         <div className="h-px bg-border" />
 
@@ -1368,6 +1378,91 @@ function CrossSyncStatusRow({
       <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
       idle
     </span>
+  );
+}
+
+function AsyncSection() {
+  const [config, setConfig] = useState<AsyncConfig>(() => readAsyncConfig());
+  const telegramConfigured = readTelegramEnabled();
+  const update = (patch: Partial<AsyncConfig>) => {
+    setConfig(writeAsyncConfig(patch));
+  };
+  return (
+    <section className="space-y-3">
+      <div>
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+          <Clock className="h-3 w-3" />
+          Async background tasks
+        </h3>
+        <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
+          Defaults for when a chat is set to "let it run" — the agent keeps going without prompting until it hits a stop.
+        </p>
+      </div>
+      <div className="space-y-2">
+        <div className="grid grid-cols-2 gap-2">
+          <div className="space-y-1">
+            <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
+              Max steps
+            </label>
+            <Input
+              type="number"
+              min={1}
+              value={config.maxSteps}
+              onChange={(e) =>
+                update({ maxSteps: Math.max(1, Number(e.target.value) || 1) })
+              }
+              className="tabular-nums"
+            />
+            <p className="text-[10.5px] text-muted-foreground/70">
+              Agent stops after N turns.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
+              Max wall-clock
+            </label>
+            <div className="flex items-center gap-1">
+              <Input
+                type="number"
+                min={1}
+                value={config.maxWallClockMin}
+                onChange={(e) =>
+                  update({
+                    maxWallClockMin: Math.max(1, Number(e.target.value) || 1),
+                  })
+                }
+                className="flex-1 tabular-nums"
+              />
+              <span className="text-[10.5px] text-muted-foreground">minutes</span>
+            </div>
+            <p className="text-[10.5px] text-muted-foreground/70">
+              Hard stop regardless of progress.
+            </p>
+          </div>
+        </div>
+        <label className="flex items-start gap-2.5 cursor-pointer pt-1">
+          <input
+            type="checkbox"
+            className="vc-checkbox mt-0.5"
+            checked={config.pingOnFinish}
+            onChange={(e) => update({ pingOnFinish: e.target.checked })}
+          />
+          <div className="flex-1">
+            <div className="text-[12px]">Ping when an async chat finishes</div>
+            <p className="text-[10.5px] text-muted-foreground/80">
+              Marks the chat unread in the Chats panel; if Telegram is on, also sends a chat title + first line.
+              {!telegramConfigured && " (Telegram off — only the Chats unread badge fires.)"}
+            </p>
+          </div>
+        </label>
+        <div className="rounded-md border border-border/60 bg-muted/30 p-2.5 text-[11px] text-muted-foreground">
+          <div className="font-medium text-foreground/85 mb-1">Per-chat trigger</div>
+          <div>
+            Each chat has a small <span className="text-foreground/85 font-mono">▶ Let it run</span> button in the composer footer. Click → the agent keeps going on its own; the Chats panel shows the pulsing "running" indicator.
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
