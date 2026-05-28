@@ -1394,6 +1394,8 @@ function TelegramSection() {
     | { kind: "ok"; message: string }
     | { kind: "err"; message: string }
   >({ kind: "idle" });
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1433,10 +1435,19 @@ function TelegramSection() {
     const tok = tokenDraft.trim();
     const uid = userIdDraft.trim();
     if (!tok || !uid) return;
-    await setTelegramCredentials(tok, uid);
-    if (enabled) {
-      await stopTelegramService();
-      await startTelegramService();
+    setSaveState("saving");
+    setSaveError(null);
+    try {
+      await setTelegramCredentials(tok, uid);
+      if (enabled) {
+        await stopTelegramService();
+        await startTelegramService();
+      }
+      setSaveState("saved");
+      setTimeout(() => setSaveState((s) => (s === "saved" ? "idle" : s)), 1800);
+    } catch (e) {
+      setSaveState("error");
+      setSaveError(String(e));
     }
   };
 
@@ -1528,10 +1539,18 @@ function TelegramSection() {
           <Button
             size="sm"
             onClick={saveCredentials}
-            disabled={!tokenDraft.trim() || !userIdDraft.trim()}
+            disabled={!tokenDraft.trim() || !userIdDraft.trim() || saveState === "saving"}
           >
-            Save
+            {saveState === "saving" ? "Saving…" : "Save"}
           </Button>
+          {saveState === "saved" && (
+            <span className="inline-flex items-center gap-1 text-[11px] text-emerald-500">
+              <Check className="h-3 w-3" /> saved to keychain
+            </span>
+          )}
+          {saveState === "error" && saveError && (
+            <span className="text-[11px] text-destructive">save failed: {saveError}</span>
+          )}
           {(tokenDraft || userIdDraft) && (
             <Button
               size="sm"
