@@ -30,7 +30,6 @@ import {
   refreshTelegramSnapshot,
   getEnabledTelegramVaults,
 } from "./telegram";
-import { readConversations, writeConversations, emptyConversation, deriveConversationTitle } from "./conversations";
 import "./App.css";
 
 export default function App() {
@@ -283,48 +282,19 @@ export default function App() {
       const { sendTelegramMessage } = await import("./telegram");
       const trimmedText = m.text.trim();
 
-      // Off-vault inbound: write the user message directly into the
-      // target vault's conversations.jsonl. No agent run yet — the
-      // user will see the queued message when they next open that
-      // vault. (Phase 2 will add off-vault agent runs so the bot
-      // replies in real time from any vault.)
+      // Off-vault inbound: full round-trip (agent run + telegram
+      // reply) without touching the active vault's UI. The user only
+      // sees off-vault activity when they next switch to that vault.
       if (!isCurrentVault) {
-        try {
-          const list = await readConversations(inboundVault);
-          let target = list.find((c) => c.telegramChatId === m.chat_id);
-          if (!target) {
-            target = {
-              ...emptyConversation(),
-              source: "telegram",
-              telegramChatId: m.chat_id,
-              title: m.from_username
-                ? `Telegram · @${m.from_username}`
-                : deriveConversationTitle([{ role: "user", content: m.text }]),
-              messages: [{ role: "user", content: m.text }],
-              unread: true,
-              lastActivityAt: Date.now(),
-            };
-            list.unshift(target);
-          } else {
-            const idx = list.indexOf(target);
-            list[idx] = {
-              ...target,
-              messages: [...target.messages, { role: "user", content: m.text }],
-              unread: true,
-              lastActivityAt: Date.now(),
-            };
-          }
-          await writeConversations(inboundVault, list);
-          // Tell the user we got it but the bot can't think on this
-          // vault right now since vault-chat isn't focused on it.
-          sendTelegramMessage(
-            inboundVault,
-            m.chat_id,
-            "Queued. (Bot replies on this vault only when vault-chat has it open. Open the vault to process.)",
-          ).catch(() => {});
-        } catch (e) {
-          console.warn("[telegram] off-vault queue failed:", e);
-        }
+        const { handleOffVaultInbound } = await import("./offVaultRun");
+        void handleOffVaultInbound(
+          inboundVault,
+          m.chat_id,
+          m.text,
+          m.from_username,
+        ).catch((e) =>
+          console.warn("[telegram] off-vault run failed:", e),
+        );
         return;
       }
 
