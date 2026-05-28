@@ -858,6 +858,84 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         });
       },
     }),
+    ListConversations: tool({
+      description:
+        "List the other chats in this vault — useful for finding a specific conversation to peek into (see ReadConversation). Returns id, title, source, status (idle/running), unread, attention (ask/error if waiting on user), last activity time, and message count for each. Excludes the current chat.",
+      inputSchema: z.object({
+        limit: z
+          .number()
+          .int()
+          .optional()
+          .describe("Max number of conversations to return, sorted by recency. Default 20."),
+      }),
+      execute: async ({ limit }) => {
+        const cap = Math.max(1, Math.min(100, limit ?? 20));
+        const { readConversations } = await import("./conversations");
+        const list = await readConversations(vault);
+        const filtered = list
+          .filter((c) => c.id !== conversationId)
+          .sort((a, b) => b.lastActivityAt - a.lastActivityAt)
+          .slice(0, cap);
+        if (filtered.length === 0) return "(no other conversations)";
+        const fmt = (ts: number) => {
+          const diff = Date.now() - ts;
+          const min = Math.floor(diff / 60_000);
+          if (min < 60) return `${Math.max(0, min)}m ago`;
+          const hr = Math.floor(min / 60);
+          if (hr < 24) return `${hr}h ago`;
+          return `${Math.floor(hr / 24)}d ago`;
+        };
+        return filtered
+          .map((c) =>
+            JSON.stringify({
+              id: c.id,
+              title: c.title || "(untitled)",
+              source: c.source,
+              status: c.status,
+              unread: !!c.unread,
+              attention: c.attention ?? null,
+              messageCount: c.messages.length,
+              lastActivity: fmt(c.lastActivityAt),
+            }),
+          )
+          .join("\n");
+      },
+    }),
+    ReadConversation: tool({
+      description:
+        "Read the recent history of another chat in this vault, including the most recent tool calls. Use when the user asks 'how is the X chat doing', 'what's the deep-dive chat working on', or similar monitoring questions. Pair with ListConversations to find the id. Returns the last N messages with role, content (truncated), and any tool-call summaries.",
+      inputSchema: z.object({
+        conversation_id: z.string().describe("Conversation id from ListConversations."),
+        last_n: z
+          .number()
+          .int()
+          .optional()
+          .describe("How many recent messages to return. Default 12, max 50."),
+      }),
+      execute: async ({ conversation_id, last_n }) => {
+        const cap = Math.max(1, Math.min(50, last_n ?? 12));
+        const { readConversations } = await import("./conversations");
+        const list = await readConversations(vault);
+        const conv = list.find((c) => c.id === conversation_id);
+        if (!conv) return `Conversation not found: ${conversation_id}`;
+        const tail = conv.messages.slice(-cap);
+        const lines: string[] = [
+          `# ${conv.title || "(untitled)"} [${conv.status}${conv.attention ? `, ${conv.attention}` : ""}]`,
+          `source: ${conv.source} · ${conv.messages.length} total messages`,
+          ...tail.map((m) => {
+            const content = (m.content ?? "").slice(0, 800);
+            const tools =
+              m.toolCalls && m.toolCalls.length > 0
+                ? `\n  tools: ${m.toolCalls
+                    .map((t) => `${t.name}(${JSON.stringify(t.input ?? {}).slice(0, 80)})`)
+                    .join(", ")}`
+                : "";
+            return `[${m.role}${m.hidden ? " hidden" : ""}] ${content}${content.length === 800 ? "…" : ""}${tools}`;
+          }),
+        ];
+        return lines.join("\n\n");
+      },
+    }),
     Schedule: tool({
       description:
         "Schedule a one-time prompt to fire at a future local time. The prompt runs as a new turn in the *current* conversation when it fires; if the conversation is Telegram-sourced, the reply is also sent to the user's phone. Use for reminders, follow-ups, or any 'come back to me at X' request. The schedule fires while vault-chat is running with this vault available; if the app is closed at fire time, the schedule fires on the next launch when the vault is loaded.",

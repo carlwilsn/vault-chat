@@ -85,6 +85,15 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
   const tick = async () => {
     if (cancelled) return;
     const now = Date.now();
+    // Re-read from disk every tick. Cheap (small file, sub-ms IPC)
+    // and lets git-synced changes from another machine pick up
+    // without an app restart. The in-memory cache stays as a fast
+    // path for the SchedulesPanel subscriber.
+    const fromDisk = await readSchedules(vault).catch(() => null);
+    if (fromDisk) {
+      schedulesByVault.set(vault, fromDisk);
+      emit();
+    }
     const list = (schedulesByVault.get(vault) ?? []).slice();
     let changed = false;
     for (const s of list) {
