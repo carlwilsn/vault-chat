@@ -109,6 +109,14 @@ export async function sendMessage(
   const modelId = cur.modelId;
   const currentFile = cur.currentFile;
   const openPaneIds = cur.panes.map((p) => p.id);
+  // Pin the conversation this run is for. If the user navigates away
+  // mid-stream, all live-UI updates (streamingText, liveTools, busy)
+  // are gated on the active conversation still being this one;
+  // otherwise the run's events would leak into whatever conversation
+  // the user is currently looking at.
+  const targetConvId = cur.activeConversationId;
+  const isTargetActive = () =>
+    useStore.getState().activeConversationId === targetConvId;
   // If the active conversation is telegram-sourced, mirror the
   // assistant's final reply back to Telegram on completion.
   const activeConv = cur.conversations.find(
@@ -137,21 +145,22 @@ export async function sendMessage(
     voiceMode: cur.voiceMode,
     onEvent: (e) => {
       const store = useStore.getState();
+      const live = isTargetActive();
       if (e.kind === "text") {
         acc += e.delta;
-        store.appendStreamingText(e.delta);
+        if (live) store.appendStreamingText(e.delta);
       } else if (e.kind === "reasoning_start") {
-        store.clearStreamingReasoning();
+        if (live) store.clearStreamingReasoning();
       } else if (e.kind === "reasoning") {
-        store.appendStreamingReasoning(e.delta);
+        if (live) store.appendStreamingReasoning(e.delta);
       } else if (e.kind === "tool_input_start") {
-        store.startLiveToolInput(e.id, e.name);
+        if (live) store.startLiveToolInput(e.id, e.name);
       } else if (e.kind === "tool_input_delta") {
-        store.appendLiveToolInputDelta(e.id, e.delta);
+        if (live) store.appendLiveToolInputDelta(e.id, e.delta);
       } else if (e.kind === "tool_use") {
         const t: LiveTool = { id: e.id, name: e.name, input: e.input, startedAt: Date.now() };
         tools.push(t);
-        store.pushLiveTool(t);
+        if (live) store.pushLiveTool(t);
         // Fire-and-forget ETA estimate for Bash. Updates the live tool
         // if Haiku comes back before the command finishes; ignored
         // otherwise. Bounded by the agent's abort signal.
@@ -174,34 +183,48 @@ export async function sendMessage(
       } else if (e.kind === "tool_result") {
         const t = tools.find((x) => x.id === e.id);
         if (t) t.result = e.result;
-        store.updateLiveToolResult(e.id, e.result);
+        if (live) store.updateLiveToolResult(e.id, e.result);
       } else if (e.kind === "done") {
-        if (e.usage) {
+        if (e.usage && live) {
           store.addTokenUsage(e.usage);
           store.setLastContext(e.usage.context);
         }
-        store.appendMessage({
+        const assistantMsg: ChatMessage = {
           role: "assistant",
           content: acc,
           toolCalls: tools.length ? tools : undefined,
           usage: e.usage,
-        });
-        store.resetStreaming();
-        store.setBusy(false);
+        };
+        if (live) {
+          // User is still watching this conversation — write to the
+          // global view and let syncActiveMessages persist on switch.
+          store.appendMessage(assistantMsg);
+          store.resetStreaming();
+          store.setBusy(false);
+        } else {
+          // User navigated away mid-run. Write the final message
+          // straight to the target conversation's stored messages so
+          // it lands in the right place, and flip its status to idle.
+          // Don't touch global streamingText/busy — those belong to
+          // whatever conversation the user is currently viewing.
+          if (targetConvId) {
+            store.appendMessageToConversation(targetConvId, assistantMsg);
+            store.setConversationStatus(targetConvId, "idle");
+          }
+        }
 
         // Status markers: the agent can end with `(ask: …)` to signal
         // it needs user input, or `(error: …)` to signal an
         // unrecoverable failure. Drives the colored dot in the Chats
         // panel for off-screen chats. Absence = assumed done.
-        const convId = cur.activeConversationId;
-        if (convId) {
+        if (targetConvId) {
           const tail = acc.slice(-400);
           const kind: "ask" | "error" | null = /\(\s*error\s*:[^)]*\)\s*$/i.test(tail)
             ? "error"
             : /\(\s*ask\s*:[^)]*\)\s*$/i.test(tail)
               ? "ask"
               : null;
-          if (kind) store.setConversationAttention(convId, kind);
+          if (kind) store.setConversationAttention(targetConvId, kind);
         }
 
         if (telegramChatId !== undefined && acc.trim()) {
@@ -245,9 +268,18 @@ export async function sendMessage(
             .catch(() => {});
         }
       } else if (e.kind === "error") {
-        store.appendMessage({ role: "assistant", content: `⚠️ ${e.message}` });
-        store.resetStreaming();
-        store.setBusy(false);
+        const errMsg: ChatMessage = {
+          role: "assistant",
+          content: `⚠️ ${e.message}`,
+        };
+        if (live) {
+          store.appendMessage(errMsg);
+          store.resetStreaming();
+          store.setBusy(false);
+        } else if (targetConvId) {
+          store.appendMessageToConversation(targetConvId, errMsg);
+          store.setConversationStatus(targetConvId, "idle");
+        }
       }
     },
   });

@@ -595,6 +595,12 @@ type State = {
     activate?: boolean;
   }) => { conversationId: string; isNew: boolean };
   setConversationAttention: (id: string, kind: "ask" | "error" | null) => void;
+  // Off-screen-safe message append: writes directly to a specific
+  // conversation's stored messages array, regardless of which one is
+  // currently active. Used by chat-controller when a run finishes
+  // after the user navigated away.
+  appendMessageToConversation: (id: string, m: ChatMessage) => void;
+  setConversationStatus: (id: string, status: "idle" | "running") => void;
 };
 
 export const useStore = create<State>((set) => ({
@@ -1511,6 +1517,11 @@ export const useStore = create<State>((set) => ({
       return {
         conversations: [fresh, ...synced],
         activeConversationId: fresh.id,
+        // Fresh conversation is never mid-run; clear the global busy
+        // flag even if the previous conversation's agent is still
+        // running off-screen. The previous conversation's entry
+        // already carries status="running" from syncActiveMessages.
+        busy: false,
         messages: [],
         compactionSummary: null,
         lastContext: 0,
@@ -1542,6 +1553,13 @@ export const useStore = create<State>((set) => ({
         conversations: synced,
         activeConversationId: id,
         messages: target.messages,
+        // Global busy/streaming/tools view follows the conversation
+        // we just landed on. If the target was mid-run when we
+        // switched away earlier, it's still running in the
+        // background — re-arm the UI accordingly. (Streaming text
+        // and live tools that happened off-screen are lost; only
+        // the final reply lands when the run finishes.)
+        busy: target.status === "running",
         compactionSummary: null,
         lastContext: 0,
         tokenUsage: { prompt: 0, completion: 0, total: 0 },
@@ -1672,6 +1690,25 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       conversations: s.conversations.map((c) =>
         c.id === id ? { ...c, attention: kind } : c,
+      ),
+    })),
+  appendMessageToConversation: (id, m) =>
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === id
+          ? {
+              ...c,
+              messages: [...c.messages, m],
+              lastActivityAt: Date.now(),
+              unread: s.activeConversationId === id ? c.unread : true,
+            }
+          : c,
+      ),
+    })),
+  setConversationStatus: (id, status) =>
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === id ? { ...c, status } : c,
       ),
     })),
 }));
