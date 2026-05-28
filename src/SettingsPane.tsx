@@ -45,6 +45,8 @@ import {
   readTelegramEnabled,
   writeTelegramEnabled,
   refreshTelegramSnapshot,
+  getTelegramModelId,
+  setTelegramModelId,
   type TelegramSnapshot,
 } from "./telegram";
 import {
@@ -1397,6 +1399,7 @@ function TelegramSection() {
   >({ kind: "idle" });
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [tgModelDraft, setTgModelDraft] = useState(() => getTelegramModelId());
 
   useEffect(() => {
     let cancelled = false;
@@ -1538,6 +1541,41 @@ function TelegramSection() {
           />
           <p className="text-[10.5px] text-muted-foreground/70">
             From @userinfobot. Locks the bot to only your messages.
+          </p>
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
+            Telegram brain
+          </label>
+          <select
+            value={tgModelDraft}
+            onChange={(e) => {
+              setTgModelDraft(e.target.value);
+              setTelegramModelId(e.target.value);
+            }}
+            className="w-full h-8 px-2 rounded border border-border bg-background text-[12px] font-mono"
+          >
+            <optgroup label="Haiku (cheap, recommended)">
+              <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+            </optgroup>
+            <optgroup label="Sonnet (heavier reasoning)">
+              <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+              <option value="claude-sonnet-4-5@20250929">claude-sonnet-4-5</option>
+            </optgroup>
+            <optgroup label="Opus (full muscle, slow + pricey)">
+              <option value="claude-opus-4-7">claude-opus-4-7</option>
+            </optgroup>
+            <optgroup label="Gemini">
+              <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+              <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+            </optgroup>
+          </select>
+          <p className="text-[10.5px] text-muted-foreground/70">
+            Model the agent uses when replying to a Telegram-sourced chat
+            (inbound messages or scheduled fires). Defaults to Haiku since
+            the phone path is usually quick replies + light tool use;
+            keeps cost down on daily / hourly schedules. Override if you
+            actually want the bot doing heavy work over Telegram.
           </p>
         </div>
         <div className="pt-1 flex items-center gap-2 flex-wrap">

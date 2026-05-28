@@ -36,7 +36,17 @@ export async function sendMessage(
   const trimmed = text.trim();
   const preamble = contextPreamble?.trim() ?? "";
   if (!trimmed && !preamble) return;
-  const spec = findModel(s.modelId);
+  // Telegram-sourced runs use a cheaper default model — see
+  // getTelegramModelId. User can override in Settings → Telegram.
+  const targetForModelLookup = targetConvIdOverride
+    ? s.conversations.find((c) => c.id === targetConvIdOverride)
+    : s.conversations.find((c) => c.id === s.activeConversationId);
+  let modelId = s.modelId;
+  if (targetForModelLookup?.source === "telegram") {
+    const { getTelegramModelId } = await import("./telegram");
+    modelId = getTelegramModelId();
+  }
+  const spec = findModel(modelId);
   const apiKey = spec ? s.apiKeys[spec.provider] : undefined;
   if (!s.vaultPath || !apiKey || !spec) return;
   const tavilyKey = s.serviceKeys.tavily;
@@ -153,7 +163,9 @@ export async function sendMessage(
     : baseHistory;
 
   const vault = cur.vaultPath!;
-  const modelId = cur.modelId;
+  // modelId was already resolved above (Telegram-sourced convs swap
+  // to the cheaper default). Don't re-read from store here — that
+  // would undo the override.
   const currentFile = cur.currentFile;
   const openPaneIds = cur.panes.map((p) => p.id);
   const isTargetActive = () =>

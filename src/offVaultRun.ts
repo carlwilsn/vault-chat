@@ -34,7 +34,10 @@ export async function handleOffVaultInbound(
   if (await handleOffVaultSlashCommand(vault, chatId, trimmed, fromUsername)) return;
 
   const store = useStore.getState();
-  const modelId = store.modelId;
+  // Telegram inbound is by definition telegram-sourced — use the
+  // cheaper default model. User overrides in Settings → Telegram.
+  const { getTelegramModelId } = await import("./telegram");
+  const modelId = getTelegramModelId();
   const spec = findModel(modelId);
   const apiKey = spec ? store.apiKeys[spec.provider] : undefined;
   if (!spec || !apiKey) {
@@ -162,7 +165,13 @@ export async function runScheduledHeadlessTurn(
   opts: { sendViaTelegram: boolean },
 ): Promise<void> {
   const store = useStore.getState();
-  const modelId = store.modelId;
+  // Telegram-bound scheduled runs use the cheaper Telegram default
+  // model; non-telegram scheduled runs use the user's main model.
+  let modelId = store.modelId;
+  if (opts.sendViaTelegram) {
+    const { getTelegramModelId } = await import("./telegram");
+    modelId = getTelegramModelId();
+  }
   const spec = findModel(modelId);
   const apiKey = spec ? store.apiKeys[spec.provider] : undefined;
   if (!spec || !apiKey) {

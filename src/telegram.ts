@@ -145,6 +145,23 @@ export async function clearTelegramCredentials(vault: string): Promise<void> {
   await keychainDelete(vaultTokenKey(vault));
 }
 
+// Cheaper-default model for Telegram runs. The agent in a Telegram
+// chat doesn't need to do heavy reasoning — short replies, light
+// tool use. Default Haiku 4.5 keeps cost down for recurring
+// schedules (daily briefs, hourly polls). User can override in
+// Settings → Telegram. Global, not per-vault — your phone is the
+// same constraint regardless of which vault is responding.
+const TELEGRAM_MODEL_KEY = "vault_chat_telegram_model";
+export const DEFAULT_TELEGRAM_MODEL = "claude-haiku-4-5";
+
+export function getTelegramModelId(): string {
+  return localStorage.getItem(TELEGRAM_MODEL_KEY) ?? DEFAULT_TELEGRAM_MODEL;
+}
+
+export function setTelegramModelId(modelId: string): void {
+  localStorage.setItem(TELEGRAM_MODEL_KEY, modelId);
+}
+
 export type TelegramInbound = {
   chat_id: number;
   from_user_id: number;
