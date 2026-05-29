@@ -12,6 +12,7 @@ export type ModelSpec = {
 };
 
 export const MODELS: ModelSpec[] = [
+  { provider: "anthropic", id: "claude-opus-4-8", label: "Claude Opus 4.8" },
   { provider: "anthropic", id: "claude-opus-4-7", label: "Claude Opus 4.7" },
   { provider: "anthropic", id: "claude-opus-4-6", label: "Claude Opus 4.6" },
   { provider: "anthropic", id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
@@ -26,7 +27,7 @@ export const MODELS: ModelSpec[] = [
   { provider: "openrouter", id: "deepseek/deepseek-chat", label: "DeepSeek V3" },
 ];
 
-export const DEFAULT_MODEL_ID = "claude-opus-4-7";
+export const DEFAULT_MODEL_ID = "claude-opus-4-8";
 
 export const PROVIDER_LABEL: Record<ProviderId, string> = {
   anthropic: "Anthropic",

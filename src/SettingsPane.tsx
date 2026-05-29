@@ -659,6 +659,7 @@ export function SettingsPane() {
               <option value="claude-3-7-sonnet">claude-3-7-sonnet</option>
             </optgroup>
             <optgroup label="Claude — Opus (smartest, slower)">
+              <option value="claude-opus-4-8">claude-opus-4-8</option>
               <option value="claude-opus-4-7">claude-opus-4-7</option>
             </optgroup>
             <optgroup label="Claude — Haiku (fastest)">
@@ -1563,6 +1564,7 @@ function TelegramSection() {
               <option value="claude-sonnet-4-5@20250929">claude-sonnet-4-5</option>
             </optgroup>
             <optgroup label="Opus (full muscle, slow + pricey)">
+              <option value="claude-opus-4-8">claude-opus-4-8</option>
               <option value="claude-opus-4-7">claude-opus-4-7</option>
             </optgroup>
             <optgroup label="Gemini">

@@ -351,7 +351,7 @@ Be terse. If the task is research, return findings as a structured list with fil
       // effort instead of a raw token budget. Older models (Opus 4.6,
       // Sonnet 4.6, Haiku 4.5) still accept the enabled+budgetTokens
       // shape, and sending the new keys to them fails — so branch.
-      const isAdaptive = /^claude-opus-4-7/i.test(spec.id);
+      const isAdaptive = /^claude-opus-4-(7|8)/i.test(spec.id);
       providerOptions = isAdaptive
         ? {
             anthropic: {

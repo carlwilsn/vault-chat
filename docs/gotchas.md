@@ -9,9 +9,9 @@ Cross-cutting weirdness that bit us once or is still latent. Read this before ed
 - Before the fix, every tool call through Qwen / DeepSeek bounced with *"Invalid Responses API request"*.
 - Native OpenAI stays on `r(id)` (Responses API) because that's where `reasoningEffort` works.
 
-### Opus 4.7 uses adaptive thinking, older Claude uses enabled+budgetTokens
-- [agent.ts:148](../src/agent.ts): branch on `^claude-opus-4-7` regex.
-- Opus 4.7: `{thinking: {type: "adaptive"}, output_config: {effort: "medium"}}`.
+### Opus 4.7+ uses adaptive thinking, older Claude uses enabled+budgetTokens
+- [agent.ts:148](../src/agent.ts): branch on `^claude-opus-4-(7|8)` regex.
+- Opus 4.7 / 4.8: `{thinking: {type: "adaptive"}, output_config: {effort: "medium"}}`.
 - Opus 4.6 / Sonnet 4.6 / Haiku 4.5: `{thinking: {type: "enabled", budgetTokens: 3000}}`.
 - Sending the new shape to older models → API error `thinking.type.enabled is not supported`.
 
