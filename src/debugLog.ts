@@ -17,7 +17,11 @@ import { invoke } from "@tauri-apps/api/core";
 
 const LS_KEY = "vc_debug_buf";
 const MAX_ENTRIES = 800;
-const PERSIST_INTERVAL_MS = 200;
+// 0 = persist synchronously on every entry. The freeze locks within a few
+// ms of the toggle, faster than any throttle window, so we cannot afford
+// to buffer: every entry must hit durable localStorage immediately or it's
+// lost when the user force-quits the frozen app.
+const PERSIST_INTERVAL_MS = 0;
 
 type Entry = { t: number; tag: string; data?: unknown };
 

@@ -963,9 +963,11 @@ export function LiveEditor({
 
   useEffect(() => {
     if (!hostRef.current) return;
-    vlog("LiveEditor mount: creating view", { file, valueLen: value.length });
+    vlog("LiveEditor mount: before EditorState.create", { file, valueLen: value.length });
+    const initialState = EditorState.create({ doc: value, extensions });
+    vlog("LiveEditor mount: state created, before new EditorView", { file });
     const view = new EditorView({
-      state: EditorState.create({ doc: value, extensions }),
+      state: initialState,
       parent: hostRef.current,
     });
     viewRef.current = view;
@@ -976,6 +978,7 @@ export function LiveEditor({
     // (showing the alt-text fallback) before the file-effect below
     // fires and triggers a rebuild.
     if (file) {
+      vlog("LiveEditor mount: dispatch setCurrentFile", { file });
       view.dispatch({ effects: setCurrentFileEffect.of(file) });
     }
     if (initialScrollRatio && initialScrollRatio > 0) {
@@ -985,6 +988,7 @@ export function LiveEditor({
         if (max > 0) el.scrollTop = initialScrollRatio * max;
       });
     }
+    vlog("LiveEditor mount: done", { file });
     return () => {
       view.destroy();
       viewRef.current = null;
@@ -997,6 +1001,7 @@ export function LiveEditor({
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
+    vlog("LiveEditor [file] effect: dispatch setCurrentFile", { file });
     view.dispatch({ effects: setCurrentFileEffect.of(file ?? null) });
   }, [file]);
 
@@ -1005,6 +1010,7 @@ export function LiveEditor({
     if (!view) return;
     const cur = view.state.doc.toString();
     if (cur !== value) {
+      vlog("LiveEditor [value] effect: replacing doc", { file, curLen: cur.length, valLen: value.length });
       view.dispatch({
         changes: { from: 0, to: cur.length, insert: value },
         annotations: ExternalSet.of(true),
