@@ -235,12 +235,17 @@ export function MarkdownView({ paneId }: Props) {
 
   const saveTimer = useRef<number | null>(null);
   const lastSaved = useRef<string>(content);
+  // The most recent value the *user* produced via onChange. Lets us tell
+  // a user edit apart from an external buffer swap (agent reload after a
+  // run, voice-tool write, sync). See the [content] effect below.
+  const lastUserValue = useRef<string>(content);
   const scrollRatioRef = useRef(0);
   const viewScrollRef = useRef<HTMLDivElement | null>(null);
   const [inlineAsk, setInlineAsk] = useState<InlineEditRequest | null>(null);
 
   useEffect(() => {
     lastSaved.current = content;
+    lastUserValue.current = content;
     scrollRatioRef.current = 0;
     // Publish viewport for the freshly-opened file so voice mode's
     // follow-along contextual update fires even before the user has
@@ -254,6 +259,22 @@ export function MarkdownView({ paneId }: Props) {
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
     };
   }, []);
+
+  // When the buffer is replaced by something other than the user typing
+  // — the agent reloading the open file after a run, a voice-tool write,
+  // an external-sync reload — the new content IS the on-disk truth, so
+  // advance `lastSaved` to match. Without this, the autosave's
+  // external-mutation guard later sees disk != stale lastSaved, mistakes
+  // the agent's own (already-loaded) change for an unsynced external
+  // edit, and "reloads" — clobbering the user's in-progress edit and
+  // scrolling to the top. User edits route through onChange, which keeps
+  // lastUserValue === content, so this no-ops for them.
+  useEffect(() => {
+    if (content !== lastUserValue.current) {
+      lastSaved.current = content;
+      lastUserValue.current = content;
+    }
+  }, [content]);
 
   useLayoutEffect(() => {
     const el = viewScrollRef.current;
@@ -282,6 +303,7 @@ export function MarkdownView({ paneId }: Props) {
     // file's path — which is how daily.md once ended up with
     // boosting-loop.md's content.
     if (value === content) return;
+    lastUserValue.current = value;
     if (paneId) {
       updatePaneContent(paneId, value);
     } else {
