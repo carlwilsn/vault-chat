@@ -413,12 +413,25 @@ export default function App() {
         ).catch(() => {});
         return;
       }
-      // If the agent's already mid-turn, don't yank focus or interrupt.
-      // Just record the message; the user can re-send / nudge once
-      // the current run finishes.
-      if (s.busy) {
+      // Telegram threads run in the BACKGROUND and in PARALLEL with the
+      // foreground vault agent — a phone message no longer waits for the
+      // laptop's agent (or any other thread) to finish. The single
+      // exception: don't start a second concurrent run on the SAME
+      // telegram thread. If this thread's agent is still mid-turn, queue
+      // the message so it isn't lost; it gets picked up on the next turn.
+      const existingConv = s.conversations.find(
+        (c) => c.telegramChatId === m.chat_id,
+      );
+      // Is this exact thread already being processed? Two ways it can be:
+      // running in the background (per-conv status), or running in the
+      // foreground because the user is currently viewing it (global busy
+      // — foreground runs don't set the per-conv status).
+      const thisThreadBusy =
+        existingConv?.status === "running" ||
+        (!!existingConv && s.activeConversationId === existingConv.id && s.busy);
+      if (thisThreadBusy) {
         console.warn(
-          "[telegram] inbound while agent busy — queued, agent not auto-triggered",
+          "[telegram] inbound while THIS thread is mid-run — queued",
         );
         s.ingestExternalMessage({
           text: m.text,
@@ -435,8 +448,7 @@ export default function App() {
       // Create it inline (no newConversation() — that would activate the
       // chat and steal focus). Telegram convos always run in the
       // background unless the user explicitly clicks on them.
-      let convId =
-        s.conversations.find((c) => c.telegramChatId === m.chat_id)?.id ?? null;
+      let convId = existingConv?.id ?? null;
       if (!convId) {
         const { emptyConversation } = await import("./conversations");
         const fresh = {

@@ -32,7 +32,34 @@ export async function sendMessage(
   targetConvIdOverride?: string,
 ) {
   const s = useStore.getState();
-  if (s.busy) return;
+  // Concurrency model: only the FOREGROUND (active) conversation owns the
+  // global `busy` flag and the singleton abortRef. Background "off-target"
+  // runs — Telegram, scheduled, anything with a targetConvIdOverride that
+  // isn't the active conversation — don't touch those, so they run IN
+  // PARALLEL with the foreground agent. Guard accordingly:
+  //   • foreground run → refuse if the foreground is already busy
+  //     (prevents a double-submit on the active chat).
+  //   • background run → refuse only if THAT conversation is already
+  //     running (never start two concurrent runs on the same thread);
+  //     never gate on the global busy flag, or it'd serialize again.
+  {
+    const guardTargetId = targetConvIdOverride ?? s.activeConversationId;
+    const guardOffTarget =
+      !!targetConvIdOverride && targetConvIdOverride !== s.activeConversationId;
+    // Never start a second run on a conversation that's already running —
+    // whether it's running in the background (per-conv `status`) or in the
+    // foreground (global `busy`, which is set when the active conversation
+    // runs but doesn't update per-conv status). This also catches the case
+    // where a background run is in flight on conv X and the user then
+    // switches to X and submits.
+    const tConv = guardTargetId
+      ? s.conversations.find((c) => c.id === guardTargetId)
+      : null;
+    if (tConv?.status === "running") return;
+    // Foreground submit while the foreground is already busy → ignore.
+    // Background runs deliberately skip this so they parallelize.
+    if (!guardOffTarget && s.busy) return;
+  }
   const trimmed = text.trim();
   const preamble = contextPreamble?.trim() ?? "";
   if (!trimmed && !preamble) return;

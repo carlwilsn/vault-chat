@@ -19,16 +19,30 @@ export async function gitInitIfNeeded(vault: string): Promise<boolean> {
   }
 }
 
+// Process-wide commit mutex. Now that agents can run in parallel (the
+// foreground vault agent plus background Telegram/scheduled runs), two
+// runs can finish at nearly the same instant and each tries to commit.
+// Concurrent `git add`/`git commit` in one repo races on `index.lock` and
+// can drop or corrupt a commit. Serialize every commit through one chain
+// so they apply one at a time, in arrival order.
+let commitChain: Promise<unknown> = Promise.resolve();
+
 export async function gitCommitAll(
   vault: string,
   message: string,
 ): Promise<string | null> {
-  try {
-    return await invoke<string | null>("git_commit_all", { vault, message });
-  } catch (e) {
-    console.warn("[git] commit failed:", e);
-    return null;
-  }
+  const run = commitChain.then(async () => {
+    try {
+      return await invoke<string | null>("git_commit_all", { vault, message });
+    } catch (e) {
+      console.warn("[git] commit failed:", e);
+      return null;
+    }
+  });
+  // Keep the chain alive regardless of this commit's outcome (already
+  // caught above, so this never actually rejects).
+  commitChain = run.catch(() => {});
+  return run;
 }
 
 export async function gitRecentCommits(
