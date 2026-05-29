@@ -638,10 +638,16 @@ function buildDecorations(state: EditorState): DecorationSet {
       const content = sm[1];
       if (!isMathLike(content)) continue;
       if (spanActive(s, e)) {
+        // Cursor is INSIDE this specific $..$ — show source so the
+        // user can edit it. Other $..$ spans on the same line stay
+        // rendered.
         applyTexTokens(builder, doc, s, e);
         continue;
       }
-      if (lineActive(s)) continue;
+      // No `lineActive` check here: a line can contain multiple
+      // inline math spans, and the cursor being on the line but
+      // not in this span shouldn't unrender it. The block-math
+      // path above already uses spanActive only — mirror that.
       builder.push(
         Decoration.replace({
           widget: new MathWidget(content.trim(), false),
