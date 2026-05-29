@@ -12,7 +12,6 @@ import "katex/dist/katex.min.css";
 import { invoke } from "@tauri-apps/api/core";
 import { FileText, Eye, Pencil, X } from "lucide-react";
 import { useStore } from "./store";
-import { vlog } from "./debugLog";
 import { MonacoEditor } from "./MonacoEditor";
 import { LiveEditor } from "./LiveEditor";
 import { CodeView } from "./CodeView";
@@ -526,13 +525,7 @@ export function MarkdownView({ paneId }: Props) {
   // changes one byte of `content` — doesn't reparse fence regions and
   // re-run the $$ regex on every keystroke. Cheap to keep this even
   // when not in markdown view; the memo just no-ops.
-  const processedMarkdown = useMemo(() => {
-    const t0 = Date.now();
-    vlog("preprocessMarkdownMath start", { file, len: content.length });
-    const r = preprocessMarkdownMath(content);
-    vlog("preprocessMarkdownMath end", { file, ms: Date.now() - t0 });
-    return r;
-  }, [content]);
+  const processedMarkdown = useMemo(() => preprocessMarkdownMath(content), [content]);
 
   if (!file) {
     return (
@@ -563,8 +556,6 @@ export function MarkdownView({ paneId }: Props) {
   const showingEditor =
     kind === "code" ||
     ((kind === "markdown" || kind === "tex") && mode === "edit");
-
-  vlog("MarkdownView render", { file, kind, mode, showingEditor });
 
   return (
     <div

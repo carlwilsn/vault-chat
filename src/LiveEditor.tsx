@@ -24,12 +24,6 @@ import {
 } from "./InlineEditPrompt";
 import { useStore } from "./store";
 import { isMathLike } from "./mdMath";
-import { vlog } from "./debugLog";
-
-// Monotonic counter so each buildDecorations invocation is identifiable
-// in the log. A hang shows up as a "bd start" with no matching "bd end";
-// a runaway loop shows up as a rapid flood of incrementing seqs.
-let bdSeq = 0;
 
 const hideDeco = Decoration.replace({});
 
@@ -64,10 +58,18 @@ function parseTableAlign(line: string): (string | null)[] {
 const CELL_INLINE_RE =
   /`([^`\n]+?)`|\$\$([^$\n]+?)\$\$|\[([^\]\n]+?)\]\(([^)\n]+?)\)|\*\*([\s\S]+?)\*\*|\*([^*\n]+?)\*/g;
 function renderCellInto(el: HTMLElement, src: string) {
-  CELL_INLINE_RE.lastIndex = 0;
+  // CRITICAL: use a fresh regex instance per call. CELL_INLINE_RE is a
+  // /g regex with mutable lastIndex, and this function RECURSES on
+  // **bold**/*italic* content. A recursive call would reset the shared
+  // lastIndex, so when the outer loop resumed it would re-match the same
+  // span from position 0 forever — an infinite loop that hard-froze the
+  // app whenever a table cell contained bold/italic (CodeMirror calls
+  // toDOM() during its post-mount layout pass). A per-call instance keeps
+  // each loop's iteration state isolated.
+  const re = new RegExp(CELL_INLINE_RE.source, "g");
   let last = 0;
   let m: RegExpExecArray | null;
-  while ((m = CELL_INLINE_RE.exec(src))) {
+  while ((m = re.exec(src))) {
     if (m.index > last) {
       el.appendChild(document.createTextNode(src.slice(last, m.index)));
     }
@@ -395,20 +397,6 @@ function activeLineSet(state: EditorState): Set<number> {
 }
 
 function buildDecorations(state: EditorState): DecorationSet {
-  const seq = ++bdSeq;
-  const t0 = Date.now();
-  vlog("bd start", { seq, lines: state.doc.lines, len: state.doc.length });
-  try {
-    const result = buildDecorationsInner(state);
-    vlog("bd end", { seq, ms: Date.now() - t0, decos: result.size });
-    return result;
-  } catch (err) {
-    vlog("bd THREW", { seq, ms: Date.now() - t0, err: String(err).slice(0, 300) });
-    throw err;
-  }
-}
-
-function buildDecorationsInner(state: EditorState): DecorationSet {
   const builder: Range<Decoration>[] = [];
   const doc = state.doc;
   const active = activeLineSet(state);
@@ -963,22 +951,17 @@ export function LiveEditor({
 
   useEffect(() => {
     if (!hostRef.current) return;
-    vlog("LiveEditor mount: before EditorState.create", { file, valueLen: value.length });
-    const initialState = EditorState.create({ doc: value, extensions });
-    vlog("LiveEditor mount: state created, before new EditorView", { file });
     const view = new EditorView({
-      state: initialState,
+      state: EditorState.create({ doc: value, extensions }),
       parent: hostRef.current,
     });
     viewRef.current = view;
-    vlog("LiveEditor mount: view created", { file });
     // Seed the file path so the very first decoration build (which
     // runs synchronously inside EditorState.create) sees a non-null
     // baseFile. Without this, images render once with baseFile=null
     // (showing the alt-text fallback) before the file-effect below
     // fires and triggers a rebuild.
     if (file) {
-      vlog("LiveEditor mount: dispatch setCurrentFile", { file });
       view.dispatch({ effects: setCurrentFileEffect.of(file) });
     }
     if (initialScrollRatio && initialScrollRatio > 0) {
@@ -988,7 +971,6 @@ export function LiveEditor({
         if (max > 0) el.scrollTop = initialScrollRatio * max;
       });
     }
-    vlog("LiveEditor mount: done", { file });
     return () => {
       view.destroy();
       viewRef.current = null;
@@ -1001,7 +983,6 @@ export function LiveEditor({
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
-    vlog("LiveEditor [file] effect: dispatch setCurrentFile", { file });
     view.dispatch({ effects: setCurrentFileEffect.of(file ?? null) });
   }, [file]);
 
@@ -1010,7 +991,6 @@ export function LiveEditor({
     if (!view) return;
     const cur = view.state.doc.toString();
     if (cur !== value) {
-      vlog("LiveEditor [value] effect: replacing doc", { file, curLen: cur.length, valLen: value.length });
       view.dispatch({
         changes: { from: 0, to: cur.length, insert: value },
         annotations: ExternalSet.of(true),
