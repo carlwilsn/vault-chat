@@ -26,7 +26,23 @@ import {
   hydrateKeychain,
   hydratePersistedChat,
   maybeClearMessagesForVoiceV2,
+  useStore,
 } from "./store";
+import { installDebugLog, flushDebugLogToDisk, vlog } from "./debugLog";
+
+// Install the freeze diagnostic logger before anything else runs, so a
+// crash during boot still leaves a trail.
+installDebugLog();
+vlog("boot", { view: new URLSearchParams(window.location.search).get("view") });
+// Flush whatever the previous (possibly frozen) session left behind to
+// the current vault's .vault-chat/app-log.txt, and re-flush whenever the
+// active vault changes so the trail lands in the right vault folder.
+flushDebugLogToDisk(useStore.getState().vaultPath).catch(() => {});
+useStore.subscribe((s, prev) => {
+  if (s.vaultPath && s.vaultPath !== prev.vaultPath) {
+    flushDebugLogToDisk(s.vaultPath).catch(() => {});
+  }
+});
 
 export function applyHljsTheme(theme: string) {
   let link = document.getElementById("vault-chat-hljs") as HTMLLinkElement | null;

@@ -1007,6 +1007,30 @@ async fn write_text_file(
     Ok(())
 }
 
+/// Append a line (or block) to `<vault>/.vault-chat/app-log.txt`.
+/// Used by the renderer's crash/freeze diagnostic logger. Deliberately
+/// does NOT emit a file-changed event (unlike `write_text_file`) so the
+/// log file can't trigger reloads or feed back into the very render
+/// loops we're trying to capture. Best-effort: errors are surfaced but
+/// the caller treats logging as fire-and-forget.
+#[tauri::command]
+async fn append_debug_log(vault_path: String, text: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = std::path::Path::new(&vault_path).join(".vault-chat");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("app-log.txt");
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        f.write_all(text.as_bytes()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Prune the `<vault>/.vault-chat/captures/` folder of files whose
 /// mtime is older than `older_than_hours`. Called on vault open so
 /// chat captures don't accumulate forever — the user's mental model is
@@ -4165,6 +4189,7 @@ pub fn run() {
             read_text_file,
             read_binary_file,
             write_text_file,
+            append_debug_log,
             write_binary_file_unique,
             cleanup_old_captures,
             copy_into_vault,

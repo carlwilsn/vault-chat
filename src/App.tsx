@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Allotment, LayoutPriority } from "allotment";
 import { invoke } from "@tauri-apps/api/core";
 import type { FileEntry } from "./store";
+import { vlog } from "./debugLog";
 import "allotment/dist/style.css";
 import { FileTree } from "./FileTree";
 import { MarkdownArea } from "./MarkdownArea";
@@ -192,6 +193,7 @@ export default function App() {
         // can read one note while editing another. Falls back to the
         // global mode when there are no panes.
         const st = useStore.getState();
+        vlog("ctrl+e toggle", { file: currentFile, mode: st.mode, activePane: st.activePaneId });
         if (st.activePaneId && st.panes.some((p) => p.id === st.activePaneId)) {
           st.togglePaneMode(st.activePaneId);
         } else {

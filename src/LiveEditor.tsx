@@ -24,6 +24,12 @@ import {
 } from "./InlineEditPrompt";
 import { useStore } from "./store";
 import { isMathLike } from "./mdMath";
+import { vlog } from "./debugLog";
+
+// Monotonic counter so each buildDecorations invocation is identifiable
+// in the log. A hang shows up as a "bd start" with no matching "bd end";
+// a runaway loop shows up as a rapid flood of incrementing seqs.
+let bdSeq = 0;
 
 const hideDeco = Decoration.replace({});
 
@@ -389,6 +395,20 @@ function activeLineSet(state: EditorState): Set<number> {
 }
 
 function buildDecorations(state: EditorState): DecorationSet {
+  const seq = ++bdSeq;
+  const t0 = Date.now();
+  vlog("bd start", { seq, lines: state.doc.lines, len: state.doc.length });
+  try {
+    const result = buildDecorationsInner(state);
+    vlog("bd end", { seq, ms: Date.now() - t0, decos: result.size });
+    return result;
+  } catch (err) {
+    vlog("bd THREW", { seq, ms: Date.now() - t0, err: String(err).slice(0, 300) });
+    throw err;
+  }
+}
+
+function buildDecorationsInner(state: EditorState): DecorationSet {
   const builder: Range<Decoration>[] = [];
   const doc = state.doc;
   const active = activeLineSet(state);
@@ -943,11 +963,13 @@ export function LiveEditor({
 
   useEffect(() => {
     if (!hostRef.current) return;
+    vlog("LiveEditor mount: creating view", { file, valueLen: value.length });
     const view = new EditorView({
       state: EditorState.create({ doc: value, extensions }),
       parent: hostRef.current,
     });
     viewRef.current = view;
+    vlog("LiveEditor mount: view created", { file });
     // Seed the file path so the very first decoration build (which
     // runs synchronously inside EditorState.create) sees a non-null
     // baseFile. Without this, images render once with baseFile=null
