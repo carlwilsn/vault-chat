@@ -333,9 +333,20 @@ export default function App() {
         useStore.setState({ conversations: next });
       };
       if (/^\/(new|start)\b/i.test(trimmedText)) {
-        const freshId = useStore.getState().newConversation();
+        // Create the fresh conversation inline and rebind the chat_id to
+        // it — deliberately NOT newConversation(), which sets
+        // activeConversationId and would yank the laptop's foreground over
+        // to this Telegram thread. Telegram convos always run in the
+        // background; the phone gets a fresh context without disturbing
+        // whatever you're doing in the app. Mirrors the inbound-message
+        // path below.
+        const { emptyConversation } = await import("./conversations");
+        const fresh = emptyConversation();
+        useStore.setState({
+          conversations: [fresh, ...useStore.getState().conversations],
+        });
         rebindChatIdTo(
-          freshId,
+          fresh.id,
           m.from_username ? `Telegram · @${m.from_username}` : undefined,
         );
         sendTelegramMessage(
