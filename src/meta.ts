@@ -66,6 +66,57 @@ export function northStarPromptBlock(text: string): string {
   return formatNorthStarBlock(text);
 }
 
+/** Read the per-vault memory index. The agent keeps a file-based memory
+ *  at <vault>/.vault-chat/memory/ — one fact per markdown file, with an
+ *  MEMORY.md index (one line per fact). Only the index is loaded into
+ *  the system prompt each session; the agent reads individual fact files
+ *  on demand with the Read tool and writes/updates them with Write/Edit.
+ *  This keeps the prompt small as the memory grows. Returns "" when no
+ *  memory has been written yet (or no vault is open). */
+export async function loadVaultMemoryIndex(vault: string | null): Promise<string> {
+  if (!vault) return "";
+  try {
+    return await invoke<string>("read_text_file", {
+      path: `${vault}/.vault-chat/memory/MEMORY.md`,
+    });
+  } catch {
+    return "";
+  }
+}
+
+export function vaultMemoryPromptBlock(index: string): string {
+  const dir = "<vault>/.vault-chat/memory/";
+  const trimmed = index.trim();
+  const indexSection = trimmed
+    ? `Your current memory index (one line per stored fact):\n\n${trimmed}\n\nTo recall a fact in full, Read its file. To revise one, Edit it; if it turns out to be wrong, Delete the file and remove its index line. Keep \`MEMORY.md\` in sync with the files — it is what loads next session.`
+    : `You have no stored memories for this vault yet. The directory may not exist; the Write tool creates it on first save.`;
+
+  return `## Vault memory
+
+You keep a persistent, file-based memory scoped to this vault at \`${dir}\`, the way Claude Code keeps memory for itself. It survives across sessions and travels with the vault in git. Use your existing Read / Write / Edit / Glob tools — there are no special memory tools.
+
+Each memory is ONE markdown file holding ONE fact, with frontmatter:
+
+\`\`\`markdown
+---
+name: <short-kebab-case-slug>
+description: <one-line summary — used to decide relevance during recall>
+metadata:
+  type: project | reference | preference | fact
+---
+
+<the fact, stated plainly. Link related memories with [[their-name]].>
+\`\`\`
+
+\`${dir}MEMORY.md\` is the index loaded into your context each session — one line per memory (\`- [Title](file.md) — hook\`), no frontmatter, never put fact content there. After writing or changing a fact file, update the index line.
+
+**Save** durable facts about THIS vault that you'd want at the start of a future session and can't cheaply re-derive: how the project is organized beyond what's obvious from the files, decisions and their rationale, the user's stated preferences for working in this vault, external references (URLs, IDs). Before saving, check the index for an existing file that already covers it and update that instead of duplicating. Convert relative dates to absolute.
+
+**Don't save** things the vault already records (file contents, what's plainly visible in the tree, git history) or things that only matter to the current conversation. If a fact later proves wrong, delete its file and its index line rather than leaving it stale.
+
+${indexSection}`;
+}
+
 /** Read the voice-mode personality prompt from the meta vault.
  *  voice.md is the user-editable header that controls how the voice
  *  agent talks (tone, length, persona, speech rules). Returns ""

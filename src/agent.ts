@@ -6,7 +6,7 @@ import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./provi
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
-import { loadMetaSystemPrompt, loadMetaTools, getMetaVaultPath, loadVaultNorthStar, northStarPromptBlock } from "./meta";
+import { loadMetaSystemPrompt, loadMetaTools, getMetaVaultPath, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock } from "./meta";
 
 export type TokenUsage = {
   prompt: number;
@@ -84,13 +84,14 @@ export async function runAgent(params: {
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey);
 
-    const [sessionContext, skills, metaSystem, metaTools, metaPath, northStar, shellKind] = await Promise.all([
+    const [sessionContext, skills, metaSystem, metaTools, metaPath, northStar, memoryIndex, shellKind] = await Promise.all([
       loadSessionContext(vault),
       loadSkills(vault),
       loadMetaSystemPrompt(),
       loadMetaTools(),
       getMetaVaultPath().catch(() => null),
       loadVaultNorthStar(vault),
+      loadVaultMemoryIndex(vault),
       getShellKind(),
     ]);
 
@@ -117,6 +118,7 @@ export async function runAgent(params: {
       : "";
 
     const northStarBlock = northStarPromptBlock(northStar);
+    const memoryBlock = vaultMemoryPromptBlock(memoryIndex);
 
     const statusMarkerNote = voiceMode
       ? ""
@@ -132,6 +134,7 @@ export async function runAgent(params: {
       `\n${shellNote}`,
       northStarBlock ? `\n${northStarBlock}` : "",
       sessionContext ? `\n${sessionContext}` : "",
+      memoryBlock ? `\n${memoryBlock}` : "",
       skills.length ? `\n${skillPromptIndex(skills)}` : "",
       metaToolNames.length
         ? `\n## Meta-vault tools\n\nThese tools were loaded from the meta vault and are available in addition to the built-in set:\n${metaToolNames.map((n) => `- ${n}`).join("\n")}`
