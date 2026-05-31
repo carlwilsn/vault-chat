@@ -353,22 +353,30 @@ export async function sendMessage(
             .catch(() => {});
         }
 
-        invoke<FileEntry[]>("list_markdown_files", { vault })
-          .then(store.setFiles)
-          .catch(() => {});
-        if (openPaneIds.length > 0) {
-          for (const paneId of openPaneIds) {
-            const pane = useStore.getState().panes.find((p) => p.id === paneId);
-            if (!pane) continue;
-            const path = pane.file;
-            invoke<string>("read_text_file", { path })
-              .then((text) => useStore.getState().setPaneFile(paneId, path, text))
+        // Only refresh the UI if the user is still looking at the vault
+        // this turn ran in. A backgrounded agent in vault A must not
+        // repaint the file tree / panes / open file of vault B after the
+        // user has switched vaults. The file writes and git commit above
+        // already targeted vault A correctly regardless of where the user
+        // is now — this guard covers only the view-state side effects.
+        if (useStore.getState().vaultPath === vault) {
+          invoke<FileEntry[]>("list_markdown_files", { vault })
+            .then(store.setFiles)
+            .catch(() => {});
+          if (openPaneIds.length > 0) {
+            for (const paneId of openPaneIds) {
+              const pane = useStore.getState().panes.find((p) => p.id === paneId);
+              if (!pane) continue;
+              const path = pane.file;
+              invoke<string>("read_text_file", { path })
+                .then((text) => useStore.getState().setPaneFile(paneId, path, text))
+                .catch(() => {});
+            }
+          } else if (currentFile) {
+            invoke<string>("read_text_file", { path: currentFile })
+              .then((text) => store.reloadCurrent(currentFile, text))
               .catch(() => {});
           }
-        } else if (currentFile) {
-          invoke<string>("read_text_file", { path: currentFile })
-            .then((text) => store.reloadCurrent(currentFile, text))
-            .catch(() => {});
         }
       } else if (e.kind === "error") {
         const errMsg: ChatMessage = {
