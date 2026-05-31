@@ -367,7 +367,7 @@ export async function sendMessage(
           }
         } else if (currentFile) {
           invoke<string>("read_text_file", { path: currentFile })
-            .then(store.reloadCurrent)
+            .then((text) => store.reloadCurrent(currentFile, text))
             .catch(() => {});
         }
       } else if (e.kind === "error") {

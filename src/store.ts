@@ -466,7 +466,7 @@ type State = {
   applyDeleteCascade: (paths: string[]) => Promise<void>;
   applyRenameCascade: (moves: { from: string; to: string }[]) => Promise<void>;
   setCurrentFile: (p: string | null, content: string) => void;
-  reloadCurrent: (content: string) => void;
+  reloadCurrent: (path: string, content: string) => void;
   splitWith: (path: string, content: string, side: DropSide) => void;
   setPaneFile: (paneId: string, path: string, content: string) => void;
   closePane: (paneId: string) => void;
@@ -886,14 +886,25 @@ export const useStore = create<State>((set) => ({
       }
       return { currentFile: p, currentContent: content, panes: [], splitDirection: null, activePaneId: null, viewport: null };
     }),
-  reloadCurrent: (content) =>
+  reloadCurrent: (path, content) =>
     set((s) => {
+      // Path-guarded: only apply the content if the view still shows
+      // `path`. A reload can land late (e.g. the agent finishes writing
+      // file A just after the user switched to file B); without this
+      // guard reloadCurrent would write A's text into B's view — the
+      // transient "wrong file's content flashes up" bug.
+      if (!path) return {};
+      const norm = (p: string) => p.replace(/\\/g, "/");
+      const want = norm(path);
       if (s.panes.length > 0 && s.activePaneId) {
+        const active = s.panes.find((p) => p.id === s.activePaneId);
+        if (!active || norm(active.file) !== want) return {};
         const panes = s.panes.map((pane) =>
           pane.id === s.activePaneId ? { ...pane, content } : pane,
         );
         return { panes, currentContent: content };
       }
+      if (!s.currentFile || norm(s.currentFile) !== want) return {};
       return { currentContent: content };
     }),
   splitWith: (path, content, side) =>

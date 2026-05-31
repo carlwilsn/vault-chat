@@ -307,7 +307,7 @@ export function MarkdownView({ paneId }: Props) {
     if (paneId) {
       updatePaneContent(paneId, value);
     } else {
-      reloadCurrent(value);
+      reloadCurrent(file ?? "", value);
     }
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(async () => {

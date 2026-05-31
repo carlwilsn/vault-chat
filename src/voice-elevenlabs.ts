@@ -679,7 +679,7 @@ function refreshIfOpen(path: string, contents: string): void {
     norm(store.currentFile) === target &&
     store.mode === "view"
   ) {
-    store.reloadCurrent(contents);
+    store.reloadCurrent(path, contents);
   }
 }
 
