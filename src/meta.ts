@@ -252,32 +252,22 @@ async function findRunFile(toolDir: string): Promise<string | null> {
 
 // Return type is intentionally loose — each tool's zod schema is built
 // at runtime from TOOL.md, so we can't statically type them.
-export async function loadMetaTools(): Promise<Record<string, unknown>> {
+//
+// Scans a `<root>/<name>/TOOL.md` + run.* layout and returns a dict of
+// ai-sdk tool objects. Shared by both the global meta-tool loader and
+// the per-vault loader below — the only difference between them is the
+// root directory.
+async function loadToolsFromRoot(toolsRoot: string): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
   const diag: string[] = [];
-  let metaPath: string;
-  try {
-    metaPath = await getMetaVaultPath();
-  } catch (e) {
-    console.warn("[meta-tools] no meta path:", e);
-    return out;
-  }
-  const toolsRoot = `${metaPath}/tools`;
   let entries: { path: string; name: string; is_dir: boolean }[] = [];
   try {
     entries = await invoke("list_dir", { path: toolsRoot });
-  } catch (e) {
-    console.warn("[meta-tools] list_dir failed:", toolsRoot, e);
+  } catch {
+    // A missing root is normal — a vault with no local tools, or a meta
+    // vault that has no tools dir yet. Quietly register nothing.
     return out;
   }
-  console.log(
-    "[meta-tools] toolsRoot:",
-    toolsRoot,
-    "entry count:",
-    entries.length,
-    "names:",
-    entries.map((e) => e.name).join(","),
-  );
 
   for (const entry of entries) {
     if (!entry.is_dir) {
@@ -362,6 +352,28 @@ export async function loadMetaTools(): Promise<Record<string, unknown>> {
     }
   }
 
-  console.log("[meta-tools]", diag.join(" | "), "→ registered:", Object.keys(out));
+  console.log("[tools]", toolsRoot, "→", diag.join(" | "), "→ registered:", Object.keys(out));
   return out;
+}
+
+/** Global tools: <meta>/tools/<name>/. Available in every vault. */
+export async function loadMetaTools(): Promise<Record<string, unknown>> {
+  let metaPath: string;
+  try {
+    metaPath = await getMetaVaultPath();
+  } catch (e) {
+    console.warn("[meta-tools] no meta path:", e);
+    return {};
+  }
+  return loadToolsFromRoot(`${metaPath}/tools`);
+}
+
+/** Per-vault tools: <vault>/.vault-chat/tools/<name>/ (same TOOL.md +
+ *  run.* shape as meta tools). Scoped to a single vault so a one-off
+ *  custom tool doesn't bloat the model's tool choice in every other
+ *  vault. Merged on top of the global meta tools by the caller — a
+ *  local tool with the same name as a global one wins. */
+export async function loadVaultTools(vault: string | null): Promise<Record<string, unknown>> {
+  if (!vault) return {};
+  return loadToolsFromRoot(`${vault}/.vault-chat/tools`);
 }

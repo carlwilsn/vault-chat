@@ -6,7 +6,7 @@ import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./provi
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
-import { loadMetaSystemPrompt, loadMetaTools, getMetaVaultPath, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock } from "./meta";
+import { loadMetaSystemPrompt, loadMetaTools, loadVaultTools, getMetaVaultPath, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock } from "./meta";
 
 export type TokenUsage = {
   prompt: number;
@@ -84,11 +84,12 @@ export async function runAgent(params: {
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey);
 
-    const [sessionContext, skills, metaSystem, metaTools, metaPath, northStar, memoryIndex, shellKind] = await Promise.all([
+    const [sessionContext, skills, metaSystem, metaTools, vaultTools, metaPath, northStar, memoryIndex, shellKind] = await Promise.all([
       loadSessionContext(vault),
       loadSkills(vault),
       loadMetaSystemPrompt(),
       loadMetaTools(),
+      loadVaultTools(vault),
       getMetaVaultPath().catch(() => null),
       loadVaultNorthStar(vault),
       loadVaultMemoryIndex(vault),
@@ -98,7 +99,10 @@ export async function runAgent(params: {
     const { body: expandedMessage } = expandSkillInvocation(userMessage, skills);
 
     const baseSystem = metaSystem.trim() || FALLBACK_SYSTEM;
-    const metaToolNames = Object.keys(metaTools);
+    // Local (vault) tools merge on top of global (meta) tools — a local
+    // tool with the same name as a global one shadows it.
+    const customTools = { ...metaTools, ...vaultTools };
+    const customToolNames = Object.keys(customTools);
 
     const platform = detectPlatform();
     // Windows splits two ways now. Git Bash (when installed) gives you
@@ -136,8 +140,10 @@ export async function runAgent(params: {
       sessionContext ? `\n${sessionContext}` : "",
       memoryBlock ? `\n${memoryBlock}` : "",
       skills.length ? `\n${skillPromptIndex(skills)}` : "",
-      metaToolNames.length
-        ? `\n## Meta-vault tools\n\nThese tools were loaded from the meta vault and are available in addition to the built-in set:\n${metaToolNames.map((n) => `- ${n}`).join("\n")}`
+      customToolNames.length
+        ? `\n## Custom tools\n\nThese tools were loaded in addition to the built-in set. Global tools live in the meta vault (\`<meta>/tools/\`) and are available everywhere; vault-local tools live at \`<vault>/.vault-chat/tools/\` and only load in this vault:\n${customToolNames
+            .map((n) => `- ${n}${Object.prototype.hasOwnProperty.call(vaultTools, n) ? " (this vault only)" : " (global)"}`)
+            .join("\n")}`
         : "",
       statusMarkerNote,
       voiceNote,
@@ -265,7 +271,7 @@ export async function runAgent(params: {
       conversationId,
       isTelegramSourced: isTelegramSourced ?? false,
     });
-    const innerTools = { ...builtinTools, ...metaTools };
+    const innerTools = { ...builtinTools, ...customTools };
 
     // Agent: delegate a self-contained sub-task to a sub-call with
     // isolated context. The sub-agent shares the model + tool set
