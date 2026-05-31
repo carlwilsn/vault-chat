@@ -29,6 +29,7 @@ import {
   useStore,
 } from "./store";
 import { installDebugLog, flushDebugLogToDisk, vlog } from "./debugLog";
+import { installAutosaveNet } from "./autosave";
 
 // Install the freeze diagnostic logger before anything else runs, so a
 // crash during boot still leaves a trail.
@@ -82,6 +83,9 @@ if (isPopout) {
   // surface its path for the settings UI + agent.ts. Silent no-op on
   // subsequent launches.
   initMetaVault().catch((e) => console.warn("[meta] init failed:", e));
+  // Durability safety net: periodic backstop + commit-on-quit so no vault
+  // change can reach disk without reaching git. Main window only.
+  installAutosaveNet();
 }
 
 const Root = isPopout ? ChatWindow : App;

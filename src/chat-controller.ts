@@ -5,6 +5,7 @@ import { compactConversation } from "./compactor";
 import { estimateBashEta } from "./eta-estimator";
 import { gitCommitAll } from "./git";
 import { flushEditCommit } from "./commit-controller";
+import { safetyCommit } from "./autosave";
 import { sendTelegramReplyWithImages } from "./telegram";
 import {
   useStore,
@@ -391,6 +392,9 @@ export async function sendMessage(
           store.appendMessageToConversation(targetConvId, errMsg);
           store.setConversationStatus(targetConvId, "idle");
         }
+        // An errored turn also skips the end-of-turn commit — sweep up any
+        // partial writes so they aren't lost.
+        safetyCommit("agent-error").catch(() => {});
       }
     },
   });
@@ -402,6 +406,10 @@ export function stopAgent() {
   const store = useStore.getState();
   store.resetStreaming();
   store.setBusy(false);
+  // An aborted turn never reaches the end-of-turn commit, so anything the
+  // agent wrote before being stopped would sit uncommitted. Commit it now
+  // — this is the crack that lost post.html.
+  safetyCommit("agent-stopped").catch(() => {});
 }
 
 // Mid-generation interruption. Captures whatever the agent had
@@ -433,6 +441,9 @@ export async function interruptAndSend(
     abortRef = null;
     s.resetStreaming();
     s.setBusy(false);
+    // Commit any files the interrupted turn wrote before the fresh turn
+    // starts, so a write can't be stranded between two turns.
+    safetyCommit("agent-interrupted").catch(() => {});
   }
   // Hand off to the normal send flow on the next microtask so the
   // store updates from the interrupt above settle first.
