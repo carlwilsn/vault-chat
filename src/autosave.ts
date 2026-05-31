@@ -41,19 +41,45 @@ let periodicTimer: number | null = null;
 let installed = false;
 
 /**
- * Commit whatever is on disk right now, flushing any pending edit batch
- * first (so a queued edit lands with its nice "edit foo.md" message rather
- * than a generic autosave one). Best-effort: never throws.
+ * Commit whatever is on disk right now.
+ *
+ * Attribution matters: the honesty sweep (summer/honesty.md) splits "my
+ * work" from "agent work" purely on the `[agent]` commit-subject prefix.
+ * A safety commit that rescues agent-written files MUST carry that prefix
+ * or the work gets miscredited to the user. So:
+ *
+ *   - agent-origin (opts.agent, or a run in flight): tag `[agent]` and
+ *     commit the whole tree as one agent commit. We deliberately do NOT
+ *     flush the user-edit batch first — honesty.md's rule is "when in
+ *     doubt, mark it agent," so any rare hand-edit made mid-run is folded
+ *     into the agent commit rather than risk crediting agent output to me.
+ *   - idle/user: let the debounced edit batch flush with its own nice
+ *     "edit foo.md" (unprefixed = my work) message, then sweep the rest as
+ *     an unprefixed user autosave.
+ *
+ * Best-effort: never throws.
  */
-export async function safetyCommit(reason: string): Promise<void> {
+export async function safetyCommit(
+  reason: string,
+  opts?: { agent?: boolean },
+): Promise<void> {
   const vault = useStore.getState().vaultPath;
   if (!vault) return;
+  // `busy` only reflects the foreground active-vault run; off-vault
+  // background runs don't flip it (honesty.md gap #1). That's the known
+  // ~10% blind spot — the foreground path this covers is the one most
+  // likely to mislead.
+  const isAgent = opts?.agent ?? useStore.getState().busy;
   try {
-    // Let any debounced edit flush with its own message; gitCommitAll then
-    // no-ops if that already cleaned the tree, or sweeps up the rest.
-    await flushEditCommit();
-    const hash = await gitCommitAll(vault, `vault-chat: autosave (${reason})`);
-    if (hash) vlog("autosave", { reason, hash });
+    if (!isAgent) {
+      // Let any debounced user edit flush with its own message first;
+      // gitCommitAll then no-ops if that cleaned the tree, or sweeps the
+      // rest as an unprefixed (= user) autosave.
+      await flushEditCommit();
+    }
+    const prefix = isAgent ? "[agent] " : "";
+    const hash = await gitCommitAll(vault, `${prefix}autosave (${reason})`);
+    if (hash) vlog("autosave", { reason, agent: isAgent, hash });
   } catch (e) {
     console.warn("[autosave] commit failed:", e);
   }

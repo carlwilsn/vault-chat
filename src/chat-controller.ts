@@ -393,8 +393,9 @@ export async function sendMessage(
           store.setConversationStatus(targetConvId, "idle");
         }
         // An errored turn also skips the end-of-turn commit — sweep up any
-        // partial writes so they aren't lost.
-        safetyCommit("agent-error").catch(() => {});
+        // partial writes so they aren't lost. Agent-tagged: the agent
+        // wrote them.
+        safetyCommit("agent-error", { agent: true }).catch(() => {});
       }
     },
   });
@@ -408,8 +409,9 @@ export function stopAgent() {
   store.setBusy(false);
   // An aborted turn never reaches the end-of-turn commit, so anything the
   // agent wrote before being stopped would sit uncommitted. Commit it now
-  // — this is the crack that lost post.html.
-  safetyCommit("agent-stopped").catch(() => {});
+  // — this is the crack that lost post.html. Tagged agent: these are the
+  // agent's writes, so the honesty sweep must credit them to the agent.
+  safetyCommit("agent-stopped", { agent: true }).catch(() => {});
 }
 
 // Mid-generation interruption. Captures whatever the agent had
@@ -443,7 +445,7 @@ export async function interruptAndSend(
     s.setBusy(false);
     // Commit any files the interrupted turn wrote before the fresh turn
     // starts, so a write can't be stranded between two turns.
-    safetyCommit("agent-interrupted").catch(() => {});
+    safetyCommit("agent-interrupted", { agent: true }).catch(() => {});
   }
   // Hand off to the normal send flow on the next microtask so the
   // store updates from the interrupt above settle first.
