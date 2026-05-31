@@ -132,7 +132,9 @@ jobs:
           - platform: windows-latest
             args: ''
           - platform: ubuntu-22.04
-            args: '--bundles appimage'
+            # Build AppImage only; config override swaps tectonic resource
+            # path from tectonic.exe (Windows) to tectonic (Linux).
+            args: '--bundles appimage --config tauri.linux.conf.json'
     runs-on: ${{ matrix.platform }}
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -171,11 +173,11 @@ jobs:
 
       - run: npm ci
 
-      # Tectonic LaTeX engine — Windows only for now.
-      # Linux PDF export is a follow-up (needs a Linux binary in the
-      # download script). The rest of vault-chat works fine without it.
+      # Download the Tectonic LaTeX engine for the current platform.
+      # Windows gets tectonic.exe (from a zip); Linux gets tectonic (from
+      # a tar.gz).  tauri.linux.conf.json overrides the resource path so
+      # each bundle picks up the right binary.
       - name: Download Tectonic LaTeX engine
-        if: matrix.platform == 'windows-latest'
         run: node scripts/download-tectonic.mjs
 
       - name: Build, sign, publish release
