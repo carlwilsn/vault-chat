@@ -42,9 +42,13 @@ That's it — Read / Write / Edit / Bash / PDF marquee / inline edit all work on
 
 **Optional: voice mode.** Voice mode is powered by [ElevenLabs](https://elevenlabs.io/) and needs a Conversational AI plan key (free tier includes 15 min/month). Grab a key, then in vault-chat: gear icon → **ElevenLabs (voice mode)** field → paste → **Save**. Toggle voice mode anytime with `Ctrl+D`.
 
-### Mac / Linux
+### Linux
 
-No prebuilt installers yet — see [Build from source](#build-from-source) below.
+Grab the `.AppImage` from the [latest release](https://github.com/carlwilsn/vault-chat/releases/latest) — no install needed, just make it executable and run it. Auto-updates work the same as Windows.
+
+### Mac
+
+No prebuilt installer yet — see [Build from source](#build-from-source) below.
 
 ## What's in it
 
@@ -56,6 +60,7 @@ No prebuilt installers yet — see [Build from source](#build-from-source) below
 - **Notes scratchpad** (`Ctrl+N`). Capture a thought anchored to whatever you're looking at — file + line, PDF page + region, conversation turn. Stored as JSONL at `<vault>/.vault-chat/notes.jsonl`. The agent can list, create, resolve, and reopen them via `ListNotes` / `CreateNote` / `ResolveNote` / `ReopenNote` tools — ask "what did I flag?" or "remember this for later" and it does the right thing.
 - **File hiding**. Right-click any file or folder → Hide. Hidden entries drop out of the file tree but stay on disk; the list lives in `.vaultchatignore` at the vault root (gitignore-style syntax). This is purely a tree-view declutter for build artifacts and noise — *the agent still sees hidden files via Glob/Grep/Read.* Not a security boundary.
 - **Chat popout**. The external-link icon in the titlebar pops the chat into its own window so you can keep reading on the main one while a long agent run streams in the background. State stays in sync — same conversation, same tool calls, same scrollback. Close the popout to dock the chat back.
+- **Telegram bot** — connect a Telegram bot to any vault (Settings → Telegram) and talk to the agent from your phone. The bot has full access to the same tools and file system as the desktop chat. Each vault gets its own independent bot, so multiple vaults run simultaneously without colliding. Scheduled prompts that fire for a Telegram-sourced conversation are sent directly to your phone — set a daily reminder or a recurring brief once, and it lands in your chat without opening the app. Slash commands: `/new` starts a fresh conversation, `/reset` lets you reattach to a previous one.
 - **`Ctrl+J`** opens your system terminal in the active vault (Windows Terminal / Terminal.app / your default Linux emulator).
 - **`Alt+L`** flips the whole UI between light and dark.
 - **Editable everywhere** — explained below. The agent can write its own skills and tools right inside the meta vault.
