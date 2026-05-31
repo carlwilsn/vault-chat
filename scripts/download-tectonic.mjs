@@ -1,14 +1,10 @@
-// Downloads the Tectonic LaTeX engine binary into
-// `src-tauri/binaries/tectonic.exe` so the Tauri bundle can ship it as a
-// resource. No-op when the binary already exists, so dev rebuilds don't
-// re-download. Called from package.json prebuild / Tauri beforeDev +
-// beforeBuild hooks, and from ship.yml on CI.
-//
-// Only Windows x86_64 is fetched today because ship.yml only builds for
-// Windows. When mac/linux ship targets land, extend this with arch/os
-// branches.
+// Downloads the Tectonic LaTeX engine binary into src-tauri/binaries/ so the
+// Tauri bundle can ship it as a resource.  Runs on Windows (x86_64) and Linux
+// (x86_64).  No-op when the binary is already up-to-date.
+// Called from package.json prebuild / Tauri beforeDev + beforeBuild hooks,
+// and from ship.yml on CI.
 
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,13 +12,19 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
 const TECTONIC_VERSION = "0.16.9";
-const TARGET = "x86_64-pc-windows-msvc";
-const ZIP_URL = `https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/tectonic-${TECTONIC_VERSION}-${TARGET}.zip`;
 
-const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, "..");
-const outDir = resolve(repoRoot, "src-tauri", "binaries");
-const outBin = resolve(outDir, "tectonic.exe");
+const IS_WINDOWS = process.platform === "win32";
+const TARGET     = IS_WINDOWS
+  ? "x86_64-pc-windows-msvc"
+  : "x86_64-unknown-linux-gnu";
+const ARCHIVE_EXT = IS_WINDOWS ? "zip" : "tar.gz";
+const ARCHIVE_URL = `https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/tectonic-${TECTONIC_VERSION}-${TARGET}.${ARCHIVE_EXT}`;
+const BIN_NAME    = IS_WINDOWS ? "tectonic.exe" : "tectonic";
+
+const here       = dirname(fileURLToPath(import.meta.url));
+const repoRoot   = resolve(here, "..");
+const outDir     = resolve(repoRoot, "src-tauri", "binaries");
+const outBin     = resolve(outDir, BIN_NAME);
 const versionFile = resolve(outDir, "VERSION");
 
 async function downloadTo(url, dest) {
@@ -32,37 +34,28 @@ async function downloadTo(url, dest) {
     const stream = createWriteStream(dest);
     res.body.pipeTo(
       new WritableStream({
-        write(chunk) {
-          stream.write(chunk);
-        },
-        close() {
-          stream.end(resolveP);
-        },
-        abort(err) {
-          stream.destroy();
-          reject(err);
-        },
+        write(chunk)  { stream.write(chunk); },
+        close()       { stream.end(resolveP); },
+        abort(err)    { stream.destroy(); reject(err); },
       }),
     ).catch(reject);
   });
 }
 
-function expandZip(zipPath, dest) {
-  // PowerShell ships with every Windows. Avoids adding a node-side zip
-  // dependency just for this. Linux/mac CI runners that bootstrap this
-  // script would need an `unzip` branch; not relevant yet because ship
-  // only runs on windows-latest.
-  const result = spawnSync(
-    "powershell",
-    [
-      "-NoProfile",
-      "-Command",
-      `Expand-Archive -Path '${zipPath}' -DestinationPath '${dest}' -Force`,
-    ],
-    { stdio: "inherit" },
-  );
-  if (result.status !== 0) {
-    throw new Error(`Expand-Archive failed for ${zipPath}`);
+function expandArchive(archivePath, extractDir) {
+  if (IS_WINDOWS) {
+    // PowerShell ships with every Windows image.
+    const r = spawnSync(
+      "powershell",
+      ["-NoProfile", "-Command",
+       `Expand-Archive -Path '${archivePath}' -DestinationPath '${extractDir}' -Force`],
+      { stdio: "inherit" },
+    );
+    if (r.status !== 0) throw new Error(`Expand-Archive failed for ${archivePath}`);
+  } else {
+    // tar is always present on Linux CI runners.
+    const r = spawnSync("tar", ["xzf", archivePath, "-C", extractDir], { stdio: "inherit" });
+    if (r.status !== 0) throw new Error(`tar xzf failed for ${archivePath}`);
   }
 }
 
@@ -77,28 +70,29 @@ async function main() {
   }
 
   await mkdir(outDir, { recursive: true });
-  const zipPath = resolve(outDir, `tectonic-${TECTONIC_VERSION}.zip`);
-  console.log(`downloading ${ZIP_URL}`);
-  await downloadTo(ZIP_URL, zipPath);
+  const archivePath = resolve(outDir, `tectonic-${TECTONIC_VERSION}.${ARCHIVE_EXT}`);
+  console.log(`downloading ${ARCHIVE_URL}`);
+  await downloadTo(ARCHIVE_URL, archivePath);
 
-  const sha = createHash("sha256").update(readFileSync(zipPath)).digest("hex");
+  const sha = createHash("sha256").update(readFileSync(archivePath)).digest("hex");
   console.log(`sha256 ${sha}`);
 
   const extractDir = resolve(outDir, "_extract");
   await rm(extractDir, { recursive: true, force: true });
   mkdirSync(extractDir, { recursive: true });
-  expandZip(zipPath, extractDir);
+  expandArchive(archivePath, extractDir);
 
-  // Tectonic's Windows release zip has a single tectonic.exe at the
-  // top level; copy it to the canonical location.
-  const candidate = resolve(extractDir, "tectonic.exe");
+  // Both the Windows zip and the Linux tar.gz place the binary at the top
+  // level of the archive with the same base name.
+  const candidate = resolve(extractDir, BIN_NAME);
   if (!existsSync(candidate)) {
-    throw new Error(`tectonic.exe not found in extracted zip at ${candidate}`);
+    throw new Error(`${BIN_NAME} not found in extracted archive at ${candidate}`);
   }
   writeFileSync(outBin, readFileSync(candidate));
+  if (!IS_WINDOWS) chmodSync(outBin, 0o755);
   writeFileSync(versionFile, TECTONIC_VERSION + "\n");
   await rm(extractDir, { recursive: true, force: true });
-  await rm(zipPath, { force: true });
+  await rm(archivePath, { force: true });
 
   console.log(`tectonic ${TECTONIC_VERSION} installed at ${outBin}`);
 }
