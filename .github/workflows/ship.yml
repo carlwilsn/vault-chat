@@ -6,8 +6,8 @@ name: ship
 # main since the last release tag, and if so: bumps the patch version,
 # commits the bump back to main with [skip ci] (which prevents this
 # workflow from re-firing on its own version-bump push), builds + signs
-# the Windows installer, and publishes a GitHub Release with the updater
-# manifest. The installed app sees it on next launch.
+# installers for Windows and Linux, and publishes a GitHub Release with
+# the updater manifest. The installed app sees it on next launch.
 #
 # Manual escape hatch: push a v* tag yourself (release.yml), or
 # workflow_dispatch this from the Actions UI.
@@ -15,9 +15,6 @@ name: ship
 on:
   push:
     branches: [main]
-    # Only ship when something that actually goes into the bundled app
-    # changes. Workflow tweaks, READMEs, and the meta-tools-staging
-    # area don't justify a 15-minute build.
     paths:
       - "src/**"
       - "src-tauri/**"
@@ -29,27 +26,25 @@ on:
       - "tsconfig.json"
   workflow_dispatch:
 
-# Coalesce a flurry of pushes (e.g. several commits back-to-back) into
-# a single build. cancel-in-progress kills the running build when a
-# fresh commit arrives so we always ship the tip of main rather than a
-# stale interim state.
 concurrency:
   group: ship
   cancel-in-progress: true
 
 jobs:
-  ship:
-    # Kill switch: set repo variable SHIP_PAUSED=true (Settings →
-    # Secrets and variables → Actions → Variables) to skip builds.
-    # Commits keep landing on main, but no release publishes until
-    # unpaused. Useful before sleep, exam week, demos.
+  # ── Phase 1: run once ─────────────────────────────────────────────────────
+  # Check for new commits, generate release notes, bump the version, and
+  # commit the bump back to main. Everything downstream reads the outputs
+  # of this job so the bump never fires twice.
+  prepare:
     if: vars.SHIP_PAUSED != 'true'
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      # Vite's transform pass needs more heap than Node's Windows default.
-      NODE_OPTIONS: --max-old-space-size=4096
+    outputs:
+      has_changes: ${{ steps.changes.outputs.has_changes }}
+      version:     ${{ steps.bump.outputs.version }}
+      body:        ${{ steps.notes.outputs.body }}
+      range:       ${{ steps.changes.outputs.range }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -60,24 +55,10 @@ jobs:
           node-version: 20
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
       - run: npm ci
-
-      # Download the bundled Tectonic LaTeX engine before the build.
-      # tauri.conf.json `bundle.resources` references the file, so a
-      # missing binary would fail the build later with a less-obvious
-      # error. The script is a no-op when the binary is already present.
-      - name: Download Tectonic LaTeX engine
-        run: node scripts/download-tectonic.mjs
 
       - name: Check for new commits since last release
         id: changes
-        shell: bash
         run: |
           LAST_TAG=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "")
           if [ -z "$LAST_TAG" ]; then
@@ -99,14 +80,9 @@ jobs:
       - name: Generate release notes
         if: steps.changes.outputs.has_changes == 'true'
         id: notes
-        shell: bash
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          # The in-app UpdateBanner displays this body verbatim, so we
-          # ask Haiku to turn the commit log into short user-facing
-          # bullets. Script falls back to raw subjects if the API call
-          # fails — never block a ship on a copywriting hiccup.
           BODY=$(node scripts/release-notes.mjs "${{ steps.changes.outputs.range }}")
           echo "Release body:"
           echo "$BODY"
@@ -123,7 +99,6 @@ jobs:
       - name: Bump version
         if: steps.changes.outputs.has_changes == 'true'
         id: bump
-        shell: bash
         run: |
           NEW=$(node scripts/bump-version.mjs)
           echo "version=$NEW" >> $GITHUB_OUTPUT
@@ -131,50 +106,103 @@ jobs:
 
       - name: Commit version bump back to main
         if: steps.changes.outputs.has_changes == 'true'
-        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
           git commit -m "v${{ steps.bump.outputs.version }} [skip ci]"
-          # Race-safe push: parallel ship runs (e.g. cron + a fresh
-          # push arriving within the build window) can both try to
-          # land a `[skip ci]` autobump. Rebase on top of whatever
-          # arrived first; retry on a tighter race.
           for attempt in 1 2 3; do
             git pull --rebase origin main && git push origin HEAD:main && break
             echo "push attempt $attempt failed — retrying"
             sleep 2
           done
 
+  # ── Phase 2: build on every platform ─────────────────────────────────────
+  # Runs in parallel on Windows and Ubuntu. Each platform builds its own
+  # native installer and attaches it to the same GitHub release.
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.has_changes == 'true'
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ''
+          - platform: ubuntu-22.04
+            args: '--bundles appimage'
+    runs-on: ${{ matrix.platform }}
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Check out the version-bumped commit that prepare just pushed.
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Linux needs native WebKit / GTK / AppIndicator headers.
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - run: npm ci
+
+      # Tectonic LaTeX engine — Windows only for now.
+      # Linux PDF export is a follow-up (needs a Linux binary in the
+      # download script). The rest of vault-chat works fine without it.
+      - name: Download Tectonic LaTeX engine
+        if: matrix.platform == 'windows-latest'
+        run: node scripts/download-tectonic.mjs
+
       - name: Build, sign, publish release
-        if: steps.changes.outputs.has_changes == 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v${{ steps.bump.outputs.version }}
-          releaseName: vault-chat v${{ steps.bump.outputs.version }}
-          releaseBody: ${{ steps.notes.outputs.body }}
+          tagName: v${{ needs.prepare.outputs.version }}
+          releaseName: vault-chat v${{ needs.prepare.outputs.version }}
+          releaseBody: ${{ needs.prepare.outputs.body }}
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
-          updaterJsonPreferNsis: true
+          updaterJsonPreferNsis: ${{ matrix.platform == 'windows-latest' }}
+          args: ${{ matrix.args }}
 
-      # Bundle the demo vault as a release asset so first-time users can
-      # download a ready-made tour vault alongside the installer. README
-      # links the latest-release URL, which always resolves to the most
-      # recent attachment.
+      # Demo vault attachment — Windows runner only (runs once, no duplication).
       - name: Zip demo vault
-        if: steps.changes.outputs.has_changes == 'true'
+        if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: Compress-Archive -Path demo-vault -DestinationPath demo-vault.zip -Force
 
       - name: Attach demo vault to release
-        if: steps.changes.outputs.has_changes == 'true'
+        if: matrix.platform == 'windows-latest'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload v${{ steps.bump.outputs.version }} demo-vault.zip --clobber
+        run: gh release upload v${{ needs.prepare.outputs.version }} demo-vault.zip --clobber
