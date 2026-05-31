@@ -4052,9 +4052,50 @@ fn compile_tex_sync(
     std::fs::create_dir_all(&work_dir)
         .map_err(|e| format!("create scratch dir {}: {}", work_dir.display(), e))?;
 
-    let input = work_dir.join("input.tex");
-    std::fs::write(&input, &contents)
-        .map_err(|e| format!("write {}: {}", input.display(), e))?;
+    // Tectonic resolves \input and \includegraphics relative to the
+    // PRIMARY INPUT FILE's directory — NOT the process cwd and NOT
+    // $TEXINPUTS (both verified to be ignored for graphics lookup). So a
+    // document that pulls in assets by relative path
+    // (e.g. \includegraphics{output/fig.png}) only compiles if the input
+    // .tex we hand Tectonic lives in the SAME folder as the real file.
+    //
+    // We therefore drop a short-lived dotfile next to the real .tex and
+    // point Tectonic at it, while still sending ALL output (pdf, log,
+    // intermediates) to the scratch dir via --outdir. The source folder
+    // only ever holds one preview dotfile, deleted as soon as the compile
+    // returns. If the source dir isn't writable, fall back to compiling in
+    // scratch (assets won't resolve, but plain documents still work).
+    let src_dir = std::path::Path::new(&source_path)
+        .parent()
+        .filter(|p| p.is_dir());
+    let preview_name = format!(".vault-chat-preview-{key}.tex");
+    let (input, cleanup_input) = match src_dir {
+        Some(dir) => {
+            let p = dir.join(&preview_name);
+            match std::fs::write(&p, &contents) {
+                Ok(_) => (p, true),
+                Err(_) => {
+                    let fallback = work_dir.join("input.tex");
+                    std::fs::write(&fallback, &contents)
+                        .map_err(|e| format!("write {}: {}", fallback.display(), e))?;
+                    (fallback, false)
+                }
+            }
+        }
+        None => {
+            let p = work_dir.join("input.tex");
+            std::fs::write(&p, &contents)
+                .map_err(|e| format!("write {}: {}", p.display(), e))?;
+            (p, false)
+        }
+    };
+    // Tectonic names its outputs after the input file's stem, so the pdf
+    // and log land at <scratch>/<stem>.{pdf,log}.
+    let stem: String = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("input")
+        .to_string();
 
     // Tectonic CLI: `compile <file> --outdir <dir> --keep-logs --chatter minimal`.
     // Tectonic V2 CLI: `tectonic -X compile <file> --outdir <dir> --keep-logs`.
@@ -4087,7 +4128,14 @@ fn compile_tex_sync(
     }
     let status = child.wait().map_err(|e| e.to_string())?;
 
-    let log_path = work_dir.join("input.log");
+    // Remove the preview dotfile from the source dir now that Tectonic has
+    // read it — before any early return — so it can't linger in the vault
+    // or get swept into an auto-commit.
+    if cleanup_input {
+        let _ = std::fs::remove_file(&input);
+    }
+
+    let log_path = work_dir.join(format!("{stem}.log"));
     let log_tail = std::fs::read_to_string(&log_path)
         .ok()
         .map(|s| {
@@ -4110,7 +4158,7 @@ fn compile_tex_sync(
         ));
     }
 
-    let pdf = work_dir.join("input.pdf");
+    let pdf = work_dir.join(format!("{stem}.pdf"));
     if !pdf.exists() {
         return Err(format!(
             "tectonic reported success but no PDF at {}\n\n--- stderr ---\n{}\n\n--- log tail ---\n{}",
