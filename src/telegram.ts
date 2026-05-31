@@ -443,13 +443,79 @@ export async function resolveImagePathForTelegram(
   return null;
 }
 
+// Split a markdown table row into trimmed cells, dropping the empty
+// cells that leading/trailing pipes produce.
+function splitTableRow(line: string): string[] {
+  let t = line.trim();
+  if (t.startsWith("|")) t = t.slice(1);
+  if (t.endsWith("|")) t = t.slice(0, -1);
+  return t.split("|").map((c) => c.trim());
+}
+
+// A markdown table's delimiter row, e.g. `|---|:--:|`. Must contain a
+// pipe (so a bare `---` horizontal rule isn't mistaken for one) and
+// every cell must be only dashes/colons.
+function isTableDelimiter(line: string): boolean {
+  if (!line.includes("|")) return false;
+  const cells = splitTableRow(line);
+  return cells.length > 0 && cells.every((c) => /^:?-{1,}:?$/.test(c));
+}
+
+// Telegram renders no markdown tables — a `| a | b |` grid arrives as
+// raw pipe-and-dash mush, and column alignment is hopeless on a phone
+// anyway. Convert each table into labeled `Header: value` blocks (one
+// block per data row), which reads cleanly at any width. Runs before
+// the inline strips so cell contents (bold, links) get cleaned after.
+function tablesToText(text: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const header = lines[i];
+    const delim = lines[i + 1];
+    if (header?.includes("|") && delim !== undefined && isTableDelimiter(delim)) {
+      const headers = splitTableRow(header);
+      let j = i + 2;
+      const rows: string[][] = [];
+      while (j < lines.length && lines[j].includes("|") && lines[j].trim() !== "") {
+        rows.push(splitTableRow(lines[j]));
+        j++;
+      }
+      if (rows.length === 0) {
+        // Header-only table — just emit its cells as one line.
+        out.push(headers.filter(Boolean).join(" — "));
+      } else {
+        const blocks = rows.map((cells) =>
+          headers
+            .map((h, k) => {
+              const v = (cells[k] ?? "").trim();
+              if (!v) return null;
+              return h ? `${h}: ${v}` : v;
+            })
+            .filter(Boolean)
+            .join("\n"),
+        );
+        out.push(blocks.join("\n\n"));
+      }
+      i = j;
+    } else {
+      out.push(lines[i]);
+      i++;
+    }
+  }
+  return out.join("\n");
+}
+
 // Strip markdown syntax from text destined for Telegram. Even with
 // "plain text only" in the system prompt, smaller models (Haiku) emit
 // markdown anyway; without this the phone sees literal asterisks /
 // hashes / backticks. Catches the common shapes — perfect parsing
 // not required, just less-broken output than raw.
 export function stripMarkdownForTelegram(text: string): string {
-  let s = text;
+  // Tables first: turn each grid into labeled per-row blocks while the
+  // pipe/delimiter structure is still intact. The inline strips below
+  // then clean any markdown inside the cells.
+  let s = tablesToText(text);
   // Code fences: keep the inner code, drop the fence + language tag.
   s = s.replace(/```[a-zA-Z0-9_-]*\n?([\s\S]*?)```/g, (_m, code) => code.trim());
   // Inline code `foo` → foo
