@@ -19,6 +19,21 @@ This is normal — the installer isn't code-signed yet, so SmartScreen hasn't se
 
 When it opens: gear icon → paste an API key → open a folder as your vault → start asking.
 
+## Try it (Linux)
+
+Grab the `.AppImage` from the [latest release](https://github.com/carlwilsn/vault-chat/releases/latest):
+
+```bash
+chmod +x vault-chat_*.AppImage
+./vault-chat_*.AppImage
+```
+
+No install needed. Auto-updates work the same as Windows — a small banner appears in the corner when a new release is available.
+
+### Mac
+
+No prebuilt installer yet — see [Build from source](#build-from-source) below.
+
 ### New here? Try the demo vault
 
 Don't have a folder of markdown notes yet? Grab the demo vault — eight short notes that walk you through every feature hands-on (inline edit, PDF marquee, agentic file ops, undo, skill creation), plus a sample PDF to drag a box on. Ten minutes end-to-end.
@@ -41,21 +56,6 @@ That's it — Read / Write / Edit / Bash / PDF marquee / inline edit all work on
 **Optional: WebSearch.** The agent's `WebSearch` tool is powered by [Tavily](https://app.tavily.com/), which also has a free tier (1000 searches/month). Grab a key from your Tavily dashboard, then in vault-chat: gear icon → **Tavily (web search)** field → paste → **Save**. `WebFetch` (loading a specific URL) needs no key and works out of the box.
 
 **Optional: voice mode.** Voice mode is powered by [ElevenLabs](https://elevenlabs.io/) and needs a Conversational AI plan key (free tier includes 15 min/month). Grab a key, then in vault-chat: gear icon → **ElevenLabs (voice mode)** field → paste → **Save**. Toggle voice mode anytime with `Ctrl+D`.
-
-## Try it (Linux)
-
-Grab the `.AppImage` from the [latest release](https://github.com/carlwilsn/vault-chat/releases/latest):
-
-```bash
-chmod +x vault-chat_*.AppImage
-./vault-chat_*.AppImage
-```
-
-No install needed. Auto-updates work the same as Windows — a small banner appears in the corner when a new release is available.
-
-### Mac
-
-No prebuilt installer yet — see [Build from source](#build-from-source) below.
 
 ## What's in it
 
