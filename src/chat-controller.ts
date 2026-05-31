@@ -272,6 +272,11 @@ export async function sendMessage(
         if (t) t.result = e.result;
         if (live) store.updateLiveToolResult(e.id, e.result);
       } else if (e.kind === "done") {
+        // User stopped/interrupted this run — stopAgent/interruptAndSend
+        // already finalized the partial reply and committed. Skip so we
+        // don't double-append. (Abort normally surfaces as `error`, not
+        // `done`; this guards providers that finish cleanly on abort.)
+        if (signal.aborted) return;
         if (e.usage && live) {
           store.addTokenUsage(e.usage);
           store.setLastContext(e.usage.context);
@@ -380,6 +385,12 @@ export async function sendMessage(
           }
         }
       } else if (e.kind === "error") {
+        // A user-initiated stop/interrupt aborts the run, which surfaces
+        // here as an error. It's not a real failure: stopAgent /
+        // interruptAndSend already captured the partial reply as an
+        // incomplete message and committed, so swallow it — no ⚠️ bubble,
+        // no duplicate, no lost context.
+        if (signal.aborted) return;
         const errMsg: ChatMessage = {
           role: "assistant",
           content: `⚠️ ${e.message}`,
@@ -402,15 +413,32 @@ export async function sendMessage(
 }
 
 export function stopAgent() {
+  const store = useStore.getState();
+  // Preserve whatever the agent streamed before Stop as an incomplete
+  // assistant message, instead of discarding it — so stopping keeps the
+  // partial reply and its context for the next turn (matches Claude Code).
+  // The abort surfaces as an `error` event, which onEvent swallows while
+  // signal.aborted, so this is the one place the partial is finalized.
+  if (store.busy) {
+    const partialText = store.streamingText.trim();
+    const partialTools = store.liveTools;
+    const stopped: ChatMessage = {
+      role: "assistant",
+      content: partialText
+        ? `${partialText}\n\n_(stopped)_`
+        : "_(stopped before any reply)_",
+      toolCalls: partialTools.length > 0 ? partialTools : undefined,
+    };
+    store.appendMessage(stopped);
+  }
   abortRef?.abort();
   abortRef = null;
-  const store = useStore.getState();
   store.resetStreaming();
   store.setBusy(false);
   // An aborted turn never reaches the end-of-turn commit, so anything the
   // agent wrote before being stopped would sit uncommitted. Commit it now
-  // — this is the crack that lost post.html. Tagged agent: these are the
-  // agent's writes, so the honesty sweep must credit them to the agent.
+  // — this is the crack that lost post.html. Tagged agent: the agent wrote
+  // them, so the honesty sweep must credit them to the agent.
   safetyCommit("agent-stopped", { agent: true }).catch(() => {});
 }
 
