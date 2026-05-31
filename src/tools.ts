@@ -777,7 +777,17 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         ),
       }),
       execute: async ({ todos }) => {
-        useStore.getState().setAgentTodos(todos as TodoItem[]);
+        // The plan/todo block is GLOBAL ephemeral UI state (store.agentTodos),
+        // shown for whichever conversation the user is currently viewing.
+        // A background/off-target run (Telegram, scheduled) must not write
+        // it, or its plan clobbers the foreground chat's block. Mirror the
+        // streaming handlers' `live` guard: only update the global block
+        // when this run IS the active conversation. The agent still gets
+        // its summary string either way, so its own planning is unaffected.
+        const live =
+          conversationId == null ||
+          useStore.getState().activeConversationId === conversationId;
+        if (live) useStore.getState().setAgentTodos(todos as TodoItem[]);
         const counts = todos.reduce(
           (acc, t) => {
             acc[t.status] = (acc[t.status] ?? 0) + 1;
