@@ -134,7 +134,7 @@ jobs:
           - platform: ubuntu-22.04
             # Build AppImage only; config override swaps tectonic resource
             # path from tectonic.exe (Windows) to tectonic (Linux).
-            args: '--bundles appimage --config tauri.linux.conf.json'
+            args: '--bundles appimage --config src-tauri/tauri.linux.conf.json'
     runs-on: ${{ matrix.platform }}
     env:
       NODE_OPTIONS: --max-old-space-size=4096
