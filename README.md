@@ -42,9 +42,16 @@ That's it — Read / Write / Edit / Bash / PDF marquee / inline edit all work on
 
 **Optional: voice mode.** Voice mode is powered by [ElevenLabs](https://elevenlabs.io/) and needs a Conversational AI plan key (free tier includes 15 min/month). Grab a key, then in vault-chat: gear icon → **ElevenLabs (voice mode)** field → paste → **Save**. Toggle voice mode anytime with `Ctrl+D`.
 
-### Linux
+## Try it (Linux)
 
-Grab the `.AppImage` from the [latest release](https://github.com/carlwilsn/vault-chat/releases/latest) — no install needed, just make it executable and run it. Auto-updates work the same as Windows.
+Grab the `.AppImage` from the [latest release](https://github.com/carlwilsn/vault-chat/releases/latest):
+
+```bash
+chmod +x vault-chat_*.AppImage
+./vault-chat_*.AppImage
+```
+
+No install needed. Auto-updates work the same as Windows — a small banner appears in the corner when a new release is available.
 
 ### Mac
 
