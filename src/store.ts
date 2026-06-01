@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { emit } from "@tauri-apps/api/event";
 import type { ModelSpec, ProviderId } from "./providers";
-import { DEFAULT_MODEL_ID, setLiveCatalog, setAutoRouterCostBias } from "./providers";
+import { AUTO_MODEL_ID, setLiveCatalog, setAutoRouterCostBias } from "./providers";
 import type { Skill } from "./skills";
 import type { Note } from "./notes";
 import { readNotes, appendNote, writeAllNotes } from "./notes";
@@ -629,7 +629,9 @@ export const useStore = create<State>((set) => ({
   catalog: loadCatalogFromLocalStorage() ?? [],
   catalogRefreshing: false,
   catalogErrors: {},
-  modelId: localStorage.getItem(MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
+  // New installs start on Auto (cost-aware routing) rather than the most
+  // expensive model. Anyone who has already picked a model keeps it.
+  modelId: localStorage.getItem(MODEL_STORAGE) ?? AUTO_MODEL_ID,
   theme: loadTheme(),
   strictVaultMode: loadBoolFlag(STRICT_VAULT_STORAGE, true),
   bashDisabled: loadBoolFlag(BASH_DISABLED_STORAGE, true),
