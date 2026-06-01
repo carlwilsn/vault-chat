@@ -3584,11 +3584,20 @@ async fn telegram_poll_loop(
         consecutive_errors = 0;
         if !resp.status().is_success() {
             let status = resp.status();
+            let code = status.as_u16();
             let body = resp.text().await.unwrap_or_default();
+            // Only a bad token is truly fatal (401 Unauthorized / 404 Not
+            // Found). Everything else is transient and the poller must
+            // self-heal by retrying — most importantly 409 Conflict, which
+            // fires when another getUpdates consumer is still active. That
+            // happens on a quick app reopen while the previous session's
+            // long-poll is still draining on Telegram's side; it clears on
+            // its own within ~25s. Also retry 429 (rate limit) and 5xx.
+            let fatal = code == 401 || code == 404;
             emit_telegram_status(
                 &app,
                 TelegramStatus {
-                    running: false,
+                    running: !fatal,
                     bot_username: None,
                     error: Some(format!(
                         "getUpdates {}: {}",
@@ -3598,9 +3607,13 @@ async fn telegram_poll_loop(
                     vault_id: vault_id.clone(),
                 },
             );
-            // Auth / invalid token errors aren't transient — stop.
-            pollers_lock().as_mut().unwrap().remove(&bot_token);
-            return;
+            if fatal {
+                pollers_lock().as_mut().unwrap().remove(&bot_token);
+                return;
+            }
+            // Transient — back off a few seconds and keep polling.
+            tokio_sleep(3000).await;
+            continue;
         }
         let json: serde_json::Value = match resp.json().await {
             Ok(j) => j,
