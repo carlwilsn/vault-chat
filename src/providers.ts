@@ -25,6 +25,8 @@ export const MODELS: ModelSpec[] = [
   { provider: "openrouter", id: "qwen/qwen3-235b-a22b", label: "Qwen3 235B" },
   { provider: "openrouter", id: "qwen/qwen3-coder", label: "Qwen3 Coder" },
   { provider: "openrouter", id: "deepseek/deepseek-chat", label: "DeepSeek V3" },
+  { provider: "openrouter", id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash" },
+  { provider: "openrouter", id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro" },
 ];
 
 export const DEFAULT_MODEL_ID = "claude-opus-4-8";

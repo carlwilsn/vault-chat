@@ -1611,6 +1611,16 @@ function TelegramSection() {
               <option value="gemini-2.5-flash">gemini-2.5-flash</option>
               <option value="gemini-2.5-pro">gemini-2.5-pro</option>
             </optgroup>
+            <optgroup label="OpenRouter — fast & cheap">
+              <option value="openrouter/auto">openrouter/auto — smart routing</option>
+              <option value="deepseek/deepseek-v4-flash">deepseek-v4-flash (cheapest, fast)</option>
+              <option value="deepseek/deepseek-chat">deepseek-chat (V3)</option>
+              <option value="qwen/qwen3-coder">qwen3-coder</option>
+            </optgroup>
+            <optgroup label="OpenRouter — smarter">
+              <option value="deepseek/deepseek-v4-pro">deepseek-v4-pro</option>
+              <option value="qwen/qwen3-235b-a22b">qwen3-235b</option>
+            </optgroup>
           </select>
           <p className="text-[10.5px] text-muted-foreground/70">
             Model the agent uses when replying to a Telegram-sourced chat
