@@ -1446,7 +1446,12 @@ function TelegramSection() {
     let cancelled = false;
     setTokenDraft("");
     setUserIdDraft("");
-    setEnabled(readTelegramEnabled(vaultPath));
+    const en = readTelegramEnabled(vaultPath);
+    setEnabled(en);
+    // Self-heal: an already-enabled vault must be in the launch registry so
+    // the boot auto-start reconnects it. Older enables predate the registry,
+    // which is why reconnect needed a manual Save every launch. Idempotent.
+    if (en && vaultPath) writeTelegramEnabled(vaultPath, true);
     void (async () => {
       const { token, userId } = await getTelegramCredentials(vaultPath);
       if (cancelled) return;
@@ -1489,10 +1494,13 @@ function TelegramSection() {
     setSaveError(null);
     try {
       await setTelegramCredentials(vaultPath, tok, uid);
-      if (enabled) {
-        await stopTelegramService(vaultPath);
-        await startTelegramService(vaultPath);
-      }
+      // Saving valid credentials turns the connection ON and persists it
+      // (registry-backed) so it auto-reconnects on every reopen — no more
+      // re-Saving each launch. Save sets it and holds on.
+      writeTelegramEnabled(vaultPath, true);
+      setEnabled(true);
+      await stopTelegramService(vaultPath);
+      await startTelegramService(vaultPath);
       setSaveState("saved");
       setTimeout(() => setSaveState((s) => (s === "saved" ? "idle" : s)), 1800);
     } catch (e) {
