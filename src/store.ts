@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { emit } from "@tauri-apps/api/event";
 import type { ModelSpec, ProviderId } from "./providers";
-import { DEFAULT_MODEL_ID, setLiveCatalog } from "./providers";
+import { DEFAULT_MODEL_ID, setLiveCatalog, setAutoRouterCostBias } from "./providers";
 import type { Skill } from "./skills";
 import type { Note } from "./notes";
 import { readNotes, appendNote, writeAllNotes } from "./notes";
@@ -138,6 +138,7 @@ const VAULT_STORAGE = "vault_chat_last_vault";
 const CHAT_STORAGE = "vault_chat_history";
 const STRICT_VAULT_STORAGE = "vault_chat_strict_vault";
 const BASH_DISABLED_STORAGE = "vault_chat_bash_disabled";
+const AUTO_COST_BIAS_STORAGE = "vault_chat_auto_cost_bias";
 // Rolling buffer of the last few finalised conversations. Capped at
 // SAVED_CHATS_MAX entries (newest first), shared across vaults — the
 // UI filters to the active vault on display.
@@ -199,6 +200,13 @@ function loadBoolFlag(key: string, defaultValue: boolean): boolean {
   const raw = localStorage.getItem(key);
   if (raw === null) return defaultValue;
   return raw === "true";
+}
+
+function loadNumFlag(key: string, defaultValue: number): number {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return defaultValue;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : defaultValue;
 }
 
 /** Fetch every known credential from the OS keychain into memory.
@@ -323,6 +331,9 @@ type State = {
   strictVaultMode: boolean;
   // Don't expose the Bash tool to the agent at all.
   bashDisabled: boolean;
+  // Cost ⇄ quality dial for OpenRouter's auto router (0 = quality … 10 =
+  // cheapest). Applies when "Auto" resolves to openrouter/auto.
+  autoRouterCostBias: number;
   skills: Skill[];
   busy: boolean;
   showSettings: boolean;
@@ -488,6 +499,7 @@ type State = {
   // open that bypasses the guard). User can independently turn Bash back
   // on after, if they explicitly want shell + strict file ops.
   setStrictVaultMode: (b: boolean) => void;
+  setAutoRouterCostBias: (n: number) => void;
   setBashDisabled: (b: boolean) => void;
   setSkills: (s: Skill[]) => void;
   setBusy: (b: boolean) => void;
@@ -621,6 +633,7 @@ export const useStore = create<State>((set) => ({
   theme: loadTheme(),
   strictVaultMode: loadBoolFlag(STRICT_VAULT_STORAGE, true),
   bashDisabled: loadBoolFlag(BASH_DISABLED_STORAGE, true),
+  autoRouterCostBias: loadNumFlag(AUTO_COST_BIAS_STORAGE, 7),
   skills: [],
   busy: false,
   showSettings: false,
@@ -1118,6 +1131,12 @@ export const useStore = create<State>((set) => ({
   applyThemeFromEvent: (t) => {
     localStorage.setItem(THEME_STORAGE, t);
     set({ theme: t });
+  },
+  setAutoRouterCostBias: (n) => {
+    const clamped = Math.max(0, Math.min(10, Math.round(n)));
+    localStorage.setItem(AUTO_COST_BIAS_STORAGE, String(clamped));
+    setAutoRouterCostBias(clamped); // sync the providers module (fetch shim reads it)
+    set({ autoRouterCostBias: clamped });
   },
   setStrictVaultMode: (b) => {
     localStorage.setItem(STRICT_VAULT_STORAGE, String(b));
@@ -1730,6 +1749,10 @@ export const useStore = create<State>((set) => ({
       ),
     })),
 }));
+
+// Sync the persisted auto-router cost bias into the providers module on
+// boot (its fetch shim reads a module-level copy, not the store).
+setAutoRouterCostBias(useStore.getState().autoRouterCostBias);
 
 // Mirror the live `messages` / `busy` view back into the active
 // conversation entry. Called from any action that swaps the active

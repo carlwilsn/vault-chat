@@ -30,17 +30,63 @@ export const MODELS: ModelSpec[] = [
 export const DEFAULT_MODEL_ID = "claude-opus-4-8";
 
 // Sentinel value stored in the model picker when the user selects "Auto".
-// Auto mode classifies each message at send-time and routes to either a
-// fast/cheap model (short conversational messages) or the full frontier
-// model (complex/task-heavy requests) using whichever providers the user
-// has API keys for. No extra API call is made — classification is local.
+// At send-time `resolveAutoModel` turns this into a concrete model:
+//   • OpenRouter key present → OpenRouter's trained server-side router
+//     (`openrouter/auto`, see below) — strictly better than local matching
+//     and provider-neutral.
+//   • otherwise → a lightweight local fast/full split over the user's
+//     direct-key providers.
+// Either way no EXTRA request is made — routing rides the normal call.
 export const AUTO_MODEL_ID = "auto";
+
+// OpenRouter's server-side router (NotDiamond-powered). It analyses each
+// prompt and forwards to the best model from a curated pool (Claude / GPT /
+// Gemini / DeepSeek / …) at no markup, supports tool calling + streaming,
+// and reports the chosen model back in the response. This is the SOTA path:
+// a router trained on preference data instead of keyword guesses.
+export const AUTO_ROUTER_MODEL_ID = "openrouter/auto";
+
+// Cost ⇄ quality dial for `openrouter/auto`: 0 = pure quality, 10 = cheapest
+// (per OpenRouter's `cost_quality_tradeoff`). Default 7 leans toward savings
+// — the whole point of Auto — while still escalating genuinely hard prompts.
+// Held module-level (mirrors `setLiveCatalog`) and synced from the store so
+// the fetch shim below can read it without a circular import.
+let _autoRouterCostBias = 7;
+export function setAutoRouterCostBias(n: number): void {
+  if (Number.isFinite(n)) _autoRouterCostBias = Math.max(0, Math.min(10, Math.round(n)));
+}
+export function getAutoRouterCostBias(): number {
+  return _autoRouterCostBias;
+}
 
 export const PROVIDER_LABEL: Record<ProviderId, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   google: "Google",
   openrouter: "OpenRouter",
+};
+
+// The Vercel AI SDK has no passthrough for OpenRouter's non-standard
+// `plugins` body field, so we patch it in at the fetch layer. Only touches
+// requests whose model is `openrouter/auto`; every other request (including
+// concrete OpenRouter models) passes through untouched.
+const autoRouterFetch = async (input: any, init?: any): Promise<Response> => {
+  try {
+    if (init && typeof init.body === "string") {
+      const body = JSON.parse(init.body);
+      if (body?.model === AUTO_ROUTER_MODEL_ID) {
+        const existing = Array.isArray(body.plugins) ? body.plugins : [];
+        body.plugins = [
+          ...existing.filter((p: any) => p?.id !== "auto-router"),
+          { id: "auto-router", cost_quality_tradeoff: _autoRouterCostBias },
+        ];
+        init = { ...init, body: JSON.stringify(body) };
+      }
+    }
+  } catch {
+    // Non-JSON body / parse failure — send the original request unchanged.
+  }
+  return fetch(input, init);
 };
 
 export function buildModel(spec: ModelSpec, apiKey: string): LanguageModel {
@@ -84,6 +130,8 @@ export function buildModel(spec: ModelSpec, apiKey: string): LanguageModel {
           "HTTP-Referer": "https://github.com/carl-wilson/vault-chat",
           "X-Title": "vault-chat",
         },
+        // Injects the auto-router plugin config for `openrouter/auto`.
+        fetch: autoRouterFetch,
       });
       return r.chat(spec.id);
     }
@@ -113,11 +161,19 @@ export function supportsVision(spec: ModelSpec): boolean {
   if (spec.provider === "anthropic") return true;
   if (spec.provider === "openai") return true;
   if (spec.provider === "google") return true;
+  // OpenRouter's auto router can land on a vision model, so allow images.
+  if (spec.id === AUTO_ROUTER_MODEL_ID) return true;
   // OpenRouter: opt-in by id substring.
   return /(-vl|vision|pixtral|llava|gpt-4|claude|gemini|llama-4|qwen.*2\.5|qwen3-vl)/i.test(spec.id);
 }
 
 export function findModel(id: string): ModelSpec | undefined {
+  // OpenRouter's auto router is a virtual model — never in any catalog, but
+  // a valid target the agent can send. Synthesize its spec so apiKey lookup
+  // and the request path work.
+  if (id === AUTO_ROUTER_MODEL_ID) {
+    return { provider: "openrouter", id: AUTO_ROUTER_MODEL_ID, label: "Auto (OpenRouter)" };
+  }
   return (_liveCatalog ?? MODELS).find((m) => m.id === id) ?? MODELS.find((m) => m.id === id);
 }
 
@@ -125,9 +181,10 @@ export function findModel(id: string): ModelSpec | undefined {
 // Auto-mode routing
 // ---------------------------------------------------------------------------
 
-// Provider priority order when deciding which provider to use in auto mode.
-// Earlier = preferred (typically whichever the user has a key for).
-const PROVIDER_PRIORITY: ProviderId[] = ["anthropic", "openai", "google", "openrouter"];
+// Fallback provider priority for direct-key-only users (no OpenRouter key).
+// OpenRouter is handled separately and preferred whenever present — see
+// resolveAutoModel — so it isn't listed here.
+const PROVIDER_PRIORITY: ProviderId[] = ["anthropic", "openai", "google"];
 
 // Fast (cheap) model ids to prefer per provider. Matched against the live
 // catalog; falls back to the seed list. Pattern matched case-insensitively.
@@ -149,27 +206,30 @@ const FULL_PATTERN: Record<ProviderId, RegExp> = {
   openrouter: /235b|sonnet|gpt-4/i,
 };
 
-// Keywords that suggest the request needs the full model. Keep it
-// concise — false positives (routing heavy work to haiku) cost quality,
-// false negatives (routing simple greetings to opus) just waste money.
+// Narrow set of verbs that reliably signal real work. Deliberately tight:
+// the previous list included how/what/why/find/read/write/search, which
+// match almost every message and forced ~everything onto the expensive
+// model — defeating the point of Auto. These are strong task intents only.
 const COMPLEX_KEYWORDS =
-  /\b(code|implement|build|debug|refactor|analyze|analyse|write|create|edit|fix|read|explain|generate|script|function|class|test|deploy|search|find|how|why|what|compare|review|summarize|plan|design|improve|update|rename|delete|move)\b/i;
+  /\b(implement|debug|refactor|rewrite|optimi[sz]e|architect|migrate|deploy|stack ?trace|traceback|exception|algorithm|regex|derive|prove|benchmark|diff)\b/i;
 
 /**
- * Classify the user message as "simple" (conversational) or "complex"
- * (task-heavy). Returns true if the full model should be used.
+ * Heuristic classifier for the direct-key fallback path (no OpenRouter).
+ * Returns true if the request warrants the full/capable model.
+ *
+ * @param historyTokensApprox  Approximate tokens already in the conversation
+ *   (the conversation's last known context size). This is the single
+ *   strongest cost signal: long agentic threads are where spend accumulates,
+ *   and a weak model tends to flail there (extra tool loops) — which costs
+ *   MORE than just using the strong model. So escalate once context is real.
  */
-function isComplexMessage(message: string): boolean {
+function isComplexMessage(message: string, historyTokensApprox = 0): boolean {
   const trimmed = message.trim();
-  // Long messages almost certainly need the full model.
-  if (trimmed.length > 120) return true;
-  // Code fences or indented code blocks.
-  if (/```|^\s{4}/m.test(trimmed)) return true;
-  // File-path-like fragments.
-  if (/[\/\\][a-zA-Z0-9_.-]+\.[a-zA-Z]{2,5}/.test(trimmed)) return true;
-  // Task-oriented keywords.
+  if (historyTokensApprox > 4000) return true; // substantive ongoing thread
+  if (trimmed.length > 240) return true; // was 120 — far too aggressive
+  if (/```|^\s{4}/m.test(trimmed)) return true; // code block
+  if (/[\/\\][\w.-]+\.[a-zA-Z]{2,5}\b/.test(trimmed)) return true; // file path
   if (COMPLEX_KEYWORDS.test(trimmed)) return true;
-  // Questions that are too short to be substantive are simple greetings.
   return false;
 }
 
@@ -177,21 +237,30 @@ function isComplexMessage(message: string): boolean {
  * Resolve the "auto" sentinel to a real ModelSpec.
  *
  * @param message  The user's raw message text.
- * @param apiKeys  Map of provider → API key (only set for providers that
- *                 the user has configured).
+ * @param apiKeys  Map of provider → API key (only set for configured ones).
  * @param catalog  The live model catalog (or seed list as fallback).
- * @returns A ModelSpec to actually run, or null if no provider has a key.
+ * @param historyTokensApprox  Tokens already in the conversation (fallback
+ *   path only; OpenRouter's router judges context itself).
+ * @returns A ModelSpec to run, or null if no provider has a key.
  */
 export function resolveAutoModel(
   message: string,
   apiKeys: Partial<Record<ProviderId, string>>,
   catalog: ModelSpec[] = _liveCatalog ?? MODELS,
+  historyTokensApprox = 0,
 ): ModelSpec | null {
-  // Pick the highest-priority provider that has a key.
+  // SOTA path: defer to OpenRouter's trained, provider-neutral router
+  // whenever a key exists. It outperforms local keyword matching and, by
+  // construction, carries no single-vendor bias.
+  if (apiKeys.openrouter) {
+    return { provider: "openrouter", id: AUTO_ROUTER_MODEL_ID, label: "Auto (OpenRouter)" };
+  }
+
+  // Fallback for direct-key-only users: a cheap local fast/full split.
   const provider = PROVIDER_PRIORITY.find((p) => !!apiKeys[p]);
   if (!provider) return null;
 
-  const complex = isComplexMessage(message);
+  const complex = isComplexMessage(message, historyTokensApprox);
   const pattern = complex ? FULL_PATTERN[provider] : FAST_PATTERN[provider];
 
   // Search the live catalog first, then the seed list as a safety net.

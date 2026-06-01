@@ -74,10 +74,18 @@ export async function sendMessage(
     const { getTelegramModelId } = await import("./telegram");
     modelId = getTelegramModelId();
   }
-  // Auto mode: classify the message locally and route to a fast (cheap)
-  // or full (capable) model without making any extra API call.
+  // Auto mode: resolve the "auto" sentinel to a concrete model. With an
+  // OpenRouter key this becomes `openrouter/auto` (server-side trained
+  // router); otherwise a local fast/full split informed by how much context
+  // the thread already carries. No extra API call either way.
   if (modelId === AUTO_MODEL_ID) {
-    const resolved = resolveAutoModel(text.trim(), s.apiKeys, getLiveCatalog());
+    // Approx context size: prefer the most recent message's reported context
+    // token count; fall back to a chars/4 estimate over the thread.
+    const msgs = targetForModelLookup?.messages ?? [];
+    const reportedCtx = [...msgs].reverse().find((m) => m.usage?.context)?.usage?.context ?? 0;
+    const histTokens =
+      reportedCtx || Math.floor(msgs.reduce((n, m) => n + (m.content?.length ?? 0), 0) / 4);
+    const resolved = resolveAutoModel(text.trim(), s.apiKeys, getLiveCatalog(), histTokens);
     modelId = resolved?.id ?? modelId; // fall back to "auto" string if no provider available
   }
   const spec = findModel(modelId);

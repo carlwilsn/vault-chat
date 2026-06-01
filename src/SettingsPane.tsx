@@ -91,6 +91,8 @@ export function SettingsPane() {
     refreshCatalog,
   } = useStore();
   const setVault = useStore((s) => s.setVault);
+  const autoRouterCostBias = useStore((s) => s.autoRouterCostBias);
+  const setAutoRouterCostBias = useStore((s) => s.setAutoRouterCostBias);
   const setFiles = useStore((s) => s.setFiles);
   const setCurrentFile = useStore((s) => s.setCurrentFile);
   const vaultPath = useStore((s) => s.vaultPath);
@@ -345,6 +347,46 @@ export function SettingsPane() {
                 .map(([p, msg]) => `${p}: ${msg}`)
                 .join(" · ")}
             </p>
+          )}
+          {modelId === AUTO_MODEL_ID && (
+            <div className="rounded-md border border-border/60 bg-accent/20 p-3 space-y-2">
+              {apiKeys.openrouter ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11.5px] font-medium text-foreground">
+                      Auto cost ⇄ quality
+                    </span>
+                    <span className="text-[11px] tabular-nums text-muted-foreground">
+                      {autoRouterCostBias <= 3
+                        ? "Quality"
+                        : autoRouterCostBias >= 8
+                          ? "Cheapest"
+                          : "Balanced"}{" "}
+                      ({autoRouterCostBias}/10)
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={10}
+                    step={1}
+                    value={autoRouterCostBias}
+                    onChange={(e) => setAutoRouterCostBias(Number(e.target.value))}
+                    className="w-full accent-primary"
+                  />
+                  <p className="text-[11px] text-muted-foreground/80">
+                    Auto uses OpenRouter's trained router (openrouter/auto) to pick the
+                    best model per message. Higher = cheaper models more often.
+                  </p>
+                </>
+              ) : (
+                <p className="text-[11px] text-muted-foreground/80">
+                  Auto routes to a cheap or capable model per message using your
+                  configured providers. Add an <span className="font-medium">OpenRouter</span>{" "}
+                  key to unlock its trained, provider-neutral router with a cost dial.
+                </p>
+              )}
+            </div>
           )}
         </section>
 
