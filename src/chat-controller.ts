@@ -319,20 +319,6 @@ export async function sendMessage(
           }
         }
 
-        // Status markers: the agent can end with `(ask: …)` to signal
-        // it needs user input, or `(error: …)` to signal an
-        // unrecoverable failure. Drives the colored dot in the Chats
-        // panel for off-screen chats. Absence = assumed done.
-        if (targetConvId) {
-          const tail = acc.slice(-400);
-          const kind: "ask" | "error" | null = /\(\s*error\s*:[^)]*\)\s*$/i.test(tail)
-            ? "error"
-            : /\(\s*ask\s*:[^)]*\)\s*$/i.test(tail)
-              ? "ask"
-              : null;
-          if (kind) store.setConversationAttention(targetConvId, kind);
-        }
-
         if (telegramChatId !== undefined) {
           // Markdown image refs in the reply get pulled out and sent
           // as photos via sendPhoto; the remaining text goes as a

@@ -279,22 +279,10 @@ function Row({
         <span
           className="relative inline-flex h-1.5 w-1.5 mt-[7px] shrink-0"
           title={
-            c.attention === "error"
-              ? "Agent hit an error — needs you"
-              : c.attention === "ask"
-                ? "Agent has a question — needs you"
-                : isRunning
-                  ? "Running"
-                  : isUnread
-                    ? "Unread"
-                    : undefined
+            isRunning ? "Running" : isUnread ? "Unread" : undefined
           }
         >
-          {c.attention === "error" ? (
-            <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
-          ) : c.attention === "ask" ? (
-            <span className="h-1.5 w-1.5 rounded-full bg-yellow-500" />
-          ) : isRunning ? (
+          {isRunning ? (
             <>
               <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
               <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />

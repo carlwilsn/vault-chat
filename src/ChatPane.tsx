@@ -317,20 +317,15 @@ export function ChatPane() {
   const showChatsPanel = useStore((s) => s.showChatsPanel);
   const conversations = useStore((s) => s.conversations);
   const activeConversationId = useStore((s) => s.activeConversationId);
-  // Indicator is for chats you *can't see* — alerting about background
-  // activity in conversations off-screen. Suppress on the active chat
-  // since the user is already watching it. Priority order: error >
-  // ask > running. Drives both the dot's color and whether it pulses.
+  // Indicator is for chats you *can't see* — alerts that a background
+  // conversation is still running. Suppressed on the active chat since
+  // the user is already watching it.
   const offscreenChats = conversations.filter((c) => c.id !== activeConversationId);
-  const indicatorKind: "error" | "ask" | "running" | null = offscreenChats.some(
-    (c) => c.attention === "error",
+  const indicatorKind: "running" | null = offscreenChats.some(
+    (c) => c.status === "running",
   )
-    ? "error"
-    : offscreenChats.some((c) => c.attention === "ask")
-      ? "ask"
-      : offscreenChats.some((c) => c.status === "running")
-        ? "running"
-        : null;
+    ? "running"
+    : null;
   const toggleChatsPanel = () => setShowChatsPanel(!showChatsPanel);
   const [pendingImages, setPendingImages] = useState<
     Array<{
@@ -1025,24 +1020,10 @@ export function ChatPane() {
                   {indicatorKind && (
                     <span
                       className="relative inline-flex h-1.5 w-1.5 ml-0.5"
-                      title={
-                        indicatorKind === "error"
-                          ? "A background chat hit an error"
-                          : indicatorKind === "ask"
-                            ? "A background chat has a question for you"
-                            : "A background chat is running"
-                      }
+                      title="A background chat is running"
                     >
-                      {indicatorKind === "error" ? (
-                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-red-500" />
-                      ) : indicatorKind === "ask" ? (
-                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-yellow-500" />
-                      ) : (
-                        <>
-                          <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
-                          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-                        </>
-                      )}
+                      <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
+                      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
                     </span>
                   )}
                 </button>

@@ -870,7 +870,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     }),
     ListConversations: tool({
       description:
-        "List the other chats in this vault — useful for finding a specific conversation to peek into (see ReadConversation). Returns id, title, source, status (idle/running), unread, attention (ask/error if waiting on user), last activity time, and message count for each. Excludes the current chat.",
+        "List the other chats in this vault — useful for finding a specific conversation to peek into (see ReadConversation). Returns id, title, source, status (idle/running), unread, last activity time, and message count for each. Excludes the current chat.",
       inputSchema: z.object({
         limit: z
           .number()
@@ -903,7 +903,6 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
               source: c.source,
               status: c.status,
               unread: !!c.unread,
-              attention: c.attention ?? null,
               messageCount: c.messages.length,
               lastActivity: fmt(c.lastActivityAt),
             }),
@@ -930,7 +929,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         if (!conv) return `Conversation not found: ${conversation_id}`;
         const tail = conv.messages.slice(-cap);
         const lines: string[] = [
-          `# ${conv.title || "(untitled)"} [${conv.status}${conv.attention ? `, ${conv.attention}` : ""}]`,
+          `# ${conv.title || "(untitled)"} [${conv.status}]`,
           `source: ${conv.source} · ${conv.messages.length} total messages`,
           ...tail.map((m) => {
             const content = (m.content ?? "").slice(0, 800);

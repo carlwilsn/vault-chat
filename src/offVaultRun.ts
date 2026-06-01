@@ -164,14 +164,6 @@ export async function handleOffVaultInbound(
   let fi = finalList.findIndex((c) => c.telegramChatId === chatId);
   if (fi < 0) fi = 0;
   if (finalList[fi]) {
-    // Attention markers — same detection as chat-controller.
-    const tail = acc.slice(-400);
-    const attention: "ask" | "error" | null =
-      /\(\s*error\s*:[^)]*\)\s*$/i.test(tail)
-        ? "error"
-        : /\(\s*ask\s*:[^)]*\)\s*$/i.test(tail)
-          ? "ask"
-          : null;
     const assistantMsg: ChatMessage = {
       role: "assistant",
       content: acc,
@@ -182,7 +174,6 @@ export async function handleOffVaultInbound(
       messages: [...finalList[fi]!.messages, assistantMsg],
       lastActivityAt: Date.now(),
       unread: true,
-      attention,
     };
     await writeConversations(vault, finalList);
   }
@@ -318,13 +309,6 @@ export async function runScheduledHeadlessTurn(
   let fi = finalList.findIndex((c) => c.id === conversationId);
   if (fi < 0) fi = 0;
   if (finalList[fi]) {
-    const tail = acc.slice(-400);
-    const attention: "ask" | "error" | null =
-      /\(\s*error\s*:[^)]*\)\s*$/i.test(tail)
-        ? "error"
-        : /\(\s*ask\s*:[^)]*\)\s*$/i.test(tail)
-          ? "ask"
-          : null;
     const assistantMsg: ChatMessage = {
       role: "assistant",
       content: acc,
@@ -335,7 +319,6 @@ export async function runScheduledHeadlessTurn(
       messages: [...finalList[fi]!.messages, assistantMsg],
       lastActivityAt: Date.now(),
       unread: true,
-      attention,
     };
     await writeConversations(vault, finalList);
   }

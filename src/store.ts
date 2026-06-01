@@ -607,7 +607,6 @@ type State = {
     titleHint?: string;
     activate?: boolean;
   }) => { conversationId: string; isNew: boolean };
-  setConversationAttention: (id: string, kind: "ask" | "error" | null) => void;
   // Off-screen-safe message append: writes directly to a specific
   // conversation's stored messages array, regardless of which one is
   // currently active. Used by chat-controller when a run finishes
@@ -1604,14 +1603,14 @@ export const useStore = create<State>((set) => ({
         // Selecting the already-active chat is just a clear-unread.
         return {
           conversations: s.conversations.map((c) =>
-            c.id === id ? { ...c, unread: false, attention: null } : c,
+            c.id === id ? { ...c, unread: false } : c,
           ),
         };
       }
       const target = s.conversations.find((c) => c.id === id);
       if (!target) return {};
       const synced = syncActiveMessages(s).map((c) =>
-        c.id === id ? { ...c, unread: false, attention: null } : c,
+        c.id === id ? { ...c, unread: false } : c,
       );
       return {
         conversations: synced,
@@ -1753,12 +1752,6 @@ export const useStore = create<State>((set) => ({
     });
     return assigned;
   },
-  setConversationAttention: (id, kind) =>
-    set((s) => ({
-      conversations: s.conversations.map((c) =>
-        c.id === id ? { ...c, attention: kind } : c,
-      ),
-    })),
   appendMessageToConversation: (id, m) =>
     set((s) => ({
       conversations: s.conversations.map((c) =>
