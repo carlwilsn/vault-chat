@@ -1444,7 +1444,7 @@ function ModelPicker({
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
       >
-        <span className={isAuto ? "text-violet-500 dark:text-violet-400" : undefined}>
+        <span>
           {isAuto ? "Auto" : (current?.label ?? modelId)}
         </span>
         <ChevronUp className="h-3 w-3" />
@@ -1479,7 +1479,7 @@ function ModelPicker({
                   onClick={() => { onSelect(AUTO_MODEL_ID); setOpen(false); }}
                   className={cn(
                     "block w-full text-left px-3 py-1.5 text-[11px] hover:bg-accent transition-colors",
-                    isAuto ? "text-violet-500 dark:text-violet-400 font-medium" : "text-muted-foreground"
+                    isAuto ? "font-medium" : "text-muted-foreground"
                   )}
                   title="Routes each message to a fast or full model based on complexity"
                 >
