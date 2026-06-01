@@ -589,6 +589,7 @@ type State = {
   }) => void;
   clearMessages: () => void;
   loadConversations: () => Promise<void>;
+  refreshConversationFromDisk: (vault: string, convId: string) => Promise<void>;
   newConversation: () => string;
   selectConversation: (id: string) => void;
   deleteConversation: (id: string) => void;
@@ -1542,6 +1543,33 @@ export const useStore = create<State>((set) => ({
     } catch (e) {
       console.error("[conversations] load failed:", e);
       useStore.setState({ conversationsLoaded: true });
+    }
+  },
+  refreshConversationFromDisk: async (vault, convId) => {
+    // Non-destructive: pull ONE conversation's latest on-disk state into
+    // the in-memory list without disturbing the user's active view. Used
+    // after a headless scheduled / off-vault run so its result appears
+    // live if the user is on that vault, without yanking focus the way
+    // loadConversations() would.
+    if (useStore.getState().vaultPath !== vault) return;
+    try {
+      const list = await readConversations(vault);
+      const updated = list.find((c) => c.id === convId);
+      if (!updated) return;
+      set((s) => {
+        const exists = s.conversations.some((c) => c.id === convId);
+        const conversations = exists
+          ? s.conversations.map((c) => (c.id === convId ? updated : c))
+          : [updated, ...s.conversations];
+        // Only refresh the visible message list when the user is actually
+        // looking at this conversation and nothing is mid-run.
+        if (s.activeConversationId === convId && !s.busy) {
+          return { conversations, messages: updated.messages };
+        }
+        return { conversations };
+      });
+    } catch (e) {
+      console.warn("[conversations] refresh-from-disk failed:", e);
     }
   },
   newConversation: () => {

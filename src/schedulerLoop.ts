@@ -180,10 +180,13 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
     return;
   }
 
-  // Non-active vault: headless run on disk.
+  // Non-active vault: headless run on disk. Pass the schedule's pinned
+  // model so a heavy sweep keeps the model it was configured with instead
+  // of silently dropping to the cheap Telegram brain.
   const { runScheduledHeadlessTurn } = await import("./offVaultRun");
   await runScheduledHeadlessTurn(vault, conversationId, s.prompt, {
     sendViaTelegram: s.sendViaTelegram,
+    modelId: s.modelId,
   });
 }
 
