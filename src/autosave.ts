@@ -20,7 +20,6 @@
 // through a process-wide mutex, so concurrent commits never race on
 // index.lock. That makes "commit aggressively" safe.
 
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useStore } from "./store";
 import { gitCommitAll } from "./git";
 import { flushEditCommit } from "./commit-controller";
@@ -32,10 +31,6 @@ import { vlog } from "./debugLog";
 // with autosave commits during active chat (conversations.jsonl churns
 // constantly) while still being a tight floor.
 const PERIODIC_MS = 60_000;
-
-// How long the graceful-quit handler will wait for the final commit before
-// closing anyway — a hung git must never wedge the window shut.
-const QUIT_COMMIT_BUDGET_MS = 4_000;
 
 let periodicTimer: number | null = null;
 let installed = false;
@@ -99,29 +94,13 @@ export function installAutosaveNet(): void {
     safetyCommit("periodic").catch(() => {});
   }, PERIODIC_MS);
 
-  // (2) Graceful quit — Tauri lets us defer the close until a final commit
-  // lands. Both the OS title-bar X and the app's own close button route
-  // through win.close(), which fires this; win.destroy() afterwards closes
-  // without re-firing, so there's no loop. Time-boxed so a stuck commit
-  // can't trap the user in an unclosable window.
-  try {
-    const win = getCurrentWindow();
-    win
-      .onCloseRequested(async (event) => {
-        event.preventDefault();
-        const commit = safetyCommit("quit");
-        const guard = new Promise<void>((r) => window.setTimeout(r, QUIT_COMMIT_BUDGET_MS));
-        await Promise.race([commit, guard]);
-        win.destroy();
-      })
-      .catch((e) => console.warn("[autosave] onCloseRequested wiring failed:", e));
-  } catch {
-    // Not running inside a Tauri window (e.g. plain web dev) — skip.
-  }
-
-  // Last-ditch fire-and-forget for unload paths the close hook can't catch
-  // (renderer reload, webview killed out from under us). Can't await here,
-  // but the invoke is dispatched before the context tears down.
+  // (2) Quit — we deliberately do NOT intercept the window close. The ✕
+  // routes straight through win.close() to the OS for a normal close (with
+  // its close animation), exactly as it did before the durability feature.
+  // Intercepting it (preventDefault + destroy) caused a hard "snap" teardown
+  // and, when a permission was missing, an unclosable window. The quit-time
+  // commit is instead handled best-effort by the pagehide hook below, and
+  // backed by the 60s periodic commit + end-of-turn / edit-debounce commits.
   window.addEventListener("pagehide", () => {
     safetyCommit("pagehide").catch(() => {});
   });
