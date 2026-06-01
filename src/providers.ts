@@ -139,11 +139,14 @@ const FAST_PATTERN: Record<ProviderId, RegExp> = {
 };
 
 // Full (capable) model ids per provider.
+// Intentionally avoids Opus for Anthropic — Sonnet 4.6 is the sweet spot
+// for complex tasks at 60% lower cost. Users can pick Opus manually when
+// they genuinely need it.
 const FULL_PATTERN: Record<ProviderId, RegExp> = {
-  anthropic: /sonnet|opus/i,
+  anthropic: /sonnet/i,
   openai: /gpt-4\.1$|gpt-4o$|gpt-5/i,
   google: /pro/i,
-  openrouter: /235b|sonnet|opus|gpt-4/i,
+  openrouter: /235b|sonnet|gpt-4/i,
 };
 
 // Keywords that suggest the request needs the full model. Keep it
