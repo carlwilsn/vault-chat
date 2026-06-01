@@ -12,7 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
 import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
 import { buildViewportContextText } from "./voice-elevenlabs";
-import { findModel } from "./providers";
+import { findModel, AUTO_MODEL_ID } from "./providers";
 import { loadSkills } from "./skills";
 import { isUnreadableAsText } from "./fileKind";
 import { SettingsPane } from "./SettingsPane";
@@ -393,7 +393,15 @@ export function ChatPane() {
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
   const activeSpec = findModel(modelId);
-  const activeKey = activeSpec ? apiKeys[activeSpec.provider] : undefined;
+  // Auto mode is "active" if any provider has a key — routing picks
+  // the right one at send-time. Without this, `activeKey` is undefined
+  // for the "auto" sentinel and the chat pane shows "Set up a provider".
+  const activeKey =
+    modelId === AUTO_MODEL_ID
+      ? Object.values(apiKeys).find(Boolean)
+      : activeSpec
+        ? apiKeys[activeSpec.provider]
+        : undefined;
   const ready = Boolean(vaultPath && activeKey);
 
   useEffect(() => {
@@ -1412,7 +1420,8 @@ function ModelPicker({
         return q.split(/\s+/).every((t) => hay.includes(t));
       })
     : available;
-  const current = findModel(modelId);
+  const isAuto = modelId === AUTO_MODEL_ID;
+  const current = isAuto ? null : findModel(modelId);
 
   useEffect(() => {
     if (!open) return;
@@ -1435,7 +1444,9 @@ function ModelPicker({
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
       >
-        <span>{current?.label ?? modelId}</span>
+        <span className={isAuto ? "text-violet-500 dark:text-violet-400" : undefined}>
+          {isAuto ? "Auto" : (current?.label ?? modelId)}
+        </span>
         <ChevronUp className="h-3 w-3" />
       </button>
       {open && (
@@ -1461,6 +1472,22 @@ function ModelPicker({
             />
           </div>
           <div className="py-1 max-h-64 overflow-auto">
+            {/* Auto option — always pinned at the top, hidden when searching */}
+            {!q && (
+              <>
+                <button
+                  onClick={() => { onSelect(AUTO_MODEL_ID); setOpen(false); }}
+                  className={cn(
+                    "block w-full text-left px-3 py-1.5 text-[11px] hover:bg-accent transition-colors",
+                    isAuto ? "text-violet-500 dark:text-violet-400 font-medium" : "text-muted-foreground"
+                  )}
+                  title="Routes each message to a fast or full model based on complexity"
+                >
+                  Auto <span className="opacity-60 text-[10px]">— smart routing</span>
+                </button>
+                <div className="mx-2 border-t border-border/40 my-1" />
+              </>
+            )}
             {filtered.length === 0 ? (
               <div className="px-3 py-2 text-[11px] text-muted-foreground italic">
                 No matches

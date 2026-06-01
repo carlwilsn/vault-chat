@@ -14,7 +14,7 @@ import {
   Monitor,
 } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
-import { PROVIDER_LABEL, type ProviderId } from "./providers";
+import { PROVIDER_LABEL, AUTO_MODEL_ID, type ProviderId } from "./providers";
 import { Button, Input, Select } from "./ui";
 import { getMetaVaultPath } from "./meta";
 import { gitInitIfNeeded } from "./git";
@@ -320,11 +320,9 @@ export function SettingsPane() {
             onChange={(e) => setModelSearch(e.target.value)}
           />
           <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
-            {catalog.length === 0 ? (
-              <option value="" disabled>
-                Add an API key below to load models
-              </option>
-            ) : filteredCatalog.length === 0 ? (
+            {/* Auto is always available at the top — no key required */}
+            <option value={AUTO_MODEL_ID}>Auto — smart routing (saves credits)</option>
+            {catalog.length === 0 ? null : filteredCatalog.length === 0 ? (
               <option value={modelId} disabled>
                 No models match "{modelSearch}"
               </option>

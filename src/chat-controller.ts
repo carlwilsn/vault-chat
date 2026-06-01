@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { runAgent } from "./agent";
-import { findModel } from "./providers";
+import { findModel, AUTO_MODEL_ID, resolveAutoModel, getLiveCatalog } from "./providers";
 import { compactConversation } from "./compactor";
 import { estimateBashEta } from "./eta-estimator";
 import { gitCommitAll } from "./git";
@@ -73,6 +73,12 @@ export async function sendMessage(
   if (targetForModelLookup?.source === "telegram") {
     const { getTelegramModelId } = await import("./telegram");
     modelId = getTelegramModelId();
+  }
+  // Auto mode: classify the message locally and route to a fast (cheap)
+  // or full (capable) model without making any extra API call.
+  if (modelId === AUTO_MODEL_ID) {
+    const resolved = resolveAutoModel(text.trim(), s.apiKeys, getLiveCatalog());
+    modelId = resolved?.id ?? modelId; // fall back to "auto" string if no provider available
   }
   const spec = findModel(modelId);
   const apiKey = spec ? s.apiKeys[spec.provider] : undefined;

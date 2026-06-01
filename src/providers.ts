@@ -29,6 +29,13 @@ export const MODELS: ModelSpec[] = [
 
 export const DEFAULT_MODEL_ID = "claude-opus-4-8";
 
+// Sentinel value stored in the model picker when the user selects "Auto".
+// Auto mode classifies each message at send-time and routes to either a
+// fast/cheap model (short conversational messages) or the full frontier
+// model (complex/task-heavy requests) using whichever providers the user
+// has API keys for. No extra API call is made — classification is local.
+export const AUTO_MODEL_ID = "auto";
+
 export const PROVIDER_LABEL: Record<ProviderId, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
@@ -112,4 +119,82 @@ export function supportsVision(spec: ModelSpec): boolean {
 
 export function findModel(id: string): ModelSpec | undefined {
   return (_liveCatalog ?? MODELS).find((m) => m.id === id) ?? MODELS.find((m) => m.id === id);
+}
+
+// ---------------------------------------------------------------------------
+// Auto-mode routing
+// ---------------------------------------------------------------------------
+
+// Provider priority order when deciding which provider to use in auto mode.
+// Earlier = preferred (typically whichever the user has a key for).
+const PROVIDER_PRIORITY: ProviderId[] = ["anthropic", "openai", "google", "openrouter"];
+
+// Fast (cheap) model ids to prefer per provider. Matched against the live
+// catalog; falls back to the seed list. Pattern matched case-insensitively.
+const FAST_PATTERN: Record<ProviderId, RegExp> = {
+  anthropic: /haiku/i,
+  openai: /mini/i,
+  google: /flash/i,
+  openrouter: /deepseek-chat|haiku|flash|mini|qwen3-coder/i,
+};
+
+// Full (capable) model ids per provider.
+const FULL_PATTERN: Record<ProviderId, RegExp> = {
+  anthropic: /sonnet|opus/i,
+  openai: /gpt-4\.1$|gpt-4o$|gpt-5/i,
+  google: /pro/i,
+  openrouter: /235b|sonnet|opus|gpt-4/i,
+};
+
+// Keywords that suggest the request needs the full model. Keep it
+// concise — false positives (routing heavy work to haiku) cost quality,
+// false negatives (routing simple greetings to opus) just waste money.
+const COMPLEX_KEYWORDS =
+  /\b(code|implement|build|debug|refactor|analyze|analyse|write|create|edit|fix|read|explain|generate|script|function|class|test|deploy|search|find|how|why|what|compare|review|summarize|plan|design|improve|update|rename|delete|move)\b/i;
+
+/**
+ * Classify the user message as "simple" (conversational) or "complex"
+ * (task-heavy). Returns true if the full model should be used.
+ */
+function isComplexMessage(message: string): boolean {
+  const trimmed = message.trim();
+  // Long messages almost certainly need the full model.
+  if (trimmed.length > 120) return true;
+  // Code fences or indented code blocks.
+  if (/```|^\s{4}/m.test(trimmed)) return true;
+  // File-path-like fragments.
+  if (/[\/\\][a-zA-Z0-9_.-]+\.[a-zA-Z]{2,5}/.test(trimmed)) return true;
+  // Task-oriented keywords.
+  if (COMPLEX_KEYWORDS.test(trimmed)) return true;
+  // Questions that are too short to be substantive are simple greetings.
+  return false;
+}
+
+/**
+ * Resolve the "auto" sentinel to a real ModelSpec.
+ *
+ * @param message  The user's raw message text.
+ * @param apiKeys  Map of provider → API key (only set for providers that
+ *                 the user has configured).
+ * @param catalog  The live model catalog (or seed list as fallback).
+ * @returns A ModelSpec to actually run, or null if no provider has a key.
+ */
+export function resolveAutoModel(
+  message: string,
+  apiKeys: Partial<Record<ProviderId, string>>,
+  catalog: ModelSpec[] = _liveCatalog ?? MODELS,
+): ModelSpec | null {
+  // Pick the highest-priority provider that has a key.
+  const provider = PROVIDER_PRIORITY.find((p) => !!apiKeys[p]);
+  if (!provider) return null;
+
+  const complex = isComplexMessage(message);
+  const pattern = complex ? FULL_PATTERN[provider] : FAST_PATTERN[provider];
+
+  // Search the live catalog first, then the seed list as a safety net.
+  const candidates = [...catalog, ...MODELS].filter((m) => m.provider === provider);
+  const match = candidates.find((m) => pattern.test(m.id));
+
+  // Final fallback: first model for this provider in the catalog.
+  return match ?? candidates[0] ?? null;
 }
