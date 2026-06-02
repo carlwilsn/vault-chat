@@ -682,7 +682,7 @@ export function MarkdownView({ paneId }: Props) {
           }}
         />
       ) : kind === "html" ? (
-        <HtmlView content={content} />
+        <HtmlView content={content} path={file} />
       ) : kind === "image" ? (
         <ImageView path={file} />
       ) : kind === "video" ? (
