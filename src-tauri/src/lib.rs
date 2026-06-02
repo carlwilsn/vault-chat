@@ -4045,6 +4045,120 @@ async fn compile_tex(
         .map_err(|e| e.to_string())?
 }
 
+// Escape a raw string for safe display in LaTeX text / typewriter mode.
+// Used to print a missing image's path inside the placeholder box without
+// the special chars (underscores, %, &, …) breaking the compile.
+fn tex_escape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\textbackslash{}"),
+            '~' => out.push_str("\\textasciitilde{}"),
+            '^' => out.push_str("\\textasciicircum{}"),
+            '&' | '%' | '$' | '#' | '_' | '{' | '}' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+// Does the graphic referenced by `raw` (a \includegraphics argument)
+// resolve to a real file on disk, relative to `base`? graphicx lets you
+// omit the extension, so when none is given we probe the common ones.
+fn graphic_exists(base: &std::path::Path, raw: &str) -> bool {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return true; // leave odd/empty args alone
+    }
+    let candidate = if std::path::Path::new(raw).is_absolute() {
+        std::path::PathBuf::from(raw)
+    } else {
+        base.join(raw)
+    };
+    if std::path::Path::new(raw).extension().is_some() {
+        return candidate.exists();
+    }
+    if candidate.exists() {
+        return true;
+    }
+    const EXTS: &[&str] = &[
+        "png", "pdf", "jpg", "jpeg", "PNG", "PDF", "JPG", "JPEG", "eps", "gif", "bmp",
+    ];
+    EXTS.iter().any(|e| {
+        let mut p = candidate.clone();
+        p.set_extension(e);
+        p.exists()
+    })
+}
+
+// Replace \includegraphics references to MISSING files with a visible
+// placeholder box, so one bad path renders a "[missing image]" frame
+// instead of halting the whole preview compile. Valid graphics and the
+// rest of the document are left untouched. Bails out entirely if the
+// document uses \graphicspath, since our relative-only resolution can't
+// see those search dirs and would produce false placeholders.
+fn neutralize_missing_graphics(contents: &str, base: &std::path::Path) -> String {
+    const NEEDLE: &str = "\\includegraphics";
+    if contents.contains("\\graphicspath") || !contents.contains(NEEDLE) {
+        return contents.to_string();
+    }
+    let bytes = contents.as_bytes();
+    let skip_ws = |mut k: usize| {
+        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+            k += 1;
+        }
+        k
+    };
+    let mut out = String::with_capacity(contents.len());
+    let mut i = 0usize;
+    while let Some(rel) = contents[i..].find(NEEDLE) {
+        let start = i + rel;
+        out.push_str(&contents[i..start]);
+        let mut k = start + NEEDLE.len();
+        if bytes.get(k) == Some(&b'*') {
+            k += 1;
+        }
+        k = skip_ws(k);
+        // optional [options]
+        if bytes.get(k) == Some(&b'[') {
+            match contents[k..].find(']') {
+                Some(c) => k = k + c + 1,
+                None => {
+                    out.push_str(NEEDLE);
+                    i = start + NEEDLE.len();
+                    continue;
+                }
+            }
+        }
+        k = skip_ws(k);
+        // required {path}
+        if bytes.get(k) == Some(&b'{') {
+            if let Some(c) = contents[k..].find('}') {
+                let path = &contents[k + 1..k + c];
+                let end = k + c + 1;
+                if graphic_exists(base, path) {
+                    out.push_str(&contents[start..end]);
+                } else {
+                    out.push_str(&format!(
+                        "\\fbox{{\\begin{{minipage}}[c]{{0.6\\linewidth}}\\centering\\vspace{{1.5em}}{{\\bfseries [missing image]}}\\\\[0.4em]{{\\ttfamily\\small {}}}\\\\[0.3em]{{\\footnotesize\\itshape file not found --- check the path}}\\vspace{{1.5em}}\\end{{minipage}}}}",
+                        tex_escape_text(path)
+                    ));
+                }
+                i = end;
+                continue;
+            }
+        }
+        // Unparseable — emit the command name verbatim and continue.
+        out.push_str(NEEDLE);
+        i = start + NEEDLE.len();
+    }
+    out.push_str(&contents[i..]);
+    out
+}
+
 fn compile_tex_sync(
     tectonic_path: PathBuf,
     source_path: String,
@@ -4082,6 +4196,16 @@ fn compile_tex_sync(
         .parent()
         .filter(|p| p.is_dir());
     let preview_name = format!(".vault-chat-preview-{key}.tex");
+
+    // Make missing-image references non-fatal: swap each \includegraphics
+    // whose target doesn't exist for a visible placeholder box. Resolve
+    // against the REAL source dir (where the assets live), regardless of
+    // where the preview dotfile ends up being written.
+    let contents = match src_dir {
+        Some(dir) => neutralize_missing_graphics(&contents, dir),
+        None => contents,
+    };
+
     let (input, cleanup_input) = match src_dir {
         Some(dir) => {
             let p = dir.join(&preview_name);
