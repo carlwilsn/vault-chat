@@ -496,7 +496,7 @@ function FormView({
                   onChange={(e) =>
                     setTarget({ kind: "existing", conversationId: e.target.value })
                   }
-                  className="ml-auto h-6 px-1.5 rounded bg-background border border-border text-[11.5px] focus:outline-none"
+                  className="ml-auto min-w-0 max-w-[55%] truncate h-6 px-1.5 rounded bg-background border border-border text-[11.5px] focus:outline-none"
                 >
                   {conversations.map((c) => (
                     <option key={c.id} value={c.id}>

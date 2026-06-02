@@ -251,6 +251,50 @@
     outline: 2px solid hsl(var(--ring) / 0.6);
     outline-offset: 2px;
   }
+  /* Radios: same grayscale theme as the checkbox above. Without this
+     the native control paints its selected dot in the OS accent color
+     (e.g. Windows purple), which clashes with the app's neutral palette. */
+  .vc-radio {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    border: 1px solid hsl(var(--border));
+    border-radius: 50%;
+    background: hsl(var(--muted));
+    cursor: pointer;
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    transition: background-color 120ms, border-color 120ms;
+  }
+  .vc-radio:hover {
+    border-color: hsl(var(--muted-foreground) / 0.6);
+  }
+  .vc-radio:checked {
+    border-color: hsl(var(--primary));
+  }
+  .vc-radio::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: hsl(var(--primary));
+    transform: translate(-50%, -50%) scale(0);
+    transition: transform 120ms;
+  }
+  .vc-radio:checked::after {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  .vc-radio:focus-visible {
+    outline: 2px solid hsl(var(--ring) / 0.6);
+    outline-offset: 2px;
+  }
 
   /* User chat bubble. Normally plain text with line-breaks preserved,
      but can hold a quoted selection (blockquote) or a captured image
