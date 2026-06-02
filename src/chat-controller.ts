@@ -327,11 +327,13 @@ export async function sendMessage(
           // arrives as literal text on the phone.
           // If acc is empty (model did a tool-only turn with no
           // prose), fall back to a short "(done)" so the user gets
-          // some signal on the phone instead of silence.
+          // some signal on the phone instead of silence. We
+          // deliberately don't list the tool names here — the phone
+          // just wants to know the turn finished, not the mechanics.
           const reply = acc.trim()
             ? acc
             : tools.length > 0
-              ? `(done — ran ${tools.map((t) => t.name).slice(0, 3).join(", ")}${tools.length > 3 ? "…" : ""})`
+              ? "(done)"
               : "(no reply)";
           sendTelegramReplyWithImages(vault, telegramChatId, reply).catch((err) =>
             console.warn("[telegram] outbound reply failed:", err),
