@@ -23,6 +23,7 @@ import {
   toggleSchedule,
 } from "./schedulerLoop";
 import { readTelegramEnabled } from "./telegram";
+import { PROVIDER_LABEL, AUTO_MODEL_ID, MODELS, type ProviderId } from "./providers";
 
 type Props = {
   open: boolean;
@@ -294,10 +295,25 @@ function FormView({
   onDelete: (id: string) => void | Promise<void>;
 }) {
   const vaultPath = useStore((s) => s.vaultPath);
+  const catalog = useStore((s) => s.catalog);
+  const apiKeys = useStore((s) => s.apiKeys);
   const [draft, setDraft] = useState<Schedule>(schedule);
   const isNew = !schedule.lastFiredAt && !schedule.name && !schedule.prompt;
   const telegramAvailable = readTelegramEnabled(vaultPath);
   const next = nextFireAt(draft);
+
+  // Model dropdown: prefer models whose provider has a key configured;
+  // if no keys are set yet, fall back to the full catalog so the field
+  // is still usable. Grouped by provider, with Auto pinned on top.
+  const base = catalog.length > 0 ? catalog : MODELS;
+  const withKeys = base.filter((m) => apiKeys[m.provider]);
+  const usableModels = withKeys.length > 0 ? withKeys : base;
+  const providerOrder = Object.keys(PROVIDER_LABEL) as ProviderId[];
+  // Keep a saved model visible even if its key was removed, so saving
+  // doesn't silently switch the schedule to a different model.
+  const savedMissing =
+    draft.modelId !== AUTO_MODEL_ID &&
+    !usableModels.some((m) => m.id === draft.modelId);
 
   const setRecurrence = (r: Recurrence) => {
     setDraft((d) => ({ ...d, recurrence: r }));
@@ -523,13 +539,33 @@ function FormView({
         </Field>
 
         <Field label="Model">
-          <input
-            type="text"
+          <select
             value={draft.modelId}
             onChange={(e) => setDraft({ ...draft, modelId: e.target.value })}
-            className="w-full h-8 px-2 rounded-md bg-background border border-border text-[12.5px] focus:outline-none focus:border-ring/40 font-mono"
-            placeholder="claude-opus-4-7"
-          />
+            className="w-full h-8 px-2 rounded-md bg-background border border-border text-[12.5px] font-mono focus:outline-none focus:border-ring/40"
+          >
+            <option value={AUTO_MODEL_ID}>Auto — smart routing</option>
+            {savedMissing && (
+              <option value={draft.modelId}>{draft.modelId} (no key)</option>
+            )}
+            {providerOrder.map((p) => {
+              const models = usableModels.filter((m) => m.provider === p);
+              if (models.length === 0) return null;
+              return (
+                <optgroup key={p} label={PROVIDER_LABEL[p]}>
+                  {models.map((m) => (
+                    <option key={`${p}:${m.id}`} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </optgroup>
+              );
+            })}
+          </select>
+          <div className="text-[10.5px] text-muted-foreground/80">
+            Auto routes per-prompt by complexity. Otherwise this exact model
+            runs the schedule — pick a heavier one for big sweeps.
+          </div>
         </Field>
 
         <Field label="On completion">
