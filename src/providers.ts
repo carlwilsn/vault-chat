@@ -27,6 +27,19 @@ export const MODELS: ModelSpec[] = [
   { provider: "openrouter", id: "deepseek/deepseek-chat", label: "DeepSeek V3" },
   { provider: "openrouter", id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash" },
   { provider: "openrouter", id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+  // Fastest tier — open-weight models pinned to the highest-throughput
+  // backend via OpenRouter's `:nitro` suffix (== provider.sort
+  // "throughput"), which lands on Groq's LPUs or Cerebras's WSE: ~0.6-0.9s
+  // time-to-first-token and ~400-3000 tok/s, well past Haiku. The whole
+  // point of the Telegram path is fast, light replies, so these are the
+  // headline picks. Text-only (no vision) — supportsVision gates that.
+  { provider: "openrouter", id: "openai/gpt-oss-120b:nitro", label: "gpt-oss 120B (Nitro)" },
+  { provider: "openrouter", id: "meta-llama/llama-3.3-70b-instruct:nitro", label: "Llama 3.3 70B (Nitro)" },
+  { provider: "openrouter", id: "qwen/qwen3-32b:nitro", label: "Qwen3 32B (Nitro)" },
+  // Smart + fast — Sonnet-class intelligence at Flash speed/cost. Routed
+  // through OpenRouter so the same key that powers the Nitro picks above
+  // also unlocks this; no separate Google key needed.
+  { provider: "openrouter", id: "google/gemini-3.5-flash", label: "Gemini 3.5 Flash" },
 ];
 
 export const DEFAULT_MODEL_ID = "claude-opus-4-8";

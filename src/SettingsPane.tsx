@@ -1604,6 +1604,14 @@ function TelegramSection() {
             }}
             className="w-full h-8 px-2 rounded border border-border bg-background text-[12px] font-mono"
           >
+            <optgroup label="Fastest — Groq/Cerebras (speed first)">
+              <option value="openai/gpt-oss-120b:nitro">gpt-oss-120b · nitro (fastest + smart)</option>
+              <option value="meta-llama/llama-3.3-70b-instruct:nitro">llama-3.3-70b · nitro</option>
+              <option value="qwen/qwen3-32b:nitro">qwen3-32b · nitro</option>
+            </optgroup>
+            <optgroup label="Fast + smart">
+              <option value="google/gemini-3.5-flash">gemini-3.5-flash (Sonnet-class, fast)</option>
+            </optgroup>
             <optgroup label="Haiku (cheap, recommended)">
               <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
             </optgroup>
@@ -1632,10 +1640,12 @@ function TelegramSection() {
           </select>
           <p className="text-[10.5px] text-muted-foreground/70">
             Model the agent uses when replying to a Telegram-sourced chat
-            (inbound messages or scheduled fires). Defaults to Haiku since
-            the phone path is usually quick replies + light tool use;
-            keeps cost down on daily / hourly schedules. Override if you
-            actually want the bot doing heavy work over Telegram.
+            (inbound messages or scheduled fires). The phone path is quick
+            replies + light tool use, so speed matters most — the Nitro
+            picks route through OpenRouter to the fastest backend (Groq /
+            Cerebras) for sub-second first-token. Haiku stays the cheap
+            default; gemini-3.5-flash is the smartest of the fast options.
+            Nitro and Gemini picks need an OpenRouter key (Settings → Keys).
           </p>
         </div>
         <div className="pt-1 flex items-center gap-2 flex-wrap">
