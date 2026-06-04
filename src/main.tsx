@@ -90,32 +90,41 @@ if (isPopout) {
 
 const Root = isPopout ? ChatWindow : App;
 
+vlog("pre-render", { isPopout });
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <Root />
   </React.StrictMode>,
 );
+vlog("post-render");
 
 // Cold-start sequence:
-//   1. Window starts hidden (tauri.conf.json visible:false for main,
-//      sync.ts visible:false for popout) so the OS never paints a
-//      half-loaded white frame.
-//   2. After React's first commit (two rAFs), invoke `app_ready` to
-//      show the window — the user's first sight of the app is the
-//      splash dot pulsing on the proper background.
-//   3. Hold the splash for ~400ms so the dot is actually perceivable
-//      (without this, the fade starts the same frame the window
-//      appears and the dot is gone before the eye registers it).
-//   4. Fade the splash out and remove it.
+//   1. The window is now created visible (tauri.conf.json visible:true),
+//      with the splash + critical CSS covering the load so there's no
+//      white flash. We no longer depend on a paint frame to *show* the
+//      window — that dependency permanently hid the window on some
+//      Linux/WebKit compositors that never delivered the first frame.
+//   2. We still call `app_ready` (show+focus, idempotent) and fade the
+//      splash. Fire it from React's first commit (two rAFs) for the
+//      nicest timing, but ALSO from a setTimeout fallback so a stalled
+//      compositor can't leave us stuck on the splash forever.
+let revealed = false;
+function reveal(via: string) {
+  if (revealed) return;
+  revealed = true;
+  vlog("reveal", { via });
+  invoke("app_ready").catch((e) => console.warn("[boot] app_ready:", e));
+  setTimeout(() => {
+    const splash = document.getElementById("vault-splash");
+    if (splash) {
+      splash.classList.add("hidden");
+      setTimeout(() => splash.remove(), 250);
+    }
+  }, 400);
+}
 requestAnimationFrame(() => {
-  requestAnimationFrame(() => {
-    invoke("app_ready").catch((e) => console.warn("[boot] app_ready:", e));
-    setTimeout(() => {
-      const splash = document.getElementById("vault-splash");
-      if (splash) {
-        splash.classList.add("hidden");
-        setTimeout(() => splash.remove(), 250);
-      }
-    }, 400);
-  });
+  requestAnimationFrame(() => reveal("raf"));
 });
+// Fallback: if no paint frame arrives within 1.5s, reveal anyway so the
+// splash never gets stuck on a compositor that isn't issuing rAFs.
+setTimeout(() => reveal("timeout"), 1500);
