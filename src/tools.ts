@@ -848,11 +848,14 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     delete (base as Partial<typeof base>).Bash;
   }
 
-  if (!tavilyKey) return base;
-
+  // Only WebSearch needs the Tavily key. The git/conversation/schedule
+  // tools below are always available, so headless coach and monitoring
+  // runs can read git evidence and chat history without a key configured.
   return {
     ...base,
-    WebSearch: tool({
+    ...(tavilyKey
+      ? {
+          WebSearch: tool({
       description:
         "Search the web and return the top results (title, URL, snippet) plus a synthesized answer. Use this when the user asks a question that requires current information, or when you don't know a specific URL. Prefer WebFetch if you already know the URL.",
       inputSchema: z.object({
@@ -866,6 +869,41 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           maxResults: max_results ?? null,
           includeAnswer: true,
         });
+      },
+          }),
+        }
+      : {}),
+    GitLog: tool({
+      description:
+        "Read recent git history from a repo inside the vault — including nested work repos like `DeepDL/bitnet-repro`, `DeepDL/torchtitan`, or `Blog/...`. Always available (unlike Bash). Use it to gauge real momentum from objective evidence: what was committed, when, and by whom. Returns oneline `<short-hash> <subject>` rows. Note the vault root is mostly autosave commits — the real work lives in the nested repos, so target those.",
+      inputSchema: z.object({
+        subdir: z
+          .string()
+          .describe(
+            "Vault-relative path to the repo, e.g. 'DeepDL/bitnet-repro'. Use '' or '.' for the vault root.",
+          ),
+        since: z
+          .string()
+          .optional()
+          .describe("Only commits newer than this, e.g. '10 days ago' or '2026-06-01'."),
+        author: z
+          .string()
+          .optional()
+          .describe("Filter to commits whose author matches this substring."),
+        max_count: z
+          .number()
+          .int()
+          .optional()
+          .describe("Max commits to return. Default 40, max 500."),
+      }),
+      execute: async ({ subdir, since, author, max_count }) => {
+        const { gitLogSubdir } = await import("./git");
+        const out = await gitLogSubdir(vault, subdir ?? ".", {
+          since,
+          author,
+          maxCount: max_count,
+        });
+        return out.trim() === "" ? "(no commits match)" : out;
       },
     }),
     ListConversations: tool({

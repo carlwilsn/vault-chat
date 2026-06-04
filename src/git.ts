@@ -62,6 +62,28 @@ export async function gitRecentCommits(
   }
 }
 
+// Read-only `git log` for a repo at a vault-relative subdirectory —
+// including nested work repos (e.g. `DeepDL/bitnet-repro`) that the
+// vault-root-only gitRecentCommits can't see. Always works regardless of
+// the Bash tool being enabled; used by the GitLog agent tool.
+export async function gitLogSubdir(
+  vault: string,
+  subdir: string,
+  opts: { since?: string; author?: string; maxCount?: number } = {},
+): Promise<string> {
+  try {
+    return await invoke<string>("git_log_subdir", {
+      vault,
+      subdir,
+      since: opts.since ?? null,
+      author: opts.author ?? null,
+      maxCount: opts.maxCount ?? null,
+    });
+  } catch (e) {
+    return `(git log failed for ${subdir || "."}: ${String(e)})`;
+  }
+}
+
 export async function gitRevertHead(vault: string): Promise<string> {
   return await invoke<string>("git_revert_head", { vault });
 }

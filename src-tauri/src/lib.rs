@@ -1723,6 +1723,64 @@ fn run_git(
     Ok((stdout, stderr, status.code().unwrap_or(-1)))
 }
 
+/// Read recent commits from a git repo at a vault-relative subdirectory
+/// (e.g. a nested work repo like `DeepDL/bitnet-repro`). Unlike
+/// `git_recent_commits` — which is hardwired to the vault root and the
+/// `vault-chat-start` anchor — this is a plain read-only `git log` meant
+/// for monitoring/coach use: it reaches *nested* repos and never depends
+/// on the Bash tool being enabled. Returns oneline-style output.
+#[tauri::command]
+async fn git_log_subdir(
+    vault: String,
+    subdir: String,
+    since: Option<String>,
+    author: Option<String>,
+    max_count: Option<u32>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root_raw = std::path::Path::new(&vault);
+        let rel = subdir.trim();
+        let target_raw = if rel.is_empty() || rel == "." {
+            root_raw.to_path_buf()
+        } else {
+            root_raw.join(rel)
+        };
+        // Security: canonicalize both sides and confirm the resolved
+        // target stays inside the vault, so a crafted `../` subdir can't
+        // read an arbitrary repo on disk.
+        let canon_root = root_raw
+            .canonicalize()
+            .map_err(|e| format!("vault path: {}", e))?;
+        let canon_target = target_raw
+            .canonicalize()
+            .map_err(|e| format!("subdir {}: {}", subdir, e))?;
+        if !canon_target.starts_with(&canon_root) {
+            return Err("subdir escapes the vault".to_string());
+        }
+        // Pass the non-canonical path to git: on Windows `canonicalize`
+        // yields a `\\?\` extended-length prefix that some git builds
+        // choke on as a working directory.
+        let cwd = target_raw.to_string_lossy().to_string();
+        let n = format!("-n{}", max_count.unwrap_or(40).min(500));
+        let mut args: Vec<String> =
+            vec!["log".into(), "--oneline".into(), "--no-color".into(), n];
+        if let Some(s) = since.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            args.push(format!("--since={}", s));
+        }
+        if let Some(a) = author.as_ref().map(|a| a.trim()).filter(|a| !a.is_empty()) {
+            args.push(format!("--author={}", a));
+        }
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let (out, err, code) = run_git(&cwd, &arg_refs)?;
+        if code != 0 {
+            return Err(format!("git log {}: {}", subdir, err.trim()));
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Ensure the vault has a git repo AND a `vault-chat-start` tag
 /// anchoring "when vault-chat first saw this vault." Two cases:
 ///
@@ -3529,13 +3587,17 @@ async fn telegram_poll_loop(
     vault_id: String,
     stop: std::sync::Arc<AtomicBool>,
 ) {
-    let client = match reqwest::Client::builder()
-        .user_agent("vault-chat/0.1")
-        // Long-poll timeout is server-side (~25s). Allow our HTTP timeout
-        // to extend past that with a small buffer for network jitter.
-        .timeout(std::time::Duration::from_secs(40))
-        .build()
-    {
+    // Long-poll timeout is server-side (~25s). Allow our HTTP timeout to
+    // extend past that with a small buffer for network jitter. Built via
+    // a closure so we can rebuild the client mid-loop to drop a stale
+    // keep-alive pool after sustained failures (see below).
+    let build_client = || {
+        reqwest::Client::builder()
+            .user_agent("vault-chat/0.1")
+            .timeout(std::time::Duration::from_secs(40))
+            .build()
+    };
+    let mut client = match build_client() {
         Ok(c) => c,
         Err(e) => {
             emit_telegram_status(
@@ -3555,6 +3617,10 @@ async fn telegram_poll_loop(
     let mut offset: i64 = 0;
     let url = format!("https://api.telegram.org/bot{}/getUpdates", bot_token);
     let mut consecutive_errors = 0u32;
+    // Whether we've shown a network error in the UI for the current run of
+    // failures, so we can clear it once the connection recovers instead of
+    // leaving a stale error sitting on screen.
+    let mut error_surfaced = false;
 
     while !stop.load(Ordering::SeqCst) {
         let params = [
@@ -3566,7 +3632,7 @@ async fn telegram_poll_loop(
             Ok(r) => r,
             Err(e) => {
                 consecutive_errors += 1;
-                if consecutive_errors >= 5 {
+                if consecutive_errors >= 5 && !error_surfaced {
                     emit_telegram_status(
                         &app,
                         TelegramStatus {
@@ -3576,12 +3642,42 @@ async fn telegram_poll_loop(
                             vault_id: vault_id.clone(),
                         },
                     );
+                    error_surfaced = true;
                 }
-                tokio_sleep(2000).await;
+                // A sustained failure run usually means the keep-alive pool
+                // is holding dead sockets — common after laptop sleep/wake
+                // or a network change, where reqwest would otherwise wait
+                // out the full 40s timeout on each stale connection. Rebuild
+                // the client every 5 failures to force fresh connections.
+                if consecutive_errors % 5 == 0 {
+                    if let Ok(c) = build_client() {
+                        client = c;
+                    }
+                }
+                // Recover fast on a blip (1s) but back off when truly
+                // offline, capped at 10s so we stop hammering Telegram.
+                let backoff = 1000u64.saturating_mul(consecutive_errors.min(10) as u64);
+                tokio_sleep(backoff).await;
                 continue;
             }
         };
-        consecutive_errors = 0;
+        if consecutive_errors > 0 {
+            consecutive_errors = 0;
+            // Connection is back — clear the stale network error in the UI.
+            // bot_username: None preserves the cached name on the JS side.
+            if error_surfaced {
+                error_surfaced = false;
+                emit_telegram_status(
+                    &app,
+                    TelegramStatus {
+                        running: true,
+                        bot_username: None,
+                        error: None,
+                        vault_id: vault_id.clone(),
+                    },
+                );
+            }
+        }
         if !resp.status().is_success() {
             let status = resp.status();
             let code = status.as_u16();
@@ -4414,6 +4510,7 @@ pub fn run() {
             git_init_if_needed,
             git_commit_all,
             git_recent_commits,
+            git_log_subdir,
             git_revert_head,
             git_show_commit,
             git_restore_to_commit,
