@@ -34,6 +34,11 @@ jobs:
       # appimagetool / linuxdeploy are themselves AppImages; FUSE isn't
       # available inside the container, so run them via extract-and-run.
       APPIMAGE_EXTRACT_AND_RUN: "1"
+      # tauri.conf.json sets an updater pubkey + createUpdaterArtifacts, so
+      # the build signs the AppImage. Reuse the same signing secret ship.yml
+      # uses, so the test artifact is a real, install-and-update-able build.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - name: Show base image
         run: |
