@@ -131,10 +131,14 @@ jobs:
         include:
           - platform: windows-latest
             args: ''
-          - platform: ubuntu-22.04
-            # Build AppImage only; config override swaps tectonic resource
-            # path from tectonic.exe (Windows) to tectonic (Linux).
-            args: '--bundles appimage --config src-tauri/tauri.linux.conf.json'
+          - platform: ubuntu-24.04
+            # Build AppImage + deb. Newer runner so the AppImage bundles a
+            # modern glib/GTK/WebKit stack (22.04's 2022-era libs failed to
+            # init EGL on current distros — see #51). The deb depends on the
+            # host's system libs, so it sidesteps bundling entirely. Config
+            # override swaps tectonic resource path from tectonic.exe
+            # (Windows) to tectonic (Linux).
+            args: '--bundles appimage,deb --config src-tauri/tauri.linux.conf.json'
     runs-on: ${{ matrix.platform }}
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -158,7 +162,7 @@ jobs:
 
       # Linux needs native WebKit / GTK / AppIndicator headers.
       - name: Install Linux system dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
