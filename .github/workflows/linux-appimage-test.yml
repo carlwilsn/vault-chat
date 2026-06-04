@@ -53,7 +53,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev librsvg2-bin \
             patchelf desktop-file-utils \
-            xdg-utils libgdk-pixbuf-2.0-bin shared-mime-info zsync
+            xdg-utils libgdk-pixbuf2.0-bin shared-mime-info zsync
 
       - uses: actions/checkout@v5
 
