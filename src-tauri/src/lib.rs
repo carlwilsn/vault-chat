@@ -1467,6 +1467,7 @@ fn bash_exec_sync(
     if let Some(d) = &working_dir {
         cmd.current_dir(d);
     }
+    strip_polluting_env(&mut cmd);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
@@ -3203,6 +3204,17 @@ fn interpreter_for(path: &str) -> Option<(&'static str, Vec<String>)> {
     }
 }
 
+// User scripts and Bash commands should run in a clean system environment,
+// not the GUI app's. An AppImage (and some packaging) leaks PYTHONHOME /
+// PYTHONPATH into the app's own process; inherited by a spawned python3,
+// they break its stdlib bootstrap ("Failed to import encodings"). Strip
+// them before spawn so every Python tool/script/command runs against the
+// system interpreter's own paths. No-op when the vars aren't set.
+fn strip_polluting_env(cmd: &mut Command) {
+    cmd.env_remove("PYTHONHOME");
+    cmd.env_remove("PYTHONPATH");
+}
+
 #[tauri::command]
 async fn run_script(
     script_path: String,
@@ -3249,6 +3261,7 @@ fn run_script_sync(
     let mut cmd = Command::new(program);
 
     cmd.args(&args);
+    strip_polluting_env(&mut cmd);
     if let Some(d) = &cwd {
         if PathBuf::from(d).is_dir() {
             cmd.current_dir(d);
