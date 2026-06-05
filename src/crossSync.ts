@@ -101,7 +101,11 @@ async function ensureListener(): Promise<void> {
 export async function startCrossSync(vault: string): Promise<void> {
   await ensureListener();
   const config = readCrossSyncConfig();
-  snapshot = { ...snapshot, mode: config.mode };
+  // Reset transient status on every (re)start. Without clearing `error`
+  // here, a stale "daemon URL not configured" (set the instant Client
+  // mode was selected, before a URL was typed) would persist forever —
+  // every keystroke restarts the loop but no branch clears the old error.
+  snapshot = { ...snapshot, mode: config.mode, error: null };
   emit();
   // Ensure this vault has a stable id and register it with the local
   // daemon state map. The daemon may not be running yet — registration
