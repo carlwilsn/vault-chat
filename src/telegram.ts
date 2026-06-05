@@ -31,7 +31,7 @@ function vaultSlug(vault: string): string {
   return h.toString(36);
 }
 
-function vaultTokenKey(vault: string): string {
+export function vaultTokenKey(vault: string): string {
   return `vault.${vaultSlug(vault)}.telegram_bot_token`;
 }
 
