@@ -99,16 +99,21 @@
   ::-webkit-scrollbar-thumb { @apply bg-border rounded-full; }
   ::-webkit-scrollbar-thumb:hover { @apply bg-muted-foreground/40; }
 
-  /* Native <select> theming. The controls set a dark background via a
-     `bg-*` class but take their text colour by *inheritance* from
-     `text-foreground`. Chromium (Windows WebView2) honours inherited
-     colour on native form controls; WebKitGTK (Linux) does not — it
-     paints the selected value and the option popup with the GTK system
-     theme, so on the dark UI they render light-on-light ("whited out").
-     Declaring the colour directly on select/option (not inherited) makes
-     WebKitGTK use it. Theme variables keep it correct in light mode too,
-     and it's a no-op on Chromium where the inherited value already won. */
-  select { color: hsl(var(--foreground)); }
+  /* Native <select> theming. WebKitGTK (Linux) renders native form
+     controls with the GTK system theme: it honours `color` set directly
+     on the element, but NOT `background-color` on the closed control —
+     it paints that with the host GTK theme (usually light), so on the
+     dark UI the selected value rendered light-on-light ("whited out").
+     Declaring the colours directly fixes the option popup; the *closed*
+     control is fixed by the `appearance: none` rule at the end of this
+     file, which stops WebKitGTK using the native widget so the CSS
+     background is honoured. The background-color here is a default for
+     selects without a bg-* utility. Chromium (Windows) already rendered
+     correctly and is unaffected. */
+  select {
+    color: hsl(var(--foreground));
+    background-color: hsl(var(--background));
+  }
   select option,
   select optgroup {
     color: hsl(var(--foreground));
@@ -413,4 +418,22 @@
   .pdf-text-layer .endOfContent {
     display: none;
   }
+}
+
+/* Intentionally UNLAYERED so these out-rank Tailwind's layered utilities
+   (notably each select's px-* horizontal padding). `appearance: none`
+   stops WebKitGTK (Linux) from drawing the native GTK <select> widget,
+   which ignored our background-color and showed the selected value
+   white-on-white. With the native widget gone the CSS background applies
+   — but so does the native dropdown arrow, so we repaint a chevron via
+   background-image and reserve room for it with padding-right. The
+   chevron is a mid-grey that reads on both the dark and light themes. */
+select {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23888888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M4 6l4 4 4-4'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+  background-size: 14px 14px;
+  padding-right: 1.75rem;
 }
