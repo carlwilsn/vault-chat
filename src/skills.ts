@@ -10,25 +10,15 @@ export type Skill = {
   body: string;
 };
 
-export async function loadSkills(_vault: string): Promise<Skill[]> {
-  // Skills are global — they live in the meta vault and are available
-  // in every vault. No per-vault skill scope.
-  let root: string | null = null;
-  try {
-    const meta = await getMetaVaultPath();
-    if (meta) root = `${meta}/skills`;
-  } catch {
-    return [];
-  }
-  if (!root) return [];
-
+// Scan a `<root>/<name>/SKILL.md` layout into Skill objects. Missing root
+// or unreadable entries yield an empty list rather than throwing.
+async function loadSkillsFromRoot(root: string): Promise<Skill[]> {
   let entries: { path: string; name: string; is_dir: boolean }[] = [];
   try {
     entries = await invoke("list_dir", { path: root });
   } catch {
     return [];
   }
-
   const skills: Skill[] = [];
   for (const entry of entries) {
     if (!entry.is_dir) continue;
@@ -49,9 +39,33 @@ export async function loadSkills(_vault: string): Promise<Skill[]> {
       continue;
     }
   }
-
-  skills.sort((a, b) => a.name.localeCompare(b.name));
   return skills;
+}
+
+export async function loadSkills(vault: string): Promise<Skill[]> {
+  // Skills load from two roots: the meta vault (global, every vault) and
+  // the open vault's <vault>/.vault-chat/skills/ — which syncs via git, so
+  // skills built in a vault reach every machine. A vault-local skill
+  // shadows a global one with the same name (mirrors how tools resolve).
+  const byName = new Map<string, Skill>();
+  try {
+    const meta = await getMetaVaultPath();
+    if (meta) {
+      for (const s of await loadSkillsFromRoot(`${meta}/skills`)) {
+        byName.set(s.name, s);
+      }
+    }
+  } catch {
+    // meta vault unavailable — fall through to vault-local skills.
+  }
+  if (vault) {
+    for (const s of await loadSkillsFromRoot(`${vault}/.vault-chat/skills`)) {
+      byName.set(s.name, s);
+    }
+  }
+  return Array.from(byName.values()).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
 }
 
 export function skillPromptIndex(skills: Skill[]): string {
