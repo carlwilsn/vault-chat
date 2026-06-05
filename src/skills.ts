@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import matter from "gray-matter";
-import { getMetaVaultPath } from "./meta";
 
 export type Skill = {
   name: string;
@@ -43,21 +42,10 @@ async function loadSkillsFromRoot(root: string): Promise<Skill[]> {
 }
 
 export async function loadSkills(vault: string): Promise<Skill[]> {
-  // Skills load from two roots: the meta vault (global, every vault) and
-  // the open vault's <vault>/.vault-chat/skills/ — which syncs via git, so
-  // skills built in a vault reach every machine. A vault-local skill
-  // shadows a global one with the same name (mirrors how tools resolve).
+  // Skills live in the open vault at <vault>/.vault-chat/skills/ — which
+  // syncs via git, so skills built in a vault reach every machine that
+  // opens it. Invoked with `/name`.
   const byName = new Map<string, Skill>();
-  try {
-    const meta = await getMetaVaultPath();
-    if (meta) {
-      for (const s of await loadSkillsFromRoot(`${meta}/skills`)) {
-        byName.set(s.name, s);
-      }
-    }
-  } catch {
-    // meta vault unavailable — fall through to vault-local skills.
-  }
   if (vault) {
     for (const s of await loadSkillsFromRoot(`${vault}/.vault-chat/skills`)) {
       byName.set(s.name, s);

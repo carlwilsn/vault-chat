@@ -254,11 +254,10 @@ export function stripNotebook(raw: string): string {
 }
 
 export type BuildToolsOptions = {
-  metaPath?: string | null;
   tavilyKey?: string;
-  // When true, file-op tools refuse paths outside the active vault and
-  // meta vault. Doesn't constrain Bash — that's a separate switch
-  // because we have no real shell sandbox.
+  // When true, file-op tools refuse paths outside the active vault.
+  // Doesn't constrain Bash — that's a separate switch because we have
+  // no real shell sandbox.
   strictVault?: boolean;
   // When true, the Bash tool is omitted from the agent's toolset.
   bashDisabled?: boolean;
@@ -284,7 +283,6 @@ function isInside(absPath: string, root: string): boolean {
 function assertAllowed(
   path: string,
   vault: string,
-  metaPath: string | null | undefined,
   strict: boolean,
 ): void {
   if (!strict) return;
@@ -293,10 +291,8 @@ function assertAllowed(
     throw new Error(`refusing path with '..' segment (strict vault mode): ${path}`);
   }
   if (isInside(np, vault)) return;
-  if (metaPath && isInside(np, metaPath)) return;
-  const allowed = metaPath ? `${vault} or ${metaPath}` : vault;
   throw new Error(
-    `refusing access outside vault (strict vault mode): ${path}\nallowed: ${allowed}`,
+    `refusing access outside vault (strict vault mode): ${path}\nallowed: ${vault}`,
   );
 }
 
@@ -379,14 +375,13 @@ async function assertNotDenied(absPath: string, vault: string): Promise<void> {
 
 export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   const {
-    metaPath = null,
     tavilyKey,
     strictVault = false,
     bashDisabled = false,
     conversationId,
     isTelegramSourced = false,
   } = options;
-  const guardPath = (path: string) => assertAllowed(path, vault, metaPath, strictVault);
+  const guardPath = (path: string) => assertAllowed(path, vault, strictVault);
   const guardDenied = (path: string) => assertNotDenied(path, vault);
   const guardWritable = (path: string) => assertCanWrite(path, vault);
   const base = {

@@ -4,90 +4,128 @@ import { tool } from "ai";
 import { z } from "zod";
 import { getUserKeysAsEnv } from "./keychain";
 
-export type MetaInit = { path: string; fresh: boolean };
+// ----- per-vault agent config -----
+//
+// The agent's editable config lives in the vault at `.vault-chat/agent/`
+// (system.md, voice.md, north-star.md), so it syncs across machines via
+// git and is fully customizable per-vault. There is no global meta vault;
+// new vaults seed each file from the app's bundled defaults on open.
 
-let cachedPath: string | null = null;
+const AGENT_DIR = ".vault-chat/agent";
 
-export async function initMetaVault(): Promise<MetaInit> {
-  const res = await invoke<MetaInit>("meta_vault_init");
-  cachedPath = res.path;
-  return res;
-}
-
-export async function getMetaVaultPath(): Promise<string> {
-  if (cachedPath) return cachedPath;
-  const p = await invoke<string>("meta_vault_path");
-  cachedPath = p;
-  return p;
-}
-
-/** Read the system prompt from the meta vault. Falls back to an empty
- *  string if the file is missing (caller is expected to have a
- *  baseline compiled-in prompt to concatenate with). */
-export async function loadMetaSystemPrompt(): Promise<string> {
-  try {
-    const p = await getMetaVaultPath();
-    return await invoke<string>("read_text_file", { path: `${p}/system.md` });
-  } catch {
-    return "";
-  }
-}
-
-/** Per-vault system prompt at <vault>/.vault-chat/system.md. Lives in the
- *  vault so it syncs across machines via git — the agent on every machine
- *  uses the same prompt. Returns "" when absent. */
-export async function loadVaultSystemPrompt(vault: string | null): Promise<string> {
-  if (!vault) return "";
+/** Read a config file from `.vault-chat/agent/<name>`, falling back to an
+ *  older flat `.vault-chat/<legacyRel>` location if present. "" if absent. */
+async function readAgentConfig(
+  vault: string,
+  name: string,
+  legacyRel?: string,
+): Promise<string> {
   try {
     return await invoke<string>("read_text_file", {
-      path: `${vault}/.vault-chat/system.md`,
+      path: `${vault}/${AGENT_DIR}/${name}`,
     });
   } catch {
-    return "";
+    /* fall through to legacy location */
+  }
+  if (legacyRel) {
+    try {
+      return await invoke<string>("read_text_file", {
+        path: `${vault}/.vault-chat/${legacyRel}`,
+      });
+    } catch {
+      /* absent */
+    }
+  }
+  return "";
+}
+
+/** Seed `.vault-chat/agent/<name>` if absent: migrate a legacy flat file
+ *  into the agent/ folder if one exists, otherwise write the app's bundled
+ *  default (via the given Rust command). Never clobbers an existing file. */
+async function ensureAgentConfig(
+  vault: string,
+  name: string,
+  defaultCommand: string,
+  legacyRel?: string,
+): Promise<void> {
+  const path = `${vault}/${AGENT_DIR}/${name}`;
+  try {
+    const existing = await invoke<string>("read_text_file", { path });
+    if (existing.trim()) return; // already present — keep the customization
+  } catch {
+    /* absent — seed below */
+  }
+  if (legacyRel) {
+    try {
+      const legacy = await invoke<string>("read_text_file", {
+        path: `${vault}/.vault-chat/${legacyRel}`,
+      });
+      if (legacy.trim()) {
+        await invoke("write_text_file", { path, contents: legacy });
+        return; // migrated the user's existing file into agent/
+      }
+    } catch {
+      /* no legacy file */
+    }
+  }
+  try {
+    const seed = (await invoke<string>(defaultCommand)).trim();
+    if (seed) await invoke("write_text_file", { path, contents: seed });
+  } catch (e) {
+    console.warn(`[agent-cfg] seed ${name} failed:`, e);
   }
 }
 
-/** Seed <vault>/.vault-chat/system.md from the meta-vault default when the
- *  vault doesn't have one yet, so every vault starts with a sensible prompt
- *  that then syncs cross-machine and can be fully customized per-vault.
- *  Never overwrites an existing (customized) prompt. */
+/** Per-vault system prompt at `.vault-chat/agent/system.md`. Syncs across
+ *  machines via git; "" when absent (caller has a compiled-in baseline). */
+export async function loadVaultSystemPrompt(vault: string | null): Promise<string> {
+  if (!vault) return "";
+  return readAgentConfig(vault, "system.md", "system.md");
+}
+
 export async function ensureVaultSystemPrompt(vault: string | null): Promise<void> {
   if (!vault) return;
-  const path = `${vault}/.vault-chat/system.md`;
-  try {
-    const existing = await invoke<string>("read_text_file", { path });
-    if (existing.trim()) return; // already present — leave the customization
-  } catch {
-    // absent — seed below
-  }
-  const seed = (await loadMetaSystemPrompt()).trim();
-  if (!seed) return; // nothing to seed; the agent falls back to its baseline
-  try {
-    await invoke("write_text_file", { path, contents: seed });
-  } catch (e) {
-    console.warn("[meta] seed vault system.md failed:", e);
-  }
+  await ensureAgentConfig(vault, "system.md", "default_system_prompt", "system.md");
+}
+
+export async function saveVaultSystemPrompt(vault: string, contents: string): Promise<void> {
+  await invoke("write_text_file", {
+    path: `${vault}/${AGENT_DIR}/system.md`,
+    contents,
+  });
+}
+
+/** Per-vault voice-mode prompt at `.vault-chat/agent/voice.md`. */
+export async function loadVaultVoicePrompt(vault: string | null): Promise<string> {
+  if (!vault) return "";
+  return readAgentConfig(vault, "voice.md");
+}
+
+export async function ensureVaultVoicePrompt(vault: string | null): Promise<void> {
+  if (!vault) return;
+  await ensureAgentConfig(vault, "voice.md", "default_voice_prompt");
+}
+
+export async function saveVaultVoicePrompt(vault: string, contents: string): Promise<void> {
+  await invoke("write_text_file", {
+    path: `${vault}/${AGENT_DIR}/voice.md`,
+    contents,
+  });
 }
 
 /** Read the per-vault north-star brief (the user's declaration of
- *  what the vault is for). Stored at <vault>/.vault-chat/north-star.md.
- *  Prepended to every agent system prompt (chat, voice, inline) so the
- *  agent enters every turn pre-briefed on the vault's purpose. Returns
- *  "" when the file is missing or no vault is open. */
+ *  what the vault is for). Stored at <vault>/.vault-chat/agent/north-star.md
+ *  (migrated from the older flat `.vault-chat/north-star.md`). Prepended to
+ *  every agent system prompt (chat, voice, inline) so the agent enters every
+ *  turn pre-briefed on the vault's purpose. "" when missing / no vault. */
 export async function loadVaultNorthStar(vault: string | null): Promise<string> {
   if (!vault) return "";
-  try {
-    return await invoke<string>("read_text_file", {
-      path: `${vault}/.vault-chat/north-star.md`,
-    });
-  } catch {
-    return "";
-  }
+  return readAgentConfig(vault, "north-star.md", "north-star.md");
 }
 
 export async function saveVaultNorthStar(vault: string, contents: string): Promise<void> {
   await invoke("write_text_file", {
-    path: `${vault}/.vault-chat/north-star.md`,
+    path: `${vault}/${AGENT_DIR}/north-star.md`,
     contents,
   });
 }
@@ -95,7 +133,7 @@ export async function saveVaultNorthStar(vault: string, contents: string): Promi
 function formatNorthStarBlock(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) return "";
-  return `## Vault north star\n\nThe user has declared this brief for the vault you're working in. Treat it as load-bearing — it tells you what kind of help the user wants here (tutor / co-engineer / from-scratch / etc.). When the brief conflicts with your default behavior, the brief wins.\n\nThe brief lives at \`<vault>/.vault-chat/north-star.md\`. If the user asks you to update, append to, or revise it, edit that file directly with the Edit or Write tool — the modal in the titlebar reads from the same place and will reflect your changes when reopened.\n\n${trimmed}`;
+  return `## Vault north star\n\nThe user has declared this brief for the vault you're working in. Treat it as load-bearing — it tells you what kind of help the user wants here (tutor / co-engineer / from-scratch / etc.). When the brief conflicts with your default behavior, the brief wins.\n\nThe brief lives at \`<vault>/.vault-chat/agent/north-star.md\`. If the user asks you to update, append to, or revise it, edit that file directly with the Edit or Write tool — the modal in the titlebar reads from the same place and will reflect your changes when reopened.\n\n${trimmed}`;
 }
 
 export function northStarPromptBlock(text: string): string {
@@ -151,19 +189,6 @@ metadata:
 **Don't save** things the vault already records (file contents, what's plainly visible in the tree, git history) or things that only matter to the current conversation. If a fact later proves wrong, delete its file and its index line rather than leaving it stale.
 
 ${indexSection}`;
-}
-
-/** Read the voice-mode personality prompt from the meta vault.
- *  voice.md is the user-editable header that controls how the voice
- *  agent talks (tone, length, persona, speech rules). Returns ""
- *  when the file is missing — caller falls back to a baseline. */
-export async function loadMetaVoicePrompt(): Promise<string> {
-  try {
-    const p = await getMetaVaultPath();
-    return await invoke<string>("read_text_file", { path: `${p}/voice.md` });
-  } catch {
-    return "";
-  }
 }
 
 // ----- vault-tool loader -----
@@ -392,23 +417,9 @@ async function loadToolsFromRoot(toolsRoot: string): Promise<Record<string, unkn
   return out;
 }
 
-/** Global tools: <meta>/tools/<name>/. Available in every vault. */
-export async function loadMetaTools(): Promise<Record<string, unknown>> {
-  let metaPath: string;
-  try {
-    metaPath = await getMetaVaultPath();
-  } catch (e) {
-    console.warn("[meta-tools] no meta path:", e);
-    return {};
-  }
-  return loadToolsFromRoot(`${metaPath}/tools`);
-}
-
-/** Per-vault tools: <vault>/.vault-chat/tools/<name>/ (same TOOL.md +
- *  run.* shape as meta tools). Scoped to a single vault so a one-off
- *  custom tool doesn't bloat the model's tool choice in every other
- *  vault. Merged on top of the global meta tools by the caller — a
- *  local tool with the same name as a global one wins. */
+/** Per-vault tools: <vault>/.vault-chat/tools/<name>/ — a folder per tool
+ *  (TOOL.md + run.*), scoped to the vault and synced with it via git so a
+ *  tool built in a vault reaches every machine that opens it. */
 export async function loadVaultTools(vault: string | null): Promise<Record<string, unknown>> {
   if (!vault) return {};
   return loadToolsFromRoot(`${vault}/.vault-chat/tools`);

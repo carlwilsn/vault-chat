@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./store";
 import { buildNote } from "./notes";
 import { gitCommitAll } from "./git";
-import { loadMetaVoicePrompt, loadVaultNorthStar, northStarPromptBlock } from "./meta";
+import { loadVaultVoicePrompt, loadVaultNorthStar, northStarPromptBlock } from "./meta";
 import { applyNotebookEdit, extractPdfText, stripNotebook, assertCanWrite } from "./tools";
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
@@ -516,10 +516,10 @@ export async function startElevenLabsSession(): Promise<void> {
   sessionFirstUserText = null;
   startViewportWatch();
 
-  // Load the user-editable voice header from the meta vault. Empty
-  // string when the file is missing → buildSystemPrompt falls back
-  // to the built-in default header.
-  const customHeader = await loadMetaVoicePrompt();
+  // Load the user-editable voice header from this vault's agent config
+  // (.vault-chat/agent/voice.md). Empty string when missing →
+  // buildSystemPrompt falls back to the built-in default header.
+  const customHeader = await loadVaultVoicePrompt(state.vaultPath);
   const northStar = await loadVaultNorthStar(state.vaultPath);
   const systemPrompt = buildSystemPrompt(state, customHeader, northStar);
   const dynamicVariables = buildDynamicVariables(state);

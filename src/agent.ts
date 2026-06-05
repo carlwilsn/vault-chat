@@ -6,7 +6,7 @@ import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./provi
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
-import { loadMetaSystemPrompt, loadVaultSystemPrompt, loadMetaTools, loadVaultTools, getMetaVaultPath, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock } from "./meta";
+import { loadVaultSystemPrompt, loadVaultTools, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock } from "./meta";
 
 export type TokenUsage = {
   prompt: number;
@@ -84,14 +84,11 @@ export async function runAgent(params: {
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey);
 
-    const [sessionContext, skills, vaultSystem, metaSystem, metaTools, vaultTools, metaPath, northStar, memoryIndex, shellKind] = await Promise.all([
+    const [sessionContext, skills, vaultSystem, vaultTools, northStar, memoryIndex, shellKind] = await Promise.all([
       loadSessionContext(vault),
       loadSkills(vault),
       loadVaultSystemPrompt(vault),
-      loadMetaSystemPrompt(),
-      loadMetaTools(),
       loadVaultTools(vault),
-      getMetaVaultPath().catch(() => null),
       loadVaultNorthStar(vault),
       loadVaultMemoryIndex(vault),
       getShellKind(),
@@ -99,12 +96,10 @@ export async function runAgent(params: {
 
     const { body: expandedMessage } = expandSkillInvocation(userMessage, skills);
 
-    // Per-vault system prompt (synced cross-machine) wins; fall back to the
-    // meta-vault default, then the built-in baseline.
-    const baseSystem = vaultSystem.trim() || metaSystem.trim() || FALLBACK_SYSTEM;
-    // Local (vault) tools merge on top of global (meta) tools — a local
-    // tool with the same name as a global one shadows it.
-    const customTools = { ...metaTools, ...vaultTools };
+    // Per-vault system prompt (synced cross-machine via git); fall back to
+    // the built-in baseline if the vault hasn't been seeded yet.
+    const baseSystem = vaultSystem.trim() || FALLBACK_SYSTEM;
+    const customTools = { ...vaultTools };
     const customToolNames = Object.keys(customTools);
 
     const platform = detectPlatform();
@@ -140,8 +135,8 @@ export async function runAgent(params: {
       memoryBlock ? `\n${memoryBlock}` : "",
       skills.length ? `\n${skillPromptIndex(skills)}` : "",
       customToolNames.length
-        ? `\n## Custom tools\n\nThese tools were loaded in addition to the built-in set. Global tools live in the meta vault (\`<meta>/tools/\`) and are available everywhere; vault-local tools live at \`<vault>/.vault-chat/tools/\` and only load in this vault:\n${customToolNames
-            .map((n) => `- ${n}${Object.prototype.hasOwnProperty.call(vaultTools, n) ? " (this vault only)" : " (global)"}`)
+        ? `\n## Custom tools\n\nThese tools were loaded in addition to the built-in set. They live in this vault at \`<vault>/.vault-chat/tools/\` and sync with it:\n${customToolNames
+            .map((n) => `- ${n}`)
             .join("\n")}`
         : "",
 
@@ -263,7 +258,6 @@ export async function runAgent(params: {
     ];
 
     const builtinTools = buildTools(vault, {
-      metaPath,
       tavilyKey,
       strictVault: strictVault ?? false,
       bashDisabled: bashDisabled ?? false,

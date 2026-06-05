@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
   Check,
   Key,
-  Cog,
   X,
   Plus,
   Lock,
@@ -12,12 +10,9 @@ import {
   RefreshCw,
   Send,
 } from "lucide-react";
-import { useStore, type FileEntry } from "./store";
+import { useStore } from "./store";
 import { PROVIDER_LABEL, AUTO_MODEL_ID, type ProviderId } from "./providers";
 import { Button, Input, Select } from "./ui";
-import { getMetaVaultPath } from "./meta";
-import { gitInitIfNeeded } from "./git";
-import { stopAgent } from "./chat-controller";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
 import {
   readVaultSyncConfig,
@@ -79,12 +74,8 @@ export function SettingsPane() {
     catalogErrors,
     refreshCatalog,
   } = useStore();
-  const setVault = useStore((s) => s.setVault);
   const autoRouterCostBias = useStore((s) => s.autoRouterCostBias);
   const setAutoRouterCostBias = useStore((s) => s.setAutoRouterCostBias);
-  const setFiles = useStore((s) => s.setFiles);
-  const setCurrentFile = useStore((s) => s.setCurrentFile);
-  const vaultPath = useStore((s) => s.vaultPath);
   const [modelSearch, setModelSearch] = useState("");
   const filteredCatalog = (() => {
     const q = modelSearch.trim().toLowerCase();
@@ -253,27 +244,6 @@ export function SettingsPane() {
   };
 
   const mask = (k?: string) => (k ? `${k.slice(0, 6)}…${k.slice(-4)}` : "not set");
-
-  const openMetaVault = async () => {
-    try {
-      const meta = await getMetaVaultPath();
-      if (meta === vaultPath) {
-        setShowSettings(false);
-        return;
-      }
-      if (useStore.getState().busy) {
-        stopAgent();
-      }
-      setVault(meta);
-      setCurrentFile(null, "");
-      const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: meta });
-      setFiles(listed);
-      gitInitIfNeeded(meta).catch(() => {});
-      setShowSettings(false);
-    } catch (e) {
-      console.error("[meta] open failed:", e);
-    }
-  };
 
   return (
     <div className="h-full flex flex-col bg-card border-l border-border">
@@ -802,25 +772,6 @@ export function SettingsPane() {
               No custom keys yet.
             </p>
           )}
-        </section>
-
-        <div className="h-px bg-border" />
-
-        <section className="space-y-2">
-          <div>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <Cog className="h-3 w-3" />
-              Agent internals (meta vault)
-            </h3>
-            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5 leading-relaxed">
-              The agent's system prompt, skills, and custom tools live in a
-              folder you can open as a vault and edit. The agent can edit it
-              too. Every change is auto-committed to git so you can revert.
-            </p>
-          </div>
-          <Button size="sm" onClick={openMetaVault}>
-            Open meta vault
-          </Button>
         </section>
 
         <div className="h-px bg-border" />

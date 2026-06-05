@@ -1,7 +1,7 @@
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { buildModel, findModel, DEFAULT_MODEL_ID } from "./providers";
 import { buildTools } from "./tools";
-import { getMetaVaultPath, northStarPromptBlock } from "./meta";
+import { northStarPromptBlock } from "./meta";
 
 function prependNorthStar(base: string, northStar?: string): string {
   const block = northStarPromptBlock(northStar ?? "");
@@ -205,9 +205,7 @@ export async function* runInlineAsk(
   if (!spec) throw new Error(`unknown model: ${p.modelId}`);
   const model = buildModel(spec, p.apiKey);
 
-  const metaPath = await getMetaVaultPath().catch(() => null);
   const allTools = buildTools(p.vault, {
-    metaPath,
     tavilyKey: p.tavilyKey,
     strictVault: p.strictVault ?? false,
     // Inline ask only ever exposes the read-only subset below — Bash

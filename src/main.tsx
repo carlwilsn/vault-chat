@@ -21,7 +21,6 @@ import hljsLightUrl from "highlight.js/styles/github.css?url";
 import App from "./App";
 import { ChatWindow } from "./ChatWindow";
 import { installMainSync, installPopoutSync } from "./sync";
-import { initMetaVault } from "./meta";
 import {
   hydrateKeychain,
   hydratePersistedChat,
@@ -79,10 +78,6 @@ if (isPopout) {
   // One-shot wipe of pre-ElevenLabs voice-mode chat history. Runs
   // once per install thanks to a localStorage flag, then no-ops.
   maybeClearMessagesForVoiceV2();
-  // Seed the meta vault with bundled defaults on first launch, and
-  // surface its path for the settings UI + agent.ts. Silent no-op on
-  // subsequent launches.
-  initMetaVault().catch((e) => console.warn("[meta] init failed:", e));
   // Durability safety net: periodic backstop + commit-on-quit so no vault
   // change can reach disk without reaching git. Main window only.
   installAutosaveNet();

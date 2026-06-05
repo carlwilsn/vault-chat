@@ -3084,78 +3084,21 @@ fn git_guard(path: &str) -> Result<(), String> {
 // On first launch we seed it with sensible defaults.
 
 const DEFAULT_SYSTEM_MD: &str = include_str!("../defaults/system.md");
-const DEFAULT_META_README: &str = include_str!("../defaults/README.md");
 const DEFAULT_VOICE_MD: &str = include_str!("../defaults/voice.md");
 
-#[derive(Serialize)]
-struct MetaInit {
-    path: String,
-    fresh: bool,
-}
-
-fn meta_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    use tauri::Manager;
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("app_data_dir: {}", e))?;
-    Ok(base.join("meta"))
-}
-
-/// Create the meta vault on disk with bundled defaults if it doesn't
-/// exist yet. Returns the path and whether this call was the one that
-/// created it.
+/// The bundled default agent system prompt. New vaults seed
+/// `<vault>/.vault-chat/agent/system.md` from this; it can then be
+/// customized per-vault and syncs across machines via the vault's git.
 #[tauri::command]
-fn meta_vault_init(app: tauri::AppHandle) -> Result<MetaInit, String> {
-    let dir = meta_dir(&app)?;
-    let fresh = !dir.exists();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-
-    let system_path = dir.join("system.md");
-    if !system_path.exists() {
-        std::fs::write(&system_path, DEFAULT_SYSTEM_MD).map_err(|e| e.to_string())?;
-    }
-    let voice_path = dir.join("voice.md");
-    if !voice_path.exists() {
-        std::fs::write(&voice_path, DEFAULT_VOICE_MD).map_err(|e| e.to_string())?;
-    } else {
-        // Migration: the first version of the seed accidentally
-        // included editing instructions ("Things you might want to
-        // add:" / "Things to keep:") inside the file, which then
-        // got fed to the agent as part of the prompt. Detect that
-        // exact buggy seed (both marker strings together) and
-        // replace with the clean version. Files the user has
-        // actually customized won't have both markers.
-        if let Ok(contents) = std::fs::read_to_string(&voice_path) {
-            if contents.contains("Things you might want to add:")
-                && contents.contains("Things to keep:")
-            {
-                std::fs::write(&voice_path, DEFAULT_VOICE_MD)
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-    }
-    let readme_path = dir.join("README.md");
-    if !readme_path.exists() {
-        std::fs::write(&readme_path, DEFAULT_META_README).map_err(|e| e.to_string())?;
-    }
-    let skills_dir = dir.join("skills");
-    std::fs::create_dir_all(&skills_dir).map_err(|e| e.to_string())?;
-    let tools_dir = dir.join("tools");
-    std::fs::create_dir_all(&tools_dir).map_err(|e| e.to_string())?;
-
-    let path_str = dir.to_string_lossy().replace('\\', "/");
-    Ok(MetaInit {
-        path: path_str,
-        fresh,
-    })
+fn default_system_prompt() -> String {
+    DEFAULT_SYSTEM_MD.to_string()
 }
 
-/// Return the meta vault path (does not create if absent).
+/// The bundled default voice-mode prompt. New vaults seed
+/// `<vault>/.vault-chat/agent/voice.md` from this.
 #[tauri::command]
-fn meta_vault_path(app: tauri::AppHandle) -> Result<String, String> {
-    let dir = meta_dir(&app)?;
-    Ok(dir.to_string_lossy().replace('\\', "/"))
+fn default_voice_prompt() -> String {
+    DEFAULT_VOICE_MD.to_string()
 }
 
 // ----- run_script -----
@@ -4389,8 +4332,8 @@ pub fn run() {
             telegram_send_photo,
             telegram_download_file,
             path_exists,
-            meta_vault_init,
-            meta_vault_path,
+            default_system_prompt,
+            default_voice_prompt,
             run_script,
             keychain_get,
             keychain_set,

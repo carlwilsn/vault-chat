@@ -561,12 +561,16 @@ export default function App() {
         console.warn("[keystore] auto-import failed:", e),
       );
     })();
-    // Seed a per-vault system.md from the default if absent, so the agent's
-    // base prompt lives in the vault and syncs across machines.
+    // Seed this vault's agent config (system.md + voice.md) from the bundled
+    // defaults if absent — migrating any older flat files — so the agent's
+    // prompts live in the vault at .vault-chat/agent/ and sync across machines.
     void (async () => {
-      const { ensureVaultSystemPrompt } = await import("./meta");
+      const { ensureVaultSystemPrompt, ensureVaultVoicePrompt } = await import("./meta");
       await ensureVaultSystemPrompt(vaultPath).catch((e) =>
-        console.warn("[meta] ensure vault system prompt failed:", e),
+        console.warn("[agent-cfg] ensure system prompt failed:", e),
+      );
+      await ensureVaultVoicePrompt(vaultPath).catch((e) =>
+        console.warn("[agent-cfg] ensure voice prompt failed:", e),
       );
     })();
   }, [vaultPath]);
