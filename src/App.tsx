@@ -561,6 +561,14 @@ export default function App() {
         console.warn("[keystore] auto-import failed:", e),
       );
     })();
+    // Seed a per-vault system.md from the default if absent, so the agent's
+    // base prompt lives in the vault and syncs across machines.
+    void (async () => {
+      const { ensureVaultSystemPrompt } = await import("./meta");
+      await ensureVaultSystemPrompt(vaultPath).catch((e) =>
+        console.warn("[meta] ensure vault system prompt failed:", e),
+      );
+    })();
   }, [vaultPath]);
 
   // Sweep stale chat-pane captures on every vault activation. The

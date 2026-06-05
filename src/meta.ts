@@ -33,6 +33,42 @@ export async function loadMetaSystemPrompt(): Promise<string> {
   }
 }
 
+/** Per-vault system prompt at <vault>/.vault-chat/system.md. Lives in the
+ *  vault so it syncs across machines via git — the agent on every machine
+ *  uses the same prompt. Returns "" when absent. */
+export async function loadVaultSystemPrompt(vault: string | null): Promise<string> {
+  if (!vault) return "";
+  try {
+    return await invoke<string>("read_text_file", {
+      path: `${vault}/.vault-chat/system.md`,
+    });
+  } catch {
+    return "";
+  }
+}
+
+/** Seed <vault>/.vault-chat/system.md from the meta-vault default when the
+ *  vault doesn't have one yet, so every vault starts with a sensible prompt
+ *  that then syncs cross-machine and can be fully customized per-vault.
+ *  Never overwrites an existing (customized) prompt. */
+export async function ensureVaultSystemPrompt(vault: string | null): Promise<void> {
+  if (!vault) return;
+  const path = `${vault}/.vault-chat/system.md`;
+  try {
+    const existing = await invoke<string>("read_text_file", { path });
+    if (existing.trim()) return; // already present — leave the customization
+  } catch {
+    // absent — seed below
+  }
+  const seed = (await loadMetaSystemPrompt()).trim();
+  if (!seed) return; // nothing to seed; the agent falls back to its baseline
+  try {
+    await invoke("write_text_file", { path, contents: seed });
+  } catch (e) {
+    console.warn("[meta] seed vault system.md failed:", e);
+  }
+}
+
 /** Read the per-vault north-star brief (the user's declaration of
  *  what the vault is for). Stored at <vault>/.vault-chat/north-star.md.
  *  Prepended to every agent system prompt (chat, voice, inline) so the

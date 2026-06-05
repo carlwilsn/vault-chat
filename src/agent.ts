@@ -6,7 +6,7 @@ import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./provi
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
-import { loadMetaSystemPrompt, loadMetaTools, loadVaultTools, getMetaVaultPath, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock } from "./meta";
+import { loadMetaSystemPrompt, loadVaultSystemPrompt, loadMetaTools, loadVaultTools, getMetaVaultPath, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock } from "./meta";
 
 export type TokenUsage = {
   prompt: number;
@@ -84,9 +84,10 @@ export async function runAgent(params: {
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey);
 
-    const [sessionContext, skills, metaSystem, metaTools, vaultTools, metaPath, northStar, memoryIndex, shellKind] = await Promise.all([
+    const [sessionContext, skills, vaultSystem, metaSystem, metaTools, vaultTools, metaPath, northStar, memoryIndex, shellKind] = await Promise.all([
       loadSessionContext(vault),
       loadSkills(vault),
+      loadVaultSystemPrompt(vault),
       loadMetaSystemPrompt(),
       loadMetaTools(),
       loadVaultTools(vault),
@@ -98,7 +99,9 @@ export async function runAgent(params: {
 
     const { body: expandedMessage } = expandSkillInvocation(userMessage, skills);
 
-    const baseSystem = metaSystem.trim() || FALLBACK_SYSTEM;
+    // Per-vault system prompt (synced cross-machine) wins; fall back to the
+    // meta-vault default, then the built-in baseline.
+    const baseSystem = vaultSystem.trim() || metaSystem.trim() || FALLBACK_SYSTEM;
     // Local (vault) tools merge on top of global (meta) tools — a local
     // tool with the same name as a global one shadows it.
     const customTools = { ...metaTools, ...vaultTools };
