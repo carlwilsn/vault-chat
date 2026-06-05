@@ -25,6 +25,9 @@ import {
 // the bot runs on one designated machine, so it has no reason to roam.
 
 const PASSPHRASE_KEY = "keystore.passphrase"; // machine-local, in keychain
+// keys.enc is intentionally NOT gitignored — it must sync via git for the
+// cross-machine flow. Safe because it's age-encrypted and useless without
+// the passphrase, which lives only in each machine's own keychain.
 const KEYS_ENC_REL = ".vault-chat/keys.enc";
 
 export type KeystoreResult = { ok: boolean; message: string };
