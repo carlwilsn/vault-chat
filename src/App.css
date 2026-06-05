@@ -99,6 +99,22 @@
   ::-webkit-scrollbar-thumb { @apply bg-border rounded-full; }
   ::-webkit-scrollbar-thumb:hover { @apply bg-muted-foreground/40; }
 
+  /* Native <select> theming. The controls set a dark background via a
+     `bg-*` class but take their text colour by *inheritance* from
+     `text-foreground`. Chromium (Windows WebView2) honours inherited
+     colour on native form controls; WebKitGTK (Linux) does not — it
+     paints the selected value and the option popup with the GTK system
+     theme, so on the dark UI they render light-on-light ("whited out").
+     Declaring the colour directly on select/option (not inherited) makes
+     WebKitGTK use it. Theme variables keep it correct in light mode too,
+     and it's a no-op on Chromium where the inherited value already won. */
+  select { color: hsl(var(--foreground)); }
+  select option,
+  select optgroup {
+    color: hsl(var(--foreground));
+    background-color: hsl(var(--popover));
+  }
+
   /* Repaint the webkit search-clear "X" so it reads as foreground,
      not the browser's default blue. Built as an inline SVG mask so it
      tints to the current color instead of shipping as a blue glyph. */
