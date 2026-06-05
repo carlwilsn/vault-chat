@@ -120,26 +120,14 @@ jobs:
   # ── Phase 2: build on every platform ─────────────────────────────────────
   # Runs in parallel on Windows and Ubuntu. Each platform builds its own
   # native installer and attaches it to the same GitHub release.
-  build:
+  # Windows builds on its native runner. tauri-action builds, signs, and
+  # publishes the NSIS + MSI installers and the updater manifest.
+  build_windows:
     needs: prepare
     if: needs.prepare.outputs.has_changes == 'true'
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            args: ''
-          - platform: ubuntu-24.04
-            # Build AppImage + deb. Newer runner so the AppImage bundles a
-            # modern glib/GTK/WebKit stack (22.04's 2022-era libs failed to
-            # init EGL on current distros — see #51). The deb depends on the
-            # host's system libs, so it sidesteps bundling entirely. Config
-            # override swaps tectonic resource path from tectonic.exe
-            # (Windows) to tectonic (Linux).
-            args: '--bundles appimage,deb --config src-tauri/tauri.linux.conf.json'
-    runs-on: ${{ matrix.platform }}
+    runs-on: windows-latest
     env:
       NODE_OPTIONS: --max-old-space-size=4096
     steps:
@@ -160,27 +148,8 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # Linux needs native WebKit / GTK / AppIndicator headers.
-      - name: Install Linux system dependencies
-        if: matrix.platform == 'ubuntu-24.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
-
       - run: npm ci
 
-      # Download the Tectonic LaTeX engine for the current platform.
-      # Windows gets tectonic.exe (from a zip); Linux gets tectonic (from
-      # a tar.gz).  tauri.linux.conf.json overrides the resource path so
-      # each bundle picks up the right binary.
       - name: Download Tectonic LaTeX engine
         run: node scripts/download-tectonic.mjs
 
@@ -197,18 +166,99 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
-          updaterJsonPreferNsis: ${{ matrix.platform == 'windows-latest' }}
-          args: ${{ matrix.args }}
+          updaterJsonPreferNsis: true
+          args: ''
 
-      # Demo vault attachment — Windows runner only (runs once, no duplication).
+      # Demo vault attachment — Windows job only (runs once, no duplication).
       - name: Zip demo vault
-        if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: Compress-Archive -Path demo-vault -DestinationPath demo-vault.zip -Force
 
       - name: Attach demo vault to release
-        if: matrix.platform == 'windows-latest'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload v${{ needs.prepare.outputs.version }} demo-vault.zip --clobber
+
+  # Linux builds INSIDE an ubuntu:26.04 container, not on the GitHub runner.
+  # Why: the AppImage bundles the glib/GTK/wayland-egl stack from the build
+  # host. Building on the ubuntu-24.04 runner bundled glib 2.80, which is too
+  # old for modern hosts (Ubuntu 26.04 ships glib 2.88) — the host's gvfs/EGL
+  # modules then fail to load into the app and it crashed at startup with
+  # EGL_BAD_PARAMETER and never showed a window (#51). Building in a 26.04
+  # container bundles a matching 2.88 stack, so the AppImage launches on
+  # current distros and Tauri's in-app updater can keep it up to date.
+  build_linux:
+    needs: prepare
+    if: needs.prepare.outputs.has_changes == 'true'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      DEBIAN_FRONTEND: noninteractive
+      # appimagetool / linuxdeploy are themselves AppImages; FUSE isn't
+      # available in the container, so run them via extract-and-run.
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      # git is needed by actions/checkout; the rest are tauri/linuxdeploy
+      # build + bundle dependencies. Runs before checkout so git exists.
+      - name: Install system build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl wget file git xz-utils \
+            build-essential pkg-config libssl-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev librsvg2-bin \
+            patchelf desktop-file-utils \
+            xdg-utils libgdk-pixbuf2.0-bin shared-mime-info zsync
+
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # In the container the job runs as root over a checkout owned by another
+      # uid; mark it safe so tauri-action's git calls don't bail on "dubious
+      # ownership".
+      - name: Mark workspace as git-safe
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Download Tectonic LaTeX engine
+        run: node scripts/download-tectonic.mjs
+
+      - name: Build, sign, publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v${{ needs.prepare.outputs.version }}
+          releaseName: vault-chat v${{ needs.prepare.outputs.version }}
+          releaseBody: ${{ needs.prepare.outputs.body }}
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: false
+          args: '--bundles appimage,deb --config src-tauri/tauri.linux.conf.json'

@@ -3890,8 +3890,8 @@ async fn daemon_start(
 
     let app_router: Router = Router::new()
         .route("/health", get(|| async { "ok" }))
-        .route("/vaults/:id/conversations", get(daemon_get_conversations_by_id))
-        .route("/vaults/:id/conversations", post(daemon_put_conversations_by_id))
+        .route("/vaults/{id}/conversations", get(daemon_get_conversations_by_id))
+        .route("/vaults/{id}/conversations", post(daemon_put_conversations_by_id))
         .with_state(state_clone);
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
