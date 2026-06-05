@@ -2476,6 +2476,9 @@ struct SyncStatus {
     has_repo: bool,
     remote: Option<String>,
     has_changes: bool,
+    /// Local commits not yet on the upstream. Non-zero means there's
+    /// work committed but unpushed — the status must not read "synced".
+    ahead: u32,
     /// Newline-separated list of nested repos inside the vault root
     /// (excluding the vault's own .git). One entry per nested .git
     /// — the sync loop skips these.
@@ -2492,6 +2495,7 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
                 has_repo: false,
                 remote: None,
                 has_changes: false,
+                ahead: 0,
                 nested_repos: Vec::new(),
             });
         }
@@ -2505,11 +2509,23 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
         };
         let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
         let has_changes = !status_out.trim().is_empty();
+        // Count local commits not yet on the upstream. Errors (no upstream,
+        // detached HEAD) are treated as "nothing ahead".
+        let ahead = {
+            let (out, _, code) =
+                run_git(&vault, &["rev-list", "--count", "@{upstream}..HEAD"])?;
+            if code == 0 {
+                out.trim().parse::<u32>().unwrap_or(0)
+            } else {
+                0
+            }
+        };
         let nested_repos = find_nested_repos(&root);
         Ok(SyncStatus {
             has_repo,
             remote,
             has_changes,
+            ahead,
             nested_repos,
         })
     })

@@ -874,6 +874,7 @@ function VaultSyncSection() {
     running: false,
     remote: null as string | null,
     hasChanges: false,
+    ahead: 0,
     nestedRepos: [] as string[],
   });
   const [busy, setBusy] = useState(false);
@@ -1150,6 +1151,7 @@ function SyncStatusRow({
     running: boolean;
     remote: string | null;
     hasChanges: boolean;
+    ahead: number;
   };
   enabled: boolean;
 }) {
@@ -1182,6 +1184,17 @@ function SyncStatusRow({
           <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
         </span>
         syncing…
+      </span>
+    );
+  }
+  // Unpushed local commits — not "synced" yet. The pull loop flushes
+  // these each cycle, so this is normally transient; if it lingers, it's
+  // honestly surfacing a push that isn't going through.
+  if (snapshot.ahead > 0) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-amber-500">
+        <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+        {snapshot.ahead} unpushed · pending
       </span>
     );
   }

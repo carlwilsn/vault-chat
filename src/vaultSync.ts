@@ -21,6 +21,8 @@ export type SyncStatus = {
   has_repo: boolean;
   remote: string | null;
   has_changes: boolean;
+  // Local commits not yet pushed to the upstream.
+  ahead: number;
   nested_repos: string[];
 };
 
@@ -130,6 +132,7 @@ type SyncSnapshot = {
   running: boolean;
   remote: string | null;
   hasChanges: boolean;
+  ahead: number;
   nestedRepos: string[];
 };
 
@@ -148,6 +151,7 @@ let snapshot: SyncSnapshot = {
   running: false,
   remote: null,
   hasChanges: false,
+  ahead: 0,
   nestedRepos: [],
 };
 const listeners = new Set<SyncListener>();
@@ -174,6 +178,7 @@ function resetSnapshot() {
     running: false,
     remote: null,
     hasChanges: false,
+    ahead: 0,
     nestedRepos: [],
   };
   emit();
@@ -203,6 +208,7 @@ export async function startVaultSyncLoop(vault: string): Promise<void> {
       setStatus({
         remote: st.remote,
         hasChanges: st.has_changes,
+        ahead: st.ahead,
         nestedRepos: st.nested_repos,
       });
       return st;
@@ -233,7 +239,20 @@ export async function startVaultSyncLoop(vault: string): Promise<void> {
     } else {
       setStatus({ lastMessage: result.message, running: false });
     }
-    await refreshStatus();
+    const st = await refreshStatus();
+    // Flush commits that were made but never pushed. The dirty-tree push
+    // trigger only fires while the working tree has uncommitted changes;
+    // a commit landed when the remote had advanced (or made out-of-band)
+    // leaves a clean tree that nothing re-pushes, so it strands silently
+    // while the status still reads "synced". Pulling first, then pushing
+    // any remaining `ahead`, closes that gap each cycle.
+    if (st && st.ahead > 0 && !cancelled) {
+      const flush = await vaultPush(vault).catch(() => null);
+      if (flush?.ok) {
+        setStatus({ lastSyncedAt: Date.now(), lastError: null });
+      }
+      await refreshStatus();
+    }
   };
 
   const tickPush = async () => {
