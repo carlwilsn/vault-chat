@@ -431,6 +431,12 @@
 select {
   -webkit-appearance: none;
   appearance: none;
+  /* Set colour + background here too (not just in @layer base) so the
+     closed control's dark background and light text both come from this
+     winning unlayered rule — no dependence on the bg-* utility surviving
+     WebKitGTK's native theming. This is what stops the white-on-white. */
+  color: hsl(var(--foreground));
+  background-color: hsl(var(--background));
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23888888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M4 6l4 4 4-4'/></svg>");
   background-repeat: no-repeat;
   background-position: right 0.5rem center;
