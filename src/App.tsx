@@ -22,7 +22,6 @@ import { useGlobalAnchorClickHandler } from "./linkNav";
 import { applyHljsTheme } from "./main";
 import { startVaultSyncLoop, stopVaultSyncLoop } from "./vaultSync";
 import { startSchedulerLoop, stopSchedulerLoop } from "./schedulerLoop";
-import { startCrossSync, stopCrossSync } from "./crossSync";
 import {
   startTelegramService,
   stopTelegramService,
@@ -544,19 +543,15 @@ export default function App() {
   // it to other machines via git so both sides converge.
   useEffect(() => {
     if (!vaultPath) return;
+    // Ensure the vault has a stable id file (vault identity).
     void (async () => {
       try {
         const { ensureVaultId } = await import("./vaultId");
-        const id = await ensureVaultId(vaultPath);
-        await invoke("daemon_register_vault", {
-          vaultId: id,
-          vaultPath,
-        });
+        await ensureVaultId(vaultPath);
       } catch (e) {
-        console.warn("[vault-id] register failed:", e);
+        console.warn("[vault-id] ensure failed:", e);
       }
     })();
-    void startCrossSync(vaultPath);
     // Pull any keys this machine is missing from the vault's encrypted
     // keystore (no-op unless a passphrase is set and keys.enc exists), so
     // a synced machine inherits credentials without re-entry.
@@ -566,9 +561,6 @@ export default function App() {
         console.warn("[keystore] auto-import failed:", e),
       );
     })();
-    return () => {
-      void stopCrossSync();
-    };
   }, [vaultPath]);
 
   // Sweep stale chat-pane captures on every vault activation. The

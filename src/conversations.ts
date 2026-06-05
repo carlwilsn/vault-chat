@@ -63,28 +63,8 @@ export function conversationPreview(c: Conversation): string {
 }
 
 export async function readConversations(vault: string): Promise<Conversation[]> {
-  // In cross-sync client mode the conversations live on the daemon —
-  // read those instead so both machines stay in sync. The daemon
-  // serves vaults by their stable vault-id (.vault-chat/vault-id);
-  // if the daemon doesn't know about this vault (DaemonVaultNotFound),
-  // fall back to local disk so non-synced vaults still work.
-  try {
-    const { isClientMode, clientFetchConversations, DaemonVaultNotFound } = await import("./crossSync");
-    if (isClientMode()) {
-      try {
-        return await clientFetchConversations(vault);
-      } catch (e) {
-        if (e instanceof DaemonVaultNotFound) {
-          // Vault isn't synced — read local as if standalone.
-        } else {
-          throw e;
-        }
-      }
-    }
-  } catch {
-    // crossSync module unavailable or daemon unreachable — fall back
-    // to local disk so the app degrades gracefully.
-  }
+  // Conversations live in the vault on local disk; git auto-sync
+  // propagates them across machines.
   const lines = await invoke<string[]>("conversations_read", { vault });
   const out: Conversation[] = [];
   for (const line of lines) {
@@ -119,22 +99,5 @@ export async function writeConversations(
   // Persist messages, not in-flight stream state. The `status` field is
   // forced to 'idle' on read anyway.
   const lines = conversations.map((c) => JSON.stringify(c));
-  try {
-    const { isClientMode, clientPushConversations, DaemonVaultNotFound } = await import("./crossSync");
-    if (isClientMode()) {
-      try {
-        await clientPushConversations(vault, conversations);
-        return;
-      } catch (e) {
-        if (e instanceof DaemonVaultNotFound) {
-          // Vault isn't synced — write local instead.
-        } else {
-          throw e;
-        }
-      }
-    }
-  } catch {
-    // fall through to local write
-  }
   await invoke("conversations_write_all", { vault, lines });
 }

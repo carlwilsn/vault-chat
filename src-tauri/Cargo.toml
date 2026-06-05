@@ -31,8 +31,6 @@ glob = "0.3"
 regex = "1"
 reqwest = { version = "0.12", features = ["blocking", "gzip", "rustls-tls", "json", "multipart"], default-features = false }
 tokio = { version = "1", features = ["time", "macros", "rt", "sync", "net"] }
-axum = "0.8"
-tower-http = { version = "0.6", features = ["cors"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 # Passphrase-based encryption for the cross-machine key sync (keys.enc).
 age = "0.10"
