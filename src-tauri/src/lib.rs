@@ -4125,9 +4125,18 @@ async fn compile_tex(
     use tauri::Manager;
     use tauri::path::BaseDirectory;
 
+    // The bundled binary keeps its platform-native name: tectonic.exe on
+    // Windows (see tauri.conf.json), plain `tectonic` on Linux (see
+    // tauri.linux.conf.json). Resolving the wrong one makes compile_tex fail
+    // with a "tectonic binary missing" error on the other platform.
+    let tectonic_resource = if cfg!(windows) {
+        "binaries/tectonic.exe"
+    } else {
+        "binaries/tectonic"
+    };
     let tectonic_path = app
         .path()
-        .resolve("binaries/tectonic.exe", BaseDirectory::Resource)
+        .resolve(tectonic_resource, BaseDirectory::Resource)
         .map_err(|e| format!("locate tectonic binary: {e}"))?;
     if !tectonic_path.exists() {
         return Err(format!(
