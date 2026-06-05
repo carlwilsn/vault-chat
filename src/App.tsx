@@ -557,6 +557,15 @@ export default function App() {
       }
     })();
     void startCrossSync(vaultPath);
+    // Pull any keys this machine is missing from the vault's encrypted
+    // keystore (no-op unless a passphrase is set and keys.enc exists), so
+    // a synced machine inherits credentials without re-entry.
+    void (async () => {
+      const { autoImportOnOpen } = await import("./keystore");
+      await autoImportOnOpen(vaultPath).catch((e) =>
+        console.warn("[keystore] auto-import failed:", e),
+      );
+    })();
     return () => {
       void stopCrossSync();
     };

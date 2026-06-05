@@ -2960,6 +2960,97 @@ async fn keychain_delete(key: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+// ----- cross-machine key sync (encrypted keystore) -----
+//
+// The OS keychain stays the runtime source of truth for every key. This
+// layer only moves keys *between machines*: the JS side serialises the
+// keychain to JSON, encrypts it here with the user's passphrase, and
+// writes the blob to `<vault>/.vault-chat/keys.enc` (synced by git). On
+// another machine it decrypts the blob and writes the keys back into the
+// local keychain. The passphrase lives only in each machine's own
+// keychain and never touches git, so the committed blob is useless
+// without it. Rust does only the crypto primitive; key enumeration and
+// keychain I/O stay in the JS layer.
+
+fn keystore_encrypt_bytes(passphrase: &str, plaintext: &[u8]) -> Result<String, String> {
+    use std::io::Write;
+    let encryptor =
+        age::Encryptor::with_user_passphrase(age::secrecy::Secret::new(passphrase.to_owned()));
+    let mut encrypted = Vec::new();
+    let mut writer = encryptor
+        .wrap_output(&mut encrypted)
+        .map_err(|e| format!("encrypt init: {}", e))?;
+    writer
+        .write_all(plaintext)
+        .map_err(|e| format!("encrypt write: {}", e))?;
+    writer
+        .finish()
+        .map_err(|e| format!("encrypt finish: {}", e))?;
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(encrypted))
+}
+
+fn keystore_decrypt_bytes(passphrase: &str, blob: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    use std::io::Read;
+    let encrypted = base64::engine::general_purpose::STANDARD
+        .decode(blob.trim())
+        .map_err(|e| format!("base64 decode: {}", e))?;
+    let decryptor = match age::Decryptor::new(&encrypted[..])
+        .map_err(|e| format!("decrypt init: {}", e))?
+    {
+        age::Decryptor::Passphrase(d) => d,
+        _ => return Err("keys.enc is not passphrase-encrypted".into()),
+    };
+    let mut decrypted = Vec::new();
+    let mut reader = decryptor
+        .decrypt(&age::secrecy::Secret::new(passphrase.to_owned()), None)
+        .map_err(|_| "decrypt failed (wrong passphrase?)".to_string())?;
+    reader
+        .read_to_end(&mut decrypted)
+        .map_err(|e| format!("decrypt read: {}", e))?;
+    Ok(decrypted)
+}
+
+#[tauri::command]
+async fn keystore_encrypt(passphrase: String, plaintext: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        keystore_encrypt_bytes(&passphrase, plaintext.as_bytes())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn keystore_decrypt(passphrase: String, blob: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = keystore_decrypt_bytes(&passphrase, &blob)?;
+        String::from_utf8(bytes).map_err(|e| format!("utf8: {}", e))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod keystore_tests {
+    use super::{keystore_decrypt_bytes, keystore_encrypt_bytes};
+
+    #[test]
+    fn roundtrip_preserves_payload() {
+        let pass = "correct horse battery staple";
+        let secret = r#"{"api.openrouter":"sk-abc123","user.lambda_api_key":"lam-xyz"}"#;
+        let blob = keystore_encrypt_bytes(pass, secret.as_bytes()).expect("encrypt");
+        let out = keystore_decrypt_bytes(pass, &blob).expect("decrypt");
+        assert_eq!(out, secret.as_bytes());
+    }
+
+    #[test]
+    fn wrong_passphrase_is_rejected() {
+        let blob = keystore_encrypt_bytes("right-pass", b"secret").expect("encrypt");
+        assert!(keystore_decrypt_bytes("wrong-pass", &blob).is_err());
+    }
+}
+
 // ----- .git/ guard -----
 //
 // The git auto-commit / history / restore system is our only undo
@@ -4572,6 +4663,8 @@ pub fn run() {
             keychain_get,
             keychain_set,
             keychain_delete,
+            keystore_encrypt,
+            keystore_decrypt,
             compile_tex,
             app_ready
         ])

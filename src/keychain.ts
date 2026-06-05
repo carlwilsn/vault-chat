@@ -81,6 +81,14 @@ export async function deleteUserKey(name: string): Promise<void> {
   writeUserKeyRegistry(listUserKeys().filter((n) => n !== name));
 }
 
+// Merge in user-key names discovered elsewhere (e.g. imported from another
+// machine via the encrypted keystore) so Settings can enumerate them. The
+// registry is machine-local; the values are written separately.
+export function mergeUserKeyNames(names: string[]): void {
+  const merged = Array.from(new Set([...listUserKeys(), ...names])).sort();
+  writeUserKeyRegistry(merged);
+}
+
 export async function getUserKey(name: string): Promise<string | null> {
   return keychainGet(userKeyName(name));
 }

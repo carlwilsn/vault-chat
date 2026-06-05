@@ -844,6 +844,10 @@ export function SettingsPane() {
 
         <div className="h-px bg-border" />
 
+        <KeystoreSection />
+
+        <div className="h-px bg-border" />
+
         <section className="space-y-1.5">
           <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Storage
@@ -1220,6 +1224,110 @@ function relativeAgo(ts: number): string {
   if (hr < 24) return `${hr}h`;
   const day = Math.floor(hr / 24);
   return `${day}d`;
+}
+
+function KeystoreSection() {
+  const vaultPath = useStore((s) => s.vaultPath);
+  const [hasPass, setHasPass] = useState(false);
+  const [passDraft, setPassDraft] = useState("");
+  const [hasEnc, setHasEnc] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { getPassphrase, hasKeystore } = await import("./keystore");
+      const p = await getPassphrase();
+      const enc = vaultPath ? await hasKeystore(vaultPath) : false;
+      if (!cancelled) {
+        setHasPass(!!p);
+        setHasEnc(enc);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultPath]);
+
+  const savePass = async () => {
+    const p = passDraft.trim();
+    if (!p) return;
+    const { setPassphrase } = await import("./keystore");
+    await setPassphrase(p);
+    setHasPass(true);
+    setPassDraft("");
+    setMsg("passphrase saved on this machine");
+  };
+
+  const run = async (which: "push" | "pull") => {
+    if (!vaultPath) return;
+    setBusy(true);
+    setMsg(null);
+    const mod = await import("./keystore");
+    const r =
+      which === "push" ? await mod.exportKeys(vaultPath) : await mod.importKeys(vaultPath);
+    setMsg(r.message);
+    if (which === "push" && r.ok) setHasEnc(true);
+    setBusy(false);
+  };
+
+  return (
+    <section className="space-y-3">
+      <div>
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+          <Lock className="h-3 w-3" />
+          Key sync across machines
+        </h3>
+        <p className="text-[11.5px] text-muted-foreground/80 mt-0.5 leading-relaxed">
+          Encrypt your keys into the vault so another machine inherits them with
+          one passphrase. The blob (<code className="font-mono">keys.enc</code>) is
+          git-synced; the passphrase never leaves this machine.
+        </p>
+      </div>
+      <div className="space-y-2">
+        <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
+          Passphrase (this machine)
+        </label>
+        <div className="flex gap-2">
+          <Input
+            type="password"
+            value={passDraft}
+            onChange={(e) => setPassDraft(e.target.value)}
+            placeholder={hasPass ? "•••••• (set — re-enter to change)" : "choose a passphrase"}
+            className="font-mono"
+          />
+          <Button size="sm" onClick={savePass} disabled={!passDraft.trim()}>
+            Save
+          </Button>
+        </div>
+        <div className="flex gap-2 pt-1">
+          <Button
+            size="sm"
+            onClick={() => run("push")}
+            disabled={!hasPass || !vaultPath || busy}
+          >
+            Push keys to vault
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => run("pull")}
+            disabled={!hasPass || !hasEnc || busy}
+          >
+            Pull keys now
+          </Button>
+        </div>
+        {msg && <p className="text-[11px] text-muted-foreground pt-0.5">{msg}</p>}
+        {!hasPass && (
+          <p className="text-[10.5px] text-muted-foreground/80">
+            Set the <em>same</em> passphrase on each machine to share keys. New
+            machines auto-pull on vault open.
+          </p>
+        )}
+      </div>
+    </section>
+  );
 }
 
 function CrossSyncSection() {
