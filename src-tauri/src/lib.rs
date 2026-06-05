@@ -3174,7 +3174,17 @@ struct ScriptResult {
 fn interpreter_for(path: &str) -> Option<(&'static str, Vec<String>)> {
     let lower = path.to_lowercase();
     if lower.ends_with(".py") {
-        Some(("python", vec![path.to_string()]))
+        // Windows' Python installer provides `python`; Linux/macOS ship
+        // `python3` with no bare `python` by default — so pick per-platform,
+        // or every .py tool/script dies with "python: command not found".
+        #[cfg(windows)]
+        {
+            Some(("python", vec![path.to_string()]))
+        }
+        #[cfg(not(windows))]
+        {
+            Some(("python3", vec![path.to_string()]))
+        }
     } else if lower.ends_with(".mjs") || lower.ends_with(".js") {
         Some(("node", vec![path.to_string()]))
     } else if lower.ends_with(".ts") {
