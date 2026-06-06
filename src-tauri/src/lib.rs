@@ -1835,6 +1835,145 @@ fn maybe_update_submodules(vault: &str) {
     }
 }
 
+/// Extract the owner/org from a git remote URL — the segment before the repo
+/// name. Handles `https://host/owner/repo(.git)` and `git@host:owner/repo(.git)`.
+/// Lower-cased for case-insensitive comparison. None if it can't be parsed.
+fn repo_owner(url: &str) -> Option<String> {
+    let u = url.trim().trim_end_matches('/').trim_end_matches(".git");
+    let parts: Vec<&str> = u.rsplitn(3, |c| c == '/' || c == ':').collect();
+    // parts = [repo, owner, rest…]
+    parts.get(1).map(|s| s.to_lowercase()).filter(|s| !s.is_empty())
+}
+
+/// True cross-machine sync for sub-repos: for each registered submodule the
+/// user is actively working in — under their own account, on a branch with an
+/// upstream, NOT a detached mirror checkout — commit any uncommitted edits and
+/// push the branch to the sub-repo's own remote. A sub-repo edit then travels across machines exactly
+/// like a vault edit: the push lands the commit on its remote, and the parent's
+/// gitlink bump (committed right after by the normal vault flow) tells the
+/// other machine which commit to check out.
+///
+/// Deliberately skipped — all best-effort, never fatal to the vault's own sync:
+///   - detached-HEAD submodules: a mirror checkout or read-only reference (e.g.
+///     microsoft/BitNet) just tracks a pinned commit; we must not commit into it.
+///   - submodules with no upstream branch: nowhere to push.
+///   - a push that fails (no write access, non-fast-forward): logged, skipped —
+///     the parent still records the local commit; the other machine fetches it
+///     once the push eventually succeeds.
+fn sync_submodules(vault: &str, agent: bool) {
+    if !PathBuf::from(vault).join(".gitmodules").is_file() {
+        return;
+    }
+    let (out, _, code) = match run_git(
+        vault,
+        &["config", "-f", ".gitmodules", "--get-regexp", "\\.path$"],
+    ) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    if code != 0 {
+        return;
+    }
+    // Only sync sub-repos owned by the same account as the vault itself.
+    // This is the key safety gate: it prevents committing into third-party
+    // upstreams that happen to be registered as submodules (e.g. microsoft/BitNet).
+    // If we can't determine the vault owner, we skip the whole function — safer
+    // than guessing and accidentally committing into a repo we don't own.
+    let vault_owner: Option<String> = run_git(vault, &["remote", "get-url", "origin"])
+        .ok()
+        .and_then(|(url, _, c)| if c == 0 { Some(url) } else { None })
+        .and_then(|url| repo_owner(&url));
+    if vault_owner.is_none() {
+        return; // vault has no remote — nothing meaningful to sync sub-repos to
+    }
+    let vault_owner = vault_owner.unwrap();
+
+    let (name, email) = if agent {
+        (AGENT_GIT_NAME, AGENT_GIT_EMAIL)
+    } else {
+        (APP_GIT_NAME, APP_GIT_EMAIL)
+    };
+    let name_cfg = format!("user.name={}", name);
+    let email_cfg = format!("user.email={}", email);
+    for line in out.lines() {
+        // Each line: "submodule.<name>.path <relpath>"
+        let rel = match line.split_once(char::is_whitespace) {
+            Some((_, p)) => p.trim(),
+            None => continue,
+        };
+        if rel.is_empty() {
+            continue;
+        }
+        let sub = format!("{}/{}", vault, rel);
+        if !PathBuf::from(&sub).join(".git").exists() {
+            continue; // not materialized on this machine
+        }
+        // Only sync repos owned by the same account as the vault.
+        // Skips third-party upstreams (microsoft/BitNet, etc.) — we have no
+        // write access and must not commit into them.
+        let sub_owner: Option<String> = run_git(&sub, &["remote", "get-url", "origin"])
+            .ok()
+            .and_then(|(url, _, c)| if c == 0 { Some(url) } else { None })
+            .and_then(|url| repo_owner(&url));
+        match &sub_owner {
+            Some(o) if o == &vault_owner => {} // same owner — proceed
+            _ => continue,                      // different owner or no remote — skip
+        }
+        // On a branch? A detached mirror checkout returns non-zero here, so it
+        // is skipped — we only sync repos the user is actually working in.
+        let on_branch = matches!(
+            run_git(&sub, &["symbolic-ref", "--quiet", "--short", "HEAD"]),
+            Ok((ref b, _, 0)) if !b.trim().is_empty()
+        );
+        if !on_branch {
+            continue;
+        }
+        // Needs an upstream branch to push to.
+        let has_upstream = matches!(
+            run_git(
+                &sub,
+                &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+            ),
+            Ok((_, _, 0))
+        );
+        if !has_upstream {
+            continue;
+        }
+        // Commit any uncommitted edits in the sub-repo.
+        if let Ok((st, _, _)) = run_git(&sub, &["status", "--porcelain"]) {
+            if !st.trim().is_empty() {
+                let _ = run_git_mut(&sub, &["-c", &email_cfg, "-c", &name_cfg, "add", "-A"]);
+                let msg = format!(
+                    "{}vault-chat: auto-sync (sub-repo)",
+                    if agent { "[agent] " } else { "" }
+                );
+                let _ = run_git_mut(
+                    &sub,
+                    &["-c", &email_cfg, "-c", &name_cfg, "commit", "-q", "-m", &msg],
+                );
+            }
+        }
+        // Push if the branch is ahead of its upstream. Best-effort.
+        let ahead = match run_git(&sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
+            Ok((c, _, 0)) => c.trim().parse::<u64>().unwrap_or(0),
+            _ => 0,
+        };
+        if ahead > 0 {
+            match run_git_timeout(&sub, &["push"], 300) {
+                Ok((_, perr, pc)) if pc != 0 => {
+                    eprintln!(
+                        "[sync] submodule '{}' push skipped: {}",
+                        rel,
+                        first_line(&perr).trim()
+                    );
+                }
+                Err(e) => eprintln!("[sync] submodule '{}' push error: {}", rel, e),
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Mutating git with retry: if it fails on a foreign `index.lock`, clear a
 /// stale lock and retry with backoff. In-process writers are already
 /// serialized by `with_repo_lock`, so this only covers a foreign git (the
@@ -2906,6 +3045,11 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         // Self-heal a wedged repo: a crashed prior pull can leave an
         // in-progress rebase under which every commit silently no-ops.
         abort_stuck_merge_or_rebase(&vault);
+        // True-sync sub-repos first: commit + push any work in submodules the
+        // user is actively on, advancing their HEADs so the parent's gitlink
+        // bumps get staged and committed below. A sub-repo edit is then carried
+        // cross-machine the same way a vault edit is.
+        sync_submodules(&vault, false);
         let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
         if status_out.trim().is_empty() {
             return Ok(SyncOpResult {
