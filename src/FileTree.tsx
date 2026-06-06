@@ -944,14 +944,18 @@ export function FileTree() {
                     <FileText className="h-3.5 w-3.5 shrink-0 opacity-70 ml-3.5" />
                   )}
                   <span className="truncate">{f.name.replace(/\.md$/, "")}</span>
-                  {/* Git repo folder badges — only shown when this dir is a git repo root */}
-                  {f.git_branch !== undefined && (
+                  {/* Git repo folder badge — only on a directory that is itself a
+                      nested git repo root (has its own .git). NOTE: must be a
+                      null-safe check: the backend serializes a non-repo entry's
+                      git_branch as JSON `null`, and `null !== undefined` is true,
+                      which would paint the badge on every file in the vault. */}
+                  {f.git_branch != null && (
                     <>
                       <GitBranch className="h-2.5 w-2.5 shrink-0 text-muted-foreground/60 ml-1" />
                       <span className="text-[9.5px] text-muted-foreground/60 font-mono shrink-0">
                         {f.git_branch}
                       </span>
-                      {f.git_dirty_count !== undefined && f.git_dirty_count > 0 && (
+                      {f.git_dirty_count != null && f.git_dirty_count > 0 && (
                         <span
                           className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0"
                           title={`${f.git_dirty_count} uncommitted change${f.git_dirty_count === 1 ? "" : "s"}`}

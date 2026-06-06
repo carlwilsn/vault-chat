@@ -134,9 +134,14 @@ struct FileEntry {
     humanized: bool,
     /// Some("main") if this directory contains a `.git` subdirectory —
     /// i.e. it IS a git repo root. None for ordinary directories and files.
+    /// Skip when None so the field is absent (not JSON `null`) on the wire —
+    /// the frontend treats "has a branch" as "is a repo", and a serialized
+    /// `null` would otherwise read as present and badge every file.
+    #[serde(skip_serializing_if = "Option::is_none")]
     git_branch: Option<String>,
     /// Number of uncommitted changes in the repo (lines of `git status --porcelain`).
     /// Some(0) = clean repo, Some(n) = n dirty files. None for non-repo dirs.
+    #[serde(skip_serializing_if = "Option::is_none")]
     git_dirty_count: Option<u32>,
 }
 
