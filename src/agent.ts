@@ -6,7 +6,7 @@ import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./provi
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
-import { loadVaultSystemPrompt, loadVaultTools, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock } from "./meta";
+import { loadVaultSystemPrompt, loadVaultTools, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock, loadVaultTelegramPrompt } from "./meta";
 
 export type TokenUsage = {
   prompt: number;
@@ -34,6 +34,11 @@ export type ChatTurn = { role: "user" | "assistant"; content: string };
 const FALLBACK_SYSTEM = `You are the runtime for a personal knowledge vault. Tools: Read, Write, Edit, Delete, Glob, Grep, Bash, ListDir, NotebookEdit, PdfExtract, PdfPageSnapshot, TodoWrite, WebFetch, WebSearch, ListNotes, ResolveNote, ReopenNote, CreateNote. Use absolute paths. Render math with $$...$$.
 
 The user keeps a scratchpad of notes at <vault>/.vault-chat/notes.jsonl — quick thoughts they flagged while working. Call ListNotes when they ask about their notes, what they've flagged, what's open, etc. When a conversation actually addresses an open note, call ResolveNote to close it. When you notice something the user will want to revisit, offer to CreateNote it for them.`;
+
+// Compiled-in fallback for Telegram mode, used when a vault hasn't seeded
+// (or the user emptied) `.vault-chat/agent/telegram.md`. The seeded file is
+// the editable source of truth — kept in sync with defaults/telegram.md.
+const FALLBACK_TELEGRAM = `Your reply will be sent to the user's phone via Telegram. Keep it short (1-3 sentences), plain text only — no markdown, headers, bullets, or code fences (they render as literal characters on Telegram). For images the user asks for, create the file with your tools and reference it as \`![caption](relative/path.png)\` — vault-chat uploads that as a real photo. Tool calls are fine; only your final reply text goes to Telegram. Delete any throwaway scratch files before replying.`;
 
 function detectPlatform(): "windows" | "mac" | "linux" {
   const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
@@ -84,7 +89,7 @@ export async function runAgent(params: {
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey);
 
-    const [sessionContext, skills, vaultSystem, vaultTools, northStar, memoryIndex, shellKind] = await Promise.all([
+    const [sessionContext, skills, vaultSystem, vaultTools, northStar, memoryIndex, shellKind, vaultTelegram] = await Promise.all([
       loadSessionContext(vault),
       loadSkills(vault),
       loadVaultSystemPrompt(vault),
@@ -92,6 +97,9 @@ export async function runAgent(params: {
       loadVaultNorthStar(vault),
       loadVaultMemoryIndex(vault),
       getShellKind(),
+      // Editable per-vault Telegram-mode prompt; only used when telegramMode
+      // is on, but loaded here so the prompt assembly stays a single pass.
+      telegramMode ? loadVaultTelegramPrompt(vault) : Promise.resolve(""),
     ]);
 
     const { body: expandedMessage } = expandSkillInvocation(userMessage, skills);
@@ -122,8 +130,12 @@ export async function runAgent(params: {
     const northStarBlock = northStarPromptBlock(northStar);
     const memoryBlock = vaultMemoryPromptBlock(memoryIndex);
 
+    // Telegram-mode instructions come from the per-vault editable file
+    // `.vault-chat/agent/telegram.md` (surfaced as the "Telegram" tab in the
+    // agent-config modal, synced cross-machine via git), falling back to the
+    // compiled-in baseline when the vault hasn't seeded it.
     const telegramNote = telegramMode
-      ? `\n## Telegram mode\n\nYour reply will be sent to the user's phone via Telegram. Constraints that override your defaults:\n\n- **Short.** Aim for 1-3 sentences. A few well-chosen lines beat a wall of text the user has to scroll through on their phone.\n- **Plain text only.** No markdown — no \`**bold**\`, no \`*italic*\`, no \`#\` headers, no \`-\` bullet lists, no code fences. They render as literal asterisks/hashes on Telegram, which looks broken.\n- **Images:** when the user asks for an image (plot, chart, diagram), generate the file with your tools (e.g. Write a Python script with matplotlib that saves to PNG, then Bash to run it; or write directly with the appropriate tool), then reference it in your reply using markdown image syntax: \`![short caption](relative/path/to/file.png)\`. vault-chat detects this pattern and uploads each as a real photo via Telegram's sendPhoto API — the caption shows under the image. Paths are relative to the vault root unless absolute. This is the ONE markdown exception in this mode; don't use \`![…](…)\` for anything other than actual image files you've just created or located.\n- **No tables, no diagrams in text.** If something genuinely needs structure, just describe it in prose or render it as an image (above).\n- **Code:** if the user is asking for code, inline it with backticks for short snippets or post it as plain indented text. Skip language tags. If it's longer than ~15 lines, save it to a file with Write and tell the user the path in one sentence.\n- **Tool calls are fine** — they don't go to Telegram, just your final reply text does. Do whatever work the task requires, then summarize the outcome briefly.\n- **Clean up scratch work.** If you write throwaway helper code or temp files *only to compute an answer* (a quick script, a scratch data file, an intermediate dump), delete them once you have what you need. The user isn't watching this run, and everything left in the vault gets auto-committed to its git history — so unattended scratch quietly piles up. Keep only files the user actually asked you to produce; remove the rest before you reply.`
+      ? `\n## Telegram mode\n\n${vaultTelegram.trim() || FALLBACK_TELEGRAM}`
       : "";
 
     const system = [

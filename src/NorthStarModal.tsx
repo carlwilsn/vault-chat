@@ -7,11 +7,13 @@ import {
   saveVaultSystemPrompt,
   loadVaultVoicePrompt,
   saveVaultVoicePrompt,
+  loadVaultTelegramPrompt,
+  saveVaultTelegramPrompt,
 } from "./meta";
 
 // The agent's editable config for a vault, all under .vault-chat/agent/.
 // Each tab is one file; Save writes whichever tabs changed.
-type TabKey = "north" | "system" | "voice";
+type TabKey = "north" | "system" | "voice" | "telegram";
 
 const TABS: {
   key: TabKey;
@@ -50,9 +52,18 @@ const TABS: {
     load: loadVaultVoicePrompt,
     save: saveVaultVoicePrompt,
   },
+  {
+    key: "telegram",
+    label: "Telegram",
+    file: ".vault-chat/agent/telegram.md",
+    desc: "How the agent replies to messages from this vault's Telegram bot — length, formatting, image handling. Edit this to make the Telegram agent actually follow your rules. Seeded from the app default.",
+    placeholder: "The Telegram-mode reply rules for this vault.",
+    load: loadVaultTelegramPrompt,
+    save: saveVaultTelegramPrompt,
+  },
 ];
 
-const EMPTY: Record<TabKey, string> = { north: "", system: "", voice: "" };
+const EMPTY: Record<TabKey, string> = { north: "", system: "", voice: "", telegram: "" };
 
 export function NorthStarModal({
   vault,
@@ -77,12 +88,13 @@ export function NorthStarModal({
     setLoaded(false);
     setError(null);
     void (async () => {
-      const [north, system, voice] = await Promise.all([
+      const [north, system, voice, telegram] = await Promise.all([
         loadVaultNorthStar(vault),
         loadVaultSystemPrompt(vault),
         loadVaultVoicePrompt(vault),
+        loadVaultTelegramPrompt(vault),
       ]);
-      const next: Record<TabKey, string> = { north, system, voice };
+      const next: Record<TabKey, string> = { north, system, voice, telegram };
       setTexts(next);
       setOrig(next);
       setLoaded(true);

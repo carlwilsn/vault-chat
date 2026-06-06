@@ -113,6 +113,27 @@ export async function saveVaultVoicePrompt(vault: string, contents: string): Pro
   });
 }
 
+/** Per-vault Telegram-mode prompt at `.vault-chat/agent/telegram.md`. Steers
+ *  how the agent replies to messages arriving via the vault's Telegram bot
+ *  (short, plain-text, phone-friendly). "" when absent — the agent then uses
+ *  the compiled-in fallback. */
+export async function loadVaultTelegramPrompt(vault: string | null): Promise<string> {
+  if (!vault) return "";
+  return readAgentConfig(vault, "telegram.md");
+}
+
+export async function ensureVaultTelegramPrompt(vault: string | null): Promise<void> {
+  if (!vault) return;
+  await ensureAgentConfig(vault, "telegram.md", "default_telegram_prompt");
+}
+
+export async function saveVaultTelegramPrompt(vault: string, contents: string): Promise<void> {
+  await invoke("write_text_file", {
+    path: `${vault}/${AGENT_DIR}/telegram.md`,
+    contents,
+  });
+}
+
 /** Read the per-vault north-star brief (the user's declaration of
  *  what the vault is for). Stored at <vault>/.vault-chat/agent/north-star.md
  *  (migrated from the older flat `.vault-chat/north-star.md`). Prepended to

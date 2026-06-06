@@ -3338,6 +3338,7 @@ fn git_guard(path: &str) -> Result<(), String> {
 
 const DEFAULT_SYSTEM_MD: &str = include_str!("../defaults/system.md");
 const DEFAULT_VOICE_MD: &str = include_str!("../defaults/voice.md");
+const DEFAULT_TELEGRAM_MD: &str = include_str!("../defaults/telegram.md");
 
 /// The bundled default agent system prompt. New vaults seed
 /// `<vault>/.vault-chat/agent/system.md` from this; it can then be
@@ -3352,6 +3353,15 @@ fn default_system_prompt() -> String {
 #[tauri::command]
 fn default_voice_prompt() -> String {
     DEFAULT_VOICE_MD.to_string()
+}
+
+/// The bundled default Telegram-mode prompt. New vaults seed
+/// `<vault>/.vault-chat/agent/telegram.md` from this. It steers how the
+/// agent replies to messages that arrive via the vault's Telegram bot
+/// (short, plain-text, phone-friendly), and is editable per vault.
+#[tauri::command]
+fn default_telegram_prompt() -> String {
+    DEFAULT_TELEGRAM_MD.to_string()
 }
 
 // ----- run_script -----
@@ -4587,6 +4597,7 @@ pub fn run() {
             path_exists,
             default_system_prompt,
             default_voice_prompt,
+            default_telegram_prompt,
             run_script,
             keychain_get,
             keychain_set,
