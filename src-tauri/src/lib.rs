@@ -4514,14 +4514,40 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
 
-            // Start the main window hidden so the OS doesn't show an
-            // unpainted frame while the WebView is still loading. The
-            // frontend calls `app_ready` once React has mounted and the
-            // splash starts fading — see src/main.tsx.
+            // Window visibility on cold start. The window is created hidden
+            // (tauri.conf.json `visible:false`) so Windows/macOS never flash
+            // an unpainted WebView frame. The frontend calls `app_ready` to
+            // show it the instant React's first paint lands — a single, clean
+            // appear with no show→hide→show flicker.
+            //
+            // Earlier this hid the window here in setup *after* a `visible:true`
+            // config — which on Windows produced exactly that flicker (the OS
+            // showed the frame, then we hid it, then app_ready re-showed it).
             if let Some(w) = app.get_webview_window("main") {
-                let _ = w.hide();
                 #[cfg(windows)]
                 apply_titlebar_color(&w);
+
+                // Linux exception: some WebKitGTK compositors never deliver a
+                // first paint frame and historically left the window hidden
+                // forever. There the static HTML splash covers the load, so
+                // show immediately rather than waiting on a paint signal.
+                #[cfg(target_os = "linux")]
+                {
+                    let _ = w.show();
+                }
+
+                // Cross-platform safety net: if the frontend never calls
+                // `app_ready` at all (a wedged WebView that doesn't even run
+                // JS), show the window anyway after a few seconds so it can
+                // never stay invisible.
+                let wf = w.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    if matches!(wf.is_visible(), Ok(false)) {
+                        let _ = wf.show();
+                        let _ = wf.set_focus();
+                    }
+                });
             }
 
             Ok(())

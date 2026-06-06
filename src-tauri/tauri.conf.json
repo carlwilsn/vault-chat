@@ -22,7 +22,7 @@
         "titleBarStyle": "Overlay",
         "backgroundColor": "#1f1f23",
         "dragDropEnabled": false,
-        "visible": true
+        "visible": false
       }
     ],
     "security": {
