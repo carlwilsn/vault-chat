@@ -168,8 +168,14 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
     if (s.modelId && s.modelId !== prevModel) {
       store.setModelId(s.modelId);
     }
-    await sendMessage(s.prompt, undefined, undefined, conversationId).catch(
-      (e) => console.warn("[scheduler] active-vault sendMessage failed:", e),
+    await sendMessage(
+      s.prompt,
+      undefined,
+      undefined,
+      conversationId,
+      s.sendViaTelegram,
+    ).catch((e) =>
+      console.warn("[scheduler] active-vault sendMessage failed:", e),
     );
     if (s.modelId && s.modelId !== prevModel) {
       // Restore. sendMessage above resolves once the run is enqueued;

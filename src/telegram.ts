@@ -130,6 +130,24 @@ export async function getTelegramCredentials(vault: string | null): Promise<{
   return { token, userId };
 }
 
+// Resolve where a schedule's "send via Telegram" output should go.
+// Prefer the conversation's own bound chat (a real Telegram thread).
+// Otherwise fall back to the owner's DM: in a private chat with the
+// bot, the chat_id is identical to the owner's user_id, which we have
+// stored. This lets a schedule keep its long-form context in a normal
+// (non-Telegram) chat thread while still delivering the result to the
+// phone. Returns null if no chat can be resolved (no user_id stored).
+export async function resolveScheduleTelegramTarget(
+  vault: string,
+  convChatId: number | undefined,
+): Promise<number | null> {
+  if (convChatId !== undefined) return convChatId;
+  const { userId } = await getTelegramCredentials(vault);
+  if (!userId) return null;
+  const n = Number(userId);
+  return Number.isFinite(n) && n !== 0 ? n : null;
+}
+
 export async function setTelegramCredentials(
   vault: string,
   token: string,

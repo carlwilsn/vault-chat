@@ -8,7 +8,11 @@ import {
   newConversationId,
   type Conversation,
 } from "./conversations";
-import { sendTelegramMessage, sendTelegramReplyWithImages } from "./telegram";
+import {
+  sendTelegramMessage,
+  sendTelegramReplyWithImages,
+  resolveScheduleTelegramTarget,
+} from "./telegram";
 import { useStore, type ChatMessage, type LiveTool } from "./store";
 
 // Minimum gap between Telegram progress pings during a long headless run,
@@ -247,7 +251,14 @@ export async function runScheduledHeadlessTurn(
   await writeConversations(vault, list);
 
   const isTelegramSourced = list[idx]!.source === "telegram";
-  const telegramChatId = list[idx]!.telegramChatId;
+  // Where Telegram output should go. Prefer the conversation's own bound
+  // chat; if this schedule fires into a non-Telegram conversation (e.g. a
+  // coach thread that keeps long-form context), fall back to the owner's
+  // DM so "send via Telegram" still delivers. null when delivery is off
+  // or no chat can be resolved.
+  const telegramChatId = opts.sendViaTelegram
+    ? await resolveScheduleTelegramTarget(vault, list[idx]!.telegramChatId)
+    : null;
 
   let acc = "";
   const tools: LiveTool[] = [];
@@ -259,7 +270,7 @@ export async function runScheduledHeadlessTurn(
   // Only when the run is Telegram-bound and the conversation has a chat.
   let lastProgressAt = 0;
   const notify = (text: string) => {
-    if (!opts.sendViaTelegram || telegramChatId === undefined) return;
+    if (telegramChatId == null) return;
     void sendTelegramMessage(vault, telegramChatId, text).catch(() => {});
   };
 
@@ -330,7 +341,7 @@ export async function runScheduledHeadlessTurn(
     .refreshConversationFromDisk(vault, conversationId)
     .catch(() => {});
 
-  if (acc.trim() && opts.sendViaTelegram && telegramChatId !== undefined) {
+  if (acc.trim() && telegramChatId != null) {
     await sendTelegramReplyWithImages(vault, telegramChatId, acc).catch((e) =>
       console.warn("[scheduler] telegram send failed:", e),
     );

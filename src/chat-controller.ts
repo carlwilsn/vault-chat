@@ -31,6 +31,11 @@ export async function sendMessage(
   // in the background and the off-screen path in the mid-run-switch
   // logic routes events to the right place.
   targetConvIdOverride?: string,
+  // Schedule-only: when true, mirror the final reply to Telegram even if
+  // the target conversation isn't Telegram-sourced — falling back to the
+  // owner's DM. Lets a coach schedule keep long-form context in a normal
+  // chat thread while still pinging the phone.
+  sendViaTelegram?: boolean,
 ) {
   const s = useStore.getState();
   // Concurrency model: only the FOREGROUND (active) conversation owns the
@@ -215,8 +220,13 @@ export async function sendMessage(
   // Mirror the assistant's final reply to Telegram if the target
   // conversation is telegram-sourced — regardless of which conv the
   // user is currently watching.
-  const telegramChatId =
+  let telegramChatId =
     targetConv?.source === "telegram" ? targetConv.telegramChatId : undefined;
+  if (telegramChatId === undefined && sendViaTelegram) {
+    const { resolveScheduleTelegramTarget } = await import("./telegram");
+    telegramChatId =
+      (await resolveScheduleTelegramTarget(vault, undefined)) ?? undefined;
+  }
 
   // For off-target runs use a local AbortController — don't clobber
   // the singleton abortRef that the active conversation's Stop button
