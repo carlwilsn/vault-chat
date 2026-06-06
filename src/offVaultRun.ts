@@ -6,6 +6,7 @@ import {
   emptyConversation,
   deriveConversationTitle,
   newConversationId,
+  bindTelegramChatId,
   type Conversation,
 } from "./conversations";
 import {
@@ -256,9 +257,14 @@ export async function runScheduledHeadlessTurn(
   // coach thread that keeps long-form context), fall back to the owner's
   // DM so "send via Telegram" still delivers. null when delivery is off
   // or no chat can be resolved.
+  const ownChatId = list[idx]!.telegramChatId;
   const telegramChatId = opts.sendViaTelegram
-    ? await resolveScheduleTelegramTarget(vault, list[idx]!.telegramChatId)
+    ? await resolveScheduleTelegramTarget(vault, ownChatId)
     : null;
+  // When we deliver via the owner's DM fallback (the thread wasn't itself
+  // bound), bind that DM to this thread so replies from the phone
+  // continue the coach with full context instead of a stray thread.
+  const bindFallback = telegramChatId != null && ownChatId === undefined;
 
   let acc = "";
   const tools: LiveTool[] = [];
@@ -316,7 +322,7 @@ export async function runScheduledHeadlessTurn(
     notify(`⚠️ scheduled run failed: ${String(e)}`);
   }
 
-  const finalList = await readConversations(vault);
+  let finalList = await readConversations(vault);
   let fi = finalList.findIndex((c) => c.id === conversationId);
   if (fi < 0) fi = 0;
   if (finalList[fi]) {
@@ -331,6 +337,9 @@ export async function runScheduledHeadlessTurn(
       lastActivityAt: Date.now(),
       unread: true,
     };
+    if (bindFallback) {
+      finalList = bindTelegramChatId(finalList, conversationId, telegramChatId);
+    }
     await writeConversations(vault, finalList);
   }
 

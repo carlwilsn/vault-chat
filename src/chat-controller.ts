@@ -220,12 +220,20 @@ export async function sendMessage(
   // Mirror the assistant's final reply to Telegram if the target
   // conversation is telegram-sourced — regardless of which conv the
   // user is currently watching.
-  let telegramChatId =
-    targetConv?.source === "telegram" ? targetConv.telegramChatId : undefined;
+  // A conversation with a bound telegramChatId talks to the phone,
+  // regardless of source — so a coach thread a schedule has bound to the
+  // DM mirrors its replies too, not just telegram-sourced chats. When a
+  // schedule wants delivery but the thread isn't bound yet, fall back to
+  // the owner's DM and remember to bind it after this run.
+  let telegramChatId = targetConv?.telegramChatId;
+  let bindFallback = false;
   if (telegramChatId === undefined && sendViaTelegram) {
     const { resolveScheduleTelegramTarget } = await import("./telegram");
-    telegramChatId =
-      (await resolveScheduleTelegramTarget(vault, undefined)) ?? undefined;
+    const resolved = await resolveScheduleTelegramTarget(vault, undefined);
+    if (resolved != null) {
+      telegramChatId = resolved;
+      bindFallback = true;
+    }
   }
 
   // For off-target runs use a local AbortController — don't clobber
@@ -348,6 +356,20 @@ export async function sendMessage(
           sendTelegramReplyWithImages(vault, telegramChatId, reply).catch((err) =>
             console.warn("[telegram] outbound reply failed:", err),
           );
+          // Bind the DM to this thread so phone replies continue it. Keep
+          // source as-is — the thread stays in rich mode, only routing
+          // moves. The store subscription persists this to disk.
+          if (bindFallback && targetConvId) {
+            import("./conversations").then(({ bindTelegramChatId }) => {
+              useStore.setState({
+                conversations: bindTelegramChatId(
+                  useStore.getState().conversations,
+                  targetConvId,
+                  telegramChatId!,
+                ),
+              });
+            });
+          }
         }
 
         // If the agent wrote / edited / deleted / ran bash, auto-commit
