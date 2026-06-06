@@ -4554,6 +4554,38 @@ pub fn run() {
                 #[cfg(target_os = "linux")]
                 {
                     let _ = w.show();
+
+                    // wry installs no permission-request handler on WebKitGTK,
+                    // so getUserMedia (microphone) is denied by default and
+                    // voice mode fails with NotAllowedError. Reach into the
+                    // underlying WebKitWebView to enable the media features and
+                    // approve UserMedia (microphone) permission requests.
+                    use webkit2gtk::{
+                        glib::object::Cast, PermissionRequestExt, SettingsExt,
+                        UserMediaPermissionRequest, WebViewExt,
+                    };
+                    let _ = w.with_webview(|webview| {
+                        let wv = webview.inner();
+                        if let Some(settings) = WebViewExt::settings(&wv) {
+                            settings.set_enable_media_stream(true);
+                            settings.set_enable_mediasource(true);
+                            settings.set_enable_webrtc(true);
+                            settings.set_enable_webaudio(true);
+                            // Voice mode resumes its playback AudioContext
+                            // asynchronously after the click that starts it;
+                            // without this WebKitGTK keeps it suspended.
+                            settings.set_media_playback_requires_user_gesture(false);
+                            settings.set_media_playback_allows_inline(true);
+                        }
+                        wv.connect_permission_request(|_wv, req| {
+                            if req.downcast_ref::<UserMediaPermissionRequest>().is_some() {
+                                req.allow();
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                    });
                 }
 
                 // Cross-platform safety net: if the frontend never calls

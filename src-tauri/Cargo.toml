@@ -39,3 +39,9 @@ base64 = "0.22"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 
+# Linux voice mode: reach into the WebKitGTK webview to grant the microphone
+# (getUserMedia) permission, which wry leaves denied by default. Pinned to the
+# same version + feature wry uses so the WebView type unifies.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
+
