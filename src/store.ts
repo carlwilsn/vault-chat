@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import type { ModelSpec, ProviderId } from "./providers";
 import { AUTO_MODEL_ID, setLiveCatalog, setAutoRouterCostBias } from "./providers";
@@ -33,6 +34,12 @@ export type FileEntry = {
   // True when this exact path is in <vault>/.vault-chat/humanized.json.
   // Agent write tools refuse it; the user can still edit by hand.
   humanized: boolean;
+  // Set only for directories that ARE a git repo root (contain `.git`).
+  // Branch name, e.g. "main", or "detached" for detached HEAD.
+  git_branch?: string;
+  // Number of uncommitted changes (lines from `git status --porcelain`).
+  // 0 = clean; >0 = dirty. Only set when git_branch is set.
+  git_dirty_count?: number;
 };
 
 export type ChatRole = "user" | "assistant";
@@ -472,6 +479,12 @@ type State = {
   showChatsPanel: boolean;
   showSchedulesPanel: boolean;
 
+  // Git repo root for the currently-open file. When the file lives inside a
+  // nested sub-repo (e.g. `DeepDL/bitnet-repro/notes.md`) this is that
+  // sub-repo's root, not vaultPath. Falls back to vaultPath when the file is
+  // not in a sub-repo. Null until a file is opened.
+  repoRoot: string | null;
+
   setVault: (p: string) => void;
   setFiles: (f: FileEntry[]) => void;
   applyDeleteCascade: (paths: string[]) => Promise<void>;
@@ -682,6 +695,7 @@ export const useStore = create<State>((set) => ({
   conversationsLoaded: false,
   showChatsPanel: false,
   showSchedulesPanel: false,
+  repoRoot: null,
 
   setVault: (p) =>
     set((s) => {
@@ -891,7 +905,7 @@ export const useStore = create<State>((set) => ({
       }
     }
   },
-  setCurrentFile: (p, content) =>
+  setCurrentFile: (p, content) => {
     set((s) => {
       if (s.panes.length > 0 && s.activePaneId && p) {
         const panes = s.panes.map((pane) =>
@@ -900,7 +914,23 @@ export const useStore = create<State>((set) => ({
         return { panes, currentFile: p, currentContent: content, viewport: null };
       }
       return { currentFile: p, currentContent: content, panes: [], splitDirection: null, activePaneId: null, viewport: null };
-    }),
+    });
+    // Async: resolve which git repo root owns this file, then update
+    // repoRoot. Fire-and-forget — the sync state update above is
+    // instantaneous; repoRoot catches up on the next microtask.
+    const vault = useStore.getState().vaultPath;
+    if (p && vault) {
+      invoke<string | null>("git_repo_root_for_file", { vault, path: p })
+        .then((root) => {
+          set({ repoRoot: root ?? vault });
+        })
+        .catch(() => {
+          set({ repoRoot: vault });
+        });
+    } else {
+      set({ repoRoot: vault });
+    }
+  },
   reloadCurrent: (path, content) =>
     set((s) => {
       // Path-guarded: only apply the content if the view still shows

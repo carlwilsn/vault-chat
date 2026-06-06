@@ -132,6 +132,12 @@ struct FileEntry {
     hidden: bool,
     denied: bool,
     humanized: bool,
+    /// Some("main") if this directory contains a `.git` subdirectory —
+    /// i.e. it IS a git repo root. None for ordinary directories and files.
+    git_branch: Option<String>,
+    /// Number of uncommitted changes in the repo (lines of `git status --porcelain`).
+    /// Some(0) = clean repo, Some(n) = n dirty files. None for non-repo dirs.
+    git_dirty_count: Option<u32>,
 }
 
 // Extensions we hide from the file tree even though they exist on disk —
@@ -324,6 +330,35 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
         let hidden = is_hidden_path(&rel_str, &ignored);
         let is_denied = is_listed_path(&rel_str, &denied);
         let is_humanized = humanized.contains(&rel_str);
+        // Detect git repos: check if this directory contains a `.git` entry.
+        // Only populated for directories — fast, no network, no git process.
+        let (git_branch, git_dirty_count) = if is_dir && path.join(".git").exists() {
+            let path_str = path.to_string_lossy().to_string();
+            let branch = run_git(&path_str, &["symbolic-ref", "--short", "HEAD"])
+                .ok()
+                .map(|(out, _, code)| {
+                    if code == 0 {
+                        let b = out.trim().to_string();
+                        if b.is_empty() { "detached".to_string() } else { b }
+                    } else {
+                        "detached".to_string()
+                    }
+                })
+                .unwrap_or_else(|| "detached".to_string());
+            let dirty = run_git(&path_str, &["status", "--porcelain"])
+                .ok()
+                .map(|(out, _, code)| {
+                    if code == 0 {
+                        out.lines().filter(|l| !l.trim().is_empty()).count() as u32
+                    } else {
+                        0u32
+                    }
+                })
+                .unwrap_or(0u32);
+            (Some(branch), Some(dirty))
+        } else {
+            (None, None)
+        };
         entries.push(FileEntry {
             path: path.to_string_lossy().replace('\\', "/"),
             name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
@@ -332,6 +367,8 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
             hidden,
             denied: is_denied,
             humanized: is_humanized,
+            git_branch,
+            git_dirty_count,
         });
     }
     Ok(entries)
@@ -1677,6 +1714,8 @@ async fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
             hidden: false,
             denied: false,
             humanized: false,
+            git_branch: None,
+            git_dirty_count: None,
         });
     }
     entries.sort_by(|a, b| {
@@ -2381,6 +2420,49 @@ async fn git_recent_commits(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Find the git repository root that contains `path`. Walks up from the
+/// file's directory looking for a `.git` entry, stopping at (and never
+/// above) `vault`. Returns the repo root as an absolute path if found, or
+/// `None` if the file is not inside any git repo within the vault.
+///
+/// Used by the history modal to show the right repo's history when a file
+/// inside a nested sub-repo (e.g. `DeepDL/bitnet-repro/notes.md`) is open.
+#[tauri::command]
+async fn git_repo_root_for_file(vault: String, path: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault_path = PathBuf::from(&vault);
+        // Start from the file's parent directory (or the path itself if it is
+        // already a directory).
+        let start = {
+            let p = PathBuf::from(&path);
+            if p.is_dir() { p } else { p.parent().map(|p| p.to_path_buf()).unwrap_or(p) }
+        };
+
+        let mut current = start;
+        loop {
+            // Never escape the vault boundary.
+            if !current.starts_with(&vault_path) {
+                break;
+            }
+            if current.join(".git").exists() {
+                return Some(current.to_string_lossy().replace('\\', "/"));
+            }
+            // Stop once we hit the vault root itself (we already checked it).
+            if current == vault_path {
+                break;
+            }
+            match current.parent() {
+                Some(p) => current = p.to_path_buf(),
+                None => break,
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Revert the most recent commit (leaves a new commit that undoes it
@@ -4952,6 +5034,7 @@ pub fn run() {
             git_init_if_needed,
             git_commit_all,
             git_recent_commits,
+            git_repo_root_for_file,
             git_log_subdir,
             git_revert_head,
             git_show_commit,

@@ -8,7 +8,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import { preprocessMarkdownMath } from "./mdMath";
-import { History as HistoryIcon, Undo2, FileText, FilePlus, FileX, Pencil } from "lucide-react";
+import { History as HistoryIcon, Undo2, FileText, FilePlus, FileX, Pencil, GitBranch } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import {
   gitRecentCommits,
@@ -171,6 +171,9 @@ function relativeTime(iso: string): string {
 
 export function HistoryModal({ open, onClose }: Props) {
   const vaultPath = useStore((s) => s.vaultPath);
+  // repoRoot is the git root for the currently-open file — may be a nested
+  // sub-repo root rather than vaultPath. Falls back to vaultPath.
+  const repoRoot = useStore((s) => s.repoRoot ?? s.vaultPath);
   const setFiles = useStore((s) => s.setFiles);
 
   const [tab, setTab] = useState<Tab>("files");
@@ -205,15 +208,15 @@ export function HistoryModal({ open, onClose }: Props) {
   const toastTimer = useRef<number | null>(null);
 
   const reloadCommits = async () => {
-    if (!vaultPath) return;
-    const c = await gitRecentCommits(vaultPath, 30, showEarlier);
+    if (!repoRoot) return;
+    const c = await gitRecentCommits(repoRoot, 30, showEarlier);
     setCommits(c);
   };
 
   const reloadTouched = async () => {
-    if (!vaultPath) return;
+    if (!repoRoot) return;
     setTouchedLoaded(false);
-    const t = await gitAllTouchedFiles(vaultPath, showEarlier);
+    const t = await gitAllTouchedFiles(repoRoot, showEarlier);
     setTouched(t);
     setTouchedLoaded(true);
   };
@@ -236,12 +239,12 @@ export function HistoryModal({ open, onClose }: Props) {
   }, [open, showEarlier]);
 
   const selectCommit = async (hash: string) => {
-    if (!vaultPath || selectedHash === hash) return;
+    if (!repoRoot || selectedHash === hash) return;
     setSelectedHash(hash);
     setCommitFiles([]);
     setCommitFilesLoading(true);
     try {
-      const files = await gitCommitFiles(vaultPath, hash);
+      const files = await gitCommitFiles(repoRoot, hash);
       setCommitFiles(files);
     } catch (e) {
       console.error("[history] commit files failed:", e);
@@ -250,12 +253,12 @@ export function HistoryModal({ open, onClose }: Props) {
   };
 
   const restoreToSelected = async () => {
-    if (!vaultPath || !selectedHash || restoreBusy) return;
+    if (!repoRoot || !vaultPath || !selectedHash || restoreBusy) return;
     if (commits[0]?.hash === selectedHash) return;
     setRestoreBusy(true);
     setUndoError(null);
     try {
-      await gitRestoreToCommit(vaultPath, selectedHash);
+      await gitRestoreToCommit(repoRoot, selectedHash);
       const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: vaultPath });
       setFiles(listed);
       await reloadCommits();
@@ -274,25 +277,25 @@ export function HistoryModal({ open, onClose }: Props) {
   // version is selected (used for "click a file in a commit" jumps);
   // otherwise the most recent version that touched the file is shown.
   const openFile = async (path: string, pinHash?: string) => {
-    if (!vaultPath) return;
+    if (!repoRoot) return;
     setSelectedFile(path);
     setSelectedFileHash(null);
     setPreviewContent("");
     setFileDiff("");
-    const c = await gitFileHistory(vaultPath, path, 50, showEarlier);
+    const c = await gitFileHistory(repoRoot, path, 50, showEarlier);
     setFileCommits(c);
     const target = pinHash && c.some((v) => v.hash === pinHash) ? pinHash : c[0]?.hash;
     if (target) await selectFileVersion(path, target);
   };
 
   const selectFileVersion = async (path: string, hash: string) => {
-    if (!vaultPath) return;
+    if (!repoRoot) return;
     setSelectedFileHash(hash);
     setPreviewLoading(true);
     try {
       const [content, diff] = await Promise.all([
-        gitFileAt(vaultPath, hash, path),
-        gitDiffVsCurrent(vaultPath, hash, path),
+        gitFileAt(repoRoot, hash, path),
+        gitDiffVsCurrent(repoRoot, hash, path),
       ]);
       setPreviewContent(content);
       setFileDiff(diff);
@@ -303,15 +306,15 @@ export function HistoryModal({ open, onClose }: Props) {
   };
 
   const restoreThisFile = async () => {
-    if (!vaultPath || !selectedFile || !selectedFileHash || fileRestoreBusy) return;
+    if (!repoRoot || !vaultPath || !selectedFile || !selectedFileHash || fileRestoreBusy) return;
     setFileRestoreBusy(true);
     try {
-      await gitRestoreFileTo(vaultPath, selectedFileHash, selectedFile);
+      await gitRestoreFileTo(repoRoot, selectedFileHash, selectedFile);
       const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: vaultPath });
       setFiles(listed);
       await reloadCommits();
       await reloadTouched();
-      const c = await gitFileHistory(vaultPath, selectedFile, 50, showEarlier);
+      const c = await gitFileHistory(repoRoot, selectedFile, 50, showEarlier);
       setFileCommits(c);
       // Move selection to the new HEAD so the user sees their current state.
       if (c[0]) await selectFileVersion(selectedFile, c[0].hash);
@@ -401,6 +404,16 @@ export function HistoryModal({ open, onClose }: Props) {
                 Commits
               </button>
             </div>
+            {/* Sub-repo breadcrumb: shown when history is scoped to a nested repo */}
+            {repoRoot && vaultPath && repoRoot !== vaultPath && (
+              <span
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] bg-primary/10 text-primary/80"
+                title={`Showing history for ${repoRoot}`}
+              >
+                <GitBranch className="h-3 w-3 shrink-0" />
+                {repoRoot.split("/").pop()}
+              </span>
+            )}
           </div>
           <button
             onClick={() => setShowEarlier((v) => !v)}

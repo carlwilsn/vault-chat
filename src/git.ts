@@ -10,6 +10,21 @@ export type GitCommit = {
   is_anchor: boolean;
 };
 
+/// Find the git repository root for a given file path, capped at the vault
+/// boundary. Returns the repo root path, or null if the file is not in any
+/// sub-repo. The result falls back to vaultPath when null.
+export async function gitRepoRootForFile(
+  vault: string,
+  path: string,
+): Promise<string | null> {
+  try {
+    return await invoke<string | null>("git_repo_root_for_file", { vault, path });
+  } catch (e) {
+    console.warn("[git] repo root for file failed:", e);
+    return null;
+  }
+}
+
 export async function gitInitIfNeeded(vault: string): Promise<boolean> {
   try {
     return await invoke<boolean>("git_init_if_needed", { vault });
