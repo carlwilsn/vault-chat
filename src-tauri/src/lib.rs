@@ -1,15 +1,16 @@
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
 
-#[cfg(windows)]
 use std::sync::OnceLock;
 
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 // Windows: probe once for Git Bash and reuse the result for every
 // bash_exec call. Picking bash.exe over `cmd /C` makes the Bash tool
@@ -1693,6 +1694,111 @@ struct GitCommit {
     is_anchor: bool,
 }
 
+// ===================== git hardening =====================
+//
+// Git is the single durability + cross-machine-sync substrate: every vault
+// is a repo, and nothing that reaches disk is safe until it reaches git.
+// That makes concurrency discipline load-bearing. Every *mutating* git
+// sequence funnels through one per-repo lock, so the app's many commit
+// sources — end-of-turn, edit-debounce, voice, the 60s autosave net, the
+// vault-sync loop, restore/revert/init — can never collide on
+// `.git/index.lock`. Reads (status/log/rev-parse) don't take the index lock
+// and run unlocked.
+//
+// Three further guards make a vault self-healing rather than wedge-prone:
+//   - a stale `index.lock` left by a killed git is removed on lock entry;
+//   - a leftover in-progress rebase/merge from a crashed auto-sync is
+//     aborted before we commit, instead of every later commit silently
+//     failing forever (the "wedged vault" failure);
+//   - `run_git` has a hard timeout and never prompts for credentials, so a
+//     hung fetch/push on the headless server fails fast, not forever.
+
+const GIT_TIMEOUT_SECS: u64 = 90;
+const STALE_LOCK_SECS: u64 = 10;
+
+// One lock per repo, keyed by canonical path so "C:\v" and "C:/v/" collapse
+// to a single lock. Created lazily on first use.
+static REPO_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+fn repo_lock_for(vault: &str) -> Arc<Mutex<()>> {
+    let key = std::path::Path::new(vault)
+        .canonicalize()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| vault.to_string());
+    let map = REPO_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .entry(key)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+/// Remove `.git/index.lock` only if it's older than STALE_LOCK_SECS — old
+/// enough that no live git could still hold it (a normal commit holds it for
+/// milliseconds). Called while we already own the per-repo lock, so any lock
+/// seen here is necessarily external or orphaned by a crash.
+fn clear_stale_index_lock(vault: &str) {
+    let lock = PathBuf::from(vault).join(".git").join("index.lock");
+    if let Ok(meta) = std::fs::metadata(&lock) {
+        let stale = meta
+            .modified()
+            .ok()
+            .and_then(|m| std::time::SystemTime::now().duration_since(m).ok())
+            .map(|age| age.as_secs() >= STALE_LOCK_SECS)
+            // Can't read the mtime → assume stale; better to clear than wedge.
+            .unwrap_or(true);
+        if stale {
+            let _ = std::fs::remove_file(&lock);
+        }
+    }
+}
+
+/// If a prior auto-sync crashed mid-rebase/merge, the repo is stuck in that
+/// state and every later commit silently no-ops — the "wedged vault." This
+/// app owns its vaults' git (no human runs rebases by hand here), so a
+/// leftover is always our own failed attempt: abort it so the next op starts
+/// from a clean HEAD.
+fn abort_stuck_merge_or_rebase(vault: &str) {
+    let git = PathBuf::from(vault).join(".git");
+    if git.join("rebase-merge").is_dir() || git.join("rebase-apply").is_dir() {
+        let _ = run_git(vault, &["rebase", "--abort"]);
+    }
+    if git.join("MERGE_HEAD").exists() {
+        let _ = run_git(vault, &["merge", "--abort"]);
+    }
+}
+
+/// Run a mutating git sequence under the repo lock, after clearing any stale
+/// lock. Serializes against every other in-process git writer for this repo.
+fn with_repo_lock<T>(vault: &str, f: impl FnOnce() -> T) -> T {
+    let lock = repo_lock_for(vault);
+    let _g = lock.lock().unwrap_or_else(|e| e.into_inner());
+    clear_stale_index_lock(vault);
+    f()
+}
+
+fn is_index_lock_error(stderr: &str) -> bool {
+    stderr.contains("index.lock")
+}
+
+/// Mutating git with retry: if it fails on a foreign `index.lock`, clear a
+/// stale lock and retry with backoff. In-process writers are already
+/// serialized by `with_repo_lock`, so this only covers a foreign git (the
+/// user's CLI, a second app instance) briefly holding the lock.
+fn run_git_mut(cwd: &str, args: &[&str]) -> Result<(String, String, i32), String> {
+    let mut attempt = 0u32;
+    loop {
+        let (out, err, code) = run_git(cwd, args)?;
+        if code != 0 && is_index_lock_error(&err) && attempt < 4 {
+            attempt += 1;
+            clear_stale_index_lock(cwd);
+            std::thread::sleep(Duration::from_millis(150 * attempt as u64));
+            continue;
+        }
+        return Ok((out, err, code));
+    }
+}
+
 fn run_git(
     cwd: &str,
     args: &[&str],
@@ -1709,19 +1815,97 @@ fn run_git(
     let mut cmd = Command::new("git");
     cmd.current_dir(cwd);
     cmd.args(args);
+    // Never block on an interactive credential/passphrase prompt — on the
+    // headless server that would hang the whole sync loop forever. Fail fast
+    // and let the caller surface the auth error instead.
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let Some(mut o) = child.stdout.take() {
-        let _ = o.read_to_string(&mut stdout);
+    // Drain both pipes on their own threads so a large stdout can't deadlock
+    // against a full stderr pipe (or vice-versa) while we wait.
+    let so = child.stdout.take();
+    let se = child.stderr.take();
+    let h_out = std::thread::spawn(move || {
+        let mut s = String::new();
+        if let Some(mut o) = so {
+            let _ = o.read_to_string(&mut s);
+        }
+        s
+    });
+    let h_err = std::thread::spawn(move || {
+        let mut s = String::new();
+        if let Some(mut e) = se {
+            let _ = e.read_to_string(&mut s);
+        }
+        s
+    });
+    // Bounded wait: kill a hung git rather than block a worker thread forever.
+    let start = Instant::now();
+    let code = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.code().unwrap_or(-1),
+            Ok(None) => {
+                if start.elapsed() >= Duration::from_secs(GIT_TIMEOUT_SECS) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "git timed out after {}s: git {}",
+                        GIT_TIMEOUT_SECS,
+                        args.join(" ")
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    let stdout = h_out.join().unwrap_or_default();
+    let stderr = h_err.join().unwrap_or_default();
+    Ok((stdout, stderr, code))
+}
+
+// `.gitattributes` seeded into every vault. Without it, Windows (autocrlf)
+// stores CRLF in the working tree while the Linux server uses LF, so every
+// text file shows as modified on the other box → spurious autosave commits
+// and guaranteed cross-machine rebase conflicts. `eol=lf` pins a single
+// canonical line ending everywhere. `merge=union` makes the app's churny
+// append-only JSONL logs (conversations/schedules/notes) combine both
+// sides' lines on conflict instead of wedging the sync rebase.
+const VAULT_GITATTRIBUTES: &str = "\
+# Managed by vault-chat. Keeps cross-machine git sync conflict-free.
+* text=auto eol=lf
+*.jsonl merge=union
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.zip binary
+*.gz binary
+*.bundle binary
+";
+
+/// Ensure `<vault>/.gitattributes` exists and carries our managed block.
+/// Returns true if it wrote the file (i.e. it was missing or stale). Does
+/// NOT renormalize existing history — that one-time migration is left to a
+/// deliberate step so opening a vault never triggers a surprise churn.
+fn ensure_vault_gitattributes(vault: &str) -> bool {
+    let path = PathBuf::from(vault).join(".gitattributes");
+    let current = std::fs::read_to_string(&path).unwrap_or_default();
+    if current.contains("Managed by vault-chat") {
+        return false;
     }
-    if let Some(mut e) = child.stderr.take() {
-        let _ = e.read_to_string(&mut stderr);
-    }
-    let status = child.wait().map_err(|e| e.to_string())?;
-    Ok((stdout, stderr, status.code().unwrap_or(-1)))
+    // Preserve any pre-existing user rules by prepending our block.
+    let contents = if current.trim().is_empty() {
+        VAULT_GITATTRIBUTES.to_string()
+    } else {
+        format!("{}\n{}", VAULT_GITATTRIBUTES, current)
+    };
+    std::fs::write(&path, contents).is_ok()
 }
 
 /// Read recent commits from a git repo at a vault-relative subdirectory
@@ -1794,12 +1978,17 @@ async fn git_log_subdir(
 #[tauri::command]
 async fn git_init_if_needed(vault: String) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        with_repo_lock(&vault, || {
         let git_dir = PathBuf::from(&vault).join(".git");
         let mut did_work = false;
 
         if !git_dir.is_dir() {
-            run_git(&vault, &["init", "-q"])?;
-            run_git(
+            run_git_mut(&vault, &["init", "-q"])?;
+            // Seed .gitattributes BEFORE the first `add` so line-ending
+            // normalization applies from the very first commit — the repo is
+            // born conflict-safe across Windows/Linux.
+            ensure_vault_gitattributes(&vault);
+            run_git_mut(
                 &vault,
                 &[
                     "-c",
@@ -1810,7 +1999,7 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
                     "-A",
                 ],
             )?;
-            run_git(
+            run_git_mut(
                 &vault,
                 &[
                     "-c",
@@ -1825,6 +2014,42 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
                 ],
             )?;
             did_work = true;
+        } else {
+            // Existing repo (predates managed .gitattributes): add the file
+            // and commit just it. No tree-wide renormalize, so opening an old
+            // vault never triggers a surprise churn — only new writes pick up
+            // the eol/merge rules.
+            if ensure_vault_gitattributes(&vault) {
+                abort_stuck_merge_or_rebase(&vault);
+                run_git_mut(
+                    &vault,
+                    &[
+                        "-c",
+                        "user.email=vault-chat@local",
+                        "-c",
+                        "user.name=vault-chat",
+                        "add",
+                        "--",
+                        ".gitattributes",
+                    ],
+                )?;
+                let (_, _, code) = run_git_mut(
+                    &vault,
+                    &[
+                        "-c",
+                        "user.email=vault-chat@local",
+                        "-c",
+                        "user.name=vault-chat",
+                        "commit",
+                        "-q",
+                        "-m",
+                        "vault-chat: add managed .gitattributes",
+                    ],
+                )?;
+                if code == 0 {
+                    did_work = true;
+                }
+            }
         }
 
         // Create the vault-chat-start tag if it doesn't already exist.
@@ -1834,11 +2059,12 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
             run_git(&vault, &["rev-parse", "--verify", "vault-chat-start"])?;
         if tag_check != 0 {
             // Tag absent — create it at current HEAD.
-            run_git(&vault, &["tag", "vault-chat-start"])?;
+            run_git_mut(&vault, &["tag", "vault-chat-start"])?;
             did_work = true;
         }
 
         Ok(did_work)
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1852,11 +2078,16 @@ async fn git_commit_all(
     message: String,
 ) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        with_repo_lock(&vault, || {
+        // A crashed prior auto-sync can leave the repo mid-rebase, where
+        // every commit silently no-ops. Clear that first so this commit
+        // actually lands instead of vanishing.
+        abort_stuck_merge_or_rebase(&vault);
         let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
         if status_out.trim().is_empty() {
             return Ok(None);
         }
-        run_git(
+        run_git_mut(
             &vault,
             &[
                 "-c",
@@ -1867,7 +2098,7 @@ async fn git_commit_all(
                 "-A",
             ],
         )?;
-        run_git(
+        run_git_mut(
             &vault,
             &[
                 "-c",
@@ -1882,6 +2113,7 @@ async fn git_commit_all(
         )?;
         let (hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
         Ok(Some(hash.trim().to_string()))
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1958,12 +2190,13 @@ async fn git_recent_commits(
 #[tauri::command]
 async fn git_revert_head(vault: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        with_repo_lock(&vault, || {
         let (count_out, _, _) = run_git(&vault, &["rev-list", "--count", "HEAD"])?;
         let count: usize = count_out.trim().parse().unwrap_or(0);
         if count < 2 {
             return Err("nothing to undo yet".to_string());
         }
-        let (_, stderr, code) = run_git(
+        let (_, stderr, code) = run_git_mut(
             &vault,
             &[
                 "-c",
@@ -1980,6 +2213,7 @@ async fn git_revert_head(vault: String) -> Result<String, String> {
         }
         let (hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
         Ok(hash.trim().to_string())
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2051,6 +2285,8 @@ async fn git_show_commit(
 #[tauri::command]
 async fn git_restore_to_commit(vault: String, hash: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        with_repo_lock(&vault, || {
+        abort_stuck_merge_or_rebase(&vault);
         let (head_hash, _, _) = run_git(&vault, &["rev-parse", "HEAD"])?;
         let (target_full, _, _) = run_git(&vault, &["rev-parse", &hash])?;
         if head_hash.trim() == target_full.trim() {
@@ -2094,7 +2330,7 @@ async fn git_restore_to_commit(vault: String, hash: String) -> Result<String, St
         // shot — much cleaner than a `checkout <hash> -- .` followed
         // by a manual diff-filter removal pass.
         let (_, stderr, code) =
-            run_git(&vault, &["read-tree", "--reset", "-u", &hash])?;
+            run_git_mut(&vault, &["read-tree", "--reset", "-u", &hash])?;
         if code != 0 {
             return Err(format!("read-tree failed: {}", stderr.trim()));
         }
@@ -2105,7 +2341,7 @@ async fn git_restore_to_commit(vault: String, hash: String) -> Result<String, St
         } else {
             format!("Restore: {} ({})", subject, short)
         };
-        let (_, stderr2, code2) = run_git(
+        let (_, stderr2, code2) = run_git_mut(
             &vault,
             &[
                 "-c",
@@ -2124,6 +2360,7 @@ async fn git_restore_to_commit(vault: String, hash: String) -> Result<String, St
         }
         let (new_hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
         Ok(new_hash.trim().to_string())
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2605,6 +2842,10 @@ struct SyncOpResult {
 #[tauri::command]
 async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        with_repo_lock(&vault, || {
+        // Self-heal a wedged repo: a crashed prior pull can leave an
+        // in-progress rebase under which every commit silently no-ops.
+        abort_stuck_merge_or_rebase(&vault);
         let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
         if status_out.trim().is_empty() {
             return Ok(SyncOpResult {
@@ -2618,7 +2859,7 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         // repo is treated as a submodule pointer), so this is a no-op
         // for those — but we add the explicit nested_repos check below
         // when summarising the commit body.
-        let (_, stderr, code) = run_git(
+        let (_, stderr, code) = run_git_mut(
             &vault,
             &[
                 "-c",
@@ -2636,7 +2877,7 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
                 error: true,
             });
         }
-        let (_, stderr, code) = run_git(
+        let (_, stderr, code) = run_git_mut(
             &vault,
             &[
                 "-c",
@@ -2661,6 +2902,7 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
             message: "committed local changes".into(),
             error: false,
         })
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2669,6 +2911,11 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
 #[tauri::command]
 async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        with_repo_lock(&vault, || {
+        // Clear any leftover rebase/merge from a crashed prior pull before we
+        // start a new one — otherwise `rebase` errors with "rebase in
+        // progress" and the vault stays wedged.
+        abort_stuck_merge_or_rebase(&vault);
         // Detect the local branch — most repos default to main, but a
         // pre-existing vault may be on master or something else.
         let (branch_out, _, branch_code) =
@@ -2709,7 +2956,7 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         // fails, abort cleanly and surface a non-blocking error.
         let upstream = format!("origin/{}", branch);
         let (_, _, ff_code) =
-            run_git(&vault, &["merge", "--ff-only", &upstream])?;
+            run_git_mut(&vault, &["merge", "--ff-only", &upstream])?;
         if ff_code == 0 {
             return Ok(SyncOpResult {
                 ok: true,
@@ -2717,7 +2964,7 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
                 error: false,
             });
         }
-        let (_, stderr, rebase_code) = run_git(
+        let (_, stderr, rebase_code) = run_git_mut(
             &vault,
             &[
                 "-c",
@@ -2731,7 +2978,7 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         if rebase_code != 0 {
             // Leave the working tree untouched — abort the half-applied
             // rebase so the next attempt can start clean.
-            let _ = run_git(&vault, &["rebase", "--abort"]);
+            let _ = run_git_mut(&vault, &["rebase", "--abort"]);
             return Ok(SyncOpResult {
                 ok: false,
                 message: format!("merge conflict: {}", first_line(&stderr).trim()),
@@ -2743,6 +2990,7 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
             message: "rebased onto origin".into(),
             error: false,
         })
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2751,6 +2999,7 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
 #[tauri::command]
 async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        with_repo_lock(&vault, || {
         let (branch_out, _, branch_code) =
             run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
         if branch_code != 0 || branch_out.trim() == "HEAD" {
@@ -2782,6 +3031,7 @@ async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
             ok: true,
             message: "pushed".into(),
             error: false,
+        })
         })
     })
     .await
@@ -2863,12 +3113,14 @@ async fn git_restore_file_to(
     relative_path: String,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        with_repo_lock(&vault, || {
+        abort_stuck_merge_or_rebase(&vault);
         // Did this path exist in the target commit?
         let spec = format!("{}:{}", hash, relative_path);
         let (_, _, ls_code) = run_git(&vault, &["cat-file", "-e", &spec])?;
         if ls_code == 0 {
             // Yes — checkout that version into both index and worktree.
-            let (_, stderr, code) = run_git(
+            let (_, stderr, code) = run_git_mut(
                 &vault,
                 &["checkout", &hash, "--", &relative_path],
             )?;
@@ -2879,7 +3131,7 @@ async fn git_restore_file_to(
             // No — the path didn't exist there, so restoring means
             // removing the current file. `git rm` will fail loudly if
             // the path is also untracked; ignore that case.
-            let (_, _, _) = run_git(&vault, &["rm", "-f", "--", &relative_path])?;
+            let (_, _, _) = run_git_mut(&vault, &["rm", "-f", "--", &relative_path])?;
         }
         let short = hash.chars().take(8).collect::<String>();
         let leaf = relative_path
@@ -2887,7 +3139,7 @@ async fn git_restore_file_to(
             .next()
             .unwrap_or(&relative_path);
         let msg = format!("Restore {} to {}", leaf, short);
-        let (_, stderr, code) = run_git(
+        let (_, stderr, code) = run_git_mut(
             &vault,
             &[
                 "-c",
@@ -2906,6 +3158,7 @@ async fn git_restore_file_to(
         }
         let (new_hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
         Ok(new_hash.trim().to_string())
+        })
     })
     .await
     .map_err(|e| e.to_string())?
