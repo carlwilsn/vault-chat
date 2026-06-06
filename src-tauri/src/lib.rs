@@ -1806,6 +1806,28 @@ fn is_index_lock_error(stderr: &str) -> bool {
     stderr.contains("index.lock")
 }
 
+/// Materialize registered submodules after a successful pull. Nested work
+/// repos (e.g. a fork that lives inside the vault) keep their own remotes; the
+/// vault only tracks their commit *pointers*, so on a fresh machine those
+/// folders are empty until `submodule update --init` clones them from their
+/// own remotes. No-op when the vault has no `.gitmodules`, so ordinary vaults
+/// pay nothing. Best-effort: a submodule whose pinned commit hasn't been
+/// pushed to its own remote yet must not fail the vault's own sync — log and
+/// move on. Long timeout because the first clone of a big sub-repo (a fork, a
+/// large upstream) can take minutes.
+fn maybe_update_submodules(vault: &str) {
+    if !PathBuf::from(vault).join(".gitmodules").is_file() {
+        return;
+    }
+    match run_git_timeout(vault, &["submodule", "update", "--init", "--recursive"], 1800) {
+        Ok((_, stderr, code)) if code != 0 => {
+            eprintln!("[sync] submodule update (code {}): {}", code, stderr.trim());
+        }
+        Err(e) => eprintln!("[sync] submodule update failed: {}", e),
+        _ => {}
+    }
+}
+
 /// Mutating git with retry: if it fails on a foreign `index.lock`, clear a
 /// stale lock and retry with backoff. In-process writers are already
 /// serialized by `with_repo_lock`, so this only covers a foreign git (the
@@ -1827,6 +1849,17 @@ fn run_git_mut(cwd: &str, args: &[&str]) -> Result<(String, String, i32), String
 fn run_git(
     cwd: &str,
     args: &[&str],
+) -> Result<(String, String, i32), String> {
+    run_git_timeout(cwd, args, GIT_TIMEOUT_SECS)
+}
+
+/// Like `run_git` but with a caller-chosen timeout. Used for operations that
+/// can legitimately run far longer than a normal git command — notably the
+/// first `submodule update --init`, which clones whole sub-repos.
+fn run_git_timeout(
+    cwd: &str,
+    args: &[&str],
+    timeout_secs: u64,
 ) -> Result<(String, String, i32), String> {
     use std::io::Read;
     #[cfg(windows)]
@@ -1872,12 +1905,12 @@ fn run_git(
         match child.try_wait() {
             Ok(Some(status)) => break status.code().unwrap_or(-1),
             Ok(None) => {
-                if start.elapsed() >= Duration::from_secs(GIT_TIMEOUT_SECS) {
+                if start.elapsed() >= Duration::from_secs(timeout_secs) {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(format!(
                         "git timed out after {}s: git {}",
-                        GIT_TIMEOUT_SECS,
+                        timeout_secs,
                         args.join(" ")
                     ));
                 }
@@ -2977,37 +3010,38 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         let upstream = format!("origin/{}", branch);
         let (_, _, ff_code) =
             run_git_mut(&vault, &["merge", "--ff-only", &upstream])?;
-        if ff_code == 0 {
-            return Ok(SyncOpResult {
-                ok: true,
-                message: "pulled".into(),
-                error: false,
-            });
-        }
-        let (_, stderr, rebase_code) = run_git_mut(
-            &vault,
-            &[
-                "-c",
-                "user.email=vault-chat@local",
-                "-c",
-                "user.name=vault-chat",
-                "rebase",
-                &upstream,
-            ],
-        )?;
-        if rebase_code != 0 {
-            // Leave the working tree untouched — abort the half-applied
-            // rebase so the next attempt can start clean.
-            let _ = run_git_mut(&vault, &["rebase", "--abort"]);
-            return Ok(SyncOpResult {
-                ok: false,
-                message: format!("merge conflict: {}", first_line(&stderr).trim()),
-                error: true,
-            });
-        }
+        let pulled_msg = if ff_code == 0 {
+            "pulled"
+        } else {
+            let (_, stderr, rebase_code) = run_git_mut(
+                &vault,
+                &[
+                    "-c",
+                    "user.email=vault-chat@local",
+                    "-c",
+                    "user.name=vault-chat",
+                    "rebase",
+                    &upstream,
+                ],
+            )?;
+            if rebase_code != 0 {
+                // Leave the working tree untouched — abort the half-applied
+                // rebase so the next attempt can start clean.
+                let _ = run_git_mut(&vault, &["rebase", "--abort"]);
+                return Ok(SyncOpResult {
+                    ok: false,
+                    message: format!("merge conflict: {}", first_line(&stderr).trim()),
+                    error: true,
+                });
+            }
+            "rebased onto origin"
+        };
+        // Pull succeeded — bring any registered submodules to the commits the
+        // vault now points at (clones them on a fresh machine). Best-effort.
+        maybe_update_submodules(&vault);
         Ok(SyncOpResult {
             ok: true,
-            message: "rebased onto origin".into(),
+            message: pulled_msg.into(),
             error: false,
         })
         })
