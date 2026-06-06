@@ -4524,8 +4524,126 @@ fn apply_titlebar_color(window: &tauri::WebviewWindow) {
     }
 }
 
+// ── Native agent-audio playback (Linux) ────────────────────────────────────
+// WebKitGTK 2.52 on Ubuntu 26.04 renders no audio output, so the ElevenLabs
+// agent voice is silent if played through the webview. The SDK's `onAudio`
+// callback hands us the agent's speech as base64 PCM (16 kHz mono, s16le); we
+// decode it and play it natively with rodio, which uses the working system
+// audio path. The rodio OutputStream is not Send, so it lives on a dedicated
+// thread and we talk to it over a channel.
+#[cfg(target_os = "linux")]
+mod agent_audio {
+    use std::sync::mpsc::{channel, Sender};
+    use std::sync::{Mutex, OnceLock};
+
+    enum Cmd {
+        Play(Vec<i16>),
+        Stop,
+    }
+
+    static TX: OnceLock<Mutex<Sender<Cmd>>> = OnceLock::new();
+
+    fn sender() -> &'static Mutex<Sender<Cmd>> {
+        TX.get_or_init(|| {
+            let (tx, rx) = channel::<Cmd>();
+            std::thread::spawn(move || {
+                let (_stream, handle) = match rodio::OutputStream::try_default() {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("agent_audio: no output device: {e}");
+                        return;
+                    }
+                };
+                let sink = match rodio::Sink::try_new(&handle) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("agent_audio: sink init failed: {e}");
+                        return;
+                    }
+                };
+                for cmd in rx {
+                    match cmd {
+                        Cmd::Play(samples) => {
+                            sink.append(rodio::buffer::SamplesBuffer::new(1, 16_000, samples));
+                        }
+                        Cmd::Stop => {
+                            // Drop queued audio (barge-in / session end), then
+                            // resume so the next turn plays. clear() pauses.
+                            sink.clear();
+                            sink.play();
+                        }
+                    }
+                }
+            });
+            Mutex::new(tx)
+        })
+    }
+
+    pub fn play(b64: &str) {
+        use base64::Engine;
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(b64) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let mut samples = Vec::with_capacity(bytes.len() / 2);
+        for ch in bytes.chunks_exact(2) {
+            samples.push(i16::from_le_bytes([ch[0], ch[1]]));
+        }
+        if samples.is_empty() {
+            return;
+        }
+        let _ = sender().lock().unwrap().send(Cmd::Play(samples));
+    }
+
+    pub fn stop() {
+        if let Some(tx) = TX.get() {
+            let _ = tx.lock().unwrap().send(Cmd::Stop);
+        }
+    }
+}
+
+// Play a base64 PCM (16 kHz mono s16le) agent-audio chunk natively. No-op off
+// Linux, where the webview plays audio correctly on its own.
+#[tauri::command]
+fn agent_audio_play(b64: String) {
+    #[cfg(target_os = "linux")]
+    agent_audio::play(&b64);
+    #[cfg(not(target_os = "linux"))]
+    let _ = b64;
+}
+
+// Stop/flush native agent-audio playback (barge-in or session end).
+#[tauri::command]
+fn agent_audio_stop() {
+    #[cfg(target_os = "linux")]
+    agent_audio::stop();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK's sandboxed WebProcess can't resolve GStreamer plugins on this
+    // stack unless the system plugin dir is on GST_PLUGIN_SYSTEM_PATH. Without
+    // it, mic capture sees "0 devices" (the WebProcess even caches an empty
+    // registry) and voice mode fails with "Invalid constraint". The AppImage
+    // points this at its own bundled dir; append the system dir so plugins
+    // (appsink, device providers) are found. CI bundles GStreamer 1.28 — same
+    // as the system — so loading system plugins is ABI-safe.
+    #[cfg(target_os = "linux")]
+    {
+        const SYS_GST: &str = "/usr/lib/x86_64-linux-gnu/gstreamer-1.0";
+        if std::path::Path::new(SYS_GST).is_dir() {
+            let cur = std::env::var("GST_PLUGIN_SYSTEM_PATH_1_0").unwrap_or_default();
+            if !cur.split(':').any(|p| p == SYS_GST) {
+                let next = if cur.is_empty() {
+                    SYS_GST.to_string()
+                } else {
+                    format!("{cur}:{SYS_GST}")
+                };
+                std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", next);
+            }
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -4683,6 +4801,8 @@ pub fn run() {
             keystore_encrypt,
             keystore_decrypt,
             compile_tex,
+            agent_audio_play,
+            agent_audio_stop,
             app_ready
         ])
         .run(tauri::generate_context!())

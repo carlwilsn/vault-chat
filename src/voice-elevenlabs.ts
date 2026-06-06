@@ -13,6 +13,23 @@ import { applyNotebookEdit, extractPdfText, stripNotebook, assertCanWrite } from
 // SDK events and get appended to state.messages when the session
 // ends.
 
+// WebKitGTK (Linux) can't play Web Audio on the current Ubuntu stack, so the
+// agent's voice is routed to native playback in the Rust backend. The Rust
+// command no-ops on other platforms (WebView2 / WKWebView), where the webview
+// plays audio fine on its own.
+
+// Hand an agent-audio chunk to the native player. The SDK's
+// onAudio gives base64 PCM (16 kHz mono s16le) — exactly what the Rust
+// command expects.
+function playAgentAudioNative(audioBase64: string): void {
+  if (!audioBase64) return;
+  // Rust command is a no-op off Linux, so no platform gate needed.
+  void invoke("agent_audio_play", { b64: audioBase64 }).catch(() => {});
+}
+function stopAgentAudioNative(): void {
+  void invoke("agent_audio_stop").catch(() => {});
+}
+
 const AGENT_NAME = "vault-chat";
 // Default — overridable via Settings → ElevenLabs → Voice model.
 // Stored in localStorage as `vault_chat_elevenlabs_llm`. Their LLM
@@ -540,6 +557,16 @@ export async function startElevenLabsSession(): Promise<void> {
       },
       dynamicVariables,
       clientTools: buildClientToolHandlers(),
+      // Linux: the webview can't play Web Audio, so play the agent's voice
+      // natively. Harmless no-op elsewhere (the webview plays it normally and
+      // playAgentAudioNative/stopAgentAudioNative short-circuit off Linux).
+      onAudio: (audioBase64: string) => {
+        playAgentAudioNative(audioBase64);
+      },
+      onInterruption: () => {
+        // Barge-in: drop buffered agent audio so it stops immediately.
+        stopAgentAudioNative();
+      },
       onConnect: () => {
         useStore.getState().setVoiceConnecting(false);
         useStore.getState().setVoiceListening(false);
@@ -547,6 +574,8 @@ export async function startElevenLabsSession(): Promise<void> {
         useStore.getState().setVoiceThinking(false);
       },
       onDisconnect: () => {
+        // Stop any native agent audio still playing/queued (Linux).
+        stopAgentAudioNative();
         // Drain any agent text that was waiting for audio silence
         // before stamping the "session ended" marker — preserves
         // ordering between the last spoken turn and the end notice.
