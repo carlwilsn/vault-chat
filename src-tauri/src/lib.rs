@@ -1813,13 +1813,20 @@ fn is_index_lock_error(stderr: &str) -> bool {
 /// own remotes. No-op when the vault has no `.gitmodules`, so ordinary vaults
 /// pay nothing. Best-effort: a submodule whose pinned commit hasn't been
 /// pushed to its own remote yet must not fail the vault's own sync — log and
-/// move on. Long timeout because the first clone of a big sub-repo (a fork, a
-/// large upstream) can take minutes.
+/// move on. Long timeout because the first clone of a big sub-repo can take
+/// minutes.
+///
+/// Deliberately NOT `--recursive`: a sub-repo can itself vendor heavy
+/// submodules (microsoft/BitNet pulls in a fork of llama.cpp, hundreds of MB),
+/// and recursively cloning that inside the background sync loop — while holding
+/// the vault lock — is the wrong default. This brings the vault's own nested
+/// repos; if you need a sub-repo's full sub-tree (e.g. to build it), run
+/// `git submodule update --init --recursive` inside that repo by hand.
 fn maybe_update_submodules(vault: &str) {
     if !PathBuf::from(vault).join(".gitmodules").is_file() {
         return;
     }
-    match run_git_timeout(vault, &["submodule", "update", "--init", "--recursive"], 1800) {
+    match run_git_timeout(vault, &["submodule", "update", "--init"], 1800) {
         Ok((_, stderr, code)) if code != 0 => {
             eprintln!("[sync] submodule update (code {}): {}", code, stderr.trim());
         }
