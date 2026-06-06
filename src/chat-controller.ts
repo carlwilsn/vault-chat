@@ -357,7 +357,7 @@ export async function sendMessage(
           // Second flush for edits the user made WHILE the agent was
           // running — they'd otherwise sneak into the agent commit.
           flushEditCommit()
-            .then(() => gitCommitAll(vault, msg))
+            .then(() => gitCommitAll(vault, msg, true))
             .catch(() => {});
         }
 

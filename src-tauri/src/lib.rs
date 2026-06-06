@@ -1469,6 +1469,10 @@ fn bash_exec_sync(
         cmd.current_dir(d);
     }
     strip_polluting_env(&mut cmd);
+    // Any `git commit` the agent runs via Bash — in the vault root or a
+    // nested repo — is authored as the agent, so it's distinguishable from
+    // the user's own commits in that repo's history.
+    stamp_agent_git_identity(&mut cmd);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
@@ -1715,6 +1719,27 @@ struct GitCommit {
 
 const GIT_TIMEOUT_SECS: u64 = 90;
 const STALE_LOCK_SECS: u64 = 10;
+
+// Distinct git identity for everything the AGENT commits — the app's
+// agent-origin auto-commits AND any `git commit` the agent runs through the
+// Bash tool, in the vault root OR any nested repo. Human/app commits keep the
+// neutral `vault-chat` identity, and the user's own terminal commits keep
+// their real one. So `git log --author`, blame, and the editor gutter show
+// agent-vs-human everywhere, not just via the `[agent]` subject tag.
+const AGENT_GIT_NAME: &str = "vault-chat-agent";
+const AGENT_GIT_EMAIL: &str = "agent@vault-chat.local";
+const APP_GIT_NAME: &str = "vault-chat";
+const APP_GIT_EMAIL: &str = "vault-chat@local";
+
+/// Stamp the agent's git identity into a spawned command's environment, so
+/// any `git commit` it runs is authored as `vault-chat-agent` regardless of
+/// which repo (nested work repos included) it lands in.
+fn stamp_agent_git_identity(cmd: &mut Command) {
+    cmd.env("GIT_AUTHOR_NAME", AGENT_GIT_NAME);
+    cmd.env("GIT_AUTHOR_EMAIL", AGENT_GIT_EMAIL);
+    cmd.env("GIT_COMMITTER_NAME", AGENT_GIT_NAME);
+    cmd.env("GIT_COMMITTER_EMAIL", AGENT_GIT_EMAIL);
+}
 
 // One lock per repo, keyed by canonical path so "C:\v" and "C:/v/" collapse
 // to a single lock. Created lazily on first use.
@@ -2076,6 +2101,7 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
 async fn git_commit_all(
     vault: String,
     message: String,
+    agent: Option<bool>,
 ) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         with_repo_lock(&vault, || {
@@ -2087,29 +2113,23 @@ async fn git_commit_all(
         if status_out.trim().is_empty() {
             return Ok(None);
         }
+        // Author by origin: agent-written turns are stamped `vault-chat-agent`,
+        // the user's own edits stay neutral `vault-chat`. Makes the vault's own
+        // history author-attributable, not just via the `[agent]` subject tag.
+        let (name, email) = if agent.unwrap_or(false) {
+            (AGENT_GIT_NAME, AGENT_GIT_EMAIL)
+        } else {
+            (APP_GIT_NAME, APP_GIT_EMAIL)
+        };
+        let name_cfg = format!("user.name={}", name);
+        let email_cfg = format!("user.email={}", email);
         run_git_mut(
             &vault,
-            &[
-                "-c",
-                "user.email=vault-chat@local",
-                "-c",
-                "user.name=vault-chat",
-                "add",
-                "-A",
-            ],
+            &["-c", &email_cfg, "-c", &name_cfg, "add", "-A"],
         )?;
         run_git_mut(
             &vault,
-            &[
-                "-c",
-                "user.email=vault-chat@local",
-                "-c",
-                "user.name=vault-chat",
-                "commit",
-                "-q",
-                "-m",
-                &message,
-            ],
+            &["-c", &email_cfg, "-c", &name_cfg, "commit", "-q", "-m", &message],
         )?;
         let (hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
         Ok(Some(hash.trim().to_string()))

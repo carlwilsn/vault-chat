@@ -73,7 +73,7 @@ export async function safetyCommit(
       await flushEditCommit();
     }
     const prefix = isAgent ? "[agent] " : "";
-    const hash = await gitCommitAll(vault, `${prefix}autosave (${reason})`);
+    const hash = await gitCommitAll(vault, `${prefix}autosave (${reason})`, isAgent);
     if (hash) vlog("autosave", { reason, agent: isAgent, hash });
   } catch (e) {
     console.warn("[autosave] commit failed:", e);

@@ -130,6 +130,28 @@ function DiffView({ diff }: { diff: string }) {
   );
 }
 
+// Was this commit made by the agent or by you? Structural author identity
+// (`vault-chat-agent`) is ground truth going forward; the `[agent]` subject
+// prefix covers commits made before author attribution shipped.
+function isAgentCommit(c: { author?: string; subject?: string }): boolean {
+  return c.author === "vault-chat-agent" || (c.subject ?? "").startsWith("[agent]");
+}
+
+function AuthorChip({ commit }: { commit: { author?: string; subject?: string } }) {
+  const agent = isAgentCommit(commit);
+  return (
+    <span
+      className={cn(
+        "rounded px-1.5 py-px text-[9.5px]",
+        agent ? "bg-amber-500/15 text-amber-600" : "bg-primary/10 text-primary/80",
+      )}
+      title={agent ? "Committed by the vault-chat agent" : "Committed by you"}
+    >
+      {agent ? "agent" : "you"}
+    </span>
+  );
+}
+
 function relativeTime(iso: string): string {
   // dates from our git format are "YYYY-MM-DD HH:MM"
   const d = new Date(iso.replace(" ", "T") + ":00");
@@ -486,6 +508,7 @@ function CommitsTab({
                   <span>
                     {c.short_hash} · {c.date}
                   </span>
+                  <AuthorChip commit={c} />
                   {isHead && <span className="text-primary">HEAD</span>}
                   {c.is_anchor && (
                     <span className="rounded px-1.5 py-px text-[9.5px] bg-primary/15 text-primary">
@@ -508,8 +531,9 @@ function CommitsTab({
           <>
             <div className="px-4 py-3 border-b border-border/60 shrink-0">
               <div className="text-[12.5px] text-foreground">{selectedCommit.subject}</div>
-              <div className="text-[10.5px] text-muted-foreground font-mono mt-0.5">
-                {selectedCommit.short_hash} · {selectedCommit.date}
+              <div className="text-[10.5px] text-muted-foreground font-mono mt-0.5 flex items-center gap-2 flex-wrap">
+                <span>{selectedCommit.short_hash} · {selectedCommit.date}</span>
+                <AuthorChip commit={selectedCommit} />
               </div>
             </div>
             <div className="flex-1 overflow-auto">
@@ -714,14 +738,22 @@ function FilesTab({
                     <button
                       key={c.hash}
                       onClick={() => onSelectVersion(selectedFile, c.hash)}
-                      title={c.subject}
+                      title={`${isAgentCommit(c) ? "agent" : "you"} · ${c.subject}`}
                       className={cn(
-                        "px-2 py-0.5 rounded text-[10.5px] font-mono border whitespace-nowrap",
+                        "px-2 py-0.5 rounded text-[10.5px] font-mono border whitespace-nowrap inline-flex items-center gap-1.5",
                         isSelected
                           ? "bg-primary text-primary-foreground border-primary"
                           : "border-border bg-muted/40 hover:bg-accent/60",
                       )}
                     >
+                      <span
+                        aria-hidden
+                        title={isAgentCommit(c) ? "agent" : "you"}
+                        className={cn(
+                          "h-1.5 w-1.5 rounded-full shrink-0",
+                          isAgentCommit(c) ? "bg-amber-500" : "bg-primary/50",
+                        )}
+                      />
                       {c.short_hash} · {relativeTime(c.date)}
                       {isHead && (
                         <span

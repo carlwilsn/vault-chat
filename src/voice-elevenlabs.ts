@@ -720,7 +720,7 @@ async function finalizeSessionMutations(): Promise<void> {
     ? `voice session: ${truncate(firstUser, 60)}`
     : "voice session";
   try {
-    await gitCommitAll(vault, subject);
+    await gitCommitAll(vault, subject, true);
   } catch (e) {
     console.warn("[voice-eleven] auto-commit failed:", e);
   }

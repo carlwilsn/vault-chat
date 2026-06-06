@@ -30,10 +30,11 @@ let commitChain: Promise<unknown> = Promise.resolve();
 export async function gitCommitAll(
   vault: string,
   message: string,
+  agent = false,
 ): Promise<string | null> {
   const run = commitChain.then(async () => {
     try {
-      return await invoke<string | null>("git_commit_all", { vault, message });
+      return await invoke<string | null>("git_commit_all", { vault, message, agent });
     } catch (e) {
       console.warn("[git] commit failed:", e);
       return null;
