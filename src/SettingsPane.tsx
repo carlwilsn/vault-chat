@@ -9,10 +9,12 @@ import {
   Shield,
   RefreshCw,
   Send,
+  ChevronDown,
 } from "lucide-react";
 import { useStore } from "./store";
 import { PROVIDER_LABEL, AUTO_MODEL_ID, type ProviderId } from "./providers";
 import { Button, Input, Select } from "./ui";
+import { SUPPORTED_VOICE_LLMS, DEFAULT_LLM } from "./voice-elevenlabs";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
 import {
   readVaultSyncConfig,
@@ -121,9 +123,12 @@ export function SettingsPane() {
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, []);
-  const [elevenlabsLlmDraft, setElevenlabsLlmDraft] = useState(
-    localStorage.getItem("vault_chat_elevenlabs_llm") ?? "gemini-2.5-flash",
-  );
+  const [elevenlabsLlmDraft, setElevenlabsLlmDraft] = useState(() => {
+    // Fall back to the default if the stored model is no longer voice-supported
+    // (e.g. a previously-selected Opus), so the dropdown never renders blank.
+    const stored = localStorage.getItem("vault_chat_elevenlabs_llm");
+    return stored && SUPPORTED_VOICE_LLMS.has(stored) ? stored : DEFAULT_LLM;
+  });
   const [savedFlash, setSavedFlash] = useState<
     | ProviderId
     | "tavily"
@@ -564,13 +569,13 @@ export function SettingsPane() {
               </span>
             )}
           </div>
-          <details ref={voicePickerRef} className="w-full rounded border border-border bg-background group">
-            <summary className="h-8 px-2 flex items-center justify-between cursor-pointer text-[12px] font-mono list-none">
+          <details ref={voicePickerRef} className="w-full rounded-md border border-input bg-background group">
+            <summary className="h-8 px-2.5 flex items-center justify-between cursor-pointer text-[12px] font-mono list-none">
               <span className="truncate">
                 {voiceLibrary.find((v) => v.id === elevenlabsVoiceDraft)?.name ?? "(unsaved)"}
                 <span className="ml-2 text-muted-foreground/60">{elevenlabsVoiceDraft}</span>
               </span>
-              <span className="text-muted-foreground/60 group-open:rotate-180 transition-transform">▾</span>
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60 group-open:rotate-180 transition-transform" />
             </summary>
             <div className="border-t border-border max-h-48 overflow-y-auto">
               {voiceLibrary.length === 0 && (
@@ -642,14 +647,13 @@ export function SettingsPane() {
               </span>
             )}
           </div>
-          <select
+          <Select
             value={elevenlabsLlmDraft}
             onChange={(e) => saveElevenlabsLlm(e.target.value)}
-            className="w-full h-8 px-2 rounded border border-border bg-background text-[12px] font-mono"
+            className="font-mono"
           >
             <optgroup label="Gemini (default — native PDF vision)">
               <option value="gemini-2.5-flash">gemini-2.5-flash (default)</option>
-              <option value="gemini-2.5-pro">gemini-2.5-pro (deeper reasoning)</option>
             </optgroup>
             <optgroup label="Claude — Sonnet">
               <option value="claude-sonnet-4-6">claude-sonnet-4-6 (newest)</option>
@@ -657,21 +661,17 @@ export function SettingsPane() {
               <option value="claude-sonnet-4@20250514">claude-sonnet-4</option>
               <option value="claude-3-7-sonnet">claude-3-7-sonnet</option>
             </optgroup>
-            <optgroup label="Claude — Opus (smartest, slower)">
-              <option value="claude-opus-4-8">claude-opus-4-8</option>
-              <option value="claude-opus-4-7">claude-opus-4-7</option>
-            </optgroup>
             <optgroup label="Claude — Haiku (fastest)">
               <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
             </optgroup>
-          </select>
+          </Select>
           <p className="text-[11px] text-muted-foreground/80">
             Brain that handles voice turns. Gemini 2.5 Flash is the default —
             it sees PDFs natively (every page, diagram, equation) with the
-            snappiest TTFT. Switch to gemini-2.5-pro for deep math. Claude
-            variants don't get the PDF blob piped in, so they fall back to
-            the PdfExtract tool. Changes re-provision the agent on next
-            session.
+            snappiest TTFT. Claude variants don't get the PDF blob piped in,
+            so they fall back to the PdfExtract tool. Only models ElevenLabs
+            Agents can run for voice are listed (no Opus, no Gemini 2.5 Pro).
+            Changes re-provision the agent on next session.
           </p>
         </section>
 
@@ -1441,13 +1441,13 @@ function TelegramSection() {
           <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
             Telegram brain
           </label>
-          <select
+          <Select
             value={tgModelDraft}
             onChange={(e) => {
               setTgModelDraft(e.target.value);
               setTelegramModelId(e.target.value);
             }}
-            className="w-full h-8 px-2 rounded border border-border bg-background text-[12px] font-mono"
+            className="font-mono"
           >
             <optgroup label="Fastest — Groq/Cerebras (speed first)">
               <option value="openai/gpt-oss-120b:nitro">gpt-oss-120b · nitro (fastest + smart)</option>
@@ -1482,7 +1482,7 @@ function TelegramSection() {
               <option value="deepseek/deepseek-v4-pro">deepseek-v4-pro</option>
               <option value="qwen/qwen3-235b-a22b">qwen3-235b</option>
             </optgroup>
-          </select>
+          </Select>
           <p className="text-[10.5px] text-muted-foreground/70">
             Model the agent uses when replying to a Telegram-sourced chat
             (inbound messages or scheduled fires). The phone path is quick

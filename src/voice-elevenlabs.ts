@@ -32,21 +32,35 @@ function stopAgentAudioNative(): void {
 
 const AGENT_NAME = "vault-chat";
 // Default — overridable via Settings → ElevenLabs → Voice model.
-// Stored in localStorage as `vault_chat_elevenlabs_llm`. Their LLM
-// allowlist accepts both bare aliases (claude-sonnet-4-6) and dated
-// forms (claude-sonnet-4-5@20250929); we use the bare alias for the
-// newest models since it stays current as ElevenLabs rolls dates.
-// Gemini 2.5 Flash: native PDF + multimodal-native context, far snappier
-// TTFT than 2.5 Pro for voice tempo. Most lecture-narration / "what does
-// this say" / "walk me through this" work doesn't need Pro-tier
-// reasoning — Flash handles it. Switch to gemini-2.5-pro via the
-// per-session picker for genuinely deep math sessions.
-const DEFAULT_LLM = "gemini-2.5-flash";
+// Stored in localStorage as `vault_chat_elevenlabs_llm`. ElevenLabs Agents
+// accept both bare aliases (claude-sonnet-4-6) and dated forms
+// (claude-sonnet-4-5@20250929); we use the bare alias for the newest models
+// since it stays current as ElevenLabs rolls dates. Gemini 2.5 Flash: native
+// PDF + multimodal context, snappy TTFT for voice tempo — handles most
+// lecture-narration / "what does this say" work without Pro-tier reasoning.
+export const DEFAULT_LLM = "gemini-2.5-flash";
 const LLM_STORAGE = "vault_chat_elevenlabs_llm";
 const AGENT_LLM_AT_PROVISION = "vault_chat_elevenlabs_agent_llm";
 
+// Models ElevenLabs Agents can actually run for voice — NOT every model the rest
+// of the app supports. Agents runs no Claude Opus, and only specific Gemini tiers
+// (no gemini-2.5-pro). Keep this in sync with the Settings voice-model dropdown.
+// Verified against ElevenLabs' supported-LLM list + changelog (2026-06).
+export const SUPPORTED_VOICE_LLMS = new Set<string>([
+  "gemini-2.5-flash",
+  "claude-sonnet-4-6",
+  "claude-sonnet-4-5@20250929",
+  "claude-sonnet-4@20250514",
+  "claude-3-7-sonnet",
+  "claude-haiku-4-5-20251001",
+]);
+
+// A stored value outside the supported set (e.g. left over from before a model
+// was dropped) falls back to the default, so voice never fails provisioning on a
+// model ElevenLabs would reject.
 function getCurrentLlm(): string {
-  return localStorage.getItem(LLM_STORAGE) ?? DEFAULT_LLM;
+  const stored = localStorage.getItem(LLM_STORAGE);
+  return stored && SUPPORTED_VOICE_LLMS.has(stored) ? stored : DEFAULT_LLM;
 }
 
 // Gemini reads PDFs natively as part of the multimodal context we
