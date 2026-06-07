@@ -463,3 +463,18 @@ input[type="number"]::-webkit-outer-spin-button {
   appearance: none;
   margin: 0;
 }
+
+/* Pane splitter (allotment) resize cursor: keep the bidirectional arrow in
+   every state. By default allotment switches the sash cursor to a single-
+   direction arrow when a pane hits its min/max (vertical: ew-resize →
+   e-resize/w-resize; horizontal: ns-resize → s-resize/n-resize) — that's
+   the "3 states" (↔ / → / ←). Pin it so a vertical sash is always
+   ew-resize and a horizontal one always ns-resize. Attribute selectors on
+   the hashed CSS-module classes so this survives an allotment version bump;
+   :not(disabled) leaves non-resizable sashes with the default cursor. */
+[class*="sash-module_sash"][class*="vertical"]:not([class*="disabled"]) {
+  cursor: ew-resize !important;
+}
+[class*="sash-module_sash"][class*="horizontal"]:not([class*="disabled"]) {
+  cursor: ns-resize !important;
+}
