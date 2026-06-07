@@ -143,6 +143,13 @@ struct FileEntry {
     /// Some(0) = clean repo, Some(n) = n dirty files. None for non-repo dirs.
     #[serde(skip_serializing_if = "Option::is_none")]
     git_dirty_count: Option<u32>,
+    /// Set only when a nested repo is genuinely stuck — a detached HEAD parked at
+    /// no remote branch tip, which the sync loop can't auto-attach, so its edits
+    /// won't propagate. The string is a human-readable reason for the UI tooltip.
+    /// None for healthy repos (on a branch, or detached-but-at-a-tip which
+    /// auto-attaches next sync), so the file tree shows no branch/`detached` noise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_warn: Option<String>,
 }
 
 // Extensions we hide from the file tree even though they exist on disk —
@@ -337,19 +344,14 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
         let is_humanized = humanized.contains(&rel_str);
         // Detect git repos: check if this directory contains a `.git` entry.
         // Only populated for directories — fast, no network, no git process.
-        let (git_branch, git_dirty_count) = if is_dir && path.join(".git").exists() {
+        let (git_branch, git_dirty_count, git_warn) = if is_dir && path.join(".git").exists() {
             let path_str = path.to_string_lossy().to_string();
-            let branch = run_git(&path_str, &["symbolic-ref", "--short", "HEAD"])
-                .ok()
-                .map(|(out, _, code)| {
-                    if code == 0 {
-                        let b = out.trim().to_string();
-                        if b.is_empty() { "detached".to_string() } else { b }
-                    } else {
-                        "detached".to_string()
-                    }
-                })
-                .unwrap_or_else(|| "detached".to_string());
+            let branch_ref = run_git(&path_str, &["symbolic-ref", "--short", "HEAD"]).ok();
+            let on_branch = matches!(&branch_ref, Some((b, _, 0)) if !b.trim().is_empty());
+            let branch = match &branch_ref {
+                Some((b, _, 0)) if !b.trim().is_empty() => b.trim().to_string(),
+                _ => "detached".to_string(),
+            };
             let dirty = run_git(&path_str, &["status", "--porcelain"])
                 .ok()
                 .map(|(out, _, code)| {
@@ -360,9 +362,27 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
                     }
                 })
                 .unwrap_or(0u32);
-            (Some(branch), Some(dirty))
+            // Sync-health warning. The only genuinely-stuck state in the current
+            // model is a detached HEAD sitting at NO remote branch tip — a
+            // deliberate old-commit checkout the sync loop can't auto-attach, so
+            // its edits won't propagate. On a branch, or detached-but-at-a-tip
+            // (auto-attaches next sync), there's nothing worth flagging.
+            let warn = if on_branch {
+                None
+            } else {
+                let at_tip = run_git(&path_str, &["branch", "-r", "--points-at", "HEAD"])
+                    .ok()
+                    .map(|(out, _, code)| code == 0 && !out.trim().is_empty())
+                    .unwrap_or(false);
+                if at_tip {
+                    None
+                } else {
+                    Some("Detached at an old commit — edits here won't sync".to_string())
+                }
+            };
+            (Some(branch), Some(dirty), warn)
         } else {
-            (None, None)
+            (None, None, None)
         };
         entries.push(FileEntry {
             path: path.to_string_lossy().replace('\\', "/"),
@@ -374,6 +394,7 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
             humanized: is_humanized,
             git_branch,
             git_dirty_count,
+            git_warn,
         });
     }
     Ok(entries)
@@ -1721,6 +1742,7 @@ async fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
             humanized: false,
             git_branch: None,
             git_dirty_count: None,
+            git_warn: None,
         });
     }
     entries.sort_by(|a, b| {

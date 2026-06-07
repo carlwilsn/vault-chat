@@ -35,11 +35,15 @@ export type FileEntry = {
   // Agent write tools refuse it; the user can still edit by hand.
   humanized: boolean;
   // Set only for directories that ARE a git repo root (contain `.git`).
-  // Branch name, e.g. "main", or "detached" for detached HEAD.
+  // Branch name, e.g. "main", or "detached". Used only to detect "is a repo";
+  // the file tree no longer renders the branch name.
   git_branch?: string;
   // Number of uncommitted changes (lines from `git status --porcelain`).
   // 0 = clean; >0 = dirty. Only set when git_branch is set.
   git_dirty_count?: number;
+  // Set only when a nested repo is genuinely stuck (detached at an old commit
+  // that won't sync). Human-readable reason for the tooltip. Absent when healthy.
+  git_warn?: string;
 };
 
 export type ChatRole = "user" | "assistant";
