@@ -978,6 +978,12 @@ async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
     .map_err(|e| e.to_string())?
 }
 
+// Abstract-socket address the vault-chat kitty instance listens on, so the
+// titlebar "+" (open_kitty_tab) can add tabs to the same window the terminal
+// button opened. Linux-only (kitty + abstract unix sockets).
+#[cfg(all(unix, not(target_os = "macos")))]
+const KITTY_SOCKET: &str = "unix:@vault-chat-kitty";
+
 #[tauri::command]
 fn open_terminal(cwd: Option<String>) -> Result<(), String> {
     let dir = cwd.unwrap_or_else(|| ".".to_string());
@@ -1010,12 +1016,87 @@ fn open_terminal(cwd: Option<String>) -> Result<(), String> {
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        for term in ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"] {
-            if Command::new(term).current_dir(&dir).spawn().is_ok() {
+        // Pass each terminal its explicit working-directory FLAG. Relying on
+        // current_dir alone fails for terminals that hand off to a running
+        // server process (ptyxis — Ubuntu 26.04's default, gnome-terminal,
+        // konsole with a daemon): the new window opens in $HOME, not the vault.
+        // kitty is tried first (Carl's terminal), launched single-instance +
+        // remote-control so the titlebar "+" can add tabs to it. current_dir is
+        // kept as a belt-and-suspenders fallback for terminals that honour it.
+        let listen = format!("--listen-on={}", KITTY_SOCKET);
+        let attempts: [(&str, Vec<String>); 5] = [
+            (
+                "kitty",
+                vec![
+                    "--single-instance".into(),
+                    listen.clone(),
+                    "-o".into(),
+                    "allow_remote_control=yes".into(),
+                    "-d".into(),
+                    dir.clone(),
+                ],
+            ),
+            (
+                "ptyxis",
+                vec!["--new-window".into(), format!("--working-directory={}", dir)],
+            ),
+            ("konsole", vec!["--workdir".into(), dir.clone()]),
+            ("gnome-terminal", vec![format!("--working-directory={}", dir)]),
+            ("xterm", vec![]),
+        ];
+        for (term, args) in &attempts {
+            if Command::new(term).args(args).current_dir(&dir).spawn().is_ok() {
                 return Ok(());
             }
         }
+        // Last resort: the Debian default-terminal alias (no portable workdir
+        // flag, so this relies on current_dir).
+        if Command::new("x-terminal-emulator")
+            .current_dir(&dir)
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
         Err("no terminal emulator found".to_string())
+    }
+}
+
+/// Open a new tab in the vault-chat kitty instance (titlebar "+" button).
+/// Adds a tab via kitty remote control if the instance is already running;
+/// otherwise launches kitty (single-instance + remote-control) which opens
+/// the first window. On Windows/macOS (no kitty) it just opens a terminal.
+#[tauri::command]
+fn open_kitty_tab(cwd: Option<String>) -> Result<(), String> {
+    let dir = cwd.unwrap_or_else(|| ".".to_string());
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let added = Command::new("kitty")
+            .args(["@", "--to", KITTY_SOCKET, "launch", "--type=tab", "--cwd", &dir])
+            .current_dir(&dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if added {
+            return Ok(());
+        }
+        // No instance listening yet — launch one (this opens the first window).
+        let listen = format!("--listen-on={}", KITTY_SOCKET);
+        Command::new("kitty")
+            .arg("--single-instance")
+            .arg(&listen)
+            .args(["-o", "allow_remote_control=yes", "-d"])
+            .arg(&dir)
+            .current_dir(&dir)
+            .spawn()
+            .map_err(|e| format!("kitty not found or failed to launch: {e}"))?;
+        Ok(())
+    }
+
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    {
+        open_terminal(Some(dir))
     }
 }
 
@@ -5343,6 +5424,7 @@ pub fn run() {
             schedules_read,
             schedules_write_all,
             open_terminal,
+            open_kitty_tab,
             git_init_if_needed,
             git_commit_all,
             git_recent_commits,

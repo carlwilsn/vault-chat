@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, History, RefreshCw, StickyNote, Mic, Compass, Keyboard, Clock } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, History, RefreshCw, StickyNote, Mic, Compass, Keyboard, Clock, Plus } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
@@ -241,6 +241,17 @@ export function Titlebar() {
         className="flex items-center gap-1 px-2"
         style={isMac ? { paddingLeft: 76 } : undefined}
       >
+        <button
+          onClick={() =>
+            invoke("open_kitty_tab", { cwd: vaultPath ?? undefined }).catch((err) =>
+              console.error("[kitty tab] failed:", err),
+            )
+          }
+          className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
+          title={vaultPath ? `New kitty tab in ${vaultPath}` : "New kitty tab"}
+        >
+          <Plus className="h-4 w-4" />
+        </button>
         <button
           onClick={toggleLeft}
           className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${leftCollapsed ? "text-muted-foreground" : "text-foreground/90"}`}
