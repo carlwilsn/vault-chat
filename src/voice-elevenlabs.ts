@@ -466,6 +466,146 @@ const CLIENT_TOOL_DEFINITIONS = [
       required: ["command"],
     },
   },
+  {
+    name: "ReopenNote",
+    description:
+      "Mark a previously resolved note as open again. Use when the user realises an issue they'd closed isn't actually solved.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        id: {
+          type: "string",
+          description: "The note id (from ListNotes output, in square brackets).",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "GitLog",
+    description:
+      "Read recent git history from a repo inside the vault — including nested work repos. Use it to gauge real momentum from objective evidence: what was committed, when, and by whom. Returns oneline '<short-hash> <subject>' rows. The vault root is mostly autosave commits — the real work usually lives in nested repos, so target those.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        subdir: {
+          type: "string",
+          description:
+            "Vault-relative path to the repo, e.g. 'DeepDL/bitnet-repro'. Use '' or '.' for the vault root.",
+        },
+        since: {
+          type: "string",
+          description: "Optional. Only commits newer than this, e.g. '10 days ago' or '2026-06-01'.",
+        },
+        author: {
+          type: "string",
+          description: "Optional. Filter to commits whose author matches this substring.",
+        },
+        max_count: {
+          type: "number",
+          description: "Optional. Max commits to return. Default 40, max 500.",
+        },
+      },
+      required: ["subdir"],
+    },
+  },
+  {
+    name: "ListConversations",
+    description:
+      "List the other chats in this vault — useful for finding a specific conversation to peek into (see ReadConversation). Returns id, title, source, status, unread, last activity time, and message count for each. Excludes the current chat. Use when the user asks 'what other chats do I have', 'list my conversations', etc.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        limit: {
+          type: "number",
+          description: "Optional. Max conversations to return, sorted by recency. Default 20.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "ReadConversation",
+    description:
+      "Read the recent history of another chat in this vault, including the most recent tool calls. Use when the user asks 'how is the X chat doing', 'what's the deep-dive chat working on', or similar monitoring questions. Pair with ListConversations to find the id. Returns the last N messages with role, content, and any tool-call summaries.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        conversation_id: {
+          type: "string",
+          description: "Conversation id from ListConversations.",
+        },
+        last_n: {
+          type: "number",
+          description: "Optional. How many recent messages to return. Default 12, max 50.",
+        },
+      },
+      required: ["conversation_id"],
+    },
+  },
+  {
+    name: "ListSchedules",
+    description:
+      "List the scheduled prompts in this vault. Use to find a schedule's id before cancelling it, or to remind the user what they have set up. Returns id, name, prompt, recurrence, next-fire time, target, and enabled state.",
+    parameters: {
+      type: "object" as const,
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "CancelSchedule",
+    description:
+      "Delete a schedule by id. Use when the user asks to cancel a reminder, stop a recurring brief, or undo a duplicate. Pair with ListSchedules to find the id.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        schedule_id: {
+          type: "string",
+          description: "The schedule id, from ListSchedules.",
+        },
+      },
+      required: ["schedule_id"],
+    },
+  },
+  {
+    name: "Schedule",
+    description:
+      "Schedule a prompt to fire at a future time, either once or recurring. The prompt runs as a new turn in the CURRENT conversation when it fires. Use for reminders ('remind me at 9pm'), recurring briefs ('daily news at 8am'), or polling tasks. Exactly one of when_iso, daily_at, weekdays_at, or every_minutes must be set — that choice picks the recurrence. Fires while vault-chat is running with this vault available; if the app is closed at fire time, it fires on the next launch.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        prompt: {
+          type: "string",
+          description:
+            "The text sent as the user's turn each time it fires. Phrase it as what you want the agent to do at fire time.",
+        },
+        description: {
+          type: "string",
+          description: "Optional short label shown in the Schedules panel.",
+        },
+        when_iso: {
+          type: "string",
+          description:
+            "ONE-TIME fire. ISO 8601 local datetime e.g. '2026-05-29T21:30'. Compute from the current time.",
+        },
+        daily_at: {
+          type: "string",
+          description: "DAILY fire. Time of day in 'HH:MM' 24h format, e.g. '08:00'.",
+        },
+        weekdays_at: {
+          type: "string",
+          description: "WEEKDAYS-ONLY fire (Mon-Fri). Time in 'HH:MM' 24h format.",
+        },
+        every_minutes: {
+          type: "number",
+          description:
+            "EVERY-N-MINUTES fire. Integer minutes between fires, minimum 5. Use sparingly — frequent fires burn API calls.",
+        },
+      },
+      required: ["prompt"],
+    },
+  },
 ];
 
 export async function startElevenLabsSession(): Promise<void> {
@@ -1664,6 +1804,20 @@ function formatToolMarker(name: string, args: any): string {
       return `Listed ${args.status ?? "open"} notes`;
     case "ResolveNote":
       return `Resolved note ${args.id ?? ""}`;
+    case "ReopenNote":
+      return `Reopened note ${args.id ?? ""}`;
+    case "GitLog":
+      return `Read git log of ${args.subdir || "."}`;
+    case "ListConversations":
+      return `Listed conversations`;
+    case "ReadConversation":
+      return `Read conversation ${args.conversation_id ?? ""}`;
+    case "ListSchedules":
+      return `Listed schedules`;
+    case "CancelSchedule":
+      return `Cancelled schedule ${args.schedule_id ?? ""}`;
+    case "Schedule":
+      return `Scheduled "${String(args.prompt ?? "").slice(0, 50)}"`;
     case "CreateNote": {
       const text = (args.text ?? "").trim();
       const snip = text.length > 50 ? text.slice(0, 47) + "…" : text;
@@ -2137,6 +2291,256 @@ function buildClientToolHandlers(): Record<
           if (result.stdout) parts.push(`stdout:\n${clip(result.stdout)}`);
           if (result.stderr) parts.push(`stderr:\n${clip(result.stderr)}`);
           return parts.join("\n");
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    ReopenNote: withTracking("ReopenNote", async (args: { id: string }) => {
+      const n = useStore.getState().notes.find((n) => n.id === args.id);
+      if (!n) return `No note with id "${args.id}".`;
+      if (n.status === "open") return `Note ${args.id} is already open.`;
+      try {
+        await useStore.getState().setNoteStatus(args.id, "open");
+        sessionMutationCount++;
+        return `Reopened note ${args.id}.`;
+      } catch (e) {
+        return `Error: ${(e as any)?.message ?? String(e)}`;
+      }
+    }),
+    GitLog: withTracking(
+      "GitLog",
+      async (args: {
+        subdir: string;
+        since?: string;
+        author?: string;
+        max_count?: number;
+      }) => {
+        const vault = useStore.getState().vaultPath;
+        if (!vault) return "Error: no active vault";
+        try {
+          const { gitLogSubdir } = await import("./git");
+          const out = await gitLogSubdir(vault, args.subdir ?? ".", {
+            since: args.since,
+            author: args.author,
+            maxCount: args.max_count,
+          });
+          return out.trim() === "" ? "(no commits match)" : out;
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    ListConversations: withTracking(
+      "ListConversations",
+      async (args: { limit?: number }) => {
+        const vault = useStore.getState().vaultPath;
+        if (!vault) return "Error: no active vault";
+        const current = useStore.getState().activeConversationId;
+        const cap = Math.max(1, Math.min(100, args.limit ?? 20));
+        try {
+          const { readConversations } = await import("./conversations");
+          const list = await readConversations(vault);
+          const filtered = list
+            .filter((c) => c.id !== current)
+            .sort((a, b) => b.lastActivityAt - a.lastActivityAt)
+            .slice(0, cap);
+          if (filtered.length === 0) return "(no other conversations)";
+          const fmt = (ts: number) => {
+            const diff = Date.now() - ts;
+            const min = Math.floor(diff / 60_000);
+            if (min < 60) return `${Math.max(0, min)}m ago`;
+            const hr = Math.floor(min / 60);
+            if (hr < 24) return `${hr}h ago`;
+            return `${Math.floor(hr / 24)}d ago`;
+          };
+          return filtered
+            .map((c) =>
+              JSON.stringify({
+                id: c.id,
+                title: c.title || "(untitled)",
+                source: c.source,
+                status: c.status,
+                unread: !!c.unread,
+                messageCount: c.messages.length,
+                lastActivity: fmt(c.lastActivityAt),
+              }),
+            )
+            .join("\n");
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    ReadConversation: withTracking(
+      "ReadConversation",
+      async (args: { conversation_id: string; last_n?: number }) => {
+        const vault = useStore.getState().vaultPath;
+        if (!vault) return "Error: no active vault";
+        const cap = Math.max(1, Math.min(50, args.last_n ?? 12));
+        try {
+          const { readConversations } = await import("./conversations");
+          const list = await readConversations(vault);
+          const conv = list.find((c) => c.id === args.conversation_id);
+          if (!conv) return `Conversation not found: ${args.conversation_id}`;
+          const tail = conv.messages.slice(-cap);
+          const lines: string[] = [
+            `# ${conv.title || "(untitled)"} [${conv.status}]`,
+            `source: ${conv.source} · ${conv.messages.length} total messages`,
+            ...tail.map((m) => {
+              const content = (m.content ?? "").slice(0, 800);
+              const tools =
+                m.toolCalls && m.toolCalls.length > 0
+                  ? `\n  tools: ${m.toolCalls
+                      .map((t) => `${t.name}(${JSON.stringify(t.input ?? {}).slice(0, 80)})`)
+                      .join(", ")}`
+                  : "";
+              return `[${m.role}${m.hidden ? " hidden" : ""}] ${content}${content.length === 800 ? "…" : ""}${tools}`;
+            }),
+          ];
+          return lines.join("\n\n");
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    ListSchedules: withTracking("ListSchedules", async () => {
+      const vault = useStore.getState().vaultPath;
+      if (!vault) return "Error: no active vault";
+      try {
+        const { readSchedules, nextFireAt, recurrenceLabel } = await import("./schedules");
+        const list = await readSchedules(vault);
+        if (list.length === 0) return "(no schedules set)";
+        return list
+          .map((s) => {
+            const next = nextFireAt(s);
+            return JSON.stringify({
+              id: s.id,
+              name: s.name || "(unnamed)",
+              prompt: s.prompt.slice(0, 200),
+              recurrence: recurrenceLabel(s.recurrence),
+              time: s.time,
+              date: s.date,
+              nextFire: next ? new Date(next).toLocaleString() : "(none)",
+              target:
+                s.target.kind === "existing"
+                  ? `chat:${s.target.conversationId}`
+                  : "new chat",
+              enabled: s.enabled,
+              sendViaTelegram: s.sendViaTelegram,
+            });
+          })
+          .join("\n");
+      } catch (e) {
+        return `Error: ${(e as any)?.message ?? String(e)}`;
+      }
+    }),
+    CancelSchedule: withTracking(
+      "CancelSchedule",
+      async (args: { schedule_id: string }) => {
+        const vault = useStore.getState().vaultPath;
+        if (!vault) return "Error: no active vault";
+        try {
+          const { readSchedules, writeSchedules } = await import("./schedules");
+          const list = await readSchedules(vault);
+          const target = list.find((s) => s.id === args.schedule_id);
+          if (!target) return `No schedule with id ${args.schedule_id}.`;
+          const next = list.filter((s) => s.id !== args.schedule_id);
+          await writeSchedules(vault, next);
+          return `Cancelled: ${target.name || target.prompt.slice(0, 60)}`;
+        } catch (e) {
+          return `Error: ${(e as any)?.message ?? String(e)}`;
+        }
+      },
+    ),
+    Schedule: withTracking(
+      "Schedule",
+      async (args: {
+        prompt: string;
+        description?: string;
+        when_iso?: string;
+        daily_at?: string;
+        weekdays_at?: string;
+        every_minutes?: number;
+      }) => {
+        const state = useStore.getState();
+        const vault = state.vaultPath;
+        if (!vault) return "Error: no active vault";
+        const conversationId = state.activeConversationId;
+        if (!conversationId) {
+          return "Schedule tool unavailable: no current conversation id.";
+        }
+        const { prompt, description, when_iso, daily_at, weekdays_at, every_minutes } = args;
+        const recurrenceOptions = [
+          when_iso ? "when_iso" : null,
+          daily_at ? "daily_at" : null,
+          weekdays_at ? "weekdays_at" : null,
+          every_minutes ? "every_minutes" : null,
+        ].filter(Boolean);
+        if (recurrenceOptions.length === 0) {
+          return "Set exactly one of when_iso, daily_at, weekdays_at, or every_minutes.";
+        }
+        if (recurrenceOptions.length > 1) {
+          return `Set exactly one recurrence option (got ${recurrenceOptions.join(", ")}).`;
+        }
+
+        let recurrence: import("./schedules").Recurrence;
+        let time = "08:00";
+        let date: string | undefined;
+        let fireDescription: string;
+
+        if (when_iso) {
+          const dt = new Date(when_iso);
+          if (isNaN(dt.getTime())) {
+            return `Invalid datetime '${when_iso}'. Use ISO local format like 2026-05-29T21:30.`;
+          }
+          if (dt.getTime() <= Date.now()) {
+            return `Refusing to schedule in the past (${when_iso}). Pick a future time.`;
+          }
+          recurrence = { kind: "once" };
+          date = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+          time = `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+          fireDescription = `once at ${dt.toLocaleString()}`;
+        } else if (daily_at) {
+          if (!/^\d{1,2}:\d{2}$/.test(daily_at)) {
+            return `Invalid daily_at '${daily_at}'. Use 'HH:MM' 24h format like 08:00.`;
+          }
+          recurrence = { kind: "daily" };
+          time = daily_at.padStart(5, "0");
+          fireDescription = `daily at ${time}`;
+        } else if (weekdays_at) {
+          if (!/^\d{1,2}:\d{2}$/.test(weekdays_at)) {
+            return `Invalid weekdays_at '${weekdays_at}'. Use 'HH:MM' 24h format like 08:00.`;
+          }
+          recurrence = { kind: "weekdays" };
+          time = weekdays_at.padStart(5, "0");
+          fireDescription = `weekdays at ${time}`;
+        } else {
+          const n = every_minutes!;
+          if (n < 5) {
+            return `every_minutes minimum is 5 (got ${n}). Anything finer is just burning API calls.`;
+          }
+          recurrence = { kind: "every", minutes: n };
+          fireDescription = `every ${n} minutes`;
+        }
+
+        try {
+          const { readSchedules, writeSchedules, emptySchedule } = await import("./schedules");
+          const list = await readSchedules(vault);
+          const fresh = {
+            ...emptySchedule(state.modelId),
+            name: description ?? prompt.split(/\s+/).slice(0, 6).join(" "),
+            prompt,
+            recurrence,
+            time,
+            date,
+            target: { kind: "existing" as const, conversationId },
+            enabled: true,
+            markUnreadOnFinish: true,
+            sendViaTelegram: false,
+          };
+          await writeSchedules(vault, [...list, fresh]);
+          return `Scheduled ${fireDescription}. Will fire as a turn in this conversation.`;
         } catch (e) {
           return `Error: ${(e as any)?.message ?? String(e)}`;
         }
