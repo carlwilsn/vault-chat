@@ -1870,6 +1870,30 @@ fn maybe_update_submodules(vault: &str) {
     if !PathBuf::from(vault).join(".gitmodules").is_file() {
         return;
     }
+    // Pick up any URL changes first (e.g. a sub-repo that got adopted/repointed
+    // to the user's fork on another machine), so we clone from the right remote.
+    let _ = run_git(vault, &["submodule", "sync"]);
+    // Blobless partial clone: fetch the full commit graph but defer file contents
+    // until they're actually checked out, so a big sub-repo materializes without
+    // dragging its entire blob history onto every machine — git fetches blobs
+    // lazily on demand. Falls back to a plain clone if the remote doesn't
+    // advertise partial-clone support.
+    let filtered = run_git_timeout(
+        vault,
+        &["submodule", "update", "--init", "--filter=blob:none"],
+        1800,
+    );
+    let ok = matches!(&filtered, Ok((_, _, 0)));
+    if ok {
+        return;
+    }
+    if let Ok((_, stderr, code)) = &filtered {
+        eprintln!(
+            "[sync] partial submodule update (code {}): {} — retrying full",
+            code,
+            first_line(stderr).trim()
+        );
+    }
     match run_git_timeout(vault, &["submodule", "update", "--init"], 1800) {
         Ok((_, stderr, code)) if code != 0 => {
             eprintln!("[sync] submodule update (code {}): {}", code, stderr.trim());
@@ -1952,6 +1976,167 @@ fn attach_detached_to_branch(sub: &str) -> Option<String> {
     Some(branch)
 }
 
+/// Run the `gh` CLI in `cwd`, returning (stdout, stderr, exit code). GitHub auth
+/// is entirely delegated to `gh` (the app holds no token), mirroring the platform
+/// handling in `vault_sync_gh_create_repo`. Err only if `gh` can't be spawned.
+fn run_gh(cwd: &str, args: &[&str]) -> Result<(String, String, i32), String> {
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new("gh");
+        c.creation_flags(0x08000000);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = Command::new("gh");
+    cmd.current_dir(cwd);
+    cmd.args(args);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    Ok((
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+        out.status.code().unwrap_or(-1),
+    ))
+}
+
+/// Map a submodule's working-tree path back to its `.gitmodules` section name
+/// (the `submodule.<name>.path = <rel>` key), needed to rewrite its URL.
+fn submodule_name_for_path(vault: &str, rel: &str) -> Option<String> {
+    let (out, _, c) = run_git(
+        vault,
+        &["config", "-f", ".gitmodules", "--get-regexp", "\\.path$"],
+    )
+    .ok()?;
+    if c != 0 {
+        return None;
+    }
+    for line in out.lines() {
+        // "submodule.<name>.path <relpath>"
+        if let Some((key, path)) = line.split_once(char::is_whitespace) {
+            if path.trim() == rel {
+                if let Some(name) = key
+                    .strip_prefix("submodule.")
+                    .and_then(|k| k.strip_suffix(".path"))
+                {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Take ownership of a sub-repo whose remote belongs to someone else (e.g.
+/// `microsoft/BitNet`) by forking it to the user's GitHub account and repointing
+/// the submodule at the fork. The vault's invariant: every sub-repo has a remote
+/// the user can push to, so it syncs like a normal folder. The original remote is
+/// preserved as `upstream` for occasional `git fetch upstream` / PRs — a separate
+/// flow from vault sync. Returns the fork URL on success.
+///
+/// Idempotent, best-effort: needs `gh` installed + authenticated as the vault
+/// owner (so the fork lands in the right account); `gh repo fork` treats an
+/// existing fork as success, so re-runs are no-ops. Returns None on any failure,
+/// leaving the sub-repo untouched (caller then skips it exactly as before).
+fn adopt_unowned_subrepo(vault: &str, rel: &str, sub: &str, vault_owner: &str) -> Option<String> {
+    // Fork into the *vault owner's* account only. If gh is authed as someone
+    // else, a fork there still wouldn't be "owned" by the vault — bail.
+    let me = run_gh(sub, &["api", "user", "-q", ".login"])
+        .ok()
+        .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_lowercase()) } else { None })?;
+    if me != vault_owner {
+        return None;
+    }
+    let upstream_url = run_git(sub, &["remote", "get-url", "origin"])
+        .ok()
+        .and_then(|(u, _, c)| if c == 0 { Some(u.trim().to_string()) } else { None })?;
+    // "https://github.com/microsoft/BitNet.git" -> "BitNet"
+    let repo_name = upstream_url
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    // Server-side fork; no local clone (we already have the working tree).
+    let (_, ferr, fc) = run_gh(sub, &["repo", "fork", &upstream_url, "--clone=false"]).ok()?;
+    if fc != 0 {
+        eprintln!("[sync] fork of '{}' failed: {}", rel, first_line(&ferr).trim());
+        return None;
+    }
+    let fork_url = format!("https://github.com/{}/{}.git", me, repo_name);
+    // Repoint: origin -> fork (pushable), keep the original as upstream.
+    let _ = run_git_mut(sub, &["remote", "add", "upstream", &upstream_url]); // no-op if exists
+    let _ = run_git_mut(sub, &["remote", "set-url", "upstream", &upstream_url]);
+    let _ = run_git_mut(sub, &["remote", "set-url", "origin", &fork_url]);
+    // Propagate the new URL into .gitmodules so other machines clone the fork too.
+    if let Some(name) = submodule_name_for_path(vault, rel) {
+        let key = format!("submodule.{}.url", name);
+        let _ = run_git_mut(vault, &["config", "-f", ".gitmodules", &key, &fork_url]);
+        let _ = run_git_mut(vault, &["submodule", "sync", "--", rel]);
+    }
+    // Fetch the fork so the subsequent attach/upstream wiring sees its refs.
+    let _ = run_git_timeout(sub, &["fetch", "origin"], 300);
+    Some(fork_url)
+}
+
+/// Repack a git repo when it has accumulated too many loose objects. The vault's
+/// append-only logs (conversations/notes/schedules `.jsonl`) get re-committed on
+/// every autosave cycle, piling up loose objects fast — 362 MiB loose for a
+/// 34 MiB packed history was observed. `git gc` delta-compresses those near-
+/// identical versions down to almost nothing. We don't lean on git's own
+/// `gc --auto`: it triggers on object *count* (default 6700 loose), which a few
+/// large blobs never reach even while eating hundreds of MB. Threshold on loose
+/// count with a low bar instead. Best-effort and non-destructive — gc only
+/// repacks; it never rewrites history.
+fn maybe_compact_git(dir: &str) {
+    let loose = run_git(dir, &["count-objects", "-v"])
+        .ok()
+        .filter(|(_, _, c)| *c == 0)
+        .and_then(|(out, _, _)| {
+            out.lines().find_map(|l| {
+                l.strip_prefix("count:")
+                    .and_then(|n| n.trim().parse::<u64>().ok())
+            })
+        })
+        .unwrap_or(0);
+    if loose < 300 {
+        return;
+    }
+    match run_git_timeout(dir, &["gc", "--quiet"], 600) {
+        Ok((_, err, c)) if c != 0 => {
+            eprintln!("[sync] gc {} (code {}): {}", dir, c, first_line(&err).trim())
+        }
+        Err(e) => eprintln!("[sync] gc {} failed: {}", dir, e),
+        _ => {}
+    }
+}
+
+/// Patterns for large binary/model artifacts that should live in git-LFS rather
+/// than as fat blobs in every machine's history.
+const LFS_PATTERNS: &[&str] = &[
+    "*.gguf", "*.safetensors", "*.bin", "*.pt", "*.pth", "*.ckpt", "*.onnx", "*.h5", "*.npz",
+    "*.model", "*.weights", "*.tflite", "*.pb",
+];
+
+/// Enable git-LFS for heavy model artifacts in `dir`, if git-LFS is installed.
+/// Strictly conditional: with no `git lfs` binary this is a no-op (adding LFS
+/// filter attributes without the binary would break `git add` of matching files).
+/// Only sets up tracking for *future* files — existing blobs already in history
+/// are left alone (a `git lfs migrate` rewrite is a separate, deliberate step).
+fn ensure_lfs_tracking(dir: &str) {
+    // Probe: is git-LFS available at all?
+    if run_git(dir, &["lfs", "version"]).map(|(_, _, c)| c != 0).unwrap_or(true) {
+        return; // git-lfs not installed — stay dormant
+    }
+    let _ = run_git_mut(dir, &["lfs", "install", "--local"]);
+    for pat in LFS_PATTERNS {
+        // `git lfs track` is idempotent: it won't duplicate an existing rule.
+        let _ = run_git_mut(dir, &["lfs", "track", pat]);
+    }
+}
+
 /// True cross-machine sync for sub-repos: for each registered submodule the
 /// user is actively working in — under their own account, on a branch with an
 /// upstream, NOT a detached mirror checkout — commit any uncommitted edits and
@@ -1965,10 +2150,13 @@ fn attach_detached_to_branch(sub: &str) -> Option<String> {
 /// freshly-materialized repo starts syncing like a normal working tree rather
 /// than staying a frozen reference — see `attach_detached_to_branch`.
 ///
+/// A sub-repo whose remote the user doesn't own (e.g. microsoft/BitNet) is first
+/// adopted — forked to the user's account and repointed at the fork — so the
+/// "everything in the vault is mine" invariant holds; see `adopt_unowned_subrepo`.
+///
 /// Deliberately skipped — all best-effort, never fatal to the vault's own sync:
-///   - third-party submodules (different owner, e.g. microsoft/BitNet): we have
-///     no write access and must not commit into them. Excluded by the owner gate
-///     before any attach is attempted, so they stay detached references.
+///   - unowned sub-repos that can't be adopted (no gh / not authed as the vault
+///     owner): we have no writable remote, so we don't commit into them.
 ///   - detached HEAD at no branch tip (a deliberate old-commit checkout): can't
 ///     attach without orphaning, so left alone.
 ///   - submodules with no upstream branch: nowhere to push.
@@ -2023,16 +2211,23 @@ fn sync_submodules(vault: &str, agent: bool) {
         if !PathBuf::from(&sub).join(".git").exists() {
             continue; // not materialized on this machine
         }
-        // Only sync repos owned by the same account as the vault.
-        // Skips third-party upstreams (microsoft/BitNet, etc.) — we have no
-        // write access and must not commit into them.
+        // Every sub-repo in the vault should be one the user owns (a remote they
+        // can push to), so it syncs like a normal folder. If this one's remote
+        // belongs to someone else (e.g. microsoft/BitNet), adopt it: fork it to
+        // the user's account and repoint origin at the fork, preserving the
+        // original as `upstream`. Adoption is best-effort — if it can't happen
+        // (no gh, not authed as the vault owner), skip exactly as before so we
+        // never commit into a repo we can't push to.
         let sub_owner: Option<String> = run_git(&sub, &["remote", "get-url", "origin"])
             .ok()
             .and_then(|(url, _, c)| if c == 0 { Some(url) } else { None })
             .and_then(|url| repo_owner(&url));
-        match &sub_owner {
-            Some(o) if o == &vault_owner => {} // same owner — proceed
-            _ => continue,                      // different owner or no remote — skip
+        let owned = matches!(&sub_owner, Some(o) if o == &vault_owner);
+        if !owned {
+            match adopt_unowned_subrepo(vault, rel, &sub, &vault_owner) {
+                Some(fork) => eprintln!("[sync] sub-repo '{}' adopted → {}", rel, fork),
+                None => continue, // can't adopt — skip, don't touch a repo we can't push to
+            }
         }
         // On a branch? A submodule materialized via `git submodule update`
         // lands in detached HEAD on the pinned commit, not a branch — so a fresh
@@ -2096,6 +2291,8 @@ fn sync_submodules(vault: &str, agent: bool) {
                 _ => {}
             }
         }
+        // Keep the sub-repo's own .git compact (same churn logic as the vault).
+        maybe_compact_git(&sub);
     }
 }
 
@@ -2380,6 +2577,10 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
                 }
             }
         }
+
+        // Route heavy model artifacts to git-LFS for future writes. No-op unless
+        // git-LFS is installed, so vaults without it are unaffected.
+        ensure_lfs_tracking(&vault);
 
         // Create the vault-chat-start tag if it doesn't already exist.
         // The tag marks "vault as it was when vault-chat first opened
@@ -3269,6 +3470,9 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
                 error: true,
             });
         }
+        // Repack if the append-only-log churn has piled up loose objects, so the
+        // vault's .git doesn't balloon (362 MiB loose → ~tens packed observed).
+        maybe_compact_git(&vault);
         Ok(SyncOpResult {
             ok: true,
             message: "committed local changes".into(),
