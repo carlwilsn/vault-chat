@@ -1889,6 +1889,69 @@ fn repo_owner(url: &str) -> Option<String> {
     parts.get(1).map(|s| s.to_lowercase()).filter(|s| !s.is_empty())
 }
 
+/// Re-attach a detached-HEAD sub-repo to the branch whose tip is exactly the
+/// current commit, so an owned submodule behaves like a normal working tree
+/// instead of a frozen reference. Returns the local branch name on success.
+///
+/// Safe by construction: we only attach when HEAD already equals a remote branch
+/// tip (`git branch -r --points-at HEAD`), so no commits are orphaned and the
+/// working tree is unchanged. If HEAD is at no remote branch tip — a deliberate
+/// old-commit checkout — returns None and the caller leaves it detached.
+///
+/// When several remote branches point at the commit, prefer the remote's default
+/// branch (origin/HEAD), then any main/master, then the first listed.
+fn attach_detached_to_branch(sub: &str) -> Option<String> {
+    let (out, _, code) = run_git(
+        sub,
+        &["branch", "-r", "--points-at", "HEAD", "--format=%(refname:short)"],
+    )
+    .ok()?;
+    if code != 0 {
+        return None;
+    }
+    // Keep only "origin/<branch>" entries; drop the bare "origin" symref (which
+    // `%(refname:short)` emits for refs/remotes/origin/HEAD) and any "->" arrow.
+    let candidates: Vec<String> = out
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| l.contains('/') && !l.contains("->"))
+        .map(|s| s.to_string())
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    let default = run_git(
+        sub,
+        &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+    )
+    .ok()
+    .and_then(|(d, _, c)| if c == 0 { Some(d.trim().to_string()) } else { None });
+    let pick = default
+        .filter(|d| candidates.iter().any(|c| c == d))
+        .or_else(|| {
+            candidates
+                .iter()
+                .find(|c| c.ends_with("/main") || c.ends_with("/master"))
+                .cloned()
+        })
+        .or_else(|| candidates.first().cloned())?;
+    // "origin/main" -> "main"; preserves slashes in "origin/feature/x" -> "feature/x".
+    let branch = pick.splitn(2, '/').nth(1).unwrap_or(&pick).to_string();
+    // HEAD already equals this tip, so the checkout changes no files. Create the
+    // local tracking branch, or switch to it if it already exists.
+    let ok = matches!(
+        run_git_mut(sub, &["switch", "-c", &branch, "--track", &pick]),
+        Ok((_, _, 0))
+    ) || matches!(run_git_mut(sub, &["switch", &branch]), Ok((_, _, 0)));
+    if !ok {
+        return None;
+    }
+    // Ensure upstream is set (the `switch` fallback for a pre-existing branch may
+    // not have configured tracking).
+    let _ = run_git_mut(sub, &["branch", "--set-upstream-to", &pick, &branch]);
+    Some(branch)
+}
+
 /// True cross-machine sync for sub-repos: for each registered submodule the
 /// user is actively working in — under their own account, on a branch with an
 /// upstream, NOT a detached mirror checkout — commit any uncommitted edits and
@@ -1897,9 +1960,17 @@ fn repo_owner(url: &str) -> Option<String> {
 /// gitlink bump (committed right after by the normal vault flow) tells the
 /// other machine which commit to check out.
 ///
+/// An owned sub-repo found in detached HEAD (the default right after
+/// `git submodule update`) is re-attached to the branch at its tip first, so a
+/// freshly-materialized repo starts syncing like a normal working tree rather
+/// than staying a frozen reference — see `attach_detached_to_branch`.
+///
 /// Deliberately skipped — all best-effort, never fatal to the vault's own sync:
-///   - detached-HEAD submodules: a mirror checkout or read-only reference (e.g.
-///     microsoft/BitNet) just tracks a pinned commit; we must not commit into it.
+///   - third-party submodules (different owner, e.g. microsoft/BitNet): we have
+///     no write access and must not commit into them. Excluded by the owner gate
+///     before any attach is attempted, so they stay detached references.
+///   - detached HEAD at no branch tip (a deliberate old-commit checkout): can't
+///     attach without orphaning, so left alone.
 ///   - submodules with no upstream branch: nowhere to push.
 ///   - a push that fails (no write access, non-fast-forward): logged, skipped —
 ///     the parent still records the local commit; the other machine fetches it
@@ -1963,14 +2034,24 @@ fn sync_submodules(vault: &str, agent: bool) {
             Some(o) if o == &vault_owner => {} // same owner — proceed
             _ => continue,                      // different owner or no remote — skip
         }
-        // On a branch? A detached mirror checkout returns non-zero here, so it
-        // is skipped — we only sync repos the user is actually working in.
+        // On a branch? A submodule materialized via `git submodule update`
+        // lands in detached HEAD on the pinned commit, not a branch — so a fresh
+        // checkout of an owned sub-repo would otherwise be skipped forever and
+        // never behave like a normal working tree. We only reach this point for
+        // owned repos (owner gate above), so if it's detached we try to ATTACH it
+        // to the branch whose tip is exactly this commit. That's loss-free: HEAD
+        // already equals the branch tip, so no commits are orphaned and no files
+        // change. A deliberate old-commit checkout (HEAD at no branch tip) can't
+        // attach and stays detached + skipped, preserving the user's intent.
         let on_branch = matches!(
             run_git(&sub, &["symbolic-ref", "--quiet", "--short", "HEAD"]),
             Ok((ref b, _, 0)) if !b.trim().is_empty()
         );
         if !on_branch {
-            continue;
+            match attach_detached_to_branch(&sub) {
+                Some(b) => eprintln!("[sync] submodule '{}' attached to branch '{}'", rel, b),
+                None => continue, // not at any remote branch tip — leave detached, skip
+            }
         }
         // Needs an upstream branch to push to.
         let has_upstream = matches!(
