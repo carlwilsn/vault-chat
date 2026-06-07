@@ -978,12 +978,6 @@ async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
     .map_err(|e| e.to_string())?
 }
 
-// Abstract-socket address the vault-chat kitty instance listens on, so the
-// titlebar "+" (open_kitty_tab) can add tabs to the same window the terminal
-// button opened. Linux-only (kitty + abstract unix sockets).
-#[cfg(all(unix, not(target_os = "macos")))]
-const KITTY_SOCKET: &str = "unix:@vault-chat-kitty";
-
 #[tauri::command]
 fn open_terminal(cwd: Option<String>) -> Result<(), String> {
     let dir = cwd.unwrap_or_else(|| ".".to_string());
@@ -1020,21 +1014,13 @@ fn open_terminal(cwd: Option<String>) -> Result<(), String> {
         // current_dir alone fails for terminals that hand off to a running
         // server process (ptyxis — Ubuntu 26.04's default, gnome-terminal,
         // konsole with a daemon): the new window opens in $HOME, not the vault.
-        // kitty is tried first (Carl's terminal), launched single-instance +
-        // remote-control so the titlebar "+" can add tabs to it. current_dir is
-        // kept as a belt-and-suspenders fallback for terminals that honour it.
-        let listen = format!("--listen-on={}", KITTY_SOCKET);
+        // kitty is tried first (Carl's terminal), launched single-instance so
+        // repeated opens reuse one process. current_dir is kept as a
+        // belt-and-suspenders fallback for terminals that honour it.
         let attempts: [(&str, Vec<String>); 5] = [
             (
                 "kitty",
-                vec![
-                    "--single-instance".into(),
-                    listen.clone(),
-                    "-o".into(),
-                    "allow_remote_control=yes".into(),
-                    "-d".into(),
-                    dir.clone(),
-                ],
+                vec!["--single-instance".into(), "-d".into(), dir.clone()],
             ),
             (
                 "ptyxis",
@@ -1059,44 +1045,6 @@ fn open_terminal(cwd: Option<String>) -> Result<(), String> {
             return Ok(());
         }
         Err("no terminal emulator found".to_string())
-    }
-}
-
-/// Open a new tab in the vault-chat kitty instance (titlebar "+" button).
-/// Adds a tab via kitty remote control if the instance is already running;
-/// otherwise launches kitty (single-instance + remote-control) which opens
-/// the first window. On Windows/macOS (no kitty) it just opens a terminal.
-#[tauri::command]
-fn open_kitty_tab(cwd: Option<String>) -> Result<(), String> {
-    let dir = cwd.unwrap_or_else(|| ".".to_string());
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let added = Command::new("kitty")
-            .args(["@", "--to", KITTY_SOCKET, "launch", "--type=tab", "--cwd", &dir])
-            .current_dir(&dir)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if added {
-            return Ok(());
-        }
-        // No instance listening yet — launch one (this opens the first window).
-        let listen = format!("--listen-on={}", KITTY_SOCKET);
-        Command::new("kitty")
-            .arg("--single-instance")
-            .arg(&listen)
-            .args(["-o", "allow_remote_control=yes", "-d"])
-            .arg(&dir)
-            .current_dir(&dir)
-            .spawn()
-            .map_err(|e| format!("kitty not found or failed to launch: {e}"))?;
-        Ok(())
-    }
-
-    #[cfg(not(all(unix, not(target_os = "macos"))))]
-    {
-        open_terminal(Some(dir))
     }
 }
 
@@ -5424,7 +5372,6 @@ pub fn run() {
             schedules_read,
             schedules_write_all,
             open_terminal,
-            open_kitty_tab,
             git_init_if_needed,
             git_commit_all,
             git_recent_commits,
