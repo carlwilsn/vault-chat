@@ -1030,8 +1030,21 @@ fn open_terminal(cwd: Option<String>) -> Result<(), String> {
             ("gnome-terminal", vec![format!("--working-directory={}", dir)]),
             ("xterm", vec![]),
         ];
+        // Strip the Python env the AppImage runtime injects (PYTHONHOME /
+        // PYTHONPATH point at the bundled /tmp/.mount_*/usr). A terminal that
+        // embeds its own Python — notably kitty — inherits these and its
+        // interpreter then can't find its stdlib ("Failed to import encodings
+        // module"), so it dies instantly and nothing appears. GTK terminals
+        // (ptyxis etc.) don't embed Python, which is why they were unaffected.
         for (term, args) in &attempts {
-            if Command::new(term).args(args).current_dir(&dir).spawn().is_ok() {
+            if Command::new(term)
+                .args(args)
+                .current_dir(&dir)
+                .env_remove("PYTHONHOME")
+                .env_remove("PYTHONPATH")
+                .spawn()
+                .is_ok()
+            {
                 return Ok(());
             }
         }
@@ -1039,6 +1052,8 @@ fn open_terminal(cwd: Option<String>) -> Result<(), String> {
         // flag, so this relies on current_dir).
         if Command::new("x-terminal-emulator")
             .current_dir(&dir)
+            .env_remove("PYTHONHOME")
+            .env_remove("PYTHONPATH")
             .spawn()
             .is_ok()
         {
