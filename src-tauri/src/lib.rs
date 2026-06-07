@@ -1014,14 +1014,14 @@ fn open_terminal(cwd: Option<String>) -> Result<(), String> {
         // current_dir alone fails for terminals that hand off to a running
         // server process (ptyxis — Ubuntu 26.04's default, gnome-terminal,
         // konsole with a daemon): the new window opens in $HOME, not the vault.
-        // kitty is tried first (Carl's terminal), launched single-instance so
-        // repeated opens reuse one process. current_dir is kept as a
-        // belt-and-suspenders fallback for terminals that honour it.
+        // kitty is tried first (Carl's terminal). NOTE: do NOT pass
+        // --single-instance — spawned from this GUI app the single-instance
+        // handshake makes the child exit without showing a window (silent
+        // failure + zombies). Plain `kitty -d DIR` opens a window reliably.
+        // current_dir is kept as a belt-and-suspenders fallback for terminals
+        // that honour it.
         let attempts: [(&str, Vec<String>); 5] = [
-            (
-                "kitty",
-                vec!["--single-instance".into(), "-d".into(), dir.clone()],
-            ),
+            ("kitty", vec!["-d".into(), dir.clone()]),
             (
                 "ptyxis",
                 vec!["--new-window".into(), format!("--working-directory={}", dir)],
