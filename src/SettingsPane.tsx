@@ -13,8 +13,15 @@ import {
 } from "lucide-react";
 import { useStore } from "./store";
 import { PROVIDER_LABEL, AUTO_MODEL_ID, type ProviderId } from "./providers";
-import { Button, Input, Select } from "./ui";
+import { Button, Input, MenuSelect } from "./ui";
 import { SUPPORTED_VOICE_LLMS, DEFAULT_LLM } from "./voice-elevenlabs";
+import {
+  readVoiceLibraryCache,
+  readVoiceLibrary,
+  writeVoiceLibrary,
+  DEFAULT_VOICES,
+  type SavedVoice,
+} from "./voiceLibrary";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
 import {
   readVaultSyncConfig,
@@ -78,6 +85,7 @@ export function SettingsPane() {
   } = useStore();
   const autoRouterCostBias = useStore((s) => s.autoRouterCostBias);
   const setAutoRouterCostBias = useStore((s) => s.setAutoRouterCostBias);
+  const vaultPath = useStore((s) => s.vaultPath);
   const [modelSearch, setModelSearch] = useState("");
   const filteredCatalog = (() => {
     const q = modelSearch.trim().toLowerCase();
@@ -99,16 +107,27 @@ export function SettingsPane() {
   const [elevenlabsVoiceDraft, setElevenlabsVoiceDraft] = useState(
     localStorage.getItem("vault_chat_elevenlabs_voice") ?? "nPczCjzI2devNBz1zQrb",
   );
-  const [voiceLibrary, setVoiceLibrary] = useState<{ name: string; id: string }[]>(() => {
-    const raw = localStorage.getItem("vault_chat_elevenlabs_voice_library");
-    if (!raw) return [{ name: "Brian (Jarvis-adjacent)", id: "nPczCjzI2devNBz1zQrb" }];
-    try {
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
+  const [voiceLibrary, setVoiceLibrary] = useState<SavedVoice[]>(() => {
+    const cached = readVoiceLibraryCache();
+    return cached.length ? cached : DEFAULT_VOICES;
   });
+  // The saved voice set is git-synced via <vault>/.vault-chat/voices.json. On
+  // open, load it from the vault (the cross-machine source of truth); if the
+  // vault has no file yet, seed it from whatever's local so it starts syncing.
+  useEffect(() => {
+    if (!vaultPath) return;
+    let cancelled = false;
+    (async () => {
+      const fromVault = await readVoiceLibrary(vaultPath);
+      if (cancelled) return;
+      if (fromVault) setVoiceLibrary(fromVault);
+      else await writeVoiceLibrary(vaultPath, voiceLibrary);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vaultPath]);
   const [newVoiceName, setNewVoiceName] = useState("");
   const [newVoiceId, setNewVoiceId] = useState("");
   const voicePickerRef = useRef<HTMLDetailsElement | null>(null);
@@ -197,7 +216,7 @@ export function SettingsPane() {
     if (!name || !id) return;
     const next = [...voiceLibrary.filter((v) => v.id !== id), { name, id }];
     setVoiceLibrary(next);
-    localStorage.setItem("vault_chat_elevenlabs_voice_library", JSON.stringify(next));
+    void writeVoiceLibrary(vaultPath, next);
     setNewVoiceName("");
     setNewVoiceId("");
     saveElevenlabsVoice(id);
@@ -206,7 +225,7 @@ export function SettingsPane() {
   const removeVoiceFromLibrary = (id: string) => {
     const next = voiceLibrary.filter((v) => v.id !== id);
     setVoiceLibrary(next);
-    localStorage.setItem("vault_chat_elevenlabs_voice_library", JSON.stringify(next));
+    void writeVoiceLibrary(vaultPath, next);
   };
 
   const saveElevenlabsLlm = (v: string) => {
@@ -285,21 +304,33 @@ export function SettingsPane() {
             value={modelSearch}
             onChange={(e) => setModelSearch(e.target.value)}
           />
-          <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
-            {/* Auto is always available at the top — no key required */}
-            <option value={AUTO_MODEL_ID}>Auto — smart routing (saves credits)</option>
-            {catalog.length === 0 ? null : filteredCatalog.length === 0 ? (
-              <option value={modelId} disabled>
-                No models match "{modelSearch}"
-              </option>
-            ) : (
-              filteredCatalog.map((m) => (
-                <option key={`${m.provider}:${m.id}`} value={m.id}>
-                  [{PROVIDER_LABEL[m.provider]}] {m.label}
-                </option>
-              ))
-            )}
-          </Select>
+          <MenuSelect
+            value={modelId}
+            onChange={setModelId}
+            triggerLabel={
+              modelId === AUTO_MODEL_ID
+                ? "Auto — smart routing (saves credits)"
+                : (() => {
+                    const m = catalog.find((c) => c.id === modelId);
+                    return m ? `[${PROVIDER_LABEL[m.provider]}] ${m.label}` : modelId;
+                  })()
+            }
+            emptyHint={modelSearch ? `No models match "${modelSearch}"` : undefined}
+            groups={[
+              // Auto is always available at the top — no key required.
+              { options: [{ value: AUTO_MODEL_ID, label: "Auto — smart routing (saves credits)" }] },
+              ...(filteredCatalog.length > 0
+                ? [
+                    {
+                      options: filteredCatalog.map((m) => ({
+                        value: m.id,
+                        label: `[${PROVIDER_LABEL[m.provider]}] ${m.label}`,
+                      })),
+                    },
+                  ]
+                : []),
+            ]}
+          />
           {modelSearch && (
             <p className="text-[11px] text-muted-foreground/80">
               {filteredCatalog.length} of {catalog.length} match
@@ -365,10 +396,18 @@ export function SettingsPane() {
               App color palette.
             </p>
           </div>
-          <Select value={theme} onChange={(e) => setTheme(e.target.value as "graphite" | "light")}>
-            <option value="graphite">Graphite (default)</option>
-            <option value="light">Light</option>
-          </Select>
+          <MenuSelect
+            value={theme}
+            onChange={(v) => setTheme(v as "graphite" | "light")}
+            groups={[
+              {
+                options: [
+                  { value: "graphite", label: "Graphite (default)" },
+                  { value: "light", label: "Light" },
+                ],
+              },
+            ]}
+          />
         </section>
 
         <div className="h-px bg-border" />
@@ -647,24 +686,30 @@ export function SettingsPane() {
               </span>
             )}
           </div>
-          <Select
+          <MenuSelect
             value={elevenlabsLlmDraft}
-            onChange={(e) => saveElevenlabsLlm(e.target.value)}
-            className="font-mono"
-          >
-            <optgroup label="Gemini (default — native PDF vision)">
-              <option value="gemini-2.5-flash">gemini-2.5-flash (default)</option>
-            </optgroup>
-            <optgroup label="Claude — Sonnet">
-              <option value="claude-sonnet-4-6">claude-sonnet-4-6 (newest)</option>
-              <option value="claude-sonnet-4-5@20250929">claude-sonnet-4-5</option>
-              <option value="claude-sonnet-4@20250514">claude-sonnet-4</option>
-              <option value="claude-3-7-sonnet">claude-3-7-sonnet</option>
-            </optgroup>
-            <optgroup label="Claude — Haiku (fastest)">
-              <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
-            </optgroup>
-          </Select>
+            onChange={saveElevenlabsLlm}
+            mono
+            groups={[
+              {
+                label: "Gemini (default — native PDF vision)",
+                options: [{ value: "gemini-2.5-flash", label: "gemini-2.5-flash (default)" }],
+              },
+              {
+                label: "Claude — Sonnet",
+                options: [
+                  { value: "claude-sonnet-4-6", label: "claude-sonnet-4-6 (newest)" },
+                  { value: "claude-sonnet-4-5@20250929", label: "claude-sonnet-4-5" },
+                  { value: "claude-sonnet-4@20250514", label: "claude-sonnet-4" },
+                  { value: "claude-3-7-sonnet", label: "claude-3-7-sonnet" },
+                ],
+              },
+              {
+                label: "Claude — Haiku (fastest)",
+                options: [{ value: "claude-haiku-4-5-20251001", label: "claude-haiku-4-5" }],
+              },
+            ]}
+          />
           <p className="text-[11px] text-muted-foreground/80">
             Brain that handles voice turns. Gemini 2.5 Flash is the default —
             it sees PDFs natively (every page, diagram, equation) with the
@@ -1441,48 +1486,69 @@ function TelegramSection() {
           <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
             Telegram brain
           </label>
-          <Select
+          <MenuSelect
             value={tgModelDraft}
-            onChange={(e) => {
-              setTgModelDraft(e.target.value);
-              setTelegramModelId(e.target.value);
+            onChange={(v) => {
+              setTgModelDraft(v);
+              setTelegramModelId(v);
             }}
-            className="font-mono"
-          >
-            <optgroup label="Fastest — Groq/Cerebras (speed first)">
-              <option value="openai/gpt-oss-120b:nitro">gpt-oss-120b · nitro (fastest + smart)</option>
-              <option value="meta-llama/llama-3.3-70b-instruct:nitro">llama-3.3-70b · nitro</option>
-              <option value="qwen/qwen3-32b:nitro">qwen3-32b · nitro</option>
-            </optgroup>
-            <optgroup label="Fast + smart">
-              <option value="google/gemini-3.5-flash">gemini-3.5-flash (Sonnet-class, fast)</option>
-            </optgroup>
-            <optgroup label="Haiku (cheap, recommended)">
-              <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
-            </optgroup>
-            <optgroup label="Sonnet (heavier reasoning)">
-              <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
-              <option value="claude-sonnet-4-5@20250929">claude-sonnet-4-5</option>
-            </optgroup>
-            <optgroup label="Opus (full muscle, slow + pricey)">
-              <option value="claude-opus-4-8">claude-opus-4-8</option>
-              <option value="claude-opus-4-7">claude-opus-4-7</option>
-            </optgroup>
-            <optgroup label="Gemini">
-              <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-              <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-            </optgroup>
-            <optgroup label="OpenRouter — fast & cheap">
-              <option value="openrouter/auto">openrouter/auto — smart routing</option>
-              <option value="deepseek/deepseek-v4-flash">deepseek-v4-flash (cheapest, fast)</option>
-              <option value="deepseek/deepseek-chat">deepseek-chat (V3)</option>
-              <option value="qwen/qwen3-coder">qwen3-coder</option>
-            </optgroup>
-            <optgroup label="OpenRouter — smarter">
-              <option value="deepseek/deepseek-v4-pro">deepseek-v4-pro</option>
-              <option value="qwen/qwen3-235b-a22b">qwen3-235b</option>
-            </optgroup>
-          </Select>
+            mono
+            groups={[
+              {
+                label: "Fastest — Groq/Cerebras (speed first)",
+                options: [
+                  { value: "openai/gpt-oss-120b:nitro", label: "gpt-oss-120b · nitro (fastest + smart)" },
+                  { value: "meta-llama/llama-3.3-70b-instruct:nitro", label: "llama-3.3-70b · nitro" },
+                  { value: "qwen/qwen3-32b:nitro", label: "qwen3-32b · nitro" },
+                ],
+              },
+              {
+                label: "Fast + smart",
+                options: [{ value: "google/gemini-3.5-flash", label: "gemini-3.5-flash (Sonnet-class, fast)" }],
+              },
+              {
+                label: "Haiku (cheap, recommended)",
+                options: [{ value: "claude-haiku-4-5-20251001", label: "claude-haiku-4-5" }],
+              },
+              {
+                label: "Sonnet (heavier reasoning)",
+                options: [
+                  { value: "claude-sonnet-4-6", label: "claude-sonnet-4-6" },
+                  { value: "claude-sonnet-4-5@20250929", label: "claude-sonnet-4-5" },
+                ],
+              },
+              {
+                label: "Opus (full muscle, slow + pricey)",
+                options: [
+                  { value: "claude-opus-4-8", label: "claude-opus-4-8" },
+                  { value: "claude-opus-4-7", label: "claude-opus-4-7" },
+                ],
+              },
+              {
+                label: "Gemini",
+                options: [
+                  { value: "gemini-2.5-flash", label: "gemini-2.5-flash" },
+                  { value: "gemini-2.5-pro", label: "gemini-2.5-pro" },
+                ],
+              },
+              {
+                label: "OpenRouter — fast & cheap",
+                options: [
+                  { value: "openrouter/auto", label: "openrouter/auto — smart routing" },
+                  { value: "deepseek/deepseek-v4-flash", label: "deepseek-v4-flash (cheapest, fast)" },
+                  { value: "deepseek/deepseek-chat", label: "deepseek-chat (V3)" },
+                  { value: "qwen/qwen3-coder", label: "qwen3-coder" },
+                ],
+              },
+              {
+                label: "OpenRouter — smarter",
+                options: [
+                  { value: "deepseek/deepseek-v4-pro", label: "deepseek-v4-pro" },
+                  { value: "qwen/qwen3-235b-a22b", label: "qwen3-235b" },
+                ],
+              },
+            ]}
+          />
           <p className="text-[10.5px] text-muted-foreground/70">
             Model the agent uses when replying to a Telegram-sourced chat
             (inbound messages or scheduled fires). The phone path is quick
