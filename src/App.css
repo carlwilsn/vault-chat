@@ -443,3 +443,23 @@ select {
   background-size: 14px 14px;
   padding-right: 1.75rem;
 }
+
+/* Also UNLAYERED, for the same WebKitGTK reason as <select> above: a rule
+   inside @layer base loses to WebKitGTK's native form-control rendering, so
+   the up/down stepper on `type="number"` kept showing on Linux even with the
+   pseudo-element reset. Here `appearance: none` (unlayered, so it actually
+   wins) stops WebKitGTK drawing the native spin widget; the pseudo-element
+   rules clear the remainder under Chromium (Windows), where the field has
+   no spinner in our layout anyway. The field keeps `type="number"` for
+   validation — only the redundant arrows go. */
+input[type="number"] {
+  -webkit-appearance: none;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
