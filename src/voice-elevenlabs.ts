@@ -622,6 +622,41 @@ const CLIENT_TOOL_DEFINITIONS = [
   },
 ];
 
+// Decide which conversation a starting voice session should run in.
+// Voice always wants its own thread, so a session never appends onto a
+// text chat. Reuse the active conversation ONLY when it's already a
+// pure-voice thread (source "voice" — i.e. the mic was just toggled off
+// and back on) or it's empty; otherwise spin up a fresh thread and tag
+// it "voice". A typed turn later flips it back to "manual" (see
+// chat-controller), so "source === voice" means "voice from start to end
+// so far", which is exactly the resume condition the user wants.
+function ensureVoiceConversation(): void {
+  const s = useStore.getState();
+  const active = s.activeConversationId
+    ? s.conversations.find((c) => c.id === s.activeConversationId)
+    : null;
+  const reusable =
+    !!active &&
+    (active.source === "voice" ||
+      (active.messages.length === 0 && s.messages.length === 0));
+  if (reusable) {
+    if (active!.source !== "voice") {
+      useStore.setState({
+        conversations: s.conversations.map((c) =>
+          c.id === active!.id ? { ...c, source: "voice" } : c,
+        ),
+      });
+    }
+    return;
+  }
+  const id = useStore.getState().newConversation();
+  useStore.setState((st) => ({
+    conversations: st.conversations.map((c) =>
+      c.id === id ? { ...c, source: "voice" } : c,
+    ),
+  }));
+}
+
 export async function startElevenLabsSession(): Promise<void> {
   if (activeConversation) return;
   const state = useStore.getState();
@@ -685,15 +720,25 @@ export async function startElevenLabsSession(): Promise<void> {
   sentPdfPaths.clear();
   sessionMutationCount = 0;
   sessionFirstUserText = null;
+
+  // Voice runs in its own thread. Start fresh unless we're resuming a
+  // pure-voice conversation (the user toggled the mic off and back on, so
+  // the active thread is voice from start to end) or the active thread is
+  // empty. Otherwise a voice session would tack its turns onto whatever
+  // text chat happened to be open. Must run before the prompt build below
+  // so the system prompt's recent-history reflects the chosen thread.
+  ensureVoiceConversation();
   startViewportWatch();
 
+  // Re-read after the possible conversation swap.
+  const voiceState = useStore.getState();
   // Load the user-editable voice header from this vault's agent config
   // (.vault-chat/agent/voice.md). Empty string when missing →
   // buildSystemPrompt falls back to the built-in default header.
-  const customHeader = await loadVaultVoicePrompt(state.vaultPath);
-  const northStar = await loadVaultNorthStar(state.vaultPath);
-  const systemPrompt = buildSystemPrompt(state, customHeader, northStar);
-  const dynamicVariables = buildDynamicVariables(state);
+  const customHeader = await loadVaultVoicePrompt(voiceState.vaultPath);
+  const northStar = await loadVaultNorthStar(voiceState.vaultPath);
+  const systemPrompt = buildSystemPrompt(voiceState, customHeader, northStar);
+  const dynamicVariables = buildDynamicVariables(voiceState);
 
   try {
     activeConversation = await Conversation.startSession({

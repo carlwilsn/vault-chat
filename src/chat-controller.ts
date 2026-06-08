@@ -178,6 +178,16 @@ export async function sendMessage(
     // surfaces as the pulse in the Chats panel.
     cur.setConversationStatus(targetConvId, "running");
   } else {
+    // A typed turn into a voice thread means voice is no longer the whole
+    // conversation — drop the "voice" tag so the next mic-on starts fresh
+    // instead of resuming this now-mixed thread.
+    if (targetConvId && targetConv?.source === "voice") {
+      useStore.setState((st) => ({
+        conversations: st.conversations.map((c) =>
+          c.id === targetConvId ? { ...c, source: "manual" } : c,
+        ),
+      }));
+    }
     cur.setBusy(true);
     cur.resetStreaming();
   }

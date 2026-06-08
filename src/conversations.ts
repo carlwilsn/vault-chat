@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ChatMessage } from "./store";
 
-export type ConversationSource = "manual" | "telegram" | "scheduled";
+export type ConversationSource = "manual" | "telegram" | "scheduled" | "voice";
 export type ConversationStatus = "idle" | "running";
 
 export type Conversation = {

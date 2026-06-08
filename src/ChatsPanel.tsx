@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Plus, X as XIcon, Trash2, Send } from "lucide-react";
+import { MessageSquare, Plus, X as XIcon, Trash2, Send, Mic } from "lucide-react";
 import { useStore } from "./store";
 import { conversationPreview, type Conversation } from "./conversations";
 
@@ -321,6 +321,9 @@ function Row({
 function SourceIcon({ source }: { source: string }) {
   if (source === "telegram") {
     return <Send className="h-3 w-3 text-muted-foreground shrink-0" />;
+  }
+  if (source === "voice") {
+    return <Mic className="h-3 w-3 text-muted-foreground shrink-0" />;
   }
   return null;
 }
