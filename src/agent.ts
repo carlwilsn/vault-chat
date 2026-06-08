@@ -1,4 +1,4 @@
-import { streamText, stepCountIs, tool, type ModelMessage } from "ai";
+import { streamText, generateText, stepCountIs, tool, type ModelMessage } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
@@ -63,6 +63,83 @@ function getShellKind(): Promise<ShellKind> {
     }));
   }
   return shellKindPromise;
+}
+
+// --- Mid-run compaction ---------------------------------------------------
+// A single agent turn runs up to 50 tool-call steps; the accumulated tool
+// outputs grow the context until the provider rejects the request and the
+// whole turn dies — which is what kills long / overnight runs. The AI SDK's
+// prepareStep hook lets us rewrite the message list before each step, so
+// when the running context crosses a threshold we summarize the older
+// prefix into a single recap message and keep the recent turns verbatim.
+// Guarded by the threshold so normal short turns are never touched, and
+// fully fail-safe (any error → leave the messages alone), so the worst case
+// is the pre-existing "dies at the limit" behavior, never something worse.
+const MID_RUN_CONTEXT_LIMIT = 200_000;
+const MID_RUN_COMPACT_AT = Math.floor(MID_RUN_CONTEXT_LIMIT * 0.75); // ~150k
+const MID_RUN_KEEP_TAIL = 12;
+
+const MID_RUN_COMPACT_SYSTEM = `You compact the middle of a long, in-flight agent run so it can keep going with less context.
+
+Preserve, in compressed form:
+- The user's overall goal and any standing instructions
+- File paths touched and decisions made about them
+- Concrete facts/findings established, and the current state of the work
+- What has been done so far and what still remains
+
+Drop verbose tool outputs (file dumps, command output, listings) — keep only the conclusions. Output a tight recap (around 300-700 words) written so the agent can pick up mid-task without re-reading anything.`;
+
+function estimateMessageTokens(messages: ModelMessage[]): number {
+  let chars = 0;
+  for (const m of messages) {
+    const c = (m as any).content;
+    if (typeof c === "string") chars += c.length;
+    else if (Array.isArray(c)) {
+      for (const part of c) {
+        chars += typeof part?.text === "string" ? part.text.length : JSON.stringify(part ?? "").length;
+      }
+    }
+  }
+  return Math.ceil(chars / 4);
+}
+
+function flattenForSummary(messages: ModelMessage[]): string {
+  return messages
+    .map((m) => {
+      const role = (m as any).role;
+      const c = (m as any).content;
+      let text: string;
+      if (typeof c === "string") text = c;
+      else if (Array.isArray(c)) {
+        text = c
+          .map((part: any) => {
+            if (typeof part?.text === "string") return part.text;
+            if (part?.type === "tool-call") return `[tool-call: ${part.toolName ?? "?"}]`;
+            if (part?.type === "tool-result") {
+              const out = part.output ?? part.result;
+              const s = typeof out === "string" ? out : JSON.stringify(out ?? "");
+              return `[tool-result: ${s.slice(0, 2000)}]`;
+            }
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n");
+      } else text = "";
+      return `=== ${role} ===\n${text}`;
+    })
+    .join("\n\n");
+}
+
+// Index where the kept tail should begin: the first assistant message at or
+// after (len - keepTail). Keeping the tail on an assistant boundary means no
+// tool-result is orphaned from its tool-call, and the recap→tail handoff
+// stays valid user/assistant alternation. null when there isn't a clean cut
+// that leaves something to both summarize and keep.
+function findTailCut(messages: ModelMessage[], keepTail: number): number | null {
+  let cut = Math.max(1, messages.length - keepTail);
+  while (cut < messages.length && (messages[cut] as any).role !== "assistant") cut++;
+  if (cut <= 1 || cut >= messages.length) return null;
+  return cut;
 }
 
 export async function runAgent(params: {
@@ -420,6 +497,40 @@ Be terse. If the task is research, return findings as a structured list with fil
           tools,
           stopWhen: stepCountIs(50),
           abortSignal,
+          // Mid-run compaction: before each step, if the running context
+          // has grown past the threshold, summarize the older prefix and
+          // keep the recent turns so a long multi-step turn doesn't die at
+          // the context limit. Threshold-guarded + fail-safe (see helpers).
+          prepareStep: async ({ messages: stepMessages, steps }) => {
+            try {
+              const used =
+                (steps?.[steps.length - 1]?.usage as any)?.totalTokens ??
+                estimateMessageTokens(stepMessages as ModelMessage[]);
+              if (used < MID_RUN_COMPACT_AT) return undefined;
+              const msgs = stepMessages as ModelMessage[];
+              const sys = (msgs[0] as any)?.role === "system" ? msgs[0] : null;
+              const cut = findTailCut(msgs, MID_RUN_KEEP_TAIL);
+              if (cut == null) return undefined;
+              const prefix = msgs.slice(sys ? 1 : 0, cut);
+              const tail = msgs.slice(cut);
+              if (prefix.length === 0) return undefined;
+              const summary = await generateText({
+                model,
+                system: MID_RUN_COMPACT_SYSTEM,
+                prompt: `Summarize the work so far so the agent can continue seamlessly:\n\n${flattenForSummary(prefix)}`,
+                abortSignal,
+              });
+              const recap: ModelMessage = {
+                role: "user",
+                content: `[Auto-compacted earlier context to stay within the model's window. Recap of the work so far:]\n\n${summary.text.trim()}`,
+              };
+              return { messages: sys ? [sys, recap, ...tail] : [recap, ...tail] };
+            } catch {
+              // Never let compaction break the run — fall back to the
+              // unmodified messages (worst case: the limit, as before).
+              return undefined;
+            }
+          },
           ...(providerOptions ? { providerOptions } : {}),
         });
 
