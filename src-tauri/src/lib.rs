@@ -2500,6 +2500,43 @@ fn ensure_vault_gitattributes(vault: &str) -> bool {
     std::fs::write(&path, contents).is_ok()
 }
 
+// `.gitignore` seeded into every vault. Keeps ephemeral, machine-local
+// runtime state out of git so it doesn't churn history or collide across
+// machines. The heartbeat (run-heartbeat.json) is rewritten every ~10s
+// during agent runs; the log/backup/temp files and Python caches are
+// likewise local scratch. Deliberately does NOT ignore the synced state —
+// conversations.jsonl, keys.enc, and everything under .vault-chat/agent/**
+// must stay tracked.
+const VAULT_GITIGNORE: &str = "\
+# Managed by vault-chat. Ephemeral machine-local state — never synced.
+.vault-chat/run-heartbeat.json
+.vault-chat/app-log.txt
+.vault-chat/*.bak
+.vault-chat/*.tmp
+__pycache__/
+*.pyc
+";
+
+/// Ensure `<vault>/.gitignore` exists and carries our managed block.
+/// Returns true if it wrote the file (i.e. it was missing or stale).
+/// Mirrors `ensure_vault_gitattributes`: prepends our block to preserve
+/// any pre-existing user rules, and is idempotent (the marker comment
+/// guards against duplicating the block on re-run).
+fn ensure_vault_gitignore(vault: &str) -> bool {
+    let path = PathBuf::from(vault).join(".gitignore");
+    let current = std::fs::read_to_string(&path).unwrap_or_default();
+    if current.contains("Managed by vault-chat") {
+        return false;
+    }
+    // Preserve any pre-existing user rules by prepending our block.
+    let contents = if current.trim().is_empty() {
+        VAULT_GITIGNORE.to_string()
+    } else {
+        format!("{}\n{}", VAULT_GITIGNORE, current)
+    };
+    std::fs::write(&path, contents).is_ok()
+}
+
 /// Read recent commits from a git repo at a vault-relative subdirectory
 /// (e.g. a nested work repo like `DeepDL/bitnet-repro`). Unlike
 /// `git_recent_commits` — which is hardwired to the vault root and the
@@ -2580,6 +2617,9 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
             // normalization applies from the very first commit — the repo is
             // born conflict-safe across Windows/Linux.
             ensure_vault_gitattributes(&vault);
+            // Seed .gitignore likewise BEFORE the first `add` so ephemeral
+            // runtime state (heartbeat, logs, caches) never enters history.
+            ensure_vault_gitignore(&vault);
             run_git_mut(
                 &vault,
                 &[
@@ -2636,6 +2676,61 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
                         "-q",
                         "-m",
                         "vault-chat: add managed .gitattributes",
+                    ],
+                )?;
+                if code == 0 {
+                    did_work = true;
+                }
+            }
+            // Existing repo (predates managed .gitignore): seed the file and
+            // commit just it. If an ephemeral file like the heartbeat was
+            // already tracked before the ignore existed, `git rm --cached`
+            // stops tracking it (leaving the working copy in place) so it
+            // stops churning history going forward.
+            if ensure_vault_gitignore(&vault) {
+                abort_stuck_merge_or_rebase(&vault);
+                // Untrack any already-committed ephemeral files. `--ignore-unmatch`
+                // keeps this a no-op when they were never tracked.
+                let _ = run_git_mut(
+                    &vault,
+                    &[
+                        "-c",
+                        "user.email=vault-chat@local",
+                        "-c",
+                        "user.name=vault-chat",
+                        "rm",
+                        "-r",
+                        "--cached",
+                        "--quiet",
+                        "--ignore-unmatch",
+                        "--",
+                        ".vault-chat/run-heartbeat.json",
+                        ".vault-chat/app-log.txt",
+                    ],
+                );
+                run_git_mut(
+                    &vault,
+                    &[
+                        "-c",
+                        "user.email=vault-chat@local",
+                        "-c",
+                        "user.name=vault-chat",
+                        "add",
+                        "--",
+                        ".gitignore",
+                    ],
+                )?;
+                let (_, _, code) = run_git_mut(
+                    &vault,
+                    &[
+                        "-c",
+                        "user.email=vault-chat@local",
+                        "-c",
+                        "user.name=vault-chat",
+                        "commit",
+                        "-q",
+                        "-m",
+                        "vault-chat: add managed .gitignore",
                     ],
                 )?;
                 if code == 0 {
