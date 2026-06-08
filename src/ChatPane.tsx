@@ -1300,14 +1300,18 @@ function ReasoningStream({ text }: { text: string }) {
 }
 
 function ElapsedTimer() {
+  // Count from the run's real start (store) so leaving and returning to a
+  // running thread shows continuous elapsed time, not a restart from 0.
+  // Falls back to mount time if the start wasn't recorded.
+  const busyStartedAt = useStore((s) => s.busyStartedAt);
   const [seconds, setSeconds] = useState(0);
   useEffect(() => {
-    const start = Date.now();
-    const id = setInterval(() => {
-      setSeconds(Math.floor((Date.now() - start) / 1000));
-    }, 1000);
+    const start = busyStartedAt ?? Date.now();
+    const tick = () => setSeconds(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [busyStartedAt]);
   const mm = Math.floor(seconds / 60);
   const ss = seconds % 60;
   const label = mm > 0 ? `${mm}:${ss.toString().padStart(2, "0")}` : `${ss}s`;

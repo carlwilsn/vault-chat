@@ -189,6 +189,7 @@ export async function sendMessage(
       }));
     }
     cur.setBusy(true);
+    cur.setBusyStartedAt(Date.now());
     cur.resetStreaming();
   }
 
@@ -340,6 +341,7 @@ export async function sendMessage(
           store.appendMessage(assistantMsg);
           store.resetStreaming();
           store.setBusy(false);
+          store.setBusyStartedAt(null);
         } else {
           // User navigated away mid-run. Write the final message
           // straight to the target conversation's stored messages so
@@ -451,6 +453,7 @@ export async function sendMessage(
           store.appendMessage(errMsg);
           store.resetStreaming();
           store.setBusy(false);
+          store.setBusyStartedAt(null);
         } else if (targetConvId) {
           store.appendMessageToConversation(targetConvId, errMsg);
           store.setConversationStatus(targetConvId, "idle");
@@ -466,7 +469,11 @@ export async function sendMessage(
       // far (text / reasoning / tools), exactly as if the user had stayed.
       // Terminal events (done/error) clear the buffer above instead.
       if (!live && targetConvId && e.kind !== "done" && e.kind !== "error") {
+        // Merge, not replace — keep the todos / tokens / start-time the
+        // snapshot captured when the user left this run.
+        const existing = store.convRuntime[targetConvId];
         store.setConvRuntime(targetConvId, {
+          ...existing,
           streamingText: acc,
           streamingReasoning: bgReasoning,
           liveTools: tools.slice(),
@@ -499,6 +506,7 @@ export function stopAgent() {
   abortRef = null;
   store.resetStreaming();
   store.setBusy(false);
+  store.setBusyStartedAt(null);
   // An aborted turn never reaches the end-of-turn commit, so anything the
   // agent wrote before being stopped would sit uncommitted. Commit it now
   // — this is the crack that lost post.html. Tagged agent: the agent wrote

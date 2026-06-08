@@ -110,6 +110,10 @@ export type ConvRuntime = {
   streamingText: string;
   streamingReasoning: string;
   liveTools: LiveTool[];
+  agentTodos?: TodoItem[];
+  tokenUsage?: { prompt: number; completion: number; total: number };
+  lastContext?: number;
+  startedAt?: number;
 };
 
 function liveToolsEqual(a: LiveTool[], b: LiveTool[]): boolean {
@@ -399,6 +403,10 @@ type State = {
   viewport: Viewport | null;
   tokenUsage: { prompt: number; completion: number; total: number };
   lastContext: number;
+  // When the active conversation's run started (ms). Drives the elapsed
+  // timer off real run start instead of component mount, so the timer
+  // keeps counting correctly across a leave/return. null when idle.
+  busyStartedAt: number | null;
   compactionSummary: string | null;
   compacting: boolean;
   streamingText: string;
@@ -593,6 +601,7 @@ type State = {
   setEditorSelection: (sel: State["editorSelection"]) => void;
   setConvRuntime: (id: string, rt: ConvRuntime) => void;
   clearConvRuntime: (id: string) => void;
+  setBusyStartedAt: (t: number | null) => void;
   openNoteComposer: (payload?: {
     initialDraft?: string;
     initialAnchors?: import("./notes").NoteAnchor[];
@@ -688,6 +697,7 @@ export const useStore = create<State>((set) => ({
   viewport: null,
   tokenUsage: { prompt: 0, completion: 0, total: 0 },
   lastContext: 0,
+  busyStartedAt: null,
   compactionSummary: null,
   compacting: false,
   streamingText: "",
@@ -1441,6 +1451,7 @@ export const useStore = create<State>((set) => ({
   },
   setConvRuntime: (id, rt) =>
     set((s) => ({ convRuntime: { ...s.convRuntime, [id]: rt } })),
+  setBusyStartedAt: (t) => set({ busyStartedAt: t }),
   clearConvRuntime: (id) =>
     set((s) => {
       if (!(id in s.convRuntime)) return {};
@@ -1649,6 +1660,7 @@ export const useStore = create<State>((set) => ({
         // running off-screen. The previous conversation's entry
         // already carries status="running" from syncActiveMessages.
         busy: false,
+        busyStartedAt: null,
         messages: [],
         compactionSummary: null,
         lastContext: 0,
@@ -1692,9 +1704,10 @@ export const useStore = create<State>((set) => ({
         // returning to a running thread looks exactly like never leaving.
         busy: target.status === "running",
         compactionSummary: null,
-        lastContext: 0,
-        tokenUsage: { prompt: 0, completion: 0, total: 0 },
-        agentTodos: [],
+        lastContext: rt?.lastContext ?? 0,
+        tokenUsage: rt?.tokenUsage ?? { prompt: 0, completion: 0, total: 0 },
+        agentTodos: rt?.agentTodos ?? [],
+        busyStartedAt: target.status === "running" ? rt?.startedAt ?? null : null,
         streamingText: rt?.streamingText ?? "",
         streamingReasoning: rt?.streamingReasoning ?? "",
         liveTools: rt?.liveTools ?? [],
@@ -1854,12 +1867,18 @@ setAutoRouterCostBias(useStore.getState().autoRouterCostBias);
 // returns. No-op unless the active conversation is mid-run.
 function snapshotRuntime(s: State): Record<string, ConvRuntime> {
   if (!s.activeConversationId || !s.busy) return s.convRuntime;
+  const prev = s.convRuntime[s.activeConversationId];
   return {
     ...s.convRuntime,
     [s.activeConversationId]: {
+      ...prev,
       streamingText: s.streamingText,
       streamingReasoning: s.streamingReasoning,
       liveTools: s.liveTools,
+      agentTodos: s.agentTodos,
+      tokenUsage: s.tokenUsage,
+      lastContext: s.lastContext,
+      startedAt: s.busyStartedAt ?? prev?.startedAt,
     },
   };
 }
