@@ -165,8 +165,10 @@ export async function runAgent(params: {
   telegramMode?: boolean;
   conversationId?: string;
   isTelegramSourced?: boolean;
+  reasoningEffort?: import("./store").ReasoningEffort;
 }) {
   const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, telegramMode, conversationId, isTelegramSourced } = params;
+  const reasoningEffort = params.reasoningEffort ?? "medium";
 
   try {
     const spec = findModel(modelId) ?? findModel(DEFAULT_MODEL_ID);
@@ -438,10 +440,15 @@ Be terse. If the task is research, return findings as a structured list with fil
     // so we branch on spec.provider and construct just the block the
     // active adapter understands. Extra keys are ignored by adapters
     // that don't recognize them, but we keep the object minimal anyway.
-    // Reasoning / thinking hints. Each adapter takes a different shape.
-    // Extended thinking on Claude 4.x, reasoningEffort on OpenAI's
-    // reasoning families, thinkingConfig on Gemini 2.5. OpenRouter has
-    // no universal flag — left off by default.
+    // Reasoning / thinking hints. Each adapter takes a different shape;
+    // all are driven by the user's reasoningEffort setting (low/medium/
+    // high). Extended thinking on Claude 4.x, reasoning_effort on OpenAI's
+    // reasoning families, thinkingConfig on Gemini 2.5. OpenRouter routes
+    // through the OpenAI adapter, so the SAME reasoningEffort key reaches
+    // GPT-5 / o-series via OpenRouter — it normalizes reasoning_effort to
+    // the upstream. Used to be left off for OpenRouter entirely, which is
+    // why a GPT-5.5-via-OpenRouter run silently ran at default (low) effort.
+    const budgetForEffort = { low: 1024, medium: 3000, high: 12000 } as const;
     let providerOptions: ProviderOptions | undefined;
     if (spec.provider === "anthropic") {
       // Opus 4.7+ uses the new adaptive reasoning API: thinking.type
@@ -454,16 +461,28 @@ Be terse. If the task is research, return findings as a structured list with fil
         ? {
             anthropic: {
               thinking: { type: "adaptive" },
-              output_config: { effort: "medium" },
+              output_config: { effort: reasoningEffort },
             },
           }
         : {
-            anthropic: { thinking: { type: "enabled", budgetTokens: 3000 } },
+            anthropic: {
+              thinking: { type: "enabled", budgetTokens: budgetForEffort[reasoningEffort] },
+            },
           };
-    } else if (spec.provider === "openai" && /^(o1|o3|o4|gpt-5)/i.test(spec.id)) {
-      providerOptions = { openai: { reasoningEffort: "medium" } };
-    } else if (spec.provider === "google" && /^gemini-2\.5/i.test(spec.id)) {
-      providerOptions = { google: { thinkingConfig: { thinkingBudget: 3000 } } };
+    } else if (
+      (spec.provider === "openai" || spec.provider === "openrouter") &&
+      // OpenAI reasoning families, by bare id (direct) or `openai/…`
+      // (OpenRouter). gpt-5 / o1 / o3 / o4.
+      /(^|\/)(o[134]|gpt-5)/i.test(spec.id)
+    ) {
+      providerOptions = { openai: { reasoningEffort } };
+    } else if (
+      spec.provider === "google" &&
+      /^gemini-2\.5/i.test(spec.id)
+    ) {
+      providerOptions = {
+        google: { thinkingConfig: { thinkingBudget: budgetForEffort[reasoningEffort] } },
+      };
     }
 
     // Detect failures that are safe to retry. Conservative — only the

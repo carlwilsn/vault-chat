@@ -79,8 +79,10 @@ export function SettingsPane() {
     setTheme,
     strictVaultMode,
     bashDisabled,
+    reasoningEffort,
     setStrictVaultMode,
     setBashDisabled,
+    setReasoningEffort,
     setShowSettings,
     catalog,
     catalogRefreshing,
@@ -454,6 +456,23 @@ export function SettingsPane() {
               </p>
             </div>
           </label>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1">
+              <div className="text-[12px]">Reasoning effort</div>
+              <p className="text-[11px] text-muted-foreground/80">
+                How hard reasoning-capable models (GPT-5, o-series, Claude 4.x, Gemini 2.5 — direct or via OpenRouter) think before answering. Higher = fewer careless mistakes on hard/long tasks, but slower and pricier. Doesn't affect non-reasoning models.
+              </p>
+            </div>
+            <select
+              className="vc-select shrink-0 text-[12px] rounded-md border border-border bg-background px-2 py-1"
+              value={reasoningEffort}
+              onChange={(e) => setReasoningEffort(e.target.value as typeof reasoningEffort)}
+            >
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </div>
         </section>
 
         <div className="h-px bg-border" />

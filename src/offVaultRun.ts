@@ -133,6 +133,7 @@ export async function handleOffVaultInbound(
       telegramMode: true,
       conversationId: list[idx]?.id,
       isTelegramSourced: true,
+      reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
         if (e.kind === "text") {
           acc += e.delta;
@@ -294,6 +295,7 @@ export async function runScheduledHeadlessTurn(
       telegramMode: isTelegramSourced && opts.sendViaTelegram,
       conversationId,
       isTelegramSourced: isTelegramSourced && opts.sendViaTelegram,
+      reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
         if (e.kind === "text") acc += e.delta;
         else if (e.kind === "tool_use") {

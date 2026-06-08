@@ -104,6 +104,11 @@ export type LiveTool = { id: string; name: string; input: any; result?: string; 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 export type TodoItem = { content: string; status: TodoStatus; activeForm?: string };
 
+// How hard reasoning models think before answering. Maps to the right
+// per-provider knob in agent.ts (Anthropic effort, OpenAI/OpenRouter
+// reasoning_effort, Gemini thinking budget). Default medium.
+export type ReasoningEffort = "low" | "medium" | "high";
+
 // Snapshot of a single conversation's in-flight streaming view, used to
 // keep a backgrounded run's progress visible across leave/return.
 export type ConvRuntime = {
@@ -161,6 +166,7 @@ const VAULT_STORAGE = "vault_chat_last_vault";
 const CHAT_STORAGE = "vault_chat_history";
 const STRICT_VAULT_STORAGE = "vault_chat_strict_vault";
 const BASH_DISABLED_STORAGE = "vault_chat_bash_disabled";
+const REASONING_EFFORT_STORAGE = "vault_chat_reasoning_effort";
 const AUTO_COST_BIAS_STORAGE = "vault_chat_auto_cost_bias";
 // Rolling buffer of the last few finalised conversations. Capped at
 // SAVED_CHATS_MAX entries (newest first), shared across vaults — the
@@ -230,6 +236,12 @@ function loadNumFlag(key: string, defaultValue: number): number {
   if (raw === null) return defaultValue;
   const n = Number(raw);
   return Number.isFinite(n) ? n : defaultValue;
+}
+
+function loadReasoningEffort(): ReasoningEffort {
+  const raw = localStorage.getItem(REASONING_EFFORT_STORAGE);
+  if (raw === "low" || raw === "medium" || raw === "high") return raw;
+  return "medium";
 }
 
 /** Fetch every known credential from the OS keychain into memory.
@@ -354,6 +366,8 @@ type State = {
   strictVaultMode: boolean;
   // Don't expose the Bash tool to the agent at all.
   bashDisabled: boolean;
+  // How hard reasoning-capable models think before answering.
+  reasoningEffort: ReasoningEffort;
   // Cost ⇄ quality dial for OpenRouter's auto router (0 = quality … 10 =
   // cheapest). Applies when "Auto" resolves to openrouter/auto.
   autoRouterCostBias: number;
@@ -541,6 +555,7 @@ type State = {
   setStrictVaultMode: (b: boolean) => void;
   setAutoRouterCostBias: (n: number) => void;
   setBashDisabled: (b: boolean) => void;
+  setReasoningEffort: (e: ReasoningEffort) => void;
   setSkills: (s: Skill[]) => void;
   setBusy: (b: boolean) => void;
   setShowSettings: (b: boolean) => void;
@@ -678,6 +693,7 @@ export const useStore = create<State>((set) => ({
   theme: loadTheme(),
   strictVaultMode: loadBoolFlag(STRICT_VAULT_STORAGE, true),
   bashDisabled: loadBoolFlag(BASH_DISABLED_STORAGE, true),
+  reasoningEffort: loadReasoningEffort(),
   autoRouterCostBias: loadNumFlag(AUTO_COST_BIAS_STORAGE, 7),
   skills: [],
   busy: false,
@@ -1214,6 +1230,10 @@ export const useStore = create<State>((set) => ({
   setBashDisabled: (b) => {
     localStorage.setItem(BASH_DISABLED_STORAGE, String(b));
     set({ bashDisabled: b });
+  },
+  setReasoningEffort: (e) => {
+    localStorage.setItem(REASONING_EFFORT_STORAGE, e);
+    set({ reasoningEffort: e });
   },
   setSkills: (s) => set({ skills: s }),
   setBusy: (b) => set({ busy: b }),

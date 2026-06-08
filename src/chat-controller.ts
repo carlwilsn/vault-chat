@@ -276,6 +276,7 @@ export async function sendMessage(
     telegramMode: targetConv?.source === "telegram",
     conversationId: targetConvId ?? undefined,
     isTelegramSourced: targetConv?.source === "telegram",
+    reasoningEffort: cur.reasoningEffort,
     onEvent: (e) => {
       const store = useStore.getState();
       const live = isTargetActive();
