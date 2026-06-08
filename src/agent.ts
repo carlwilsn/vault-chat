@@ -79,6 +79,13 @@ const MID_RUN_CONTEXT_LIMIT = 200_000;
 const MID_RUN_COMPACT_AT = Math.floor(MID_RUN_CONTEXT_LIMIT * 0.75); // ~150k
 const MID_RUN_KEEP_TAIL = 12;
 
+// How many times a turn may auto-continue after hitting the per-call step
+// cap (stepCountIs(50)) or an output-token cap before it stops on its own.
+// 50 steps × (1 + 12) ≈ up to ~650 tool steps in one turn — enough for a
+// genuinely long build/doc run — while still bounded so a degenerate loop
+// can't run forever. The abort signal (Stop button) breaks out immediately.
+const MAX_AUTO_CONTINUE = 12;
+
 const MID_RUN_COMPACT_SYSTEM = `You compact the middle of a long, in-flight agent run so it can keep going with less context.
 
 Preserve, in compressed form:
@@ -485,15 +492,15 @@ Be terse. If the task is research, return findings as a structured list with fil
     // was emitted (`gotOutput`) so the caller can decide if a retry is
     // safe — retrying after tokens have been delivered would double-emit.
     type AttemptResult =
-      | { ok: true; usage: any }
+      | { ok: true; usage: any; finishReason?: string; responseMessages?: ModelMessage[] }
       | { ok: false; error: any; gotOutput: boolean };
 
-    const attempt = async (): Promise<AttemptResult> => {
+    const attempt = async (msgs: ModelMessage[]): Promise<AttemptResult> => {
       let gotOutput = false;
       try {
         const result = streamText({
           model,
-          messages,
+          messages: msgs,
           tools,
           stopWhen: stepCountIs(50),
           abortSignal,
@@ -605,7 +612,9 @@ Be terse. If the task is research, return findings as a structured list with fil
         }
 
         const usage = await result.usage;
-        return { ok: true, usage };
+        const finishReason = await result.finishReason;
+        const responseMessages = (await result.response).messages as ModelMessage[];
+        return { ok: true, usage, finishReason, responseMessages };
       } catch (e) {
         return { ok: false, error: e, gotOutput };
       }
@@ -615,14 +624,46 @@ Be terse. If the task is research, return findings as a structured list with fil
     // failure looks transient (upstream blip, network hiccup), retry
     // exactly once after a short backoff. The user sees a brief pause
     // instead of an error toast for the common Anthropic flake.
-    let res = await attempt();
+    let runMessages = messages;
+    let res = await attempt(runMessages);
     if (!res.ok && !res.gotOutput && isTransient(res.error)) {
       console.warn(
         "[agent] initial stream failed, retrying once:",
         res.error?.message ?? res.error,
       );
       await new Promise((r) => setTimeout(r, 1200));
-      res = await attempt();
+      res = await attempt(runMessages);
+    }
+
+    // Auto-continue. The multi-step loop stops at the per-call step cap
+    // (finishReason "tool-calls" — the model was still mid-tool-loop) or
+    // when a single step hits the output-token cap ("length"). Both leave
+    // the task UNFINISHED, and the turn used to just end silently — which
+    // is why a long run "stopped for no reason" until the user typed
+    // "Done?" to nudge it. Instead, feed the messages it generated back in
+    // and keep going. Bounded by MAX_AUTO_CONTINUE and the abort signal so
+    // it can't loop or run away; a natural finish ("stop") never continues.
+    let totalPrompt = 0;
+    let totalCompletion = 0;
+    let totalCached = 0;
+    const accumulate = (u: any) => {
+      if (!u) return;
+      totalPrompt += u.inputTokens ?? 0;
+      totalCompletion += u.outputTokens ?? 0;
+      totalCached += u.cachedInputTokens ?? 0;
+    };
+    let autoContinues = 0;
+    if (res.ok) accumulate(res.usage);
+    while (
+      res.ok &&
+      !abortSignal?.aborted &&
+      (res.finishReason === "tool-calls" || res.finishReason === "length") &&
+      autoContinues < MAX_AUTO_CONTINUE
+    ) {
+      autoContinues++;
+      runMessages = [...runMessages, ...(res.responseMessages ?? [])];
+      res = await attempt(runMessages);
+      if (res.ok) accumulate(res.usage);
     }
 
     if (!res.ok) {
@@ -633,19 +674,20 @@ Be terse. If the task is research, return findings as a structured list with fil
       return;
     }
 
-    const usage = res.usage;
-    if (usage) {
-      const prompt = usage.inputTokens ?? 0;
-      const completion = usage.outputTokens ?? 0;
-      const cached = (usage as any).cachedInputTokens ?? 0;
-      const context = prompt + cached;
+    // Report cumulative tokens across all continuations, but use the LAST
+    // attempt's input+cached as the live context size (that's the window
+    // actually in play now, after any mid-run compaction).
+    const lastUsage = res.usage;
+    if (lastUsage) {
+      const lastInput = lastUsage.inputTokens ?? 0;
+      const lastCached = (lastUsage as any).cachedInputTokens ?? 0;
       onEvent({
         kind: "done",
         usage: {
-          prompt,
-          completion,
-          total: usage.totalTokens ?? prompt + completion + cached,
-          context,
+          prompt: totalPrompt,
+          completion: totalCompletion,
+          total: totalPrompt + totalCompletion + totalCached,
+          context: lastInput + lastCached,
         },
       });
     } else {
