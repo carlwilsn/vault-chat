@@ -1022,6 +1022,26 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         return `Worker "${conv.title || conversation_id}" replied:\n${reply}`;
       },
     }),
+    StartWorker: tool({
+      description:
+        "Spawn a NEW worker chat (a subagent) and kick off a task on it in the background — use when the user asks you to start a long or heavy job (e.g. 'run the BitNet training overnight', 'do the big refactor') so YOUR chat stays free to keep talking to them while the worker grinds. Returns the new worker's conversation id + title; afterward you watch it (via the heartbeat / ReadConversation) and relay to it (AskWorker). The worker starts FRESH with no other context, so make the task self-contained. Don't use this for quick things you can just do yourself in this chat.",
+      inputSchema: z.object({
+        task: z
+          .string()
+          .describe(
+            "The full, self-contained task for the worker — be specific; it starts with no other context.",
+          ),
+        title: z
+          .string()
+          .optional()
+          .describe("Short title for the worker chat. Defaults to a slug of the task."),
+      }),
+      execute: async ({ task, title }) => {
+        const { startWorker } = await import("./offVaultRun");
+        const { id, title: t } = await startWorker(vault, task, title);
+        return `Spawned worker "${t}" (id ${id}) — it's running the task in the background. It runs independently; keep talking to the user. Check on it with ReadConversation (id ${id}) or the run heartbeat, and relay to it with AskWorker.`;
+      },
+    }),
     ListSchedules: tool({
       description:
         "List the scheduled prompts in this vault. Use to find a schedule's id before cancelling it, or to remind the user what they have set up. Returns id, name, prompt (truncated), recurrence, next-fire time, target conversation, and enabled state.",

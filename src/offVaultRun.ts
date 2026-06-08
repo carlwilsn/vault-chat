@@ -503,6 +503,36 @@ export async function runWorkerTurn(
   return { reply: acc, error: runErr };
 }
 
+// Spawn a NEW worker thread (subagent) and kick its task off in the
+// background, returning immediately with the new conversation's id + title.
+// The orchestrator (supervisor / the phone's front agent) calls this when the
+// user asks it to start a long/heavy job, so the orchestrator's own chat
+// stays free to talk while the worker grinds. The worker runs one turn
+// (auto-continue lets it span many steps); for GPU work it launches detached
+// training that outlives the turn. The worker registers a heartbeat + abort
+// handle, so the supervisor can watch and relay to it afterward.
+export async function startWorker(
+  vault: string,
+  task: string,
+  title?: string,
+  modelId?: string,
+): Promise<{ id: string; title: string }> {
+  const id = newConversationId();
+  const t = title?.trim() || deriveConversationTitle([{ role: "user", content: task }]);
+  const list = await readConversations(vault);
+  const fresh: Conversation = { ...emptyConversation(), id, source: "manual", title: t };
+  list.unshift(fresh);
+  await writeConversations(vault, list);
+  await useStore.getState().refreshConversationFromDisk(vault, id).catch(() => {});
+  // Fire-and-forget: the worker runs async; we don't await it so the caller
+  // (and the user's chat) returns right away. runWorkerTurn appends the task
+  // as the worker's first user turn and persists its reply.
+  void runWorkerTurn(vault, id, task, { modelId }).catch((e) =>
+    console.warn("[worker] start failed:", e),
+  );
+  return { id, title: t };
+}
+
 // Create a fresh conversation entry on disk for a vault that's not
 // currently in memory. Returns the new conversation's id so the
 // scheduler can bind subsequent runs to it.
