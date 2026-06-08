@@ -2042,6 +2042,45 @@ fn attach_detached_to_branch(sub: &str) -> Option<String> {
     Some(branch)
 }
 
+/// Recover a submodule that's detached at a commit which is NOT any branch tip
+/// (so `attach_detached_to_branch` gave up) ONTO its `.gitmodules`-configured
+/// branch. This is the fix for the multi-machine submodule-pointer war: a stale
+/// gitlink (e.g. an old upstream commit left by a `submodule update`) detaches
+/// the working tree there, and the parent's auto-commit then captures that
+/// stale commit as the gitlink and pushes it — reverting another machine's
+/// correct pointer, every sync. A submodule that declares `branch = X` is meant
+/// to TRACK X, not stay frozen on a pin, so we move it onto X (fetching the
+/// remote tip first, fast-forwarding the local branch up to it) — recovering the
+/// real work and making the captured gitlink follow the branch instead of
+/// reverting it. Loss-free: `switch` keeps the clean tree, and we only ever
+/// fast-forward the local branch (never reset). Returns the branch on success.
+/// None (caller keeps it detached) when there's no configured branch or the
+/// switch fails — preserving a deliberate, un-tracked old-commit pin.
+fn recover_to_configured_branch(sub: &str, branch: Option<&str>) -> Option<String> {
+    let branch = branch?.trim();
+    if branch.is_empty() {
+        return None;
+    }
+    let remote = format!("origin/{}", branch);
+    // Make sure we have the branch's latest remote tip (the work may have been
+    // pushed from another machine). Best-effort — offline still recovers onto
+    // whatever the local branch already has, which still beats a stale pin.
+    let _ = run_git_timeout(sub, &["fetch", "origin", branch], 120);
+    let switched = matches!(run_git_mut(sub, &["switch", branch]), Ok((_, _, 0)))
+        || matches!(
+            run_git_mut(sub, &["switch", "-c", branch, "--track", &remote]),
+            Ok((_, _, 0))
+        );
+    if !switched {
+        return None;
+    }
+    // Fast-forward the local branch up to the remote tip so it carries the work,
+    // not the stale commit we were detached at. FF-only never discards local
+    // commits; if it can't FF (genuinely diverged), the branch still stands.
+    let _ = run_git_mut(sub, &["merge", "--ff-only", &remote]);
+    Some(branch.to_string())
+}
+
 /// Run the `gh` CLI in `cwd`, returning (stdout, stderr, exit code). GitHub auth
 /// is entirely delegated to `gh` (the app holds no token), mirroring the platform
 /// handling in `vault_sync_gh_create_repo`. Err only if `gh` can't be spawned.
@@ -2311,7 +2350,37 @@ fn sync_submodules(vault: &str, agent: bool) {
         if !on_branch {
             match attach_detached_to_branch(&sub) {
                 Some(b) => eprintln!("[sync] submodule '{}' attached to branch '{}'", rel, b),
-                None => continue, // not at any remote branch tip — leave detached, skip
+                None => {
+                    // HEAD isn't at any remote branch tip — a stale pin (e.g. an
+                    // old `submodule update` left it on a gitlink that no longer
+                    // matches the work). If .gitmodules declares a tracking
+                    // branch, recover onto it instead of leaving the stale commit
+                    // to be captured as the gitlink and pushed — which is what
+                    // makes two machines fight over the pointer every sync.
+                    let cfg_branch = line
+                        .split_whitespace()
+                        .next()
+                        .and_then(|k| k.strip_suffix(".path"))
+                        .map(|p| format!("{}.branch", p))
+                        .and_then(|bk| {
+                            run_git(vault, &["config", "-f", ".gitmodules", &bk])
+                                .ok()
+                                .and_then(|(v, _, c)| {
+                                    if c == 0 && !v.trim().is_empty() {
+                                        Some(v.trim().to_string())
+                                    } else {
+                                        None
+                                    }
+                                })
+                        });
+                    match recover_to_configured_branch(&sub, cfg_branch.as_deref()) {
+                        Some(b) => eprintln!(
+                            "[sync] submodule '{}' recovered onto tracking branch '{}' (was detached at a stale pin)",
+                            rel, b
+                        ),
+                        None => continue, // no tracking branch / can't recover — respect a deliberate pin
+                    }
+                }
             }
         }
         // Needs an upstream branch to push to.
