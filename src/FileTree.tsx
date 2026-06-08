@@ -48,11 +48,13 @@ export function FileTree() {
   const lastVaultRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const renameRef = useRef<HTMLInputElement | null>(null);
-  // Drag threshold: rows are not `draggable` until the pointer has moved
-  // past DRAG_THRESHOLD px while pressed. Native HTML5 draggable starts a
-  // drag on the tiniest twitch of a click, so we arm it imperatively on
-  // the row's DOM node only after a deliberate movement — otherwise plain
-  // clicks constantly turn into accidental moves.
+  // Drag threshold. Rows stay statically `draggable` — WebKitGTK (the Linux
+  // webview) only honors the draggable flag as it stood at mousedown and
+  // ignores a later flip, so the old "arm draggable after movement" trick
+  // killed drag-and-drop entirely on Linux. Instead we record the press
+  // origin here and, in onDragStart, cancel the drag unless the pointer has
+  // travelled past DRAG_THRESHOLD px — so a 1-2px click-twitch no longer
+  // turns into an accidental move, while real drags still work everywhere.
   const pressRef = useRef<{ x: number; y: number; el: HTMLElement } | null>(null);
   const DRAG_THRESHOLD = 5;
 
@@ -76,14 +78,11 @@ export function FileTree() {
     }
   }, [renaming?.path]);
 
-  // Disarm any half-armed row when the button is released anywhere, so a
-  // gesture that didn't become a drag leaves no row stuck in draggable.
+  // Clear a recorded press when the button is released anywhere, so a click
+  // that never became a drag doesn't leave a stale press origin behind.
   useEffect(() => {
     const onUp = () => {
-      if (pressRef.current) {
-        pressRef.current.el.draggable = false;
-        pressRef.current = null;
-      }
+      pressRef.current = null;
     };
     window.addEventListener("mouseup", onUp);
     return () => window.removeEventListener("mouseup", onUp);
@@ -858,27 +857,34 @@ export function FileTree() {
                     f.is_dir && dropTarget === f.path && "ring-2 ring-primary/60 bg-primary/10",
                   )}
                   style={{ paddingLeft: 8 + f.depth * 12 }}
+                  draggable
                   onMouseDown={(e) => {
                     if (e.button === 2) {
                       e.stopPropagation();
                       return;
                     }
                     if (e.button !== 0) return;
+                    // Record the press origin; onDragStart uses it to apply
+                    // the movement threshold (see DRAG_THRESHOLD note above).
                     pressRef.current = { x: e.clientX, y: e.clientY, el: e.currentTarget };
-                    e.currentTarget.draggable = false;
                   }}
-                  onMouseMove={(e) => {
-                    const p = pressRef.current;
-                    if (!p || p.el !== e.currentTarget) return;
-                    if (Math.hypot(e.clientX - p.x, e.clientY - p.y) >= DRAG_THRESHOLD) {
-                      e.currentTarget.draggable = true;
-                    }
-                  }}
-                  onDragEnd={(e) => {
-                    e.currentTarget.draggable = false;
+                  onDragEnd={() => {
                     pressRef.current = null;
                   }}
                   onDragStart={(e) => {
+                    // Cancel a drag that a tiny click-twitch would otherwise
+                    // start: require a deliberate move past the threshold from
+                    // the press origin. Real drags have already travelled well
+                    // past it by the time dragstart fires.
+                    const p = pressRef.current;
+                    if (
+                      p &&
+                      p.el === e.currentTarget &&
+                      Math.hypot(e.clientX - p.x, e.clientY - p.y) < DRAG_THRESHOLD
+                    ) {
+                      e.preventDefault();
+                      return;
+                    }
                     pressRef.current = null;
                     // If the dragged row is part of a multi-selection,
                     // ship the whole set; otherwise just this row.

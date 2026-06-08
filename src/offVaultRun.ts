@@ -435,6 +435,15 @@ export async function runWorkerTurn(
   };
   await writeConversations(vault, list);
 
+  // Surface the run to the live UI immediately: pull the just-written user
+  // turn into the in-memory list so the worker chat shows the task it was
+  // handed (instead of an empty pane until the turn finishes), then flip the
+  // thread to "running" so it pulses in the Chats panel while it grinds. The
+  // status flip MUST come after the refresh — the on-disk copy is always
+  // read back as idle, so refreshing afterward would clear the pulse.
+  await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+  useStore.getState().setConversationStatus(conversationId, "running");
+
   const baseHistory = list[idx]!.messages
     .filter((m) => !m.system)
     .map((m) => ({ role: m.role, content: m.content }));
@@ -480,6 +489,10 @@ export async function runWorkerTurn(
   } finally {
     await endHeartbeat(vault, conversationId).catch(() => {});
     unregisterRun(conversationId, controller);
+    // Stop the pulse the moment the turn ends — don't wait on the disk
+    // round-trip below, which would leave it blinking until persistence
+    // finishes (or forever, if the reply write is skipped on empty output).
+    useStore.getState().setConversationStatus(conversationId, "idle");
   }
 
   // Persist the worker's reply onto its thread so the exchange is coherent.
