@@ -13,8 +13,10 @@ import {
   sendTelegramMessage,
   sendTelegramReplyWithImages,
   resolveScheduleTelegramTarget,
+  isSilentReply,
 } from "./telegram";
 import { useStore, type ChatMessage, type LiveTool } from "./store";
+import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 
 // Minimum gap between Telegram progress pings during a long headless run,
 // so the phone gets "still working" signal without being spammed.
@@ -149,6 +151,7 @@ export async function handleOffVaultInbound(
             lastProgressAt = now;
             notify(`🔧 ${e.name}…`);
           }
+          if (list[idx]) void bumpHeartbeat(vault, list[idx]!.id, e.name);
         } else if (e.kind === "tool_result") {
           const t = tools.find((x) => x.id === e.id);
           if (t) t.result = e.result;
@@ -161,6 +164,8 @@ export async function handleOffVaultInbound(
   } catch (e) {
     acc = (acc + `\n\n⚠️ off-vault run failed: ${String(e)}`).trim();
     notify(`⚠️ off-vault run failed: ${String(e)}`);
+  } finally {
+    if (list[idx]) await endHeartbeat(vault, list[idx]!.id).catch(() => {});
   }
 
   // Second write: persist the assistant reply. Re-read to avoid
@@ -310,6 +315,7 @@ export async function runScheduledHeadlessTurn(
             lastProgressAt = now;
             notify(`🔧 ${e.name}…`);
           }
+          void bumpHeartbeat(vault, conversationId, e.name);
         } else if (e.kind === "tool_result") {
           const t = tools.find((x) => x.id === e.id);
           if (t) t.result = e.result;
@@ -322,12 +328,26 @@ export async function runScheduledHeadlessTurn(
   } catch (e) {
     acc = (acc + `\n\n⚠️ scheduled run failed: ${String(e)}`).trim();
     notify(`⚠️ scheduled run failed: ${String(e)}`);
+  } finally {
+    await endHeartbeat(vault, conversationId).catch(() => {});
   }
 
   let finalList = await readConversations(vault);
   let fi = finalList.findIndex((c) => c.id === conversationId);
   if (fi < 0) fi = 0;
-  if (finalList[fi]) {
+  if (finalList[fi] && isSilentReply(acc)) {
+    // Supervisor poll with nothing to report — leave no trace: drop the
+    // prompt we appended in the first write, store no reply, no unread, no
+    // DM binding. The thread stays exactly as it was before this poll.
+    const msgs = finalList[fi]!.messages;
+    const last = msgs[msgs.length - 1];
+    const pruned =
+      last && last.role === "user" && last.content === prompt
+        ? msgs.slice(0, -1)
+        : msgs;
+    finalList[fi] = { ...finalList[fi]!, messages: pruned };
+    await writeConversations(vault, finalList);
+  } else if (finalList[fi]) {
     const assistantMsg: ChatMessage = {
       role: "assistant",
       content: acc,

@@ -565,6 +565,16 @@ export function stripMarkdownForTelegram(text: string): string {
   return s.trim();
 }
 
+// A scheduled/supervisor run emits exactly this as its whole reply when
+// there's nothing worth interrupting the user for. Delivery is suppressed
+// (see isSilentReply) so a supervisor schedule can poll a long run every
+// few minutes and stay quiet until something actually needs attention.
+export const SILENT_REPLY_SENTINEL = "[[SILENT]]";
+
+export function isSilentReply(text: string): boolean {
+  return text.trim().toUpperCase() === SILENT_REPLY_SENTINEL;
+}
+
 // Convenience: take an agent's full reply text, split out any image
 // references, upload them as photos, strip markdown from the
 // remaining text, and send it as a regular message.
@@ -573,6 +583,8 @@ export async function sendTelegramReplyWithImages(
   chatId: number,
   reply: string,
 ): Promise<void> {
+  // Supervisor "nothing to report" turn — don't ping the phone.
+  if (isSilentReply(reply)) return;
   const { text, images } = extractTelegramImages(reply);
   for (const img of images) {
     const resolved = await resolveImagePathForTelegram(vault, img.path);

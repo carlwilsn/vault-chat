@@ -7,6 +7,7 @@ import { gitCommitAll } from "./git";
 import { flushEditCommit } from "./commit-controller";
 import { safetyCommit } from "./autosave";
 import { sendTelegramReplyWithImages } from "./telegram";
+import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import {
   useStore,
   MODEL_CONTEXT_LIMIT,
@@ -297,6 +298,9 @@ export async function sendMessage(
         const t: LiveTool = { id: e.id, name: e.name, input: e.input, startedAt: Date.now() };
         tools.push(t);
         if (live) store.pushLiveTool(t);
+        // Progress heartbeat so a supervisor can tell this run is alive even
+        // mid-turn (throttled inside bumpHeartbeat).
+        if (targetConvId) void bumpHeartbeat(vault, targetConvId, e.name);
         // Fire-and-forget ETA estimate for Bash. Updates the live tool
         // if Haiku comes back before the command finishes; ignored
         // otherwise. Bounded by the agent's abort signal.
@@ -357,6 +361,7 @@ export async function sendMessage(
         // The run is over — drop its replay buffer so a later return to
         // this thread shows the finished message, not stale streaming.
         if (targetConvId) store.clearConvRuntime(targetConvId);
+        if (targetConvId) void endHeartbeat(vault, targetConvId);
 
         if (telegramChatId !== undefined) {
           // Markdown image refs in the reply get pulled out and sent
@@ -460,6 +465,7 @@ export async function sendMessage(
           store.setConversationStatus(targetConvId, "idle");
         }
         if (targetConvId) store.clearConvRuntime(targetConvId);
+        if (targetConvId) void endHeartbeat(vault, targetConvId);
         // An errored turn also skips the end-of-turn commit — sweep up any
         // partial writes so they aren't lost. Agent-tagged: the agent
         // wrote them.
