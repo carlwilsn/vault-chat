@@ -77,7 +77,38 @@ export async function readSchedules(vault: string): Promise<Schedule[]> {
       // skip
     }
   }
-  return out;
+  return dedupeById(out);
+}
+
+// schedules.jsonl is committed with `merge=union` so a schedule is never
+// lost when two machines edit it concurrently. The cost: a row that both
+// machines rewrote (e.g. each stamping its own lastFiredAt) survives as
+// TWO lines after the union merge, and over time a schedule accumulates
+// several duplicate rows. The scheduler fires every row it reads, so an
+// undeduped read makes one daily check-in run N times — N independent
+// agent runs with divergent output, which is how the phone and the chat
+// pane end up showing completely different replies. Collapse to one row
+// per id here, carrying the MAX lastFiredAt so the survivor reflects the
+// most recent fire and won't immediately re-fire.
+function dedupeById(list: Schedule[]): Schedule[] {
+  const byId = new Map<string, Schedule>();
+  for (const s of list) {
+    const prev = byId.get(s.id);
+    if (!prev) {
+      byId.set(s.id, s);
+      continue;
+    }
+    // Keep the most-recently-fired row as the base (it carries the
+    // freshest edits), but never let the merged lastFiredAt regress
+    // below any duplicate's — otherwise a stale row could reopen a
+    // fire window the newest row already closed.
+    const base = (s.lastFiredAt ?? 0) >= (prev.lastFiredAt ?? 0) ? s : prev;
+    byId.set(s.id, {
+      ...base,
+      lastFiredAt: Math.max(s.lastFiredAt ?? 0, prev.lastFiredAt ?? 0) || undefined,
+    });
+  }
+  return Array.from(byId.values());
 }
 
 export async function writeSchedules(
