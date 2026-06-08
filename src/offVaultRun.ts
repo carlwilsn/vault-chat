@@ -17,6 +17,7 @@ import {
 } from "./telegram";
 import { useStore, type ChatMessage, type LiveTool } from "./store";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
+import { registerRun, unregisterRun } from "./runRegistry";
 
 // Minimum gap between Telegram progress pings during a long headless run,
 // so the phone gets "still working" signal without being spammed.
@@ -120,6 +121,11 @@ export async function handleOffVaultInbound(
     void sendTelegramMessage(vault, chatId, text).catch(() => {});
   };
 
+  // Register an abort handle so a supervisor can interject this run by id.
+  const inboundConvId = list[idx]!.id;
+  const controller = new AbortController();
+  registerRun(inboundConvId, controller);
+
   try {
     await runAgent({
       modelId,
@@ -128,6 +134,7 @@ export async function handleOffVaultInbound(
       history: baseHistory,
       userMessage: trimmed,
       userAttachments: attachments.length > 0 ? attachments : undefined,
+      abortSignal: controller.signal,
       tavilyKey: store.serviceKeys.tavily,
       strictVault: store.strictVaultMode,
       bashDisabled: store.bashDisabled,
@@ -165,7 +172,8 @@ export async function handleOffVaultInbound(
     acc = (acc + `\n\n⚠️ off-vault run failed: ${String(e)}`).trim();
     notify(`⚠️ off-vault run failed: ${String(e)}`);
   } finally {
-    if (list[idx]) await endHeartbeat(vault, list[idx]!.id).catch(() => {});
+    await endHeartbeat(vault, inboundConvId).catch(() => {});
+    unregisterRun(inboundConvId, controller);
   }
 
   // Second write: persist the assistant reply. Re-read to avoid
@@ -286,6 +294,11 @@ export async function runScheduledHeadlessTurn(
     void sendTelegramMessage(vault, telegramChatId, text).catch(() => {});
   };
 
+  // Register an abort handle so another agent (a supervisor) can interject
+  // this run by id (AskWorker / auto-nudge).
+  const controller = new AbortController();
+  registerRun(conversationId, controller);
+
   try {
     await runAgent({
       modelId,
@@ -293,6 +306,7 @@ export async function runScheduledHeadlessTurn(
       vault,
       history: baseHistory,
       userMessage: prompt,
+      abortSignal: controller.signal,
       tavilyKey: store.serviceKeys.tavily,
       strictVault: store.strictVaultMode,
       bashDisabled: store.bashDisabled,
@@ -331,6 +345,7 @@ export async function runScheduledHeadlessTurn(
     notify(`⚠️ scheduled run failed: ${String(e)}`);
   } finally {
     await endHeartbeat(vault, conversationId).catch(() => {});
+    unregisterRun(conversationId, controller);
   }
 
   // What (if anything) this run delivers to Telegram. A quiet supervisor
@@ -383,6 +398,109 @@ export async function runScheduledHeadlessTurn(
       console.warn("[scheduler] telegram send failed:", e),
     );
   }
+}
+
+// Run ONE turn on an existing thread with `message`, persist the exchange,
+// and RETURN the reply text. Used by the AskWorker relay so one agent (a
+// supervisor / the phone's front agent) can hand a message to a worker thread
+// and get its answer back to relay. No Telegram delivery — the caller decides
+// what to do with the reply. The worker run registers an abort handle so a
+// concurrent interject can stop it.
+export async function runWorkerTurn(
+  vault: string,
+  conversationId: string,
+  message: string,
+  opts: { modelId?: string } = {},
+): Promise<{ reply: string; error?: string }> {
+  const store = useStore.getState();
+  let modelId = opts.modelId || store.modelId;
+  if (modelId === AUTO_MODEL_ID) {
+    modelId = resolveAutoModel(message, store.apiKeys, getLiveCatalog())?.id ?? modelId;
+  }
+  const spec = findModel(modelId);
+  const apiKey = spec ? store.apiKeys[spec.provider] : undefined;
+  if (!spec || !apiKey) {
+    return { reply: "", error: "no model / API key configured" };
+  }
+
+  const list = await readConversations(vault);
+  const idx = list.findIndex((c) => c.id === conversationId);
+  if (idx < 0) return { reply: "", error: `worker thread not found: ${conversationId}` };
+
+  const userMsg: ChatMessage = { role: "user", content: message };
+  list[idx] = {
+    ...list[idx]!,
+    messages: [...list[idx]!.messages, userMsg],
+    lastActivityAt: Date.now(),
+  };
+  await writeConversations(vault, list);
+
+  const baseHistory = list[idx]!.messages
+    .filter((m) => !m.system)
+    .map((m) => ({ role: m.role, content: m.content }));
+
+  let acc = "";
+  const tools: LiveTool[] = [];
+  let runErr: string | undefined;
+  const controller = new AbortController();
+  registerRun(conversationId, controller);
+  try {
+    await runAgent({
+      modelId,
+      apiKey,
+      vault,
+      history: baseHistory,
+      userMessage: message,
+      abortSignal: controller.signal,
+      tavilyKey: store.serviceKeys.tavily,
+      strictVault: store.strictVaultMode,
+      bashDisabled: store.bashDisabled,
+      voiceMode: false,
+      telegramMode: false,
+      conversationId,
+      isTelegramSourced: false,
+      reasoningEffort: store.reasoningEffort,
+      onEvent: (e) => {
+        if (e.kind === "text") acc += e.delta;
+        else if (e.kind === "tool_use") {
+          tools.push({ id: e.id, name: e.name, input: e.input, startedAt: Date.now() });
+          void bumpHeartbeat(vault, conversationId, e.name);
+        } else if (e.kind === "tool_result") {
+          const t = tools.find((x) => x.id === e.id);
+          if (t) t.result = e.result;
+        } else if (e.kind === "error") {
+          runErr = e.message;
+          acc = (acc + `\n\n⚠️ ${e.message}`).trim();
+        }
+      },
+    });
+  } catch (e) {
+    runErr = String(e);
+    acc = (acc + `\n\n⚠️ worker turn failed: ${String(e)}`).trim();
+  } finally {
+    await endHeartbeat(vault, conversationId).catch(() => {});
+    unregisterRun(conversationId, controller);
+  }
+
+  // Persist the worker's reply onto its thread so the exchange is coherent.
+  const finalList = await readConversations(vault);
+  const fi = finalList.findIndex((c) => c.id === conversationId);
+  if (fi >= 0 && acc.trim()) {
+    const assistantMsg: ChatMessage = {
+      role: "assistant",
+      content: acc,
+      toolCalls: tools.length ? tools : undefined,
+    };
+    finalList[fi] = {
+      ...finalList[fi]!,
+      messages: [...finalList[fi]!.messages, assistantMsg],
+      lastActivityAt: Date.now(),
+    };
+    await writeConversations(vault, finalList);
+  }
+  await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+
+  return { reply: acc, error: runErr };
 }
 
 // Create a fresh conversation entry on disk for a vault that's not

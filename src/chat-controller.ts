@@ -8,6 +8,7 @@ import { flushEditCommit } from "./commit-controller";
 import { safetyCommit } from "./autosave";
 import { sendTelegramReplyWithImages, scheduledDeliveryText } from "./telegram";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
+import { registerRun, unregisterRun } from "./runRegistry";
 import {
   useStore,
   MODEL_CONTEXT_LIMIT,
@@ -258,6 +259,7 @@ export async function sendMessage(
   // the UI, but Stop button doesn't render in that case anyway.
   const controller = new AbortController();
   if (!isOffTarget) abortRef = controller;
+  if (targetConvId) registerRun(targetConvId, controller);
   const signal = controller.signal;
 
   let acc = "";
@@ -366,6 +368,7 @@ export async function sendMessage(
         // this thread shows the finished message, not stale streaming.
         if (targetConvId) store.clearConvRuntime(targetConvId);
         if (targetConvId) void endHeartbeat(vault, targetConvId);
+        if (targetConvId) unregisterRun(targetConvId, controller);
 
         if (telegramChatId !== undefined) {
           // Markdown image refs in the reply get pulled out and sent
@@ -475,6 +478,7 @@ export async function sendMessage(
         }
         if (targetConvId) store.clearConvRuntime(targetConvId);
         if (targetConvId) void endHeartbeat(vault, targetConvId);
+        if (targetConvId) unregisterRun(targetConvId, controller);
         // An errored turn also skips the end-of-turn commit — sweep up any
         // partial writes so they aren't lost. Agent-tagged: the agent
         // wrote them.

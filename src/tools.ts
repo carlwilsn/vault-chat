@@ -978,6 +978,50 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         return lines.join("\n\n");
       },
     }),
+    AskWorker: tool({
+      description:
+        "Relay a message to ANOTHER chat (a 'worker') in this vault and get its reply back — so you can hand an instruction or question to a long-running worker thread and report its answer. Find the worker's id with ListConversations. By default it does NOT interrupt a busy worker: if the worker is mid-run you'll get its current status instead of forcing an answer (use that for status checks — never disrupts a job). Set interrupt=true to abort its current turn and make it act on your message NOW (use to redirect it, or to nudge a stuck worker back to work). Returns the worker's reply, or its status when busy and not interrupted.",
+      inputSchema: z.object({
+        conversation_id: z
+          .string()
+          .describe("The worker conversation id (from ListConversations)."),
+        message: z
+          .string()
+          .describe("What to say to the worker — phrase it as you'd speak to that agent."),
+        interrupt: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true, abort the worker's current turn and make it handle your message now. Default false — don't disrupt a busy worker.",
+          ),
+      }),
+      execute: async ({ conversation_id, message, interrupt }) => {
+        if (conversationId && conversation_id === conversationId) {
+          return "Refused: that id is THIS conversation. AskWorker targets a different thread.";
+        }
+        const { readConversations } = await import("./conversations");
+        const list = await readConversations(vault);
+        const conv = list.find((c) => c.id === conversation_id);
+        if (!conv) return `Worker thread not found: ${conversation_id}`;
+        const busy = conv.status === "running";
+        if (busy && !interrupt) {
+          const tail = conv.messages
+            .slice(-6)
+            .map((m) => `[${m.role}] ${(m.content ?? "").slice(0, 400)}`)
+            .join("\n");
+          return `Worker "${conv.title || conversation_id}" is BUSY (mid-run) — not interrupted. Recent activity:\n${tail}\n\n(To make it act on your message now, call again with interrupt=true.)`;
+        }
+        if (busy && interrupt) {
+          const { abortRun } = await import("./runRegistry");
+          abortRun(conversation_id);
+          await new Promise((r) => setTimeout(r, 600)); // let the abort unwind
+        }
+        const { runWorkerTurn } = await import("./offVaultRun");
+        const { reply, error } = await runWorkerTurn(vault, conversation_id, message, {});
+        if (error && !reply.trim()) return `Worker run failed: ${error}`;
+        return `Worker "${conv.title || conversation_id}" replied:\n${reply}`;
+      },
+    }),
     ListSchedules: tool({
       description:
         "List the scheduled prompts in this vault. Use to find a schedule's id before cancelling it, or to remind the user what they have set up. Returns id, name, prompt (truncated), recurrence, next-fire time, target conversation, and enabled state.",
