@@ -53,6 +53,44 @@ export function getSchedules(): Schedule[] {
 
 const TRACKED_VAULTS_KEY = "vault_chat_tracked_vaults";
 
+// Single-firer gate (machine-local). The scheduler loop runs on EVERY
+// machine that has the app open — there is no server/consumer role. When
+// the same vault is open on two machines, both loops independently see a
+// schedule as due and fire it, because the optimistic `lastFiredAt` mark
+// only propagates between machines via git (pull interval ~30s), far
+// slower than the fire window. The result is one daily check-in running
+// as two divergent agent turns.
+//
+// The fix is to let secondary machines opt OUT of firing. The flag is
+// deliberately stored in localStorage and NOT in
+// <vault>/.vault-chat/config.json: config.json is git-tracked and synced,
+// so an opt-out written there would propagate to every machine and turn
+// firing off everywhere — the one failure mode we must avoid. localStorage
+// is per-install, so each machine owns its own answer.
+//
+// Default is ON. A fresh install fires; you must explicitly disable on a
+// secondary box. That asymmetry is intentional: the worst case of a
+// misconfiguration is the pre-existing double-fire, never silence.
+const FIRE_ON_THIS_MACHINE_KEY = "vault_chat_fire_schedules_on_this_machine";
+
+export function fireSchedulesOnThisMachine(): boolean {
+  try {
+    return localStorage.getItem(FIRE_ON_THIS_MACHINE_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+export function setFireSchedulesOnThisMachine(on: boolean): void {
+  try {
+    // Store only the opt-out; absence means the default (fire).
+    if (on) localStorage.removeItem(FIRE_ON_THIS_MACHINE_KEY);
+    else localStorage.setItem(FIRE_ON_THIS_MACHINE_KEY, "false");
+  } catch {
+    // localStorage unavailable — the default (fire) stands.
+  }
+}
+
 export function getTrackedVaults(): string[] {
   try {
     const raw = localStorage.getItem(TRACKED_VAULTS_KEY);
@@ -94,6 +132,13 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
       schedulesByVault.set(vault, fromDisk);
       emit();
     }
+    // Single-firer gate. We still refresh the in-memory list above (so the
+    // SchedulesPanel stays current on every machine), but a machine opted
+    // out of firing returns here without touching `lastFiredAt`. Skipping
+    // the mark is essential: if a non-firing machine still stamped
+    // lastFiredAt and pushed it, the firing machine would read it as
+    // "already fired" and skip — silently disabling the schedule.
+    if (!fireSchedulesOnThisMachine()) return;
     const list = (schedulesByVault.get(vault) ?? []).slice();
     let changed = false;
     for (const s of list) {

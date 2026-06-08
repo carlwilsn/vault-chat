@@ -52,6 +52,10 @@ import {
   setTelegramModelId,
   type TelegramSnapshot,
 } from "./telegram";
+import {
+  fireSchedulesOnThisMachine,
+  setFireSchedulesOnThisMachine,
+} from "./schedulerLoop";
 const PROVIDERS: ProviderId[] = ["anthropic", "openai", "google", "openrouter"];
 
 const KEY_PLACEHOLDER: Record<ProviderId, string> = {
@@ -865,6 +869,12 @@ function VaultSyncSection() {
   const [busy, setBusy] = useState(false);
   const [repoNameDraft, setRepoNameDraft] = useState("");
   const [creatingRepo, setCreatingRepo] = useState(false);
+  // Machine-local single-firer gate (localStorage, not synced config).
+  const [fireHere, setFireHere] = useState(true);
+
+  useEffect(() => {
+    setFireHere(fireSchedulesOnThisMachine());
+  }, []);
 
   useEffect(() => {
     if (!vaultPath) {
@@ -997,6 +1007,32 @@ function VaultSyncSection() {
             className="vc-checkbox"
             checked={config.enabled}
             onChange={(e) => toggleEnabled(e.target.checked)}
+          />
+        </label>
+      </div>
+      <div className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
+        <div>
+          <div className="text-[11.5px] font-medium text-foreground/90">
+            Fire scheduled tasks on this machine
+          </div>
+          <p className="text-[10.5px] text-muted-foreground/80 mt-0.5">
+            Turn off on a secondary machine (e.g. a laptop sharing this
+            vault with an always-on box) so a daily schedule doesn't fire
+            twice. Machine-local — not synced. Leave one machine on.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 shrink-0 cursor-pointer">
+          <span className="text-[10.5px] text-muted-foreground">
+            {fireHere ? "on" : "off"}
+          </span>
+          <input
+            type="checkbox"
+            className="vc-checkbox"
+            checked={fireHere}
+            onChange={(e) => {
+              setFireSchedulesOnThisMachine(e.target.checked);
+              setFireHere(e.target.checked);
+            }}
           />
         </label>
       </div>
