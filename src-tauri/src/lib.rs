@@ -1830,12 +1830,19 @@ struct GitCommit {
 const GIT_TIMEOUT_SECS: u64 = 90;
 const STALE_LOCK_SECS: u64 = 10;
 
-// Distinct git identity for everything the AGENT commits — the app's
-// agent-origin auto-commits AND any `git commit` the agent runs through the
-// Bash tool, in the vault root OR any nested repo. Human/app commits keep the
-// neutral `vault-chat` identity, and the user's own terminal commits keep
-// their real one. So `git log --author`, blame, and the editor gutter show
-// agent-vs-human everywhere, not just via the `[agent]` subject tag.
+// Git identity model. Authorship follows *who actually did the work*:
+//   - the AGENT (an autonomous turn, or any `git commit` the agent runs via
+//     the Bash tool) is authored as `vault-chat-agent`;
+//   - everything the USER did — their edits, autosaves of their work, app
+//     housekeeping on their behalf — is authored as the user's *real* git
+//     identity (resolved from the repo's effective config, which they already
+//     have set, e.g. "Carl Wilson <wada2918@gmail.com>").
+// We never stamp a neutral `vault-chat` bot as the author of the user's work —
+// that erases their ownership, and in a shared repo it pollutes a history real
+// collaborators read. The `[agent]` subject tag plus, in shared repos, a
+// `Co-authored-by:` trailer keep the agent-vs-human split honest without faking
+// authorship. APP_GIT_* survives only as a last-resort fallback for a repo with
+// no git identity configured anywhere, so a commit never fails for lack of one.
 const AGENT_GIT_NAME: &str = "vault-chat-agent";
 const AGENT_GIT_EMAIL: &str = "agent@vault-chat.local";
 const APP_GIT_NAME: &str = "vault-chat";
@@ -1849,6 +1856,56 @@ fn stamp_agent_git_identity(cmd: &mut Command) {
     cmd.env("GIT_AUTHOR_EMAIL", AGENT_GIT_EMAIL);
     cmd.env("GIT_COMMITTER_NAME", AGENT_GIT_NAME);
     cmd.env("GIT_COMMITTER_EMAIL", AGENT_GIT_EMAIL);
+}
+
+/// The user's *real* git identity for `repo`, read from its effective git
+/// config (local → global → system, exactly what a bare `git commit` would
+/// use). This is what the user has already configured (e.g. their name + email),
+/// so commits of their own work carry their ownership instead of a bot's.
+/// Falls back to the neutral app identity only if nothing is configured.
+fn human_identity(repo: &str) -> (String, String) {
+    let get = |key: &str| -> Option<String> {
+        run_git(repo, &["config", "--get", key]).ok().and_then(|(v, _, c)| {
+            let v = v.trim().to_string();
+            if c == 0 && !v.is_empty() {
+                Some(v)
+            } else {
+                None
+            }
+        })
+    };
+    (
+        get("user.name").unwrap_or_else(|| APP_GIT_NAME.to_string()),
+        get("user.email").unwrap_or_else(|| APP_GIT_EMAIL.to_string()),
+    )
+}
+
+/// The identity a commit should be authored as in `repo`, given whether the
+/// AGENT did the work. Agent → `vault-chat-agent`; user → their real identity.
+fn commit_identity(repo: &str, agent: bool) -> (String, String) {
+    if agent {
+        (AGENT_GIT_NAME.to_string(), AGENT_GIT_EMAIL.to_string())
+    } else {
+        human_identity(repo)
+    }
+}
+
+/// Run a mutating git command in `dir`, authored as `(name, email)` via
+/// per-invocation `-c user.*` overrides — so we set authorship without ever
+/// mutating the repo's stored config. `rest` is the git subcommand and its args
+/// (e.g. `["commit", "-q", "-m", msg]`). Replaces the old pattern of hardcoding
+/// `-c user.name=vault-chat -c user.email=vault-chat@local` at every call site.
+fn run_git_as(
+    dir: &str,
+    name: &str,
+    email: &str,
+    rest: &[&str],
+) -> Result<(String, String, i32), String> {
+    let name_cfg = format!("user.name={}", name);
+    let email_cfg = format!("user.email={}", email);
+    let mut args: Vec<&str> = vec!["-c", &name_cfg, "-c", &email_cfg];
+    args.extend_from_slice(rest);
+    run_git_mut(dir, &args)
 }
 
 // One lock per repo, keyed by canonical path so "C:\v" and "C:/v/" collapse
@@ -2242,192 +2299,385 @@ fn ensure_lfs_tracking(dir: &str) {
     }
 }
 
-/// True cross-machine sync for sub-repos: for each registered submodule the
-/// user is actively working in — under their own account, on a branch with an
-/// upstream, NOT a detached mirror checkout — commit any uncommitted edits and
-/// push the branch to the sub-repo's own remote. A sub-repo edit then travels across machines exactly
-/// like a vault edit: the push lands the commit on its remote, and the parent's
-/// gitlink bump (committed right after by the normal vault flow) tells the
-/// other machine which commit to check out.
-///
-/// An owned sub-repo found in detached HEAD (the default right after
-/// `git submodule update`) is re-attached to the branch at its tip first, so a
-/// freshly-materialized repo starts syncing like a normal working tree rather
-/// than staying a frozen reference — see `attach_detached_to_branch`.
-///
-/// A sub-repo whose remote the user doesn't own (e.g. microsoft/BitNet) is first
-/// adopted — forked to the user's account and repointed at the fork — so the
-/// "everything in the vault is mine" invariant holds; see `adopt_unowned_subrepo`.
-///
-/// Deliberately skipped — all best-effort, never fatal to the vault's own sync:
-///   - unowned sub-repos that can't be adopted (no gh / not authed as the vault
-///     owner): we have no writable remote, so we don't commit into them.
-///   - detached HEAD at no branch tip (a deliberate old-commit checkout): can't
-///     attach without orphaning, so left alone.
-///   - submodules with no upstream branch: nowhere to push.
-///   - a push that fails (no write access, non-fast-forward): logged, skipped —
-///     the parent still records the local commit; the other machine fetches it
-///     once the push eventually succeeds.
-fn sync_submodules(vault: &str, agent: bool) {
-    if !PathBuf::from(vault).join(".gitmodules").is_file() {
-        return;
-    }
-    let (out, _, code) = match run_git(
-        vault,
-        &["config", "-f", ".gitmodules", "--get-regexp", "\\.path$"],
-    ) {
-        Ok(t) => t,
-        Err(_) => return,
-    };
-    if code != 0 {
-        return;
-    }
-    // Only sync sub-repos owned by the same account as the vault itself.
-    // This is the key safety gate: it prevents committing into third-party
-    // upstreams that happen to be registered as submodules (e.g. microsoft/BitNet).
-    // If we can't determine the vault owner, we skip the whole function — safer
-    // than guessing and accidentally committing into a repo we don't own.
-    let vault_owner: Option<String> = run_git(vault, &["remote", "get-url", "origin"])
-        .ok()
-        .and_then(|(url, _, c)| if c == 0 { Some(url) } else { None })
-        .and_then(|url| repo_owner(&url));
-    if vault_owner.is_none() {
-        return; // vault has no remote — nothing meaningful to sync sub-repos to
-    }
-    let vault_owner = vault_owner.unwrap();
+/// How vault-chat may sync a nested git repo, decided by the user's *real*
+/// relationship to its `origin` remote — never by overwriting ownership.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RepoClass {
+    /// `origin` is the user's own repo → commit + push to its tracking branch.
+    Mine,
+    /// `origin` is someone else's, but the user has push access (a real
+    /// collaborator) → commit onto a dedicated `vault-chat/<user>` branch and
+    /// push ONLY that branch. The team's default branch is never touched by
+    /// automation; landing work there is a deliberate, separate merge the user
+    /// does by hand. Keeps shared history clean and the user connected.
+    Shared,
+    /// `origin` is someone else's with NO push access → fork it to the user's
+    /// account, repoint `origin` at the fork, then sync the fork like `Mine`.
+    /// The only case where forking is wanted: nothing to collaborate on, and a
+    /// fork is the sole way to own a syncable copy.
+    Foreign,
+    /// No `origin` remote → commit locally for version history; nothing to push.
+    Internal,
+    /// Can't classify safely (no `gh` login, unparseable remote) → leave it
+    /// untouched. Never risk committing into a repo we can't verify.
+    Skip,
+}
 
-    let (name, email) = if agent {
-        (AGENT_GIT_NAME, AGENT_GIT_EMAIL)
-    } else {
-        (APP_GIT_NAME, APP_GIT_EMAIL)
-    };
-    let name_cfg = format!("user.name={}", name);
-    let email_cfg = format!("user.email={}", email);
-    for line in out.lines() {
-        // Each line: "submodule.<name>.path <relpath>"
-        let rel = match line.split_once(char::is_whitespace) {
-            Some((_, p)) => p.trim(),
-            None => continue,
-        };
-        if rel.is_empty() {
-            continue;
+/// The GitHub login vault-chat is authenticated as (lowercased), resolved once
+/// per process — telling the user's own repos from other people's needs it, and
+/// it never changes within a run. None if `gh` is missing/unauthenticated.
+fn gh_login(cwd: &str) -> Option<String> {
+    static CACHE: OnceLock<Option<String>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            run_gh(cwd, &["api", "user", "-q", ".login"])
+                .ok()
+                .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_lowercase()) } else { None })
+                .filter(|s| !s.is_empty())
+        })
+        .clone()
+}
+
+/// "https://github.com/owner/Repo.git" → "Repo" (repo name, case preserved).
+fn repo_name(url: &str) -> Option<String> {
+    url.trim()
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .rsplit(|c| c == '/' || c == ':')
+        .next()
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Does the authenticated user have push access to `owner/repo`? Asks GitHub
+/// directly (`gh api repos/{owner}/{repo} .permissions.push`): a collaborator
+/// gets `true`, a stranger `false`/404. This is the probe that splits "shared"
+/// (commit to my own branch on the real repo) from "foreign" (fork it). Cached
+/// per `owner/repo` for the process — permissions don't flip mid-session, and
+/// it keeps a fast sync loop from hitting the API every cycle.
+fn can_push_to(cwd: &str, owner: &str, repo: &str) -> bool {
+    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    let key = format!("{}/{}", owner.to_lowercase(), repo.to_lowercase());
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(v) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return *v;
+    }
+    let allowed = run_gh(
+        cwd,
+        &[
+            "api",
+            &format!("repos/{}/{}", owner, repo),
+            "--jq",
+            ".permissions.push",
+        ],
+    )
+    .ok()
+    .map(|(o, _, c)| c == 0 && o.trim() == "true")
+    .unwrap_or(false);
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, allowed);
+    allowed
+}
+
+/// Classify a nested repo by its `origin` and the user's access to it.
+fn classify_repo(sub: &str, me: Option<&str>) -> RepoClass {
+    let origin = run_git(sub, &["remote", "get-url", "origin"]).ok().and_then(|(u, _, c)| {
+        let u = u.trim().to_string();
+        if c == 0 && !u.is_empty() {
+            Some(u)
+        } else {
+            None
         }
+    });
+    let Some(origin) = origin else {
+        return RepoClass::Internal; // no remote — local history only
+    };
+    let Some(owner) = repo_owner(&origin) else {
+        return RepoClass::Skip; // unparseable remote — don't guess
+    };
+    // Without a gh login we can't verify whose repo this is, so we don't touch
+    // it — better a stale dot than committing into someone else's checkout.
+    let Some(me) = me else {
+        return RepoClass::Skip;
+    };
+    if owner == me {
+        return RepoClass::Mine;
+    }
+    let Some(repo) = repo_name(&origin) else {
+        return RepoClass::Skip;
+    };
+    if can_push_to(sub, &owner, &repo) {
+        RepoClass::Shared
+    } else {
+        RepoClass::Foreign
+    }
+}
+
+/// Put `sub` on `branch`, carrying any uncommitted work onto it. No-op if
+/// already there. Tracks an existing remote branch of the same name (so both
+/// machines ride it), else creates a fresh local branch from the current HEAD.
+/// Returns false if neither switch worked (e.g. a conflicting checkout).
+fn ensure_on_branch(sub: &str, branch: &str) -> bool {
+    let cur = run_git(sub, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .and_then(|(b, _, c)| if c == 0 { Some(b.trim().to_string()) } else { None });
+    if cur.as_deref() == Some(branch) {
+        return true;
+    }
+    let remote = format!("origin/{}", branch);
+    let remote_exists = matches!(
+        run_git(sub, &["rev-parse", "--verify", "--quiet", &remote]),
+        Ok((_, _, 0))
+    );
+    if remote_exists {
+        if matches!(run_git_mut(sub, &["switch", branch]), Ok((_, _, 0))) {
+            return true;
+        }
+        if matches!(
+            run_git_mut(sub, &["switch", "-c", branch, "--track", &remote]),
+            Ok((_, _, 0))
+        ) {
+            return true;
+        }
+    }
+    matches!(run_git_mut(sub, &["switch", "-c", branch]), Ok((_, _, 0)))
+        || matches!(run_git_mut(sub, &["switch", branch]), Ok((_, _, 0)))
+}
+
+/// Sync ONE nested repo per its class. Best-effort throughout — any step that
+/// fails is logged and skipped, never fatal to the vault's own sync.
+/// `cfg_branch` is the `.gitmodules`-declared tracking branch when this repo is
+/// a registered submodule (used for stale-pin recovery), else None.
+fn sync_one_repo(
+    vault: &str,
+    sub: &str,
+    rel: &str,
+    agent: bool,
+    me: Option<&str>,
+    cfg_branch: Option<&str>,
+) {
+    let mut class = classify_repo(sub, me);
+
+    // Foreign → fork to the user's account and repoint origin at the fork, then
+    // sync the fork exactly like one of the user's own repos.
+    if class == RepoClass::Foreign {
+        match me.and_then(|m| adopt_unowned_subrepo(vault, rel, sub, m)) {
+            Some(fork) => {
+                eprintln!("[sync] foreign repo '{}' forked → {}", rel, fork);
+                class = RepoClass::Mine;
+            }
+            None => return, // can't fork (no gh write) — leave it read-only
+        }
+    }
+    if class == RepoClass::Skip {
+        return;
+    }
+
+    // Resolve the working branch.
+    //  - Shared: a dedicated, isolated `vault-chat/<me>` branch so automation
+    //    never touches the team's default; created from wherever the work sits
+    //    (carrying uncommitted edits) and tracked so both machines ride it.
+    //  - Mine / Internal: the repo's own branch. A freshly-materialized
+    //    submodule lands detached, so attach it to its branch tip (or recover
+    //    onto its .gitmodules-declared branch), exactly as before.
+    let shared_branch = if class == RepoClass::Shared {
+        let Some(m) = me else { return };
+        let b = format!("vault-chat/{}", m);
+        if !ensure_on_branch(sub, &b) {
+            eprintln!("[sync] shared repo '{}' — couldn't switch to '{}'; skipping", rel, b);
+            return;
+        }
+        Some(b)
+    } else {
+        let on_branch = matches!(
+            run_git(sub, &["symbolic-ref", "--quiet", "--short", "HEAD"]),
+            Ok((ref b, _, 0)) if !b.trim().is_empty()
+        );
+        if !on_branch {
+            match attach_detached_to_branch(sub) {
+                Some(b) => eprintln!("[sync] repo '{}' attached to branch '{}'", rel, b),
+                None => match recover_to_configured_branch(sub, cfg_branch) {
+                    Some(b) => eprintln!(
+                        "[sync] repo '{}' recovered onto tracking branch '{}' (was detached at a stale pin)",
+                        rel, b
+                    ),
+                    None => return, // deliberate detached pin — respect it
+                },
+            }
+        }
+        None
+    };
+
+    // Commit any uncommitted edits, authored by who did the work. In a shared
+    // repo an agent commit is co-signed by the user, so a teammate reading the
+    // history sees a real human standing behind it.
+    let (cn, ce) = commit_identity(sub, agent);
+    if let Ok((st, _, _)) = run_git(sub, &["status", "--porcelain"]) {
+        if !st.trim().is_empty() {
+            let _ = run_git_as(sub, &cn, &ce, &["add", "-A"]);
+            let mut msg = String::new();
+            if agent {
+                msg.push_str("[agent] ");
+            }
+            msg.push_str("vault-chat: auto-sync (sub-repo)");
+            if agent && class == RepoClass::Shared {
+                let (hn, he) = human_identity(sub);
+                msg.push_str(&format!("\n\nCo-authored-by: {} <{}>", hn, he));
+            }
+            let _ = run_git_as(sub, &cn, &ce, &["commit", "-q", "-m", &msg]);
+        }
+    }
+
+    // Push.
+    match (&shared_branch, class) {
+        // Shared → push only the dedicated branch, with -u so it exists on the
+        // remote and tracks. Never the team's default branch.
+        (Some(branch), _) => match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
+            Ok((_, perr, pc)) if pc != 0 => {
+                eprintln!("[sync] shared repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+            }
+            Err(e) => eprintln!("[sync] shared repo '{}' push error: {}", rel, e),
+            _ => {}
+        },
+        // Mine → push the tracking branch when it's ahead. Needs an upstream.
+        (None, RepoClass::Mine) => {
+            let has_upstream = matches!(
+                run_git(sub, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
+                Ok((_, _, 0))
+            );
+            let ahead = if has_upstream {
+                match run_git(sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
+                    Ok((c, _, 0)) => c.trim().parse::<u64>().unwrap_or(0),
+                    _ => 0,
+                }
+            } else {
+                0
+            };
+            if ahead > 0 {
+                match run_git_timeout(sub, &["push"], 300) {
+                    Ok((_, perr, pc)) if pc != 0 => {
+                        eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                    }
+                    Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
+                    _ => {}
+                }
+            }
+        }
+        // Internal → no remote; the local commit above is the version history.
+        _ => {}
+    }
+
+    maybe_compact_git(sub);
+}
+
+/// Walk the vault for every nested git repo (a dir containing `.git`) at any
+/// reasonable depth, skipping the vault's own `.git`, dotdirs, and heavy build
+/// dirs. Descends INTO nested repos so a repo-inside-a-repo (e.g. a class repo
+/// holding a team project) is found too. Returns vault-relative, slash-joined
+/// paths.
+fn find_all_nested_repos(root: &std::path::Path) -> Vec<String> {
+    fn walk(dir: &std::path::Path, root: &std::path::Path, depth: usize, found: &mut Vec<String>) {
+        if depth > 4 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let name = match p.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+            if name.starts_with('.')
+                || matches!(
+                    name,
+                    "node_modules" | "target" | "__pycache__" | "venv" | ".venv" | "dist" | "build"
+                )
+            {
+                continue;
+            }
+            if p.join(".git").exists() {
+                if let Ok(rel) = p.strip_prefix(root) {
+                    found.push(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+            walk(&p, root, depth + 1, found); // descend (repos inside repos)
+        }
+    }
+    let mut found = Vec::new();
+    walk(root, root, 0, &mut found);
+    found.sort();
+    found
+}
+
+/// Commit + sync every nested git repo in the vault, each on its own merits —
+/// classified by *its own* remote and the user's relationship to it (see
+/// `RepoClass`). Replaces the old submodule-only, vault-remote-gated path: a
+/// nested repo now syncs even when the vault root has no remote, and an embedded
+/// repo never registered as a submodule is handled too. This is what clears the
+/// per-repo "uncommitted changes" dots. Best-effort; never fatal to vault sync.
+fn sync_nested_repos(vault: &str, agent: bool) {
+    // Build the work list: registered submodules (carry a .gitmodules tracking
+    // branch we use for stale-pin recovery) ∪ embedded repos found on disk.
+    let mut repos: Vec<(String, Option<String>)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    if PathBuf::from(vault).join(".gitmodules").is_file() {
+        if let Ok((out, _, 0)) =
+            run_git(vault, &["config", "-f", ".gitmodules", "--get-regexp", "\\.path$"])
+        {
+            for line in out.lines() {
+                let (key, rel) = match line.split_once(char::is_whitespace) {
+                    Some((k, p)) => (k, p.trim()),
+                    None => continue,
+                };
+                if rel.is_empty() {
+                    continue;
+                }
+                let cfg_branch = key
+                    .strip_suffix(".path")
+                    .map(|p| format!("{}.branch", p))
+                    .and_then(|bk| {
+                        run_git(vault, &["config", "-f", ".gitmodules", &bk])
+                            .ok()
+                            .and_then(|(v, _, c)| {
+                                if c == 0 && !v.trim().is_empty() {
+                                    Some(v.trim().to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                    });
+                if seen.insert(rel.to_string()) {
+                    repos.push((rel.to_string(), cfg_branch));
+                }
+            }
+        }
+    }
+    for rel in find_all_nested_repos(std::path::Path::new(vault)) {
+        if seen.insert(rel.clone()) {
+            repos.push((rel, None));
+        }
+    }
+    if repos.is_empty() {
+        return;
+    }
+
+    // Resolve "who am I on GitHub" once (cached); drives mine/shared/foreign.
+    let me = gh_login(vault);
+
+    for (rel, cfg_branch) in repos {
         let sub = format!("{}/{}", vault, rel);
         if !PathBuf::from(&sub).join(".git").exists() {
             continue; // not materialized on this machine
         }
-        // Every sub-repo in the vault should be one the user owns (a remote they
-        // can push to), so it syncs like a normal folder. If this one's remote
-        // belongs to someone else (e.g. microsoft/BitNet), adopt it: fork it to
-        // the user's account and repoint origin at the fork, preserving the
-        // original as `upstream`. Adoption is best-effort — if it can't happen
-        // (no gh, not authed as the vault owner), skip exactly as before so we
-        // never commit into a repo we can't push to.
-        let sub_owner: Option<String> = run_git(&sub, &["remote", "get-url", "origin"])
-            .ok()
-            .and_then(|(url, _, c)| if c == 0 { Some(url) } else { None })
-            .and_then(|url| repo_owner(&url));
-        let owned = matches!(&sub_owner, Some(o) if o == &vault_owner);
-        if !owned {
-            match adopt_unowned_subrepo(vault, rel, &sub, &vault_owner) {
-                Some(fork) => eprintln!("[sync] sub-repo '{}' adopted → {}", rel, fork),
-                None => continue, // can't adopt — skip, don't touch a repo we can't push to
-            }
-        }
-        // On a branch? A submodule materialized via `git submodule update`
-        // lands in detached HEAD on the pinned commit, not a branch — so a fresh
-        // checkout of an owned sub-repo would otherwise be skipped forever and
-        // never behave like a normal working tree. We only reach this point for
-        // owned repos (owner gate above), so if it's detached we try to ATTACH it
-        // to the branch whose tip is exactly this commit. That's loss-free: HEAD
-        // already equals the branch tip, so no commits are orphaned and no files
-        // change. A deliberate old-commit checkout (HEAD at no branch tip) can't
-        // attach and stays detached + skipped, preserving the user's intent.
-        let on_branch = matches!(
-            run_git(&sub, &["symbolic-ref", "--quiet", "--short", "HEAD"]),
-            Ok((ref b, _, 0)) if !b.trim().is_empty()
-        );
-        if !on_branch {
-            match attach_detached_to_branch(&sub) {
-                Some(b) => eprintln!("[sync] submodule '{}' attached to branch '{}'", rel, b),
-                None => {
-                    // HEAD isn't at any remote branch tip — a stale pin (e.g. an
-                    // old `submodule update` left it on a gitlink that no longer
-                    // matches the work). If .gitmodules declares a tracking
-                    // branch, recover onto it instead of leaving the stale commit
-                    // to be captured as the gitlink and pushed — which is what
-                    // makes two machines fight over the pointer every sync.
-                    let cfg_branch = line
-                        .split_whitespace()
-                        .next()
-                        .and_then(|k| k.strip_suffix(".path"))
-                        .map(|p| format!("{}.branch", p))
-                        .and_then(|bk| {
-                            run_git(vault, &["config", "-f", ".gitmodules", &bk])
-                                .ok()
-                                .and_then(|(v, _, c)| {
-                                    if c == 0 && !v.trim().is_empty() {
-                                        Some(v.trim().to_string())
-                                    } else {
-                                        None
-                                    }
-                                })
-                        });
-                    match recover_to_configured_branch(&sub, cfg_branch.as_deref()) {
-                        Some(b) => eprintln!(
-                            "[sync] submodule '{}' recovered onto tracking branch '{}' (was detached at a stale pin)",
-                            rel, b
-                        ),
-                        None => continue, // no tracking branch / can't recover — respect a deliberate pin
-                    }
-                }
-            }
-        }
-        // Needs an upstream branch to push to.
-        let has_upstream = matches!(
-            run_git(
-                &sub,
-                &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
-            ),
-            Ok((_, _, 0))
-        );
-        if !has_upstream {
-            continue;
-        }
-        // Commit any uncommitted edits in the sub-repo.
-        if let Ok((st, _, _)) = run_git(&sub, &["status", "--porcelain"]) {
-            if !st.trim().is_empty() {
-                let _ = run_git_mut(&sub, &["-c", &email_cfg, "-c", &name_cfg, "add", "-A"]);
-                let msg = format!(
-                    "{}vault-chat: auto-sync (sub-repo)",
-                    if agent { "[agent] " } else { "" }
-                );
-                let _ = run_git_mut(
-                    &sub,
-                    &["-c", &email_cfg, "-c", &name_cfg, "commit", "-q", "-m", &msg],
-                );
-            }
-        }
-        // Push if the branch is ahead of its upstream. Best-effort.
-        let ahead = match run_git(&sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
-            Ok((c, _, 0)) => c.trim().parse::<u64>().unwrap_or(0),
-            _ => 0,
-        };
-        if ahead > 0 {
-            match run_git_timeout(&sub, &["push"], 300) {
-                Ok((_, perr, pc)) if pc != 0 => {
-                    eprintln!(
-                        "[sync] submodule '{}' push skipped: {}",
-                        rel,
-                        first_line(&perr).trim()
-                    );
-                }
-                Err(e) => eprintln!("[sync] submodule '{}' push error: {}", rel, e),
-                _ => {}
-            }
-        }
-        // Keep the sub-repo's own .git compact (same churn logic as the vault).
-        maybe_compact_git(&sub);
+        sync_one_repo(vault, &sub, &rel, agent, me.as_deref(), cfg_branch.as_deref());
     }
 }
 
@@ -2679,6 +2929,10 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
         with_repo_lock(&vault, || {
         let git_dir = PathBuf::from(&vault).join(".git");
         let mut did_work = false;
+        // App housekeeping on the user's own vault is authored as the user, not
+        // a bot — it's their repo and their files being brought under version
+        // control. Resolved once; cheap (reads git config).
+        let (hn, he) = human_identity(&vault);
 
         if !git_dir.is_dir() {
             run_git_mut(&vault, &["init", "-q"])?;
@@ -2689,24 +2943,12 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
             // Seed .gitignore likewise BEFORE the first `add` so ephemeral
             // runtime state (heartbeat, logs, caches) never enters history.
             ensure_vault_gitignore(&vault);
-            run_git_mut(
+            run_git_as(&vault, &hn, &he, &["add", "-A"])?;
+            run_git_as(
                 &vault,
+                &hn,
+                &he,
                 &[
-                    "-c",
-                    "user.email=vault-chat@local",
-                    "-c",
-                    "user.name=vault-chat",
-                    "add",
-                    "-A",
-                ],
-            )?;
-            run_git_mut(
-                &vault,
-                &[
-                    "-c",
-                    "user.email=vault-chat@local",
-                    "-c",
-                    "user.name=vault-chat",
                     "commit",
                     "--allow-empty",
                     "-q",
@@ -2722,30 +2964,12 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
             // the eol/merge rules.
             if ensure_vault_gitattributes(&vault) {
                 abort_stuck_merge_or_rebase(&vault);
-                run_git_mut(
+                run_git_as(&vault, &hn, &he, &["add", "--", ".gitattributes"])?;
+                let (_, _, code) = run_git_as(
                     &vault,
-                    &[
-                        "-c",
-                        "user.email=vault-chat@local",
-                        "-c",
-                        "user.name=vault-chat",
-                        "add",
-                        "--",
-                        ".gitattributes",
-                    ],
-                )?;
-                let (_, _, code) = run_git_mut(
-                    &vault,
-                    &[
-                        "-c",
-                        "user.email=vault-chat@local",
-                        "-c",
-                        "user.name=vault-chat",
-                        "commit",
-                        "-q",
-                        "-m",
-                        "vault-chat: add managed .gitattributes",
-                    ],
+                    &hn,
+                    &he,
+                    &["commit", "-q", "-m", "vault-chat: add managed .gitattributes"],
                 )?;
                 if code == 0 {
                     did_work = true;
@@ -2760,13 +2984,11 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
                 abort_stuck_merge_or_rebase(&vault);
                 // Untrack any already-committed ephemeral files. `--ignore-unmatch`
                 // keeps this a no-op when they were never tracked.
-                let _ = run_git_mut(
+                let _ = run_git_as(
                     &vault,
+                    &hn,
+                    &he,
                     &[
-                        "-c",
-                        "user.email=vault-chat@local",
-                        "-c",
-                        "user.name=vault-chat",
                         "rm",
                         "-r",
                         "--cached",
@@ -2777,30 +2999,12 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
                         ".vault-chat/app-log.txt",
                     ],
                 );
-                run_git_mut(
+                run_git_as(&vault, &hn, &he, &["add", "--", ".gitignore"])?;
+                let (_, _, code) = run_git_as(
                     &vault,
-                    &[
-                        "-c",
-                        "user.email=vault-chat@local",
-                        "-c",
-                        "user.name=vault-chat",
-                        "add",
-                        "--",
-                        ".gitignore",
-                    ],
-                )?;
-                let (_, _, code) = run_git_mut(
-                    &vault,
-                    &[
-                        "-c",
-                        "user.email=vault-chat@local",
-                        "-c",
-                        "user.name=vault-chat",
-                        "commit",
-                        "-q",
-                        "-m",
-                        "vault-chat: add managed .gitignore",
-                    ],
+                    &hn,
+                    &he,
+                    &["commit", "-q", "-m", "vault-chat: add managed .gitignore"],
                 )?;
                 if code == 0 {
                     did_work = true;
@@ -2848,24 +3052,13 @@ async fn git_commit_all(
         if status_out.trim().is_empty() {
             return Ok(None);
         }
-        // Author by origin: agent-written turns are stamped `vault-chat-agent`,
-        // the user's own edits stay neutral `vault-chat`. Makes the vault's own
-        // history author-attributable, not just via the `[agent]` subject tag.
-        let (name, email) = if agent.unwrap_or(false) {
-            (AGENT_GIT_NAME, AGENT_GIT_EMAIL)
-        } else {
-            (APP_GIT_NAME, APP_GIT_EMAIL)
-        };
-        let name_cfg = format!("user.name={}", name);
-        let email_cfg = format!("user.email={}", email);
-        run_git_mut(
-            &vault,
-            &["-c", &email_cfg, "-c", &name_cfg, "add", "-A"],
-        )?;
-        run_git_mut(
-            &vault,
-            &["-c", &email_cfg, "-c", &name_cfg, "commit", "-q", "-m", &message],
-        )?;
+        // Author by origin: agent-written turns are stamped `vault-chat-agent`;
+        // the user's own edits carry the user's *real* identity (not a bot), so
+        // the vault's history shows true ownership, reinforced by the `[agent]`
+        // subject tag for agent turns.
+        let (name, email) = commit_identity(&vault, agent.unwrap_or(false));
+        run_git_as(&vault, &name, &email, &["add", "-A"])?;
+        run_git_as(&vault, &name, &email, &["commit", "-q", "-m", &message])?;
         let (hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
         Ok(Some(hash.trim().to_string()))
         })
@@ -2994,18 +3187,9 @@ async fn git_revert_head(vault: String) -> Result<String, String> {
         if count < 2 {
             return Err("nothing to undo yet".to_string());
         }
-        let (_, stderr, code) = run_git_mut(
-            &vault,
-            &[
-                "-c",
-                "user.email=vault-chat@local",
-                "-c",
-                "user.name=vault-chat",
-                "revert",
-                "--no-edit",
-                "HEAD",
-            ],
-        )?;
+        let (hn, he) = human_identity(&vault);
+        let (_, stderr, code) =
+            run_git_as(&vault, &hn, &he, &["revert", "--no-edit", "HEAD"])?;
         if code != 0 {
             return Err(format!("revert failed: {}", stderr.trim()));
         }
@@ -3139,20 +3323,9 @@ async fn git_restore_to_commit(vault: String, hash: String) -> Result<String, St
         } else {
             format!("Restore: {} ({})", subject, short)
         };
-        let (_, stderr2, code2) = run_git_mut(
-            &vault,
-            &[
-                "-c",
-                "user.email=vault-chat@local",
-                "-c",
-                "user.name=vault-chat",
-                "commit",
-                "--allow-empty",
-                "-q",
-                "-m",
-                &msg,
-            ],
-        )?;
+        let (hn, he) = human_identity(&vault);
+        let (_, stderr2, code2) =
+            run_git_as(&vault, &hn, &he, &["commit", "--allow-empty", "-q", "-m", &msg])?;
         if code2 != 0 {
             return Err(format!("commit failed: {}", stderr2.trim()));
         }
@@ -3644,11 +3817,11 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         // Self-heal a wedged repo: a crashed prior pull can leave an
         // in-progress rebase under which every commit silently no-ops.
         abort_stuck_merge_or_rebase(&vault);
-        // True-sync sub-repos first: commit + push any work in submodules the
-        // user is actively on, advancing their HEADs so the parent's gitlink
-        // bumps get staged and committed below. A sub-repo edit is then carried
-        // cross-machine the same way a vault edit is.
-        sync_submodules(&vault, false);
+        // Sync every nested repo first — each by its own remote and the user's
+        // relationship to it (own / shared / foreign / internal). This commits
+        // their working trees (clearing the per-repo dots) and advances owned
+        // HEADs so the parent's gitlink bumps get staged and committed below.
+        sync_nested_repos(&vault, false);
         let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
         if status_out.trim().is_empty() {
             return Ok(SyncOpResult {
@@ -3661,18 +3834,11 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         // recurse into nested .git directories on `add -A` (a nested
         // repo is treated as a submodule pointer), so this is a no-op
         // for those — but we add the explicit nested_repos check below
-        // when summarising the commit body.
-        let (_, stderr, code) = run_git_mut(
-            &vault,
-            &[
-                "-c",
-                "user.email=vault-chat@local",
-                "-c",
-                "user.name=vault-chat",
-                "add",
-                "-A",
-            ],
-        )?;
+        // when summarising the commit body. Authored as the user: the root
+        // autosave bundles the user's own accumulated edits, so it carries
+        // their identity, not a bot's.
+        let (hn, he) = human_identity(&vault);
+        let (_, stderr, code) = run_git_as(&vault, &hn, &he, &["add", "-A"])?;
         if code != 0 {
             return Ok(SyncOpResult {
                 ok: false,
@@ -3680,19 +3846,8 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
                 error: true,
             });
         }
-        let (_, stderr, code) = run_git_mut(
-            &vault,
-            &[
-                "-c",
-                "user.email=vault-chat@local",
-                "-c",
-                "user.name=vault-chat",
-                "commit",
-                "-q",
-                "-m",
-                "vault-chat: auto-sync",
-            ],
-        )?;
+        let (_, stderr, code) =
+            run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: auto-sync"])?;
         if code != 0 {
             return Ok(SyncOpResult {
                 ok: false,
@@ -3766,17 +3921,12 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         let pulled_msg = if ff_code == 0 {
             "pulled"
         } else {
-            let (_, stderr, rebase_code) = run_git_mut(
-                &vault,
-                &[
-                    "-c",
-                    "user.email=vault-chat@local",
-                    "-c",
-                    "user.name=vault-chat",
-                    "rebase",
-                    &upstream,
-                ],
-            )?;
+            // Rebase replays the user's local commits onto the remote tip; the
+            // committer for any new commit is the user's real identity, never a
+            // bot. (Original authors on replayed commits are preserved by git.)
+            let (rn, re) = human_identity(&vault);
+            let (_, stderr, rebase_code) =
+                run_git_as(&vault, &rn, &re, &["rebase", &upstream])?;
             if rebase_code != 0 {
                 // Leave the working tree untouched — abort the half-applied
                 // rebase so the next attempt can start clean.
@@ -3946,20 +4096,9 @@ async fn git_restore_file_to(
             .next()
             .unwrap_or(&relative_path);
         let msg = format!("Restore {} to {}", leaf, short);
-        let (_, stderr, code) = run_git_mut(
-            &vault,
-            &[
-                "-c",
-                "user.email=vault-chat@local",
-                "-c",
-                "user.name=vault-chat",
-                "commit",
-                "--allow-empty",
-                "-q",
-                "-m",
-                &msg,
-            ],
-        )?;
+        let (hn, he) = human_identity(&vault);
+        let (_, stderr, code) =
+            run_git_as(&vault, &hn, &he, &["commit", "--allow-empty", "-q", "-m", &msg])?;
         if code != 0 {
             return Err(format!("commit failed: {}", stderr.trim()));
         }
@@ -4109,6 +4248,52 @@ mod keystore_tests {
     fn wrong_passphrase_is_rejected() {
         let blob = keystore_encrypt_bytes("right-pass", b"secret").expect("encrypt");
         assert!(keystore_decrypt_bytes("wrong-pass", &blob).is_err());
+    }
+}
+
+#[cfg(test)]
+mod repo_class_tests {
+    use super::{repo_name, repo_owner};
+
+    // Owner + repo parsing underpins the whole mine/shared/foreign decision —
+    // a misparse would misclassify someone else's repo as the user's. Cover
+    // the real URL shapes the user's vaults actually carry (https + .git, ssh,
+    // trailing slash, no .git).
+    #[test]
+    fn owner_parsing_covers_real_remote_shapes() {
+        assert_eq!(
+            repo_owner("https://github.com/Buckarney/IEMS-305-Soccer-Forecasting.git").as_deref(),
+            Some("buckarney") // lowercased for case-insensitive comparison to gh login
+        );
+        assert_eq!(
+            repo_owner("https://github.com/karpathy/nanochat.git").as_deref(),
+            Some("karpathy")
+        );
+        assert_eq!(
+            repo_owner("git@github.com:carlwilsn/torchtitan.git").as_deref(),
+            Some("carlwilsn")
+        );
+        assert_eq!(
+            repo_owner("https://github.com/carlwilsn/summer").as_deref(),
+            Some("carlwilsn")
+        );
+        assert_eq!(repo_owner("not-a-url").as_deref(), None);
+    }
+
+    #[test]
+    fn repo_name_preserves_case_and_strips_suffix() {
+        assert_eq!(
+            repo_name("https://github.com/carlwilsn/BitNet.git").as_deref(),
+            Some("BitNet")
+        );
+        assert_eq!(
+            repo_name("git@github.com:karpathy/nanochat.git").as_deref(),
+            Some("nanochat")
+        );
+        assert_eq!(
+            repo_name("https://github.com/Buckarney/IEMS-305-Soccer-Forecasting").as_deref(),
+            Some("IEMS-305-Soccer-Forecasting")
+        );
     }
 }
 
