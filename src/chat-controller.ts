@@ -255,6 +255,9 @@ export async function sendMessage(
   const signal = controller.signal;
 
   let acc = "";
+  // Reasoning accumulated locally too (not just pushed to the global
+  // view) so a backgrounded run can mirror it into its replay buffer.
+  let bgReasoning = "";
   const tools: LiveTool[] = [];
 
   await runAgent({
@@ -279,8 +282,10 @@ export async function sendMessage(
         acc += e.delta;
         if (live) store.appendStreamingText(e.delta);
       } else if (e.kind === "reasoning_start") {
+        bgReasoning = "";
         if (live) store.clearStreamingReasoning();
       } else if (e.kind === "reasoning") {
+        bgReasoning += e.delta;
         if (live) store.appendStreamingReasoning(e.delta);
       } else if (e.kind === "tool_input_start") {
         if (live) store.startLiveToolInput(e.id, e.name);
@@ -346,6 +351,9 @@ export async function sendMessage(
             store.setConversationStatus(targetConvId, "idle");
           }
         }
+        // The run is over — drop its replay buffer so a later return to
+        // this thread shows the finished message, not stale streaming.
+        if (targetConvId) store.clearConvRuntime(targetConvId);
 
         if (telegramChatId !== undefined) {
           // Markdown image refs in the reply get pulled out and sent
@@ -447,10 +455,22 @@ export async function sendMessage(
           store.appendMessageToConversation(targetConvId, errMsg);
           store.setConversationStatus(targetConvId, "idle");
         }
+        if (targetConvId) store.clearConvRuntime(targetConvId);
         // An errored turn also skips the end-of-turn commit — sweep up any
         // partial writes so they aren't lost. Agent-tagged: the agent
         // wrote them.
         safetyCommit("agent-error", { agent: true }).catch(() => {});
+      }
+      // Mirror in-flight progress into the backgrounded run's replay
+      // buffer so returning to this thread shows what it has streamed so
+      // far (text / reasoning / tools), exactly as if the user had stayed.
+      // Terminal events (done/error) clear the buffer above instead.
+      if (!live && targetConvId && e.kind !== "done" && e.kind !== "error") {
+        store.setConvRuntime(targetConvId, {
+          streamingText: acc,
+          streamingReasoning: bgReasoning,
+          liveTools: tools.slice(),
+        });
       }
     },
   });

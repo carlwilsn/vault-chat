@@ -104,6 +104,14 @@ export type LiveTool = { id: string; name: string; input: any; result?: string; 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 export type TodoItem = { content: string; status: TodoStatus; activeForm?: string };
 
+// Snapshot of a single conversation's in-flight streaming view, used to
+// keep a backgrounded run's progress visible across leave/return.
+export type ConvRuntime = {
+  streamingText: string;
+  streamingReasoning: string;
+  liveTools: LiveTool[];
+};
+
 function liveToolsEqual(a: LiveTool[], b: LiveTool[]): boolean {
   if (a === b) return true;
   if (a.length !== b.length) return false;
@@ -397,6 +405,13 @@ type State = {
   streamingReasoning: string;
   liveTools: LiveTool[];
   agentTodos: TodoItem[];
+  // Per-conversation live-run buffer. A run that's backgrounded (the user
+  // switched away from it) keeps writing its streaming text / reasoning /
+  // live tools here keyed by conversation id, and the global streaming
+  // view is snapshotted here on leave + rehydrated from here on return —
+  // so leaving and coming back to a running thread shows the same live
+  // progress you'd see if you'd stayed. Not persisted to disk.
+  convRuntime: Record<string, ConvRuntime>;
   notes: Note[];
   notesLoaded: boolean;
   showNotesPanel: boolean;
@@ -576,6 +591,8 @@ type State = {
   setVoiceCapturePending: (b: boolean) => void;
   setVoiceLastCapture: (cap: State["voiceLastCapture"]) => void;
   setEditorSelection: (sel: State["editorSelection"]) => void;
+  setConvRuntime: (id: string, rt: ConvRuntime) => void;
+  clearConvRuntime: (id: string) => void;
   openNoteComposer: (payload?: {
     initialDraft?: string;
     initialAnchors?: import("./notes").NoteAnchor[];
@@ -677,6 +694,7 @@ export const useStore = create<State>((set) => ({
   streamingReasoning: "",
   liveTools: [],
   agentTodos: [],
+  convRuntime: {},
   notes: [],
   notesLoaded: false,
   showNotesPanel: false,
@@ -1421,6 +1439,15 @@ export const useStore = create<State>((set) => ({
     cancelReasoningFlush();
     set({ streamingText: "", streamingReasoning: "", liveTools: [], agentTodos: [] });
   },
+  setConvRuntime: (id, rt) =>
+    set((s) => ({ convRuntime: { ...s.convRuntime, [id]: rt } })),
+  clearConvRuntime: (id) =>
+    set((s) => {
+      if (!(id in s.convRuntime)) return {};
+      const next = { ...s.convRuntime };
+      delete next[id];
+      return { convRuntime: next };
+    }),
   applyChatState: (s) =>
     set((prev) => {
       // Preserve existing messages reference if the incoming list is
@@ -1613,6 +1640,9 @@ export const useStore = create<State>((set) => ({
       const synced = syncActiveMessages(s);
       return {
         conversations: [fresh, ...synced],
+        // Preserve the leaving run's live view so returning to it shows
+        // the same streaming progress, not a blank pane.
+        convRuntime: snapshotRuntime(s),
         activeConversationId: fresh.id,
         // Fresh conversation is never mid-run; clear the global busy
         // flag even if the previous conversation's agent is still
@@ -1646,24 +1676,28 @@ export const useStore = create<State>((set) => ({
       const synced = syncActiveMessages(s).map((c) =>
         c.id === id ? { ...c, unread: false } : c,
       );
+      // Snapshot the leaving run's live view, then rehydrate the global
+      // streaming view from the target's buffer if it has one in flight.
+      const convRuntime = snapshotRuntime(s);
+      const rt = convRuntime[id];
       return {
         conversations: synced,
         activeConversationId: id,
         messages: target.messages,
-        // Global busy/streaming/tools view follows the conversation
-        // we just landed on. If the target was mid-run when we
-        // switched away earlier, it's still running in the
-        // background — re-arm the UI accordingly. (Streaming text
-        // and live tools that happened off-screen are lost; only
-        // the final reply lands when the run finishes.)
+        convRuntime,
+        // Global busy/streaming/tools view follows the conversation we
+        // just landed on. If the target was mid-run when we switched away
+        // earlier, it's still running in the background — re-arm the UI
+        // and replay whatever it has streamed so far from its buffer, so
+        // returning to a running thread looks exactly like never leaving.
         busy: target.status === "running",
         compactionSummary: null,
         lastContext: 0,
         tokenUsage: { prompt: 0, completion: 0, total: 0 },
         agentTodos: [],
-        streamingText: "",
-        streamingReasoning: "",
-        liveTools: [],
+        streamingText: rt?.streamingText ?? "",
+        streamingReasoning: rt?.streamingReasoning ?? "",
+        liveTools: rt?.liveTools ?? [],
       };
     }),
   deleteConversation: (id) =>
@@ -1814,6 +1848,22 @@ setAutoRouterCostBias(useStore.getState().autoRouterCostBias);
 // Mirror the live `messages` / `busy` view back into the active
 // conversation entry. Called from any action that swaps the active
 // conversation so the about-to-be-replaced entry keeps its messages.
+// Capture the active conversation's live streaming view into the
+// per-conversation runtime buffer before we swap away from it, so a run
+// that keeps going in the background can be replayed when the user
+// returns. No-op unless the active conversation is mid-run.
+function snapshotRuntime(s: State): Record<string, ConvRuntime> {
+  if (!s.activeConversationId || !s.busy) return s.convRuntime;
+  return {
+    ...s.convRuntime,
+    [s.activeConversationId]: {
+      streamingText: s.streamingText,
+      streamingReasoning: s.streamingReasoning,
+      liveTools: s.liveTools,
+    },
+  };
+}
+
 function syncActiveMessages(s: State): Conversation[] {
   if (!s.activeConversationId) return s.conversations;
   return s.conversations.map((c) => {
