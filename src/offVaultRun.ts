@@ -13,7 +13,7 @@ import {
   sendTelegramMessage,
   sendTelegramReplyWithImages,
   resolveScheduleTelegramTarget,
-  isSilentReply,
+  scheduledDeliveryText,
 } from "./telegram";
 import { useStore, type ChatMessage, type LiveTool } from "./store";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
@@ -212,7 +212,7 @@ export async function runScheduledHeadlessTurn(
   vault: string,
   conversationId: string,
   prompt: string,
-  opts: { sendViaTelegram: boolean; modelId?: string },
+  opts: { sendViaTelegram: boolean; modelId?: string; quietUnlessAlert?: boolean },
 ): Promise<void> {
   const store = useStore.getState();
   // Model precedence: the schedule's pinned model wins (it was chosen for
@@ -311,7 +311,8 @@ export async function runScheduledHeadlessTurn(
             startedAt: Date.now(),
           });
           const now = Date.now();
-          if (now - lastProgressAt > PROGRESS_MIN_GAP_MS) {
+          // A quiet supervisor stays silent while polling — no progress pings.
+          if (!opts.quietUnlessAlert && now - lastProgressAt > PROGRESS_MIN_GAP_MS) {
             lastProgressAt = now;
             notify(`🔧 ${e.name}…`);
           }
@@ -332,13 +333,18 @@ export async function runScheduledHeadlessTurn(
     await endHeartbeat(vault, conversationId).catch(() => {});
   }
 
+  // What (if anything) this run delivers to Telegram. A quiet supervisor
+  // returns null unless it explicitly emitted an ALERT:; a normal schedule
+  // returns its reply unless it's the [[SILENT]] sentinel.
+  const deliver = scheduledDeliveryText(acc, opts.quietUnlessAlert ?? false);
+
   let finalList = await readConversations(vault);
   let fi = finalList.findIndex((c) => c.id === conversationId);
   if (fi < 0) fi = 0;
-  if (finalList[fi] && isSilentReply(acc)) {
-    // Supervisor poll with nothing to report — leave no trace: drop the
-    // prompt we appended in the first write, store no reply, no unread, no
-    // DM binding. The thread stays exactly as it was before this poll.
+  if (finalList[fi] && deliver === null) {
+    // Nothing to report — leave no trace: drop the prompt we appended in the
+    // first write, store no reply, no unread, no DM binding. The thread stays
+    // exactly as it was before this poll.
     const msgs = finalList[fi]!.messages;
     const last = msgs[msgs.length - 1];
     const pruned =
@@ -372,8 +378,8 @@ export async function runScheduledHeadlessTurn(
     .refreshConversationFromDisk(vault, conversationId)
     .catch(() => {});
 
-  if (acc.trim() && telegramChatId != null) {
-    await sendTelegramReplyWithImages(vault, telegramChatId, acc).catch((e) =>
+  if (deliver != null && telegramChatId != null) {
+    await sendTelegramReplyWithImages(vault, telegramChatId, deliver).catch((e) =>
       console.warn("[scheduler] telegram send failed:", e),
     );
   }

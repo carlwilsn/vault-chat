@@ -219,6 +219,7 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
       undefined,
       conversationId,
       s.sendViaTelegram,
+      s.quietUnlessAlert,
     ).catch((e) =>
       console.warn("[scheduler] active-vault sendMessage failed:", e),
     );
@@ -238,6 +239,7 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
   await runScheduledHeadlessTurn(vault, conversationId, s.prompt, {
     sendViaTelegram: s.sendViaTelegram,
     modelId: s.modelId,
+    quietUnlessAlert: s.quietUnlessAlert,
   });
 }
 

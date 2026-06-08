@@ -565,14 +565,38 @@ export function stripMarkdownForTelegram(text: string): string {
   return s.trim();
 }
 
-// A scheduled/supervisor run emits exactly this as its whole reply when
-// there's nothing worth interrupting the user for. Delivery is suppressed
-// (see isSilentReply) so a supervisor schedule can poll a long run every
-// few minutes and stay quiet until something actually needs attention.
+// A scheduled run emits exactly this as its whole reply when there's nothing
+// worth interrupting the user for. Delivery is suppressed (see isSilentReply).
 export const SILENT_REPLY_SENTINEL = "[[SILENT]]";
 
 export function isSilentReply(text: string): boolean {
   return text.trim().toUpperCase() === SILENT_REPLY_SENTINEL;
+}
+
+// Default-silent marker for "quiet unless alert" schedules (a supervisor). The
+// run is delivered ONLY when its reply explicitly contains `ALERT:` — the text
+// after the marker is the message. No marker → nothing is sent. This makes
+// silence the DEFAULT, so a chatty "nothing's running" reply can't spam the
+// phone — far more robust than relying on the model to emit an exact silent
+// token (which it won't always do).
+export const ALERT_PREFIX = "ALERT:";
+
+export function extractAlert(text: string): string | null {
+  const idx = text.toUpperCase().indexOf(ALERT_PREFIX);
+  if (idx < 0) return null;
+  const msg = text.slice(idx + ALERT_PREFIX.length).trim();
+  return msg.length > 0 ? msg : null;
+}
+
+// The text to actually deliver to Telegram for a scheduled reply, or null to
+// stay silent. Quiet schedules deliver only an explicit ALERT:; normal ones
+// deliver everything except the legacy [[SILENT]] sentinel.
+export function scheduledDeliveryText(
+  reply: string,
+  quietUnlessAlert: boolean,
+): string | null {
+  if (quietUnlessAlert) return extractAlert(reply);
+  return isSilentReply(reply) ? null : reply;
 }
 
 // Convenience: take an agent's full reply text, split out any image

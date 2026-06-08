@@ -6,7 +6,7 @@ import { estimateBashEta } from "./eta-estimator";
 import { gitCommitAll } from "./git";
 import { flushEditCommit } from "./commit-controller";
 import { safetyCommit } from "./autosave";
-import { sendTelegramReplyWithImages } from "./telegram";
+import { sendTelegramReplyWithImages, scheduledDeliveryText } from "./telegram";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import {
   useStore,
@@ -37,6 +37,10 @@ export async function sendMessage(
   // owner's DM. Lets a coach schedule keep long-form context in a normal
   // chat thread while still pinging the phone.
   sendViaTelegram?: boolean,
+  // Schedule-only: "quiet unless alert". The reply is delivered to Telegram
+  // only when it explicitly contains an `ALERT:` marker (a supervisor that
+  // polls and stays silent otherwise).
+  quietUnlessAlert?: boolean,
 ) {
   const s = useStore.getState();
   // Concurrency model: only the FOREGROUND (active) conversation owns the
@@ -379,13 +383,18 @@ export async function sendMessage(
             : tools.length > 0
               ? "(done)"
               : "(no reply)";
-          sendTelegramReplyWithImages(vault, telegramChatId, reply).catch((err) =>
-            console.warn("[telegram] outbound reply failed:", err),
-          );
-          // Bind the DM to this thread so phone replies continue it. Keep
-          // source as-is — the thread stays in rich mode, only routing
+          // Quiet supervisor: only deliver an explicit ALERT:, nothing else.
+          const deliver = scheduledDeliveryText(reply, quietUnlessAlert ?? false);
+          if (deliver != null) {
+            sendTelegramReplyWithImages(vault, telegramChatId, deliver).catch((err) =>
+              console.warn("[telegram] outbound reply failed:", err),
+            );
+          }
+          // Bind the DM to this thread so phone replies continue it — but not
+          // for a quiet supervisor that had nothing to say (no delivery).
+          // Keep source as-is — the thread stays in rich mode, only routing
           // moves. The store subscription persists this to disk.
-          if (bindFallback && targetConvId) {
+          if (deliver != null && bindFallback && targetConvId) {
             import("./conversations").then(({ bindTelegramChatId }) => {
               useStore.setState({
                 conversations: bindTelegramChatId(

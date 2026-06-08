@@ -34,6 +34,10 @@ export type Schedule = {
   enabled: boolean;
   markUnreadOnFinish: boolean;
   sendViaTelegram: boolean;
+  // "Quiet unless alert": deliver to Telegram ONLY when the run's reply
+  // contains an `ALERT:` marker (a supervisor that polls and stays silent
+  // until something needs attention). Default false = deliver normally.
+  quietUnlessAlert?: boolean;
   lastFiredAt?: number;
   createdAt: number;
 };
@@ -133,6 +137,7 @@ function normalizeSchedule(s: Partial<Schedule>): Schedule {
     enabled: s.enabled ?? true,
     markUnreadOnFinish: s.markUnreadOnFinish ?? true,
     sendViaTelegram: s.sendViaTelegram ?? false,
+    quietUnlessAlert: s.quietUnlessAlert ?? false,
     lastFiredAt: s.lastFiredAt,
     createdAt: s.createdAt ?? Date.now(),
   };
