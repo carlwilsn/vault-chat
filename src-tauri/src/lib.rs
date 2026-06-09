@@ -907,19 +907,87 @@ fn conversation_file_stem(id: &str) -> String {
     }
 }
 
+/// Reassemble one conversation JSON string from a per-conversation `.jsonl`
+/// body: a `meta` line (the conversation object minus `messages`) plus one line
+/// per message. This append-only line layout is what lets `merge=union` resolve
+/// two machines editing the same conversation losslessly — each machine's new
+/// message is its own line, so the union keeps both instead of conflicting.
+///
+/// On read we keep EVERY message line in order — we never de-dup by content,
+/// because real conversations legitimately contain byte-identical messages
+/// (repeated short replies, identical tool results); content-dedup would delete
+/// those. A union can at worst leave a rare duplicate line, which is a cosmetic
+/// double, not data loss — always the safer side to err on. If several `meta`
+/// lines survived a union we keep the freshest by `lastActivityAt`.
+fn reconstruct_conversation(contents: &str) -> Option<String> {
+    let mut meta: Option<serde_json::Value> = None;
+    let mut meta_activity: i64 = i64::MIN;
+    let mut messages: Vec<serde_json::Value> = Vec::new();
+    for line in contents.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(t) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("role").is_some() {
+            // Every message line is kept — never dropped for being content-equal
+            // to another, or we'd delete legitimately repeated messages.
+            messages.push(v);
+        } else if v.get("id").is_some() {
+            // A meta line. Keep the freshest if a union left more than one.
+            let act = v.get("lastActivityAt").and_then(|x| x.as_i64()).unwrap_or(0);
+            if meta.is_none() || act >= meta_activity {
+                meta_activity = act;
+                meta = Some(v);
+            }
+        }
+    }
+    let mut meta = meta?;
+    if let Some(obj) = meta.as_object_mut() {
+        obj.insert("messages".to_string(), serde_json::Value::Array(messages));
+    }
+    serde_json::to_string(&meta).ok()
+}
+
 #[tauri::command]
 async fn conversations_read(vault: String) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let base = std::path::Path::new(&vault).join(NOTES_DIR);
         let dir = base.join(CONVERSATIONS_DIR);
-        // Preferred layout: one <id>.json per conversation. Read them all.
+        // Preferred layout: one append-only <id>.jsonl per conversation. A
+        // legacy <id>.json (single object) may still linger until its next write
+        // migrates it — read those too, but let a .jsonl win for the same stem.
         if dir.is_dir() {
             let mut out: Vec<String> = Vec::new();
+            let mut seen_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    if let Ok(contents) = std::fs::read_to_string(&p) {
+                        if let Some(conv) = reconstruct_conversation(&contents) {
+                            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                                seen_stems.insert(stem.to_string());
+                            }
+                            out.push(conv);
+                        }
+                    }
+                }
+            }
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for e in entries.flatten() {
                     let p = e.path();
                     if p.extension().and_then(|x| x.to_str()) != Some("json") {
                         continue; // skip .tmp and anything else
+                    }
+                    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                    if seen_stems.contains(&stem) {
+                        continue; // superseded by its .jsonl
                     }
                     if let Ok(contents) = std::fs::read_to_string(&p) {
                         let t = contents.trim();
@@ -929,9 +997,6 @@ async fn conversations_read(vault: String) -> Result<Vec<String>, String> {
                     }
                 }
             }
-            // If the folder exists but is empty AND a legacy monolith is still
-            // present (e.g. folder created but first write hasn't migrated yet),
-            // fall through to the legacy read below.
             if !out.is_empty() {
                 return Ok(out);
             }
@@ -961,55 +1026,78 @@ async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<()
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
 
-        // Write each conversation to its own <id>.json, but ONLY when its
-        // content actually changed — an unchanged file is left exactly as is, so
-        // git sees no diff for it. This is what collapses the churn: a single
-        // new message rewrites one small file instead of the whole blob.
+        // Write each conversation to its own append-only <id>.jsonl: a meta line
+        // (the conversation minus messages) then one line per message. Same
+        // full-rewrite model as before, but the line-per-message encoding means
+        // git sees a clean trailing-line diff and `*.jsonl merge=union` resolves
+        // two machines' concurrent edits losslessly instead of hard-conflicting
+        // on one giant single-object line. Only written when changed, so an
+        // untouched conversation produces no git diff.
         let mut keep: std::collections::HashSet<String> = std::collections::HashSet::new();
         for line in &lines {
             let t = line.trim();
             if t.is_empty() {
                 continue;
             }
-            // The conversation id names the file. Parse it out; skip a line we
-            // can't identify rather than risk an ambiguous filename.
-            let id = match serde_json::from_str::<serde_json::Value>(t)
-                .ok()
-                .as_ref()
-                .and_then(|v| v.get("id"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-            {
-                Some(id) if !id.is_empty() => id,
+            let v: serde_json::Value = match serde_json::from_str(t) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let id = match v.get("id").and_then(|x| x.as_str()) {
+                Some(id) if !id.is_empty() => id.to_string(),
                 _ => continue,
             };
             let stem = conversation_file_stem(&id);
             keep.insert(stem.clone());
-            let path = dir.join(format!("{}.json", stem));
-            let body = format!("{}\n", t);
-            // Skip the write if on-disk content is already identical.
+
+            // Build the jsonl body: meta line (conversation without messages),
+            // then each message on its own line. serde_json sorts object keys, so
+            // the same message serializes identically on every machine — which is
+            // what keeps the union diff clean.
+            let mut meta = v.clone();
+            let messages = meta
+                .as_object_mut()
+                .and_then(|m| m.remove("messages"))
+                .unwrap_or(serde_json::Value::Array(Vec::new()));
+            let mut body = String::new();
+            body.push_str(&serde_json::to_string(&meta).unwrap_or_default());
+            body.push('\n');
+            if let serde_json::Value::Array(msgs) = messages {
+                for m in msgs {
+                    body.push_str(&serde_json::to_string(&m).unwrap_or_default());
+                    body.push('\n');
+                }
+            }
+
+            let path = dir.join(format!("{}.jsonl", stem));
+            let stale_json = dir.join(format!("{}.json", stem));
+            // Skip the write if on-disk content is already identical — but still
+            // sweep away a superseded single-object .json from before migration.
             if let Ok(existing) = std::fs::read_to_string(&path) {
                 if existing == body {
+                    let _ = std::fs::remove_file(&stale_json);
                     continue;
                 }
             }
-            // Write-temp-then-rename so a crash mid-write leaves the previous
-            // good file in place rather than a half-written one. The temp lives
-            // at the `.vault-chat/` top level (not inside conversations/) so the
-            // managed `.gitignore`'s `.vault-chat/*.tmp` rule keeps a stray temp
-            // out of git; the rename into the subfolder is same-volume/atomic.
-            let tmp = base.join(format!("{}.json.tmp", stem));
+            // Write-temp-then-rename so a crash mid-write leaves the previous good
+            // file in place. The temp sits at `.vault-chat/` top level so the
+            // managed `.gitignore`'s `*.tmp` rule keeps it out of git; the rename
+            // into the subfolder is same-volume/atomic.
+            let tmp = base.join(format!("{}.jsonl.tmp", stem));
             std::fs::write(&tmp, &body)
                 .map_err(|e| format!("write {}: {}", tmp.display(), e))?;
             std::fs::rename(&tmp, &path)
                 .map_err(|e| format!("rename {} -> {}: {}", tmp.display(), path.display(), e))?;
+            // Migration: the .jsonl is now authoritative — drop the old .json.
+            let _ = std::fs::remove_file(&stale_json);
         }
 
-        // Delete files for conversations no longer present (a deletion).
+        // Delete files (either format) for conversations no longer present.
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for e in entries.flatten() {
                 let p = e.path();
-                if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                let ext = p.extension().and_then(|x| x.to_str());
+                if ext != Some("jsonl") && ext != Some("json") {
                     continue;
                 }
                 if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
@@ -1020,8 +1108,8 @@ async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<()
             }
         }
 
-        // Migration complete: now that the folder is the source of truth, drop
-        // the legacy monolith so it stops being re-stored on every sync.
+        // Migration complete: drop the legacy monolith so it stops being
+        // re-stored on every sync.
         let legacy = base.join(CONVERSATIONS_FILE);
         if legacy.exists() {
             let _ = std::fs::remove_file(&legacy);
@@ -4537,6 +4625,48 @@ mod conversation_storage_tests {
         assert!(!conversation_file_stem("a/b\\c").contains('\\'));
         assert_eq!(conversation_file_stem(""), "conversation");
         assert_eq!(conversation_file_stem("///"), "conversation");
+    }
+}
+
+#[cfg(test)]
+mod conversation_jsonl_tests {
+    use super::reconstruct_conversation;
+
+    #[test]
+    fn keeps_every_message_and_picks_fresh_meta() {
+        // Two "hi" messages — which is a legitimately repeated message, NOT to be
+        // collapsed (we can't tell a real repeat from a union artifact, so we
+        // keep both: never lose real data). An older meta line lingers and must
+        // lose to the fresher one.
+        let body = "{\"id\":\"abc\",\"title\":\"T\",\"lastActivityAt\":100}\n\
+                    {\"role\":\"user\",\"content\":\"hi\"}\n\
+                    {\"role\":\"assistant\",\"content\":\"hello\"}\n\
+                    {\"role\":\"user\",\"content\":\"hi\"}\n\
+                    {\"id\":\"abc\",\"title\":\"T-old\",\"lastActivityAt\":50}\n";
+        let out = reconstruct_conversation(body).expect("reconstruct");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v.get("title").and_then(|x| x.as_str()), Some("T")); // fresh meta wins
+        let msgs = v.get("messages").unwrap().as_array().unwrap();
+        assert_eq!(msgs.len(), 3); // every message kept — no content de-dup
+    }
+
+    #[test]
+    fn both_machines_messages_survive_a_union() {
+        // The whole point: two machines each appended a distinct message to the
+        // same conversation. A union keeps both lines; neither is lost.
+        let body = "{\"id\":\"x\",\"lastActivityAt\":10}\n\
+                    {\"role\":\"user\",\"content\":\"shared\"}\n\
+                    {\"role\":\"assistant\",\"content\":\"from-box\"}\n\
+                    {\"role\":\"assistant\",\"content\":\"from-laptop\"}\n";
+        let out = reconstruct_conversation(body).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v.get("messages").unwrap().as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn empty_or_metaless_body_is_none() {
+        assert!(reconstruct_conversation("").is_none());
+        assert!(reconstruct_conversation("{\"role\":\"user\",\"content\":\"orphan\"}\n").is_none());
     }
 }
 
