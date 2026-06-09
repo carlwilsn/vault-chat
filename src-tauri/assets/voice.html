@@ -36,13 +36,15 @@
   }
   .orb:active{transform:scale(.97)}
   .orb svg{width:64px;height:64px;opacity:.92}
-  .ring{position:absolute;inset:0;border-radius:50%;border:2px solid var(--accent);
-    opacity:0;z-index:1}
-  body.live .ring{animation:pulse 2.2s ease-out infinite}
-  body.live .ring.r2{animation-delay:1.1s}
-  @keyframes pulse{0%{opacity:.5;transform:scale(.78)}100%{opacity:0;transform:scale(1.15)}}
-  body.live .orb{filter:saturate(1.15)}
-  body.speaking .orb{filter:brightness(1.12) saturate(1.3);transform:scale(1.04)}
+  .ring{position:absolute;inset:0;border-radius:50%;border:2px solid var(--accent);opacity:0;z-index:1}
+  /* Connecting: a clear breathing orb + a spinning ring so the wait is obvious. */
+  body.connecting .orb{animation:breathe 1.25s ease-in-out infinite;cursor:default}
+  @keyframes breathe{0%,100%{transform:scale(1);filter:brightness(.9)}50%{transform:scale(1.05);filter:brightness(1.12)}}
+  body.connecting .ring{opacity:.4;border-top-color:transparent;border-right-color:transparent;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  /* Live: the orb's scale + glow are driven every frame by real audio level
+     (your mic when listening, the agent's output when speaking) — see startMeter(). */
+  body.live.speaking .orb{background:linear-gradient(145deg,var(--accent2),var(--accent))}
   .status{font-size:20px;font-weight:600;min-height:26px}
   .sub{color:var(--dim);font-size:14px;min-height:20px;max-width:320px}
   .err{color:var(--err);font-size:13px;max-width:340px;white-space:pre-wrap}
@@ -116,7 +118,8 @@
       setErr("This page isn't HTTPS, so the browser blocks the mic. Open the https://…ts.net link from vault-chat Settings → Phone voice. (On the same computer, http://localhost:8848 also works.)");
       return;
     }
-    connecting = true; setErr(""); setStatus("Connecting…", "Asking the box for a session.");
+    connecting = true; setErr(""); document.body.classList.add("connecting");
+    setStatus("Connecting…", "Waking the session on the box — one sec.");
     try {
       // Mic permission must be granted from a user gesture (this tap).
       await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -132,27 +135,72 @@
         },
         dynamicVariables: cfg.dynamicVariables || {},
         clientTools: buildClientTools(cfg.toolNames),
-        onConnect: () => { connecting = false; document.body.classList.add("live"); endBtn.classList.remove("hidden");
-          setStatus("Listening", "Just talk — I'm on."); },
+        onConnect: () => {
+          connecting = false;
+          document.body.classList.remove("connecting");
+          document.body.classList.add("live");
+          endBtn.classList.remove("hidden");
+          setStatus("Listening", "Just talk — I'm on.");
+          startMeter();
+        },
         onDisconnect: () => { teardown(); },
         onError: (m) => { setErr(typeof m === "string" ? m : (m?.message || "voice error")); },
         onModeChange: (m) => {
           const mode = m?.mode || m;
-          if (mode === "speaking") { document.body.classList.add("speaking"); setStatus("Speaking", "" ); }
-          else { document.body.classList.remove("speaking"); setStatus("Listening", ""); }
+          if (mode === "speaking") { document.body.classList.add("speaking"); setStatus("Speaking", ""); }
+          else { document.body.classList.remove("speaking"); setStatus("Listening", "I'm listening…"); }
         },
       });
     } catch (e) {
       connecting = false;
+      document.body.classList.remove("connecting");
       setErr(String(e?.message || e));
       setStatus("Tap to talk", "Couldn't connect — tap to retry.");
     }
   }
 
+  // Drive the orb off real audio: your mic level while listening, the agent's
+  // output level while it speaks — so the pulse tracks who's actually talking.
+  let rafId = 0;
+  function startMeter() {
+    cancelAnimationFrame(rafId);
+    const tick = () => {
+      if (!conv) return;
+      let level = 0;
+      try {
+        const speaking = document.body.classList.contains("speaking");
+        const data = speaking
+          ? (conv.getOutputByteFrequencyData && conv.getOutputByteFrequencyData())
+          : (conv.getInputByteFrequencyData && conv.getInputByteFrequencyData());
+        if (data && data.length) {
+          let sum = 0;
+          for (let i = 0; i < data.length; i++) sum += data[i];
+          level = Math.min(1, sum / data.length / 80);
+        }
+        // Agent output levels can be flat/unreliable; keep a gentle pulse so the
+        // "agent is speaking" state still reads as alive.
+        if (speaking && level < 0.03) {
+          level = 0.12 + 0.08 * (0.5 + 0.5 * Math.sin(Date.now() / 170));
+        }
+      } catch {}
+      orb.style.transform = `scale(${(1 + level * 0.24).toFixed(3)})`;
+      orb.style.filter = `brightness(${(1 + level * 0.3).toFixed(2)}) saturate(${(1 + level * 0.35).toFixed(2)})`;
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+  }
+  function stopMeter() {
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+    orb.style.transform = "";
+    orb.style.filter = "";
+  }
+
   function teardown() {
-    document.body.classList.remove("live","speaking");
+    document.body.classList.remove("live","speaking","connecting");
     endBtn.classList.add("hidden");
     setStatus("Tap to talk", "Live voice to your vault on the box.");
+    stopMeter();
     conv = null; connecting = false;
   }
 
