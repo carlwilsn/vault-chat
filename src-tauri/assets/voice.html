@@ -102,6 +102,9 @@
   // context can stay suspended and report all-zeros (why the bars sat flat); ours
   // is resumed on the tap and is reliable for the user's input bars.
   let micCtx = null, micAnalyser = null, micBuf = null, autoRetried = false;
+  // Agent level + "speaking" window, driven by the agent's real audio chunks
+  // (onAudio) — reliable, unlike the SDK's output analyser on mobile.
+  let agentLevel = 0, agentActiveUntil = 0, wasSpeaking = false;
 
   const setStatus = (s, sub) => { statusEl.textContent = s; if (sub !== undefined) subEl.textContent = sub; };
   const setErr = (e) => { errEl.textContent = e || ""; };
@@ -115,6 +118,24 @@
   async function api(path, opts) {
     const sep = path.includes("?") ? "&" : "?";
     return fetch(`${path}${sep}token=${encodeURIComponent(token)}`, opts);
+  }
+
+  // RMS loudness (0..1) of a base64 PCM16 audio chunk from the agent. If the
+  // chunk isn't PCM16 the number is still energy-correlated, so the bars move
+  // with the agent's voice either way.
+  function pcmLevel(b64) {
+    const s = atob(b64);
+    const n = s.length;
+    if (n < 2) return 0;
+    const step = n > 4000 ? 8 : 2; // sample fewer int16s on long chunks
+    let sum = 0, count = 0;
+    for (let i = 0; i + 1 < n; i += step) {
+      let v = s.charCodeAt(i) | (s.charCodeAt(i + 1) << 8);
+      if (v >= 32768) v -= 65536;
+      sum += v * v; count++;
+    }
+    const rms = count ? Math.sqrt(sum / count) / 32768 : 0;
+    return Math.min(1, rms * 4);
   }
 
   function bin(data, n) {
@@ -134,20 +155,26 @@
   // with decay; bars floor at ~16% so they never fully collapse.
   function meter() {
     if (!conv) return;
+    // Speaking is audio-driven: the agent is talking if its audio chunks arrived
+    // within the last ~280ms (set in onAudio). No reliance on onModeChange.
+    const speaking = Date.now() < agentActiveUntil;
+    if (speaking !== wasSpeaking) {
+      wasSpeaking = speaking;
+      document.body.classList.toggle("speaking", speaking);
+      setStatus(speaking ? "Speaking" : "Listening", speaking ? "" : "I'm listening…");
+    }
     let raw;
     try {
-      const speaking = document.body.classList.contains("speaking");
-      // Agent (output): try the SDK spectrum first.
-      const out = speaking && conv.getOutputByteFrequencyData ? bin(conv.getOutputByteFrequencyData(), NUM_BARS) : null;
-      const outActive = out && out.reduce((a, b) => a + b, 0) > 0.05;
-      if (outActive) {
-        raw = out;
-      } else if (speaking) {
-        // Output levels are flaky on mobile — gently pulse so the agent reads as talking.
-        const p = 0.18 + 0.12 * (0.5 + 0.5 * Math.sin(Date.now() / 160));
-        raw = new Array(NUM_BARS).fill(p);
+      if (speaking) {
+        // Agent: drive the bars off its real output level, shaped into a centre
+        // hump so it reads like a spectrum rather than a flat block.
+        raw = [];
+        for (let i = 0; i < NUM_BARS; i++) {
+          const shape = 0.55 + 0.45 * Math.sin((i / (NUM_BARS - 1)) * Math.PI);
+          raw.push(agentLevel * shape);
+        }
       } else if (micAnalyser) {
-        // You (input): our own analyser — works even when the SDK's reports zeros.
+        // You (input): our own analyser — works even when the SDK reports zeros.
         micAnalyser.getByteFrequencyData(micBuf);
         raw = bin(micBuf, NUM_BARS);
       } else {
@@ -237,11 +264,17 @@
         },
         onDisconnect: () => teardown(),
         onError: (m) => setErr(typeof m === "string" ? m : (m?.message || "voice error")),
-        onModeChange: (m) => {
-          const mode = m?.mode || m;
-          if (mode === "speaking") { document.body.classList.add("speaking"); setStatus("Speaking", ""); }
-          else { document.body.classList.remove("speaking"); setStatus("Listening", "I'm listening…"); }
+        // The agent's real audio chunks: compute a level from them so the bars
+        // track the agent's voice, and mark it "speaking" while chunks flow.
+        // (Speaking + level are entirely audio-driven — the meter reads these.)
+        onAudio: (b64) => {
+          try {
+            const lvl = pcmLevel(b64);
+            agentLevel = Math.max(lvl, agentLevel * 0.6); // attack fast, ease down
+            agentActiveUntil = Date.now() + 280;
+          } catch {}
         },
+        // onModeChange left out on purpose — speaking is audio-driven (above).
       });
     } catch (e) {
       connecting = false;
