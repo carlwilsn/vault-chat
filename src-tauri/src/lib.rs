@@ -3914,6 +3914,120 @@ struct SyncOpResult {
     error: bool,
 }
 
+/// Commit every nested repo's dirty working tree LOCALLY — no push, no fork, no
+/// classification, no network. This is the "version history for the internal
+/// vault" path: it runs for any open vault (even one with no remote / sync
+/// turned off), so nested-repo work is captured in local history and the file-
+/// tree dirty dots clear. The outward behavior (push / vault-chat branch / fork
+/// by class) is the separate `sync_nested_repos`, gated on opt-in remote sync.
+/// Returns how many nested repos it committed. Best-effort throughout.
+fn commit_nested_repos_local(vault: &str, agent: bool) -> u32 {
+    let mut repos: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if PathBuf::from(vault).join(".gitmodules").is_file() {
+        if let Ok((out, _, 0)) =
+            run_git(vault, &["config", "-f", ".gitmodules", "--get-regexp", "\\.path$"])
+        {
+            for line in out.lines() {
+                if let Some((_, rel)) = line.split_once(char::is_whitespace) {
+                    let rel = rel.trim();
+                    if !rel.is_empty() {
+                        repos.insert(rel.to_string());
+                    }
+                }
+            }
+        }
+    }
+    for rel in find_all_nested_repos(std::path::Path::new(vault)) {
+        repos.insert(rel);
+    }
+
+    let mut committed = 0u32;
+    for rel in repos {
+        let sub = format!("{}/{}", vault, rel);
+        if !PathBuf::from(&sub).join(".git").exists() {
+            continue;
+        }
+        // Only commit when on a branch — never create a dangling commit on a
+        // detached HEAD (re-attaching a detached submodule is the sync path's
+        // job, and needs a remote it doesn't have here).
+        let on_branch = matches!(
+            run_git(&sub, &["symbolic-ref", "--quiet", "--short", "HEAD"]),
+            Ok((ref b, _, 0)) if !b.trim().is_empty()
+        );
+        if !on_branch {
+            continue;
+        }
+        let dirty = run_git(&sub, &["status", "--porcelain"])
+            .map(|(s, _, _)| !s.trim().is_empty())
+            .unwrap_or(false);
+        if !dirty {
+            continue;
+        }
+        let (cn, ce) = commit_identity(&sub, agent);
+        let _ = run_git_as(&sub, &cn, &ce, &["add", "-A"]);
+        let mut msg = String::new();
+        if agent {
+            msg.push_str("[agent] ");
+        }
+        msg.push_str("vault-chat: local autosave (sub-repo)");
+        if let Ok((_, _, 0)) = run_git_as(&sub, &cn, &ce, &["commit", "-q", "-m", &msg]) {
+            committed += 1;
+            maybe_compact_git(&sub);
+        }
+    }
+    committed
+}
+
+/// Commit the vault locally — root + every nested repo — WITHOUT any remote
+/// operation. The always-on counterpart to `vault_sync_commit_local`: it runs
+/// for vaults with sync turned off so they still accrue version history and
+/// their nested-repo dots clear. No pull, push, fork, or branch.
+#[tauri::command]
+async fn vault_commit_local(vault: String) -> Result<SyncOpResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        with_repo_lock(&vault, || {
+            abort_stuck_merge_or_rebase(&vault);
+            let nested = commit_nested_repos_local(&vault, false);
+            let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
+            let mut root_committed = false;
+            if !status_out.trim().is_empty() {
+                let (hn, he) = human_identity(&vault);
+                let (_, stderr, code) = run_git_as(&vault, &hn, &he, &["add", "-A"])?;
+                if code != 0 {
+                    return Ok(SyncOpResult {
+                        ok: false,
+                        message: format!("add failed: {}", stderr.trim()),
+                        error: true,
+                    });
+                }
+                let (_, stderr, code) =
+                    run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: local autosave"])?;
+                if code != 0 {
+                    return Ok(SyncOpResult {
+                        ok: false,
+                        message: format!("commit failed: {}", stderr.trim()),
+                        error: true,
+                    });
+                }
+                maybe_compact_git(&vault);
+                root_committed = true;
+            }
+            let message = if nested > 0 || root_committed {
+                format!(
+                    "committed locally ({} sub-repo{})",
+                    nested,
+                    if nested == 1 { "" } else { "s" }
+                )
+            } else {
+                "no local changes".into()
+            };
+            Ok(SyncOpResult { ok: true, message, error: false })
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -5892,6 +6006,7 @@ pub fn run() {
             vault_sync_status,
             vault_sync_set_remote,
             vault_sync_commit_local,
+            vault_commit_local,
             vault_sync_pull,
             vault_sync_push,
             vault_sync_gh_create_repo,
