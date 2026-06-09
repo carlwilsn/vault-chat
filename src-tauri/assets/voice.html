@@ -105,8 +105,17 @@
     return tools;
   }
 
+  function micAvailable() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  }
+
   async function connect() {
     if (connecting || conv) return;
+    if (!micAvailable()) {
+      setStatus("Needs a secure link", "");
+      setErr("This page isn't HTTPS, so the browser blocks the mic. Open the https://…ts.net link from vault-chat Settings → Phone voice. (On the same computer, http://localhost:8848 also works.)");
+      return;
+    }
     connecting = true; setErr(""); setStatus("Connecting…", "Asking the box for a session.");
     try {
       // Mic permission must be granted from a user gesture (this tap).
@@ -154,7 +163,12 @@
 
   orb.addEventListener("click", () => { if (conv) return; connect(); });
   endBtn.addEventListener("click", end);
-  if (!token) { setErr("Missing token — open the link from vault-chat Settings."); }
+  if (!token) {
+    setErr("Missing token — open the link from vault-chat Settings.");
+  } else if (!micAvailable()) {
+    setStatus("Needs a secure link", "");
+    setErr("This page isn't HTTPS, so the browser won't allow the mic. Open the https://…ts.net link from vault-chat Settings → Phone voice (or http://localhost:8848 on this same computer).");
+  }
 </script>
 </body>
 </html>

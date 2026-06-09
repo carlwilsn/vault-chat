@@ -1746,7 +1746,11 @@ function PhoneVoiceSection() {
       </h3>
       <p className="text-[11px] text-muted-foreground/70">
         Open this on your phone (over Tailscale) and tap the orb to talk — live voice,
-        mic and speaker on your phone, brain and vault on this box.
+        mic and speaker on your phone, brain and vault on this box. It must be an{" "}
+        <span className="font-mono">https://</span> link for the phone mic to work; if it
+        shows <span className="font-mono">http://</span>, enable HTTPS in your Tailscale
+        admin (DNS). On this computer, <span className="font-mono">http://localhost:8848</span>{" "}
+        also works for a quick test.
       </p>
       {link ? (
         <div className="flex items-center gap-2">

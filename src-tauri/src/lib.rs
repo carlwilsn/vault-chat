@@ -5678,11 +5678,12 @@ fn voice_set_context(
     );
 }
 
-/// Best-effort phone link for the Settings note (Tailscale IP + port). The
-/// frontend appends the token.
+/// Best-effort phone link base for the Settings note. Prefers the secure
+/// Tailscale **HTTPS** URL (the one a phone's mic will accept); falls back to the
+/// http IP (localhost-only). The frontend appends `/voice?token=…`.
 #[tauri::command]
 fn voice_server_url(port: u16) -> Option<String> {
-    voice_server::tailscale_url(port)
+    voice_server::https_url(port).or_else(|| voice_server::tailscale_url(port))
 }
 
 #[derive(Serialize)]
