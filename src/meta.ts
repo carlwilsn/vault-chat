@@ -134,6 +134,27 @@ export async function saveVaultTelegramPrompt(vault: string, contents: string): 
   });
 }
 
+/** Per-vault supervisor role prompt at `.vault-chat/agent/supervisor.md`. Layers
+ *  the always-on orchestrator role (persistent mind, goal loop, worker steering)
+ *  onto the Telegram agent. "" when absent — the agent stays a plain Telegram
+ *  responder with no supervisor section. */
+export async function loadVaultSupervisorPrompt(vault: string | null): Promise<string> {
+  if (!vault) return "";
+  return readAgentConfig(vault, "supervisor.md");
+}
+
+export async function ensureVaultSupervisorPrompt(vault: string | null): Promise<void> {
+  if (!vault) return;
+  await ensureAgentConfig(vault, "supervisor.md", "default_supervisor_prompt");
+}
+
+export async function saveVaultSupervisorPrompt(vault: string, contents: string): Promise<void> {
+  await invoke("write_text_file", {
+    path: `${vault}/${AGENT_DIR}/supervisor.md`,
+    contents,
+  });
+}
+
 /** Read the per-vault north-star brief (the user's declaration of
  *  what the vault is for). Stored at <vault>/.vault-chat/agent/north-star.md
  *  (migrated from the older flat `.vault-chat/north-star.md`). Prepended to

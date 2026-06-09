@@ -565,7 +565,7 @@ export default function App() {
     // defaults if absent — migrating any older flat files — so the agent's
     // prompts live in the vault at .vault-chat/agent/ and sync across machines.
     void (async () => {
-      const { ensureVaultSystemPrompt, ensureVaultVoicePrompt, ensureVaultTelegramPrompt } = await import("./meta");
+      const { ensureVaultSystemPrompt, ensureVaultVoicePrompt, ensureVaultTelegramPrompt, ensureVaultSupervisorPrompt } = await import("./meta");
       await ensureVaultSystemPrompt(vaultPath).catch((e) =>
         console.warn("[agent-cfg] ensure system prompt failed:", e),
       );
@@ -574,6 +574,9 @@ export default function App() {
       );
       await ensureVaultTelegramPrompt(vaultPath).catch((e) =>
         console.warn("[agent-cfg] ensure telegram prompt failed:", e),
+      );
+      await ensureVaultSupervisorPrompt(vaultPath).catch((e) =>
+        console.warn("[agent-cfg] ensure supervisor prompt failed:", e),
       );
     })();
   }, [vaultPath]);

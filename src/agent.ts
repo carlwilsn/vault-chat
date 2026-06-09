@@ -6,7 +6,7 @@ import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./provi
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
-import { loadVaultSystemPrompt, loadVaultTools, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock, loadVaultTelegramPrompt } from "./meta";
+import { loadVaultSystemPrompt, loadVaultTools, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock, loadVaultTelegramPrompt, loadVaultSupervisorPrompt } from "./meta";
 
 export type TokenUsage = {
   prompt: number;
@@ -175,7 +175,7 @@ export async function runAgent(params: {
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey);
 
-    const [sessionContext, skills, vaultSystem, vaultTools, northStar, memoryIndex, shellKind, vaultTelegram] = await Promise.all([
+    const [sessionContext, skills, vaultSystem, vaultTools, northStar, memoryIndex, shellKind, vaultTelegram, vaultSupervisor] = await Promise.all([
       loadSessionContext(vault),
       loadSkills(vault),
       loadVaultSystemPrompt(vault),
@@ -186,6 +186,10 @@ export async function runAgent(params: {
       // Editable per-vault Telegram-mode prompt; only used when telegramMode
       // is on, but loaded here so the prompt assembly stays a single pass.
       telegramMode ? loadVaultTelegramPrompt(vault) : Promise.resolve(""),
+      // The supervisor role layers an always-on orchestrator (persistent mind,
+      // goal loop, worker steering) onto the Telegram agent. Loaded only in
+      // telegramMode and only applied if the vault has seeded the file.
+      telegramMode ? loadVaultSupervisorPrompt(vault) : Promise.resolve(""),
     ]);
 
     const { body: expandedMessage } = expandSkillInvocation(userMessage, skills);
@@ -224,6 +228,13 @@ export async function runAgent(params: {
       ? `\n## Telegram mode\n\n${vaultTelegram.trim() || FALLBACK_TELEGRAM}`
       : "";
 
+    // Supervisor role: an always-on orchestrator layered onto the Telegram
+    // agent. Applied only when the vault has seeded `.vault-chat/agent/
+    // supervisor.md` (so a vault that doesn't want a supervisor simply leaves
+    // the file empty/absent and the Telegram agent stays a plain responder).
+    const supervisorNote =
+      telegramMode && vaultSupervisor.trim() ? `\n${vaultSupervisor.trim()}` : "";
+
     const system = [
       baseSystem,
       `\nVault root: ${vault}`,
@@ -240,6 +251,7 @@ export async function runAgent(params: {
 
       voiceNote,
       telegramNote,
+      supervisorNote,
     ]
       .filter(Boolean)
       .join("\n");

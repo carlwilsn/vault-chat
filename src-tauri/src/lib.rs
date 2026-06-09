@@ -4460,6 +4460,7 @@ fn git_guard(path: &str) -> Result<(), String> {
 const DEFAULT_SYSTEM_MD: &str = include_str!("../defaults/system.md");
 const DEFAULT_VOICE_MD: &str = include_str!("../defaults/voice.md");
 const DEFAULT_TELEGRAM_MD: &str = include_str!("../defaults/telegram.md");
+const DEFAULT_SUPERVISOR_MD: &str = include_str!("../defaults/supervisor.md");
 
 /// The bundled default agent system prompt. New vaults seed
 /// `<vault>/.vault-chat/agent/system.md` from this; it can then be
@@ -4483,6 +4484,15 @@ fn default_voice_prompt() -> String {
 #[tauri::command]
 fn default_telegram_prompt() -> String {
     DEFAULT_TELEGRAM_MD.to_string()
+}
+
+/// The bundled default supervisor role prompt. New vaults seed
+/// `<vault>/.vault-chat/agent/supervisor.md` from this. It layers an always-on
+/// orchestrator role (persistent mind, goal loop, worker steering) onto the
+/// Telegram agent, and is editable per vault.
+#[tauri::command]
+fn default_supervisor_prompt() -> String {
+    DEFAULT_SUPERVISOR_MD.to_string()
 }
 
 // ----- run_script -----
@@ -5896,6 +5906,7 @@ pub fn run() {
             default_system_prompt,
             default_voice_prompt,
             default_telegram_prompt,
+            default_supervisor_prompt,
             run_script,
             keychain_get,
             keychain_set,

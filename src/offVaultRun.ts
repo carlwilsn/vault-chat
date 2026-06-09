@@ -17,7 +17,7 @@ import {
 } from "./telegram";
 import { useStore, type ChatMessage, type LiveTool } from "./store";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
-import { registerRun, unregisterRun } from "./runRegistry";
+import { registerRun, unregisterRun, abortRun, isRunActive } from "./runRegistry";
 
 // Minimum gap between Telegram progress pings during a long headless run,
 // so the phone gets "still working" signal without being spammed.
@@ -575,15 +575,42 @@ async function handleOffVaultSlashCommand(
   fromUsername: string | null,
 ): Promise<boolean> {
   const isCommand =
-    /^\/(new|start|reset|help)\b/i.test(trimmedText);
+    /^\/(new|start|reset|help|kill)\b/i.test(trimmedText);
   if (!isCommand) return false;
 
   if (/^\/help\b/i.test(trimmedText)) {
     await sendTelegramMessage(
       vault,
       chatId,
-      "Commands:\n/new (or /start) — start a fresh conversation; the old one stays in vault-chat\n/reset — list recent conversations and switch back to one (/reset N)\n/help — this message\n\nNote: clearing chat history on your phone is invisible to the bot — use /new to actually reset on the vault-chat side.",
+      "Commands:\n/new (or /start) — start a fresh conversation; the old one stays in vault-chat\n/reset — list recent conversations and switch back to one (/reset N)\n/kill — hard-stop every running worker in this vault right now\n/help — this message\n\nNote: clearing chat history on your phone is invisible to the bot — use /new to actually reset on the vault-chat side.",
     ).catch(() => {});
+    return true;
+  }
+
+  // Deterministic kill switch — aborts every in-flight run in the vault by
+  // walking the run registry directly, NOT by asking the agent. So it works
+  // even if the supervisor itself is mid-thought or wedged. We abort every
+  // conversation that has a live run registered, except this telegram chat's
+  // own (it's the one delivering the /kill, not a worker to stop).
+  if (/^\/kill\b/i.test(trimmedText)) {
+    const list = await readConversations(vault);
+    const self = list.find((c) => c.telegramChatId === chatId);
+    let killed = 0;
+    const killedTitles: string[] = [];
+    for (const c of list) {
+      if (c.id === self?.id) continue;
+      if (isRunActive(c.id) && abortRun(c.id)) {
+        killed++;
+        killedTitles.push(c.title || "New chat");
+      }
+    }
+    const msg =
+      killed === 0
+        ? "Nothing running — no workers to kill."
+        : `Killed ${killed} running worker${killed === 1 ? "" : "s"}:\n${killedTitles
+            .map((t) => `• ${t}`)
+            .join("\n")}`;
+    await sendTelegramMessage(vault, chatId, msg).catch(() => {});
     return true;
   }
 
