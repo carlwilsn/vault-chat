@@ -8,6 +8,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { buildPhoneVoiceContext } from "./voice-elevenlabs";
+import { useStore } from "./store";
 
 // Fixed port so the link is stable. High, unprivileged, unlikely to clash.
 const PORT = 8848;
@@ -59,6 +60,19 @@ export async function startPhoneVoiceHost(): Promise<void> {
     return;
   }
   await pushContext();
+  // Push the instant the vault opens/switches or the ElevenLabs key changes —
+  // that's the moment the host first has something to serve, and waiting for the
+  // next heartbeat is exactly what caused the phone's transient 503s.
+  let lastVault = useStore.getState().vaultPath;
+  let lastKey = useStore.getState().serviceKeys.elevenlabs;
+  useStore.subscribe((s) => {
+    if (s.vaultPath !== lastVault || s.serviceKeys.elevenlabs !== lastKey) {
+      lastVault = s.vaultPath;
+      lastKey = s.serviceKeys.elevenlabs;
+      void pushContext();
+    }
+  });
+  // Heartbeat backstop (e.g. the agent/context drifts during a long session).
   window.setInterval(() => {
     void pushContext();
   }, 20_000);

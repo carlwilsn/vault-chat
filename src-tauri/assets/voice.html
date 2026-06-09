@@ -158,9 +158,21 @@
     setStatus("Connecting…", "Waking the session on the box — one sec.");
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true });
-      const r = await api("/session", { method: "POST" });
-      if (!r.ok) throw new Error(`session ${r.status}: ${(await r.text()).slice(0,200)}`);
-      const cfg = await r.json();
+      // The host pushes context on open; if the phone connects in that brief
+      // gap the server answers 503. Retry for ~10s so it self-heals instead of
+      // failing instantly.
+      let cfg = null;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const r = await api("/session", { method: "POST" });
+        if (r.ok) { cfg = await r.json(); break; }
+        if (r.status === 503 && attempt < 5) {
+          setStatus("Waking the host…", "The vault-chat app is getting ready — hang on.");
+          await new Promise((res) => setTimeout(res, 2000));
+          continue;
+        }
+        throw new Error(`session ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      }
+      if (!cfg) throw new Error("session not ready");
       const { Conversation } = await import("https://esm.sh/@elevenlabs/client@1.7.0");
       conv = await Conversation.startSession({
         signedUrl: cfg.signedUrl,
