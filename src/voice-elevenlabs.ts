@@ -1963,7 +1963,7 @@ function withTracking<A>(
   };
 }
 
-function buildClientToolHandlers(): Record<
+export function buildClientToolHandlers(): Record<
   string,
   (parameters: any) => Promise<string>
 > {

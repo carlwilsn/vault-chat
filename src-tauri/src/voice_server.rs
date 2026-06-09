@@ -19,9 +19,12 @@
 //! "run anything on my box."
 
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Duration;
+use tauri::Emitter;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 const VOICE_PAGE: &str = include_str!("../assets/voice.html");
@@ -244,7 +247,7 @@ fn handle(mut req: Request, token: &str) {
         (Method::Post, "/tool") => {
             let mut raw = String::new();
             let _ = req.as_reader().read_to_string(&mut raw);
-            let result = dispatch_tool(&raw);
+            let result = run_tool(&raw);
             // EL feeds the body straight back to the model as the tool result, so
             // we return plain text (the answer, or a refusal/error message).
             let _ = req.respond(resp_text(200, "text/plain; charset=utf-8", result));
@@ -306,6 +309,65 @@ fn within_vault(vault: &str, path: &str) -> Option<PathBuf> {
         Some(ct)
     } else {
         None
+    }
+}
+
+// ---- full tool parity: relay to the desktop app's real handlers ----
+
+static APP: OnceLock<Mutex<Option<tauri::AppHandle>>> = OnceLock::new();
+static PENDING: OnceLock<Mutex<HashMap<String, mpsc::Sender<String>>>> = OnceLock::new();
+static REQ: AtomicU64 = AtomicU64::new(1);
+
+fn app_slot() -> &'static Mutex<Option<tauri::AppHandle>> {
+    APP.get_or_init(|| Mutex::new(None))
+}
+fn pending() -> &'static Mutex<HashMap<String, mpsc::Sender<String>>> {
+    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Hand the server the running app's handle so it can relay tool calls to it.
+pub fn set_app(app: tauri::AppHandle) {
+    *app_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(app);
+}
+
+/// Resolve a phone tool call the desktop app fulfilled, by request id.
+pub fn tool_respond(req_id: String, result: String) {
+    if let Some(tx) = pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&req_id) {
+        let _ = tx.send(result);
+    }
+}
+
+/// Run a tool with FULL desktop parity: relay it to the running app, which
+/// executes the exact same handler the desktop voice agent uses, against the
+/// vault. Falls back to the local read-only dispatch only if the app can't be
+/// reached (no handle, emit failed, or it didn't answer in time) — so a read
+/// still works even if the relay is momentarily down.
+fn run_tool(raw: &str) -> String {
+    let app = app_slot().lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let Some(app) = app else {
+        return dispatch_tool(raw);
+    };
+    let v: Value = match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(_) => return "error: malformed tool request".into(),
+    };
+    let id = REQ.fetch_add(1, Ordering::Relaxed).to_string();
+    let (tx, rx) = mpsc::channel::<String>();
+    pending().lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), tx);
+    let payload = json!({
+        "reqId": id,
+        "name": v.get("name").cloned().unwrap_or(Value::Null),
+        "arguments": v.get("arguments").or_else(|| v.get("parameters")).cloned().unwrap_or(json!({})),
+    });
+    if app.emit("voice:tool", payload).is_err() {
+        pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        return dispatch_tool(raw);
+    }
+    let out = rx.recv_timeout(Duration::from_secs(25));
+    pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    match out {
+        Ok(s) => s,
+        Err(_) => dispatch_tool(raw),
     }
 }
 

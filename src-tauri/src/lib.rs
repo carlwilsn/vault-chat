@@ -5641,8 +5641,17 @@ fn app_ready(window: tauri::WebviewWindow) -> Result<(), String> {
 // freshly-generated token. Stage 1 surfaces only start/stop/status.
 
 #[tauri::command]
-fn voice_server_start(port: u16, token: String) -> Result<u16, String> {
+fn voice_server_start(app: tauri::AppHandle, port: u16, token: String) -> Result<u16, String> {
+    // Hand the server the app handle so it can relay phone tool calls to the
+    // running app's real handlers (full parity with desktop voice).
+    voice_server::set_app(app);
     voice_server::start(port, token)
+}
+
+/// The desktop app's answer to a relayed phone tool call (voice_server::run_tool).
+#[tauri::command]
+fn voice_tool_respond(req_id: String, result: String) {
+    voice_server::tool_respond(req_id, result);
 }
 
 #[tauri::command]
@@ -6325,6 +6334,7 @@ pub fn run() {
             voice_server_status,
             voice_set_context,
             voice_server_url,
+            voice_tool_respond,
             app_ready
         ])
         .run(tauri::generate_context!())

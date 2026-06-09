@@ -7,8 +7,35 @@
 // before a vault/key exists is harmless (it answers 503 until ready).
 
 import { invoke } from "@tauri-apps/api/core";
-import { buildPhoneVoiceContext } from "./voice-elevenlabs";
+import { listen } from "@tauri-apps/api/event";
+import { buildPhoneVoiceContext, buildClientToolHandlers } from "./voice-elevenlabs";
 import { useStore } from "./store";
+
+// The box relays each phone tool call here; we run the EXACT same handler the
+// desktop voice agent uses (full parity — file ops, git, schedules, etc.) and
+// hand the result back by request id.
+let toolRelayWired = false;
+async function wireToolRelay(): Promise<void> {
+  if (toolRelayWired) return;
+  toolRelayWired = true;
+  await listen<{ reqId: string; name: string; arguments: unknown }>("voice:tool", async (event) => {
+    const { reqId, name, arguments: args } = event.payload;
+    let result = "";
+    try {
+      const handlers = buildClientToolHandlers() as Record<string, (p: unknown) => unknown>;
+      const fn = handlers[name];
+      if (!fn) {
+        result = `error: tool "${name}" is not available`;
+      } else {
+        const r = await fn(args);
+        result = r == null ? "" : typeof r === "string" ? r : JSON.stringify(r);
+      }
+    } catch (e) {
+      result = "error: " + String(e);
+    }
+    await invoke("voice_tool_respond", { reqId, result }).catch(() => {});
+  });
+}
 
 // Fixed port so the link is stable. High, unprivileged, unlikely to clash.
 const PORT = 8848;
@@ -59,6 +86,7 @@ export async function startPhoneVoiceHost(): Promise<void> {
     started = false;
     return;
   }
+  await wireToolRelay();
   await pushContext();
   // Push the instant the vault opens/switches or the ElevenLabs key changes —
   // that's the moment the host first has something to serve, and waiting for the
