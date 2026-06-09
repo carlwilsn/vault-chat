@@ -119,7 +119,7 @@ const IGNORE_FILE: &str = ".vaultchatignore";
 // the user can mark "agent stays out of this" without affecting
 // their own browsing.
 const DENY_FILE: &str = ".vaultchatdeny";
-const NOTES_DIR: &str = ".vault-chat";
+pub(crate) const NOTES_DIR: &str = ".vault-chat";
 const NOTES_FILE: &str = "notes.jsonl";
 const HUMANIZED_FILE: &str = "humanized.json";
 const CONVERSATIONS_FILE: &str = "conversations.jsonl";
@@ -128,7 +128,7 @@ const CONVERSATIONS_FILE: &str = "conversations.jsonl";
 /// rewrites only its own small file, not the whole multi-MB blob — collapsing
 /// git churn — and two machines editing *different* conversations no longer
 /// collide on the same file at all.
-const CONVERSATIONS_DIR: &str = "conversations";
+pub(crate) const CONVERSATIONS_DIR: &str = "conversations";
 const SCHEDULES_FILE: &str = "schedules.jsonl";
 
 #[derive(Serialize)]
@@ -921,7 +921,7 @@ fn conversation_file_stem(id: &str) -> String {
 /// those. A union can at worst leave a rare duplicate line, which is a cosmetic
 /// double, not data loss — always the safer side to err on. If several `meta`
 /// lines survived a union we keep the freshest by `lastActivityAt`.
-fn reconstruct_conversation(contents: &str) -> Option<String> {
+pub(crate) fn reconstruct_conversation(contents: &str) -> Option<String> {
     let mut meta: Option<serde_json::Value> = None;
     let mut meta_activity: i64 = i64::MIN;
     let mut messages: Vec<serde_json::Value> = Vec::new();
@@ -2893,7 +2893,7 @@ fn run_git_mut(cwd: &str, args: &[&str]) -> Result<(String, String, i32), String
     }
 }
 
-fn run_git(
+pub(crate) fn run_git(
     cwd: &str,
     args: &[&str],
 ) -> Result<(String, String, i32), String> {
@@ -5656,6 +5656,35 @@ fn voice_server_status() -> bool {
     voice_server::is_running()
 }
 
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+fn voice_set_context(
+    el_key: String,
+    agent_id: String,
+    voice_id: String,
+    system_prompt: String,
+    dynamic_vars: serde_json::Value,
+    tool_names: Vec<String>,
+    vault: String,
+) {
+    voice_server::set_context(
+        el_key,
+        agent_id,
+        voice_id,
+        system_prompt,
+        dynamic_vars,
+        tool_names,
+        vault,
+    );
+}
+
+/// Best-effort phone link for the Settings note (Tailscale IP + port). The
+/// frontend appends the token.
+#[tauri::command]
+fn voice_server_url(port: u16) -> Option<String> {
+    voice_server::tailscale_url(port)
+}
+
 #[derive(Serialize)]
 struct TexCompileResult {
     pdf_path: String,
@@ -6293,6 +6322,8 @@ pub fn run() {
             voice_server_start,
             voice_server_stop,
             voice_server_status,
+            voice_set_context,
+            voice_server_url,
             app_ready
         ])
         .run(tauri::generate_context!())

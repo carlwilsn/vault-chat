@@ -1418,6 +1418,41 @@ function buildVaultIndex(
   return `Vault file index (${rels.length} files, ${shown.length} shown — all paths relative to vault root):\n${shown.join("\n")}${more}\n\nWhen the user names a file, prefer matching against this index FIRST before guessing or calling Glob. Construct absolute paths by joining the vault root with the relative path above.`;
 }
 
+/**
+ * Gather the live voice context the box's phone-voice server needs to mint a
+ * phone session: the ElevenLabs key + agent id, the system prompt + dynamic
+ * variables (the vault context), the voice id, and the agent's tool names.
+ * Reuses the exact same builders the desktop session uses, so the phone gets an
+ * identical brain. Returns null when voice can't run yet (no key, no vault, or
+ * the agent couldn't be provisioned).
+ */
+export async function buildPhoneVoiceContext(): Promise<{
+  elKey: string;
+  agentId: string;
+  voiceId: string;
+  systemPrompt: string;
+  dynamicVariables: Record<string, string>;
+  toolNames: string[];
+  vault: string;
+} | null> {
+  const state = useStore.getState();
+  const elKey = state.serviceKeys.elevenlabs;
+  if (!elKey || !state.vaultPath) return null;
+  const agentId = await ensureAgent(elKey);
+  if (!agentId) return null;
+  const customHeader = await loadVaultVoicePrompt(state.vaultPath);
+  const northStar = await loadVaultNorthStar(state.vaultPath);
+  return {
+    elKey,
+    agentId,
+    voiceId: localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
+    systemPrompt: buildSystemPrompt(state, customHeader, northStar),
+    dynamicVariables: buildDynamicVariables(state),
+    toolNames: Object.keys(buildClientToolHandlers()),
+    vault: state.vaultPath,
+  };
+}
+
 function buildSystemPrompt(
   state: ReturnType<typeof useStore.getState>,
   customHeader: string,

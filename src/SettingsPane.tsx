@@ -8,6 +8,7 @@ import {
   Lock,
   Shield,
   RefreshCw,
+  Smartphone,
   Send,
   ChevronDown,
 } from "lucide-react";
@@ -573,6 +574,10 @@ export function SettingsPane() {
         <div className="h-px bg-border" />
 
         <TelegramSection />
+
+        <div className="h-px bg-border" />
+
+        <PhoneVoiceSection />
 
         <div className="h-px bg-border" />
 
@@ -1713,5 +1718,57 @@ function TelegramStatusRow({
       <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
       idle
     </span>
+  );
+}
+
+// Phone voice: a short note with the link to open on your phone. The box keeps
+// an always-ready server up; opening this link over Tailscale and tapping starts
+// a live voice session with the brain on the box. See src/phoneVoice.ts.
+function PhoneVoiceSection() {
+  const [link, setLink] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const { getPhoneVoiceLink } = await import("./phoneVoice");
+      const l = await getPhoneVoiceLink().catch(() => null);
+      if (alive) setLink(l);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return (
+    <section className="space-y-2">
+      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+        <Smartphone className="h-3 w-3" />
+        Phone voice
+      </h3>
+      <p className="text-[11px] text-muted-foreground/70">
+        Open this on your phone (over Tailscale) and tap the orb to talk — live voice,
+        mic and speaker on your phone, brain and vault on this box.
+      </p>
+      {link ? (
+        <div className="flex items-center gap-2">
+          <code className="text-[11px] font-mono bg-muted px-2 py-1 rounded truncate flex-1 min-w-0">
+            {link}
+          </code>
+          <button
+            className="text-[11px] px-2.5 py-1 rounded border border-border hover:bg-muted shrink-0"
+            onClick={() => {
+              void navigator.clipboard?.writeText(link);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }}
+          >
+            {copied ? "copied" : "copy"}
+          </button>
+        </div>
+      ) : (
+        <p className="text-[11px] text-muted-foreground/60">
+          Link appears once Tailscale is up on this box.
+        </p>
+      )}
+    </section>
   );
 }

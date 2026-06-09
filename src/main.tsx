@@ -29,6 +29,7 @@ import {
 } from "./store";
 import { installDebugLog, flushDebugLogToDisk, vlog } from "./debugLog";
 import { installAutosaveNet } from "./autosave";
+import { startPhoneVoiceHost } from "./phoneVoice";
 
 // Install the freeze diagnostic logger before anything else runs, so a
 // crash during boot still leaves a trail.
@@ -89,6 +90,10 @@ if (isPopout) {
   // Durability safety net: periodic backstop + commit-on-quit so no vault
   // change can reach disk without reaching git. Main window only.
   installAutosaveNet();
+  // Always-ready phone-voice host: the box keeps a token-guarded server up so a
+  // phone can connect over Tailscale and talk live. Inert until a vault + EL key
+  // exist. Main window only.
+  void startPhoneVoiceHost();
 }
 
 const Root = isPopout ? ChatWindow : App;
