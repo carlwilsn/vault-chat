@@ -8,86 +8,124 @@
 <style>
   :root{
     --bg:#0b0c0e; --panel:#141619; --line:#23262b;
-    --text:#e8eaed; --dim:#8a9099; --accent:#7c9cff; --accent2:#a886ff;
-    --live:#4ade80; --err:#ff6b6b;
+    --text:#e8eaed; --dim:#8a9099; --accent:#7c9cff; --accent2:#a886ff; --err:#ff6b6b;
   }
-  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html,body{margin:0;height:100%}
   body{
     background:radial-gradient(120% 90% at 50% -10%, #16181d 0%, var(--bg) 60%);
     color:var(--text);
     font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     display:flex;flex-direction:column;align-items:center;justify-content:center;
-    min-height:100dvh;padding:24px;gap:0;text-align:center;
+    min-height:100dvh;padding:24px;text-align:center;
     user-select:none;-webkit-user-select:none;
   }
   .brand{position:fixed;top:max(18px,env(safe-area-inset-top));left:0;right:0;
     font-weight:600;letter-spacing:.2px;color:var(--dim);font-size:14px}
   .brand b{color:var(--text)}
-  .stage{display:flex;flex-direction:column;align-items:center;gap:28px}
-  .orb-wrap{position:relative;width:220px;height:220px;display:grid;place-items:center}
-  .orb{
-    width:180px;height:180px;border-radius:50%;
-    background:linear-gradient(145deg,var(--accent),var(--accent2));
-    box-shadow:0 0 0 1px rgba(255,255,255,.06), 0 24px 60px -20px var(--accent);
-    display:grid;place-items:center;cursor:pointer;border:none;color:#0b0c0e;
-    transition:transform .15s ease, filter .2s ease;
-    position:relative;z-index:2;
-  }
-  .orb:active{transform:scale(.97)}
-  .orb svg{width:64px;height:64px;opacity:.92}
-  .ring{position:absolute;inset:0;border-radius:50%;border:2px solid var(--accent);opacity:0;z-index:1}
-  /* Connecting: a clear breathing orb + a spinning ring so the wait is obvious. */
-  body.connecting .orb{animation:breathe 1.25s ease-in-out infinite;cursor:default}
-  @keyframes breathe{0%,100%{transform:scale(1);filter:brightness(.9)}50%{transform:scale(1.05);filter:brightness(1.12)}}
-  body.connecting .ring{opacity:.4;border-top-color:transparent;border-right-color:transparent;animation:spin 1s linear infinite}
-  @keyframes spin{to{transform:rotate(360deg)}}
-  /* Live: the orb's scale + glow are driven every frame by real audio level
-     (your mic when listening, the agent's output when speaking) — see startMeter(). */
-  body.live.speaking .orb{background:linear-gradient(145deg,var(--accent2),var(--accent))}
+  .stage{display:flex;flex-direction:column;align-items:center;gap:34px}
+
+  /* The visualiser: 12 centre-anchored bars, exactly like the desktop app —
+     they grow symmetrically from the middle and are driven by real audio. */
+  .vizwrap{height:120px;display:flex;align-items:center;justify-content:center;position:relative;width:260px}
+  .viz{display:flex;align-items:center;gap:6px;height:96px}
+  .bar{width:6px;height:96px;border-radius:4px;
+    background:linear-gradient(180deg,var(--accent),var(--accent2));
+    transform:scaleY(.16);transform-origin:center;transition:transform .06s linear}
+  body.live .bar{box-shadow:0 0 18px -4px var(--accent)}
+  .connecting-label{display:none;font-size:15px;font-weight:600;color:var(--dim);
+    position:absolute;inset:0;align-items:center;justify-content:center}
+  body.connecting .viz{opacity:0}
+  body.connecting .connecting-label{display:flex;animation:blink 1.2s ease-in-out infinite}
+  @keyframes blink{0%,100%{opacity:.45}50%{opacity:1}}
+
   .status{font-size:20px;font-weight:600;min-height:26px}
   .sub{color:var(--dim);font-size:14px;min-height:20px;max-width:320px}
-  .err{color:var(--err);font-size:13px;max-width:340px;white-space:pre-wrap}
-  .end{margin-top:6px;background:transparent;color:var(--dim);border:1px solid var(--line);
-    padding:11px 22px;border-radius:999px;font-size:15px;cursor:pointer}
-  .end:active{background:var(--panel)}
-  .hidden{display:none}
-  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--live);
-    margin-right:7px;vertical-align:middle;box-shadow:0 0 10px var(--live)}
+  .err{color:var(--err);font-size:13px;max-width:340px;white-space:pre-wrap;margin-top:4px}
+
+  .toggle{margin-top:4px;background:linear-gradient(145deg,var(--accent),var(--accent2));
+    color:#0b0c0e;border:none;padding:16px 46px;border-radius:999px;font-size:17px;font-weight:700;
+    cursor:pointer;box-shadow:0 16px 44px -18px var(--accent);transition:transform .12s ease,filter .2s}
+  .toggle:active{transform:scale(.97)}
+  body.live .toggle{background:transparent;color:var(--text);border:1px solid var(--line);box-shadow:none;font-weight:600}
+  .toggle[disabled]{opacity:.6}
 </style>
 </head>
 <body>
   <div class="brand"><b>vault-chat</b> · voice</div>
   <div class="stage">
-    <div class="orb-wrap">
-      <div class="ring"></div><div class="ring r2"></div>
-      <button id="orb" class="orb" aria-label="Talk">
-        <svg viewBox="0 0 24 24" fill="none"><path d="M12 15a3.5 3.5 0 0 0 3.5-3.5V6a3.5 3.5 0 1 0-7 0v5.5A3.5 3.5 0 0 0 12 15Z" fill="currentColor"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-      </button>
+    <div class="vizwrap">
+      <div class="viz" id="viz"></div>
+      <div class="connecting-label">Connecting…</div>
     </div>
     <div>
-      <div id="status" class="status">Tap to talk</div>
+      <div id="status" class="status">Tap start to talk</div>
       <div id="sub" class="sub">Live voice to your vault on the box.</div>
       <div id="err" class="err"></div>
     </div>
-    <button id="end" class="end hidden">End</button>
+    <button id="toggle" class="toggle">Start</button>
   </div>
 
 <script type="module">
+  const NUM_BARS = 12, DECAY = 0.85;
   const token = new URLSearchParams(location.search).get("token") || "";
-  const orb = document.getElementById("orb");
   const statusEl = document.getElementById("status");
   const subEl = document.getElementById("sub");
   const errEl = document.getElementById("err");
-  const endBtn = document.getElementById("end");
-  let conv = null, connecting = false;
+  const toggleBtn = document.getElementById("toggle");
+  const viz = document.getElementById("viz");
+  let conv = null, connecting = false, rafId = 0;
+  const smoothed = new Array(NUM_BARS).fill(0);
+
+  // Build the 12 bars once.
+  const bars = [];
+  for (let i = 0; i < NUM_BARS; i++) {
+    const b = document.createElement("div");
+    b.className = "bar";
+    viz.appendChild(b);
+    bars.push(b);
+  }
 
   const setStatus = (s, sub) => { statusEl.textContent = s; if (sub !== undefined) subEl.textContent = sub; };
   const setErr = (e) => { errEl.textContent = e || ""; };
+  const micAvailable = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
 
   async function api(path, opts) {
     const sep = path.includes("?") ? "&" : "?";
     return fetch(`${path}${sep}token=${encodeURIComponent(token)}`, opts);
+  }
+
+  function bin(data, n) {
+    const out = new Array(n).fill(0);
+    if (!data || !data.length) return out;
+    const per = Math.max(1, Math.floor(data.length / n));
+    for (let i = 0; i < n; i++) {
+      let s = 0;
+      for (let j = 0; j < per; j++) s += data[i * per + j] || 0;
+      out[i] = s / per / 255;
+    }
+    return out;
+  }
+
+  // Same logic as the desktop VoiceCockpit: agent output spectrum while it
+  // speaks (when there's real audio), otherwise the live mic input. Smoothed
+  // with decay; bars floor at ~16% so they never fully collapse.
+  function meter() {
+    if (!conv) return;
+    let raw;
+    try {
+      const speaking = document.body.classList.contains("speaking");
+      const out = speaking && conv.getOutputByteFrequencyData ? bin(conv.getOutputByteFrequencyData(), NUM_BARS) : null;
+      const outActive = out && out.reduce((a, b) => a + b, 0) > 0.05;
+      raw = outActive ? out : bin(conv.getInputByteFrequencyData && conv.getInputByteFrequencyData(), NUM_BARS);
+    } catch { raw = new Array(NUM_BARS).fill(0); }
+    for (let i = 0; i < NUM_BARS; i++) {
+      const decayed = smoothed[i] * DECAY;
+      smoothed[i] = raw[i] > decayed ? raw[i] : decayed;
+      const h = 0.16 + Math.min(1, smoothed[i]) * 0.84;
+      bars[i].style.transform = `scaleY(${h.toFixed(3)})`;
+    }
+    rafId = requestAnimationFrame(meter);
   }
 
   function buildClientTools(toolNames) {
@@ -107,21 +145,18 @@
     return tools;
   }
 
-  function micAvailable() {
-    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-  }
-
-  async function connect() {
+  async function start() {
     if (connecting || conv) return;
     if (!micAvailable()) {
       setStatus("Needs a secure link", "");
-      setErr("This page isn't HTTPS, so the browser blocks the mic. Open the https://…ts.net link from vault-chat Settings → Phone voice. (On the same computer, http://localhost:8848 also works.)");
+      setErr("This page isn't HTTPS, so the browser blocks the mic. Open the https://…ts.net link from vault-chat Settings → Phone voice (or http://localhost:8848 on this same computer).");
       return;
     }
-    connecting = true; setErr(""); document.body.classList.add("connecting");
+    connecting = true; setErr("");
+    document.body.classList.add("connecting");
+    toggleBtn.textContent = "…"; toggleBtn.disabled = true;
     setStatus("Connecting…", "Waking the session on the box — one sec.");
     try {
-      // Mic permission must be granted from a user gesture (this tap).
       await navigator.mediaDevices.getUserMedia({ audio: true });
       const r = await api("/session", { method: "POST" });
       if (!r.ok) throw new Error(`session ${r.status}: ${(await r.text()).slice(0,200)}`);
@@ -139,12 +174,12 @@
           connecting = false;
           document.body.classList.remove("connecting");
           document.body.classList.add("live");
-          endBtn.classList.remove("hidden");
+          toggleBtn.textContent = "Stop"; toggleBtn.disabled = false;
           setStatus("Listening", "Just talk — I'm on.");
-          startMeter();
+          meter();
         },
-        onDisconnect: () => { teardown(); },
-        onError: (m) => { setErr(typeof m === "string" ? m : (m?.message || "voice error")); },
+        onDisconnect: () => teardown(),
+        onError: (m) => setErr(typeof m === "string" ? m : (m?.message || "voice error")),
         onModeChange: (m) => {
           const mode = m?.mode || m;
           if (mode === "speaking") { document.body.classList.add("speaking"); setStatus("Speaking", ""); }
@@ -154,63 +189,28 @@
     } catch (e) {
       connecting = false;
       document.body.classList.remove("connecting");
+      toggleBtn.textContent = "Start"; toggleBtn.disabled = false;
       setErr(String(e?.message || e));
-      setStatus("Tap to talk", "Couldn't connect — tap to retry.");
+      setStatus("Tap start to talk", "Couldn't connect — tap to retry.");
     }
   }
 
-  // Drive the orb off real audio: your mic level while listening, the agent's
-  // output level while it speaks — so the pulse tracks who's actually talking.
-  let rafId = 0;
-  function startMeter() {
-    cancelAnimationFrame(rafId);
-    const tick = () => {
-      if (!conv) return;
-      let level = 0;
-      try {
-        const speaking = document.body.classList.contains("speaking");
-        const data = speaking
-          ? (conv.getOutputByteFrequencyData && conv.getOutputByteFrequencyData())
-          : (conv.getInputByteFrequencyData && conv.getInputByteFrequencyData());
-        if (data && data.length) {
-          let sum = 0;
-          for (let i = 0; i < data.length; i++) sum += data[i];
-          level = Math.min(1, sum / data.length / 80);
-        }
-        // Agent output levels can be flat/unreliable; keep a gentle pulse so the
-        // "agent is speaking" state still reads as alive.
-        if (speaking && level < 0.03) {
-          level = 0.12 + 0.08 * (0.5 + 0.5 * Math.sin(Date.now() / 170));
-        }
-      } catch {}
-      orb.style.transform = `scale(${(1 + level * 0.24).toFixed(3)})`;
-      orb.style.filter = `brightness(${(1 + level * 0.3).toFixed(2)}) saturate(${(1 + level * 0.35).toFixed(2)})`;
-      rafId = requestAnimationFrame(tick);
-    };
-    rafId = requestAnimationFrame(tick);
-  }
-  function stopMeter() {
-    cancelAnimationFrame(rafId);
-    rafId = 0;
-    orb.style.transform = "";
-    orb.style.filter = "";
-  }
-
   function teardown() {
-    document.body.classList.remove("live","speaking","connecting");
-    endBtn.classList.add("hidden");
-    setStatus("Tap to talk", "Live voice to your vault on the box.");
-    stopMeter();
+    cancelAnimationFrame(rafId); rafId = 0;
+    smoothed.fill(0);
+    for (const b of bars) b.style.transform = "scaleY(.16)";
+    document.body.classList.remove("live", "speaking", "connecting");
+    toggleBtn.textContent = "Start"; toggleBtn.disabled = false;
+    setStatus("Tap start to talk", "Live voice to your vault on the box.");
     conv = null; connecting = false;
   }
 
-  async function end() {
+  async function stop() {
     try { if (conv) await conv.endSession(); } catch {}
     teardown();
   }
 
-  orb.addEventListener("click", () => { if (conv) return; connect(); });
-  endBtn.addEventListener("click", end);
+  toggleBtn.addEventListener("click", () => { if (conv) stop(); else start(); });
   if (!token) {
     setErr("Missing token — open the link from vault-chat Settings.");
   } else if (!micAvailable()) {
