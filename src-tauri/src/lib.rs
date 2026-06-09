@@ -4175,6 +4175,98 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
     .map_err(|e| e.to_string())?
 }
 
+/// Pick which commit a conflicted submodule gitlink should land on when two
+/// machines advanced it independently: the descendant if one side's commit
+/// contains the other (so no sub-repo work is dropped from the pointer), else
+/// None — the caller then converges both machines on "theirs" (the remote tip),
+/// and the sub-repo's own push/sync carries any local-ahead commits forward.
+fn choose_submodule_commit(sub: &str, ours: &str, theirs: &str) -> Option<String> {
+    if ours.is_empty() {
+        return if theirs.is_empty() { None } else { Some(theirs.to_string()) };
+    }
+    if theirs.is_empty() || ours == theirs {
+        return Some(ours.to_string());
+    }
+    let have = |c: &str| matches!(run_git(sub, &["cat-file", "-e", c]), Ok((_, _, 0)));
+    if have(ours) && have(theirs) {
+        if matches!(run_git(sub, &["merge-base", "--is-ancestor", theirs, ours]), Ok((_, _, 0))) {
+            return Some(ours.to_string());
+        }
+        if matches!(run_git(sub, &["merge-base", "--is-ancestor", ours, theirs]), Ok((_, _, 0))) {
+            return Some(theirs.to_string());
+        }
+    }
+    None
+}
+
+/// After a `git merge` left conflicts, resolve EVERY conflicted path
+/// deterministically so concurrent two-machine sync never wedges and never loses
+/// data:
+///   - a conflicted submodule gitlink → the descendant commit if one side
+///     contains the other, else "theirs" so both machines converge (the
+///     sub-repo's own sync carries its content);
+///   - any other conflicted file → take "theirs" and write "ours" to a
+///     `<path>.conflict` sidecar, so a genuine divergent edit is preserved for
+///     the user to reconcile rather than silently dropped.
+/// Append-only `*.jsonl` logs never reach here — git's `merge=union` already
+/// merged them. Returns true once nothing remains unmerged.
+fn resolve_merge_conflicts(vault: &str) -> bool {
+    let paths: Vec<String> = match run_git(vault, &["diff", "--name-only", "--diff-filter=U"]) {
+        Ok((out, _, 0)) => out.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect(),
+        _ => return false,
+    };
+    for path in &paths {
+        let (uf, _, _) = run_git(vault, &["ls-files", "-u", "--", path]).unwrap_or_default();
+        let is_submodule = uf.lines().any(|l| l.starts_with("160000"));
+        if is_submodule {
+            let mut ours = String::new();
+            let mut theirs = String::new();
+            for l in uf.lines() {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                if parts.len() >= 3 {
+                    match parts[2] {
+                        "2" => ours = parts[1].to_string(),
+                        "3" => theirs = parts[1].to_string(),
+                        _ => {}
+                    }
+                }
+            }
+            let sub = format!("{}/{}", vault, path);
+            let sha = choose_submodule_commit(&sub, &ours, &theirs)
+                .or(if theirs.is_empty() { None } else { Some(theirs.clone()) })
+                .or(if ours.is_empty() { None } else { Some(ours.clone()) });
+            if let Some(sha) = sha {
+                let _ = run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &sha, path]);
+            } else {
+                let _ = run_git_mut(vault, &["rm", "--cached", "--", path]);
+            }
+            continue;
+        }
+        // Regular file: preserve OURS as a sidecar, take THEIRS into the tree.
+        let ours_content = run_git(vault, &["show", &format!(":2:{}", path)])
+            .ok()
+            .and_then(|(c, _, code)| if code == 0 { Some(c) } else { None });
+        let took_theirs = matches!(run_git_mut(vault, &["checkout", "--theirs", "--", path]), Ok((_, _, 0)));
+        if !took_theirs {
+            // Theirs deleted the file — keep ours so a live edit isn't lost.
+            let _ = run_git_mut(vault, &["checkout", "--ours", "--", path]);
+        }
+        let _ = run_git_mut(vault, &["add", "--", path]);
+        if took_theirs {
+            if let Some(content) = ours_content {
+                let sidecar = format!("{}.conflict", path);
+                if std::fs::write(format!("{}/{}", vault, sidecar), content).is_ok() {
+                    let _ = run_git_mut(vault, &["add", "--", &sidecar]);
+                }
+            }
+        }
+    }
+    matches!(
+        run_git(vault, &["diff", "--name-only", "--diff-filter=U"]),
+        Ok((ref rem, _, 0)) if rem.trim().is_empty()
+    )
+}
+
 #[tauri::command]
 async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -4218,32 +4310,47 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
                 error: true,
             });
         }
-        // Try a fast-forward first — clean and never creates a merge
-        // commit. If FF isn't possible, fall back to a rebase. If that
-        // fails, abort cleanly and surface a non-blocking error.
+        // Try a fast-forward first — clean, no merge commit, the common case.
         let upstream = format!("origin/{}", branch);
-        let (_, _, ff_code) =
-            run_git_mut(&vault, &["merge", "--ff-only", &upstream])?;
+        let (_, _, ff_code) = run_git_mut(&vault, &["merge", "--ff-only", &upstream])?;
         let pulled_msg = if ff_code == 0 {
             "pulled"
         } else {
-            // Rebase replays the user's local commits onto the remote tip; the
-            // committer for any new commit is the user's real identity, never a
-            // bot. (Original authors on replayed commits are preserved by git.)
-            let (rn, re) = human_identity(&vault);
-            let (_, stderr, rebase_code) =
-                run_git_as(&vault, &rn, &re, &["rebase", &upstream])?;
-            if rebase_code != 0 {
-                // Leave the working tree untouched — abort the half-applied
-                // rebase so the next attempt can start clean.
-                let _ = run_git_mut(&vault, &["rebase", "--abort"]);
+            // Diverged — both machines committed. We MERGE (not rebase): a merge
+            // reconciles the two tips, and the append-only `*.jsonl` logs
+            // auto-union via `.gitattributes`. Rebase would replay every local
+            // commit and wedge on the first conflict; with an always-on box +
+            // an intermittent laptop, that divergence is the normal case, so the
+            // sync must reconcile it, never abort-and-loop. Whatever the union
+            // can't handle (submodule pointers, a genuinely divergent file edit)
+            // is auto-resolved so sync always makes progress and never drops data.
+            let (mn, me) = human_identity(&vault);
+            let (_, mstderr, merge_code) =
+                run_git_as(&vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
+            if merge_code == 0 {
+                "merged origin"
+            } else if resolve_merge_conflicts(&vault) {
+                let (_, cstderr, ccode) = run_git_as(&vault, &mn, &me, &["commit", "--no-edit"])?;
+                if ccode != 0 {
+                    let _ = run_git_mut(&vault, &["merge", "--abort"]);
+                    return Ok(SyncOpResult {
+                        ok: false,
+                        message: format!("merge commit failed: {}", first_line(&cstderr).trim()),
+                        error: true,
+                    });
+                }
+                "merged origin (auto-resolved)"
+            } else {
+                // Should be unreachable — every conflict class has a resolution.
+                // If something slips through, abort cleanly so the tree is intact
+                // and the next tick retries, rather than leaving a half-merge.
+                let _ = run_git_mut(&vault, &["merge", "--abort"]);
                 return Ok(SyncOpResult {
                     ok: false,
-                    message: format!("merge conflict: {}", first_line(&stderr).trim()),
+                    message: format!("unresolved conflict: {}", first_line(&mstderr).trim()),
                     error: true,
                 });
             }
-            "rebased onto origin"
         };
         // Pull succeeded — bring any registered submodules to the commits the
         // vault now points at (clones them on a fresh machine). Best-effort.
