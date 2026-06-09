@@ -121,6 +121,12 @@ const NOTES_DIR: &str = ".vault-chat";
 const NOTES_FILE: &str = "notes.jsonl";
 const HUMANIZED_FILE: &str = "humanized.json";
 const CONVERSATIONS_FILE: &str = "conversations.jsonl";
+/// Folder holding one `<id>.json` per conversation (replaces the single
+/// `conversations.jsonl` monolith). Per-conversation files mean a new message
+/// rewrites only its own small file, not the whole multi-MB blob — collapsing
+/// git churn — and two machines editing *different* conversations no longer
+/// collide on the same file at all.
+const CONVERSATIONS_DIR: &str = "conversations";
 const SCHEDULES_FILE: &str = "schedules.jsonl";
 
 #[derive(Serialize)]
@@ -885,16 +891,58 @@ async fn notes_write_all(vault: String, lines: Vec<String>) -> Result<(), String
     .map_err(|e| e.to_string())?
 }
 
+/// Sanitize a conversation id into a safe single-segment filename stem. Ids are
+/// normally short hex-with-dashes (e.g. `8e9f6621-1e4`); this is just defense so
+/// a malformed id can never escape the conversations folder or clobber a path.
+fn conversation_file_stem(id: &str) -> String {
+    let safe: String = id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let trimmed = safe.trim_matches('_');
+    if trimmed.is_empty() {
+        "conversation".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[tauri::command]
 async fn conversations_read(vault: String) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let path = std::path::Path::new(&vault)
-            .join(NOTES_DIR)
-            .join(CONVERSATIONS_FILE);
-        if !path.exists() {
+        let base = std::path::Path::new(&vault).join(NOTES_DIR);
+        let dir = base.join(CONVERSATIONS_DIR);
+        // Preferred layout: one <id>.json per conversation. Read them all.
+        if dir.is_dir() {
+            let mut out: Vec<String> = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                        continue; // skip .tmp and anything else
+                    }
+                    if let Ok(contents) = std::fs::read_to_string(&p) {
+                        let t = contents.trim();
+                        if !t.is_empty() {
+                            out.push(t.to_string());
+                        }
+                    }
+                }
+            }
+            // If the folder exists but is empty AND a legacy monolith is still
+            // present (e.g. folder created but first write hasn't migrated yet),
+            // fall through to the legacy read below.
+            if !out.is_empty() {
+                return Ok(out);
+            }
+        }
+        // Legacy fallback: the single conversations.jsonl monolith. The next
+        // write migrates it into the folder and removes it.
+        let legacy = base.join(CONVERSATIONS_FILE);
+        if !legacy.exists() {
             return Ok(Vec::new());
         }
-        let contents = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let contents = std::fs::read_to_string(&legacy).map_err(|e| e.to_string())?;
         Ok(contents
             .lines()
             .filter(|l| !l.trim().is_empty())
@@ -908,21 +956,77 @@ async fn conversations_read(vault: String) -> Result<Vec<String>, String> {
 #[tauri::command]
 async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let dir = std::path::Path::new(&vault).join(NOTES_DIR);
+        let base = std::path::Path::new(&vault).join(NOTES_DIR);
+        let dir = base.join(CONVERSATIONS_DIR);
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
-        let path = dir.join(CONVERSATIONS_FILE);
-        let tmp = dir.join(format!("{}.tmp", CONVERSATIONS_FILE));
-        let mut body = lines.join("\n");
-        if !body.is_empty() && !body.ends_with('\n') {
-            body.push('\n');
+
+        // Write each conversation to its own <id>.json, but ONLY when its
+        // content actually changed — an unchanged file is left exactly as is, so
+        // git sees no diff for it. This is what collapses the churn: a single
+        // new message rewrites one small file instead of the whole blob.
+        let mut keep: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for line in &lines {
+            let t = line.trim();
+            if t.is_empty() {
+                continue;
+            }
+            // The conversation id names the file. Parse it out; skip a line we
+            // can't identify rather than risk an ambiguous filename.
+            let id = match serde_json::from_str::<serde_json::Value>(t)
+                .ok()
+                .as_ref()
+                .and_then(|v| v.get("id"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+            {
+                Some(id) if !id.is_empty() => id,
+                _ => continue,
+            };
+            let stem = conversation_file_stem(&id);
+            keep.insert(stem.clone());
+            let path = dir.join(format!("{}.json", stem));
+            let body = format!("{}\n", t);
+            // Skip the write if on-disk content is already identical.
+            if let Ok(existing) = std::fs::read_to_string(&path) {
+                if existing == body {
+                    continue;
+                }
+            }
+            // Write-temp-then-rename so a crash mid-write leaves the previous
+            // good file in place rather than a half-written one. The temp lives
+            // at the `.vault-chat/` top level (not inside conversations/) so the
+            // managed `.gitignore`'s `.vault-chat/*.tmp` rule keeps a stray temp
+            // out of git; the rename into the subfolder is same-volume/atomic.
+            let tmp = base.join(format!("{}.json.tmp", stem));
+            std::fs::write(&tmp, &body)
+                .map_err(|e| format!("write {}: {}", tmp.display(), e))?;
+            std::fs::rename(&tmp, &path)
+                .map_err(|e| format!("rename {} -> {}: {}", tmp.display(), path.display(), e))?;
         }
-        // Write-temp-then-rename so a crash mid-write leaves the previous
-        // good file in place rather than a half-written one.
-        std::fs::write(&tmp, body)
-            .map_err(|e| format!("write {}: {}", tmp.display(), e))?;
-        std::fs::rename(&tmp, &path)
-            .map_err(|e| format!("rename {} -> {}: {}", tmp.display(), path.display(), e))
+
+        // Delete files for conversations no longer present (a deletion).
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                    continue;
+                }
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                    if !keep.contains(stem) {
+                        let _ = std::fs::remove_file(&p);
+                    }
+                }
+            }
+        }
+
+        // Migration complete: now that the folder is the source of truth, drop
+        // the legacy monolith so it stops being re-stored on every sync.
+        let legacy = base.join(CONVERSATIONS_FILE);
+        if legacy.exists() {
+            let _ = std::fs::remove_file(&legacy);
+        }
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -4294,6 +4398,31 @@ mod repo_class_tests {
             repo_name("https://github.com/Buckarney/IEMS-305-Soccer-Forecasting").as_deref(),
             Some("IEMS-305-Soccer-Forecasting")
         );
+    }
+}
+
+#[cfg(test)]
+mod conversation_storage_tests {
+    use super::conversation_file_stem;
+
+    #[test]
+    fn real_ids_map_to_themselves() {
+        // Conversation ids are hex-with-dashes — already safe, must pass through.
+        assert_eq!(conversation_file_stem("8e9f6621-1e4"), "8e9f6621-1e4");
+        assert_eq!(conversation_file_stem("fb9398cb"), "fb9398cb");
+        assert_eq!(conversation_file_stem("049dcbff-c83"), "049dcbff-c83");
+    }
+
+    #[test]
+    fn hostile_ids_cannot_escape_the_folder() {
+        // A malformed id must never produce a path separator, traversal, or
+        // empty stem that could write outside the conversations folder.
+        assert!(!conversation_file_stem("../../etc/passwd").contains('/'));
+        assert!(!conversation_file_stem("../../etc/passwd").contains("..") );
+        assert!(!conversation_file_stem("a/b\\c").contains('/'));
+        assert!(!conversation_file_stem("a/b\\c").contains('\\'));
+        assert_eq!(conversation_file_stem(""), "conversation");
+        assert_eq!(conversation_file_stem("///"), "conversation");
     }
 }
 
