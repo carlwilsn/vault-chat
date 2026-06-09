@@ -1,3 +1,5 @@
+mod voice_server;
+
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -5634,6 +5636,26 @@ fn app_ready(window: tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+// ----- phone voice mode: embedded HTTP server (see voice_server.rs) -----
+// Inert until the frontend opts in by calling voice_server_start with a
+// freshly-generated token. Stage 1 surfaces only start/stop/status.
+
+#[tauri::command]
+fn voice_server_start(port: u16, token: String) -> Result<u16, String> {
+    voice_server::start(port, token)
+}
+
+#[tauri::command]
+fn voice_server_stop() -> Result<(), String> {
+    voice_server::stop();
+    Ok(())
+}
+
+#[tauri::command]
+fn voice_server_status() -> bool {
+    voice_server::is_running()
+}
+
 #[derive(Serialize)]
 struct TexCompileResult {
     pdf_path: String,
@@ -6268,6 +6290,9 @@ pub fn run() {
             compile_tex,
             agent_audio_play,
             agent_audio_stop,
+            voice_server_start,
+            voice_server_stop,
+            voice_server_status,
             app_ready
         ])
         .run(tauri::generate_context!())

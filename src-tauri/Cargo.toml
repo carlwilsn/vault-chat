@@ -35,6 +35,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 # Passphrase-based encryption for the cross-machine key sync (keys.enc).
 age = "0.10"
 base64 = "0.22"
+# Tiny embedded HTTP server for phone voice mode (box serves a Tailscale-reachable
+# voice page + token-guarded session/tool relay). Sync, runs on its own thread.
+tiny_http = "0.12"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
