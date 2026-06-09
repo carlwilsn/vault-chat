@@ -80,6 +80,10 @@
 
 <script type="module">
   const NUM_BARS = 12, DECAY = 0.85;
+  // Preload the ElevenLabs SDK the moment the page opens — importing it inside
+  // the tap was a cold CDN fetch at connect time, the likely root of the
+  // "first tap fails, second works" pattern. By tap time it's already here.
+  const sdkPromise = import("https://esm.sh/@elevenlabs/client@1.7.0").catch(() => null);
   const token = new URLSearchParams(location.search).get("token") || "";
   const statusEl = document.getElementById("status");
   const subEl = document.getElementById("sub");
@@ -249,7 +253,9 @@
         throw new Error(`session ${r.status}: ${(await r.text()).slice(0, 200)}`);
       }
       if (!cfg) throw new Error("session not ready");
-      const { Conversation } = await import("https://esm.sh/@elevenlabs/client@1.7.0");
+      // Preloaded at page open; re-import only if that first fetch failed.
+      const sdk = (await sdkPromise) || (await import("https://esm.sh/@elevenlabs/client@1.7.0"));
+      const { Conversation } = sdk;
       // Watchdog: a silently-stalled handshake must FAIL, not hang forever —
       // startSession has no timeout of its own, and a hang here is invisible
       // (no throw, so even the auto-retry never fires). 15s then reject; if the

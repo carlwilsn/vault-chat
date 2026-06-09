@@ -234,7 +234,12 @@ fn handle(mut req: Request, token: &str) {
             let _ = req.respond(resp_text(200, "text/html; charset=utf-8", VOICE_PAGE.to_string()));
         }
         (Method::Post, "/session") => {
-            let body = match ctx_slot().lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            // Fresh-first: pull the context from the app right now (no push-
+            // timing window, current document state). Cached push is the
+            // fallback so a momentarily-busy frontend doesn't break connect.
+            let ctx = request_fresh_context()
+                .or_else(|| ctx_slot().lock().unwrap_or_else(|e| e.into_inner()).clone());
+            let body = match ctx {
                 Some(ctx) => match mint_session(&ctx) {
                     Ok(j) => resp_text(200, "application/json", j),
                     Err(e) => resp_text(
@@ -342,6 +347,44 @@ pub fn tool_respond(req_id: String, result: String) {
     if let Some(tx) = pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&req_id) {
         let _ = tx.send(result);
     }
+}
+
+/// Ask the running app for FRESH voice context (same relay pattern as tools):
+/// emit `voice:context`, the frontend builds the context with the exact desktop
+/// builders and answers by req id. This is what kills the 503 window at its
+/// root — /session no longer depends on a heartbeat push having landed first —
+/// and it means the phone connects with the *current* context (open document,
+/// live dynamic vars), not an up-to-20s-stale snapshot. Caches the result so
+/// the pushed-context path stays a warm fallback.
+fn request_fresh_context() -> Option<Ctx> {
+    let app = app_slot().lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+    let id = REQ.fetch_add(1, Ordering::Relaxed).to_string();
+    let (tx, rx) = mpsc::channel::<String>();
+    pending().lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), tx);
+    if app.emit("voice:context", json!({ "reqId": id })).is_err() {
+        pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        return None;
+    }
+    let out = rx.recv_timeout(Duration::from_secs(8));
+    pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    let s = out.ok()?;
+    let v: Value = serde_json::from_str(&s).ok()?;
+    let get = |k: &str| v.get(k).and_then(|x| x.as_str()).map(|x| x.to_string());
+    let ctx = Ctx {
+        el_key: get("elKey")?,
+        agent_id: get("agentId")?,
+        voice_id: get("voiceId").unwrap_or_default(),
+        system_prompt: get("systemPrompt").unwrap_or_default(),
+        dynamic_vars: v.get("dynamicVariables").cloned().unwrap_or_else(|| json!({})),
+        tool_names: v
+            .get("toolNames")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
+        vault: get("vault")?,
+    };
+    *ctx_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx.clone());
+    Some(ctx)
 }
 
 /// Run a tool with FULL desktop parity: relay it to the running app, which

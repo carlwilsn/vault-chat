@@ -35,6 +35,20 @@ async function wireToolRelay(): Promise<void> {
     }
     await invoke("voice_tool_respond", { reqId, result }).catch(() => {});
   });
+  // On-demand context: the box asks for FRESH context at /session time (kills
+  // the 503 push-timing window; the phone connects with the current document
+  // state). Empty result → the box falls back to its cached push / 503s.
+  await listen<{ reqId: string }>("voice:context", async (event) => {
+    const { reqId } = event.payload;
+    let result = "";
+    try {
+      const ctx = await buildPhoneVoiceContext();
+      if (ctx) result = JSON.stringify(ctx);
+    } catch {
+      /* answer empty — box falls back */
+    }
+    await invoke("voice_tool_respond", { reqId, result }).catch(() => {});
+  });
 }
 
 // Fixed port so the link is stable. High, unprivileged, unlikely to clash.
