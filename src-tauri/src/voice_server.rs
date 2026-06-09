@@ -104,7 +104,14 @@ pub fn start(port: u16, token: String) -> Result<u16, String> {
         .name("voice-http".into())
         .spawn(move || {
             for req in server_for_thread.incoming_requests() {
-                handle(req, &token_for_thread);
+                // One thread per request. A tool relay can block ~25s and a
+                // session mint ~20s — handled inline they'd stall the single
+                // accept loop and queue every later /session (and even the page
+                // itself) behind them, which reads as "stuck on Connecting…".
+                let tok = token_for_thread.clone();
+                let _ = std::thread::Builder::new()
+                    .name("voice-req".into())
+                    .spawn(move || handle(req, &tok));
             }
         })
         .map_err(|e| e.to_string())?;

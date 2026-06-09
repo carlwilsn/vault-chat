@@ -250,7 +250,12 @@
       }
       if (!cfg) throw new Error("session not ready");
       const { Conversation } = await import("https://esm.sh/@elevenlabs/client@1.7.0");
-      conv = await Conversation.startSession({
+      // Watchdog: a silently-stalled handshake must FAIL, not hang forever —
+      // startSession has no timeout of its own, and a hang here is invisible
+      // (no throw, so even the auto-retry never fires). 15s then reject; if the
+      // late session ever does resolve, end it so it can't leak.
+      let timedOut = false;
+      const sessionPromise = Conversation.startSession({
         signedUrl: cfg.signedUrl,
         overrides: {
           agent: { prompt: { prompt: cfg.systemPrompt || "" }, language: "en", firstMessage: "" },
@@ -259,6 +264,7 @@
         dynamicVariables: cfg.dynamicVariables || {},
         clientTools: buildClientTools(cfg.toolNames),
         onConnect: () => {
+          if (timedOut) return;
           connecting = false; autoRetried = false;
           document.body.classList.remove("connecting");
           document.body.classList.add("live");
@@ -266,7 +272,7 @@
           setStatus("Listening", "Just talk — I'm on.");
           meter();
         },
-        onDisconnect: () => teardown(),
+        onDisconnect: () => { if (!timedOut) teardown(); },
         onError: (m) => setErr(typeof m === "string" ? m : (m?.message || "voice error")),
         // The agent's real audio chunks: compute a level from them so the bars
         // track the agent's voice, and mark it "speaking" while chunks flow.
@@ -280,6 +286,16 @@
         },
         // onModeChange left out on purpose — speaking is audio-driven (above).
       });
+      sessionPromise.then((c) => {
+        if (timedOut && c) { try { c.endSession(); } catch {} }
+      }).catch(() => {});
+      conv = await Promise.race([
+        sessionPromise,
+        new Promise((_, rej) => setTimeout(() => {
+          timedOut = true;
+          rej(new Error("connect timed out after 15s"));
+        }, 15000)),
+      ]);
     } catch (e) {
       connecting = false;
       teardownAudio();
