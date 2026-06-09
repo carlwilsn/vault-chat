@@ -61,7 +61,7 @@ export async function startPhoneVoiceHost(): Promise<void> {
   await pushContext();
   window.setInterval(() => {
     void pushContext();
-  }, 60_000);
+  }, 20_000);
 }
 
 /**

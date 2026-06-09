@@ -226,7 +226,7 @@ fn handle(mut req: Request, token: &str) {
                 None => resp_text(
                     503,
                     "application/json",
-                    json!({ "error": "voice host not ready — open vault-chat on the box" }).to_string(),
+                    json!({ "error": "voice host not ready — the vault-chat app hosting this link needs a vault open and an ElevenLabs key set (it pushes context every ~20s)" }).to_string(),
                 ),
             };
             let _ = req.respond(body);

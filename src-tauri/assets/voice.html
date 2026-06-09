@@ -161,7 +161,7 @@
       const r = await api("/session", { method: "POST" });
       if (!r.ok) throw new Error(`session ${r.status}: ${(await r.text()).slice(0,200)}`);
       const cfg = await r.json();
-      const { Conversation } = await import("https://esm.sh/@elevenlabs/client@0.1.5");
+      const { Conversation } = await import("https://esm.sh/@elevenlabs/client@1.7.0");
       conv = await Conversation.startSession({
         signedUrl: cfg.signedUrl,
         overrides: {
