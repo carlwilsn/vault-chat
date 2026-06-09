@@ -220,9 +220,13 @@
     setStatus("Connecting…", "Waking the session on the box — one sec.");
     try {
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Set up our mic analyser — but NEVER block the connect on it. Awaiting
+      // resume() here hung iOS (the user gesture is gone after the await above),
+      // so resume fire-and-forget; the analyser starts producing data once the
+      // context wakes (the session audio resumes it anyway).
       try {
         micCtx = new (window.AudioContext || window.webkitAudioContext)();
-        await micCtx.resume();
+        micCtx.resume().catch(() => {});
         const src = micCtx.createMediaStreamSource(micStream);
         micAnalyser = micCtx.createAnalyser();
         micAnalyser.fftSize = 64;
