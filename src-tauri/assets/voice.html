@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-<meta name="theme-color" content="#0b0c0e" />
+<meta name="theme-color" content="#1a1a1a" />
 <!-- Home-screen "app": launch fullscreen/standalone (no browser chrome) on iOS
      and Android when added to the home screen, with a branded icon + dark bars. -->
 <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -14,14 +14,20 @@
 <link rel="icon" type="image/svg+xml" href="/icon.svg" />
 <title>vault-chat · voice</title>
 <style>
+  /* Matches the app's graphite theme exactly: --background 0 0% 10%, --primary
+     0 0% 85% (the bars), --foreground 0 0% 92%, --border 0 0% 22%. No colour. */
   :root{
-    --bg:#0b0c0e; --panel:#141619; --line:#23262b;
-    --text:#e8eaed; --dim:#8a9099; --accent:#7c9cff; --accent2:#a886ff; --err:#ff6b6b;
+    --bg:#1a1a1a; --panel:#212121; --line:#383838;
+    --text:#ebebeb; --dim:#999999; --bar:#d9d9d9; --err:#e5736b;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html,body{margin:0;height:100%}
+  /* Fill edge-to-edge: the root must be dark too, or the notch / home-bar /
+     overscroll areas show Safari's white default behind the page. */
+  html{background:var(--bg);height:100%}
+  html,body{margin:0}
   body{
-    background:radial-gradient(120% 90% at 50% -10%, #16181d 0%, var(--bg) 60%);
+    min-height:100dvh;
+    background:var(--bg);
     color:var(--text);
     font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -37,10 +43,8 @@
      they grow symmetrically from the middle and are driven by real audio. */
   .vizwrap{height:120px;display:flex;align-items:center;justify-content:center;position:relative;width:260px}
   .viz{display:flex;align-items:center;gap:6px;height:96px}
-  .bar{width:6px;height:96px;border-radius:4px;
-    background:linear-gradient(180deg,var(--accent),var(--accent2));
+  .bar{width:6px;height:96px;border-radius:4px;background:var(--bar);
     transform:scaleY(.16);transform-origin:center;transition:transform .06s linear}
-  body.live .bar{box-shadow:0 0 18px -4px var(--accent)}
   .connecting-label{display:none;font-size:15px;font-weight:600;color:var(--dim);
     position:absolute;inset:0;align-items:center;justify-content:center}
   body.connecting .viz{opacity:0}
@@ -51,9 +55,9 @@
   .sub{color:var(--dim);font-size:14px;min-height:20px;max-width:320px}
   .err{color:var(--err);font-size:13px;max-width:340px;white-space:pre-wrap;margin-top:4px}
 
-  .toggle{margin-top:4px;background:linear-gradient(145deg,var(--accent),var(--accent2));
-    color:#0b0c0e;border:none;padding:16px 46px;border-radius:999px;font-size:17px;font-weight:700;
-    cursor:pointer;box-shadow:0 16px 44px -18px var(--accent);transition:transform .12s ease,filter .2s}
+  .toggle{margin-top:4px;background:var(--bar);
+    color:#1a1a1a;border:none;padding:16px 46px;border-radius:999px;font-size:17px;font-weight:700;
+    cursor:pointer;transition:transform .12s ease,filter .2s}
   .toggle:active{transform:scale(.97)}
   body.live .toggle{background:transparent;color:var(--text);border:1px solid var(--line);box-shadow:none;font-weight:600}
   .toggle[disabled]{opacity:.6}
