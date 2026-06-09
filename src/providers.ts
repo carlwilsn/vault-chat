@@ -12,6 +12,7 @@ export type ModelSpec = {
 };
 
 export const MODELS: ModelSpec[] = [
+  { provider: "anthropic", id: "claude-fable-5", label: "Claude Fable 5" },
   { provider: "anthropic", id: "claude-opus-4-8", label: "Claude Opus 4.8" },
   { provider: "anthropic", id: "claude-opus-4-7", label: "Claude Opus 4.7" },
   { provider: "anthropic", id: "claude-opus-4-6", label: "Claude Opus 4.6" },
@@ -43,6 +44,15 @@ export const MODELS: ModelSpec[] = [
 ];
 
 export const DEFAULT_MODEL_ID = "claude-opus-4-8";
+
+// Workers spawned by the supervisor are heavy, long-horizon jobs — not the
+// daily chat-pane default. Fable 5 is the expert long-running worker: stays
+// coherent across millions of tokens and self-corrects from its own notes,
+// which is exactly what a multi-step grind needs and overkill for a chat reply.
+// Decoupled from DEFAULT_MODEL_ID on purpose — a lighter chat default must
+// never drag a worker down, and a pricey worker must never become the chat
+// default. Override per-run by passing modelId to startWorker/runWorkerTurn.
+export const DEFAULT_WORKER_MODEL_ID = "claude-fable-5";
 
 // Sentinel value stored in the model picker when the user selects "Auto".
 // At send-time `resolveAutoModel` turns this into a concrete model:

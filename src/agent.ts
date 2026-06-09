@@ -463,12 +463,14 @@ Be terse. If the task is research, return findings as a structured list with fil
     const budgetForEffort = { low: 1024, medium: 3000, high: 12000 } as const;
     let providerOptions: ProviderOptions | undefined;
     if (spec.provider === "anthropic") {
-      // Opus 4.7+ uses the new adaptive reasoning API: thinking.type
-      // is "adaptive" and the budget is controlled via output_config.
-      // effort instead of a raw token budget. Older models (Opus 4.6,
-      // Sonnet 4.6, Haiku 4.5) still accept the enabled+budgetTokens
-      // shape, and sending the new keys to them fails — so branch.
-      const isAdaptive = /^claude-opus-4-(7|8)/i.test(spec.id);
+      // Opus 4.7+ and the Fable/Mythos 5 tier use the new adaptive
+      // reasoning API: thinking.type is "adaptive" and the budget is
+      // controlled via output_config.effort instead of a raw token budget.
+      // Older models (Opus 4.6, Sonnet 4.6, Haiku 4.5) still accept the
+      // enabled+budgetTokens shape, and sending the new keys to them fails
+      // — so branch. (Fable/Mythos ship after 4.8 and inherit its adaptive
+      // API shape; revert this clause if their API ever diverges.)
+      const isAdaptive = /^claude-(opus-4-(7|8)|fable-|mythos-)/i.test(spec.id);
       providerOptions = isAdaptive
         ? {
             anthropic: {

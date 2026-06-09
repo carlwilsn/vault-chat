@@ -126,6 +126,8 @@ function modelPowerRank(spec: ModelSpec): number {
 
   if (spec.provider === "anthropic") {
     const v = versionScore(id); // e.g. 4.7 → 407
+    // Fable / Mythos are the Mythos-class frontier tier — above Opus.
+    if (id.includes("fable") || id.includes("mythos")) return 11_000 + v;
     if (id.includes("opus")) return 10_000 + v;
     if (id.includes("sonnet")) return 9_000 + v;
     if (id.includes("haiku")) return 8_000 + v;

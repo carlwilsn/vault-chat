@@ -1,5 +1,11 @@
 import { runAgent } from "./agent";
-import { findModel, AUTO_MODEL_ID, resolveAutoModel, getLiveCatalog } from "./providers";
+import {
+  findModel,
+  AUTO_MODEL_ID,
+  DEFAULT_WORKER_MODEL_ID,
+  resolveAutoModel,
+  getLiveCatalog,
+} from "./providers";
 import {
   readConversations,
   writeConversations,
@@ -434,11 +440,23 @@ export async function runWorkerTurn(
   opts: { modelId?: string } = {},
 ): Promise<{ reply: string; error?: string }> {
   const store = useStore.getState();
-  let modelId = opts.modelId || store.modelId;
+  // Workers default to the heavy long-horizon worker model (Fable), NOT the
+  // chat-pane default — they're expert grinds, not daily chat. An explicit
+  // opts.modelId (e.g. a schedule's pinned model) still wins. If the worker
+  // model can't run (no Anthropic key / not in catalog yet), fall back to the
+  // chat default so a worker never silently no-ops on a fresh setup.
+  let modelId = opts.modelId || DEFAULT_WORKER_MODEL_ID;
   if (modelId === AUTO_MODEL_ID) {
     modelId = resolveAutoModel(message, store.apiKeys, getLiveCatalog())?.id ?? modelId;
   }
-  const spec = findModel(modelId);
+  let spec = findModel(modelId);
+  if ((!spec || !store.apiKeys[spec.provider]) && !opts.modelId && modelId !== store.modelId) {
+    const fallback = findModel(store.modelId);
+    if (fallback && store.apiKeys[fallback.provider]) {
+      modelId = store.modelId;
+      spec = fallback;
+    }
+  }
   const apiKey = spec ? store.apiKeys[spec.provider] : undefined;
   if (!spec || !apiKey) {
     return { reply: "", error: "no model / API key configured" };
