@@ -18,6 +18,7 @@ import {
 import { useStore, type ChatMessage, type LiveTool } from "./store";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import { registerRun, unregisterRun, abortRun, isRunActive } from "./runRegistry";
+import { vlog } from "./debugLog";
 
 // Minimum gap between Telegram progress pings during a long headless run,
 // so the phone gets "still working" signal without being spammed.
@@ -299,6 +300,13 @@ export async function runScheduledHeadlessTurn(
   const controller = new AbortController();
   registerRun(conversationId, controller);
 
+  let runErr: string | null = null;
+  vlog("sched.wake", {
+    conv: conversationId.slice(0, 8),
+    quiet: opts.quietUnlessAlert ?? false,
+    prompt: prompt.slice(0, 60),
+  });
+
   try {
     await runAgent({
       modelId,
@@ -341,6 +349,7 @@ export async function runScheduledHeadlessTurn(
       },
     });
   } catch (e) {
+    runErr = String(e);
     acc = (acc + `\n\n⚠️ scheduled run failed: ${String(e)}`).trim();
     notify(`⚠️ scheduled run failed: ${String(e)}`);
   } finally {
@@ -352,6 +361,18 @@ export async function runScheduledHeadlessTurn(
   // returns null unless it explicitly emitted an ALERT:; a normal schedule
   // returns its reply unless it's the [[SILENT]] sentinel.
   const deliver = scheduledDeliveryText(acc, opts.quietUnlessAlert ?? false);
+  // Per-cycle debug trail. Survives even a silent "nothing to report" turn,
+  // which otherwise prunes itself and leaves no transcript — so this is the
+  // timeline for diagnosing a supervisor that stopped watching: did it wake,
+  // what did it call (a `Schedule` in tools = it re-armed its watch), did it
+  // error, did it alert.
+  vlog("sched.turn", {
+    conv: conversationId.slice(0, 8),
+    tools: tools.map((t) => t.name),
+    replyLen: acc.length,
+    error: runErr,
+    deliver: deliver == null ? "silent" : "sent",
+  });
 
   let finalList = await readConversations(vault);
   let fi = finalList.findIndex((c) => c.id === conversationId);

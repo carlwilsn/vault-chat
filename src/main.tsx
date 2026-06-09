@@ -43,6 +43,14 @@ useStore.subscribe((s, prev) => {
     flushDebugLogToDisk(s.vaultPath).catch(() => {});
   }
 });
+// Periodic flush so the trail lands on disk *during* a long session, not only
+// on boot/vault-switch. Without this, a supervisor cycle that runs while the
+// app stays open (the common case for an overnight watch) never reaches
+// app-log.txt until a restart — making a live failure undebuggable. No-ops when
+// nothing is buffered, and app-log.txt is gitignored so it never churns git.
+setInterval(() => {
+  flushDebugLogToDisk(useStore.getState().vaultPath).catch(() => {});
+}, 45_000);
 
 export function applyHljsTheme(theme: string) {
   let link = document.getElementById("vault-chat-hljs") as HTMLLinkElement | null;

@@ -6,6 +6,7 @@ import {
   writeSchedules,
 } from "./schedules";
 import { sendMessage } from "./chat-controller";
+import { vlog } from "./debugLog";
 
 // Multi-vault scheduler. Each tracked vault gets its own loop that
 // reads its schedules.jsonl every 30s and fires any due schedules.
@@ -204,6 +205,15 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
 
   const store = useStore.getState();
   const isActiveVault = store.vaultPath === vault;
+
+  // Positive "a schedule fired at T" marker — covers both fire paths, so even
+  // a wake that produces nothing leaves a trail (the self-scheduled supervisor
+  // watch is a chain of these; a missing marker is how I spot a broken relay).
+  vlog("sched.fire", {
+    name: s.name,
+    conv: conversationId.slice(0, 8),
+    active: isActiveVault,
+  });
 
   if (isActiveVault) {
     // Active vault: run via chat-controller. targetConvIdOverride
