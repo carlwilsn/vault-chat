@@ -98,9 +98,19 @@
     bars.push(b);
   }
 
+  // Our own Web Audio analyser on the mic stream. On mobile the EL SDK's analyser
+  // context can stay suspended and report all-zeros (why the bars sat flat); ours
+  // is resumed on the tap and is reliable for the user's input bars.
+  let micCtx = null, micAnalyser = null, micBuf = null, autoRetried = false;
+
   const setStatus = (s, sub) => { statusEl.textContent = s; if (sub !== undefined) subEl.textContent = sub; };
   const setErr = (e) => { errEl.textContent = e || ""; };
   const micAvailable = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
+  function teardownAudio() {
+    try { if (micCtx) micCtx.close(); } catch {}
+    micCtx = null; micAnalyser = null; micBuf = null;
+  }
 
   async function api(path, opts) {
     const sep = path.includes("?") ? "&" : "?";
@@ -127,9 +137,22 @@
     let raw;
     try {
       const speaking = document.body.classList.contains("speaking");
+      // Agent (output): try the SDK spectrum first.
       const out = speaking && conv.getOutputByteFrequencyData ? bin(conv.getOutputByteFrequencyData(), NUM_BARS) : null;
       const outActive = out && out.reduce((a, b) => a + b, 0) > 0.05;
-      raw = outActive ? out : bin(conv.getInputByteFrequencyData && conv.getInputByteFrequencyData(), NUM_BARS);
+      if (outActive) {
+        raw = out;
+      } else if (speaking) {
+        // Output levels are flaky on mobile — gently pulse so the agent reads as talking.
+        const p = 0.18 + 0.12 * (0.5 + 0.5 * Math.sin(Date.now() / 160));
+        raw = new Array(NUM_BARS).fill(p);
+      } else if (micAnalyser) {
+        // You (input): our own analyser — works even when the SDK's reports zeros.
+        micAnalyser.getByteFrequencyData(micBuf);
+        raw = bin(micBuf, NUM_BARS);
+      } else {
+        raw = bin(conv.getInputByteFrequencyData && conv.getInputByteFrequencyData(), NUM_BARS);
+      }
     } catch { raw = new Array(NUM_BARS).fill(0); }
     for (let i = 0; i < NUM_BARS; i++) {
       const decayed = smoothed[i] * DECAY;
@@ -169,7 +192,17 @@
     toggleBtn.textContent = "…"; toggleBtn.disabled = true;
     setStatus("Connecting…", "Waking the session on the box — one sec.");
     try {
-      await navigator.mediaDevices.getUserMedia({ audio: true });
+      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      try {
+        micCtx = new (window.AudioContext || window.webkitAudioContext)();
+        await micCtx.resume();
+        const src = micCtx.createMediaStreamSource(micStream);
+        micAnalyser = micCtx.createAnalyser();
+        micAnalyser.fftSize = 64;
+        micAnalyser.smoothingTimeConstant = 0.5;
+        src.connect(micAnalyser);
+        micBuf = new Uint8Array(micAnalyser.frequencyBinCount);
+      } catch { micAnalyser = null; }
       // The host pushes context on open; if the phone connects in that brief
       // gap the server answers 503. Retry for ~10s so it self-heals instead of
       // failing instantly.
@@ -195,7 +228,7 @@
         dynamicVariables: cfg.dynamicVariables || {},
         clientTools: buildClientTools(cfg.toolNames),
         onConnect: () => {
-          connecting = false;
+          connecting = false; autoRetried = false;
           document.body.classList.remove("connecting");
           document.body.classList.add("live");
           toggleBtn.textContent = "Stop"; toggleBtn.disabled = false;
@@ -212,7 +245,16 @@
       });
     } catch (e) {
       connecting = false;
+      teardownAudio();
       document.body.classList.remove("connecting");
+      // First attempt often hiccups (mic/session warm-up) — retry once
+      // automatically so it doesn't take two taps.
+      if (!autoRetried) {
+        autoRetried = true;
+        setStatus("Reconnecting…", "First attempt hiccuped — retrying.");
+        setTimeout(() => start(), 800);
+        return;
+      }
       toggleBtn.textContent = "Start"; toggleBtn.disabled = false;
       setErr(String(e?.message || e));
       setStatus("Tap start to talk", "Couldn't connect — tap to retry.");
@@ -221,6 +263,8 @@
 
   function teardown() {
     cancelAnimationFrame(rafId); rafId = 0;
+    teardownAudio();
+    autoRetried = false;
     smoothed.fill(0);
     for (const b of bars) b.style.transform = "scaleY(.16)";
     document.body.classList.remove("live", "speaking", "connecting");
