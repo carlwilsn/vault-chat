@@ -572,7 +572,9 @@ export async function startWorker(
   const id = newConversationId();
   const t = title?.trim() || deriveConversationTitle([{ role: "user", content: task }]);
   const list = await readConversations(vault);
-  const fresh: Conversation = { ...emptyConversation(), id, source: "manual", title: t };
+  // Tagged "worker" so every surface (ChatsPanel, the phone app's list) can
+  // tell spawned subagents apart from the user's own chats.
+  const fresh: Conversation = { ...emptyConversation(), id, source: "worker", title: t };
   list.unshift(fresh);
   await writeConversations(vault, list);
   await useStore.getState().refreshConversationFromDisk(vault, id).catch(() => {});

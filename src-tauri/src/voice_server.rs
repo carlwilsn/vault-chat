@@ -323,6 +323,23 @@ fn handle(mut req: Request, token: &str) {
                 std::thread::sleep(Duration::from_millis(250));
             }
         }
+        (Method::Get, "/schedules") => {
+            let body = match relay_request("phone:schedules", json!({}), Duration::from_secs(10)) {
+                Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
+                _ => resp_text(503, "application/json", "{\"error\":\"app not answering — is a vault open?\"}".into()),
+            };
+            let _ = req.respond(body);
+        }
+        (Method::Post, "/schedule") => {
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            let body = match relay_request("phone:schedule", payload, Duration::from_secs(10)) {
+                Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
+                _ => resp_text(503, "application/json", "{\"error\":\"app not answering\"}".into()),
+            };
+            let _ = req.respond(body);
+        }
         (Method::Get, "/status") => {
             let body = match relay_request("phone:status", json!({}), Duration::from_secs(10)) {
                 Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
@@ -945,6 +962,7 @@ fn conversations_summary_json(vault: &str) -> String {
                 "title": c.get("title").and_then(|x| x.as_str()).unwrap_or("New chat"),
                 "lastActivityAt": c.get("lastActivityAt").and_then(|x| x.as_i64()).unwrap_or(0),
                 "source": c.get("source").and_then(|x| x.as_str()).unwrap_or("manual"),
+                "role": c.get("role").and_then(|x| x.as_str()).unwrap_or(""),
                 "msgCount": msgs.len(),
                 "preview": preview,
             })

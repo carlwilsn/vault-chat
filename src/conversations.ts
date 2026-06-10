@@ -1,7 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ChatMessage } from "./store";
 
-export type ConversationSource = "manual" | "telegram" | "scheduled" | "voice" | "phone";
+export type ConversationSource =
+  | "manual"
+  | "telegram"
+  | "scheduled"
+  | "voice"
+  | "phone"
+  | "worker";
 export type ConversationStatus = "idle" | "running";
 
 export type Conversation = {
@@ -19,6 +25,10 @@ export type Conversation = {
   // schedule with "send via Telegram" also binds it onto a non-telegram
   // thread (e.g. a coach thread) so the phone becomes a window into it.
   telegramChatId?: number;
+  // Special roles. "supervisor" threads get the vault's supervisor.md
+  // orchestrator prompt on every turn (the phone app's Supervisor button
+  // binds to the one conversation carrying this).
+  role?: "supervisor";
 };
 
 // Attach a Telegram chat_id to one conversation, detaching it from any
@@ -109,6 +119,7 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         source: parsed.source ?? "manual",
         unread: parsed.unread ?? false,
         telegramChatId: parsed.telegramChatId,
+        role: parsed.role,
       });
     } catch {
       // skip

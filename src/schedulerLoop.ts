@@ -128,8 +128,20 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
     // and lets git-synced changes from another machine pick up
     // without an app restart. The in-memory cache stays as a fast
     // path for the SchedulesPanel subscriber.
-    const fromDisk = await readSchedules(vault).catch(() => null);
+    let fromDisk = await readSchedules(vault).catch(() => null);
     if (fromDisk) {
+      // Lifecycle hygiene: a fired one-off is DONE — auto-disable it so the
+      // list doesn't accumulate stale "enabled" entries (and a stale watch
+      // can't look live). Covers rows fired by old builds too.
+      const swept = fromDisk.map((s) =>
+        s.recurrence.kind === "once" && s.enabled && s.lastFiredAt
+          ? { ...s, enabled: false }
+          : s,
+      );
+      if (swept.some((s, i) => s !== fromDisk![i])) {
+        fromDisk = swept;
+        void writeSchedules(vault, swept).catch(() => {});
+      }
       schedulesByVault.set(vault, fromDisk);
       emit();
     }
@@ -147,8 +159,13 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
       const fireAt = nextFireAt(s, s.lastFiredAt ?? s.createdAt ?? 0);
       if (fireAt === null) continue;
       if (fireAt > now) continue;
-      // Optimistic mark so a slow agent run doesn't double-fire.
-      const updated = { ...s, lastFiredAt: now };
+      // Optimistic mark so a slow agent run doesn't double-fire. A one-off
+      // that's firing right now is also spent — disable it in the same write.
+      const updated = {
+        ...s,
+        lastFiredAt: now,
+        enabled: s.recurrence.kind === "once" ? false : s.enabled,
+      };
       const cur = schedulesByVault.get(vault) ?? [];
       const next = cur.map((x) => (x.id === s.id ? updated : x));
       schedulesByVault.set(vault, next);

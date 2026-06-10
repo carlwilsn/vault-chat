@@ -53,6 +53,7 @@ function isThreadBusy(conv: Conversation): boolean {
 async function handlePhoneMessage(
   convId: string | null,
   text: string,
+  supervisor = false,
 ): Promise<Record<string, unknown>> {
   const s = useStore.getState();
   if (!s.vaultPath) return { error: "no vault open on the box" };
@@ -64,6 +65,22 @@ async function handlePhoneMessage(
   if (convId) {
     conv = s.conversations.find((c) => c.id === convId);
     if (!conv) return { error: `conversation ${convId} not found` };
+  } else if (supervisor) {
+    // ONE supervisor thread per vault: reuse it if it exists; its turns get
+    // the vault's supervisor.md orchestrator prompt (chat-controller passes
+    // supervisorMode for role === "supervisor") — without the Telegram
+    // brevity contract, since this is a rich surface.
+    conv = s.conversations.find((c) => c.role === "supervisor");
+    if (!conv) {
+      const fresh: Conversation = {
+        ...emptyConversation(),
+        source: "phone",
+        role: "supervisor",
+        title: "Supervisor",
+      };
+      useStore.setState({ conversations: [fresh, ...useStore.getState().conversations] });
+      conv = fresh;
+    }
   } else {
     // Fresh thread. Built inline (NOT newConversation()) so the desktop's
     // focus never jumps — same pattern as the Telegram inbound handler.
@@ -451,12 +468,68 @@ export async function startPhoneAppHost(): Promise<void> {
     .then(({ pubB64u }) => invoke("phone_set_vapid", { key: pubB64u }))
     .catch((e) => console.warn("[phone-app] vapid init failed:", e));
 
-  await listen<{ reqId: string; convId?: string | null; text?: string }>(
+  await listen<{ reqId: string; convId?: string | null; text?: string; supervisor?: boolean }>(
     "phone:msg",
     async (event) => {
-      const { reqId, convId, text } = event.payload;
+      const { reqId, convId, text, supervisor } = event.payload;
       try {
-        respond(reqId, await handlePhoneMessage(convId ?? null, String(text ?? "")));
+        respond(reqId, await handlePhoneMessage(convId ?? null, String(text ?? ""), !!supervisor));
+      } catch (e) {
+        respond(reqId, { error: String(e) });
+      }
+    },
+  );
+
+  // Full schedule list for the phone's drawer — read fresh from disk so the
+  // phone sees the same truth as the SchedulesPanel.
+  await listen<{ reqId: string }>("phone:schedules", async (event) => {
+    try {
+      const s = useStore.getState();
+      if (!s.vaultPath) {
+        respond(event.payload.reqId, { error: "no vault open" });
+        return;
+      }
+      const { readSchedules, recurrenceLabel, shortTimeLabel } = await import("./schedules");
+      const list = await readSchedules(s.vaultPath);
+      respond(event.payload.reqId, {
+        schedules: list.map((sc) => ({
+          id: sc.id,
+          name: sc.name || sc.prompt.split(/\s+/).slice(0, 5).join(" ") || "Schedule",
+          prompt: sc.prompt.slice(0, 200),
+          label: `${recurrenceLabel(sc.recurrence)} · ${shortTimeLabel(sc)}`,
+          enabled: sc.enabled,
+          lastFiredAt: sc.lastFiredAt,
+          sendViaTelegram: sc.sendViaTelegram,
+          quietUnlessAlert: !!sc.quietUnlessAlert,
+        })),
+      });
+    } catch (e) {
+      respond(event.payload.reqId, { error: String(e) });
+    }
+  });
+
+  // Toggle / delete a schedule from the phone. Uses the scheduler's own CRUD
+  // so the in-memory loop and the SchedulesPanel stay in sync.
+  await listen<{ reqId: string; action?: string; id?: string; enabled?: boolean }>(
+    "phone:schedule",
+    async (event) => {
+      const { reqId, action, id, enabled } = event.payload;
+      try {
+        const s = useStore.getState();
+        if (!s.vaultPath || !id) {
+          respond(reqId, { error: "no vault open or missing id" });
+          return;
+        }
+        const { toggleSchedule, deleteSchedule } = await import("./schedulerLoop");
+        if (action === "toggle") {
+          await toggleSchedule(s.vaultPath, id, !!enabled);
+          respond(reqId, { ok: true });
+        } else if (action === "delete") {
+          await deleteSchedule(s.vaultPath, id);
+          respond(reqId, { ok: true });
+        } else {
+          respond(reqId, { error: `unknown action ${action}` });
+        }
       } catch (e) {
         respond(reqId, { error: String(e) });
       }

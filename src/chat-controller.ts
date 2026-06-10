@@ -281,6 +281,7 @@ export async function sendMessage(
     bashDisabled,
     voiceMode: cur.voiceMode,
     telegramMode: targetConv?.source === "telegram",
+    supervisorMode: targetConv?.role === "supervisor",
     conversationId: targetConvId ?? undefined,
     isTelegramSourced: targetConv?.source === "telegram",
     reasoningEffort: cur.reasoningEffort,

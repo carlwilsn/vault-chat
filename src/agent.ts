@@ -163,11 +163,15 @@ export async function runAgent(params: {
   bashDisabled?: boolean;
   voiceMode?: boolean;
   telegramMode?: boolean;
+  // Supervisor role WITHOUT the Telegram brevity contract — used by the
+  // phone app's Supervisor thread (a rich surface that still wants the
+  // orchestrator role prompt). telegramMode implies it.
+  supervisorMode?: boolean;
   conversationId?: string;
   isTelegramSourced?: boolean;
   reasoningEffort?: import("./store").ReasoningEffort;
 }) {
-  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, telegramMode, conversationId, isTelegramSourced } = params;
+  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, telegramMode, supervisorMode, conversationId, isTelegramSourced } = params;
   const reasoningEffort = params.reasoningEffort ?? "medium";
 
   try {
@@ -187,9 +191,10 @@ export async function runAgent(params: {
       // is on, but loaded here so the prompt assembly stays a single pass.
       telegramMode ? loadVaultTelegramPrompt(vault) : Promise.resolve(""),
       // The supervisor role layers an always-on orchestrator (persistent mind,
-      // goal loop, worker steering) onto the Telegram agent. Loaded only in
-      // telegramMode and only applied if the vault has seeded the file.
-      telegramMode ? loadVaultSupervisorPrompt(vault) : Promise.resolve(""),
+      // goal loop, worker steering) onto the agent. Loaded for telegramMode
+      // (the classic phone channel) and supervisorMode (the phone app's
+      // Supervisor thread); applied only if the vault has seeded the file.
+      telegramMode || supervisorMode ? loadVaultSupervisorPrompt(vault) : Promise.resolve(""),
     ]);
 
     const { body: expandedMessage } = expandSkillInvocation(userMessage, skills);
@@ -233,7 +238,9 @@ export async function runAgent(params: {
     // supervisor.md` (so a vault that doesn't want a supervisor simply leaves
     // the file empty/absent and the Telegram agent stays a plain responder).
     const supervisorNote =
-      telegramMode && vaultSupervisor.trim() ? `\n${vaultSupervisor.trim()}` : "";
+      (telegramMode || supervisorMode) && vaultSupervisor.trim()
+        ? `\n${vaultSupervisor.trim()}`
+        : "";
 
     const system = [
       baseSystem,

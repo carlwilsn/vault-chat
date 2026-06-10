@@ -60,6 +60,21 @@
   .conv .t .age{color:var(--dim);font-size:12px;flex:0 0 auto}
   .conv .p{color:var(--dim);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
   .badge{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 5px;flex:0 0 auto}
+  .sechdr{padding:14px 16px 4px;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px}
+  .conv .rundot{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse 1.4s ease-in-out infinite;flex:0 0 auto}
+  .suprow{
+    display:flex;align-items:center;gap:11px;margin:10px 12px 2px;padding:13px 14px;
+    border:1px solid var(--line);border-radius:12px;background:var(--panel);
+    width:calc(100% - 24px);text-align:left;
+  }
+  .suprow .ico{font-size:17px}
+  .suprow .lbl{flex:1;font-weight:600}
+  .suprow .lbl small{display:block;font-weight:400;font-size:11px;color:var(--dim)}
+  .schedrow{display:flex;align-items:center;gap:8px}
+  .schedrow .info{flex:1;min-width:0}
+  .schedrow .sw{font-size:11px;border:1px solid var(--line);border-radius:6px;padding:3px 9px;color:var(--dim)}
+  .schedrow .sw.on{color:#1a1a1a;background:var(--accent);border-color:var(--accent)}
+  .schedrow .del{color:var(--err);font-size:15px;padding:2px 6px}
   .newchat{
     position:fixed;right:18px;bottom:calc(env(safe-area-inset-bottom) + 18px);
     background:var(--accent);color:#1a1a1a;font-weight:700;font-size:15px;
@@ -370,27 +385,71 @@
   };
 
   // ---- conversation list ----
+  function convRow(c, isRunning) {
+    const b = document.createElement("button");
+    b.className = "conv";
+    b.innerHTML =
+      '<div class="t">' +
+      (isRunning ? '<span class="rundot"></span>' : "") +
+      '<span class="name"></span>' +
+      (c.source !== "manual" ? '<span class="badge">' + esc(c.source) + "</span>" : "") +
+      '<span class="age">' + age(c.lastActivityAt) + "</span></div>" +
+      '<div class="p"></div>';
+    b.querySelector(".name").textContent = c.title;
+    b.querySelector(".p").textContent = c.preview || c.msgCount + " messages";
+    b.onclick = () => openThread(c.id, c.title);
+    return b;
+  }
   async function loadList() {
     try {
-      const r = await api("/conversations");
+      // Status rides along for live run dots — best-effort, list still
+      // renders if it times out.
+      const [r, sr] = await Promise.all([
+        api("/conversations"),
+        api("/status").catch(() => null),
+      ]);
       if (r.status === 401) throw new Error("token mismatch — open the link from Settings → Phone once to refresh it");
       if (!r.ok) throw new Error((await r.json()).error || r.status);
       const d = await r.json();
+      const running = new Set();
+      if (sr && sr.ok) {
+        const sd = await sr.json().catch(() => ({}));
+        for (const run of sd.runs || []) running.add(run.convId);
+      }
       vaultName = d.vault || "";
       convsEl.innerHTML = "";
-      for (const c of d.conversations) {
-        const b = document.createElement("button");
-        b.className = "conv";
-        b.innerHTML =
-          '<div class="t"><span class="name"></span>' +
-          (c.source !== "manual" ? '<span class="badge">' + esc(c.source) + "</span>" : "") +
-          '<span class="age">' + age(c.lastActivityAt) + "</span></div>" +
-          '<div class="p"></div>';
-        b.querySelector(".name").textContent = c.title;
-        b.querySelector(".p").textContent = c.preview || c.msgCount + " messages";
-        b.onclick = () => openThread(c.id, c.title);
-        convsEl.appendChild(b);
+
+      const all = d.conversations;
+      const sup = all.find((c) => c.role === "supervisor");
+      const workers = all.filter((c) => c.source === "worker");
+      const chats = all.filter((c) => c.role !== "supervisor" && c.source !== "worker");
+
+      // Supervisor: the ops channel, pinned. One thread, carries the vault's
+      // supervisor.md role — same brain you supervise with on Telegram.
+      const supBtn = document.createElement("button");
+      supBtn.className = "suprow";
+      supBtn.innerHTML =
+        '<span class="ico">◎</span><div class="lbl">Supervisor<small>' +
+        (sup
+          ? (running.has(sup.id) ? "running · " : "") + esc(sup.preview || "orchestrator thread")
+          : "start the orchestrator thread") +
+        "</small></div>" +
+        (sup && running.has(sup.id) ? '<span class="rundot"></span>' : "");
+      supBtn.onclick = () => (sup ? openThread(sup.id, "Supervisor", true) : openThread(null, "Supervisor", true));
+      convsEl.appendChild(supBtn);
+
+      if (workers.length) {
+        const h = document.createElement("div");
+        h.className = "sechdr";
+        h.textContent = "Workers";
+        convsEl.appendChild(h);
+        for (const c of workers) convsEl.appendChild(convRow(c, running.has(c.id)));
       }
+      const h2 = document.createElement("div");
+      h2.className = "sechdr";
+      h2.textContent = "Chats";
+      convsEl.appendChild(h2);
+      for (const c of chats) convsEl.appendChild(convRow(c, running.has(c.id)));
       setHeader();
     } catch (e) {
       convsEl.innerHTML = '<div class="gate">Box unreachable: ' + esc(String(e.message || e)) + "</div>";
@@ -464,9 +523,11 @@
     scrollDown(false);
   }
 
-  async function openThread(id, title) {
+  let supervisorPending = false; // new Supervisor thread: first send carries the flag
+  async function openThread(id, title, isSupervisor = false) {
     view = "thread";
     convId = id;
+    supervisorPending = isSupervisor && !id;
     convTitle = title || "New chat";
     running = false;
     streamText = ""; streamTool = ""; streamEl = null; runlineEl = null;
@@ -505,14 +566,19 @@
       const r = await api("/message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ convId, text }),
+        body: JSON.stringify({
+          convId,
+          text,
+          supervisor: supervisorPending && !convId ? true : undefined,
+        }),
       });
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || r.status);
       if (!convId && d.convId) {
         convId = d.convId;
-        convTitle = text.split("\n")[0].slice(0, 60);
+        if (!supervisorPending) convTitle = text.split("\n")[0].slice(0, 60);
       }
+      supervisorPending = false;
       if (d.queued) {
         mine.classList.add("queued");
         toast("Agent is mid-run — queued, will send when it finishes.");
@@ -625,21 +691,57 @@
           (run.lastProgressAt ? age(run.lastProgressAt) + " ago" : "running");
         $("runsBox").appendChild(div);
       }
-      const scheds = d.schedules || [];
-      $("schedBox").innerHTML = scheds.length ? "" : '<div class="note">No schedules.</div>';
-      for (const sc of scheds) {
-        const div = document.createElement("div");
-        div.className = "row";
-        div.innerHTML = "<b></b><small></small>";
-        div.querySelector("b").textContent = sc.name;
-        div.querySelector("small").textContent = sc.detail || "";
-        $("schedBox").appendChild(div);
-      }
     } catch (e) {
       $("boxRow").innerHTML = "<small></small>";
       $("boxRow").querySelector("small").textContent = "Status failed: " + (e.message || e);
     }
+    void loadSchedules();
   };
+  async function loadSchedules() {
+    try {
+      const r = await api("/schedules");
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      const scheds = d.schedules || [];
+      $("schedBox").innerHTML = scheds.length ? "" : '<div class="note">No schedules.</div>';
+      for (const sc of scheds) {
+        const div = document.createElement("div");
+        div.className = "row schedrow";
+        div.innerHTML =
+          '<div class="info"><b></b><small></small></div>' +
+          '<button class="sw"></button><button class="del">✕</button>';
+        div.querySelector("b").textContent = sc.name;
+        div.querySelector("small").textContent =
+          sc.label +
+          (sc.sendViaTelegram ? " · → phone" : "") +
+          (sc.quietUnlessAlert ? " · quiet" : "") +
+          (sc.lastFiredAt ? " · fired " + age(sc.lastFiredAt) + " ago" : "");
+        const sw = div.querySelector(".sw");
+        sw.textContent = sc.enabled ? "On" : "Off";
+        sw.className = "sw" + (sc.enabled ? " on" : "");
+        sw.onclick = async () => {
+          await api("/schedule", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "toggle", id: sc.id, enabled: !sc.enabled }),
+          }).catch(() => {});
+          loadSchedules();
+        };
+        div.querySelector(".del").onclick = async () => {
+          if (!confirm('Delete schedule "' + sc.name + '"?')) return;
+          await api("/schedule", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "delete", id: sc.id }),
+          }).catch(() => {});
+          loadSchedules();
+        };
+        $("schedBox").appendChild(div);
+      }
+    } catch (e) {
+      $("schedBox").innerHTML = '<div class="note">Schedules failed: ' + esc(String(e.message || e)) + "</div>";
+    }
+  }
   $("drawer").addEventListener("click", (e) => {
     if (e.target === $("drawer")) $("drawer").classList.remove("open");
   });
@@ -952,6 +1054,7 @@
   $("backBtn").onclick = () => {
     view = "list";
     convId = null;
+    supervisorPending = false;
     setHeader();
     loadList();
   };
