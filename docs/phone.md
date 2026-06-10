@@ -1,4 +1,4 @@
-# Phone app — vault-chat in your pocket
+﻿# Phone app â€” vault-chat in your pocket
 
 ## North star
 
@@ -8,7 +8,7 @@ on the move. The box does everything; the phone is a thin, honest window.
 
 The bar, taken from real usage pain (June 2026 transcript audit):
 
-- **No more walls.** Replies stream in and render as real markdown — no
+- **No more walls.** Replies stream in and render as real markdown â€” no
   4000-char plain-text chunks, no stripped tables.
 - **No more "How's it going? It's been over 15 min."** Run state is a
   glance, not a model turn: live status strip, heartbeats, a deterministic
@@ -16,7 +16,7 @@ The bar, taken from real usage pain (June 2026 transcript audit):
 - **No more "details in the goal doc" pointing at a file the phone can't
   open.** Vault files (markdown, PDFs, images) open in a tap.
 - **No more silence.** Push notifications carry the coach check-in, ALERT
-  markers, and run-done pings — through Apple's push service, so they land
+  markers, and run-done pings â€” through Apple's push service, so they land
   even when the tailnet VPN is idle.
 
 Telegram stays wired up until this surface has earned the 7am coach for a
@@ -27,23 +27,23 @@ markdown stripper, chunker, per-vault bot config) can be deleted.
 
 Everything rides the existing phone-voice plumbing (`voice_server.rs`):
 tiny_http on the box, Tailscale HTTPS (`tailscale serve`) as transport,
-the per-machine token as the gate, and the proven relay pattern —
-HTTP request → `emit()` to the webview → frontend answers by `reqId`
+the per-machine token as the gate, and the proven relay pattern â€”
+HTTP request â†’ `emit()` to the webview â†’ frontend answers by `reqId`
 over an mpsc channel (`voice_tool_respond`).
 
 ```
 phone (PWA)                    box (Rust)                  box (webview TS)
-GET  /phone            →  serve embedded page
-GET  /conversations    →  read conversations/*.jsonl directly
-GET  /conversation?id  →  read + strip attachments, cap content
-GET  /file?path=       →  within_vault() → bytes + mime
-GET  /events (SSE)     →  register client ←──────  phone_broadcast(json)
-POST /message          →  relay "phone:msg"   →   sendMessage(targetConvId)
-POST /kill             →  relay "phone:kill"  →   abortRun(convId)
-GET  /status           →  relay "phone:status" →  heartbeats + runs + schedules
-POST /push/subscribe   →  store subscription on disk
+GET  /phone            â†’  serve embedded page
+GET  /conversations    â†’  read conversations/*.jsonl directly
+GET  /conversation?id  â†’  read + strip attachments, cap content
+GET  /file?path=       â†’  within_vault() â†’ bytes + mime
+GET  /events (SSE)     â†’  register client â†â”€â”€â”€â”€â”€â”€  phone_broadcast(json)
+POST /message          â†’  relay "phone:msg"   â†’   sendMessage(targetConvId)
+POST /kill             â†’  relay "phone:kill"  â†’   abortRun(convId)
+GET  /status           â†’  relay "phone:status" â†’  heartbeats + runs + schedules
+POST /push/subscribe   â†’  store subscription on disk
                           push send: TS encrypts (WebCrypto, RFC 8291)
-                          → push_post (reqwest) → APNs/FCM web push
+                          â†’ push_post (reqwest) â†’ APNs/FCM web push
 ```
 
 Key decisions:
@@ -51,16 +51,16 @@ Key decisions:
 - **Streaming without core changes.** Background runs already mirror
   every delta into `store.convRuntime[convId].streamingText`
   (chat-controller.ts). The phone host subscribes to the store and
-  forwards diffs to SSE clients. Foreground runs forward
+  forwards diffs into a long-polled event ring (SSE proved buffer-prone through tailscale serve / iOS). Foreground runs forward
   `store.streamingText` for the active conversation the same way.
 - **Phone messages run like Telegram messages**: background target runs
-  via `sendMessage(text, …, convId)` — parallel to the foreground agent,
+  via `sendMessage(text, â€¦, convId)` â€” parallel to the foreground agent,
   never steals desktop focus. Unlike Telegram, phone-sourced runs use the
-  **desktop default model**, not the cheap Telegram brain — the phone is a
+  **desktop default model**, not the cheap Telegram brain â€” the phone is a
   full-fidelity surface.
 - **Busy threads queue, then auto-run.** A message sent while that thread
   is mid-run is held and dispatched when the run ends (the Telegram
-  "black hole" — message absorbed, no reply until you text again — does
+  "black hole" â€” message absorbed, no reply until you text again â€” does
   not exist here).
 - **Web Push with zero new Rust deps.** RFC 8291 (aes128gcm) encryption
   and the VAPID ES256 JWT are done in the webview with WebCrypto; Rust
@@ -73,7 +73,7 @@ Key decisions:
   supervisor stays quiet on push too.
 - **PWA, not a store app.** Added to the iOS home screen (standalone),
   with a service worker only for push + notification clicks. No offline
-  cache in v1 — the box being reachable is the product.
+  cache in v1 â€” the box being reachable is the product.
 
 ## Security model (unchanged from phone voice, stated honestly)
 
@@ -82,7 +82,7 @@ Key decisions:
 - The token rides in the URL for page loads and SSE (EventSource cannot
   set headers; home-screen launch URLs keep their query). Mutating routes
   also accept `X-Vault-Token`.
-- The relay executes with **full desktop parity** — same as phone voice
+- The relay executes with **full desktop parity** â€” same as phone voice
   tool calls since the tool-parity commit. This page adds /message (runs
   the agent, which can Bash) and /kill. Anyone with the token and tailnet
   access can drive the agent; that is the explicit, accepted model:
@@ -92,7 +92,7 @@ Key decisions:
 
 ## What stays on Telegram until parity
 
-- The 7am daily coach (`sendViaTelegram` schedules) — mirrored to push,
+- The 7am daily coach (`sendViaTelegram` schedules) â€” mirrored to push,
   delivered to both during the trial week.
 - Off-vault inbound (texting a vault that isn't open in the UI). The
   phone page talks to the currently-open vault only in v1.
@@ -100,8 +100,8 @@ Key decisions:
 ## v1 limitations (known, deliberate)
 
 - One vault: whatever the box has open.
-- No image *upload* from the phone yet (Telegram photo→vision flow stays
-  for that); files flow box→phone only.
+- No image *upload* from the phone yet (Telegram photoâ†’vision flow stays
+  for that); files flow boxâ†’phone only.
 - No math rendering in chat (KaTeX is heavy; markdown only).
 - Push on iOS requires: page added to home screen, notifications enabled
   from the in-page button (user gesture), and iOS 16.4+. Subscriptions

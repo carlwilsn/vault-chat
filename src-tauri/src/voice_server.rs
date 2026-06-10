@@ -11,7 +11,7 @@
 //! requests on demand). Chat traffic uses the same proven relay pattern: an HTTP
 //! request emits an event to the webview, the frontend answers by `reqId` over
 //! an mpsc channel. Run streaming flows the other way — the frontend broadcasts
-//! store diffs into `/events` (SSE).
+//! store diffs into a seq-numbered event ring the phone long-polls (`/poll`).
 //!
 //! Security (user-chosen, stated honestly): **Tailscale is the perimeter, the
 //! shared token is defense-in-depth.** Every route except `/health`, the icon,
@@ -38,10 +38,13 @@ const PHONE_SW: &str = include_str!("../assets/phone-sw.js");
 
 /// Web-app manifest for the chat PWA. Served token-free (no vault data) so the
 /// browser's out-of-band manifest fetch can't fail on a missing query token.
+/// Deliberately NO `start_url`: iOS would launch it verbatim, dropping the
+/// `?token=` from the link the user added to their home screen — the bare page
+/// then 401'd. Without it, the add-time URL (token included) is what launches,
+/// and the page persists the token to the web-app's own storage container.
 const PHONE_MANIFEST: &str = r##"{
   "name": "vault-chat",
   "short_name": "vault-chat",
-  "start_url": "/phone",
   "display": "standalone",
   "background_color": "#1a1a1a",
   "theme_color": "#1a1a1a",
@@ -254,6 +257,14 @@ fn handle(mut req: Request, token: &str) {
         let _ = req.respond(resp_text(200, "application/manifest+json", PHONE_MANIFEST.to_string()));
         return;
     }
+    // The chat page SHELL is token-free: it's static HTML/JS with zero vault
+    // data, and a home-screen launch can arrive without the query token (the
+    // page then uses its stored copy for every data call — which all stay
+    // token-gated). Serving 401 JSON as the "page" was the home-screen bug.
+    if path == "/phone" && method == Method::Get {
+        let _ = req.respond(resp_text(200, "text/html; charset=utf-8", PHONE_PAGE.to_string()));
+        return;
+    }
     if !token_ok(&req, token) {
         let _ = req.respond(resp_text(401, "application/json", "{\"error\":\"unauthorized\"}".into()));
         return;
@@ -291,17 +302,26 @@ fn handle(mut req: Request, token: &str) {
             serve_vault_file(req);
             return;
         }
-        (Method::Get, "/events") => {
-            let (tx, rx) = mpsc::channel::<String>();
-            sse_clients().lock().unwrap_or_else(|e| e.into_inner()).push(tx);
-            let stream = SseStream::new(rx);
-            let headers = vec![
-                Header::from_bytes(&b"Content-Type"[..], &b"text/event-stream; charset=utf-8"[..]).unwrap(),
-                Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap(),
-            ];
-            let response = Response::new(tiny_http::StatusCode(200), headers, stream, None, None);
-            let _ = req.respond(response);
-            return;
+        (Method::Get, "/poll") => {
+            // Long-poll: hold up to 25s for events newer than `after`. The
+            // first call passes after=latest to take a cursor without replay.
+            let after_raw = query_param(req.url(), "after").unwrap_or_default();
+            if after_raw.is_empty() || after_raw == "latest" {
+                let body = format!("{{\"next\":{},\"events\":[]}}", latest_seq());
+                let _ = req.respond(resp_text(200, "application/json", body));
+                return;
+            }
+            let after: u64 = after_raw.parse().unwrap_or_else(|_| latest_seq());
+            let deadline = Instant::now() + Duration::from_secs(25);
+            loop {
+                let (events, next) = events_after(after);
+                if !events.is_empty() || Instant::now() >= deadline {
+                    let body = format!("{{\"next\":{},\"events\":[{}]}}", next, events.join(","));
+                    let _ = req.respond(resp_text(200, "application/json", body));
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
         }
         (Method::Get, "/status") => {
             let body = match relay_request("phone:status", json!({}), Duration::from_secs(10)) {
@@ -482,20 +502,50 @@ pub fn tool_respond(req_id: String, result: String) {
     }
 }
 
-// ---- phone chat: SSE clients, push subscriptions, generic relay ----
+// ---- phone chat: event ring (long-poll), push subscriptions, generic relay ----
+//
+// Live updates use LONG-POLLING, not SSE: chunked event streams can sit in
+// buffers anywhere along tiny_http → `tailscale serve` → iOS Safari, which on
+// the phone read as "sent hello, nothing happened". A seq-numbered ring +
+// 25s-max holds is proxy-proof, reconnect-safe (clients resume from their last
+// seq), and naturally survives iOS killing background pages.
 
-static SSE_CLIENTS: OnceLock<Mutex<Vec<mpsc::Sender<String>>>> = OnceLock::new();
+static EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
+static EVENT_RING: OnceLock<Mutex<std::collections::VecDeque<(u64, String)>>> = OnceLock::new();
 static VAPID_PUB: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
-fn sse_clients() -> &'static Mutex<Vec<mpsc::Sender<String>>> {
-    SSE_CLIENTS.get_or_init(|| Mutex::new(Vec::new()))
+fn event_ring() -> &'static Mutex<std::collections::VecDeque<(u64, String)>> {
+    EVENT_RING.get_or_init(|| Mutex::new(std::collections::VecDeque::new()))
 }
 
-/// Fan a JSON event line out to every connected `/events` stream. Dead clients
-/// (closed sockets → dropped receivers) are pruned on the way through.
+/// Append one JSON event to the ring for `/poll` clients. Bounded — a phone
+/// that's been gone for a while just resyncs its view on reopen.
 pub fn broadcast_event(json_line: String) {
-    let mut v = sse_clients().lock().unwrap_or_else(|e| e.into_inner());
-    v.retain(|tx| tx.send(json_line.clone()).is_ok());
+    let seq = EVENT_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut r = event_ring().lock().unwrap_or_else(|e| e.into_inner());
+    r.push_back((seq, json_line));
+    while r.len() > 300 {
+        r.pop_front();
+    }
+}
+
+/// Latest seq handed out (0 = none yet).
+fn latest_seq() -> u64 {
+    EVENT_SEQ.load(Ordering::Relaxed).saturating_sub(1)
+}
+
+/// Events strictly after `after`, plus the new cursor.
+fn events_after(after: u64) -> (Vec<String>, u64) {
+    let r = event_ring().lock().unwrap_or_else(|e| e.into_inner());
+    let mut next = after;
+    let mut out = Vec::new();
+    for (seq, line) in r.iter() {
+        if *seq > after {
+            out.push(line.clone());
+            next = next.max(*seq);
+        }
+    }
+    (out, next.max(after))
 }
 
 /// The frontend's VAPID public key (base64url, 65-byte raw P-256 point). The
@@ -1005,52 +1055,3 @@ fn serve_vault_file(req: Request) {
     }
 }
 
-/// Streaming body for `/events`: blocks on the broadcast channel, emits SSE
-/// frames, keeps the connection warm with comment pings, and caps a session at
-/// 30 minutes (EventSource reconnects transparently).
-struct SseStream {
-    rx: mpsc::Receiver<String>,
-    pending: Vec<u8>,
-    pos: usize,
-    opened: Instant,
-}
-
-impl SseStream {
-    fn new(rx: mpsc::Receiver<String>) -> Self {
-        SseStream {
-            rx,
-            // Tell EventSource to retry quickly after our 30-min cap or an app
-            // restart, and confirm liveness immediately on connect.
-            pending: b"retry: 3000\n\n: connected\n\n".to_vec(),
-            pos: 0,
-            opened: Instant::now(),
-        }
-    }
-}
-
-impl std::io::Read for SseStream {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        loop {
-            if self.pos < self.pending.len() {
-                let n = (self.pending.len() - self.pos).min(buf.len());
-                buf[..n].copy_from_slice(&self.pending[self.pos..self.pos + n]);
-                self.pos += n;
-                return Ok(n);
-            }
-            if self.opened.elapsed() > Duration::from_secs(30 * 60) {
-                return Ok(0);
-            }
-            match self.rx.recv_timeout(Duration::from_secs(15)) {
-                Ok(msg) => {
-                    self.pending = format!("data: {}\n\n", msg).into_bytes();
-                    self.pos = 0;
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.pending = b": ping\n\n".to_vec();
-                    self.pos = 0;
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(0),
-            }
-        }
-    }
-}
