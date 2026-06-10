@@ -61,6 +61,17 @@
   .toggle:active{transform:scale(.97)}
   body.live .toggle{background:transparent;color:var(--text);border:1px solid var(--line);box-shadow:none;font-weight:600}
   .toggle[disabled]{opacity:.6}
+
+  /* Minimal UI: "vault-chat · voice" title up top, the waves dead-centre, and
+     the Start/Stop button pinned to the bottom. The status line + subtitle are
+     hidden (elements kept so the JS that writes to them stays a no-op); errors
+     still surface via .err just above the button. The "Connecting…" label lives
+     inside the waves wrapper, so it shows centred while connecting. */
+  .status,.sub{display:none}
+  .toggle{position:fixed;left:0;right:0;bottom:max(24px,env(safe-area-inset-bottom));margin:0 auto;width:fit-content}
+  .stage>div{position:fixed;left:0;right:0;bottom:96px;margin:0 auto}
+  .stage{gap:0}
+  .vizwrap{position:fixed;inset:0;width:auto;height:auto;transform:none}
 </style>
 </head>
 <body>
@@ -90,7 +101,7 @@
   const errEl = document.getElementById("err");
   const toggleBtn = document.getElementById("toggle");
   const viz = document.getElementById("viz");
-  let conv = null, connecting = false, rafId = 0;
+  let conv = null, connecting = false, rafId = 0, live = false;
   const smoothed = new Array(NUM_BARS).fill(0);
 
   // Build the 12 bars once.
@@ -158,7 +169,11 @@
   // speaks (when there's real audio), otherwise the live mic input. Smoothed
   // with decay; bars floor at ~16% so they never fully collapse.
   function meter() {
-    if (!conv) return;
+    // Drive off `live` (set in onConnect), NOT `conv`: the SDK calls onConnect —
+    // which kicks off meter() — *before* `conv = await startSession()` resolves,
+    // so conv is still null on the first frame. Guarding on conv here killed the
+    // whole rAF loop and left the bars frozen even while audio was flowing.
+    if (!live) return;
     // Speaking is audio-driven: the agent is talking if its audio chunks arrived
     // within the last ~280ms (set in onAudio). No reliance on onModeChange.
     const speaking = Date.now() < agentActiveUntil;
@@ -182,7 +197,7 @@
         micAnalyser.getByteFrequencyData(micBuf);
         raw = bin(micBuf, NUM_BARS);
       } else {
-        raw = bin(conv.getInputByteFrequencyData && conv.getInputByteFrequencyData(), NUM_BARS);
+        raw = bin(conv && conv.getInputByteFrequencyData && conv.getInputByteFrequencyData(), NUM_BARS);
       }
     } catch { raw = new Array(NUM_BARS).fill(0); }
     for (let i = 0; i < NUM_BARS; i++) {
@@ -229,7 +244,9 @@
       // so resume fire-and-forget; the analyser starts producing data once the
       // context wakes (the session audio resumes it anyway).
       try {
-        micCtx = new (window.AudioContext || window.webkitAudioContext)();
+        // Reuse the context already unlocked synchronously in the click handler
+        // (creating a second, suspended one here would defeat the iOS unlock).
+        micCtx = micCtx || new (window.AudioContext || window.webkitAudioContext)();
         micCtx.resume().catch(() => {});
         const src = micCtx.createMediaStreamSource(micStream);
         micAnalyser = micCtx.createAnalyser();
@@ -260,7 +277,7 @@
       // startSession has no timeout of its own, and a hang here is invisible
       // (no throw, so even the auto-retry never fires). 15s then reject; if the
       // late session ever does resolve, end it so it can't leak.
-      let timedOut = false;
+      let timedOut = false, watchdog = 0;
       const sessionPromise = Conversation.startSession({
         signedUrl: cfg.signedUrl,
         overrides: {
@@ -271,7 +288,7 @@
         clientTools: buildClientTools(cfg.toolNames),
         onConnect: () => {
           if (timedOut) return;
-          connecting = false; autoRetried = false;
+          connecting = false; autoRetried = false; live = true;
           document.body.classList.remove("connecting");
           document.body.classList.add("live");
           toggleBtn.textContent = "Stop"; toggleBtn.disabled = false;
@@ -293,15 +310,17 @@
         // onModeChange left out on purpose — speaking is audio-driven (above).
       });
       sessionPromise.then((c) => {
+        clearTimeout(watchdog);
         if (timedOut && c) { try { c.endSession(); } catch {} }
-      }).catch(() => {});
+      }).catch(() => { clearTimeout(watchdog); });
       conv = await Promise.race([
         sessionPromise,
-        new Promise((_, rej) => setTimeout(() => {
+        new Promise((_, rej) => { watchdog = setTimeout(() => {
           timedOut = true;
           rej(new Error("connect timed out after 15s"));
-        }, 15000)),
+        }, 15000); }),
       ]);
+      clearTimeout(watchdog);
     } catch (e) {
       connecting = false;
       teardownAudio();
@@ -321,6 +340,7 @@
   }
 
   function teardown() {
+    live = false;
     cancelAnimationFrame(rafId); rafId = 0;
     teardownAudio();
     autoRetried = false;
@@ -337,7 +357,24 @@
     teardown();
   }
 
-  toggleBtn.addEventListener("click", () => { if (conv) stop(); else start(); });
+  // iOS WebAudio unlock: the EL SDK creates + resumes its own AudioContext and
+  // loads audioWorklet modules deep inside startSession (after getUserMedia and
+  // our /session round-trip). By then the tap's user-activation is spent, so on
+  // iOS Safari addModule()/resume() never settle and onConnect never fires — the
+  // session just hangs until the 15s watchdog. Resuming a context AND playing a
+  // 1-sample silent blip synchronously here, inside the gesture, gives the page
+  // sticky audio activation so the SDK's later resume()/addModule() succeed.
+  toggleBtn.addEventListener("click", () => {
+    if (conv) { stop(); return; }
+    try {
+      micCtx = micCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if (micCtx.state === "suspended") micCtx.resume().catch(() => {});
+      const b = micCtx.createBuffer(1, 1, 22050);
+      const s = micCtx.createBufferSource();
+      s.buffer = b; s.connect(micCtx.destination); s.start(0);
+    } catch {}
+    start();
+  });
   if (!token) {
     setErr("Missing token — open the link from vault-chat Settings.");
   } else if (!micAvailable()) {
