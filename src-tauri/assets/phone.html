@@ -112,6 +112,37 @@
   }
   .composer .send:disabled{opacity:.4}
 
+  /* In-app keyboard — replaces the iOS one (inputmode=none) so the
+     form-assistant bar never appears. Graphite, iOS-faithful layout. */
+  #kb{
+    flex:0 0 auto;background:#161616;border-top:1px solid var(--line);
+    padding:7px 4px calc(env(safe-area-inset-bottom) + 6px);
+    display:none;touch-action:manipulation;user-select:none;-webkit-user-select:none;
+  }
+  body.kbopen #kb{display:block}
+  body.kbopen .composer{padding-bottom:8px}
+  .kbrow{display:flex;gap:5px;margin:0 0 8px;justify-content:center}
+  .kbrow:last-child{margin-bottom:0}
+  .kbrow.indent{padding:0 5%}
+  .kbk{
+    flex:1;height:44px;background:#333;border-radius:6px;color:var(--text);
+    font-size:19px;display:flex;align-items:center;justify-content:center;
+    position:relative;min-width:0;
+  }
+  .kbk.spec{background:#262626;font-size:14px;flex:1.4}
+  .kbk.space{flex:4.6;font-size:13px;color:var(--dim)}
+  .kbk.ret{flex:2;font-size:20px}
+  .kbk.down{background:#4d4d4d}
+  .kbk.spec.down{background:#3a3a3a}
+  .kbk.lit{background:var(--accent);color:#1a1a1a}
+  .kbk.caps{box-shadow:inset 0 0 0 2px var(--accent)}
+  .kbpop{
+    position:absolute;bottom:50px;left:50%;transform:translateX(-50%);
+    min-width:46px;height:54px;background:#4d4d4d;border-radius:9px;color:var(--text);
+    font-size:28px;display:flex;align-items:center;justify-content:center;
+    box-shadow:0 4px 14px rgba(0,0,0,.55);pointer-events:none;z-index:5;
+  }
+
   /* Status drawer */
   #drawer{
     position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:30;
@@ -160,6 +191,7 @@
       <textarea id="input" rows="1" placeholder="Message the agent…" enterkeyhint="send" autocomplete="off"></textarea>
       <button class="send" id="sendBtn">↑</button>
     </div>
+    <div id="kb"></div>
   </div>
 
   <div id="drawer">
@@ -171,6 +203,9 @@
       <button class="btn warn" id="killAllBtn">Kill all runs</button>
       <h3>Schedules</h3>
       <div id="schedBox"><div class="note">—</div></div>
+      <h3>Keyboard</h3>
+      <div class="note" id="kbState"></div>
+      <button class="btn" id="kbToggleBtn"></button>
       <h3>Notifications</h3>
       <div class="note" id="pushState">Checking…</div>
       <button class="btn solid" id="pushBtn">Enable notifications</button>
@@ -681,6 +716,237 @@
       }).catch(() => {});
     }
   })();
+
+  // ---- in-app keyboard ----
+  // inputmode="none" keeps the iOS keyboard (and its form-assistant bar)
+  // down; these keys are ours. Commit-on-touch-DOWN like the real iOS
+  // keyboard, key-pop bubbles, shift one-shot + double-tap caps lock,
+  // backspace auto-repeat, double-space period. Drawer toggle falls back
+  // to the system keyboard so a keyboard bug can never lock typing out.
+  const KB_SYS_FLAG = "vc_kb_system";
+  const CUSTOM_KB = localStorage.getItem(KB_SYS_FLAG) !== "1";
+  const kbEl = $("kb");
+  let kbLayer = 0, kbShift = false, kbCaps = false, lastShiftAt = 0, lastSpaceAt = 0;
+
+  const KB_LAYERS = [
+    [ // letters
+      [..."qwertyuiop"].map((c) => ({ k: "ch", t: c })),
+      [..."asdfghjkl"].map((c) => ({ k: "ch", t: c })),
+      [{ k: "shift", t: "⇧" }, ...[..."zxcvbnm"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }],
+      [{ k: "layer1", t: "123" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }],
+    ],
+    [ // numbers / common punctuation
+      [..."1234567890"].map((c) => ({ k: "ch", t: c })),
+      [..."-/:;()$&@\""].map((c) => ({ k: "ch", t: c })),
+      [{ k: "layer2", t: "#+=" }, ...[...".,?!'"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }],
+      [{ k: "layer0", t: "ABC" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }],
+    ],
+    [ // symbols
+      [..."[]{}#%^*+="].map((c) => ({ k: "ch", t: c })),
+      [..."_\\|~<>€£¥•"].map((c) => ({ k: "ch", t: c })),
+      [{ k: "layer1", t: "123" }, ...[...".,?!'"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }],
+      [{ k: "layer0", t: "ABC" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }],
+    ],
+  ];
+
+  function kbRender() {
+    if (!CUSTOM_KB) return;
+    kbEl.innerHTML = "";
+    KB_LAYERS[kbLayer].forEach((row, ri) => {
+      const r = document.createElement("div");
+      r.className = "kbrow" + (kbLayer === 0 && ri === 1 ? " indent" : "");
+      for (const key of row) {
+        const b = document.createElement("div");
+        const spec = key.k !== "ch";
+        b.className = "kbk" + (spec ? " spec" : "");
+        if (key.k === "space") b.classList.add("space");
+        if (key.k === "ret") b.classList.add("ret");
+        if (key.k === "shift") {
+          if (kbShift || kbCaps) b.classList.add("lit");
+          if (kbCaps) b.classList.add("caps");
+        }
+        b.textContent = key.k === "ch" && (kbShift || kbCaps) ? key.t.toUpperCase() : key.t;
+        b.dataset.k = key.k;
+        b.dataset.t = key.t;
+        r.appendChild(b);
+      }
+      kbEl.appendChild(r);
+    });
+  }
+
+  function kbEnsureFocus() {
+    if (document.activeElement !== input) input.focus({ preventScroll: true });
+  }
+  function kbAfterEdit() {
+    input.dispatchEvent(new Event("input", { bubbles: true })); // autosize hook
+    kbAutoShift();
+  }
+  function kbAutoShift() {
+    if (kbCaps || kbLayer !== 0) return;
+    const caret = input.selectionStart ?? input.value.length;
+    const before = input.value.slice(0, caret);
+    const want = before === "" || /[.!?]\s+$/.test(before) || /\n$/.test(before);
+    if (want !== kbShift) {
+      kbShift = want;
+      kbRender();
+    }
+  }
+  function kbInsert(ch) {
+    kbEnsureFocus();
+    const s = input.selectionStart ?? input.value.length;
+    const e2 = input.selectionEnd ?? s;
+    input.setRangeText(ch, s, e2, "end");
+    kbAfterEdit();
+  }
+  function kbBackspaceOnce() {
+    kbEnsureFocus();
+    let s = input.selectionStart ?? 0;
+    const e2 = input.selectionEnd ?? 0;
+    if (s === e2) {
+      if (s === 0) return;
+      let n = 1;
+      const code = input.value.charCodeAt(s - 1);
+      if (code >= 0xdc00 && code <= 0xdfff && s > 1) n = 2; // don't split pasted emoji
+      s -= n;
+    }
+    input.setRangeText("", s, e2, "end");
+    kbAfterEdit();
+  }
+
+  let bkspT1 = 0, bkspIv = 0;
+  function kbStopRepeat() {
+    clearTimeout(bkspT1);
+    clearInterval(bkspIv);
+    bkspT1 = bkspIv = 0;
+  }
+
+  const downKeys = new Map(); // pointerId → key element
+  function kbKeyDown(el) {
+    const k = el.dataset.k, t = el.dataset.t;
+    el.classList.add("down");
+    if (k === "ch") {
+      const pop = document.createElement("div");
+      pop.className = "kbpop";
+      pop.textContent = el.textContent;
+      el.appendChild(pop);
+      const ch = kbShift || kbCaps ? t.toUpperCase() : t;
+      kbInsert(ch);
+      if (kbShift && !kbCaps && /[a-z]/i.test(t)) {
+        kbShift = false;
+        kbRender();
+      }
+    } else if (k === "bksp") {
+      kbBackspaceOnce();
+      kbStopRepeat();
+      bkspT1 = setTimeout(() => {
+        bkspIv = setInterval(kbBackspaceOnce, 55);
+      }, 420);
+    } else if (k === "shift") {
+      const now = Date.now();
+      if (now - lastShiftAt < 350) {
+        kbCaps = true;
+        kbShift = true;
+      } else if (kbCaps) {
+        kbCaps = false;
+        kbShift = false;
+      } else {
+        kbShift = !kbShift;
+      }
+      lastShiftAt = now;
+      kbRender();
+    } else if (k === "space") {
+      const now = Date.now();
+      const caret = input.selectionStart ?? input.value.length;
+      // double-space → ". " (the iOS period shortcut, autocorrect-independent)
+      if (
+        now - lastSpaceAt < 350 &&
+        caret >= 2 &&
+        input.value[caret - 1] === " " &&
+        /[\w)\]'"’”]/.test(input.value[caret - 2])
+      ) {
+        kbEnsureFocus();
+        input.setRangeText(". ", caret - 2, caret, "end");
+        kbAfterEdit();
+      } else {
+        kbInsert(" ");
+      }
+      lastSpaceAt = now;
+    } else if (k === "ret") {
+      kbInsert("\n");
+    } else if (k === "layer0") {
+      kbLayer = 0;
+      kbAutoShift();
+      kbRender();
+    } else if (k === "layer1") {
+      kbLayer = 1;
+      kbRender();
+    } else if (k === "layer2") {
+      kbLayer = 2;
+      kbRender();
+    }
+  }
+  function kbKeyUp(el) {
+    el.classList.remove("down");
+    el.querySelector(".kbpop")?.remove();
+  }
+
+  function showKb() {
+    if (!CUSTOM_KB) return;
+    if (!document.body.classList.contains("kbopen")) {
+      document.body.classList.add("kbopen");
+      kbAutoShift();
+      scrollDown(true);
+    }
+  }
+  function hideKb() {
+    document.body.classList.remove("kbopen");
+    kbStopRepeat();
+  }
+
+  if (CUSTOM_KB) {
+    input.setAttribute("inputmode", "none");
+    kbRender();
+    // Keep the textarea focused while tapping keys: swallowing pointerdown/
+    // mousedown stops iOS from moving focus (and kills double-tap zoom).
+    kbEl.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      const key = e.target.closest(".kbk");
+      if (!key) return;
+      downKeys.set(e.pointerId, key);
+      kbKeyDown(key);
+    });
+    kbEl.addEventListener("mousedown", (e) => e.preventDefault());
+    const endPointer = (e) => {
+      const key = downKeys.get(e.pointerId);
+      if (key) {
+        downKeys.delete(e.pointerId);
+        kbKeyUp(key);
+        if (key.dataset.k === "bksp") kbStopRepeat();
+      }
+    };
+    window.addEventListener("pointerup", endPointer);
+    window.addEventListener("pointercancel", endPointer);
+    input.addEventListener("focus", showKb);
+    // Caret moves by tapping the textarea re-evaluate auto-shift.
+    input.addEventListener("pointerup", () => setTimeout(kbAutoShift, 0));
+    document.addEventListener("pointerdown", (e) => {
+      if (!document.body.classList.contains("kbopen")) return;
+      if (e.target.closest("#kb") || e.target.closest(".composer")) return;
+      hideKb();
+      input.blur();
+    });
+  }
+
+  // Drawer toggle: custom ↔ system keyboard (reload applies inputmode).
+  const kbOn = CUSTOM_KB;
+  $("kbState").textContent = kbOn
+    ? "In-app keyboard is ON — no iOS form bar."
+    : "Using the iOS system keyboard.";
+  $("kbToggleBtn").textContent = kbOn ? "Switch to system keyboard" : "Switch to in-app keyboard";
+  $("kbToggleBtn").onclick = () => {
+    localStorage.setItem(KB_SYS_FLAG, kbOn ? "1" : "0");
+    location.reload();
+  };
 
   // ---- nav + lifecycle ----
   $("backBtn").onclick = () => {
