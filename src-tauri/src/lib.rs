@@ -5695,6 +5695,64 @@ fn voice_server_url(port: u16) -> Option<String> {
     voice_server::https_url(port).or_else(|| voice_server::tailscale_url(port))
 }
 
+// ----- phone chat PWA: SSE broadcast + Web Push plumbing -----
+// The heavy lifting (RFC 8291 payload encryption, VAPID JWT) happens in the
+// webview with WebCrypto; Rust only stores subscriptions, fans events out to
+// the phone's SSE stream, and performs the raw push POST.
+
+/// Frontend → phone SSE clients: forward one JSON event line.
+#[tauri::command]
+fn phone_broadcast(json: String) {
+    voice_server::broadcast_event(json);
+}
+
+/// Frontend hands over its VAPID public key (base64url raw P-256 point) so the
+/// phone page can subscribe with it.
+#[tauri::command]
+fn phone_set_vapid(key: String) {
+    voice_server::set_vapid_pub(key);
+}
+
+/// Stored Web Push subscriptions (JSON array string).
+#[tauri::command]
+fn phone_push_subs() -> String {
+    voice_server::push_subs_list()
+}
+
+/// Drop a dead subscription (push endpoint answered 404/410).
+#[tauri::command]
+fn phone_push_unsub(endpoint: String) {
+    voice_server::push_subs_remove(&endpoint);
+}
+
+/// Raw Web Push delivery: POST the webview-encrypted body to the push service.
+/// Returns the HTTP status so the caller can prune dead subscriptions.
+#[tauri::command]
+async fn push_post(
+    endpoint: String,
+    headers: Vec<(String, String)>,
+    body_b64: String,
+) -> Result<u16, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::Engine as _;
+        let body = base64::engine::general_purpose::STANDARD
+            .decode(body_b64)
+            .map_err(|e| e.to_string())?;
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let mut r = client.post(&endpoint);
+        for (k, v) in &headers {
+            r = r.header(k.as_str(), v.as_str());
+        }
+        let resp = r.body(body).send().map_err(|e| e.to_string())?;
+        Ok(resp.status().as_u16())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[derive(Serialize)]
 struct TexCompileResult {
     pdf_path: String,
@@ -6330,6 +6388,11 @@ pub fn run() {
             agent_audio_play,
             agent_audio_stop,
             voice_server_start,
+            phone_broadcast,
+            phone_set_vapid,
+            phone_push_subs,
+            phone_push_unsub,
+            push_post,
             voice_server_stop,
             voice_server_status,
             voice_set_context,

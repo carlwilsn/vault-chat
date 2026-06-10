@@ -1,0 +1,690 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#1a1a1a" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="vault-chat" />
+<link rel="apple-touch-icon" href="/icon.svg" />
+<link rel="icon" type="image/svg+xml" href="/icon.svg" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<title>vault-chat</title>
+<style>
+  /* Graphite theme, matching the desktop app and voice.html. */
+  :root{
+    --bg:#1a1a1a; --panel:#212121; --panel2:#262626; --line:#383838;
+    --text:#ebebeb; --dim:#999999; --accent:#d9d9d9; --err:#e5736b; --ok:#7fbf7f;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html{background:var(--bg);height:100%}
+  html,body{margin:0}
+  body{
+    height:100dvh; display:flex; flex-direction:column; overflow:hidden;
+    background:var(--bg); color:var(--text);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;padding:0}
+
+  /* Header */
+  .hdr{
+    display:flex;align-items:center;gap:10px;flex:0 0 auto;
+    padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;
+    border-bottom:1px solid var(--line);background:var(--bg);
+  }
+  .hdr .back{font-size:22px;color:var(--dim);width:28px;display:none}
+  body.thread .hdr .back{display:block}
+  .hdr .title{flex:1;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .hdr .title small{display:block;font-weight:400;font-size:11px;color:var(--dim)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:0 0 auto}
+  .dot.run{background:var(--ok);animation:pulse 1.4s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+  .hdr .menu{color:var(--dim);font-size:20px;padding:2px 6px}
+
+  /* Views */
+  .view{flex:1;min-height:0;display:none;flex-direction:column}
+  body.list  #listView{display:flex}
+  body.thread #threadView{display:flex}
+
+  /* Conversation list */
+  #convs{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:6px 0 90px}
+  .conv{display:block;width:100%;text-align:left;padding:12px 16px;border-bottom:1px solid #2b2b2b}
+  .conv:active{background:var(--panel)}
+  .conv .t{display:flex;align-items:center;gap:8px}
+  .conv .t .name{flex:1;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .conv .t .age{color:var(--dim);font-size:12px;flex:0 0 auto}
+  .conv .p{color:var(--dim);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+  .badge{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 5px;flex:0 0 auto}
+  .newchat{
+    position:fixed;right:18px;bottom:calc(env(safe-area-inset-bottom) + 18px);
+    background:var(--accent);color:#1a1a1a;font-weight:700;font-size:15px;
+    border-radius:999px;padding:13px 22px;box-shadow:0 4px 18px rgba(0,0,0,.5);
+  }
+
+  /* Thread */
+  #msgs{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 14px 8px}
+  .m{max-width:92%;margin:0 0 10px;border-radius:12px;padding:9px 12px;word-wrap:break-word;overflow-wrap:break-word}
+  .m.user{margin-left:auto;background:#333333;white-space:pre-wrap}
+  .m.asst{margin-right:auto;background:var(--panel)}
+  .m.sys{margin:0 auto 10px;background:none;color:var(--dim);font-size:12px;font-style:italic;text-align:center}
+  .m.queued{opacity:.55}
+  .m .toolchips{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
+  .toolchip{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 5px}
+  .m.stream .cursor{display:inline-block;width:7px;height:14px;background:var(--accent);vertical-align:-2px;animation:pulse 1s infinite}
+  .runline{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:12px;margin:0 0 10px}
+  .runline .kill{color:var(--err);border:1px solid var(--err);border-radius:6px;padding:2px 10px;font-size:12px}
+
+  /* Markdown */
+  .md p{margin:.35em 0}
+  .md h1,.md h2,.md h3{margin:.5em 0 .25em;line-height:1.25}
+  .md h1{font-size:1.2em}.md h2{font-size:1.1em}.md h3{font-size:1.02em}
+  .md pre{background:#161616;border:1px solid var(--line);border-radius:8px;padding:8px 10px;overflow-x:auto;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace}
+  .md code{background:#161616;border-radius:4px;padding:1px 4px;font:12px ui-monospace,Menlo,Consolas,monospace}
+  .md pre code{background:none;border:none;padding:0}
+  .md blockquote{border-left:3px solid var(--line);margin:.4em 0;padding:.05em .8em;color:var(--dim)}
+  .md ul,.md ol{margin:.35em 0;padding-left:1.4em}
+  .md a{color:#9ec3e8;text-decoration:none;word-break:break-all}
+  .md img{max-width:100%;border-radius:8px;margin:.3em 0}
+  .md table{border-collapse:collapse;margin:.4em 0;font-size:13px;display:block;overflow-x:auto}
+  .md th,.md td{border:1px solid var(--line);padding:3px 8px;text-align:left}
+  .md hr{border:none;border-top:1px solid var(--line);margin:.7em 0}
+
+  /* Composer */
+  .composer{
+    flex:0 0 auto;display:flex;align-items:flex-end;gap:8px;
+    padding:8px 12px calc(env(safe-area-inset-bottom) + 8px);
+    border-top:1px solid var(--line);background:var(--bg);
+  }
+  .composer textarea{
+    flex:1;resize:none;background:var(--panel);color:var(--text);
+    border:1px solid var(--line);border-radius:18px;padding:9px 14px;
+    font:15px/1.4 inherit;max-height:120px;outline:none;
+  }
+  .composer .send{
+    background:var(--accent);color:#1a1a1a;font-weight:700;border-radius:50%;
+    width:38px;height:38px;font-size:17px;flex:0 0 auto;
+  }
+  .composer .send:disabled{opacity:.4}
+
+  /* Status drawer */
+  #drawer{
+    position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:30;
+  }
+  #drawer.open{display:block}
+  #drawer .panel{
+    position:absolute;top:0;right:0;bottom:0;width:min(86vw,360px);
+    background:var(--panel);border-left:1px solid var(--line);
+    padding:calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 16px);
+    overflow-y:auto;display:flex;flex-direction:column;gap:14px;
+  }
+  #drawer h3{margin:0;font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px}
+  #drawer .row{font-size:13px;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  #drawer .row b{display:block;font-size:13px}
+  #drawer .row small{color:var(--dim)}
+  .btn{display:block;width:100%;text-align:center;border:1px solid var(--line);border-radius:8px;padding:10px;font-weight:600;font-size:14px;margin-top:4px}
+  .btn.warn{color:var(--err);border-color:var(--err)}
+  .btn.solid{background:var(--accent);color:#1a1a1a;border:none}
+  .note{font-size:12px;color:var(--dim)}
+  #toast{
+    position:fixed;left:50%;transform:translateX(-50%);
+    bottom:calc(env(safe-area-inset-bottom) + 80px);
+    background:#333;color:var(--text);border-radius:8px;padding:8px 14px;font-size:13px;
+    opacity:0;transition:opacity .25s;pointer-events:none;z-index:40;max-width:86vw;
+  }
+  #toast.show{opacity:1}
+  .gate{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:30px;text-align:center;color:var(--dim)}
+</style>
+</head>
+<body class="list">
+  <div class="hdr">
+    <button class="back" id="backBtn">‹</button>
+    <div class="title" id="hdrTitle">vault-chat<small id="hdrSub"></small></div>
+    <div class="dot" id="runDot"></div>
+    <button class="menu" id="menuBtn">☰</button>
+  </div>
+
+  <div class="view" id="listView">
+    <div id="convs"></div>
+    <button class="newchat" id="newBtn">New chat</button>
+  </div>
+
+  <div class="view" id="threadView">
+    <div id="msgs"></div>
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="Message the agent…"></textarea>
+      <button class="send" id="sendBtn">↑</button>
+    </div>
+  </div>
+
+  <div id="drawer">
+    <div class="panel">
+      <h3>Box</h3>
+      <div class="row" id="boxRow"><small>Loading…</small></div>
+      <h3>Active runs</h3>
+      <div id="runsBox"><div class="note">—</div></div>
+      <button class="btn warn" id="killAllBtn">Kill all runs</button>
+      <h3>Schedules</h3>
+      <div id="schedBox"><div class="note">—</div></div>
+      <h3>Notifications</h3>
+      <div class="note" id="pushState">Checking…</div>
+      <button class="btn solid" id="pushBtn">Enable notifications</button>
+      <button class="btn" id="pushTestBtn">Send test notification</button>
+      <div class="note">Push needs this page added to your Home Screen (Share → Add to Home Screen) on iOS 16.4+.</div>
+    </div>
+  </div>
+  <div id="toast"></div>
+
+<script>
+(() => {
+  "use strict";
+  // ---- token: query wins, then localStorage (home-screen launches drop it) ----
+  const qs = new URLSearchParams(location.search);
+  let TOKEN = qs.get("token") || "";
+  try {
+    if (TOKEN) localStorage.setItem("vc_phone_token", TOKEN);
+    else TOKEN = localStorage.getItem("vc_phone_token") || "";
+  } catch {}
+  const $ = (id) => document.getElementById(id);
+  const toastEl = $("toast");
+  let toastT = 0;
+  const toast = (msg) => {
+    toastEl.textContent = msg;
+    toastEl.classList.add("show");
+    clearTimeout(toastT);
+    toastT = setTimeout(() => toastEl.classList.remove("show"), 2600);
+  };
+
+  if (!TOKEN) {
+    document.body.innerHTML =
+      '<div class="gate"><b style="color:var(--text)">No access token</b>' +
+      "<div>Open the phone link from vault-chat Settings once — it carries the token, which is then remembered on this device.</div></div>";
+    return;
+  }
+
+  const api = (path, opts = {}) =>
+    fetch(path, {
+      ...opts,
+      headers: { "X-Vault-Token": TOKEN, ...(opts.headers || {}) },
+    });
+  const fileUrl = (p) => "/file?path=" + encodeURIComponent(p) + "&token=" + encodeURIComponent(TOKEN);
+
+  // ---- markdown (escape first; no raw HTML passthrough, ever) ----
+  const esc = (s) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const isVaultPath = (u) => !/^[a-z][a-z0-9+.-]*:/i.test(u) && !u.startsWith("//");
+  const inline = (s) => {
+    let out = "";
+    // split out `code` spans first so other rules don't touch them
+    const parts = s.split(/(`[^`]+`)/);
+    for (const part of parts) {
+      if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
+        out += "<code>" + esc(part.slice(1, -1)) + "</code>";
+        continue;
+      }
+      let t = esc(part);
+      t = t.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, url) => {
+        const src = isVaultPath(url) ? fileUrl(url) : url;
+        return '<img src="' + src + '" alt="' + alt + '" loading="lazy">';
+      });
+      t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => {
+        const href = isVaultPath(url) ? fileUrl(url) : url;
+        return '<a href="' + href + '" target="_blank" rel="noopener">' + label + "</a>";
+      });
+      t = t.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+      t = t.replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, "$1<i>$2</i>");
+      t = t.replace(/~~([^~]+)~~/g, "<s>$1</s>");
+      out += t;
+    }
+    return out;
+  };
+  const md = (src) => {
+    const lines = (src || "").replace(/\r\n/g, "\n").split("\n");
+    let html = "", i = 0;
+    const flushP = (buf) => {
+      if (buf.length) html += "<p>" + buf.map(inline).join("<br>") + "</p>";
+      buf.length = 0;
+    };
+    const pbuf = [];
+    while (i < lines.length) {
+      const l = lines[i];
+      if (/^```/.test(l)) {
+        flushP(pbuf);
+        const fence = [];
+        i++;
+        while (i < lines.length && !/^```/.test(lines[i])) fence.push(lines[i++]);
+        i++;
+        html += "<pre><code>" + esc(fence.join("\n")) + "</code></pre>";
+        continue;
+      }
+      if (/^\s*$/.test(l)) { flushP(pbuf); i++; continue; }
+      const h = l.match(/^(#{1,6})\s+(.*)$/);
+      if (h) { flushP(pbuf); const n = Math.min(h[1].length, 3); html += `<h${n}>` + inline(h[2]) + `</h${n}>`; i++; continue; }
+      if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(l)) { flushP(pbuf); html += "<hr>"; i++; continue; }
+      if (/^\s*>/.test(l)) {
+        flushP(pbuf);
+        const q = [];
+        while (i < lines.length && /^\s*>/.test(lines[i])) q.push(lines[i++].replace(/^\s*>\s?/, ""));
+        html += "<blockquote>" + md(q.join("\n")) + "</blockquote>";
+        continue;
+      }
+      if (/^\s*[-*+]\s+/.test(l)) {
+        flushP(pbuf);
+        html += "<ul>";
+        while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i]))
+          html += "<li>" + inline(lines[i++].replace(/^\s*[-*+]\s+/, "")) + "</li>";
+        html += "</ul>";
+        continue;
+      }
+      if (/^\s*\d+[.)]\s+/.test(l)) {
+        flushP(pbuf);
+        html += "<ol>";
+        while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i]))
+          html += "<li>" + inline(lines[i++].replace(/^\s*\d+[.)]\s+/, "")) + "</li>";
+        html += "</ol>";
+        continue;
+      }
+      if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+        flushP(pbuf);
+        const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(c.trim()));
+        html += "<table><thead><tr>" + cells(l).map((c) => "<th>" + c + "</th>").join("") + "</tr></thead><tbody>";
+        i += 2;
+        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i]))
+          html += "<tr>" + cells(lines[i++]).map((c) => "<td>" + c + "</td>").join("") + "</tr>";
+        html += "</tbody></table>";
+        continue;
+      }
+      pbuf.push(l);
+      i++;
+    }
+    flushP(pbuf);
+    return html;
+  };
+
+  // ---- state ----
+  let view = "list";        // 'list' | 'thread'
+  let convId = null;        // null = composing a brand-new chat
+  let convTitle = "New chat";
+  let running = false;
+  let streamText = "";
+  let streamTool = "";
+  let vaultName = "";
+
+  const msgsEl = $("msgs"), convsEl = $("convs"), input = $("input");
+
+  const age = (ts) => {
+    const m = Math.floor((Date.now() - ts) / 60000);
+    if (m < 1) return "now";
+    if (m < 60) return m + "m";
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + "h";
+    return Math.floor(h / 24) + "d";
+  };
+
+  const setHeader = () => {
+    $("hdrTitle").childNodes[0].nodeValue = view === "list" ? "vault-chat" : convTitle;
+    $("hdrSub").textContent = view === "list" ? (vaultName ? "vault: " + vaultName : "") : "";
+    $("runDot").className = "dot" + (running ? " run" : "");
+    document.body.className = view;
+  };
+
+  // ---- conversation list ----
+  async function loadList() {
+    try {
+      const r = await api("/conversations");
+      if (!r.ok) throw new Error((await r.json()).error || r.status);
+      const d = await r.json();
+      vaultName = d.vault || "";
+      convsEl.innerHTML = "";
+      for (const c of d.conversations) {
+        const b = document.createElement("button");
+        b.className = "conv";
+        b.innerHTML =
+          '<div class="t"><span class="name"></span>' +
+          (c.source !== "manual" ? '<span class="badge">' + esc(c.source) + "</span>" : "") +
+          '<span class="age">' + age(c.lastActivityAt) + "</span></div>" +
+          '<div class="p"></div>';
+        b.querySelector(".name").textContent = c.title;
+        b.querySelector(".p").textContent = c.preview || c.msgCount + " messages";
+        b.onclick = () => openThread(c.id, c.title);
+        convsEl.appendChild(b);
+      }
+      setHeader();
+    } catch (e) {
+      convsEl.innerHTML = '<div class="gate">Box unreachable: ' + esc(String(e.message || e)) + "</div>";
+    }
+  }
+
+  // ---- thread ----
+  function bubble(role, content, tools, opts = {}) {
+    const div = document.createElement("div");
+    div.className = "m " + (role === "user" ? "user" : opts.system ? "sys" : "asst") + (opts.queued ? " queued" : "");
+    if (role === "user" || opts.system) {
+      div.textContent = content;
+    } else {
+      div.innerHTML = '<div class="md">' + md(content) + "</div>";
+    }
+    if (tools && tools.length) {
+      const wrap = document.createElement("div");
+      wrap.className = "toolchips";
+      const shown = tools.slice(0, 8);
+      for (const t of shown) {
+        const c = document.createElement("span");
+        c.className = "toolchip";
+        c.textContent = t;
+        wrap.appendChild(c);
+      }
+      if (tools.length > shown.length) {
+        const c = document.createElement("span");
+        c.className = "toolchip";
+        c.textContent = "+" + (tools.length - shown.length);
+        wrap.appendChild(c);
+      }
+      div.appendChild(wrap);
+    }
+    return div;
+  }
+
+  const atBottom = () => msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 80;
+  const scrollDown = (force) => {
+    if (force || atBottom()) msgsEl.scrollTop = msgsEl.scrollHeight;
+  };
+
+  let streamEl = null, runlineEl = null;
+  function renderRunline() {
+    if (!running) {
+      if (runlineEl) { runlineEl.remove(); runlineEl = null; }
+      return;
+    }
+    if (!runlineEl) {
+      runlineEl = document.createElement("div");
+      runlineEl.className = "runline";
+      runlineEl.innerHTML = '<span class="dot run"></span><span class="lbl"></span><button class="kill">Kill</button>';
+      runlineEl.querySelector(".kill").onclick = killCurrent;
+      msgsEl.appendChild(runlineEl);
+    }
+    runlineEl.querySelector(".lbl").textContent = streamTool ? "running · " + streamTool : "running…";
+    msgsEl.appendChild(runlineEl); // keep last
+  }
+  function renderStream() {
+    if (!streamText) {
+      if (streamEl) { streamEl.remove(); streamEl = null; }
+      renderRunline();
+      return;
+    }
+    if (!streamEl) {
+      streamEl = document.createElement("div");
+      streamEl.className = "m asst stream";
+      msgsEl.appendChild(streamEl);
+    }
+    streamEl.innerHTML = '<div class="md">' + md(streamText) + '</div><span class="cursor"></span>';
+    renderRunline();
+    scrollDown(false);
+  }
+
+  async function openThread(id, title) {
+    view = "thread";
+    convId = id;
+    convTitle = title || "New chat";
+    running = false;
+    streamText = ""; streamTool = ""; streamEl = null; runlineEl = null;
+    msgsEl.innerHTML = "";
+    setHeader();
+    if (!id) return; // brand-new chat — empty thread
+    try {
+      const r = await api("/conversation?id=" + encodeURIComponent(id) + "&n=80");
+      if (!r.ok) throw new Error((await r.json()).error || r.status);
+      const d = await r.json();
+      convTitle = d.title;
+      running = d.status === "running";
+      msgsEl.innerHTML = "";
+      for (const m of d.messages)
+        msgsEl.appendChild(bubble(m.role, m.content, m.tools, { system: m.system }));
+      renderRunline();
+      setHeader();
+      scrollDown(true);
+    } catch (e) {
+      toast("Load failed: " + (e.message || e));
+    }
+  }
+
+  // ---- send ----
+  let lastSentText = null; // dedupe: the box echoes our own message back via SSE
+  async function send() {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    input.style.height = "auto";
+    lastSentText = text;
+    const mine = bubble("user", text, null);
+    msgsEl.appendChild(mine);
+    scrollDown(true);
+    try {
+      const r = await api("/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ convId, text }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || r.status);
+      if (!convId && d.convId) {
+        convId = d.convId;
+        convTitle = text.split("\n")[0].slice(0, 60);
+      }
+      if (d.queued) {
+        mine.classList.add("queued");
+        toast("Agent is mid-run — queued, will send when it finishes.");
+      } else {
+        running = true;
+        renderRunline();
+      }
+      setHeader();
+    } catch (e) {
+      mine.classList.add("queued");
+      toast("Send failed: " + (e.message || e));
+    }
+  }
+  $("sendBtn").onclick = send;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      send();
+    }
+  });
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 120) + "px";
+  });
+
+  async function killCurrent() {
+    if (!convId) return;
+    try {
+      const r = await api("/kill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ convId }),
+      });
+      const d = await r.json().catch(() => ({}));
+      toast(d.result || "Kill sent.");
+    } catch (e) {
+      toast("Kill failed: " + (e.message || e));
+    }
+  }
+
+  // ---- SSE live events ----
+  let es = null;
+  function connectEvents() {
+    if (es) es.close();
+    es = new EventSource("/events?token=" + encodeURIComponent(TOKEN));
+    es.onmessage = (ev) => {
+      let d;
+      try { d = JSON.parse(ev.data); } catch { return; }
+      if (d.type === "runtime" && d.convId === convId) {
+        running = true;
+        streamText = d.text || "";
+        streamTool = d.tool || "";
+        renderStream();
+        setHeader();
+      } else if (d.type === "message" && d.convId === convId) {
+        if (d.role === "user" && lastSentText !== null && d.content === lastSentText) {
+          lastSentText = null; // our own echo — already rendered optimistically
+          return;
+        }
+        streamText = ""; streamTool = "";
+        renderStream();
+        msgsEl.appendChild(bubble(d.role, d.content, d.tools));
+        scrollDown(false);
+      } else if (d.type === "status") {
+        if (d.convId === convId) {
+          running = d.status === "running";
+          if (!running) { streamText = ""; streamTool = ""; renderStream(); }
+          renderRunline();
+          setHeader();
+        }
+        if (view === "list") loadList();
+      } else if (d.type === "title" && d.convId === convId) {
+        convTitle = d.title;
+        setHeader();
+      }
+    };
+  }
+
+  // ---- status drawer ----
+  $("menuBtn").onclick = async () => {
+    $("drawer").classList.add("open");
+    refreshPushUi();
+    try {
+      const r = await api("/status");
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      $("boxRow").innerHTML = "<b></b><small></small>";
+      $("boxRow").querySelector("b").textContent = d.vault || "?";
+      $("boxRow").querySelector("small").textContent = "model: " + (d.model || "?");
+      const runs = d.runs || [];
+      $("runsBox").innerHTML = runs.length ? "" : '<div class="note">No active runs.</div>';
+      for (const run of runs) {
+        const div = document.createElement("div");
+        div.className = "row";
+        div.innerHTML = "<b></b><small></small>";
+        div.querySelector("b").textContent = run.title || run.convId;
+        div.querySelector("small").textContent =
+          (run.lastTool ? "🔧 " + run.lastTool + " · " : "") +
+          (run.lastProgressAt ? age(run.lastProgressAt) + " ago" : "running");
+        $("runsBox").appendChild(div);
+      }
+      const scheds = d.schedules || [];
+      $("schedBox").innerHTML = scheds.length ? "" : '<div class="note">No schedules.</div>';
+      for (const sc of scheds) {
+        const div = document.createElement("div");
+        div.className = "row";
+        div.innerHTML = "<b></b><small></small>";
+        div.querySelector("b").textContent = sc.name;
+        div.querySelector("small").textContent = sc.detail || "";
+        $("schedBox").appendChild(div);
+      }
+    } catch (e) {
+      $("boxRow").innerHTML = "<small></small>";
+      $("boxRow").querySelector("small").textContent = "Status failed: " + (e.message || e);
+    }
+  };
+  $("drawer").addEventListener("click", (e) => {
+    if (e.target === $("drawer")) $("drawer").classList.remove("open");
+  });
+  $("killAllBtn").onclick = async () => {
+    const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
+    const d = r ? await r.json().catch(() => ({})) : {};
+    toast(d.result || "Kill-all sent.");
+  };
+
+  // ---- push ----
+  const b64uToBytes = (s) => {
+    const pad = "=".repeat((4 - (s.length % 4)) % 4);
+    const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
+    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  };
+  const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window;
+  async function currentSub() {
+    if (!pushSupported()) return null;
+    const reg = await navigator.serviceWorker.getRegistration().catch(() => null);
+    return reg ? await reg.pushManager.getSubscription().catch(() => null) : null;
+  }
+  async function refreshPushUi() {
+    if (!pushSupported()) {
+      $("pushState").textContent = navigator.standalone === false
+        ? "Add this page to your Home Screen first — Safari tabs can't receive push."
+        : "Push not supported in this browser.";
+      $("pushBtn").style.display = "none";
+      $("pushTestBtn").style.display = "none";
+      return;
+    }
+    const sub = await currentSub();
+    $("pushState").textContent = sub ? "Notifications are ON for this device." : "Notifications are off.";
+    $("pushBtn").style.display = sub ? "none" : "block";
+    $("pushTestBtn").style.display = sub ? "block" : "none";
+  }
+  $("pushBtn").onclick = async () => {
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { toast("Notifications not allowed."); return; }
+      const reg = await navigator.serviceWorker.register("/phone-sw.js");
+      await navigator.serviceWorker.ready;
+      const vr = await api("/push/vapid");
+      const vd = await vr.json();
+      if (!vr.ok || !vd.key) throw new Error(vd.error || "no VAPID key from box");
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: b64uToBytes(vd.key),
+      });
+      const r = await api("/push/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sub.toJSON()),
+      });
+      if (!r.ok) throw new Error("subscribe store failed");
+      toast("Notifications enabled.");
+      refreshPushUi();
+    } catch (e) {
+      toast("Push setup failed: " + (e.message || e));
+    }
+  };
+  $("pushTestBtn").onclick = async () => {
+    const r = await api("/push/test", { method: "POST" }).catch(() => null);
+    const d = r ? await r.json().catch(() => ({})) : {};
+    toast(d.error ? "Test failed: " + d.error : "Test sent — should arrive in seconds.");
+  };
+  // Re-assert the subscription on every open: iOS quietly drops them.
+  (async () => {
+    const sub = await currentSub();
+    if (sub) {
+      api("/push/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sub.toJSON()),
+      }).catch(() => {});
+    }
+  })();
+
+  // ---- nav + lifecycle ----
+  $("backBtn").onclick = () => {
+    view = "list";
+    convId = null;
+    setHeader();
+    loadList();
+  };
+  $("newBtn").onclick = () => openThread(null, "New chat");
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      connectEvents();
+      if (view === "list") loadList();
+      else if (convId) openThread(convId, convTitle);
+    }
+  });
+
+  setHeader();
+  loadList();
+  connectEvents();
+})();
+</script>
+</body>
+</html>

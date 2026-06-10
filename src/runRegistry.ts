@@ -30,3 +30,9 @@ export function abortRun(convId: string): boolean {
   c.abort();
   return true;
 }
+
+// Conversation ids with a registered in-flight run — the phone's /status and
+// kill-all read this.
+export function activeRuns(): string[] {
+  return [...controllers.keys()];
+}

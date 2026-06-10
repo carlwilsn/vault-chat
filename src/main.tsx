@@ -30,6 +30,7 @@ import {
 import { installDebugLog, flushDebugLogToDisk, vlog } from "./debugLog";
 import { installAutosaveNet } from "./autosave";
 import { startPhoneVoiceHost } from "./phoneVoice";
+import { startPhoneAppHost } from "./phoneApp";
 
 // Install the freeze diagnostic logger before anything else runs, so a
 // crash during boot still leaves a trail.
@@ -94,6 +95,9 @@ if (isPopout) {
   // phone can connect over Tailscale and talk live. Inert until a vault + EL key
   // exist. Main window only.
   void startPhoneVoiceHost();
+  // Phone chat host: relays /phone PWA traffic (messages, status, kill, push)
+  // through the same server. Main window only.
+  void startPhoneAppHost();
 }
 
 const Root = isPopout ? ChatWindow : App;

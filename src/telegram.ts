@@ -629,6 +629,13 @@ export async function sendTelegramReplyWithImages(
   }
   if (text) {
     await sendTelegramMessage(vault, chatId, stripMarkdownForTelegram(text));
+    // Mirror to the phone PWA's push channel. Deliberately AFTER the
+    // [[SILENT]] / quiet-unless-ALERT gates upstream — whatever actually
+    // reaches Telegram reaches push, nothing more. Dynamic import to avoid
+    // a static cycle (phoneApp → chat-controller → telegram).
+    import("./phoneApp")
+      .then(({ mirrorPushNotify }) => mirrorPushNotify("vault-chat", text))
+      .catch(() => {});
   }
 }
 

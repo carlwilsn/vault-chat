@@ -133,3 +133,18 @@ export async function getPhoneVoiceLink(): Promise<string | null> {
     return null;
   }
 }
+
+/**
+ * The phone CHAT link (the /phone PWA): same server, same token. The page
+ * remembers the token in localStorage, so home-screen launches (which drop
+ * the query string) keep working after the first open.
+ */
+export async function getPhoneChatLink(): Promise<string | null> {
+  try {
+    const base = await invoke<string | null>("voice_server_url", { port: PORT });
+    if (!base) return null;
+    return `${base}/phone?token=${getToken()}`;
+  } catch {
+    return null;
+  }
+}
