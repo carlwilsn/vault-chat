@@ -19,6 +19,19 @@ Use Read/Write/Edit/Glob for these. If `.vault-chat/supervisor/` doesn't exist y
 2. **Open a goal file** `.vault-chat/supervisor/goals/<slug>.md`: the goal, the success criterion, status, an attempts log, and a learnings section. This is a living log — append to it as you go; never lose what's been tried.
 3. **Spawn a worker** (`StartWorker`) seeded with the goal *and* any prior learnings. When the right approach is genuinely uncertain, spawn 2–3 workers on different angles and take the first that **verifies**.
 
+## Proposing a plan the user approves (the cockpit "North Star")
+
+For a substantial, multi-part ask that comes from the **app's chat** (the cockpit), don't fan out workers blind — **propose first, fan out on approval.** Reply with one short framing line and a fenced `plan` block: a `title:` line, then one `-` bullet per task you'd hand to a separate worker. List only the tasks that genuinely parallelize — three crisp tasks beat ten.
+
+    ```plan
+    title: Reproduce the BitNet 160M MVP
+    - Train seed 42 on the 1700-step config and commit eval.loss
+    - Train seed 43 on the same config
+    - Eval all seeds and draft the writeup under docs/
+    ```
+
+The app renders that block as a card with **Approve & run** / **Refine**. On approval the user replies approving it — then **immediately `StartWorker` once per task** (seed each with the goal + relevant context) and report which workers are now running. If they ask to refine, reshape the plan and re-propose. This propose→approve checkpoint is for cockpit chats only; a goal handed to you over Telegram or by a schedule still follows the spawn-on-handoff flow above.
+
 ## The loop — informed, not blind
 
 Your job between start and done is to keep the loop *fed with information* and *always recoverable*. It is not a blind retry counter.

@@ -118,6 +118,21 @@
   .md th,.md td{border:1px solid var(--line);padding:3px 8px;text-align:left}
   .md hr{border:none;border-top:1px solid var(--line);margin:.7em 0}
 
+  /* North Star proposal card (```plan block) */
+  .plancard{background:#1d2420;border:1px solid #34532f;border-radius:13px;padding:12px 13px;margin:3px 0}
+  .pc-h{font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:var(--ok);font-weight:700;margin-bottom:6px}
+  .pc-title{font-weight:600;font-size:14.5px;line-height:1.35;margin-bottom:4px}
+  .pc-desc{font-size:13px;color:#bdbdbd;line-height:1.5;margin-bottom:4px}
+  .pc-tasks{margin:5px 0 0;padding-left:18px}
+  .pc-tasks li{font-size:13px;color:#d7d7d7;margin:3px 0;line-height:1.45}
+  .pc-btns{display:flex;gap:8px;margin-top:12px}
+  .pc-approve{flex:1;background:var(--ok);color:#11240f;font-weight:700;font-size:13px;border-radius:9px;padding:9px;min-height:38px}
+  .pc-approve:active{opacity:.85}
+  .pc-refine{background:var(--surface);border:1px solid var(--line);color:var(--text);font-size:13px;border-radius:9px;padding:9px 16px;min-height:38px}
+  .pc-refine:active{background:var(--raised)}
+  .plancard.approved{opacity:.6}
+  .plancard.approved .pc-btns{display:none}
+
   .composer{flex:0 0 auto;display:flex;align-items:flex-end;gap:9px;padding:6px 12px calc(env(safe-area-inset-bottom) + 8px)}
   .mic{width:42px;height:42px;border-radius:50%;background:var(--surface);border:1px solid var(--line);color:var(--text);flex:none;display:flex;align-items:center;justify-content:center}
   .mic:active{background:var(--raised)}
@@ -404,7 +419,7 @@
     const flushP = () => { if (pbuf.length) html += "<p>" + pbuf.map(inline).join("<br>") + "</p>"; pbuf.length = 0; };
     while (i < lines.length) {
       const l = lines[i];
-      if (/^```/.test(l)) { flushP(); const f = []; i++; while (i < lines.length && !/^```/.test(lines[i])) f.push(lines[i++]); i++; html += "<pre><code>" + esc(f.join("\n")) + "</code></pre>"; continue; }
+      if (/^```/.test(l)) { flushP(); const lang = (l.match(/^```\s*(\w+)/) || [])[1] || ""; const f = []; i++; while (i < lines.length && !/^```/.test(lines[i])) f.push(lines[i++]); i++; if (lang === "plan") { html += renderPlanCard(f); continue; } html += "<pre><code>" + esc(f.join("\n")) + "</code></pre>"; continue; }
       if (/^\s*$/.test(l)) { flushP(); i++; continue; }
       const h = l.match(/^(#{1,6})\s+(.*)$/);
       if (h) { flushP(); const n = Math.min(h[1].length, 3); html += `<h${n}>` + inline(h[2]) + `</h${n}>`; i++; continue; }
@@ -425,6 +440,31 @@
     flushP();
     return html;
   };
+
+  // A ```plan fenced block (the cockpit "North Star" proposal) renders as an
+  // approve/refine card instead of code. Format: a `title:` line, then one
+  // `- task` bullet per worker the agent would fan out. Buttons are wired by
+  // delegation on #msgs (see approvePlan).
+  function planParse(lines) {
+    let title = ""; const tasks = [], desc = [];
+    for (const ln of lines) {
+      const t = ln.trim(); if (!t) continue;
+      const m = t.match(/^title:\s*(.+)$/i);
+      if (m) { title = m[1].trim(); continue; }
+      if (/^[-*]\s+/.test(t)) { tasks.push(t.replace(/^[-*]\s+/, "")); continue; }
+      desc.push(t);
+    }
+    return { title, tasks, desc: desc.join(" ") };
+  }
+  function renderPlanCard(lines) {
+    const { title, tasks, desc } = planParse(lines);
+    let h = '<div class="plancard"><div class="pc-h">Proposed plan</div>';
+    if (title) h += '<div class="pc-title">' + inline(title) + "</div>";
+    if (desc) h += '<div class="pc-desc">' + inline(desc) + "</div>";
+    if (tasks.length) { h += '<ul class="pc-tasks">'; for (const t of tasks) h += "<li>" + inline(t) + "</li>"; h += "</ul>"; }
+    h += '<div class="pc-btns"><button class="pc-approve">Approve &amp; run</button><button class="pc-refine">Refine</button></div></div>';
+    return h;
+  }
 
   // ---------- state ----------
   let page = "chat";
@@ -613,6 +653,32 @@
     const d = r ? await r.json().catch(() => ({})) : {};
     toast(d.result || "Stopping…");
   }
+
+  // North Star: approving a proposed plan tells the supervisor to fan out a
+  // worker per task. Sent as an explicit instruction so it works even on a
+  // vault whose supervisor prompt predates the plan convention.
+  async function approvePlan(card) {
+    if (card.classList.contains("approved")) return;
+    if (!convId) { toast("Open the chat first."); return; }
+    card.classList.add("approved");
+    card.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    const text = "Approved — start a background worker for each task in that plan and run them now, then tell me which are running.";
+    if (msgsEl.querySelector(".hint")) msgsEl.innerHTML = "";
+    msgsEl.appendChild(bubble("user", text, null)); scrollDown(true);
+    try {
+      const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, text }) });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || r.status);
+      running = true; renderRunline(); setHeader();
+      toast("Approved — spawning workers.");
+    } catch (e) { card.classList.remove("approved"); card.querySelectorAll("button").forEach((b) => { b.disabled = false; }); toast("Approve failed: " + (e.message || e)); }
+  }
+  msgsEl.addEventListener("click", (e) => {
+    const ap = e.target.closest(".pc-approve");
+    if (ap) { void approvePlan(ap.closest(".plancard")); return; }
+    const rf = e.target.closest(".pc-refine");
+    if (rf) { try { input.focus({ preventScroll: true }); } catch {} showKb(); }
+  });
 
   // ---------- live events ----------
   let pollGen = 0;
