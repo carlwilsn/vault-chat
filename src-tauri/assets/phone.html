@@ -148,10 +148,7 @@
   .rinp::placeholder{color:#838383}
   .rsend{position:absolute;right:5px;width:28px;height:28px;border-radius:50%;background:var(--primary);color:var(--primary-fg);font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center}
   .empty{padding:30px 38px;text-align:center;color:var(--dim);font-size:13.5px;line-height:1.6}
-  .albar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 16px 4px}
-  .albar span{font-size:12px;color:var(--dim)}
-  .albar .clearbtn{font-size:12.5px;font-weight:600;color:var(--primary-fg);background:var(--primary);border-radius:9px;padding:7px 13px;min-height:32px}
-  .albar .clearbtn:active{opacity:.8}
+  .metabar{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#8a8a8a;font-weight:600;margin:4px 0 2px}
   .earlier{display:block;width:calc(100% - 28px);margin:6px 14px 0;text-align:center;font-size:12.5px;color:var(--dim);border:1px solid var(--line);border-radius:10px;padding:9px;min-height:38px}
   .earlier:active{background:var(--surface)}
   .dismiss{margin-top:10px;color:var(--dim);border:1px solid var(--line);border-radius:8px;padding:7px 14px;font-size:12.5px;min-height:34px}
@@ -235,6 +232,7 @@
   .vx{width:66px;height:66px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--text);display:flex;align-items:center;justify-content:center}
   .vx svg{width:24px;height:24px}
   .vhint{font-size:11.5px;color:#6f6f6f}
+  .vhint .chev{display:inline-block;width:12px;height:12px;vertical-align:-1px}
 
   @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
 </style>
@@ -282,9 +280,6 @@
 
   <div id="drawer">
     <div class="panel">
-      <h3>Box</h3>
-      <div class="row" id="boxRow"><small>Loading…</small></div>
-      <button class="btn warn" id="killAllBtn">Kill all runs</button>
       <h3>Keyboard</h3>
       <div class="note" id="kbState"></div>
       <button class="btn" id="kbToggleBtn"></button>
@@ -293,6 +288,8 @@
       <button class="btn solid" id="pushBtn">Enable notifications</button>
       <button class="btn" id="pushTestBtn">Send test notification</button>
       <div class="note">Push needs this page added to your Home Screen (Share → Add to Home Screen) on iOS 16.4+. You won't get a notification for things you're already looking at in the app.</div>
+      <div style="flex:1;min-height:18px"></div>
+      <button class="btn warn" id="killAllBtn">Kill all runs</button>
     </div>
   </div>
   <div id="toast"></div>
@@ -300,7 +297,7 @@
   <div id="voice">
     <div class="vtop"><span class="vlbl">voice · same agent, same memory</span><button class="icbtn" id="vMinBtn" aria-label="minimize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button></div>
     <div class="vmid"><div class="viz" id="viz"></div><div class="vconn">Connecting…</div><div class="verr" id="verr"></div></div>
-    <div class="vend"><button class="vx" id="vEndBtn" aria-label="end voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button><span class="vhint">tap ⌄ to keep talking while you read</span></div>
+    <div class="vend"><button class="vx" id="vEndBtn" aria-label="end voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button><span class="vhint">tap <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg> to keep talking while you read</span></div>
   </div>
 
 <script>
@@ -710,6 +707,10 @@
   }
 
   // ---------- alerts ----------
+  // Two classes, by design. ACTION (kind "ask") — something needs a decision;
+  // reply inline. INFO (everything else) — a heads-up you just acknowledge.
+  // No thread-jumping from here: that's Activity's job. Tapping an info card
+  // marks it read; read items collapse under "Show earlier".
   async function loadAlerts() {
     const box = $("alScroll");
     try {
@@ -718,23 +719,15 @@
       unreadN = d.unread || 0; setHeader();
       const list = d.notifications || [];
       box.innerHTML = "";
-      if (!list.length) { box.appendChild(el('<div class="empty">Nothing yet. Mission completions, worker results, and your recurring briefings land here — with a push if notifications are on and the app isn’t already open.</div>')); return; }
-      // Default view is unread-only — a clean board you can actually clear.
-      // Read items collapse behind "Show earlier" so nothing is lost.
+      if (!list.length) { box.appendChild(el('<div class="empty">Nothing yet. Worker results, failures that need a call, and your recurring briefings land here — with a push if notifications are on and the app isn’t already open.</div>')); return; }
       const unread = list.filter((n) => !n.read);
       const read = list.filter((n) => n.read);
-      const asks = unread.filter((n) => n.kind === "ask");
-      const info = unread.filter((n) => n.kind !== "ask");
-      if (unread.length) {
-        const bar = el('<div class="albar"><span></span><button class="clearbtn">Mark all read</button></div>');
-        bar.querySelector("span").textContent = unread.length + " new";
-        bar.querySelector(".clearbtn").onclick = async (ev) => { ev.currentTarget.disabled = true; await markAllRead(unread); loadAlerts(); };
-        box.appendChild(bar);
-      }
-      if (asks.length) box.appendChild(el('<div class="sec">Needs you</div>'));
-      for (const n of asks) box.appendChild(alertCard(n, true));
-      if (info.length) box.appendChild(el('<div class="sec">For you</div>'));
-      for (const n of info) box.appendChild(alertCard(n, false));
+      const actions = unread.filter((n) => n.kind === "ask");
+      const infos = unread.filter((n) => n.kind !== "ask");
+      if (actions.length) box.appendChild(el('<div class="sec">Needs a reply</div>'));
+      for (const n of actions) box.appendChild(alertCard(n, true));
+      if (infos.length) box.appendChild(el('<div class="sec">Heads-up</div>'));
+      for (const n of infos) box.appendChild(alertCard(n, false));
       if (!unread.length) box.appendChild(el('<div class="empty">All caught up.</div>'));
       if (read.length) {
         const holder = el('<div></div>');
@@ -750,19 +743,25 @@
     } catch (e) { box.innerHTML = '<div class="empty">Alerts unavailable: ' + esc(String(e.message || e)) + "</div>"; }
   }
   const markRead = (id) => api("/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
-  async function markAllRead(items) { await Promise.all(items.map((n) => markRead(n.id))); unreadN = 0; setHeader(); }
-  function alertCard(n, needsYou) {
-    const card = el('<div class="card' + (needsYou ? " ask" : n.read ? "" : " unread") + '"><div class="crow"><div class="ico"></div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><p class="cs"></p><span class="tag"></span></div></div></div>');
+  // The "bar" line between title and summary: what kind of alert this is.
+  function alertClass(n) {
+    if (n.kind === "ask") return { label: "Needs your reply", ico: "?", cls: "a" };
+    if (/fail|error|diverg|crash|wedge|❌|⚠/i.test(n.title)) return { label: "Something failed", ico: "!", cls: "r" };
+    if (/worker|complete|done|finished/i.test(n.title)) return { label: "Worker finished", ico: "✓", cls: "g" };
+    if (/stopped|idle|cost|\$/i.test(n.title)) return { label: "Cost / cleanup", ico: "$", cls: "r" };
+    if (/brief|coach|morning|daily|check-?in/i.test(n.title)) return { label: "Briefing", ico: "≡", cls: "" };
+    return { label: "Update", ico: "•", cls: "" };
+  }
+  function alertCard(n, isAction) {
+    const meta = alertClass(n);
+    const card = el('<div class="card' + (isAction ? " ask" : n.read ? "" : " unread") + '"><div class="crow"><div class="ico"></div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><div class="metabar"></div><p class="cs"></p></div></div></div>');
     const ico = card.querySelector(".ico");
-    if (needsYou) { ico.textContent = "?"; ico.classList.add("a"); }
-    else if (/worker|complete|done|finished/i.test(n.title)) { ico.textContent = "✓"; ico.classList.add("g"); }
-    else if (/stopped|idle|cost|\$/i.test(n.title)) { ico.textContent = "$"; ico.classList.add("r"); }
-    else { ico.textContent = "•"; }
+    ico.textContent = meta.ico; if (meta.cls) ico.classList.add(meta.cls);
     card.querySelector("b").textContent = n.title;
     card.querySelector(".t").textContent = age(n.ts);
+    card.querySelector(".metabar").textContent = meta.label;
     card.querySelector(".cs").textContent = n.body || "";
-    card.querySelector(".tag").textContent = needsYou ? "answer below" : n.convId ? "tap to open the thread" : "info";
-    if (needsYou && n.convId) {
+    if (isAction && n.convId) {
       const rep = el('<div class="reply"><input class="rinp" placeholder="tell it what to do…" autocomplete="off" /><button class="rsend">↑</button></div>');
       const go = async () => {
         const v = rep.querySelector(".rinp").value.trim(); if (!v) return;
@@ -776,7 +775,8 @@
       dismiss.onclick = async (e) => { e.stopPropagation(); await markRead(n.id); toast("Marked read."); loadAlerts(); };
       card.querySelector(".cb").appendChild(dismiss);
     } else {
-      card.onclick = async () => { if (!n.read) await markRead(n.id); if (n.convId) openThread(n.convId, n.title); else loadAlerts(); };
+      // Info: a tap acknowledges it (marks read). No thread jump.
+      card.onclick = async () => { if (!n.read) { await markRead(n.id); loadAlerts(); } };
     }
     return card;
   }
@@ -784,7 +784,6 @@
   // ---------- settings drawer ----------
   function openDrawer() {
     $("drawer").classList.add("open"); refreshPushUi();
-    void (async () => { const d = await refreshState(); $("boxRow").innerHTML = "<b></b><small></small>"; $("boxRow").querySelector("b").textContent = vaultName || "?"; $("boxRow").querySelector("small").textContent = (boxModel ? "model: " + boxModel : "model: ?") + (d ? " · " + (d.runs || []).length + " running" : ""); })();
   }
   $("drawer").addEventListener("click", (e) => { if (e.target === $("drawer")) $("drawer").classList.remove("open"); });
   $("killAllBtn").onclick = async () => { const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null); const d = r ? await r.json().catch(() => ({})) : {}; toast(d.result || "Kill-all sent."); };
@@ -846,7 +845,7 @@
   function kbSetLayer(i) { kbLayer = i; kbLayerDivs.forEach((d, li) => d.classList.toggle("active", li === i)); if (i === 0) kbAutoShift(); kbApplyShift(); }
   function kbSel() { const len = input.value.length; let s = input.selectionStart, e = input.selectionEnd; if (s == null || e == null) { s = len; e = len; } return [s, e]; }
   function kbAfterEdit() { scheduleAutosize(); kbAutoShift(); }
-  function kbAutoShift() { if (kbCaps || kbLayer !== 0) return; const [s] = kbSel(); const before = input.value.slice(0, s); const want = before === "" || /[.!?]\s$/.test(before) || /\n$/.test(before); if (want !== kbShift) { kbShift = want; kbApplyShift(); } }
+  function kbAutoShift() { if (kbCaps || kbLayer !== 0) return; const [s] = kbSel(); const tail = s >= 2 ? input.value.slice(s - 2, s) : input.value.slice(0, s); const want = s === 0 || /[.!?]\s$/.test(tail) || /\n$/.test(tail); if (want !== kbShift) { kbShift = want; kbApplyShift(); } }
   function kbInsert(str) { const [s, e] = kbSel(); input.setRangeText(str, s, e, "end"); kbAfterEdit(); }
   function kbBackspaceOnce() { let [s, e] = kbSel(); if (s === e) { if (s === 0) return; let n = 1; const code = input.value.charCodeAt(s - 1); if (code >= 0xdc00 && code <= 0xdfff && s > 1) n = 2; s -= n; } input.setRangeText("", s, e, "end"); kbAfterEdit(); }
   let bkspT1 = 0, bkspIv = 0;
