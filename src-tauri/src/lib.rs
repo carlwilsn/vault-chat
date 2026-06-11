@@ -6596,6 +6596,29 @@ fn agent_audio_stop() {
     agent_audio::stop();
 }
 
+// "Run in background" gate. When on, closing the main window hides it to the
+// tray instead of quitting, so the renderer (scheduler loop + supervisor
+// wakes) keeps running. Machine-local: the frontend pushes the user's
+// localStorage preference here at boot via `set_run_in_background`. Default
+// off so the app quits on close exactly as before until the user opts in.
+struct RunInBackground(AtomicBool);
+
+#[tauri::command]
+fn set_run_in_background(state: tauri::State<'_, RunInBackground>, enabled: bool) {
+    state.0.store(enabled, Ordering::Relaxed);
+}
+
+// Bring the main window back from the tray: show, unminimize, focus. Used by
+// the tray's left-click and "Show" menu item.
+fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK's sandboxed WebProcess can't resolve GStreamer plugins on this
@@ -6626,8 +6649,71 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .manage(RunInBackground(AtomicBool::new(false)))
+        .on_window_event(|window, event| {
+            // Close-to-tray: when "run in background" is on, intercept the
+            // main window's close and hide it instead of letting the app
+            // exit, so the daemon (scheduler + supervisor) keeps running.
+            // Only the main window — popouts close normally. The tray "Quit"
+            // item calls app.exit(0), which bypasses this entirely.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    use tauri::Manager;
+                    let on = window
+                        .app_handle()
+                        .state::<RunInBackground>()
+                        .0
+                        .load(Ordering::Relaxed);
+                    if on {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
+            }
+        })
         .setup(|app| {
             use tauri::Manager;
+
+            // System tray: the daemon's handle when its window is hidden.
+            // Left-click reopens the window; the menu offers Show / Quit
+            // (Quit is the only path that actually exits when running in
+            // the background).
+            {
+                use tauri::menu::{Menu, MenuItem};
+                use tauri::tray::{
+                    MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent,
+                };
+                let show_i = MenuItem::with_id(app, "show", "Show vault-chat", true, None::<&str>)?;
+                let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+                let mut builder = TrayIconBuilder::with_id("main")
+                    .tooltip("vault-chat")
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "show" => show_main_window(app),
+                        "quit" => app.exit(0),
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            show_main_window(tray.app_handle());
+                        }
+                    });
+                if let Some(icon) = app.default_window_icon() {
+                    builder = builder.icon(icon.clone());
+                }
+                let _ = builder.build(app)?;
+            }
 
             // Window visibility on cold start. The window is created hidden
             // (tauri.conf.json `visible:false`) so Windows/macOS never flash
@@ -6796,6 +6882,7 @@ pub fn run() {
             voice_set_context,
             voice_server_url,
             voice_tool_respond,
+            set_run_in_background,
             app_ready
         ])
         .run(tauri::generate_context!())
