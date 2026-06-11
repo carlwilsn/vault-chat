@@ -2981,7 +2981,7 @@ fn find_gh() -> Option<PathBuf> {
 
 /// The `-c credential.https://github.com.helper=…` arg that makes git
 /// authenticate GitHub HTTPS remotes through the (already-authenticated) `gh`
-/// CLI — the same wiring `gh auth setup-git` writes, but injected per-command.
+/// CLI, injected per-command.
 ///
 /// Why per-command instead of stored config: the headless Linux server never
 /// ran `gh auth setup-git`, so over an `https://github.com/...` origin git had
@@ -2991,21 +2991,34 @@ fn find_gh() -> Option<PathBuf> {
 /// being wiped or NUL-corrupted, and is inherited by submodule sub-processes
 /// (via GIT_CONFIG_PARAMETERS) so nested-repo forks authenticate too.
 ///
+/// Why `gh auth token` and not `gh auth git-credential`: gh's own credential
+/// helper REFUSES to emit an HTTPS password when the box's gh is configured for
+/// the **ssh** git protocol (`gh config get git_protocol` == ssh) — it stays
+/// silent, git falls through, and you get "could not read Username" even though
+/// `gh auth status` says you're logged in. The headless box is exactly that case
+/// (laptop = https, box = ssh). `gh auth token` prints the token regardless of
+/// protocol, so a tiny `!`-shell helper turns it into a git credential that works
+/// on both boxes. (`echo` per line — not `printf '...\n...'` — because MSYS
+/// mangles the `\n` on Windows git-bash.)
+///
 /// We *append* gh as a helper rather than resetting: git tries helpers in order
 /// and stops at the first that returns a credential, so a box that already has a
 /// working helper (e.g. Windows Credential Manager) keeps using it first and
-/// only falls through to gh when it has nothing. If gh isn't installed the
+/// only falls through to gh when it has nothing. If gh isn't installed/authed the
 /// helper just yields no credential and git behaves exactly as before — no
 /// regression.
 fn gh_credential_helper_arg() -> String {
-    // Quote for the shell git runs the leading-`!` helper through. Forward
-    // slashes work on both platforms; single quotes survive spaces in the path
-    // ("C:/Program Files/GitHub CLI/gh.exe").
-    let cmd = match find_gh() {
-        Some(p) => format!("'{}'", p.to_string_lossy().replace('\\', "/")),
+    // Absolute path when we can find it (the shell git runs the helper through
+    // may not inherit PATH); bare `gh` otherwise. Forward slashes + double quotes
+    // survive spaces ("C:/Program Files/GitHub CLI/gh.exe").
+    let gh = match find_gh() {
+        Some(p) => p.to_string_lossy().replace('\\', "/"),
         None => "gh".to_string(),
     };
-    format!("credential.https://github.com.helper=!{} auth git-credential", cmd)
+    format!(
+        "credential.https://github.com.helper=!f() {{ test \"$1\" = get && {{ echo username=x-access-token; echo \"password=$(\\\"{}\\\" auth token)\"; }}; }}; f",
+        gh
+    )
 }
 
 /// Like `run_git` but with a caller-chosen timeout. Used for operations that
@@ -4652,12 +4665,12 @@ const KEYCHAIN_SERVICE: &str = "com.vault-chat.app";
 #[tauri::command]
 async fn keychain_get(key: String) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
-            .map_err(|e| e.to_string())?;
-        match entry.get_password() {
+        // Keyring first. Any failure — backend missing (headless Linux), locked
+        // keyring, OR a genuine NoEntry — falls through to the file store, so a
+        // key written to the fallback while the keyring was down is still found.
+        match keyring::Entry::new(KEYCHAIN_SERVICE, &key).and_then(|e| e.get_password()) {
             Ok(p) => Ok(Some(p)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e.to_string()),
+            Err(_) => Ok(fallback_secret_get(&key)),
         }
     })
     .await
@@ -4667,9 +4680,19 @@ async fn keychain_get(key: String) -> Result<Option<String>, String> {
 #[tauri::command]
 async fn keychain_set(key: String, value: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
-            .map_err(|e| e.to_string())?;
-        entry.set_password(&value).map_err(|e| e.to_string())
+        match keyring::Entry::new(KEYCHAIN_SERVICE, &key).and_then(|e| e.set_password(&value)) {
+            // Keyring is the source of truth when it works — drop any stale
+            // fallback copy so the two can't diverge.
+            Ok(()) => {
+                let _ = fallback_secret_remove(&key);
+                Ok(())
+            }
+            // Keyring unavailable (the headless-box case): persist to the
+            // encrypted file fallback instead of throwing — that's the bug where
+            // the Settings "save" silently failed and keys vanished on reload.
+            Err(e) => fallback_secret_set(&key, &value)
+                .map_err(|fe| format!("keyring set failed ({e}); fallback also failed: {fe}")),
+        }
     })
     .await
     .map_err(|e| e.to_string())?
@@ -4678,16 +4701,144 @@ async fn keychain_set(key: String, value: String) -> Result<(), String> {
 #[tauri::command]
 async fn keychain_delete(key: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key)
-            .map_err(|e| e.to_string())?;
-        match entry.delete_credential() {
-            Ok(()) => Ok(()),
-            Err(keyring::Error::NoEntry) => Ok(()), // idempotent
-            Err(e) => Err(e.to_string()),
+        // Best-effort on both stores; absence in either is success.
+        if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &key) {
+            let _ = entry.delete_credential();
         }
+        let _ = fallback_secret_remove(&key);
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// ----- headless-Linux secret fallback -----
+//
+// The keyring crate uses the D-Bus Secret Service on Linux. A headless box
+// (no graphical login, or a locked/absent keyring) has none, so every keychain
+// op errors: reads look like "no keys" and writes throw — which is exactly how
+// the always-on Linux server lost its API keys and the Settings "save" button
+// stopped persisting. `gh` hits the same wall and falls back to a plaintext
+// file; we do the same but ENCRYPTED at rest. The OS keyring stays primary on
+// every platform — this file is consulted only when the keyring can't serve the
+// value. Lives in the machine's OS config dir, OUTSIDE any vault, so it never
+// git-syncs to another box and the agent's vault-scoped file tools can't read it.
+
+/// Machine-local directory for app secrets that must not live in a vault.
+fn fallback_secret_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .map(|b| b.join("vault-chat"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|h| {
+            PathBuf::from(h)
+                .join("Library")
+                .join("Application Support")
+                .join("vault-chat")
+        })
+    }
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA").map(|b| PathBuf::from(b).join("vault-chat"))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        None
+    }
+}
+
+/// Tighten a file to owner-only (0600) on Unix; no-op elsewhere. Both the
+/// secrets blob and its key file get this so a stray reader on the box can't
+/// scoop them.
+fn restrict_to_owner(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
+/// The passphrase that encrypts the fallback blob: a 256-bit random value
+/// generated once and kept in an adjacent 0600 file — so the blob is encrypted
+/// at rest rather than sitting in plaintext like `gh`'s fallback. (Not a defence
+/// against someone who can already read the user's files on the box; it stops
+/// casual exposure via backups, screen-shares, or an accidental copy.)
+fn fallback_secret_passphrase() -> Result<String, String> {
+    let dir = fallback_secret_dir().ok_or("no machine config dir for secret fallback")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let key_path = dir.join("fallback.key");
+    if let Ok(existing) = std::fs::read_to_string(&key_path) {
+        let t = existing.trim();
+        if !t.is_empty() {
+            return Ok(t.to_string());
+        }
+    }
+    let mut raw = [0u8; 32];
+    getrandom::getrandom(&mut raw).map_err(|e| format!("rng: {e}"))?;
+    use base64::Engine;
+    let pass = base64::engine::general_purpose::STANDARD.encode(raw);
+    std::fs::write(&key_path, &pass).map_err(|e| e.to_string())?;
+    restrict_to_owner(&key_path);
+    Ok(pass)
+}
+
+fn fallback_secret_path() -> Option<PathBuf> {
+    fallback_secret_dir().map(|d| d.join("secrets.age"))
+}
+
+fn fallback_secret_load() -> HashMap<String, String> {
+    let Some(path) = fallback_secret_path() else {
+        return HashMap::new();
+    };
+    let Ok(blob) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    let Ok(pass) = fallback_secret_passphrase() else {
+        return HashMap::new();
+    };
+    match keystore_decrypt_bytes(&pass, blob.trim()) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn fallback_secret_store(map: &HashMap<String, String>) -> Result<(), String> {
+    let dir = fallback_secret_dir().ok_or("no machine config dir for secret fallback")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let pass = fallback_secret_passphrase()?;
+    let plaintext = serde_json::to_vec(map).map_err(|e| e.to_string())?;
+    let blob = keystore_encrypt_bytes(&pass, &plaintext)?;
+    let path = dir.join("secrets.age");
+    std::fs::write(&path, blob).map_err(|e| e.to_string())?;
+    restrict_to_owner(&path);
+    Ok(())
+}
+
+fn fallback_secret_get(key: &str) -> Option<String> {
+    fallback_secret_load().get(key).cloned()
+}
+
+fn fallback_secret_set(key: &str, value: &str) -> Result<(), String> {
+    let mut map = fallback_secret_load();
+    map.insert(key.to_string(), value.to_string());
+    fallback_secret_store(&map)
+}
+
+fn fallback_secret_remove(key: &str) -> Result<(), String> {
+    let mut map = fallback_secret_load();
+    if map.remove(key).is_some() {
+        fallback_secret_store(&map)?;
+    }
+    Ok(())
 }
 
 // ----- cross-machine key sync (encrypted keystore) -----
