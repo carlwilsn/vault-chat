@@ -31,6 +31,7 @@
   .icbtn{color:var(--dim);min-width:40px;min-height:40px;display:flex;align-items:center;justify-content:center;border-radius:10px;position:relative;flex:none}
   .icbtn:active{background:var(--surface)}
   .icbtn svg{width:22px;height:22px}
+  body:not(.page-chat) #convBtn{visibility:hidden}
   .reddot{position:absolute;top:7px;right:7px;width:8px;height:8px;border-radius:50%;background:var(--warn);display:none}
   .reddot.on{display:block}
   .title{flex:1;min-width:0;display:flex;align-items:center;gap:8px;justify-content:center;text-align:center}
@@ -190,7 +191,7 @@
   .kbk.down{background:#4d4d4d}.kbk.spec.down{background:#3a3a3a}
   .kbk.lit{background:var(--primary);color:var(--primary-fg)}
   .kbk.caps{box-shadow:inset 0 0 0 2px var(--primary)}
-  .kbpop{position:absolute;bottom:50px;left:50%;transform:translateX(-50%);min-width:46px;height:54px;background:#4d4d4d;border-radius:9px;color:var(--text);font-size:28px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,.55);pointer-events:none;z-index:5}
+  .kbpop{position:absolute;bottom:50px;left:50%;transform:translateX(-50%);min-width:46px;height:54px;background:#4d4d4d;border-radius:9px;color:var(--text);font-size:28px;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:5}
 
   /* settings drawer (right) */
   #drawer{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:50}
@@ -529,8 +530,7 @@
     if (!running) { if (runlineEl) { runlineEl.remove(); runlineEl = null; } return; }
     if (!runlineEl) {
       runlineEl = document.createElement("div"); runlineEl.className = "runline";
-      runlineEl.innerHTML = '<span class="rd"></span><span class="rlbl"></span><button class="kill">Kill</button>';
-      runlineEl.querySelector(".kill").onclick = killCurrent;
+      runlineEl.innerHTML = '<span class="rd"></span><span class="rlbl"></span>';
       msgsEl.appendChild(runlineEl);
     }
     runlineEl.querySelector(".rlbl").textContent = streamTool ? "running · " + streamTool : "running…";
@@ -580,7 +580,12 @@
   }
   $("sendBtn").onclick = send;
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
-  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 120) + "px"; });
+  let autosizeRAF = 0;
+  function scheduleAutosize() {
+    if (autosizeRAF) return;
+    autosizeRAF = requestAnimationFrame(() => { autosizeRAF = 0; input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 120) + "px"; });
+  }
+  input.addEventListener("input", scheduleAutosize);
   async function killCurrent() {
     if (!convId) return;
     const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId }) }).catch(() => null);
@@ -788,7 +793,10 @@
   function kbApplyShift() { const up = kbShift || kbCaps; for (const lk of kbLetterKeys) lk.el.textContent = up ? lk.base.toUpperCase() : lk.base; if (kbShiftKeyEl) { kbShiftKeyEl.classList.toggle("lit", up); kbShiftKeyEl.classList.toggle("caps", kbCaps); } }
   function kbSetLayer(i) { kbLayer = i; kbLayerDivs.forEach((d, li) => d.classList.toggle("active", li === i)); if (i === 0) kbAutoShift(); kbApplyShift(); }
   function kbSel() { const len = input.value.length; let s = input.selectionStart, e = input.selectionEnd; if (s == null || e == null) { s = len; e = len; } return [s, e]; }
-  function kbAfterEdit() { input.dispatchEvent(new Event("input", { bubbles: true })); kbAutoShift(); }
+  function kbAfterEdit() { scheduleAutosize(); kbAutoShift(); }
+  let kbPopEl = null;
+  function kbShowPop(elk) { if (!kbPopEl) { kbPopEl = document.createElement("div"); kbPopEl.className = "kbpop"; } kbPopEl.textContent = elk.textContent; elk.appendChild(kbPopEl); }
+  function kbHidePop() { if (kbPopEl && kbPopEl.parentNode) kbPopEl.parentNode.removeChild(kbPopEl); }
   function kbAutoShift() { if (kbCaps || kbLayer !== 0) return; const [s] = kbSel(); const before = input.value.slice(0, s); const want = before === "" || /[.!?]\s$/.test(before) || /\n$/.test(before); if (want !== kbShift) { kbShift = want; kbApplyShift(); } }
   function kbInsert(str) { const [s, e] = kbSel(); input.setRangeText(str, s, e, "end"); kbAfterEdit(); }
   function kbBackspaceOnce() { let [s, e] = kbSel(); if (s === e) { if (s === 0) return; let n = 1; const code = input.value.charCodeAt(s - 1); if (code >= 0xdc00 && code <= 0xdfff && s > 1) n = 2; s -= n; } input.setRangeText("", s, e, "end"); kbAfterEdit(); }
@@ -796,14 +804,14 @@
   function kbStopRepeat() { clearTimeout(bkspT1); clearInterval(bkspIv); bkspT1 = bkspIv = 0; }
   function kbKeyDown(elk) {
     const k = elk.dataset.k, t = elk.dataset.t; elk.classList.add("down");
-    if (k === "ch") { const pop = document.createElement("div"); pop.className = "kbpop"; pop.textContent = elk.textContent; elk.appendChild(pop); kbInsert(kbShift || kbCaps ? t.toUpperCase() : t); if (kbShift && !kbCaps && /[a-z]/i.test(t)) { kbShift = false; kbApplyShift(); } }
+    if (k === "ch") { kbInsert(kbShift || kbCaps ? t.toUpperCase() : t); kbShowPop(elk); if (kbShift && !kbCaps && /[a-z]/i.test(t)) { kbShift = false; kbApplyShift(); } }
     else if (k === "bksp") { kbBackspaceOnce(); kbStopRepeat(); bkspT1 = setTimeout(() => { bkspIv = setInterval(kbBackspaceOnce, 55); }, 420); }
     else if (k === "shift") { const now = Date.now(); if (now - lastShiftAt < 350) { kbCaps = true; kbShift = true; } else if (kbCaps) { kbCaps = false; kbShift = false; } else { kbShift = !kbShift; } lastShiftAt = now; kbApplyShift(); }
     else if (k === "space") { const [caret] = kbSel(); const now = Date.now(); if (now - lastSpaceAt < 350 && caret >= 2 && input.value[caret - 1] === " " && /[\w)\]'"’”]/.test(input.value[caret - 2])) { input.setRangeText(". ", caret - 2, caret, "end"); kbAfterEdit(); } else kbInsert(" "); lastSpaceAt = now; }
     else if (k === "ret") kbInsert("\n");
     else if (k === "layer0") kbSetLayer(0); else if (k === "layer1") kbSetLayer(1); else if (k === "layer2") kbSetLayer(2);
   }
-  function kbKeyUp(elk) { elk.classList.remove("down"); const p = elk.querySelector(".kbpop"); if (p) p.remove(); }
+  function kbKeyUp(elk) { elk.classList.remove("down"); kbHidePop(); }
   function showKb() { if (!CUSTOM_KB || page !== "chat") return; if (!document.body.classList.contains("kbopen")) { document.body.classList.add("kbopen"); scrollDown(true); } if (document.activeElement !== input) { try { input.focus({ preventScroll: true }); } catch {} } kbApplyShift(); kbAutoShift(); }
   function hideKb() { if (!document.body.classList.contains("kbopen")) return; document.body.classList.remove("kbopen"); kbStopRepeat(); }
   if (CUSTOM_KB) {
