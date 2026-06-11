@@ -485,9 +485,15 @@ export async function sendPush(title: string, body: string, url = "/phone"): Pro
  * Called (dynamically) from sendTelegramReplyWithImages AFTER the silence
  * gates, so a quiet supervisor stays quiet here too. */
 export async function mirrorPushNotify(title: string, text: string): Promise<void> {
-  const body = text.trim().replace(/\s+/g, " ").slice(0, 300);
-  if (!body) return;
-  await notify("info", title === "vault-chat" ? "Delivered to your phone" : title, body);
+  const raw = text.trim();
+  if (!raw) return;
+  const body = raw.replace(/\s+/g, " ").slice(0, 300);
+  // For the generic mirror, lead with the message's first line as the title so
+  // the Alert reads like the message itself (e.g. a coach check-in's opening
+  // line) instead of a meta "Delivered to your phone".
+  const head =
+    title === "vault-chat" ? raw.split("\n")[0]!.trim().slice(0, 80) || "New message" : title;
+  await notify("info", head, body);
 }
 
 // ---- wiring ----

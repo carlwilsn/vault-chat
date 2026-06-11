@@ -628,11 +628,22 @@ export async function sendTelegramReplyWithImages(
     );
   }
   if (text) {
-    await sendTelegramMessage(vault, chatId, stripMarkdownForTelegram(text));
-    // Mirror to the phone PWA's push channel. Deliberately AFTER the
-    // [[SILENT]] / quiet-unless-ALERT gates upstream — whatever actually
-    // reaches Telegram reaches push, nothing more. Dynamic import to avoid
-    // a static cycle (phoneApp → chat-controller → telegram).
+    try {
+      await sendTelegramMessage(vault, chatId, stripMarkdownForTelegram(text));
+    } catch (e) {
+      // Telegram unreachable (e.g. no bot token configured on this box) must
+      // NOT swallow the phone notification. The phone is a first-class delivery
+      // surface, not a mirror that only works when Telegram does — this is the
+      // bug where a phone-first user's 7am coach check-in fired and was written
+      // to its thread, but never reached the phone's Alerts because the Telegram
+      // send threw before the mirror below.
+      console.warn("[telegram] send failed; still mirroring to phone:", e);
+    }
+    // Mirror to the phone PWA's push channel + Alerts feed. Deliberately AFTER
+    // the [[SILENT]] / quiet-unless-ALERT gates upstream — whatever clears them
+    // reaches the phone — and now independent of whether Telegram itself
+    // delivered. Dynamic import to avoid a static cycle (phoneApp →
+    // chat-controller → telegram).
     import("./phoneApp")
       .then(({ mirrorPushNotify }) => mirrorPushNotify("vault-chat", text))
       .catch(() => {});
