@@ -13,88 +13,82 @@
 <link rel="manifest" href="/manifest.webmanifest" />
 <title>vault-chat</title>
 <style>
-  /* Graphite theme, matching the desktop app and voice.html. */
+  /* Exact vault-chat graphite (src/App.css): bg 10%, muted 14%, accent 20%,
+     border 22%, fg 92%, dim 60%, primary 85%. Color only for status. */
   :root{
-    --bg:#1a1a1a; --panel:#212121; --panel2:#262626; --line:#383838;
-    --text:#ebebeb; --dim:#999999; --accent:#d9d9d9; --err:#e5736b; --ok:#7fbf7f;
+    --bg:#1a1a1a; --surface:#242424; --raised:#333333; --line:#383838;
+    --text:#ebebeb; --dim:#999999; --primary:#d9d9d9; --primary-fg:#1a1a1a;
+    --err:#e14746; --ok:#7fbf7f; --warn:#e0a35a;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html{background:var(--bg)}
-  /* Pin the app shell: no body scroll, no rubber-band "looseness" — only the
-     message list and conv list scroll. Keyboard resizes are handled via
-     visualViewport (see JS), which shrinks this fixed box. */
+  /* Pinned shell: no body scroll; only the surfaces scroll. The in-app
+     keyboard and visualViewport handling rely on this. */
   html,body{margin:0;position:fixed;inset:0;overflow:hidden;overscroll-behavior:none}
   body{
-    display:flex; flex-direction:column;
-    background:var(--bg); color:var(--text);
+    display:flex;flex-direction:column;
+    background:var(--bg);color:var(--text);
     font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   }
   button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;padding:0}
 
-  /* Header */
-  .hdr{
-    display:flex;align-items:center;gap:10px;flex:0 0 auto;
-    padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;
-    border-bottom:1px solid var(--line);background:var(--bg);
-  }
-  .hdr .back{font-size:22px;color:var(--dim);width:28px;display:none}
-  body.thread .hdr .back{display:block}
-  .hdr .title{flex:1;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .hdr .title small{display:block;font-weight:400;font-size:11px;color:var(--dim)}
-  .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:0 0 auto}
-  .dot.run{background:var(--ok);animation:pulse 1.4s ease-in-out infinite}
-  @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
-  .hdr .menu{color:var(--dim);font-size:20px;padding:2px 6px}
+  /* ---------- header (no divider lines anywhere) ---------- */
+  .hdr{display:flex;align-items:center;gap:8px;flex:0 0 auto;padding:calc(env(safe-area-inset-top) + 12px) 16px 8px;position:relative;z-index:21}
+  .state{flex:1;display:flex;align-items:center;gap:9px;font-size:14.5px;min-width:0;text-align:left}
+  .state .sub{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse 1.7s ease-in-out infinite;flex:none}
+  body.offline .dot{background:var(--err);animation:none}
+  .vpill{display:none;align-items:center;gap:6px;font-size:12px;color:var(--ok);border:1px solid #34532f;border-radius:16px;padding:4px 11px;flex:none}
+  body.voicemin .vpill{display:flex}
+  .vpill .d{width:6px;height:6px;border-radius:50%;background:var(--ok);animation:pulse 1.2s infinite}
+  .icbtn{color:var(--dim);padding:8px;min-width:40px;min-height:40px;display:flex;align-items:center;justify-content:center;border-radius:10px}
+  .icbtn:active{background:var(--surface)}
+  .icbtn svg{width:21px;height:21px}
 
-  /* Views */
-  .view{flex:1;min-height:0;display:none;flex-direction:column}
-  body.list  #listView{display:flex}
-  body.thread #threadView{display:flex}
+  .offbar{display:none;align-items:center;gap:9px;margin:2px 14px 6px;background:#2a1d1c;border:1px solid #53312f;border-radius:11px;padding:8px 13px;font-size:12.5px;color:#e8b3b0;flex:0 0 auto}
+  body.offline .offbar{display:flex}
+  .offbar b{font-weight:600;color:#f0c9c7}
 
-  /* Conversation list */
-  #convs{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:6px 0 90px}
-  .conv{display:block;width:100%;text-align:left;padding:12px 16px;border-bottom:1px solid #2b2b2b}
-  .conv:active{background:var(--panel)}
-  .conv .t{display:flex;align-items:center;gap:8px}
-  .conv .t .name{flex:1;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .conv .t .age{color:var(--dim);font-size:12px;flex:0 0 auto}
-  .conv .p{color:var(--dim);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
-  .badge{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 5px;flex:0 0 auto}
-  .sechdr{padding:14px 16px 4px;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px}
-  .conv .rundot{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse 1.4s ease-in-out infinite;flex:0 0 auto}
-  .suprow{
-    display:flex;align-items:center;gap:11px;margin:10px 12px 2px;padding:13px 14px;
-    border:1px solid var(--line);border-radius:12px;background:var(--panel);
-    width:calc(100% - 24px);text-align:left;
-  }
-  .suprow .ico{font-size:17px}
-  .suprow .lbl{flex:1;font-weight:600}
-  .suprow .lbl small{display:block;font-weight:400;font-size:11px;color:var(--dim)}
-  .schedrow{display:flex;align-items:center;gap:8px}
-  .schedrow .info{flex:1;min-width:0}
-  .schedrow .sw{font-size:11px;border:1px solid var(--line);border-radius:6px;padding:3px 9px;color:var(--dim)}
-  .schedrow .sw.on{color:#1a1a1a;background:var(--accent);border-color:var(--accent)}
-  .schedrow .del{color:var(--err);font-size:15px;padding:2px 6px}
-  .newchat{
-    position:fixed;right:18px;bottom:calc(env(safe-area-inset-bottom) + 18px);
-    background:var(--accent);color:#1a1a1a;font-weight:700;font-size:15px;
-    border-radius:999px;padding:13px 22px;box-shadow:0 4px 18px rgba(0,0,0,.5);
-  }
+  /* ---------- menu ---------- */
+  .menu{position:absolute;top:calc(env(safe-area-inset-top) + 54px);right:12px;background:#262626;border:1px solid var(--line);border-radius:14px;padding:6px;z-index:45;min-width:230px;max-width:78vw;display:none;box-shadow:0 14px 40px rgba(0,0,0,.5)}
+  .menu.on{display:block}
+  .mi{display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:10px;font-size:14px;width:100%;text-align:left}
+  .mi:active{background:var(--raised)}
+  .mi .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mi .k{color:#7c7c7c;font-size:11.5px;flex:none}
+  .mi svg{width:17px;height:17px;color:var(--dim);flex:none}
+  .mtit{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#7c7c7c;padding:10px 12px 4px}
+  .mfoot{font-size:11px;color:#6d6d6d;padding:9px 12px 6px;margin-top:4px}
 
-  /* Thread */
-  #msgs{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 14px 8px}
-  .m{max-width:92%;margin:0 0 10px;border-radius:12px;padding:9px 12px;word-wrap:break-word;overflow-wrap:break-word}
-  .m.user{margin-left:auto;background:#333333;white-space:pre-wrap}
-  .m.asst{margin-right:auto;background:var(--panel)}
+  /* ---------- tab surfaces ---------- */
+  .body{flex:1;min-height:0;position:relative;display:flex;flex-direction:column}
+  .surface{flex:1;min-height:0;display:none;flex-direction:column}
+  body.tab-chat #sChat{display:flex}
+  body.tab-activity #sAct{display:flex}
+  body.tab-alerts #sAl{display:flex}
+  .scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+
+  /* ---------- chat ---------- */
+  #msgs{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 14px 8px}
+  .m{max-width:92%;margin:0 0 10px;border-radius:14px;padding:9px 13px;word-wrap:break-word;overflow-wrap:break-word}
+  .m.user{margin-left:auto;background:var(--raised);white-space:pre-wrap;border-bottom-right-radius:5px}
+  .m.asst{margin-right:auto;background:var(--surface);border-bottom-left-radius:5px}
   .m.sys{margin:0 auto 10px;background:none;color:var(--dim);font-size:12px;font-style:italic;text-align:center}
   .m.queued{opacity:.55}
   .m .toolchips{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
   .toolchip{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 5px}
-  .m.stream .cursor{display:inline-block;width:7px;height:14px;background:var(--accent);vertical-align:-2px;animation:pulse 1s infinite}
+  .m.stream .cursor{display:inline-block;width:7px;height:14px;background:var(--primary);vertical-align:-2px;animation:pulse 1s infinite}
   .runline{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:12px;margin:0 0 10px}
-  .runline .kill{color:var(--err);border:1px solid var(--err);border-radius:6px;padding:2px 10px;font-size:12px}
+  .runline .kill{color:var(--err);border:1px solid #5a302e;border-radius:7px;padding:3px 11px;font-size:12px}
+  .hint{margin:auto;text-align:center;color:var(--dim);font-size:14px;line-height:1.65;padding:0 44px;display:none}
+  .hint b{color:var(--text);font-weight:600;display:block;font-size:15.5px;margin-bottom:6px}
+  body.fresh #msgs .hint{display:block}
+  .thbar{display:none;align-items:center;gap:8px;padding:0 16px 6px;font-size:12.5px;color:var(--dim);flex:0 0 auto}
+  .thbar.on{display:flex}
+  .thbar .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .thbar .x{color:var(--dim);border:1px solid var(--line);border-radius:7px;padding:2px 10px;font-size:12px}
 
-  /* Markdown */
+  /* markdown */
   .md p{margin:.35em 0}
   .md h1,.md h2,.md h3{margin:.5em 0 .25em;line-height:1.25}
   .md h1{font-size:1.2em}.md h2{font-size:1.1em}.md h3{font-size:1.02em}
@@ -109,120 +103,191 @@
   .md th,.md td{border:1px solid var(--line);padding:3px 8px;text-align:left}
   .md hr{border:none;border-top:1px solid var(--line);margin:.7em 0}
 
-  /* Composer */
-  .composer{
-    flex:0 0 auto;display:flex;align-items:flex-end;gap:8px;
-    padding:8px 12px calc(env(safe-area-inset-bottom) + 8px);
-    border-top:1px solid var(--line);background:var(--bg);
-  }
+  /* composer (send inside the field, no top border) */
+  .composer{flex:0 0 auto;display:flex;align-items:flex-end;gap:9px;padding:6px 12px calc(env(safe-area-inset-bottom) + 8px)}
+  .mic{width:42px;height:42px;border-radius:50%;background:var(--surface);border:1px solid var(--line);color:var(--text);flex:none;display:flex;align-items:center;justify-content:center}
+  .mic:active{background:var(--raised)}
+  .mic svg{width:20px;height:20px}
+  .field{flex:1;position:relative;display:flex;align-items:flex-end;min-width:0}
   .composer textarea{
-    flex:1;resize:none;background:var(--panel);color:var(--text);
-    border:1px solid var(--line);border-radius:18px;padding:9px 14px;
-    /* 16px minimum: anything smaller makes iOS auto-zoom the page on focus. */
-    font-size:16px;line-height:1.4;font-family:inherit;max-height:120px;outline:none;
+    flex:1;resize:none;background:var(--surface);color:var(--text);
+    border:1px solid var(--line);border-radius:21px;padding:10px 50px 10px 15px;
+    font-size:16px;line-height:1.4;font-family:inherit;max-height:120px;outline:none;min-width:0;
   }
-  .composer .send{
-    background:var(--accent);color:#1a1a1a;font-weight:700;border-radius:50%;
-    width:38px;height:38px;font-size:17px;flex:0 0 auto;
-  }
-  .composer .send:disabled{opacity:.4}
+  .send{position:absolute;right:5px;bottom:5px;width:33px;height:33px;border-radius:50%;background:var(--primary);color:var(--primary-fg);font-weight:700;font-size:16px;display:flex;align-items:center;justify-content:center}
+  .send:disabled{opacity:.35}
 
-  /* In-app keyboard — replaces the iOS one (inputmode=none) so the
-     form-assistant bar never appears. Graphite, iOS-faithful layout. */
-  #kb{
-    flex:0 0 auto;background:#161616;border-top:1px solid var(--line);
-    padding:7px 4px calc(env(safe-area-inset-bottom) + 6px);
-    display:none;touch-action:manipulation;user-select:none;-webkit-user-select:none;
-  }
-  body.kbopen #kb{display:block}
+  /* ---------- cards / sections (activity + alerts) ---------- */
+  .sec{font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;color:#8a8a8a;padding:14px 18px 7px;font-weight:600}
+  .card{margin:0 14px 10px;background:var(--surface);border-radius:14px;padding:13px 14px;width:calc(100% - 28px);text-align:left;display:block}
+  .card:active{background:#282828}
+  .card.ask{border:1px solid #5a4a26}
+  .card.unread{box-shadow:inset 2.5px 0 0 #6f6f6f}
+  .crow{display:flex;gap:12px}
+  .ico{width:31px;height:31px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:none;font-size:13.5px;font-weight:700;background:var(--raised);color:var(--dim)}
+  .ico.g{color:var(--ok)} .ico.a{color:var(--warn)} .ico.r{color:var(--err)}
+  .cb{flex:1;min-width:0}
+  .ct{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+  .ct b{font-weight:600;font-size:14.5px}
+  .ct .t{font-size:11px;color:#8a8a8a;flex:none}
+  .cs{margin:4px 0 0;font-size:13px;color:#ababab;line-height:1.5;word-wrap:break-word}
+  .tag{display:inline-block;margin-top:7px;font-size:10.5px;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:1px 7px}
+  .reply{position:relative;display:flex;align-items:center;margin-top:10px}
+  .rinp{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:18px;padding:9px 42px 9px 14px;color:var(--text);font-size:14px;outline:none;min-width:0;font-family:inherit}
+  .rinp::placeholder{color:#838383}
+  .rsend{position:absolute;right:5px;width:28px;height:28px;border-radius:50%;background:var(--primary);color:var(--primary-fg);font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center}
+  .empty{padding:30px 40px;text-align:center;color:var(--dim);font-size:13.5px;line-height:1.6}
+
+  .mtitle{display:flex;justify-content:space-between;gap:10px;align-items:center}
+  .mtitle b{font-weight:600;font-size:15px;line-height:1.35;min-width:0}
+  .pill{font-size:10.5px;font-weight:600;border-radius:20px;padding:3px 10px;flex:none}
+  .pill.run{background:#22301f;color:var(--ok)}
+  .goal{font-size:12.5px;color:var(--dim);line-height:1.5;margin:8px 0 0;padding-left:11px;border-left:2px solid var(--line)}
+  .wk{margin:0 14px 9px;background:#202020;border-radius:13px;overflow:hidden;width:calc(100% - 28px)}
+  .wh{display:flex;align-items:center;gap:11px;padding:12px 13px;width:100%;text-align:left;min-height:46px}
+  .wh .s{width:18px;height:18px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:700;border-radius:50%;font-size:11px;background:var(--raised);color:var(--dim)}
+  .wh .s.g{color:var(--ok)} .wh .s.run{color:var(--ok);animation:pulse 1.3s infinite}
+  .wh .nm{flex:1;font-size:14px;font-weight:600;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wh .mt{font-size:11.5px;color:#8f8f8f;flex:none}
+  .wd{display:none;padding:0 13px 13px 42px;font-size:12.5px;color:#ababab;line-height:1.55}
+  .wk.open .wd{display:block}
+  .lbl{color:#8a8a8a;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;margin-top:8px}
+  .wbtns{display:flex;gap:9px;margin-top:11px}
+  .wbtn{font-size:12.5px;border:1px solid var(--line);border-radius:8px;padding:7px 14px;color:#dcdcdc;min-height:34px}
+  .wbtn:active{background:var(--raised)}
+  .wbtn.danger{color:var(--err);border-color:#5a302e}
+  .wbtn.confirm{background:var(--err);color:#fff;border-color:var(--err)}
+  .schedrow{display:flex;align-items:center;gap:10px}
+  .schedrow .info{flex:1;min-width:0}
+  .schedrow .info b{font-weight:600;font-size:14px;display:block}
+  .schedrow .info small{color:var(--dim);font-size:11.5px}
+  .sw{font-size:11.5px;border:1px solid var(--line);border-radius:7px;padding:5px 11px;color:var(--dim);flex:none;min-height:32px}
+  .sw.on{color:var(--primary-fg);background:var(--primary);border-color:var(--primary)}
+  .del{color:var(--err);font-size:15px;padding:4px 8px;flex:none}
+
+  /* ---------- tab bar (no top border; tone only) ---------- */
+  .tabs{display:flex;flex:0 0 auto;background:var(--bg);padding:4px 0 calc(env(safe-area-inset-bottom) + 6px)}
+  body.kbopen .tabs{display:none}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;color:#7e7e7e;position:relative;padding:6px 0;min-height:48px}
+  .tab svg{width:22px;height:22px}
+  .tab.on{color:var(--text)}
+  .badge{position:absolute;top:1px;left:50%;margin-left:8px;background:var(--primary);color:var(--primary-fg);font-size:9.5px;font-weight:700;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 4px}
+  .badge.zero{display:none}
+
+  /* ---------- in-app keyboard (unchanged module) ---------- */
+  #kb{flex:0 0 auto;background:#161616;padding:7px 4px calc(env(safe-area-inset-bottom) + 6px);display:none;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+  body.kbopen.tab-chat #kb{display:block}
   body.kbopen .composer{padding-bottom:8px}
-  /* All three layers are built once and live in the DOM; only the active
-     one is shown. Switching layers toggles .active — it never rebuilds, so
-     the key under your finger is never destroyed mid-tap. */
   .kblayer{display:none}
   .kblayer.active{display:block}
   .kbrow{display:flex;gap:5px;margin:0 0 8px;justify-content:center}
   .kbrow:last-child{margin-bottom:0}
   .kbrow.indent{padding:0 5%}
-  .kbk{
-    flex:1;height:44px;background:#333;border-radius:6px;color:var(--text);
-    font-size:19px;display:flex;align-items:center;justify-content:center;
-    position:relative;min-width:0;
-  }
+  .kbk{flex:1;height:44px;background:#333;border-radius:6px;color:var(--text);font-size:19px;display:flex;align-items:center;justify-content:center;position:relative;min-width:0}
   .kbk.spec{background:#262626;font-size:14px;flex:1.4}
   .kbk.space{flex:4.6;font-size:13px;color:var(--dim)}
   .kbk.ret{flex:2;font-size:20px}
   .kbk.down{background:#4d4d4d}
   .kbk.spec.down{background:#3a3a3a}
-  .kbk.lit{background:var(--accent);color:#1a1a1a}
-  .kbk.caps{box-shadow:inset 0 0 0 2px var(--accent)}
-  .kbpop{
-    position:absolute;bottom:50px;left:50%;transform:translateX(-50%);
-    min-width:46px;height:54px;background:#4d4d4d;border-radius:9px;color:var(--text);
-    font-size:28px;display:flex;align-items:center;justify-content:center;
-    box-shadow:0 4px 14px rgba(0,0,0,.55);pointer-events:none;z-index:5;
-  }
+  .kbk.lit{background:var(--primary);color:var(--primary-fg)}
+  .kbk.caps{box-shadow:inset 0 0 0 2px var(--primary)}
+  .kbpop{position:absolute;bottom:50px;left:50%;transform:translateX(-50%);min-width:46px;height:54px;background:#4d4d4d;border-radius:9px;color:var(--text);font-size:28px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,.55);pointer-events:none;z-index:5}
 
-  /* Status drawer */
-  #drawer{
-    position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:30;
-  }
+  /* ---------- settings drawer ---------- */
+  #drawer{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:50}
   #drawer.open{display:block}
-  #drawer .panel{
-    position:absolute;top:0;right:0;bottom:0;width:min(86vw,360px);
-    background:var(--panel);border-left:1px solid var(--line);
-    padding:calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 16px);
-    overflow-y:auto;display:flex;flex-direction:column;gap:14px;
-  }
+  #drawer .panel{position:absolute;top:0;right:0;bottom:0;width:min(86vw,360px);background:var(--surface);padding:calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 16px);overflow-y:auto;display:flex;flex-direction:column;gap:14px}
   #drawer h3{margin:0;font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px}
-  #drawer .row{font-size:13px;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  #drawer .row{font-size:13px;background:#1e1e1e;border-radius:9px;padding:9px 11px}
   #drawer .row b{display:block;font-size:13px}
   #drawer .row small{color:var(--dim)}
-  .btn{display:block;width:100%;text-align:center;border:1px solid var(--line);border-radius:8px;padding:10px;font-weight:600;font-size:14px;margin-top:4px}
-  .btn.warn{color:var(--err);border-color:var(--err)}
-  .btn.solid{background:var(--accent);color:#1a1a1a;border:none}
+  .btn{display:block;width:100%;text-align:center;border:1px solid var(--line);border-radius:9px;padding:11px;font-weight:600;font-size:14px;margin-top:4px;min-height:44px}
+  .btn.warn{color:var(--err);border-color:#5a302e}
+  .btn.solid{background:var(--primary);color:var(--primary-fg);border:none}
   .note{font-size:12px;color:var(--dim)}
-  #toast{
-    position:fixed;left:50%;transform:translateX(-50%);
-    bottom:calc(env(safe-area-inset-bottom) + 80px);
-    background:#333;color:var(--text);border-radius:8px;padding:8px 14px;font-size:13px;
-    opacity:0;transition:opacity .25s;pointer-events:none;z-index:40;max-width:86vw;
-  }
+  #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom) + 84px);background:#333;color:var(--text);border-radius:9px;padding:8px 14px;font-size:13px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:70;max-width:86vw}
   #toast.show{opacity:1}
   .gate{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:30px;text-align:center;color:var(--dim)}
+
+  /* ---------- voice overlay ---------- */
+  #voice{position:fixed;inset:0;background:var(--bg);display:none;flex-direction:column;z-index:60}
+  body.voice #voice{display:flex}
+  body.voicemin #voice{display:none}
+  .vtop{display:flex;justify-content:space-between;align-items:center;padding:calc(env(safe-area-inset-top) + 14px) 14px 0}
+  .vtop .vlbl{font-size:13px;color:var(--dim);padding-left:8px}
+  .vmid{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:30px;padding:0 30px}
+  .viz{display:flex;align-items:center;gap:6px;height:96px}
+  .vbar{width:6px;height:96px;border-radius:4px;background:var(--primary);transform:scaleY(.16);transform-origin:center;transition:transform .06s linear}
+  .vconn{display:none;font-size:15px;font-weight:600;color:var(--dim);animation:pulse 1.2s ease-in-out infinite}
+  body.vconnecting .viz{display:none}
+  body.vconnecting .vconn{display:block}
+  .verr{color:var(--err);font-size:13px;max-width:320px;white-space:pre-wrap;text-align:center;min-height:18px}
+  .vend{display:flex;flex-direction:column;align-items:center;gap:10px;margin-bottom:calc(env(safe-area-inset-bottom) + 36px)}
+  .vx{width:66px;height:66px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--text);display:flex;align-items:center;justify-content:center}
+  .vx svg{width:24px;height:24px}
+  .vhint{font-size:11.5px;color:#6f6f6f}
+
+  @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
 </style>
 </head>
-<body class="list">
+<body class="tab-chat fresh">
+
   <div class="hdr">
-    <button class="back" id="backBtn">‹</button>
-    <div class="title" id="hdrTitle">vault-chat<small id="hdrSub"></small></div>
-    <div class="dot" id="runDot"></div>
-    <button class="menu" id="menuBtn">☰</button>
+    <button class="state" id="statebtn">
+      <span class="dot"></span>
+      <span id="statetext">connecting…</span><span class="sub" id="statesub"></span>
+    </button>
+    <button class="vpill" id="vpill"><span class="d"></span> voice</button>
+    <button class="icbtn" id="menuBtn" aria-label="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
   </div>
 
-  <div class="view" id="listView">
-    <div id="convs"></div>
-    <button class="newchat" id="newBtn">New chat</button>
+  <div class="offbar"><b>box unreachable</b> retrying — messages will queue</div>
+
+  <div class="menu" id="menu">
+    <button class="mi" id="newBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="nm">New chat</span></button>
+    <div class="mtit">Recent</div>
+    <div id="recents"></div>
+    <button class="mi" id="settingsBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="nm">Box &amp; settings</span></button>
+    <div class="mfoot" id="mfoot">vault: — </div>
   </div>
 
-  <div class="view" id="threadView">
-    <div id="msgs"></div>
-    <div class="composer">
-      <textarea id="input" rows="1" placeholder="Message the agent…" enterkeyhint="send" autocomplete="off"></textarea>
-      <button class="send" id="sendBtn">↑</button>
-    </div>
-    <div id="kb"></div>
+  <div class="body">
+
+    <!-- CHAT -->
+    <section class="surface" id="sChat">
+      <div class="thbar" id="thbar"><span class="nm" id="thname"></span><button class="x" id="thclose">new chat</button></div>
+      <div id="msgs">
+        <div class="hint"><b>What needs doing?</b>quick questions get answers. bigger asks get scoped before anything runs.</div>
+      </div>
+      <div class="composer">
+        <button class="mic" id="micBtn" aria-label="voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 19v3"/></svg></button>
+        <div class="field">
+          <textarea id="input" rows="1" placeholder="Message…" enterkeyhint="send" autocomplete="off"></textarea>
+          <button class="send" id="sendBtn" aria-label="send">↑</button>
+        </div>
+      </div>
+      <div id="kb"></div>
+    </section>
+
+    <!-- ACTIVITY -->
+    <section class="surface" id="sAct"><div class="scroll" id="actScroll"></div></section>
+
+    <!-- ALERTS -->
+    <section class="surface" id="sAl"><div class="scroll" id="alScroll"></div></section>
+
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" data-tab="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Chat</button>
+    <button class="tab" data-tab="activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>Activity</button>
+    <button class="tab" data-tab="alerts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg>Alerts<span class="badge zero" id="badge">0</span></button>
   </div>
 
   <div id="drawer">
     <div class="panel">
       <h3>Box</h3>
       <div class="row" id="boxRow"><small>Loading…</small></div>
-      <h3>Active runs</h3>
-      <div id="runsBox"><div class="note">—</div></div>
       <button class="btn warn" id="killAllBtn">Kill all runs</button>
-      <h3>Schedules</h3>
-      <div id="schedBox"><div class="note">—</div></div>
       <h3>Keyboard</h3>
       <div class="note" id="kbState"></div>
       <button class="btn" id="kbToggleBtn"></button>
@@ -235,9 +300,30 @@
   </div>
   <div id="toast"></div>
 
+  <!-- VOICE -->
+  <div id="voice">
+    <div class="vtop">
+      <span class="vlbl">voice · same agent, same memory</span>
+      <button class="icbtn" id="vMinBtn" aria-label="minimize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button>
+    </div>
+    <div class="vmid">
+      <div class="viz" id="viz"></div>
+      <div class="vconn">Connecting…</div>
+      <div class="verr" id="verr"></div>
+    </div>
+    <div class="vend">
+      <button class="vx" id="vEndBtn" aria-label="end voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      <span class="vhint">tap ⌄ to keep talking while you read</span>
+    </div>
+  </div>
+
 <script>
 (() => {
   "use strict";
+  // Preload the ElevenLabs SDK at page open — importing inside the tap was a
+  // cold CDN fetch at connect time (the "first tap fails" root).
+  const sdkPromise = import("https://esm.sh/@elevenlabs/client@1.7.0").catch(() => null);
+
   // ---- token: query wins, then localStorage (home-screen launches drop it) ----
   const qs = new URLSearchParams(location.search);
   let TOKEN = qs.get("token") || "";
@@ -254,20 +340,14 @@
     clearTimeout(toastT);
     toastT = setTimeout(() => toastEl.classList.remove("show"), 2600);
   };
-
   if (!TOKEN) {
     document.body.innerHTML =
       '<div class="gate"><b style="color:var(--text)">No access token</b>' +
-      "<div>Open the phone link from vault-chat Settings once — it carries the token, which is then remembered on this device.</div>" +
-      "<div>If this is a Home Screen icon: remove it and re-add it after opening the Settings link in Safari (an icon added before the token fix launches without one).</div></div>";
+      "<div>Open the phone link from vault-chat Settings once — it carries the token, which is then remembered on this device.</div></div>";
     return;
   }
-
   const api = (path, opts = {}) =>
-    fetch(path, {
-      ...opts,
-      headers: { "X-Vault-Token": TOKEN, ...(opts.headers || {}) },
-    });
+    fetch(path, { ...opts, headers: { "X-Vault-Token": TOKEN, ...(opts.headers || {}) } });
   const fileUrl = (p) => "/file?path=" + encodeURIComponent(p) + "&token=" + encodeURIComponent(TOKEN);
 
   // ---- markdown (escape first; no raw HTML passthrough, ever) ----
@@ -276,7 +356,6 @@
   const isVaultPath = (u) => !/^[a-z][a-z0-9+.-]*:/i.test(u) && !u.startsWith("//");
   const inline = (s) => {
     let out = "";
-    // split out `code` spans first so other rules don't touch them
     const parts = s.split(/(`[^`]+`)/);
     for (const part of parts) {
       if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
@@ -362,16 +441,17 @@
     return html;
   };
 
-  // ---- state ----
-  let view = "list";        // 'list' | 'thread'
-  let convId = null;        // null = composing a brand-new chat
+  // ---- shell state ----
+  let tab = "chat";
+  let convId = null;          // null = fresh chat (Atlas thread starts on first send)
   let convTitle = "New chat";
   let running = false;
-  let streamText = "";
-  let streamTool = "";
-  let vaultName = "";
+  let streamText = "", streamTool = "";
+  let vaultName = "", boxModel = "";
+  let runCount = 0, unreadN = 0;
+  let offlineStreak = 0;
 
-  const msgsEl = $("msgs"), convsEl = $("convs"), input = $("input");
+  const msgsEl = $("msgs"), input = $("input");
 
   const age = (ts) => {
     const m = Math.floor((Date.now() - ts) / 60000);
@@ -382,145 +462,111 @@
     return Math.floor(h / 24) + "d";
   };
 
-  const setHeader = () => {
-    $("hdrTitle").childNodes[0].nodeValue = view === "list" ? "vault-chat" : convTitle;
-    $("hdrSub").textContent = view === "list" ? (vaultName ? "vault: " + vaultName : "") : "";
-    $("runDot").className = "dot" + (running ? " run" : "");
-    // Toggle ONLY the view classes — never `body.className = view`, which
-    // would wipe `kbopen` (the in-app keyboard) on every status tick.
-    document.body.classList.remove("list", "thread");
-    document.body.classList.add(view);
-  };
-
-  // ---- conversation list ----
-  function convRow(c, isRunning) {
-    const b = document.createElement("button");
-    b.className = "conv";
-    b.innerHTML =
-      '<div class="t">' +
-      (isRunning ? '<span class="rundot"></span>' : "") +
-      '<span class="name"></span>' +
-      (c.source !== "manual" ? '<span class="badge">' + esc(c.source) + "</span>" : "") +
-      '<span class="age">' + age(c.lastActivityAt) + "</span></div>" +
-      '<div class="p"></div>';
-    b.querySelector(".name").textContent = c.title;
-    b.querySelector(".p").textContent = c.preview || c.msgCount + " messages";
-    b.onclick = () => openThread(c.id, c.title);
-    return b;
+  function setTab(name) {
+    tab = name;
+    // classList toggles only — never wipe kbopen/voice/fresh.
+    document.body.classList.remove("tab-chat", "tab-activity", "tab-alerts");
+    document.body.classList.add("tab-" + name);
+    document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t.dataset.tab === name));
+    if (name !== "chat") hideKb();
+    if (name === "activity") void loadActivity();
+    if (name === "alerts") void loadAlerts();
   }
-  async function loadList() {
+  document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => setTab(t.dataset.tab)));
+
+  function setShell() {
+    const off = document.body.classList.contains("offline");
+    $("statetext").textContent = off ? "offline" : "awake";
+    $("statesub").textContent = off
+      ? "· reconnecting"
+      : runCount > 0
+        ? `· ${runCount} running`
+        : "· idle";
+    $("thname").textContent = convTitle;
+    $("thbar").classList.toggle("on", !!convId && tab === "chat");
+    const b = $("badge");
+    b.textContent = unreadN;
+    b.classList.toggle("zero", unreadN === 0);
+  }
+  function setOffline(off) {
+    document.body.classList.toggle("offline", off);
+    setShell();
+  }
+
+  // ---- menu ----
+  const menu = $("menu");
+  $("menuBtn").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("on"); if (menu.classList.contains("on")) void loadRecents(); };
+  document.addEventListener("click", () => menu.classList.remove("on"));
+  menu.addEventListener("click", (e) => e.stopPropagation());
+  $("newBtn").onclick = () => { menu.classList.remove("on"); newChat(); };
+  $("settingsBtn").onclick = () => { menu.classList.remove("on"); openDrawer(); };
+
+  async function loadRecents() {
     try {
-      // Status rides along for live run dots — best-effort, list still
-      // renders if it times out.
-      const [r, sr] = await Promise.all([
-        api("/conversations"),
-        api("/status").catch(() => null),
-      ]);
-      if (r.status === 401) throw new Error("token mismatch — open the link from Settings → Phone once to refresh it");
-      if (!r.ok) throw new Error((await r.json()).error || r.status);
+      const r = await api("/conversations");
       const d = await r.json();
-      const running = new Set();
-      if (sr && sr.ok) {
-        const sd = await sr.json().catch(() => ({}));
-        for (const run of sd.runs || []) running.add(run.convId);
-      }
+      if (d.error) throw new Error(d.error);
       vaultName = d.vault || "";
-      convsEl.innerHTML = "";
-
-      const all = d.conversations;
-      const sup = all.find((c) => c.role === "supervisor");
-      const workers = all.filter((c) => c.source === "worker");
-      const chats = all.filter((c) => c.role !== "supervisor" && c.source !== "worker");
-
-      // Supervisor: the ops channel, pinned. One thread, carries the vault's
-      // supervisor.md role — same brain you supervise with on Telegram.
-      const supBtn = document.createElement("button");
-      supBtn.className = "suprow";
-      supBtn.innerHTML =
-        '<span class="ico">◎</span><div class="lbl">Supervisor<small>' +
-        (sup
-          ? (running.has(sup.id) ? "running · " : "") + esc(sup.preview || "orchestrator thread")
-          : "start the orchestrator thread") +
-        "</small></div>" +
-        (sup && running.has(sup.id) ? '<span class="rundot"></span>' : "");
-      supBtn.onclick = () => (sup ? openThread(sup.id, "Supervisor", true) : openThread(null, "Supervisor", true));
-      convsEl.appendChild(supBtn);
-
-      if (workers.length) {
-        const h = document.createElement("div");
-        h.className = "sechdr";
-        h.textContent = "Workers";
-        convsEl.appendChild(h);
-        for (const c of workers) convsEl.appendChild(convRow(c, running.has(c.id)));
+      $("mfoot").textContent = "vault: " + (vaultName || "—");
+      const box = $("recents");
+      box.innerHTML = "";
+      for (const c of d.conversations.slice(0, 8)) {
+        const b = document.createElement("button");
+        b.className = "mi";
+        b.innerHTML = '<span class="nm"></span><span class="k"></span>';
+        b.querySelector(".nm").textContent = c.title;
+        b.querySelector(".k").textContent = age(c.lastActivityAt);
+        b.onclick = () => { menu.classList.remove("on"); openThread(c.id, c.title); };
+        box.appendChild(b);
       }
-      const h2 = document.createElement("div");
-      h2.className = "sechdr";
-      h2.textContent = "Chats";
-      convsEl.appendChild(h2);
-      for (const c of chats) convsEl.appendChild(convRow(c, running.has(c.id)));
-      setHeader();
-    } catch (e) {
-      convsEl.innerHTML = '<div class="gate">Box unreachable: ' + esc(String(e.message || e)) + "</div>";
+    } catch {
+      $("recents").innerHTML = '<div class="mfoot">couldn’t load recents</div>';
     }
   }
 
-  // ---- thread ----
+  // ---- chat ----
   function bubble(role, content, tools, opts = {}) {
     const div = document.createElement("div");
     div.className = "m " + (role === "user" ? "user" : opts.system ? "sys" : "asst") + (opts.queued ? " queued" : "");
-    if (role === "user" || opts.system) {
-      div.textContent = content;
-    } else {
-      div.innerHTML = '<div class="md">' + md(content) + "</div>";
-    }
+    if (role === "user" || opts.system) div.textContent = content;
+    else div.innerHTML = '<div class="md">' + md(content) + "</div>";
     if (tools && tools.length) {
       const wrap = document.createElement("div");
       wrap.className = "toolchips";
-      const shown = tools.slice(0, 8);
-      for (const t of shown) {
+      for (const t of tools.slice(0, 8)) {
         const c = document.createElement("span");
         c.className = "toolchip";
         c.textContent = t;
         wrap.appendChild(c);
       }
-      if (tools.length > shown.length) {
+      if (tools.length > 8) {
         const c = document.createElement("span");
         c.className = "toolchip";
-        c.textContent = "+" + (tools.length - shown.length);
+        c.textContent = "+" + (tools.length - 8);
         wrap.appendChild(c);
       }
       div.appendChild(wrap);
     }
     return div;
   }
-
   const atBottom = () => msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 80;
-  const scrollDown = (force) => {
-    if (force || atBottom()) msgsEl.scrollTop = msgsEl.scrollHeight;
-  };
+  const scrollDown = (force) => { if (force || atBottom()) msgsEl.scrollTop = msgsEl.scrollHeight; };
 
   let streamEl = null, runlineEl = null;
   function renderRunline() {
-    if (!running) {
-      if (runlineEl) { runlineEl.remove(); runlineEl = null; }
-      return;
-    }
+    if (!running) { if (runlineEl) { runlineEl.remove(); runlineEl = null; } return; }
     if (!runlineEl) {
       runlineEl = document.createElement("div");
       runlineEl.className = "runline";
-      runlineEl.innerHTML = '<span class="dot run"></span><span class="lbl"></span><button class="kill">Kill</button>';
+      runlineEl.innerHTML = '<span class="dot"></span><span class="lbl"></span><button class="kill">Kill</button>';
       runlineEl.querySelector(".kill").onclick = killCurrent;
       msgsEl.appendChild(runlineEl);
     }
     runlineEl.querySelector(".lbl").textContent = streamTool ? "running · " + streamTool : "running…";
-    msgsEl.appendChild(runlineEl); // keep last
+    msgsEl.appendChild(runlineEl);
   }
   function renderStream() {
-    if (!streamText) {
-      if (streamEl) { streamEl.remove(); streamEl = null; }
-      renderRunline();
-      return;
-    }
+    if (!streamText) { if (streamEl) { streamEl.remove(); streamEl = null; } renderRunline(); return; }
     if (!streamEl) {
       streamEl = document.createElement("div");
       streamEl.className = "m asst stream";
@@ -531,42 +577,53 @@
     scrollDown(false);
   }
 
-  let supervisorPending = false; // new Supervisor thread: first send carries the flag
-  async function openThread(id, title, isSupervisor = false) {
-    view = "thread";
-    convId = id;
-    supervisorPending = isSupervisor && !id;
-    convTitle = title || "New chat";
+  function clearThreadUi() {
     running = false;
     streamText = ""; streamTool = ""; streamEl = null; runlineEl = null;
-    msgsEl.innerHTML = "";
-    setHeader();
-    if (!id) return; // brand-new chat — empty thread
+    msgsEl.querySelectorAll(".m, .runline").forEach((n) => n.remove());
+  }
+  function newChat() {
+    convId = null;
+    convTitle = "New chat";
+    clearThreadUi();
+    document.body.classList.add("fresh");
+    setTab("chat");
+    setShell();
+  }
+  async function openThread(id, title) {
+    convId = id;
+    convTitle = title || "New chat";
+    clearThreadUi();
+    document.body.classList.remove("fresh");
+    setTab("chat");
+    setShell();
     try {
       const r = await api("/conversation?id=" + encodeURIComponent(id) + "&n=80");
       if (!r.ok) throw new Error((await r.json()).error || r.status);
       const d = await r.json();
       convTitle = d.title;
       running = d.status === "running";
-      msgsEl.innerHTML = "";
-      for (const m of d.messages)
-        msgsEl.appendChild(bubble(m.role, m.content, m.tools, { system: m.system }));
+      clearThreadUi();
+      running = d.status === "running";
+      for (const m of d.messages) msgsEl.appendChild(bubble(m.role, m.content, m.tools, { system: m.system }));
       renderRunline();
-      setHeader();
+      setShell();
       scrollDown(true);
     } catch (e) {
       toast("Load failed: " + (e.message || e));
     }
   }
+  $("thclose").onclick = newChat;
 
-  // ---- send ----
-  let lastSentText = null; // dedupe: the box echoes our own message back via SSE
+  // ---- send (every fresh cockpit chat carries the agent role) ----
+  let lastSentText = null;
   async function send() {
     const text = input.value.trim();
     if (!text) return;
     input.value = "";
     input.style.height = "auto";
     lastSentText = text;
+    document.body.classList.remove("fresh");
     const mine = bubble("user", text, null);
     msgsEl.appendChild(mine);
     scrollDown(true);
@@ -574,27 +631,22 @@
       const r = await api("/message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          convId,
-          text,
-          supervisor: supervisorPending && !convId ? true : undefined,
-        }),
+        body: JSON.stringify({ convId, text, supervisor: convId ? undefined : true }),
       });
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || r.status);
       if (!convId && d.convId) {
         convId = d.convId;
-        if (!supervisorPending) convTitle = text.split("\n")[0].slice(0, 60);
+        convTitle = text.split("\n")[0].slice(0, 60);
       }
-      supervisorPending = false;
       if (d.queued) {
         mine.classList.add("queued");
-        toast("Agent is mid-run — queued, will send when it finishes.");
+        toast("Mid-run — queued, sends when it finishes.");
       } else {
         running = true;
         renderRunline();
       }
-      setHeader();
+      setShell();
     } catch (e) {
       mine.classList.add("queued");
       toast("Send failed: " + (e.message || e));
@@ -602,32 +654,20 @@
   }
   $("sendBtn").onclick = send;
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      send();
-    }
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
   input.addEventListener("input", () => {
     input.style.height = "auto";
     input.style.height = Math.min(input.scrollHeight, 120) + "px";
   });
-
   async function killCurrent() {
     if (!convId) return;
-    try {
-      const r = await api("/kill", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ convId }),
-      });
-      const d = await r.json().catch(() => ({}));
-      toast(d.result || "Kill sent.");
-    } catch (e) {
-      toast("Kill failed: " + (e.message || e));
-    }
+    const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId }) }).catch(() => null);
+    const d = r ? await r.json().catch(() => ({})) : {};
+    toast(d.result || "Kill sent.");
   }
 
-  // ---- live events: long-poll (proxy-proof where SSE buffered) ----
+  // ---- live events: long-poll ----
   let pollGen = 0;
   async function pollLoop() {
     const gen = ++pollGen;
@@ -638,121 +678,268 @@
         if (!r.ok) throw new Error("poll " + r.status);
         const d = await r.json();
         after = d.next;
+        offlineStreak = 0;
+        if (document.body.classList.contains("offline")) setOffline(false);
         for (const ev of d.events || []) handleEvent(ev);
       } catch {
+        offlineStreak++;
+        if (offlineStreak >= 2) setOffline(true);
         await new Promise((res) => setTimeout(res, 3000));
       }
     }
   }
   function handleEvent(d) {
-    {
-      if (d.type === "runtime" && d.convId === convId) {
-        running = true;
-        streamText = d.text || "";
-        streamTool = d.tool || "";
-        renderStream();
-        setHeader();
-      } else if (d.type === "message" && d.convId === convId) {
-        if (d.role === "user" && lastSentText !== null && d.content === lastSentText) {
-          lastSentText = null; // our own echo — already rendered optimistically
-          return;
-        }
-        streamText = ""; streamTool = "";
-        renderStream();
-        msgsEl.appendChild(bubble(d.role, d.content, d.tools));
-        scrollDown(false);
-      } else if (d.type === "status") {
-        if (d.convId === convId) {
-          running = d.status === "running";
-          if (!running) { streamText = ""; streamTool = ""; renderStream(); }
-          renderRunline();
-          setHeader();
-        }
-        if (view === "list") loadList();
-      } else if (d.type === "title" && d.convId === convId) {
-        convTitle = d.title;
-        setHeader();
+    if (d.type === "runtime" && d.convId === convId) {
+      running = true;
+      streamText = d.text || "";
+      streamTool = d.tool || "";
+      renderStream();
+      setShell();
+    } else if (d.type === "message" && d.convId === convId) {
+      if (d.role === "user" && lastSentText !== null && d.content === lastSentText) {
+        lastSentText = null;
+        return;
       }
+      streamText = ""; streamTool = "";
+      renderStream();
+      msgsEl.appendChild(bubble(d.role, d.content, d.tools));
+      scrollDown(false);
+    } else if (d.type === "status") {
+      if (d.convId === convId) {
+        running = d.status === "running";
+        if (!running) { streamText = ""; streamTool = ""; renderStream(); }
+        renderRunline();
+      }
+      void refreshState();
+      if (tab === "activity") void loadActivity();
+    } else if (d.type === "title" && d.convId === convId) {
+      convTitle = d.title;
+      setShell();
+    } else if (d.type === "notif") {
+      void refreshBadge();
+      if (tab === "alerts") void loadAlerts();
     }
   }
 
-  // ---- status drawer ----
-  $("menuBtn").onclick = async () => {
-    $("drawer").classList.add("open");
-    refreshPushUi();
+  // ---- header state ----
+  async function refreshState() {
     try {
       const r = await api("/status");
       const d = await r.json();
       if (d.error) throw new Error(d.error);
-      $("boxRow").innerHTML = "<b></b><small></small>";
-      $("boxRow").querySelector("b").textContent = d.vault || "?";
-      $("boxRow").querySelector("small").textContent = "model: " + (d.model || "?");
-      const runs = d.runs || [];
-      $("runsBox").innerHTML = runs.length ? "" : '<div class="note">No active runs.</div>';
-      for (const run of runs) {
-        const div = document.createElement("div");
-        div.className = "row";
-        div.innerHTML = "<b></b><small></small>";
-        div.querySelector("b").textContent = run.title || run.convId;
-        div.querySelector("small").textContent =
-          (run.lastTool ? "🔧 " + run.lastTool + " · " : "") +
-          (run.lastProgressAt ? age(run.lastProgressAt) + " ago" : "running");
-        $("runsBox").appendChild(div);
-      }
-    } catch (e) {
-      $("boxRow").innerHTML = "<small></small>";
-      $("boxRow").querySelector("small").textContent = "Status failed: " + (e.message || e);
+      vaultName = d.vault || vaultName;
+      boxModel = d.model || "";
+      runCount = (d.runs || []).length;
+      setShell();
+      return d;
+    } catch {
+      return null;
     }
-    void loadSchedules();
-  };
-  async function loadSchedules() {
+  }
+  async function refreshBadge() {
     try {
-      const r = await api("/schedules");
+      const r = await api("/notifications");
       const d = await r.json();
-      if (d.error) throw new Error(d.error);
-      const scheds = d.schedules || [];
-      $("schedBox").innerHTML = scheds.length ? "" : '<div class="note">No schedules.</div>';
+      if (typeof d.unread === "number") { unreadN = d.unread; setShell(); }
+    } catch {}
+  }
+
+  // ---- ACTIVITY ----
+  function el(html) {
+    const t = document.createElement("template");
+    t.innerHTML = html.trim();
+    return t.content.firstChild;
+  }
+  async function loadActivity() {
+    const box = $("actScroll");
+    try {
+      const [sr, cr, schr] = await Promise.all([api("/status"), api("/conversations"), api("/schedules")]);
+      const sd = await sr.json(), cd = await cr.json(), schd = await schr.json().catch(() => ({ schedules: [] }));
+      if (cd.error) throw new Error(cd.error);
+      const runs = sd.runs || [];
+      const runIds = new Set(runs.map((x) => x.convId));
+      const convs = cd.conversations || [];
+      const byId = new Map(convs.map((c) => [c.id, c]));
+      runCount = runs.length;
+      setShell();
+      box.innerHTML = "";
+
+      // Active: every running thread, with goal + heartbeat + kill.
+      box.appendChild(el('<div class="sec">Active</div>'));
+      if (!runs.length) {
+        box.appendChild(el('<div class="empty">Nothing running. Ask for something in Chat — big asks get scoped, then land here.</div>'));
+      }
+      for (const run of runs) {
+        const c = byId.get(run.convId) || {};
+        const card = el(
+          '<div class="wk open"><button class="wh"><span class="s run">●</span><span class="nm"></span><span class="mt"></span></button>' +
+          '<div class="wd"><div class="lbl">Goal</div><span class="g"></span>' +
+          '<div class="wbtns"><button class="wbtn op">Open thread</button><button class="wbtn danger kl">Kill</button></div></div></div>',
+        );
+        card.querySelector(".nm").textContent = run.title || c.title || run.convId;
+        card.querySelector(".mt").textContent = run.lastTool
+          ? run.lastTool + " · " + (run.lastProgressAt ? age(run.lastProgressAt) : "now")
+          : "running";
+        card.querySelector(".g").textContent = c.goal || c.preview || "(no goal recorded)";
+        card.querySelector(".wh").onclick = () => card.classList.toggle("open");
+        card.querySelector(".op").onclick = (e) => { e.stopPropagation(); openThread(run.convId, run.title || c.title); };
+        const kl = card.querySelector(".kl");
+        kl.onclick = async (e) => {
+          e.stopPropagation();
+          if (!kl.classList.contains("confirm")) {
+            kl.classList.add("confirm");
+            kl.textContent = "Confirm kill";
+            setTimeout(() => { kl.classList.remove("confirm"); kl.textContent = "Kill"; }, 2600);
+            return;
+          }
+          await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: run.convId }) }).catch(() => {});
+          toast("Kill sent.");
+          setTimeout(loadActivity, 800);
+        };
+        box.appendChild(card);
+      }
+
+      // Workers not currently running, touched in the last 24h → Done today.
+      const dayAgo = Date.now() - 24 * 3600_000;
+      const doneToday = convs.filter(
+        (c) => c.source === "worker" && !runIds.has(c.id) && c.lastActivityAt > dayAgo,
+      );
+
+      // Recurring (schedules — toggle/delete; creation happens by asking).
+      box.appendChild(el('<div class="sec">Recurring</div>'));
+      const scheds = schd.schedules || [];
+      if (!scheds.length) {
+        box.appendChild(el('<div class="empty">No recurring missions. Tell the agent — “brief me every morning at 7” is enough.</div>'));
+      }
       for (const sc of scheds) {
-        const div = document.createElement("div");
-        div.className = "row schedrow";
-        div.innerHTML =
-          '<div class="info"><b></b><small></small></div>' +
-          '<button class="sw"></button><button class="del">✕</button>';
-        div.querySelector("b").textContent = sc.name;
-        div.querySelector("small").textContent =
-          sc.label +
-          (sc.sendViaTelegram ? " · → phone" : "") +
-          (sc.quietUnlessAlert ? " · quiet" : "") +
-          (sc.lastFiredAt ? " · fired " + age(sc.lastFiredAt) + " ago" : "");
-        const sw = div.querySelector(".sw");
+        const card = el(
+          '<div class="card"><div class="schedrow"><div class="info"><b></b><small></small></div>' +
+          '<button class="sw"></button><button class="del">✕</button></div></div>',
+        );
+        card.querySelector("b").textContent = sc.name;
+        card.querySelector("small").textContent =
+          sc.label + (sc.quietUnlessAlert ? " · quiet" : "") + (sc.lastFiredAt ? " · fired " + age(sc.lastFiredAt) + " ago" : "");
+        const sw = card.querySelector(".sw");
         sw.textContent = sc.enabled ? "On" : "Off";
         sw.className = "sw" + (sc.enabled ? " on" : "");
         sw.onclick = async () => {
-          await api("/schedule", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "toggle", id: sc.id, enabled: !sc.enabled }),
-          }).catch(() => {});
-          loadSchedules();
+          await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle", id: sc.id, enabled: !sc.enabled }) }).catch(() => {});
+          loadActivity();
         };
-        div.querySelector(".del").onclick = async () => {
-          if (!confirm('Delete schedule "' + sc.name + '"?')) return;
-          await api("/schedule", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "delete", id: sc.id }),
-          }).catch(() => {});
-          loadSchedules();
+        card.querySelector(".del").onclick = async () => {
+          if (!confirm('Delete "' + sc.name + '"?')) return;
+          await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", id: sc.id }) }).catch(() => {});
+          loadActivity();
         };
-        $("schedBox").appendChild(div);
+        box.appendChild(card);
       }
+
+      if (doneToday.length) {
+        box.appendChild(el('<div class="sec">Done · today</div>'));
+        for (const c of doneToday.slice(0, 10)) {
+          const card = el(
+            '<div class="wk"><button class="wh"><span class="s g">✓</span><span class="nm"></span><span class="mt"></span></button>' +
+            '<div class="wd"><div class="lbl">Goal</div><span class="g"></span><div class="lbl">Last update</div><span class="p"></span>' +
+            '<div class="wbtns"><button class="wbtn op">Open thread</button></div></div></div>',
+          );
+          card.querySelector(".nm").textContent = c.title;
+          card.querySelector(".mt").textContent = age(c.lastActivityAt);
+          card.querySelector(".g").textContent = c.goal || "(no goal recorded)";
+          card.querySelector(".p").textContent = c.preview || "—";
+          card.querySelector(".wh").onclick = () => card.classList.toggle("open");
+          card.querySelector(".op").onclick = (e) => { e.stopPropagation(); openThread(c.id, c.title); };
+          box.appendChild(card);
+        }
+      }
+      box.appendChild(el('<div style="height:18px"></div>'));
     } catch (e) {
-      $("schedBox").innerHTML = '<div class="note">Schedules failed: ' + esc(String(e.message || e)) + "</div>";
+      box.innerHTML = '<div class="empty">Activity unavailable: ' + esc(String(e.message || e)) + "</div>";
     }
   }
-  $("drawer").addEventListener("click", (e) => {
-    if (e.target === $("drawer")) $("drawer").classList.remove("open");
-  });
+
+  // ---- ALERTS ----
+  async function loadAlerts() {
+    const box = $("alScroll");
+    try {
+      const r = await api("/notifications");
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      unreadN = d.unread || 0;
+      setShell();
+      const list = d.notifications || [];
+      box.innerHTML = "";
+      const asks = list.filter((n) => n.kind === "ask" && !n.read);
+      const rest = list.filter((n) => !(n.kind === "ask" && !n.read));
+      if (!list.length) {
+        box.appendChild(el('<div class="empty">Nothing yet. Mission completions, worker results, and your recurring briefings land here — with a push if notifications are on.</div>'));
+      }
+      if (asks.length) box.appendChild(el('<div class="sec">Needs you</div>'));
+      for (const n of asks) box.appendChild(alertCard(n, true));
+      if (rest.length) box.appendChild(el('<div class="sec">For you</div>'));
+      for (const n of rest) box.appendChild(alertCard(n, false));
+      box.appendChild(el('<div style="height:18px"></div>'));
+    } catch (e) {
+      box.innerHTML = '<div class="empty">Alerts unavailable: ' + esc(String(e.message || e)) + "</div>";
+    }
+  }
+  function markRead(id) {
+    return api("/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
+  }
+  function alertCard(n, needsYou) {
+    const card = el(
+      '<div class="card' + (needsYou ? " ask" : n.read ? "" : " unread") + '">' +
+      '<div class="crow"><div class="ico"></div><div class="cb">' +
+      '<div class="ct"><b></b><span class="t"></span></div><p class="cs"></p><span class="tag"></span>' +
+      "</div></div></div>",
+    );
+    const ico = card.querySelector(".ico");
+    if (needsYou) { ico.textContent = "?"; ico.classList.add("a"); }
+    else if (/worker/i.test(n.title)) { ico.textContent = "✓"; ico.classList.add("g"); }
+    else { ico.textContent = "•"; }
+    card.querySelector("b").textContent = n.title;
+    card.querySelector(".t").textContent = age(n.ts);
+    card.querySelector(".cs").textContent = n.body || "";
+    card.querySelector(".tag").textContent = n.kind === "ask" ? "answer below" : n.convId ? "tap to open the thread" : "info";
+    if (needsYou && n.convId) {
+      const rep = el(
+        '<div class="reply"><input class="rinp" placeholder="tell it what to do…" autocomplete="off" />' +
+        '<button class="rsend">↑</button></div>',
+      );
+      const doReply = async () => {
+        const v = rep.querySelector(".rinp").value.trim();
+        if (!v) return;
+        await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: v }) }).catch(() => {});
+        await markRead(n.id);
+        toast("Sent.");
+        loadAlerts();
+      };
+      rep.querySelector(".rsend").onclick = doReply;
+      rep.querySelector(".rinp").addEventListener("keydown", (e) => { if (e.key === "Enter") doReply(); });
+      card.querySelector(".cb").appendChild(rep);
+    } else {
+      card.onclick = async () => {
+        if (!n.read) await markRead(n.id);
+        if (n.convId) openThread(n.convId, n.title);
+        else loadAlerts();
+      };
+    }
+    return card;
+  }
+
+  // ---- settings drawer ----
+  function openDrawer() {
+    $("drawer").classList.add("open");
+    refreshPushUi();
+    void (async () => {
+      const d = await refreshState();
+      $("boxRow").innerHTML = "<b></b><small></small>";
+      $("boxRow").querySelector("b").textContent = vaultName || "?";
+      $("boxRow").querySelector("small").textContent =
+        (boxModel ? "model: " + boxModel : "model: ?") + (d ? " · " + (d.runs || []).length + " running" : "");
+    })();
+  }
+  $("statebtn").onclick = openDrawer;
+  $("drawer").addEventListener("click", (e) => { if (e.target === $("drawer")) $("drawer").classList.remove("open"); });
   $("killAllBtn").onclick = async () => {
     const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
     const d = r ? await r.json().catch(() => ({})) : {};
@@ -794,15 +981,8 @@
       const vr = await api("/push/vapid");
       const vd = await vr.json();
       if (!vr.ok || !vd.key) throw new Error(vd.error || "no VAPID key from box");
-      const sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: b64uToBytes(vd.key),
-      });
-      const r = await api("/push/subscribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(sub.toJSON()),
-      });
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(vd.key) });
+      const r = await api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) });
       if (!r.ok) throw new Error("subscribe store failed");
       toast("Notifications enabled.");
       refreshPushUi();
@@ -815,62 +995,38 @@
     const d = r ? await r.json().catch(() => ({})) : {};
     toast(d.error ? "Test failed: " + d.error : "Test sent — should arrive in seconds.");
   };
-  // Re-assert the subscription on every open: iOS quietly drops them.
   (async () => {
     const sub = await currentSub();
-    if (sub) {
-      api("/push/subscribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(sub.toJSON()),
-      }).catch(() => {});
-    }
+    if (sub) api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) }).catch(() => {});
   })();
 
-  // ---- in-app keyboard ----
-  // inputmode="none" suppresses the iOS keyboard (and its form-assistant
-  // bar); these keys are ours. Two rules keep it from collapsing:
-  //   1. Built ONCE. All three layers live in the DOM; switching toggles
-  //      .active and shift updates labels in place — the key under your
-  //      finger is never destroyed mid-tap (the old per-keystroke
-  //      innerHTML rebuild was the layer-switch collapse).
-  //   2. touchstart preventDefault keeps focus ON the textarea, so a key
-  //      tap never blurs it. Editing writes straight to the value — no
-  //      per-key refocus. (Paired with the setHeader fix that stopped
-  //      wiping `kbopen` on status ticks.)
-  // Drawer toggle restores the system keyboard so a bug can't lock typing.
+  // ---- in-app keyboard (verbatim module: built once, never rebuilt) ----
   const KB_SYS_FLAG = "vc_kb_system";
   const CUSTOM_KB = localStorage.getItem(KB_SYS_FLAG) !== "1";
   const kbEl = $("kb");
   let kbLayer = 0, kbShift = false, kbCaps = false, lastShiftAt = 0, lastSpaceAt = 0;
-
   const KB_LAYERS = [
-    [ // letters
+    [
       [..."qwertyuiop"].map((c) => ({ k: "ch", t: c })),
       [..."asdfghjkl"].map((c) => ({ k: "ch", t: c })),
       [{ k: "shift", t: "⇧" }, ...[..."zxcvbnm"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }],
       [{ k: "layer1", t: "123" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }],
     ],
-    [ // numbers / common punctuation
+    [
       [..."1234567890"].map((c) => ({ k: "ch", t: c })),
       [..."-/:;()$&@\""].map((c) => ({ k: "ch", t: c })),
       [{ k: "layer2", t: "#+=" }, ...[...".,?!'"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }],
       [{ k: "layer0", t: "ABC" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }],
     ],
-    [ // symbols
+    [
       [..."[]{}#%^*+="].map((c) => ({ k: "ch", t: c })),
       [..."_\\|~<>€£¥•"].map((c) => ({ k: "ch", t: c })),
       [{ k: "layer1", t: "123" }, ...[...".,?!'"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }],
       [{ k: "layer0", t: "ABC" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }],
     ],
   ];
-
-  const kbLayerDivs = [];
-  const kbLetterKeys = []; // { el, base } — letters, for in-place case updates
+  const kbLayerDivs = [], kbLetterKeys = [];
   let kbShiftKeyEl = null;
-
-  // Build all three layers once. After this, nothing touches kbEl's child
-  // structure — only classes and the letter labels change.
   function kbBuild() {
     kbEl.innerHTML = "";
     KB_LAYERS.forEach((rows, li) => {
@@ -898,9 +1054,6 @@
       kbLayerDivs.push(layer);
     });
   }
-
-  // Reflect shift/caps state without rebuilding: relabel letters, light the
-  // shift key.
   function kbApplyShift() {
     const up = kbShift || kbCaps;
     for (const lk of kbLetterKeys) lk.el.textContent = up ? lk.base.toUpperCase() : lk.base;
@@ -909,16 +1062,12 @@
       kbShiftKeyEl.classList.toggle("caps", kbCaps);
     }
   }
-
   function kbSetLayer(i) {
     kbLayer = i;
     kbLayerDivs.forEach((d, li) => d.classList.toggle("active", li === i));
     if (i === 0) kbAutoShift();
     kbApplyShift();
   }
-
-  // Current selection, defaulting to the end so editing works even if the
-  // textarea momentarily isn't focused.
   function kbSel() {
     const len = input.value.length;
     let s = input.selectionStart, e = input.selectionEnd;
@@ -926,7 +1075,7 @@
     return [s, e];
   }
   function kbAfterEdit() {
-    input.dispatchEvent(new Event("input", { bubbles: true })); // autosize
+    input.dispatchEvent(new Event("input", { bubbles: true }));
     kbAutoShift();
   }
   function kbAutoShift() {
@@ -947,28 +1096,22 @@
       if (s === 0) return;
       let n = 1;
       const code = input.value.charCodeAt(s - 1);
-      if (code >= 0xdc00 && code <= 0xdfff && s > 1) n = 2; // don't split surrogate pairs
+      if (code >= 0xdc00 && code <= 0xdfff && s > 1) n = 2;
       s -= n;
     }
     input.setRangeText("", s, e, "end");
     kbAfterEdit();
   }
-
   let bkspT1 = 0, bkspIv = 0;
-  function kbStopRepeat() {
-    clearTimeout(bkspT1);
-    clearInterval(bkspIv);
-    bkspT1 = bkspIv = 0;
-  }
-
-  function kbKeyDown(el) {
-    const k = el.dataset.k, t = el.dataset.t;
-    el.classList.add("down");
+  function kbStopRepeat() { clearTimeout(bkspT1); clearInterval(bkspIv); bkspT1 = bkspIv = 0; }
+  function kbKeyDown(elk) {
+    const k = elk.dataset.k, t = elk.dataset.t;
+    elk.classList.add("down");
     if (k === "ch") {
       const pop = document.createElement("div");
       pop.className = "kbpop";
-      pop.textContent = el.textContent;
-      el.appendChild(pop);
+      pop.textContent = elk.textContent;
+      elk.appendChild(pop);
       kbInsert(kbShift || kbCaps ? t.toUpperCase() : t);
       if (kbShift && !kbCaps && /[a-z]/i.test(t)) { kbShift = false; kbApplyShift(); }
     } else if (k === "bksp") {
@@ -985,33 +1128,23 @@
     } else if (k === "space") {
       const [caret] = kbSel();
       const now = Date.now();
-      // double-space → ". " (the iOS period shortcut, autocorrect-independent)
-      if (
-        now - lastSpaceAt < 350 &&
-        caret >= 2 &&
-        input.value[caret - 1] === " " &&
-        /[\w)\]'"’”]/.test(input.value[caret - 2])
-      ) {
+      if (now - lastSpaceAt < 350 && caret >= 2 && input.value[caret - 1] === " " && /[\w)\]'"’”]/.test(input.value[caret - 2])) {
         input.setRangeText(". ", caret - 2, caret, "end");
         kbAfterEdit();
-      } else {
-        kbInsert(" ");
-      }
+      } else kbInsert(" ");
       lastSpaceAt = now;
-    } else if (k === "ret") {
-      kbInsert("\n");
-    } else if (k === "layer0") { kbSetLayer(0); }
-    else if (k === "layer1") { kbSetLayer(1); }
-    else if (k === "layer2") { kbSetLayer(2); }
+    } else if (k === "ret") kbInsert("\n");
+    else if (k === "layer0") kbSetLayer(0);
+    else if (k === "layer1") kbSetLayer(1);
+    else if (k === "layer2") kbSetLayer(2);
   }
-  function kbKeyUp(el) {
-    el.classList.remove("down");
-    const p = el.querySelector(".kbpop");
+  function kbKeyUp(elk) {
+    elk.classList.remove("down");
+    const p = elk.querySelector(".kbpop");
     if (p) p.remove();
   }
-
   function showKb() {
-    if (!CUSTOM_KB || view !== "thread") return;
+    if (!CUSTOM_KB || tab !== "chat") return;
     if (!document.body.classList.contains("kbopen")) {
       document.body.classList.add("kbopen");
       scrollDown(true);
@@ -1027,7 +1160,6 @@
     document.body.classList.remove("kbopen");
     kbStopRepeat();
   }
-
   if (CUSTOM_KB) {
     input.setAttribute("inputmode", "none");
     input.setAttribute("autocapitalize", "off");
@@ -1036,16 +1168,10 @@
     input.setAttribute("spellcheck", "false");
     kbBuild();
     kbApplyShift();
-
     const hasTouch = "ontouchstart" in window;
-    const downByKey = new Map(); // touch id / "mouse" → key element
+    const downByKey = new Map();
     const keyFrom = (target) => (target && target.closest ? target.closest(".kbk") : null);
-
     if (hasTouch) {
-      // preventDefault on touchstart is the load-bearing line: it keeps
-      // focus on the textarea (no blur), kills the synthetic mouse events
-      // and the double-tap zoom, and never lets the tap escape to a
-      // dismiss handler. This is why typing no longer collapses the panel.
       kbEl.addEventListener("touchstart", (e) => {
         e.preventDefault();
         for (const t of e.changedTouches) {
@@ -1067,7 +1193,6 @@
       kbEl.addEventListener("touchend", endTouch);
       kbEl.addEventListener("touchcancel", endTouch);
     } else {
-      // Desktop fallback (the page is reachable from a laptop too).
       kbEl.addEventListener("mousedown", (e) => {
         e.preventDefault();
         const key = keyFrom(e.target);
@@ -1083,50 +1208,247 @@
         if (key.dataset.k === "bksp") kbStopRepeat();
       });
     }
-
-    // Show when the composer gets focus / is tapped. Dismiss ONLY by an
-    // explicit tap on the message history (like iMessage) — no global
-    // outside-tap auto-hide, which was the other misfire.
     input.addEventListener("focus", showKb);
     input.addEventListener("click", showKb);
     msgsEl.addEventListener("touchstart", hideKb, { passive: true });
     msgsEl.addEventListener("mousedown", hideKb);
   }
-
-  // Drawer toggle: custom ↔ system keyboard (reload applies inputmode).
   const kbOn = CUSTOM_KB;
-  $("kbState").textContent = kbOn
-    ? "In-app keyboard is ON — no iOS form bar."
-    : "Using the iOS system keyboard.";
+  $("kbState").textContent = kbOn ? "In-app keyboard is ON — no iOS form bar." : "Using the iOS system keyboard.";
   $("kbToggleBtn").textContent = kbOn ? "Switch to system keyboard" : "Switch to in-app keyboard";
   $("kbToggleBtn").onclick = () => {
     localStorage.setItem(KB_SYS_FLAG, kbOn ? "1" : "0");
     location.reload();
   };
 
-  // ---- nav + lifecycle ----
-  $("backBtn").onclick = () => {
-    view = "list";
-    convId = null;
-    supervisorPending = false;
-    if (typeof hideKb === "function") hideKb();
-    setHeader();
-    loadList();
+  // ---- VOICE (ported from voice.html — the iOS-hardened connect, verbatim
+  // semantics: synchronous unlock in the tap, 503 retry, 15s watchdog,
+  // audio-driven bars, one auto-retry) ----
+  const NUM_BARS = 12, DECAY = 0.85;
+  const vizEl = $("viz"), verrEl = $("verr");
+  const vBars = [];
+  for (let i = 0; i < NUM_BARS; i++) {
+    const b = document.createElement("div");
+    b.className = "vbar";
+    vizEl.appendChild(b);
+    vBars.push(b);
+  }
+  let vConv = null, vConnecting = false, vRafId = 0, vLive = false, vAutoRetried = false;
+  const vSmoothed = new Array(NUM_BARS).fill(0);
+  let vMicCtx = null, vMicAnalyser = null, vMicBuf = null;
+  let vAgentLevel = 0, vAgentActiveUntil = 0;
+  const setVErr = (e) => { verrEl.textContent = e || ""; };
+  const micAvailable = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  function vTeardownAudio() {
+    try { if (vMicCtx) vMicCtx.close(); } catch {}
+    vMicCtx = null; vMicAnalyser = null; vMicBuf = null;
+  }
+  function pcmLevel(b64) {
+    const s = atob(b64);
+    const n = s.length;
+    if (n < 2) return 0;
+    const step = n > 4000 ? 8 : 2;
+    let sum = 0, count = 0;
+    for (let i = 0; i + 1 < n; i += step) {
+      let v = s.charCodeAt(i) | (s.charCodeAt(i + 1) << 8);
+      if (v >= 32768) v -= 65536;
+      sum += v * v; count++;
+    }
+    const rms = count ? Math.sqrt(sum / count) / 32768 : 0;
+    return Math.min(1, rms * 4);
+  }
+  function vBin(data, n) {
+    const out = new Array(n).fill(0);
+    if (!data || !data.length) return out;
+    const per = Math.max(1, Math.floor(data.length / n));
+    for (let i = 0; i < n; i++) {
+      let s = 0;
+      for (let j = 0; j < per; j++) s += data[i * per + j] || 0;
+      out[i] = s / per / 255;
+    }
+    return out;
+  }
+  function vMeter() {
+    if (!vLive) return;
+    const speaking = Date.now() < vAgentActiveUntil;
+    let raw;
+    try {
+      if (speaking) {
+        raw = [];
+        for (let i = 0; i < NUM_BARS; i++) {
+          const shape = 0.55 + 0.45 * Math.sin((i / (NUM_BARS - 1)) * Math.PI);
+          raw.push(vAgentLevel * shape);
+        }
+      } else if (vMicAnalyser) {
+        vMicAnalyser.getByteFrequencyData(vMicBuf);
+        raw = vBin(vMicBuf, NUM_BARS);
+      } else {
+        raw = vBin(vConv && vConv.getInputByteFrequencyData && vConv.getInputByteFrequencyData(), NUM_BARS);
+      }
+    } catch { raw = new Array(NUM_BARS).fill(0); }
+    for (let i = 0; i < NUM_BARS; i++) {
+      const decayed = vSmoothed[i] * DECAY;
+      vSmoothed[i] = raw[i] > decayed ? raw[i] : decayed;
+      const h = 0.16 + Math.min(1, vSmoothed[i]) * 0.84;
+      vBars[i].style.transform = `scaleY(${h.toFixed(3)})`;
+    }
+    vRafId = requestAnimationFrame(vMeter);
+  }
+  function vClientTools(toolNames) {
+    const tools = {};
+    for (const name of toolNames || []) {
+      tools[name] = async (params) => {
+        try {
+          const r = await api("/tool", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, arguments: params || {} }),
+          });
+          return await r.text();
+        } catch (e) { return "error: " + String(e); }
+      };
+    }
+    return tools;
+  }
+  async function vStart() {
+    if (vConnecting || vConv) return;
+    if (!micAvailable()) {
+      setVErr("This page isn't HTTPS, so the browser blocks the mic. Open the https://…ts.net link from Settings → Phone.");
+      return;
+    }
+    vConnecting = true;
+    setVErr("");
+    document.body.classList.add("vconnecting");
+    try {
+      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      try {
+        vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext)();
+        vMicCtx.resume().catch(() => {});
+        const src = vMicCtx.createMediaStreamSource(micStream);
+        vMicAnalyser = vMicCtx.createAnalyser();
+        vMicAnalyser.fftSize = 64;
+        vMicAnalyser.smoothingTimeConstant = 0.5;
+        src.connect(vMicAnalyser);
+        vMicBuf = new Uint8Array(vMicAnalyser.frequencyBinCount);
+      } catch { vMicAnalyser = null; }
+      let cfg = null;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const r = await api("/session", { method: "POST" });
+        if (r.ok) { cfg = await r.json(); break; }
+        if (r.status === 503 && attempt < 5) {
+          await new Promise((res) => setTimeout(res, 2000));
+          continue;
+        }
+        throw new Error(`session ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      }
+      if (!cfg) throw new Error("session not ready");
+      const sdk = (await sdkPromise) || (await import("https://esm.sh/@elevenlabs/client@1.7.0"));
+      const { Conversation } = sdk;
+      let timedOut = false, watchdog = 0;
+      const sessionPromise = Conversation.startSession({
+        signedUrl: cfg.signedUrl,
+        overrides: {
+          agent: { prompt: { prompt: cfg.systemPrompt || "" }, language: "en", firstMessage: "" },
+          tts: { voiceId: cfg.voiceId },
+        },
+        dynamicVariables: cfg.dynamicVariables || {},
+        clientTools: vClientTools(cfg.toolNames),
+        onConnect: () => {
+          if (timedOut) return;
+          vConnecting = false; vAutoRetried = false; vLive = true;
+          document.body.classList.remove("vconnecting");
+          vMeter();
+        },
+        onDisconnect: () => { if (!timedOut) vTeardown(); },
+        onError: (m) => setVErr(typeof m === "string" ? m : (m && m.message) || "voice error"),
+        onAudio: (b64) => {
+          try {
+            const lvl = pcmLevel(b64);
+            vAgentLevel = Math.max(lvl, vAgentLevel * 0.6);
+            vAgentActiveUntil = Date.now() + 280;
+          } catch {}
+        },
+      });
+      sessionPromise.then((c) => {
+        clearTimeout(watchdog);
+        if (timedOut && c) { try { c.endSession(); } catch {} }
+      }).catch(() => clearTimeout(watchdog));
+      vConv = await Promise.race([
+        sessionPromise,
+        new Promise((_, rej) => { watchdog = setTimeout(() => { timedOut = true; rej(new Error("connect timed out after 15s")); }, 15000); }),
+      ]);
+      clearTimeout(watchdog);
+    } catch (e) {
+      vConnecting = false;
+      vTeardownAudio();
+      document.body.classList.remove("vconnecting");
+      if (!vAutoRetried) {
+        vAutoRetried = true;
+        setTimeout(() => vStart(), 800);
+        return;
+      }
+      setVErr(String((e && e.message) || e));
+    }
+  }
+  function vTeardown() {
+    vLive = false;
+    cancelAnimationFrame(vRafId); vRafId = 0;
+    vTeardownAudio();
+    vAutoRetried = false;
+    vSmoothed.fill(0);
+    for (const b of vBars) b.style.transform = "scaleY(.16)";
+    document.body.classList.remove("voice", "voicemin", "vconnecting");
+    vConv = null; vConnecting = false;
+  }
+  async function vStop() {
+    try { if (vConv) await vConv.endSession(); } catch {}
+    vTeardown();
+  }
+  // The mic tap IS the iOS unlock: resume a context and play a silent blip
+  // synchronously inside the gesture so the SDK's later resume()/addModule()
+  // succeed (the user-activation root cause).
+  $("micBtn").onclick = () => {
+    if (vLive || vConnecting) {
+      document.body.classList.add("voice");
+      document.body.classList.remove("voicemin");
+      return;
+    }
+    try {
+      vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if (vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {});
+      const b = vMicCtx.createBuffer(1, 1, 22050);
+      const s = vMicCtx.createBufferSource();
+      s.buffer = b; s.connect(vMicCtx.destination); s.start(0);
+    } catch {}
+    hideKb();
+    document.body.classList.add("voice");
+    document.body.classList.remove("voicemin");
+    vStart();
   };
-  $("newBtn").onclick = () => openThread(null, "New chat");
+  $("vEndBtn").onclick = vStop;
+  $("vMinBtn").onclick = () => {
+    if (vLive || vConnecting) {
+      document.body.classList.add("voicemin");
+      document.body.classList.remove("voice");
+    } else vStop();
+  };
+  $("vpill").onclick = () => {
+    document.body.classList.add("voice");
+    document.body.classList.remove("voicemin");
+  };
+
+  // ---- lifecycle ----
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
-      void pollLoop(); // restart with a fresh cursor; the old loop's gen dies
-      if (view === "list") loadList();
-      else if (convId) openThread(convId, convTitle);
+      void pollLoop();
+      void refreshState();
+      void refreshBadge();
+      if (tab === "activity") void loadActivity();
+      if (tab === "alerts") void loadAlerts();
     } else {
-      ++pollGen; // stop polling while backgrounded
+      ++pollGen;
     }
   });
-
-  // Keyboard handling: in a standalone PWA the iOS keyboard doesn't resize
-  // 100dvh — visualViewport is the real signal. Shrink the fixed shell so the
-  // composer rides above the keyboard instead of hiding under it.
   if (window.visualViewport) {
     const vv = window.visualViewport;
     const fit = () => {
@@ -1138,9 +1460,12 @@
     vv.addEventListener("scroll", () => window.scrollTo(0, 0));
   }
 
-  setHeader();
-  loadList();
+  // Boot: fresh chat, live state, badge, poll.
+  setShell();
+  void refreshState();
+  void refreshBadge();
   void pollLoop();
+  setInterval(() => { void refreshState(); }, 45000);
 })();
 </script>
 </body>

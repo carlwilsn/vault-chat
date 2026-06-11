@@ -323,6 +323,25 @@ fn handle(mut req: Request, token: &str) {
                 std::thread::sleep(Duration::from_millis(250));
             }
         }
+        (Method::Get, "/notifications") => {
+            let body = match current_vault() {
+                Some(vault) => resp_text(200, "application/json", notifications_json(&vault)),
+                None => resp_text(503, "application/json", "{\"error\":\"no vault open on the box\"}".into()),
+            };
+            let _ = req.respond(body);
+        }
+        (Method::Post, "/notifications/read") => {
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+            if let (Some(vault), Some(id)) = (current_vault(), v.get("id").and_then(|x| x.as_str())) {
+                let marker = json!({ "type": "read", "id": id, "ts": now_ms() }).to_string();
+                notification_append(&vault, &marker);
+                let _ = req.respond(resp_text(200, "application/json", "{\"ok\":true}".into()));
+            } else {
+                let _ = req.respond(resp_text(400, "application/json", "{\"error\":\"missing id or vault\"}".into()));
+            }
+        }
         (Method::Get, "/schedules") => {
             let body = match relay_request("phone:schedules", json!({}), Duration::from_secs(10)) {
                 Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
@@ -932,6 +951,74 @@ fn query_param(url: &str, key: &str) -> Option<String> {
     None
 }
 
+// ---- notifications: the agent→you channel (Alerts tab) ----
+//
+// Append-only JSONL at <vault>/.vault-chat/notifications.jsonl — each line is
+// either a notification {id, ts, kind, title, body, convId?} or a read marker
+// {type:"read", id, ts}. Append-only + merge=union means multi-machine sync
+// can't conflict on it, same trick as conversations.
+
+fn notifications_path(vault: &str) -> PathBuf {
+    Path::new(vault).join(crate::NOTES_DIR).join("notifications.jsonl")
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Append one line (notification or read marker). Called from the frontend via
+/// the notification_add command and from the read route below.
+pub fn notification_append(vault: &str, line: &str) {
+    let p = notifications_path(vault);
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{}", line.trim());
+    }
+}
+
+/// Read the feed: fold read markers into their notifications, newest first,
+/// capped at 80.
+fn notifications_json(vault: &str) -> String {
+    let raw = std::fs::read_to_string(notifications_path(vault)).unwrap_or_default();
+    let mut items: Vec<Value> = Vec::new();
+    let mut read_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in raw.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if v.get("type").and_then(|x| x.as_str()) == Some("read") {
+            if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                read_ids.insert(id.to_string());
+            }
+        } else if v.get("id").and_then(|x| x.as_str()).is_some() {
+            items.push(v);
+        }
+    }
+    // Dedupe by id (union merges can duplicate lines), newest wins.
+    let mut by_id: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    for it in items {
+        let id = it.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        by_id.insert(id, it);
+    }
+    let mut list: Vec<Value> = by_id
+        .into_iter()
+        .map(|(id, mut v)| {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("read".into(), json!(read_ids.contains(&id)));
+            }
+            v
+        })
+        .collect();
+    list.sort_by_key(|v| std::cmp::Reverse(v.get("ts").and_then(|x| x.as_i64()).unwrap_or(0)));
+    list.truncate(80);
+    let unread = list.iter().filter(|v| v.get("read").and_then(|x| x.as_bool()) != Some(true)).count();
+    json!({ "unread": unread, "notifications": list }).to_string()
+}
+
 /// Conversation list for the phone page: light rows, newest first, no message
 /// bodies beyond a one-line preview. Attachments and hidden preambles never
 /// leave the box.
@@ -957,6 +1044,22 @@ fn conversations_summary_json(vault: &str) -> String {
                     cut
                 })
                 .unwrap_or_default();
+            // The worker's task — its first real user message — doubles as the
+            // "goal" line on the Activity surface.
+            let goal = msgs
+                .iter()
+                .find(|m| {
+                    m.get("role").and_then(|x| x.as_str()) == Some("user")
+                        && m.get("hidden").and_then(|h| h.as_bool()) != Some(true)
+                        && !m.get("content").and_then(|x| x.as_str()).unwrap_or("").trim().is_empty()
+                })
+                .map(|m| {
+                    let t = m.get("content").and_then(|x| x.as_str()).unwrap_or("");
+                    let collapsed = t.split_whitespace().collect::<Vec<_>>().join(" ");
+                    let cut: String = collapsed.chars().take(220).collect();
+                    cut
+                })
+                .unwrap_or_default();
             json!({
                 "id": c.get("id").and_then(|x| x.as_str()).unwrap_or(""),
                 "title": c.get("title").and_then(|x| x.as_str()).unwrap_or("New chat"),
@@ -965,6 +1068,7 @@ fn conversations_summary_json(vault: &str) -> String {
                 "role": c.get("role").and_then(|x| x.as_str()).unwrap_or(""),
                 "msgCount": msgs.len(),
                 "preview": preview,
+                "goal": goal,
             })
         })
         .collect();

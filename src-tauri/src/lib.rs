@@ -5725,6 +5725,13 @@ fn phone_push_unsub(endpoint: String) {
     voice_server::push_subs_remove(&endpoint);
 }
 
+/// Append one notification line to <vault>/.vault-chat/notifications.jsonl —
+/// the agent→you feed behind the phone app's Alerts tab.
+#[tauri::command]
+fn notification_add(vault: String, json: String) {
+    voice_server::notification_append(&vault, &json);
+}
+
 /// Raw Web Push delivery: POST the webview-encrypted body to the push service.
 /// Returns the HTTP status so the caller can prune dead subscriptions.
 #[tauri::command]
@@ -6392,6 +6399,7 @@ pub fn run() {
             phone_set_vapid,
             phone_push_subs,
             phone_push_unsub,
+            notification_add,
             push_post,
             voice_server_stop,
             voice_server_status,

@@ -66,21 +66,20 @@ async function handlePhoneMessage(
     conv = s.conversations.find((c) => c.id === convId);
     if (!conv) return { error: `conversation ${convId} not found` };
   } else if (supervisor) {
-    // ONE supervisor thread per vault: reuse it if it exists; its turns get
-    // the vault's supervisor.md orchestrator prompt (chat-controller passes
-    // supervisorMode for role === "supervisor") — without the Telegram
-    // brevity contract, since this is a rich surface.
-    conv = s.conversations.find((c) => c.role === "supervisor");
-    if (!conv) {
-      const fresh: Conversation = {
-        ...emptyConversation(),
-        source: "phone",
-        role: "supervisor",
-        title: "Supervisor",
-      };
-      useStore.setState({ conversations: [fresh, ...useStore.getState().conversations] });
-      conv = fresh;
-    }
+    // Cockpit chats: every new thread IS the agent — a fresh conversation
+    // carrying role "supervisor" so its turns get the vault's supervisor.md
+    // orchestrator prompt (chat-controller passes supervisorMode for
+    // role === "supervisor") without the Telegram brevity contract. Fresh
+    // each time, per the open-to-a-new-chat design; old threads stay in
+    // the menu's recents.
+    const fresh: Conversation = {
+      ...emptyConversation(),
+      source: "phone",
+      role: "supervisor",
+      title: deriveConversationTitle([{ role: "user", content: trimmed }]),
+    };
+    useStore.setState({ conversations: [fresh, ...useStore.getState().conversations] });
+    conv = fresh;
   } else {
     // Fresh thread. Built inline (NOT newConversation()) so the desktop's
     // focus never jumps — same pattern as the Telegram inbound handler.
@@ -234,15 +233,43 @@ async function onRunEnded(convId: string): Promise<void> {
     );
     return; // the follow-up run's completion will handle notification
   }
-  // 2) Run-done push for phone-sourced threads (Telegram-delivered replies
-  // are mirrored to push inside sendTelegramReplyWithImages instead, so the
-  // [[SILENT]] / quiet-unless-ALERT semantics carry over untouched).
+  // 2) Run-done notifications. Telegram-delivered replies are mirrored
+  // inside sendTelegramReplyWithImages instead, so the [[SILENT]] /
+  // quiet-unless-ALERT semantics carry over untouched.
   const c = useStore.getState().conversations.find((x) => x.id === convId);
-  if (c?.source === "phone") {
-    const last = [...c.messages].reverse().find((m) => m.role === "assistant" && !m.hidden);
-    const body = (last?.content ?? "").trim().replace(/\s+/g, " ").slice(0, 180) || "(done)";
-    void sendPush(c.title || "vault-chat", body).catch(() => {});
+  if (!c) return;
+  const last = [...c.messages].reverse().find((m) => m.role === "assistant" && !m.hidden);
+  const body = (last?.content ?? "").trim().replace(/\s+/g, " ").slice(0, 180) || "(done)";
+  if (c.source === "phone") {
+    void notify("info", c.title || "Reply ready", body, convId);
+  } else if (c.source === "worker") {
+    void notify("info", `Worker finished — ${c.title}`, body, convId);
   }
+}
+
+// ---- the agent→you channel: record + push + live-update, one call ----
+// Every notification is (a) appended to <vault>/.vault-chat/notifications.jsonl
+// (the Alerts tab reads this), (b) delivered as Web Push, and (c) broadcast so
+// an open phone page updates its badge live.
+export async function notify(
+  kind: "info" | "ask",
+  title: string,
+  body: string,
+  convId?: string,
+): Promise<void> {
+  const vault = useStore.getState().vaultPath;
+  if (!vault) return;
+  const rec = {
+    id: Math.random().toString(36).slice(2, 10) + Date.now().toString(36),
+    ts: Date.now(),
+    kind,
+    title: title.slice(0, 90),
+    body: body.slice(0, 400),
+    convId,
+  };
+  await invoke("notification_add", { vault, json: JSON.stringify(rec) }).catch(() => {});
+  broadcast({ type: "notif" });
+  await sendPush(rec.title, rec.body).catch(() => {});
 }
 
 // ---- Web Push: VAPID + RFC 8291 (aes128gcm), all WebCrypto ----
@@ -446,13 +473,13 @@ export async function sendPush(title: string, body: string, url = "/phone"): Pro
   return sent;
 }
 
-/** Mirror a phone-bound Telegram delivery to push. Called (dynamically) from
- * sendTelegramReplyWithImages AFTER the silence gates, so a quiet supervisor
- * stays quiet here too. */
+/** Mirror a phone-bound Telegram delivery into the notification feed + push.
+ * Called (dynamically) from sendTelegramReplyWithImages AFTER the silence
+ * gates, so a quiet supervisor stays quiet here too. */
 export async function mirrorPushNotify(title: string, text: string): Promise<void> {
-  const body = text.trim().replace(/\s+/g, " ").slice(0, 180);
+  const body = text.trim().replace(/\s+/g, " ").slice(0, 300);
   if (!body) return;
-  await sendPush(title, body).catch(() => {});
+  await notify("info", title === "vault-chat" ? "Delivered to your phone" : title, body);
 }
 
 // ---- wiring ----

@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#1a1a1a" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="vault-chat" />
+<title>vault-chat</title>
+<style>
+  /* Exact vault-chat graphite (src/App.css :root, hsl → hex):
+     bg 0 0% 10%, muted 14%, accent 20%, border 22%, fg 92%, dim 60%, primary 85% */
+  :root{
+    --bg:#1a1a1a; --surface:#242424; --raised:#333333; --line:#383838;
+    --text:#ebebeb; --dim:#999999; --primary:#d9d9d9; --primary-fg:#1a1a1a;
+    --destr:#e14746;
+    --ok:#7fbf7f; --warn:#e0a35a;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%}
+  body{
+    background:#101010; color:var(--text);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    display:flex;align-items:center;justify-content:center;min-height:100dvh;
+  }
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;padding:0}
+  input{font:inherit}
+  svg{display:block}
+
+  .app{position:relative;width:100%;max-width:402px;height:100dvh;background:var(--bg);display:flex;flex-direction:column;overflow:hidden}
+  @media(min-width:480px){ .app{border-radius:30px;border:1px solid #2e2e2e;height:min(820px,96dvh)} }
+
+  /* ---------- header ---------- */
+  .hdr{display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top) + 14px) 18px 10px;position:relative;z-index:21}
+  .state{flex:1;display:flex;align-items:center;gap:8px;font-size:14.5px;min-width:0;cursor:pointer}
+  .state .sub{color:var(--dim)}
+  .live{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse 1.7s ease-in-out infinite;flex:none}
+  .live.off{background:var(--destr);animation:none}
+  .icbtn{color:var(--dim);padding:8px;border-radius:10px;min-width:40px;min-height:40px;display:flex;align-items:center;justify-content:center}
+  .icbtn:active{background:var(--surface)}
+  .icbtn svg{width:21px;height:21px}
+
+  /* offline banner */
+  .offline{display:none;align-items:center;gap:9px;margin:0 14px 8px;background:#2a1d1c;border:1px solid #53312f;border-radius:11px;padding:9px 13px;font-size:13px;color:#e8b3b0}
+  body.offline .offline{display:flex}
+  .offline b{font-weight:600;color:#f0c9c7}
+  .offline .x{margin-left:auto;color:#b98884;font-size:12px}
+
+  /* ---------- menu ---------- */
+  .menu{position:absolute;top:calc(env(safe-area-inset-top) + 56px);right:12px;background:#262626;border:1px solid var(--line);border-radius:14px;padding:6px;z-index:40;min-width:218px;display:none;box-shadow:0 14px 40px rgba(0,0,0,.5)}
+  .menu.on{display:block}
+  .mi{display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:10px;font-size:14px;width:100%;text-align:left}
+  .mi:active{background:var(--raised)}
+  .mi .k{color:#7c7c7c;font-size:12px;margin-left:auto;flex:none}
+  .mi svg{width:17px;height:17px;color:var(--dim);flex:none}
+  .mtit{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#7c7c7c;padding:10px 12px 4px}
+  .mfoot{font-size:11px;color:#6d6d6d;padding:9px 12px 6px;border-top:1px solid #2e2e2e;margin-top:5px}
+
+  /* ---------- surfaces ---------- */
+  .body{flex:1;min-height:0;position:relative}
+  .surface{position:absolute;inset:0;display:flex;flex-direction:column;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+  .surface[hidden]{display:none}
+
+  /* ---------- chat ---------- */
+  .msgs{flex:1;padding:10px 14px 8px;display:flex;flex-direction:column;gap:10px}
+  .b{max-width:85%;padding:10px 13px;border-radius:16px;font-size:14.5px;line-height:1.52;white-space:pre-wrap;overflow-wrap:break-word}
+  .b.ag{background:var(--surface);align-self:flex-start;border-bottom-left-radius:5px}
+  .b.me{background:var(--raised);align-self:flex-end;border-bottom-right-radius:5px}
+  .typing{align-self:flex-start;background:var(--surface);border-radius:16px;border-bottom-left-radius:5px;padding:13px 15px;display:none;gap:5px}
+  .typing.on{display:flex}
+  .typing span{width:7px;height:7px;border-radius:50%;background:#777;animation:pulse 1s ease-in-out infinite}
+  .typing span:nth-child(2){animation-delay:.18s}.typing span:nth-child(3){animation-delay:.36s}
+  .chip{align-self:flex-start;display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:#cfcfcf;background:#212824;border:1px solid #35463c;border-radius:10px;padding:7px 12px;min-height:36px}
+  .chip .d{width:7px;height:7px;border-radius:50%;background:var(--ok)}
+  .hint{margin:auto;text-align:center;color:var(--dim);font-size:14px;line-height:1.65;padding:0 40px;display:none}
+  .hint b{color:var(--text);font-weight:600;display:block;font-size:15.5px;margin-bottom:6px}
+  body.fresh .hint{display:block}
+  body.fresh .msgs .b, body.fresh .msgs .chip, body.fresh .proposal{display:none}
+
+  /* proposal — one card type, agent-composed (fields vary by mission) */
+  .proposal{align-self:flex-start;max-width:92%;background:var(--surface);border:1px solid #3d3d3d;border-radius:16px;border-bottom-left-radius:5px;padding:13px 14px;font-size:13.5px}
+  .ptitle{font-weight:600;font-size:14.5px;margin-bottom:8px}
+  .prow{display:flex;gap:10px;margin:6px 0;line-height:1.45;color:#c4c4c4}
+  .pk{flex:none;width:84px;color:#8d8d8d;font-size:11px;text-transform:uppercase;letter-spacing:.3px;padding-top:2px}
+  .pacts{display:flex;gap:8px;margin-top:13px}
+  .act{flex:1;font-size:13.5px;font-weight:600;text-align:center;border-radius:10px;padding:11px;border:1px solid var(--line);color:var(--text);min-height:42px}
+  .act:active{background:var(--raised)}
+  .act.p{background:var(--primary);color:var(--primary-fg);border-color:var(--primary)}
+
+  /* ---------- composer ---------- */
+  .composer{display:flex;align-items:center;gap:9px;padding:8px 13px calc(env(safe-area-inset-bottom) + 10px)}
+  .mic{width:42px;height:42px;border-radius:50%;background:var(--surface);border:1px solid var(--line);color:var(--text);flex:none;display:flex;align-items:center;justify-content:center}
+  .mic:active{background:var(--raised)}
+  .mic svg{width:20px;height:20px}
+  .field{flex:1;position:relative;display:flex;align-items:center}
+  .inp{flex:1;background:var(--surface);border:1px solid var(--line);border-radius:22px;padding:11.5px 48px 11.5px 16px;color:var(--text);font-size:15px;outline:none;min-width:0}
+  .inp::placeholder{color:#8a8a8a}
+  .inp:disabled{color:#777}
+  .send{position:absolute;right:5px;width:34px;height:34px;border-radius:50%;background:var(--primary);color:var(--primary-fg);display:flex;align-items:center;justify-content:center}
+  .send:disabled{opacity:.35}
+  .send svg{width:17px;height:17px}
+
+  /* ---------- cards (activity + alerts) ---------- */
+  .sec{font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;color:#8a8a8a;padding:16px 18px 8px;font-weight:600}
+  .card{margin:0 14px 10px;background:var(--surface);border-radius:15px;padding:13px 14px;text-align:left;width:calc(100% - 28px)}
+  .card:active{background:#282828}
+  .card.dec{border:1px solid #5a4a26}
+  .card.unread{box-shadow:inset 2.5px 0 0 #6f6f6f}
+  .row{display:flex;gap:12px}
+  .ico{width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:none;font-size:14px;font-weight:700;background:var(--raised);color:var(--dim)}
+  .ico.g{color:var(--ok)} .ico.a{color:var(--warn)} .ico.r{color:var(--destr)}
+  .cb{flex:1;min-width:0}
+  .ct{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+  .ct b{font-weight:600;font-size:14.5px}
+  .ct .t{font-size:11px;color:#8a8a8a;flex:none}
+  .cs{margin:4px 0 0;font-size:13px;color:#ababab;line-height:1.5}
+  .tag{display:inline-block;margin-top:8px;font-size:10.5px;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:1.5px 7px}
+
+  .reply{position:relative;display:flex;align-items:center;margin-top:11px}
+  .rinp{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:18px;padding:9.5px 42px 9.5px 14px;color:var(--text);font-size:13.5px;outline:none;min-width:0}
+  .rinp::placeholder{color:#838383}
+  .rsend{position:absolute;right:5px;width:29px;height:29px;border-radius:50%;background:var(--primary);color:var(--primary-fg);display:flex;align-items:center;justify-content:center}
+  .rsend svg{width:15px;height:15px}
+
+  /* ---------- missions & workers ---------- */
+  .mtitle{display:flex;justify-content:space-between;gap:10px;align-items:center}
+  .mtitle b{font-weight:600;font-size:15px;line-height:1.35}
+  .pill{font-size:10.5px;font-weight:600;border-radius:20px;padding:3.5px 10px;flex:none}
+  .pill.run{background:#22301f;color:var(--ok)} .pill.blk{background:#332a16;color:var(--warn)} .pill.done{background:var(--raised);color:var(--dim)}
+  .ns{font-size:12.5px;color:var(--dim);line-height:1.5;margin:9px 0 0;padding-left:11px;border-left:2px solid var(--line)}
+  .ns i{color:#cfcfcf;font-style:normal}
+  .wk{margin:0 14px 9px;background:#202020;border-radius:14px;overflow:hidden;width:calc(100% - 28px);text-align:left}
+  .wh{display:flex;align-items:center;gap:11px;padding:12.5px 14px;width:100%;text-align:left;min-height:46px}
+  .wh .s{width:19px;height:19px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:700;border-radius:50%;font-size:11.5px;background:var(--raised)}
+  .wh .s.g{color:var(--ok)} .wh .s.a{color:var(--warn)} .wh .s.x{color:var(--destr)}
+  .wh .s.run{color:var(--ok);animation:pulse 1.3s infinite}
+  .wh .nm{flex:1;font-size:14px;font-weight:600;min-width:0}
+  .wh .mt{font-size:11.5px;color:#909090;flex:none}
+  .wd{display:none;padding:0 14px 13px 44px;font-size:12.5px;color:#ababab;line-height:1.55}
+  .wk.open .wd{display:block}
+  .lbl{color:#8a8a8a;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;margin-top:9px}
+  .wbtns{display:flex;gap:9px;margin-top:12px}
+  .wbtn{font-size:12.5px;border:1px solid var(--line);border-radius:9px;padding:8px 14px;color:#dcdcdc;min-height:36px}
+  .wbtn:active{background:var(--raised)}
+  .wbtn.danger{color:var(--destr);border-color:#5a302e}
+  .wbtn.confirm{background:var(--destr);color:#fff;border-color:var(--destr)}
+  .tglrow{display:flex;align-items:center}
+  .tgl{width:44px;height:26px;border-radius:14px;background:var(--raised);position:relative;flex:none;transition:background .15s}
+  .tgl::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#8f8f8f;transition:left .15s,background .15s}
+  .tgl.on{background:#2f4a2c}
+  .tgl.on::after{left:21px;background:var(--ok)}
+
+  /* ---------- tabs ---------- */
+  .tabs{display:flex;background:var(--bg);padding:6px 0 calc(env(safe-area-inset-bottom) + 6px)}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;color:#7e7e7e;position:relative;padding:6px 0;min-height:48px}
+  .tab svg{width:23px;height:23px}
+  .tab.on{color:var(--text)}
+  .badge{position:absolute;top:0;left:50%;margin-left:8px;background:var(--primary);color:var(--primary-fg);font-size:9.5px;font-weight:700;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 4px}
+  .badge.zero{display:none}
+
+  /* ---------- sheet ---------- */
+  .scrim{position:absolute;inset:0;background:rgba(0,0,0,.55);z-index:50;display:none}
+  .scrim.on{display:block}
+  .sheet{position:absolute;left:0;right:0;bottom:0;z-index:51;background:#222222;border-radius:22px 22px 0 0;padding:10px 18px calc(env(safe-area-inset-bottom) + 18px);max-height:78%;overflow-y:auto;transform:translateY(105%);transition:transform .22s ease}
+  .sheet.on{transform:none}
+  .grab{width:38px;height:4.5px;border-radius:3px;background:#454545;margin:4px auto 14px}
+  .sh-t{font-weight:600;font-size:16.5px;margin:0 0 2px}
+  .sh-s{font-size:12.5px;color:var(--dim);margin:0 0 14px}
+  .sh-row{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid #2e2e2e;font-size:13.5px}
+  .sh-row .l{color:var(--dim)} .sh-row .v{text-align:right;color:var(--text)}
+  .sh-body{font-size:13.5px;line-height:1.62;color:#c9c9c9;white-space:pre-wrap}
+  .timeline{margin:4px 0 0;padding:0;list-style:none}
+  .timeline li{position:relative;padding:0 0 14px 22px;font-size:13px;color:#bdbdbd;line-height:1.5}
+  .timeline li::before{content:"";position:absolute;left:6px;top:6px;width:7px;height:7px;border-radius:50%;background:#666}
+  .timeline li::after{content:"";position:absolute;left:9px;top:16px;bottom:-2px;width:1.5px;background:#333}
+  .timeline li:last-child::after{display:none}
+  .timeline li.g::before{background:var(--ok)} .timeline li.a::before{background:var(--warn)}
+  .timeline .tt{color:#8a8a8a;font-size:11px;display:block}
+  .sh-btn{display:flex;align-items:center;justify-content:center;width:100%;border:1px solid var(--line);border-radius:11px;padding:12px;font-weight:600;font-size:14px;margin-top:14px;min-height:46px}
+  .sh-btn:active{background:var(--raised)}
+  .logbox{background:#161616;border-radius:11px;padding:12px;font:11.5px/1.7 ui-monospace,Menlo,Consolas,monospace;color:#b9b9b9;overflow-x:auto;white-space:pre}
+
+  /* ---------- voice ---------- */
+  .voice{position:absolute;inset:0;background:var(--bg);display:none;flex-direction:column;align-items:center;z-index:60}
+  .voice.on{display:flex}
+  .vtop{width:100%;display:flex;justify-content:flex-end;padding:calc(env(safe-area-inset-top) + 14px) 14px 0}
+  .vmid{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:34px;width:100%;padding:0 30px}
+  .bars{display:flex;align-items:center;gap:6px;height:96px}
+  .bar{width:6px;height:96px;background:var(--primary);border-radius:4px;transform:scaleY(.16);transform-origin:center;transition:transform .07s linear}
+  .vstat{font-size:20px;font-weight:600;text-align:center}
+  .vcap{font-size:14px;color:var(--dim);max-width:280px;text-align:center;line-height:1.55;margin-top:9px;min-height:44px}
+  .vend{margin-bottom:calc(env(safe-area-inset-bottom) + 38px)}
+  .vx{width:66px;height:66px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--text);display:flex;align-items:center;justify-content:center}
+  .vx svg{width:24px;height:24px}
+
+  @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+
+  <div class="hdr">
+    <button class="state" id="statebtn">
+      <span class="live" id="livedot"></span>
+      <span id="statetext">awake</span><span class="sub" id="statesub">· 2 missions running</span>
+    </button>
+    <button class="icbtn" id="menubtn" aria-label="chats and settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+  </div>
+
+  <button class="offline" id="offlinebar">
+    <b>box unreachable</b> retrying… messages will queue
+    <span class="x">dismiss preview</span>
+  </button>
+
+  <div class="menu" id="menu">
+    <button class="mi" id="newchat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>New chat</button>
+    <div class="mtit">Recent</div>
+    <button class="mi" data-chat="bitnet">3-seed BitNet repro<span class="k">2m</span></button>
+    <button class="mi" data-chat="deck">Lyric deck outline<span class="k">1h</span></button>
+    <button class="mi" data-chat="read">densing law · readings<span class="k">yest</span></button>
+    <div class="mfoot">vault: summer · box: home · v0.5.0</div>
+  </div>
+
+  <div class="body">
+
+    <!-- ================= CHAT ================= -->
+    <section class="surface" data-s="chat">
+      <div class="msgs" id="msgs">
+        <div class="hint"><b>What needs doing?</b>quick questions get answers. bigger asks get scoped into a mission before anything runs.</div>
+        <div class="b ag">Morning. Quiet overnight — the shakedown finished clean, results are committed. Nothing's running.</div>
+        <div class="b me">ok let's do the real 3-seed comparison, and a writeup i can actually learn from</div>
+        <div class="b ag">Before I build the team — here's the scope. Approve and I'll take it from here.</div>
+        <div class="proposal" id="prop">
+          <div class="ptitle">Reproduce 3-seed BitNet b1.58</div>
+          <div class="prow"><span class="pk">Goal</span><span>train + eval seeds 42 / 43 / 44 on the 1700-step config; results committed to the vault; writeup drafted for your review.</span></div>
+          <div class="prow"><span class="pk">North-star</span><span>curves matching the paper within tolerance across all 3 seeds.</span></div>
+          <div class="prow"><span class="pk">Guardrails</span><span>I check with you before passing ~$20 or changing the experiment design.</span></div>
+          <div class="pacts"><button class="act" id="padjust">Adjust</button><button class="act p" id="papprove">Approve &amp; run</button></div>
+        </div>
+        <div class="typing" id="typing"><span></span><span></span><span></span></div>
+      </div>
+      <div class="composer">
+        <button class="mic" id="mic" aria-label="voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 19v3"/></svg></button>
+        <div class="field">
+          <input class="inp" id="inp" placeholder="Message…" autocomplete="off" />
+          <button class="send" id="sendbtn" aria-label="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= ACTIVITY ================= -->
+    <section class="surface" data-s="activity" hidden>
+      <div class="sec">Active</div>
+
+      <button class="card" data-sheet="m-bitnet">
+        <div class="mtitle"><b>Reproduce 3-seed BitNet b1.58</b><span class="pill run" id="m1pill">running · 2 of 3</span></div>
+        <div class="ns"><i>North-star:</i> curves matching the paper within tolerance across 3 seeds.</div>
+      </button>
+
+      <div class="wk">
+        <button class="wh" data-wk><span class="s g">✓</span><span class="nm">seed-1</span><span class="mt">done · committed</span></button>
+        <div class="wd">
+          <div class="lbl">Goal</div>seed 42 → train, eval, commit eval.loss to the vault.
+          <div class="lbl">Outcome</div>landed in 1h 21m · final eval 1.5576 · $1.20
+          <div class="wbtns"><button class="wbtn" data-sheet="log-s1">View log</button></div>
+        </div>
+      </div>
+
+      <div class="wk open">
+        <button class="wh" data-wk><span class="s run">●</span><span class="nm">seed-2</span><span class="mt" id="s2meta">running · 2m ago</span></button>
+        <div class="wd">
+          <div class="lbl">Goal</div>seed 43 → same config, same eval, commit before terminate.
+          <div class="lbl">Status</div><span id="s2status">reseeded once after an OOM · step 1.2k of 1.7k · $1.10 so far</span>
+          <div class="wbtns"><button class="wbtn" data-sheet="log-s2">View log</button><button class="wbtn danger" id="kill2">Kill</button></div>
+        </div>
+      </div>
+
+      <div class="wk">
+        <button class="wh" data-wk><span class="s a">!</span><span class="nm">seed-3</span><span class="mt">blocked · needs you</span></button>
+        <div class="wd">
+          <div class="lbl">Goal</div>seed 44 → confirm the gap holds.
+          <div class="lbl">Blocked</div>its curve diverged — I asked you how to play it (see Alerts).
+          <div class="wbtns"><button class="wbtn" id="goalert">Answer in Alerts</button></div>
+        </div>
+      </div>
+
+      <button class="card" data-sheet="m-deck" style="margin-top:6px">
+        <div class="mtitle"><b>Prep Thursday's Lyric training deck</b><span class="pill run">running · 1 of 2</span></div>
+        <div class="ns"><i>North-star:</i> a deck a teammate could deliver cold — clear, example-driven.</div>
+      </button>
+
+      <div class="sec">Recurring</div>
+      <button class="card" id="reccard">
+        <div class="mtitle"><b>Morning briefing</b><span class="tglrow"><span class="tgl on" id="rectgl"></span></span></div>
+        <div class="ns" id="recns"><i>Every day · 7:00 —</i> where you stand, what matters today, the one thing at risk of dropping. lands in Alerts.</div>
+      </button>
+
+      <div class="sec">Done · today</div>
+      <div class="wk">
+        <button class="wh" data-wk><span class="s g">✓</span><span class="nm">BitNet 100-step shakedown</span><span class="mt">9:02 · committed</span></button>
+        <div class="wd">
+          <div class="lbl">Outcome</div>pipeline confirmed end-to-end before spending on the full run. analysis written.
+          <div class="lbl">North-star</div>met — clean signal, nothing to chase.
+          <div class="wbtns"><button class="wbtn" data-sheet="rep-shake">Open report</button></div>
+        </div>
+      </div>
+      <div style="height:18px"></div>
+    </section>
+
+    <!-- ================= ALERTS ================= -->
+    <section class="surface" data-s="alerts" hidden>
+      <div class="sec">Needs you</div>
+
+      <div class="card dec" id="dec">
+        <div class="row">
+          <div class="ico a">?</div>
+          <div class="cb">
+            <div class="ct"><b>Seed 3 diverged</b><span class="t">2m</span></div>
+            <p class="cs">step 800, +0.05 nat above seed 1. could be a real effect, or I match the LR and rerun. how do you want it played?</p>
+            <div class="reply">
+              <input class="rinp" id="rinp" placeholder="tell me what to do…" autocomplete="off" />
+              <button class="rsend" id="rsend" aria-label="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">For you</div>
+
+      <button class="card unread" data-sheet="al-coach" data-unread>
+        <div class="row">
+          <div class="ico">7a</div>
+          <div class="cb">
+            <div class="ct"><b>Morning briefing</b><span class="t">7:00</span></div>
+            <p class="cs">a day ahead on bitnet. lyric is today's priority; the post rides tonight's block. one ask inside.</p>
+            <span class="tag">recurring</span>
+          </div>
+        </div>
+      </button>
+
+      <button class="card" data-sheet="rep-shake">
+        <div class="row">
+          <div class="ico g">✓</div>
+          <div class="cb">
+            <div class="ct"><b>Shakedown complete</b><span class="t">9:02</span></div>
+            <p class="cs">stock-vs-BitNet at 100 steps, analysis written. pipeline confirmed before the full spend.</p>
+            <span class="tag">mission</span>
+          </div>
+        </div>
+      </button>
+
+      <button class="card" data-sheet="al-idle">
+        <div class="row">
+          <div class="ico r">$</div>
+          <div class="cb">
+            <div class="ct"><b>Stopped an idle box</b><span class="t">8:14</span></div>
+            <p class="cs">zero utilization for 12 minutes — killed it. ~$0.26 burned, nothing billing now.</p>
+            <span class="tag">automatic</span>
+          </div>
+        </div>
+      </button>
+
+      <button class="card" data-sheet="al-post">
+        <div class="row">
+          <div class="ico">✎</div>
+          <div class="cb">
+            <div class="ct"><b>Drafted Sunday's post</b><span class="t">yest</span></div>
+            <p class="cs">pulled from the week's notes — waiting on your edits.</p>
+            <span class="tag">mission</span>
+          </div>
+        </div>
+      </button>
+      <div style="height:18px"></div>
+    </section>
+
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" data-tab="chat" aria-label="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Chat</button>
+    <button class="tab" data-tab="activity" aria-label="activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>Activity</button>
+    <button class="tab" data-tab="alerts" aria-label="alerts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg>Alerts<span class="badge" id="badge">2</span></button>
+  </div>
+
+  <!-- ================= SHEET ================= -->
+  <div class="scrim" id="scrim"></div>
+  <div class="sheet" id="sheet"><div class="grab"></div><div id="sheetbody"></div></div>
+
+  <!-- ================= VOICE ================= -->
+  <div class="voice" id="voice">
+    <div class="vtop"><button class="icbtn" id="vmin" aria-label="minimize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button></div>
+    <div class="vmid">
+      <div class="bars" id="vbars" aria-hidden="true"></div>
+      <div>
+        <div class="vstat" id="vstat">Listening…</div>
+        <div class="vcap" id="vcap"></div>
+      </div>
+    </div>
+    <div class="vend"><button class="vx" id="vend" aria-label="end voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+"use strict";
+var $=function(s){return document.querySelector(s)};
+var all=function(s){return Array.prototype.slice.call(document.querySelectorAll(s))};
+
+/* ---------- tabs & nav ---------- */
+function show(name){
+  all('[data-s]').forEach(function(el){el.hidden = el.dataset.s!==name});
+  all('.tab').forEach(function(t){t.classList.toggle('on',t.dataset.tab===name)});
+}
+all('.tab').forEach(function(t){t.onclick=function(){show(t.dataset.tab)}});
+
+/* ---------- header: status sheet + menu ---------- */
+var menu=$('#menu');
+$('#menubtn').onclick=function(e){e.stopPropagation();menu.classList.toggle('on')};
+document.addEventListener('click',function(){menu.classList.remove('on')});
+menu.addEventListener('click',function(e){e.stopPropagation()});
+
+$('#newchat').onclick=function(){
+  menu.classList.remove('on');
+  document.body.classList.add('fresh');
+  show('chat'); $('#inp').focus();
+};
+all('[data-chat]').forEach(function(m){
+  m.onclick=function(){ menu.classList.remove('on'); document.body.classList.remove('fresh'); show('chat'); };
+});
+
+$('#statebtn').onclick=function(){ openSheet('status'); };
+
+/* ---------- offline preview ---------- */
+function setOffline(on){
+  document.body.classList.toggle('offline',on);
+  $('#livedot').classList.toggle('off',on);
+  $('#statetext').textContent = on?'offline':'awake';
+  $('#statesub').textContent = on?'· reconnecting':'· 2 missions running';
+  $('#inp').disabled=on; $('#sendbtn').disabled=on;
+  $('#inp').placeholder = on?'queued until the box is back…':'Message…';
+  closeSheet();
+}
+$('#offlinebar').onclick=function(){setOffline(false)};
+
+/* ---------- chat: live composer ---------- */
+var msgs=$('#msgs'), typing=$('#typing');
+function bubble(cls,text){
+  var d=document.createElement('div'); d.className='b '+cls; d.textContent=text;
+  msgs.insertBefore(d,typing); msgs.scrollTop=msgs.scrollHeight; return d;
+}
+function agentReply(text,delay){
+  typing.classList.add('on'); msgs.scrollTop=msgs.scrollHeight;
+  setTimeout(function(){ typing.classList.remove('on'); bubble('ag',text); }, delay||900);
+}
+function sendChat(){
+  var v=$('#inp').value.trim(); if(!v)return;
+  document.body.classList.remove('fresh');
+  $('#inp').value='';
+  bubble('me',v);
+  agentReply("On it. If this turns into real work I'll come back with a scope first — otherwise consider it handled.");
+}
+$('#sendbtn').onclick=sendChat;
+$('#inp').addEventListener('keydown',function(e){if(e.key==='Enter')sendChat()});
+
+/* ---------- proposal ---------- */
+$('#papprove').onclick=function(){
+  var p=$('#prop');
+  p.className='b ag'; p.innerHTML='Approved — team’s up. You’ll hear from me when it lands or needs a call.';
+  var chip=document.createElement('div'); chip.className='chip';
+  chip.innerHTML='<span class="d"></span> Mission active · track in Activity';
+  chip.onclick=function(){show('activity')};
+  msgs.insertBefore(chip,typing);
+};
+$('#padjust').onclick=function(){ agentReply('Sure — what changes? seeds, budget, or skip the writeup?',500); };
+
+/* ---------- activity ---------- */
+all('[data-wk]').forEach(function(h){
+  h.onclick=function(){h.parentElement.classList.toggle('open')};
+});
+var killArmed=false;
+$('#kill2').onclick=function(e){
+  e.stopPropagation();
+  if(!killArmed){ killArmed=true; this.textContent='Confirm kill'; this.classList.add('confirm'); var b=this;
+    setTimeout(function(){ if(killArmed){killArmed=false;b.textContent='Kill';b.classList.remove('confirm');} },2600);
+    return; }
+  var wk=this.closest('.wk');
+  wk.querySelector('.s').className='s x'; wk.querySelector('.s').textContent='×';
+  $('#s2meta').textContent='killed by you · now';
+  $('#s2status').textContent='stopped at step 1.2k — partial eval committed so nothing is lost. say the word to relaunch.';
+  this.style.display='none';
+  $('#m1pill').textContent='running · 1 of 3'; $('#m1pill').className='pill blk';
+};
+$('#goalert').onclick=function(e){e.stopPropagation();show('alerts')};
+
+var recOn=true;
+$('#rectgl').onclick=function(e){
+  e.stopPropagation(); recOn=!recOn;
+  this.classList.toggle('on',recOn);
+  $('#recns').innerHTML = recOn
+    ? '<i>Every day · 7:00 —</i> where you stand, what matters today, the one thing at risk of dropping. lands in Alerts.'
+    : '<i>Paused —</i> no briefings until you turn it back on.';
+};
+$('#reccard').onclick=function(e){ if(e.target.closest('.tgl'))return; openSheet('m-rec'); };
+
+/* ---------- alerts ---------- */
+var badgeN=2;
+function setBadge(n){ badgeN=Math.max(0,n); var b=$('#badge'); b.textContent=badgeN; b.classList.toggle('zero',badgeN===0); }
+function resolveDec(){
+  var v=$('#rinp').value.trim();
+  var card=$('#dec'); card.classList.remove('dec');
+  card.innerHTML='<div class="row"><div class="ico g">✓</div><div class="cb"><div class="ct"><b>Seed 3 — on it</b><span class="t">now</span></div><p class="cs">'+(v?'“'+v.replace(/</g,'&lt;')+'” — doing exactly that.':'on it.')+'</p><span class="tag">answered</span></div></div>';
+  setBadge(badgeN-1);
+}
+$('#rsend').onclick=resolveDec;
+$('#rinp').addEventListener('keydown',function(e){if(e.key==='Enter')resolveDec()});
+
+/* ---------- sheets: every tap answers ---------- */
+var SHEETS={
+ 'status':
+  '<p class="sh-t">This box</p><p class="sh-s">what the app is connected to</p>'+
+  '<div class="sh-row"><span class="l">box</span><span class="v">home · linux</span></div>'+
+  '<div class="sh-row"><span class="l">vault</span><span class="v">summer</span></div>'+
+  '<div class="sh-row"><span class="l">model</span><span class="v">claude-opus-4-8</span></div>'+
+  '<div class="sh-row"><span class="l">connection</span><span class="v">tailscale · live</span></div>'+
+  '<div class="sh-row"><span class="l">missions</span><span class="v">2 running · 1 blocked worker</span></div>'+
+  '<button class="sh-btn" id="offpreview">Preview the offline state</button>',
+ 'm-bitnet':
+  '<p class="sh-t">Reproduce 3-seed BitNet b1.58</p><p class="sh-s">approved 9:41 · ~$20 cap · design changes come back to you</p>'+
+  '<ul class="timeline">'+
+  '<li class="g">scoped + approved<span class="tt">9:41</span></li>'+
+  '<li class="g">team up — 3 workers, one per seed<span class="tt">9:42</span></li>'+
+  '<li class="g">seed-1 landed · eval committed<span class="tt">11:03</span></li>'+
+  '<li>seed-2 hit an OOM — reseeded it myself, no signal lost<span class="tt">11:18</span></li>'+
+  '<li class="a">seed-3 diverged — asked you how to play it<span class="tt">11:32</span></li>'+
+  '</ul><button class="sh-btn" data-go="alerts">Answer the open question</button>',
+ 'm-deck':
+  '<p class="sh-t">Prep Thursday’s Lyric training deck</p><p class="sh-s">approved yesterday · no spend</p>'+
+  '<ul class="timeline">'+
+  '<li class="g">outline drafted from your module notes<span class="tt">yest 21:10</span></li>'+
+  '<li>worker building example notebooks now<span class="tt">live</span></li>'+
+  '<li>next: speaker notes pass, then it’s yours to review<span class="tt">eta tonight</span></li>'+
+  '</ul>',
+ 'm-rec':
+  '<p class="sh-t">Morning briefing</p><p class="sh-s">recurring · every day 7:00 · created by asking</p>'+
+  '<div class="sh-body">Each morning I read the ledger, the calendar, and what actually moved yesterday — then send one card: where you stand, what matters most today, and the one thing you’re at risk of dropping.\n\nChange it by telling me — “make the briefing 6am” or “add gym streaks” is enough.</div>',
+ 'log-s1':
+  '<p class="sh-t">seed-1 · log tail</p><p class="sh-s">full log lives in the vault</p>'+
+  '<div class="logbox">11:01:12  step 1700/1700  loss 1.5438\n11:01:40  eval  loss 1.5576  ppl 4.75\n11:02:03  eval.loss → results/seed42_curves.jsonl\n11:02:41  committed 1559a53\n11:03:02  box released — nothing billing</div>',
+ 'log-s2':
+  '<p class="sh-t">seed-2 · log tail</p><p class="sh-s">live · refreshes as it runs</p>'+
+  '<div class="logbox">11:18:22  CUDA OOM at step 410\n11:18:25  retry w/ batch 12 — transient, not design\n11:19:01  resumed from step 400 checkpoint\n12:04:13  step 1200/1700  loss 1.61\n12:04:13  on pace · ~31 min left · $1.10</div>',
+ 'rep-shake':
+  '<p class="sh-t">Shakedown report</p><p class="sh-s">docs/bitnet-160m-mvp · committed 9:02</p>'+
+  '<div class="sh-body">100 steps, stock vs BitNet, single box. Purpose was never the numbers — it was proving the pipeline end-to-end before real spend: data flows, both configs train, eval writes JSONL, commit lands.\n\nAll four held. The full 3-seed run reuses this exact harness.</div>'+
+  '<button class="sh-btn">Open in vault</button>',
+ 'al-coach':
+  '<p class="sh-t">Morning briefing</p><p class="sh-s">today 7:00</p>'+
+  '<div class="sh-body">You’re a day ahead on BitNet — the shakedown landing early bought you tonight.\n\nToday: Lyric owns 9–5. The post draft is ready for your edits; it rides tonight’s block, not the afternoon.\n\nOne ask: the ledger hasn’t moved in 5 days. Two lines tonight keeps your evidence trail honest.</div>'+
+  '<button class="sh-btn" data-go="chat">Discuss</button>',
+ 'al-idle':
+  '<p class="sh-t">Stopped an idle box</p><p class="sh-s">automatic · 8:14</p>'+
+  '<div class="sh-body">A box sat at zero GPU utilization for 12 minutes after its job exited — burn with no work. I killed it.\n\nCost of the idle window: ~$0.26. Artifacts were already committed; nothing was lost. Nothing is billing now.</div>',
+ 'al-post':
+  '<p class="sh-t">Sunday’s post — draft</p><p class="sh-s">Blog/drafts · from this week’s notes</p>'+
+  '<div class="sh-body">“What a 100-step shakedown buys you” — the case for cheap end-to-end rehearsal before real spend, with this week’s OOM-reseed as the worked example.\n\nIt’s your voice, not mine — edit before it ships anywhere.</div>'+
+  '<button class="sh-btn">Open in vault</button>'
+};
+var sheet=$('#sheet'), scrim=$('#scrim'), sheetbody=$('#sheetbody');
+function openSheet(id){
+  sheetbody.innerHTML=SHEETS[id]||'';
+  scrim.classList.add('on'); sheet.classList.add('on');
+  var off=$('#offpreview'); if(off){off.onclick=function(){setOffline(true)};}
+  all('[data-go]').forEach(function(b){ b.onclick=function(){closeSheet();show(b.dataset.go)}; });
+  all('.sh-btn').forEach(function(b){ if(!b.dataset.go && !b.id){ b.onclick=function(){ closeSheet(); }; } });
+}
+function closeSheet(){scrim.classList.remove('on');sheet.classList.remove('on')}
+scrim.onclick=closeSheet;
+all('[data-sheet]').forEach(function(el){
+  el.addEventListener('click',function(e){
+    if(e.target.closest('[data-wk]')||e.target.closest('.wbtn')&&!el.classList.contains('wbtn'))return;
+    e.stopPropagation();
+    if(el.dataset.unread){ el.classList.remove('unread'); delete el.dataset.unread; setBadge(badgeN-1); }
+    openSheet(el.dataset.sheet);
+  });
+});
+
+/* ---------- voice ---------- */
+var vbars=[], voiceOn=false, vphase=0, vt=0;
+(function(){ var d=[0,1,2,3,4,5,6,7,8,9,10,11]; d.forEach(function(){ var s=document.createElement('span'); s.className='bar'; $('#vbars').appendChild(s); vbars.push(s); }); })();
+var VLINES=[
+ ['Listening…','“where’s seed two at?”'],
+ ['','step 1.2k of 1.7k — it OOM’d once, I reseeded it, and it’s back on pace. About half an hour out.'],
+ ['Listening…','“and the divergence — is it real?”'],
+ ['','Too early to call. That’s exactly the question I escalated — answer it whenever, the other seeds aren’t blocked on it.']
+];
+function vtick(){
+  if(!voiceOn)return;
+  var speaking = vphase%2===1;
+  vbars.forEach(function(b,i){
+    var amp = speaking ? .25+.7*Math.abs(Math.sin(Date.now()/130+i)) : .12+.1*Math.abs(Math.sin(Date.now()/300+i*2));
+    b.style.transform='scaleY('+amp.toFixed(2)+')';
+  });
+  requestAnimationFrame(vtick);
+}
+function vline(){
+  var L=VLINES[vphase%VLINES.length];
+  $('#vstat').textContent = L[0]||'';
+  $('#vcap').textContent = L[1];
+  vphase++;
+  vt=setTimeout(vline, vphase%2===0?3600:4600);
+}
+$('#mic').onclick=function(){ voiceOn=true; vphase=0; $('#voice').classList.add('on'); vline(); vtick(); };
+function endVoice(){ voiceOn=false; clearTimeout(vt); $('#voice').classList.remove('on'); }
+$('#vend').onclick=endVoice;
+$('#vmin').onclick=endVoice;
+
+})();
+</script>
+</body>
+</html>
