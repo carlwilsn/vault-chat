@@ -4730,16 +4730,66 @@ async fn git_restore_file_to(
 
 const KEYCHAIN_SERVICE: &str = "com.vault-chat.app";
 
+/// Whether the OS keyring can actually serve secrets on THIS machine, probed
+/// once and cached for the process. The motivating failure: a headless Linux box
+/// often has the D-Bus Secret Service either absent OR present-but-LOCKED. A
+/// locked collection doesn't error — `set_password` blocks on an unlock prompt
+/// that nothing ever answers, hanging the call and any UI awaiting it. That's why
+/// the server's "Save" went dead with no message and keys silently vanished:
+/// the call never returned, so the error-triggered file fallback never ran.
+/// The keyring crate exposes no timeout, so we probe in a throwaway thread with a
+/// bounded wait — write+delete a sentinel. A healthy keyring completes instantly;
+/// a missing backend errors fast; a locked one blocks past the timeout. Anything
+/// but a clean, fast success → treat the keyring as unusable for the rest of the
+/// process and route every secret to the encrypted file fallback. Linux-only: the
+/// native Windows/macOS backends never block, so they always report usable (no
+/// probe, no sentinel write).
+fn keyring_usable() -> bool {
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+    #[cfg(target_os = "linux")]
+    {
+        static STATE: OnceLock<bool> = OnceLock::new();
+        *STATE.get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                // Probe with a real write — the op that hangs on a locked keyring.
+                // (A read-miss returns NoEntry fast even when locked, so a read
+                // wouldn't reveal the block.)
+                let ok = keyring::Entry::new(KEYCHAIN_SERVICE, "__vaultchat_probe__")
+                    .and_then(|e| e.set_password("probe"))
+                    .is_ok();
+                if ok {
+                    let _ = keyring::Entry::new(KEYCHAIN_SERVICE, "__vaultchat_probe__")
+                        .and_then(|e| e.delete_credential());
+                }
+                let _ = tx.send(ok);
+            });
+            match rx.recv_timeout(Duration::from_secs(3)) {
+                Ok(v) => v,
+                Err(_) => false, // blocked past the timeout (locked) or thread died
+            }
+        })
+    }
+}
+
 #[tauri::command]
 async fn keychain_get(key: String) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        // Keyring first. Any failure — backend missing (headless Linux), locked
-        // keyring, OR a genuine NoEntry — falls through to the file store, so a
-        // key written to the fallback while the keyring was down is still found.
-        match keyring::Entry::new(KEYCHAIN_SERVICE, &key).and_then(|e| e.get_password()) {
-            Ok(p) => Ok(Some(p)),
-            Err(_) => Ok(fallback_secret_get(&key)),
+        // Use the keyring only if it's actually usable on this machine; otherwise
+        // (headless/locked) go straight to the file store. On a keyring miss we
+        // still consult the file, so a key written to the fallback while the
+        // keyring was down is found even if the keyring later comes back.
+        if keyring_usable() {
+            if let Ok(p) =
+                keyring::Entry::new(KEYCHAIN_SERVICE, &key).and_then(|e| e.get_password())
+            {
+                return Ok(Some(p));
+            }
         }
+        Ok(fallback_secret_get(&key))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -4748,19 +4798,22 @@ async fn keychain_get(key: String) -> Result<Option<String>, String> {
 #[tauri::command]
 async fn keychain_set(key: String, value: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        match keyring::Entry::new(KEYCHAIN_SERVICE, &key).and_then(|e| e.set_password(&value)) {
-            // Keyring is the source of truth when it works — drop any stale
-            // fallback copy so the two can't diverge.
-            Ok(()) => {
+        if keyring_usable() {
+            if keyring::Entry::new(KEYCHAIN_SERVICE, &key)
+                .and_then(|e| e.set_password(&value))
+                .is_ok()
+            {
+                // Keyring is the source of truth when it works — drop any stale
+                // fallback copy so the two can't diverge.
                 let _ = fallback_secret_remove(&key);
-                Ok(())
+                return Ok(());
             }
-            // Keyring unavailable (the headless-box case): persist to the
-            // encrypted file fallback instead of throwing — that's the bug where
-            // the Settings "save" silently failed and keys vanished on reload.
-            Err(e) => fallback_secret_set(&key, &value)
-                .map_err(|fe| format!("keyring set failed ({e}); fallback also failed: {fe}")),
         }
+        // Keyring unavailable (the headless-box case): persist to the encrypted
+        // file fallback instead of throwing or hanging — that's the bug where the
+        // Settings "save" silently failed and keys vanished on reload.
+        fallback_secret_set(&key, &value)
+            .map_err(|fe| format!("secret storage unavailable; file fallback also failed: {fe}"))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -4770,8 +4823,10 @@ async fn keychain_set(key: String, value: String) -> Result<(), String> {
 async fn keychain_delete(key: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         // Best-effort on both stores; absence in either is success.
-        if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &key) {
-            let _ = entry.delete_credential();
+        if keyring_usable() {
+            if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &key) {
+                let _ = entry.delete_credential();
+            }
         }
         let _ = fallback_secret_remove(&key);
         Ok(())

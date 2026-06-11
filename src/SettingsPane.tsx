@@ -1294,11 +1294,17 @@ function KeystoreSection() {
   const savePass = async () => {
     const p = passDraft.trim();
     if (!p) return;
-    const { setPassphrase } = await import("./keystore");
-    await setPassphrase(p);
-    setHasPass(true);
-    setPassDraft("");
-    setMsg("passphrase saved on this machine");
+    try {
+      const { setPassphrase } = await import("./keystore");
+      await setPassphrase(p);
+      setHasPass(true);
+      setPassDraft("");
+      setMsg("passphrase saved on this machine");
+    } catch (e) {
+      // Never fail silently — a dead "Save" with no message is exactly what made
+      // the headless-box secret bug so hard to spot.
+      setMsg(`couldn't save passphrase: ${String(e)}`);
+    }
   };
 
   const run = async (which: "push" | "pull") => {
