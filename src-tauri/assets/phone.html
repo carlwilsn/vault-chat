@@ -141,10 +141,16 @@
   .composer textarea{flex:1;resize:none;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:21px;padding:10px 50px 10px 15px;font-size:16px;line-height:1.4;font-family:inherit;max-height:120px;outline:none;min-width:0}
   .send{position:absolute;right:5px;bottom:5px;width:33px;height:33px;border-radius:50%;background:var(--primary);color:var(--primary-fg);font-weight:700;font-size:16px;display:flex;align-items:center;justify-content:center}
   .send:disabled{opacity:.35}
-  .send.stop{background:var(--err);color:#fff;font-size:13px}
+  /* Stop = interrupt generation, the same calm affordance as send — NOT a red
+     "kill". Real kills live in Activity (per-worker) and Settings (kill-all). */
+  .send.stop{font-size:13px}
 
   /* cards */
   .sec{font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;color:#8a8a8a;padding:15px 18px 7px;font-weight:600}
+  .msec{display:flex;align-items:baseline;gap:8px;padding:17px 18px 7px;min-width:0}
+  .msec>span:first-child{font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:var(--ok);font-weight:700;flex:none}
+  .msec b{font-size:14.5px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .msec .mc{font-size:11px;color:#8a8a8a;flex:none}
   .card{margin:0 14px 10px;background:var(--surface);border-radius:14px;padding:13px 14px;width:calc(100% - 28px);text-align:left;display:block}
   .card:active{background:#282828}
   .card.ask{border:1px solid #5a4a26}
@@ -344,11 +350,12 @@
     const DB = {
       vault: "summer", model: "claude-opus-4-8",
       convs: [
-        { id: "w1", title: "3-seed BitNet repro", source: "worker", role: "", lastActivityAt: now - 90000, msgCount: 6, preview: "all three seeds done; gap held at +0.13 nat", goal: "train + eval seeds 42/43/44 on the 1700-step config, commit eval.loss, draft a writeup" },
+        { id: "w1", title: "3-seed BitNet repro", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 90000, msgCount: 6, preview: "all three seeds done; gap held at +0.13 nat", goal: "train + eval seeds 42/43/44 on the 1700-step config, commit eval.loss, draft a writeup" },
+        { id: "w3", title: "legacy untagged worker", source: "worker", role: "", lastActivityAt: now - 7200000, msgCount: 3, preview: "old standalone worker from before missions", goal: "" },
         { id: "sup", title: "cockpit nav testing", source: "phone", role: "supervisor", lastActivityAt: now - 300000, msgCount: 14, preview: "shipped the unified app; working through nav", goal: "" },
         { id: "c1", title: "densing law — readings", source: "manual", role: "", lastActivityAt: now - 5400000, msgCount: 10, preview: "the crossover moves with task difficulty, not just scale", goal: "" },
       ],
-      runs: [{ convId: "w2", title: "seed-2 retry", lastTool: "Bash", lastProgressAt: now - 60000 }],
+      runs: [{ convId: "w2", title: "seed-2 retry", mission: "BitNet 160M MVP", lastTool: "Bash", lastProgressAt: now - 60000 }],
       schedules: [{ id: "s1", name: "Morning briefing", label: "daily · 7:00 AM", enabled: true, lastFiredAt: now - 7200000, quietUnlessAlert: false }],
       notifs: [
         { id: "n1", ts: now - 90000, kind: "ask", title: "Seed 3 diverged", body: "step 800, +0.05 nat above seed 1. real effect, or match the LR and rerun? tell me how to play it.", convId: "w1", read: false },
@@ -407,11 +414,44 @@
       let t = esc(part);
       t = t.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, url) => '<img src="' + (isVaultPath(url) ? fileUrl(url) : url) + '" alt="' + alt + '" loading="lazy">');
       t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => '<a href="' + (isVaultPath(url) ? fileUrl(url) : url) + '" target="_blank" rel="noopener">' + label + "</a>");
-      t = t.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, "$1<i>$2</i>").replace(/~~([^~]+)~~/g, "<s>$1</s>");
+      // Bare URLs become links. Word-boundary guards keep the emphasis rules
+      // below out of URLs (underscores in paths) and out of snake_case.
+      t = t.replace(/(^|[\s(])(https?:\/\/[^\s<>"')]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+      t = t.replace(/\*\*\*([^*]+)\*\*\*/g, "<b><i>$1</i></b>");
+      t = t.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, "$1<i>$2</i>");
+      t = t.replace(/(^|[\s(])__([^_]+)__(?=[\s.,!?;:)]|$)/g, "$1<b>$2</b>");
+      t = t.replace(/(^|[\s(])_([^_\s][^_]*)_(?=[\s.,!?;:)]|$)/g, "$1<i>$2</i>");
+      t = t.replace(/~~([^~]+)~~/g, "<s>$1</s>");
       out += t;
     }
     return out;
   };
+  // List parsing with real nesting: indentation depth opens sublists (inside
+  // the parent <li>), task bullets render checkboxes, and ordered/unordered
+  // mix freely. The old flat parser collapsed every level to one — the main
+  // "markdown isn't fully rendering" culprit on agent output.
+  const listLine = (s) => {
+    const m = s.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+    return m ? { indent: m[1].replace(/\t/g, "  ").length, ordered: /\d/.test(m[2]), text: m[3] } : null;
+  };
+  function buildList(items) {
+    let h = "";
+    const stack = [];
+    const close1 = () => { h += stack.pop().ordered ? "</li></ol>" : "</li></ul>"; };
+    for (const it of items) {
+      const task = it.text.match(/^\[([ xX])\]\s+(.*)$/);
+      const body = task ? (task[1] === " " ? "☐ " : "☑ ") + inline(task[2]) : inline(it.text);
+      if (!stack.length || it.indent > stack[stack.length - 1].indent) {
+        h += (it.ordered ? "<ol>" : "<ul>") + "<li>" + body;
+        stack.push({ indent: it.indent, ordered: it.ordered });
+      } else {
+        while (stack.length > 1 && stack[stack.length - 1].indent > it.indent) close1();
+        h += "</li><li>" + body;
+      }
+    }
+    while (stack.length) close1();
+    return h;
+  }
   const md = (src) => {
     const lines = (src || "").replace(/\r\n/g, "\n").split("\n");
     let html = "", i = 0;
@@ -425,8 +465,19 @@
       if (h) { flushP(); const n = Math.min(h[1].length, 3); html += `<h${n}>` + inline(h[2]) + `</h${n}>`; i++; continue; }
       if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(l)) { flushP(); html += "<hr>"; i++; continue; }
       if (/^\s*>/.test(l)) { flushP(); const qd = []; while (i < lines.length && /^\s*>/.test(lines[i])) qd.push(lines[i++].replace(/^\s*>\s?/, "")); html += "<blockquote>" + md(qd.join("\n")) + "</blockquote>"; continue; }
-      if (/^\s*[-*+]\s+/.test(l)) { flushP(); html += "<ul>"; while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) html += "<li>" + inline(lines[i++].replace(/^\s*[-*+]\s+/, "")) + "</li>"; html += "</ul>"; continue; }
-      if (/^\s*\d+[.)]\s+/.test(l)) { flushP(); html += "<ol>"; while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) html += "<li>" + inline(lines[i++].replace(/^\s*\d+[.)]\s+/, "")) + "</li>"; html += "</ol>"; continue; }
+      if (listLine(l)) {
+        flushP();
+        const items = [];
+        while (i < lines.length) {
+          const li = listLine(lines[i]);
+          if (li) { items.push(li); i++; continue; }
+          // An indented continuation line belongs to the previous item.
+          if (items.length && /^\s{2,}\S/.test(lines[i])) { items[items.length - 1].text += " " + lines[i].trim(); i++; continue; }
+          break;
+        }
+        html += buildList(items);
+        continue;
+      }
       if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
         flushP();
         const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(c.trim()));
@@ -606,7 +657,11 @@
   function clearThreadUi() { running = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
   function showHint() { msgsEl.innerHTML = '<div class="hint"><b>What needs doing?</b>quick questions get answers. bigger asks get scoped before anything runs.</div>'; }
 
-  function newChat() { convId = null; convTitle = "New chat"; clearThreadUi(); showHint(); setPage("chat"); setHeader(); }
+  // The open thread is sticky: reopening the app returns you to the chat you
+  // were in, not a blank new one — replies keep landing where you expect.
+  const LAST_CONV_KEY = "vc_phone_conv";
+  function rememberConv() { try { if (convId) localStorage.setItem(LAST_CONV_KEY, JSON.stringify({ id: convId, title: convTitle })); else localStorage.removeItem(LAST_CONV_KEY); } catch {} }
+  function newChat() { convId = null; convTitle = "New chat"; rememberConv(); clearThreadUi(); showHint(); setPage("chat"); setHeader(); }
   async function openThread(id, title) {
     convId = id; convTitle = title || "New chat"; clearThreadUi();
     setPage("chat"); setHeader();
@@ -618,8 +673,11 @@
       clearThreadUi(); running = d.status === "running";
       if (!d.messages || !d.messages.length) showHint();
       else for (const m of d.messages) msgsEl.appendChild(bubble(m.role, m.content, m.tools, { system: m.system }));
-      renderRunline(); setHeader(); scrollDown(true);
-    } catch (e) { toast("Load failed: " + (e.message || e)); }
+      renderRunline(); setHeader(); scrollDown(true); rememberConv();
+    } catch (e) {
+      if (/not found/i.test(String(e.message || e))) { newChat(); return; }
+      toast("Load failed: " + (e.message || e));
+    }
   }
 
   let lastSentText = null;
@@ -633,7 +691,7 @@
       const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, text, supervisor: convId ? undefined : true }) });
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || r.status);
-      if (!convId && d.convId) { convId = d.convId; convTitle = text.split("\n")[0].slice(0, 60); }
+      if (!convId && d.convId) { convId = d.convId; convTitle = text.split("\n")[0].slice(0, 60); rememberConv(); }
       if (d.queued) { mine.classList.add("queued"); toast("Mid-run — queued, sends when it finishes."); }
       else { running = true; renderRunline(); }
       setHeader();
@@ -647,11 +705,16 @@
     autosizeRAF = requestAnimationFrame(() => { autosizeRAF = 0; input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 120) + "px"; });
   }
   input.addEventListener("input", scheduleAutosize);
+  // Interrupt the open thread's generation (chatbot stop, not a "kill").
+  // Optimistic: clear the running UI the moment you tap — the box's idle
+  // broadcast confirms it, but the button must never keep flashing after a
+  // successful stop.
   async function killCurrent() {
     if (!convId) return;
+    running = false; streamText = ""; streamTool = ""; renderStream(); renderRunline(); setHeader();
     const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId }) }).catch(() => null);
     const d = r ? await r.json().catch(() => ({})) : {};
-    toast(d.result || "Stopping…");
+    toast(d.result || "Stopped.");
   }
 
   // North Star: approving a proposed plan tells the supervisor to fan out a
@@ -662,7 +725,11 @@
     if (!convId) { toast("Open the chat first."); return; }
     card.classList.add("approved");
     card.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-    const text = "Approved — start a background worker for each task in that plan and run them now, then tell me which are running.";
+    const mt = card.querySelector(".pc-title");
+    const mission = mt ? mt.textContent.trim() : "";
+    const text = "Approved — start a background worker for each task in that plan and run them now" +
+      (mission ? ', with mission "' + mission + '" on every one' : "") +
+      ", then tell me which are running.";
     if (msgsEl.querySelector(".hint")) msgsEl.innerHTML = "";
     msgsEl.appendChild(bubble("user", text, null)); scrollDown(true);
     try {
@@ -712,6 +779,36 @@
 
   // ---------- activity ----------
   function el(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
+  // Workers are never standalone: each belongs to a mission (the approved
+  // North Star), and Activity renders mission groups — the mission header,
+  // then its running workers, then its finished ones. Untagged legacy workers
+  // fall into an "Older workers" group at the end.
+  function runCard(run, c) {
+    const card = el('<div class="wk open"><button class="wh"><span class="s run">●</span><span class="nm"></span><span class="mt"></span></button><div class="wd"><div class="lbl">Goal</div><span class="gv"></span><div class="wbtns"><button class="wbtn op">Open thread</button><button class="wbtn danger kl">Kill worker</button></div></div></div>');
+    card.querySelector(".nm").textContent = run.title || c.title || run.convId;
+    card.querySelector(".mt").textContent = run.lastTool ? run.lastTool + " · " + (run.lastProgressAt ? age(run.lastProgressAt) : "now") : "running";
+    card.querySelector(".gv").textContent = c.goal || c.preview || "(no goal recorded)";
+    card.querySelector(".wh").onclick = () => card.classList.toggle("open");
+    card.querySelector(".op").onclick = (e) => { e.stopPropagation(); openThread(run.convId, run.title || c.title); };
+    const kl = card.querySelector(".kl");
+    kl.onclick = async (e) => {
+      e.stopPropagation();
+      if (!kl.classList.contains("confirm")) { kl.classList.add("confirm"); kl.textContent = "Confirm kill"; setTimeout(() => { kl.classList.remove("confirm"); kl.textContent = "Kill worker"; }, 2600); return; }
+      await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: run.convId }) }).catch(() => {});
+      toast("Worker killed."); setTimeout(loadActivity, 800);
+    };
+    return card;
+  }
+  function doneCard(c) {
+    const card = el('<div class="wk"><button class="wh"><span class="s g">✓</span><span class="nm"></span><span class="mt"></span></button><div class="wd"><div class="lbl">Goal</div><span class="gv"></span><div class="lbl">Last update</div><span class="p"></span><div class="wbtns"><button class="wbtn op">Open thread</button></div></div></div>');
+    card.querySelector(".nm").textContent = c.title;
+    card.querySelector(".mt").textContent = age(c.lastActivityAt);
+    card.querySelector(".gv").textContent = c.goal || "(no goal recorded)";
+    card.querySelector(".p").textContent = c.preview || "—";
+    card.querySelector(".wh").onclick = () => card.classList.toggle("open");
+    card.querySelector(".op").onclick = (e) => { e.stopPropagation(); openThread(c.id, c.title); };
+    return card;
+  }
   async function loadActivity() {
     const box = $("actScroll");
     try {
@@ -722,25 +819,41 @@
       const convs = cd.conversations || [], byId = new Map(convs.map((c) => [c.id, c]));
       runCount = runs.length; setHeader();
       box.innerHTML = "";
-      box.appendChild(el('<div class="sec">Active</div>'));
-      if (!runs.length) box.appendChild(el('<div class="empty">Nothing running. Ask for something in Chat — big asks get scoped, then land here.</div>'));
+
+      const dayAgo = Date.now() - 24 * 3600000;
+      const doneWorkers = convs.filter((c) => c.source === "worker" && !runIds.has(c.id) && c.lastActivityAt > dayAgo);
+      // missions: name -> { active: [{run, c}], done: [c] }, in first-seen order.
+      const missions = new Map();
+      const missionOf = (run, c) => ((run && run.mission) || (c && c.mission) || "").trim();
+      const bucket = (name) => { if (!missions.has(name)) missions.set(name, { active: [], done: [] }); return missions.get(name); };
+      const looseRuns = [], looseDone = [];
       for (const run of runs) {
         const c = byId.get(run.convId) || {};
-        const card = el('<div class="wk open"><button class="wh"><span class="s run">●</span><span class="nm"></span><span class="mt"></span></button><div class="wd"><div class="lbl">Goal</div><span class="gv"></span><div class="wbtns"><button class="wbtn op">Open thread</button><button class="wbtn danger kl">Kill</button></div></div></div>');
-        card.querySelector(".nm").textContent = run.title || c.title || run.convId;
-        card.querySelector(".mt").textContent = run.lastTool ? run.lastTool + " · " + (run.lastProgressAt ? age(run.lastProgressAt) : "now") : "running";
-        card.querySelector(".gv").textContent = c.goal || c.preview || "(no goal recorded)";
-        card.querySelector(".wh").onclick = () => card.classList.toggle("open");
-        card.querySelector(".op").onclick = (e) => { e.stopPropagation(); openThread(run.convId, run.title || c.title); };
-        const kl = card.querySelector(".kl");
-        kl.onclick = async (e) => {
-          e.stopPropagation();
-          if (!kl.classList.contains("confirm")) { kl.classList.add("confirm"); kl.textContent = "Confirm kill"; setTimeout(() => { kl.classList.remove("confirm"); kl.textContent = "Kill"; }, 2600); return; }
-          await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: run.convId }) }).catch(() => {});
-          toast("Kill sent."); setTimeout(loadActivity, 800);
-        };
-        box.appendChild(card);
+        const m = missionOf(run, c);
+        if (m) bucket(m).active.push({ run, c }); else looseRuns.push({ run, c });
       }
+      for (const c of doneWorkers.slice(0, 24)) {
+        const m = missionOf(null, c);
+        if (m) bucket(m).done.push(c); else looseDone.push(c);
+      }
+
+      if (!missions.size && !looseRuns.length) {
+        box.appendChild(el('<div class="sec">Missions</div>'));
+        box.appendChild(el('<div class="empty">Nothing in flight. Hand the agent a goal in Chat — it proposes a plan, you approve, and its workers land here under that mission.</div>'));
+      }
+      for (const [name, g] of missions) {
+        const head = el('<div class="msec"><span>Mission</span><b></b><span class="mc"></span></div>');
+        head.querySelector("b").textContent = name;
+        head.querySelector(".mc").textContent = g.active.length ? g.active.length + " running" : "done";
+        box.appendChild(head);
+        for (const { run, c } of g.active) box.appendChild(runCard(run, c));
+        for (const c of g.done) box.appendChild(doneCard(c));
+      }
+      if (looseRuns.length) {
+        box.appendChild(el('<div class="sec">Also running</div>'));
+        for (const { run, c } of looseRuns) box.appendChild(runCard(run, c));
+      }
+
       box.appendChild(el('<div class="sec">Recurring</div>'));
       const scheds = schd.schedules || [];
       if (!scheds.length) box.appendChild(el('<div class="empty">No recurring missions. Tell the agent — “brief me every morning at 7” is enough.</div>'));
@@ -753,20 +866,9 @@
         card.querySelector(".del").onclick = async () => { if (!confirm('Delete "' + sc.name + '"?')) return; await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", id: sc.id }) }).catch(() => {}); loadActivity(); };
         box.appendChild(card);
       }
-      const dayAgo = Date.now() - 24 * 3600000;
-      const done = convs.filter((c) => c.source === "worker" && !runIds.has(c.id) && c.lastActivityAt > dayAgo);
-      if (done.length) {
-        box.appendChild(el('<div class="sec">Done · today</div>'));
-        for (const c of done.slice(0, 12)) {
-          const card = el('<div class="wk"><button class="wh"><span class="s g">✓</span><span class="nm"></span><span class="mt"></span></button><div class="wd"><div class="lbl">Goal</div><span class="gv"></span><div class="lbl">Last update</div><span class="p"></span><div class="wbtns"><button class="wbtn op">Open thread</button></div></div></div>');
-          card.querySelector(".nm").textContent = c.title;
-          card.querySelector(".mt").textContent = age(c.lastActivityAt);
-          card.querySelector(".gv").textContent = c.goal || "(no goal recorded)";
-          card.querySelector(".p").textContent = c.preview || "—";
-          card.querySelector(".wh").onclick = () => card.classList.toggle("open");
-          card.querySelector(".op").onclick = (e) => { e.stopPropagation(); openThread(c.id, c.title); };
-          box.appendChild(card);
-        }
+      if (looseDone.length) {
+        box.appendChild(el('<div class="sec">Older workers</div>'));
+        for (const c of looseDone.slice(0, 12)) box.appendChild(doneCard(c));
       }
       box.appendChild(el('<div style="height:18px"></div>'));
     } catch (e) { box.innerHTML = '<div class="empty">Activity unavailable: ' + esc(String(e.message || e)) + "</div>"; }
@@ -774,9 +876,9 @@
 
   // ---------- alerts ----------
   // Two classes, by design. ACTION (kind "ask") — something needs a decision;
-  // reply inline. INFO (everything else) — a heads-up you just acknowledge.
-  // No thread-jumping from here: that's Activity's job. Tapping an info card
-  // marks it read; read items collapse under "Show earlier".
+  // reply inline. INFO (everything else) — a heads-up. Archiving is the ONE
+  // explicit acknowledge gesture: swipe a card right-to-left and it's read.
+  // Archived items live behind the Archive toggle at the bottom.
   async function loadAlerts() {
     const box = $("alScroll");
     try {
@@ -787,21 +889,23 @@
       box.innerHTML = "";
       if (!list.length) { box.appendChild(el('<div class="empty">Nothing yet. Worker results, failures that need a call, and your recurring briefings land here — with a push if notifications are on and the app isn’t already open.</div>')); return; }
       const unread = list.filter((n) => !n.read);
-      const read = list.filter((n) => n.read);
+      const archived = list.filter((n) => n.read);
       const actions = unread.filter((n) => n.kind === "ask");
       const infos = unread.filter((n) => n.kind !== "ask");
       if (actions.length) box.appendChild(el('<div class="sec">Needs a reply</div>'));
       for (const n of actions) box.appendChild(alertCard(n, true));
       if (infos.length) box.appendChild(el('<div class="sec">Heads-up</div>'));
       for (const n of infos) box.appendChild(alertCard(n, false));
-      if (!unread.length) box.appendChild(el('<div class="empty">All caught up.</div>'));
-      if (read.length) {
-        const holder = el('<div></div>');
+      if (!unread.length) box.appendChild(el('<div class="empty">All caught up — swipe a card left to archive it.</div>'));
+      if (archived.length) {
+        const holder = el('<div style="display:none"></div>');
+        for (const n of archived) holder.appendChild(alertCard(n, false));
         const t = el('<button class="earlier"></button>');
-        t.textContent = "Show " + read.length + " earlier";
+        t.textContent = "Archive · " + archived.length;
         t.onclick = () => {
-          if (holder.childElementCount) { holder.innerHTML = ""; t.textContent = "Show " + read.length + " earlier"; }
-          else { for (const n of read) holder.appendChild(alertCard(n, false)); t.textContent = "Hide earlier"; }
+          const open = holder.style.display !== "none";
+          holder.style.display = open ? "none" : "";
+          t.textContent = (open ? "Archive · " : "Hide archive · ") + archived.length;
         };
         box.appendChild(t); box.appendChild(holder);
       }
@@ -837,14 +941,48 @@
       rep.querySelector(".rsend").onclick = go;
       rep.querySelector(".rinp").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
       card.querySelector(".cb").appendChild(rep);
-      const dismiss = el('<button class="dismiss">Mark read</button>');
-      dismiss.onclick = async (e) => { e.stopPropagation(); await markRead(n.id); toast("Marked read."); loadAlerts(); };
-      card.querySelector(".cb").appendChild(dismiss);
-    } else {
-      // Info: a tap acknowledges it (marks read). No thread jump.
-      card.onclick = async () => { if (!n.read) { await markRead(n.id); loadAlerts(); } };
     }
+    if (!n.read) attachSwipeArchive(card, n);
     return card;
+  }
+  // Swipe right-to-left to archive (mark read). Horizontal intent is locked in
+  // only once the finger clearly moves sideways, so vertical scrolling through
+  // the list never fights the gesture. Mouse drag works too (desktop testing).
+  function attachSwipeArchive(card, n) {
+    let x0 = 0, y0 = 0, dx = 0, mode = null;
+    const start = (x, y) => { x0 = x; y0 = y; dx = 0; mode = null; card.style.transition = "none"; };
+    const move = (x, y) => {
+      if (mode === "v") return false;
+      const ndx = x - x0, ndy = y - y0;
+      if (mode === null) {
+        if (Math.abs(ndx) < 9 && Math.abs(ndy) < 9) return false;
+        mode = Math.abs(ndx) > Math.abs(ndy) ? "h" : "v";
+        if (mode === "v") return false;
+      }
+      dx = Math.min(0, ndx);
+      card.style.transform = "translateX(" + dx + "px)";
+      return true;
+    };
+    const end = async () => {
+      if (mode !== "h") { mode = null; return; }
+      mode = null;
+      card.style.transition = "transform .18s ease, opacity .18s ease";
+      if (dx < -70) {
+        card.style.transform = "translateX(-110%)"; card.style.opacity = "0";
+        await markRead(n.id);
+        setTimeout(loadAlerts, 180);
+      } else {
+        card.style.transform = "";
+      }
+    };
+    card.addEventListener("touchstart", (e) => start(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+    card.addEventListener("touchmove", (e) => move(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+    card.addEventListener("touchend", end);
+    card.addEventListener("touchcancel", end);
+    let mouseDown = false;
+    card.addEventListener("mousedown", (e) => { if (e.target.closest(".rinp,.rsend")) return; mouseDown = true; start(e.clientX, e.clientY); });
+    window.addEventListener("mousemove", (e) => { if (mouseDown) move(e.clientX, e.clientY); });
+    window.addEventListener("mouseup", () => { if (mouseDown) { mouseDown = false; end(); } });
   }
 
   // ---------- settings drawer ----------
@@ -1022,6 +1160,11 @@
 
   showHint();
   setHeader();
+  // Return to the thread you were in last session (404 falls back to a fresh chat).
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAST_CONV_KEY) || "null");
+    if (saved && saved.id) void openThread(saved.id, saved.title);
+  } catch {}
   void refreshState();
   void refreshBadge();
   void pollLoop();

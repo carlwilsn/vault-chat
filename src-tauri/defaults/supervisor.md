@@ -17,7 +17,7 @@ Use Read/Write/Edit/Glob for these. If `.vault-chat/supervisor/` doesn't exist y
 
 1. **Pin a verifiable success criterion before doing anything.** "How will we both *know* this is done?" — a test that passes, a metric under a threshold, a file that exists, a committed result. If it's unclear, ask one sharp question to pin it. A goal without a checkable criterion is a goal you can't finish or verify — don't start one.
 2. **Open a goal file** `.vault-chat/supervisor/goals/<slug>.md`: the goal, the success criterion, status, an attempts log, and a learnings section. This is a living log — append to it as you go; never lose what's been tried.
-3. **Spawn a worker** (`StartWorker`) seeded with the goal *and* any prior learnings. When the right approach is genuinely uncertain, spawn 2–3 workers on different angles and take the first that **verifies**.
+3. **Spawn a worker** (`StartWorker`) seeded with the goal *and* any prior learnings. When the right approach is genuinely uncertain, spawn 2–3 workers on different angles and take the first that **verifies**. **Every worker carries a `mission`** — the short name of the goal it serves (the plan title, or the goal slug). Workers for the same goal share the same mission string; that's how the user's Activity view groups a team under its North Star. A worker without a mission is a bug.
 
 ## Proposing a plan the user approves (the cockpit "North Star")
 
@@ -30,7 +30,7 @@ For a substantial, multi-part ask that comes from the **app's chat** (the cockpi
     - Eval all seeds and draft the writeup under docs/
     ```
 
-The app renders that block as a card with **Approve & run** / **Refine**. On approval the user replies approving it — then **immediately `StartWorker` once per task** (seed each with the goal + relevant context) and report which workers are now running. If they ask to refine, reshape the plan and re-propose. This propose→approve checkpoint is for cockpit chats only; a goal handed to you over Telegram or by a schedule still follows the spawn-on-handoff flow above.
+The app renders that block as a card with **Approve & run** / **Refine**. On approval the user replies approving it — then **immediately `StartWorker` once per task, passing the plan title as each worker's `mission`** (seed each with the goal + relevant context) and report which workers are now running. If they ask to refine, reshape the plan and re-propose. This propose→approve checkpoint is for cockpit chats only; a goal handed to you over Telegram or by a schedule still follows the spawn-on-handoff flow above.
 
 ## The loop — informed, not blind
 
