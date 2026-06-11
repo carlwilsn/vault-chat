@@ -256,7 +256,7 @@
       <div class="sec">Active</div>
 
       <button class="card" data-sheet="m-bitnet">
-        <div class="mtitle"><b>Reproduce 3-seed BitNet b1.58</b><span class="pill run" id="m1pill">running · 2 of 3</span></div>
+        <div class="mtitle"><b>Reproduce 3-seed BitNet b1.58</b><span class="pill blk" id="m1pill">1/3 done · blocked</span></div>
         <div class="ns"><i>North-star:</i> curves matching the paper within tolerance across 3 seeds.</div>
       </button>
 
@@ -288,7 +288,7 @@
       </div>
 
       <button class="card" data-sheet="m-deck" style="margin-top:6px">
-        <div class="mtitle"><b>Prep Thursday's Lyric training deck</b><span class="pill run">running · 1 of 2</span></div>
+        <div class="mtitle"><b>Prep Thursday's Lyric training deck</b><span class="pill run">1/2 done · on pace</span></div>
         <div class="ns"><i>North-star:</i> a deck a teammate could deliver cold — clear, example-driven.</div>
       </button>
 
@@ -491,7 +491,7 @@ $('#kill2').onclick=function(e){
   $('#s2meta').textContent='killed by you · now';
   $('#s2status').textContent='stopped at step 1.2k — partial eval committed so nothing is lost. say the word to relaunch.';
   this.style.display='none';
-  $('#m1pill').textContent='running · 1 of 3'; $('#m1pill').className='pill blk';
+  $('#m1pill').textContent='1/3 done · 1 killed · blocked'; $('#m1pill').className='pill blk';
 };
 $('#goalert').onclick=function(e){e.stopPropagation();show('alerts')};
 
@@ -555,7 +555,7 @@ var SHEETS={
  'rep-shake':
   '<p class="sh-t">Shakedown report</p><p class="sh-s">docs/bitnet-160m-mvp · committed 9:02</p>'+
   '<div class="sh-body">100 steps, stock vs BitNet, single box. Purpose was never the numbers — it was proving the pipeline end-to-end before real spend: data flows, both configs train, eval writes JSONL, commit lands.\n\nAll four held. The full 3-seed run reuses this exact harness.</div>'+
-  '<button class="sh-btn">Open in vault</button>',
+  '<button class="sh-btn">Read the full report</button>',
  'al-coach':
   '<p class="sh-t">Morning briefing</p><p class="sh-s">today 7:00</p>'+
   '<div class="sh-body">You’re a day ahead on BitNet — the shakedown landing early bought you tonight.\n\nToday: Lyric owns 9–5. The post draft is ready for your edits; it rides tonight’s block, not the afternoon.\n\nOne ask: the ledger hasn’t moved in 5 days. Two lines tonight keeps your evidence trail honest.</div>'+
@@ -566,7 +566,7 @@ var SHEETS={
  'al-post':
   '<p class="sh-t">Sunday’s post — draft</p><p class="sh-s">Blog/drafts · from this week’s notes</p>'+
   '<div class="sh-body">“What a 100-step shakedown buys you” — the case for cheap end-to-end rehearsal before real spend, with this week’s OOM-reseed as the worked example.\n\nIt’s your voice, not mine — edit before it ships anywhere.</div>'+
-  '<button class="sh-btn">Open in vault</button>'
+  '<button class="sh-btn">Read the draft</button>'
 };
 var sheet=$('#sheet'), scrim=$('#scrim'), sheetbody=$('#sheetbody');
 function openSheet(id){
