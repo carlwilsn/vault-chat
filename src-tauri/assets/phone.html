@@ -13,8 +13,6 @@
 <link rel="manifest" href="/manifest.webmanifest" />
 <title>vault-chat</title>
 <style>
-  /* Exact vault-chat graphite (src/App.css): bg 10%, muted 14%, accent 20%,
-     border 22%, fg 92%, dim 60%, primary 85%. Color only for status. */
   :root{
     --bg:#1a1a1a; --surface:#242424; --raised:#333333; --line:#383838;
     --text:#ebebeb; --dim:#999999; --primary:#d9d9d9; --primary-fg:#1a1a1a;
@@ -22,73 +20,89 @@
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html{background:var(--bg)}
-  /* Pinned shell: no body scroll; only the surfaces scroll. The in-app
-     keyboard and visualViewport handling rely on this. */
   html,body{margin:0;position:fixed;inset:0;overflow:hidden;overscroll-behavior:none}
-  body{
-    display:flex;flex-direction:column;
-    background:var(--bg);color:var(--text);
-    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-  }
+  body{display:flex;flex-direction:column;background:var(--bg);color:var(--text);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
   button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;padding:0}
+  svg{display:block}
 
-  /* ---------- header (no divider lines anywhere) ---------- */
-  .hdr{display:flex;align-items:center;gap:8px;flex:0 0 auto;padding:calc(env(safe-area-inset-top) + 12px) 16px 8px;position:relative;z-index:21}
-  .state{flex:1;display:flex;align-items:center;gap:9px;font-size:14.5px;min-width:0;text-align:left}
-  .state .sub{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse 1.7s ease-in-out infinite;flex:none}
-  body.offline .dot{background:var(--err);animation:none}
-  .vpill{display:none;align-items:center;gap:6px;font-size:12px;color:var(--ok);border:1px solid #34532f;border-radius:16px;padding:4px 11px;flex:none}
+  /* header */
+  .hdr{display:flex;align-items:center;gap:6px;flex:0 0 auto;padding:calc(env(safe-area-inset-top) + 12px) 12px 8px;position:relative;z-index:21}
+  .icbtn{color:var(--dim);min-width:40px;min-height:40px;display:flex;align-items:center;justify-content:center;border-radius:10px;position:relative;flex:none}
+  .icbtn:active{background:var(--surface)}
+  .icbtn svg{width:22px;height:22px}
+  .reddot{position:absolute;top:7px;right:7px;width:8px;height:8px;border-radius:50%;background:var(--warn);display:none}
+  .reddot.on{display:block}
+  .title{flex:1;min-width:0;display:flex;align-items:center;gap:8px;justify-content:center;text-align:center}
+  .title .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse 1.7s ease-in-out infinite;flex:none}
+  body.offline .title .dot{background:var(--err);animation:none}
+  .title .tx{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .title .sub{font-size:15px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:400}
+  .vpill{display:none;align-items:center;gap:6px;font-size:12px;color:var(--ok);border:1px solid #34532f;border-radius:16px;padding:5px 11px;flex:none}
   body.voicemin .vpill{display:flex}
   .vpill .d{width:6px;height:6px;border-radius:50%;background:var(--ok);animation:pulse 1.2s infinite}
-  .icbtn{color:var(--dim);padding:8px;min-width:40px;min-height:40px;display:flex;align-items:center;justify-content:center;border-radius:10px}
-  .icbtn:active{background:var(--surface)}
-  .icbtn svg{width:21px;height:21px}
 
-  .offbar{display:none;align-items:center;gap:9px;margin:2px 14px 6px;background:#2a1d1c;border:1px solid #53312f;border-radius:11px;padding:8px 13px;font-size:12.5px;color:#e8b3b0;flex:0 0 auto}
+  .offbar{display:none;align-items:center;gap:9px;margin:0 14px 6px;background:#2a1d1c;border:1px solid #53312f;border-radius:11px;padding:8px 13px;font-size:12.5px;color:#e8b3b0;flex:0 0 auto}
   body.offline .offbar{display:flex}
   .offbar b{font-weight:600;color:#f0c9c7}
 
-  /* ---------- menu ---------- */
-  .menu{position:absolute;top:calc(env(safe-area-inset-top) + 54px);right:12px;background:#262626;border:1px solid var(--line);border-radius:14px;padding:6px;z-index:45;min-width:230px;max-width:78vw;display:none;box-shadow:0 14px 40px rgba(0,0,0,.5)}
+  /* ☰ page menu */
+  .menu{position:absolute;top:calc(env(safe-area-inset-top) + 54px);right:10px;background:#262626;border:1px solid var(--line);border-radius:14px;padding:6px;z-index:46;min-width:220px;display:none;box-shadow:0 14px 40px rgba(0,0,0,.5)}
   .menu.on{display:block}
-  .mi{display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:10px;font-size:14px;width:100%;text-align:left}
-  .mi:active{background:var(--raised)}
-  .mi .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .mi .k{color:#7c7c7c;font-size:11.5px;flex:none}
-  .mi svg{width:17px;height:17px;color:var(--dim);flex:none}
-  .mtit{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#7c7c7c;padding:10px 12px 4px}
-  .mfoot{font-size:11px;color:#6d6d6d;padding:9px 12px 6px;margin-top:4px}
+  .mrow{display:flex;align-items:center;gap:11px;padding:12px 13px;border-radius:10px;font-size:14.5px;width:100%;text-align:left}
+  .mrow:active{background:var(--raised)}
+  .mrow.cur{background:#2e2e2e}
+  .mrow svg{width:19px;height:19px;color:var(--dim);flex:none}
+  .mrow .nm{flex:1}
+  .mrow .ct{font-size:11.5px;color:var(--primary-fg);background:var(--primary);border-radius:10px;min-width:18px;height:18px;display:flex;align-items:center;justify-content:center;padding:0 5px;font-weight:600}
+  .mrow .ct.warn{background:var(--warn)}
+  .mrow .ct.zero{display:none}
+  .mdiv{height:1px;background:#2e2e2e;margin:5px 8px}
 
-  /* ---------- tab surfaces ---------- */
+  /* left conversations drawer */
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;z-index:48}
+  .scrim.on{display:block}
+  .cdraw{position:fixed;top:0;left:0;bottom:0;width:min(84vw,330px);background:#202020;z-index:49;transform:translateX(-102%);transition:transform .2s ease;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top)}
+  .cdraw.on{transform:none}
+  .cdtop{display:flex;align-items:center;gap:10px;padding:14px 14px 10px}
+  .cdtop b{flex:1;font-size:16px;font-weight:600}
+  .newbtn{display:flex;align-items:center;gap:7px;font-size:13.5px;font-weight:600;color:var(--primary-fg);background:var(--primary);border-radius:10px;padding:8px 13px}
+  .newbtn svg{width:16px;height:16px}
+  .clist{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:4px 0 calc(env(safe-area-inset-bottom) + 12px)}
+  .csec{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#7c7c7c;padding:12px 16px 5px;font-weight:600}
+  .crow2{display:block;width:100%;text-align:left;padding:11px 16px}
+  .crow2:active{background:var(--surface)}
+  .crow2 .t{display:flex;align-items:center;gap:8px}
+  .crow2 .rd{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse 1.4s infinite;flex:none}
+  .crow2 .nm{flex:1;min-width:0;font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .crow2 .ag{color:#7c7c7c;font-size:11.5px;flex:none}
+  .crow2 .p{color:var(--dim);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;padding-left:0}
+
+  /* pages */
   .body{flex:1;min-height:0;position:relative;display:flex;flex-direction:column}
-  .surface{flex:1;min-height:0;display:none;flex-direction:column}
-  body.tab-chat #sChat{display:flex}
-  body.tab-activity #sAct{display:flex}
-  body.tab-alerts #sAl{display:flex}
+  .page{flex:1;min-height:0;display:none;flex-direction:column}
+  body.page-chat #pChat{display:flex}
+  body.page-activity #pAct{display:flex}
+  body.page-alerts #pAl{display:flex}
   .scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 
-  /* ---------- chat ---------- */
-  #msgs{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 14px 8px}
-  .m{max-width:92%;margin:0 0 10px;border-radius:14px;padding:9px 13px;word-wrap:break-word;overflow-wrap:break-word}
-  .m.user{margin-left:auto;background:var(--raised);white-space:pre-wrap;border-bottom-right-radius:5px}
-  .m.asst{margin-right:auto;background:var(--surface);border-bottom-left-radius:5px}
-  .m.sys{margin:0 auto 10px;background:none;color:var(--dim);font-size:12px;font-style:italic;text-align:center}
+  /* chat */
+  #msgs{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:8px 14px 6px;display:flex;flex-direction:column}
+  .m{max-width:90%;margin:0 0 10px;border-radius:15px;padding:9px 13px;word-wrap:break-word;overflow-wrap:anywhere}
+  .m.user{align-self:flex-end;background:var(--raised);white-space:pre-wrap;border-bottom-right-radius:5px}
+  .m.asst{align-self:flex-start;background:var(--surface);border-bottom-left-radius:5px}
+  .m.sys{align-self:center;background:none;color:var(--dim);font-size:12px;font-style:italic;text-align:center}
   .m.queued{opacity:.55}
   .m .toolchips{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
   .toolchip{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 5px}
   .m.stream .cursor{display:inline-block;width:7px;height:14px;background:var(--primary);vertical-align:-2px;animation:pulse 1s infinite}
-  .runline{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:12px;margin:0 0 10px}
-  .runline .kill{color:var(--err);border:1px solid #5a302e;border-radius:7px;padding:3px 11px;font-size:12px}
-  .hint{margin:auto;text-align:center;color:var(--dim);font-size:14px;line-height:1.65;padding:0 44px;display:none}
+  .runline{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:12px;margin:2px 0 10px}
+  .runline .rd{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse 1.3s infinite;flex:none}
+  .runline .rlbl{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .runline .kill{color:var(--err);border:1px solid #5a302e;border-radius:7px;padding:3px 11px;font-size:12px;flex:none}
+  .hint{margin:auto;text-align:center;color:var(--dim);font-size:14px;line-height:1.65;padding:0 40px;max-width:340px}
   .hint b{color:var(--text);font-weight:600;display:block;font-size:15.5px;margin-bottom:6px}
-  body.fresh #msgs .hint{display:block}
-  .thbar{display:none;align-items:center;gap:8px;padding:0 16px 6px;font-size:12.5px;color:var(--dim);flex:0 0 auto}
-  .thbar.on{display:flex}
-  .thbar .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .thbar .x{color:var(--dim);border:1px solid var(--line);border-radius:7px;padding:2px 10px;font-size:12px}
 
-  /* markdown */
   .md p{margin:.35em 0}
   .md h1,.md h2,.md h3{margin:.5em 0 .25em;line-height:1.25}
   .md h1{font-size:1.2em}.md h2{font-size:1.1em}.md h3{font-size:1.02em}
@@ -103,22 +117,17 @@
   .md th,.md td{border:1px solid var(--line);padding:3px 8px;text-align:left}
   .md hr{border:none;border-top:1px solid var(--line);margin:.7em 0}
 
-  /* composer (send inside the field, no top border) */
   .composer{flex:0 0 auto;display:flex;align-items:flex-end;gap:9px;padding:6px 12px calc(env(safe-area-inset-bottom) + 8px)}
   .mic{width:42px;height:42px;border-radius:50%;background:var(--surface);border:1px solid var(--line);color:var(--text);flex:none;display:flex;align-items:center;justify-content:center}
   .mic:active{background:var(--raised)}
   .mic svg{width:20px;height:20px}
   .field{flex:1;position:relative;display:flex;align-items:flex-end;min-width:0}
-  .composer textarea{
-    flex:1;resize:none;background:var(--surface);color:var(--text);
-    border:1px solid var(--line);border-radius:21px;padding:10px 50px 10px 15px;
-    font-size:16px;line-height:1.4;font-family:inherit;max-height:120px;outline:none;min-width:0;
-  }
+  .composer textarea{flex:1;resize:none;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:21px;padding:10px 50px 10px 15px;font-size:16px;line-height:1.4;font-family:inherit;max-height:120px;outline:none;min-width:0}
   .send{position:absolute;right:5px;bottom:5px;width:33px;height:33px;border-radius:50%;background:var(--primary);color:var(--primary-fg);font-weight:700;font-size:16px;display:flex;align-items:center;justify-content:center}
   .send:disabled{opacity:.35}
 
-  /* ---------- cards / sections (activity + alerts) ---------- */
-  .sec{font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;color:#8a8a8a;padding:14px 18px 7px;font-weight:600}
+  /* cards */
+  .sec{font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;color:#8a8a8a;padding:15px 18px 7px;font-weight:600}
   .card{margin:0 14px 10px;background:var(--surface);border-radius:14px;padding:13px 14px;width:calc(100% - 28px);text-align:left;display:block}
   .card:active{background:#282828}
   .card.ask{border:1px solid #5a4a26}
@@ -128,59 +137,49 @@
   .ico.g{color:var(--ok)} .ico.a{color:var(--warn)} .ico.r{color:var(--err)}
   .cb{flex:1;min-width:0}
   .ct{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
-  .ct b{font-weight:600;font-size:14.5px}
+  .ct b{font-weight:600;font-size:14.5px;min-width:0;overflow-wrap:anywhere}
   .ct .t{font-size:11px;color:#8a8a8a;flex:none}
-  .cs{margin:4px 0 0;font-size:13px;color:#ababab;line-height:1.5;word-wrap:break-word}
+  .cs{margin:4px 0 0;font-size:13px;color:#ababab;line-height:1.5;overflow-wrap:anywhere}
   .tag{display:inline-block;margin-top:7px;font-size:10.5px;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:1px 7px}
   .reply{position:relative;display:flex;align-items:center;margin-top:10px}
   .rinp{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:18px;padding:9px 42px 9px 14px;color:var(--text);font-size:14px;outline:none;min-width:0;font-family:inherit}
   .rinp::placeholder{color:#838383}
   .rsend{position:absolute;right:5px;width:28px;height:28px;border-radius:50%;background:var(--primary);color:var(--primary-fg);font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center}
-  .empty{padding:30px 40px;text-align:center;color:var(--dim);font-size:13.5px;line-height:1.6}
+  .empty{padding:30px 38px;text-align:center;color:var(--dim);font-size:13.5px;line-height:1.6}
 
   .mtitle{display:flex;justify-content:space-between;gap:10px;align-items:center}
-  .mtitle b{font-weight:600;font-size:15px;line-height:1.35;min-width:0}
+  .mtitle b{font-weight:600;font-size:15px;line-height:1.35;min-width:0;overflow-wrap:anywhere}
   .pill{font-size:12px;font-weight:500;flex:none;display:inline-flex;align-items:center;gap:6px;color:var(--dim);white-space:nowrap}
   .pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
   .pill.run{color:var(--ok)} .pill.blk{color:var(--warn)}
-  .goal{font-size:12.5px;color:var(--dim);line-height:1.5;margin:8px 0 0;padding-left:11px;border-left:2px solid var(--line)}
+  .goal{font-size:12.5px;color:var(--dim);line-height:1.5;margin:8px 0 0;padding-left:11px;border-left:2px solid var(--line);overflow-wrap:anywhere}
   .wk{margin:0 14px 9px;background:#202020;border-radius:13px;overflow:hidden;width:calc(100% - 28px)}
   .wh{display:flex;align-items:center;gap:11px;padding:12px 13px;width:100%;text-align:left;min-height:46px}
   .wh .s{width:18px;height:18px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:700;border-radius:50%;font-size:11px;background:var(--raised);color:var(--dim)}
   .wh .s.g{color:var(--ok)} .wh .s.run{color:var(--ok);animation:pulse 1.3s infinite}
   .wh .nm{flex:1;font-size:14px;font-weight:600;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .wh .mt{font-size:11.5px;color:#8f8f8f;flex:none}
-  .wd{display:none;padding:0 13px 13px 42px;font-size:12.5px;color:#ababab;line-height:1.55}
+  .wh .mt{font-size:11.5px;color:#8f8f8f;flex:none;max-width:42%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wd{display:none;padding:0 14px 13px 14px;font-size:12.5px;color:#ababab;line-height:1.55;overflow-wrap:anywhere}
   .wk.open .wd{display:block}
-  .lbl{color:#8a8a8a;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;margin-top:8px}
-  .wbtns{display:flex;gap:9px;margin-top:11px}
+  .lbl{color:#8a8a8a;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;margin-top:9px}
+  .wbtns{display:flex;flex-wrap:wrap;gap:9px;margin-top:11px}
   .wbtn{font-size:12.5px;border:1px solid var(--line);border-radius:8px;padding:7px 14px;color:#dcdcdc;min-height:34px}
   .wbtn:active{background:var(--raised)}
   .wbtn.danger{color:var(--err);border-color:#5a302e}
   .wbtn.confirm{background:var(--err);color:#fff;border-color:var(--err)}
   .schedrow{display:flex;align-items:center;gap:10px}
   .schedrow .info{flex:1;min-width:0}
-  .schedrow .info b{font-weight:600;font-size:14px;display:block}
-  .schedrow .info small{color:var(--dim);font-size:11.5px}
+  .schedrow .info b{font-weight:600;font-size:14px;display:block;overflow-wrap:anywhere}
+  .schedrow .info small{color:var(--dim);font-size:11.5px;overflow-wrap:anywhere}
   .sw{font-size:11.5px;border:1px solid var(--line);border-radius:7px;padding:5px 11px;color:var(--dim);flex:none;min-height:32px}
   .sw.on{color:var(--primary-fg);background:var(--primary);border-color:var(--primary)}
   .del{color:var(--err);font-size:15px;padding:4px 8px;flex:none}
 
-  /* ---------- tab bar (no top border; tone only) ---------- */
-  .tabs{display:flex;flex:0 0 auto;background:var(--bg);padding:4px 0 calc(env(safe-area-inset-bottom) + 6px)}
-  body.kbopen .tabs{display:none}
-  .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;color:#7e7e7e;position:relative;padding:6px 0;min-height:48px}
-  .tab svg{width:22px;height:22px}
-  .tab.on{color:var(--text)}
-  .badge{position:absolute;top:1px;left:50%;margin-left:8px;background:var(--primary);color:var(--primary-fg);font-size:9.5px;font-weight:700;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 4px}
-  .badge.zero{display:none}
-
-  /* ---------- in-app keyboard (unchanged module) ---------- */
+  /* keyboard (verbatim) */
   #kb{flex:0 0 auto;background:#161616;padding:7px 4px calc(env(safe-area-inset-bottom) + 6px);display:none;touch-action:manipulation;user-select:none;-webkit-user-select:none}
-  body.kbopen.tab-chat #kb{display:block}
+  body.kbopen.page-chat #kb{display:block}
   body.kbopen .composer{padding-bottom:8px}
-  .kblayer{display:none}
-  .kblayer.active{display:block}
+  .kblayer{display:none}.kblayer.active{display:block}
   .kbrow{display:flex;gap:5px;margin:0 0 8px;justify-content:center}
   .kbrow:last-child{margin-bottom:0}
   .kbrow.indent{padding:0 5%}
@@ -188,13 +187,12 @@
   .kbk.spec{background:#262626;font-size:14px;flex:1.4}
   .kbk.space{flex:4.6;font-size:13px;color:var(--dim)}
   .kbk.ret{flex:2;font-size:20px}
-  .kbk.down{background:#4d4d4d}
-  .kbk.spec.down{background:#3a3a3a}
+  .kbk.down{background:#4d4d4d}.kbk.spec.down{background:#3a3a3a}
   .kbk.lit{background:var(--primary);color:var(--primary-fg)}
   .kbk.caps{box-shadow:inset 0 0 0 2px var(--primary)}
   .kbpop{position:absolute;bottom:50px;left:50%;transform:translateX(-50%);min-width:46px;height:54px;background:#4d4d4d;border-radius:9px;color:var(--text);font-size:28px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,.55);pointer-events:none;z-index:5}
 
-  /* ---------- settings drawer ---------- */
+  /* settings drawer (right) */
   #drawer{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:50}
   #drawer.open{display:block}
   #drawer .panel{position:absolute;top:0;right:0;bottom:0;width:min(86vw,360px);background:var(--surface);padding:calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 16px);overflow-y:auto;display:flex;flex-direction:column;gap:14px}
@@ -206,11 +204,11 @@
   .btn.warn{color:var(--err);border-color:#5a302e}
   .btn.solid{background:var(--primary);color:var(--primary-fg);border:none}
   .note{font-size:12px;color:var(--dim)}
-  #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom) + 84px);background:#333;color:var(--text);border-radius:9px;padding:8px 14px;font-size:13px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:70;max-width:86vw}
+  #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom) + 80px);background:#333;color:var(--text);border-radius:9px;padding:8px 14px;font-size:13px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:70;max-width:86vw;text-align:center}
   #toast.show{opacity:1}
   .gate{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:30px;text-align:center;color:var(--dim)}
 
-  /* ---------- voice overlay ---------- */
+  /* voice */
   #voice{position:fixed;inset:0;background:var(--bg);display:none;flex-direction:column;z-index:60}
   body.voice #voice{display:flex}
   body.voicemin #voice{display:none}
@@ -231,35 +229,34 @@
   @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
 </style>
 </head>
-<body class="tab-chat fresh">
+<body class="page-chat">
 
   <div class="hdr">
-    <button class="state" id="statebtn">
-      <span class="dot"></span>
-      <span id="statetext">connecting…</span><span class="sub" id="statesub"></span>
-    </button>
+    <button class="icbtn" id="convBtn" aria-label="conversations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+    <button class="title" id="titleBtn"><span class="dot" id="livedot"></span><span class="tx" id="titleTx">connecting…</span><span class="sub" id="titleSub"></span></button>
     <button class="vpill" id="vpill"><span class="d"></span> voice</button>
-    <button class="icbtn" id="menuBtn" aria-label="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    <button class="icbtn" id="menuBtn" aria-label="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span class="reddot" id="menudot"></span></button>
   </div>
 
   <div class="offbar"><b>box unreachable</b> retrying — messages will queue</div>
 
   <div class="menu" id="menu">
-    <button class="mi" id="newBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="nm">New chat</span></button>
-    <div class="mtit">Recent</div>
-    <div id="recents"></div>
-    <button class="mi" id="settingsBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="nm">Box &amp; settings</span></button>
-    <div class="mfoot" id="mfoot">vault: — </div>
+    <button class="mrow" data-page="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="nm">Chat</span></button>
+    <button class="mrow" data-page="activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg><span class="nm">Activity</span><span class="ct zero" id="mAct">0</span></button>
+    <button class="mrow" data-page="alerts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg><span class="nm">Alerts</span><span class="ct warn zero" id="mAl">0</span></button>
+    <div class="mdiv"></div>
+    <button class="mrow" id="settingsRow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="nm">Box &amp; settings</span></button>
+  </div>
+
+  <div class="scrim" id="scrim"></div>
+  <div class="cdraw" id="cdraw">
+    <div class="cdtop"><b>Conversations</b><button class="newbtn" id="newBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>New</button></div>
+    <div class="clist" id="clist"></div>
   </div>
 
   <div class="body">
-
-    <!-- CHAT -->
-    <section class="surface" id="sChat">
-      <div class="thbar" id="thbar"><span class="nm" id="thname"></span><button class="x" id="thclose">new chat</button></div>
-      <div id="msgs">
-        <div class="hint"><b>What needs doing?</b>quick questions get answers. bigger asks get scoped before anything runs.</div>
-      </div>
+    <section class="page" id="pChat">
+      <div id="msgs"></div>
       <div class="composer">
         <button class="mic" id="micBtn" aria-label="voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 19v3"/></svg></button>
         <div class="field">
@@ -269,19 +266,8 @@
       </div>
       <div id="kb"></div>
     </section>
-
-    <!-- ACTIVITY -->
-    <section class="surface" id="sAct"><div class="scroll" id="actScroll"></div></section>
-
-    <!-- ALERTS -->
-    <section class="surface" id="sAl"><div class="scroll" id="alScroll"></div></section>
-
-  </div>
-
-  <div class="tabs">
-    <button class="tab on" data-tab="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Chat</button>
-    <button class="tab" data-tab="activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>Activity</button>
-    <button class="tab" data-tab="alerts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg>Alerts<span class="badge zero" id="badge">0</span></button>
+    <section class="page" id="pAct"><div class="scroll" id="actScroll"></div></section>
+    <section class="page" id="pAl"><div class="scroll" id="alScroll"></div></section>
   </div>
 
   <div id="drawer">
@@ -296,37 +282,25 @@
       <div class="note" id="pushState">Checking…</div>
       <button class="btn solid" id="pushBtn">Enable notifications</button>
       <button class="btn" id="pushTestBtn">Send test notification</button>
-      <div class="note">Push needs this page added to your Home Screen (Share → Add to Home Screen) on iOS 16.4+.</div>
+      <div class="note">Push needs this page added to your Home Screen (Share → Add to Home Screen) on iOS 16.4+. You won't get a notification for things you're already looking at in the app.</div>
     </div>
   </div>
   <div id="toast"></div>
 
-  <!-- VOICE -->
   <div id="voice">
-    <div class="vtop">
-      <span class="vlbl">voice · same agent, same memory</span>
-      <button class="icbtn" id="vMinBtn" aria-label="minimize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button>
-    </div>
-    <div class="vmid">
-      <div class="viz" id="viz"></div>
-      <div class="vconn">Connecting…</div>
-      <div class="verr" id="verr"></div>
-    </div>
-    <div class="vend">
-      <button class="vx" id="vEndBtn" aria-label="end voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
-      <span class="vhint">tap ⌄ to keep talking while you read</span>
-    </div>
+    <div class="vtop"><span class="vlbl">voice · same agent, same memory</span><button class="icbtn" id="vMinBtn" aria-label="minimize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button></div>
+    <div class="vmid"><div class="viz" id="viz"></div><div class="vconn">Connecting…</div><div class="verr" id="verr"></div></div>
+    <div class="vend"><button class="vx" id="vEndBtn" aria-label="end voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button><span class="vhint">tap ⌄ to keep talking while you read</span></div>
   </div>
 
 <script>
 (() => {
   "use strict";
-  // Preload the ElevenLabs SDK at page open — importing inside the tap was a
-  // cold CDN fetch at connect time (the "first tap fails" root).
-  const sdkPromise = import("https://esm.sh/@elevenlabs/client@1.7.0").catch(() => null);
-
-  // ---- token: query wins, then localStorage (home-screen launches drop it) ----
   const qs = new URLSearchParams(location.search);
+  const MOCK = qs.get("mock") === "1";
+
+  const sdkPromise = MOCK ? Promise.resolve(null) : import("https://esm.sh/@elevenlabs/client@1.7.0").catch(() => null);
+
   let TOKEN = qs.get("token") || "";
   try {
     if (TOKEN) localStorage.setItem("vc_phone_token", TOKEN);
@@ -335,46 +309,83 @@
   const $ = (id) => document.getElementById(id);
   const toastEl = $("toast");
   let toastT = 0;
-  const toast = (msg) => {
-    toastEl.textContent = msg;
-    toastEl.classList.add("show");
-    clearTimeout(toastT);
-    toastT = setTimeout(() => toastEl.classList.remove("show"), 2600);
-  };
-  if (!TOKEN) {
-    document.body.innerHTML =
-      '<div class="gate"><b style="color:var(--text)">No access token</b>' +
-      "<div>Open the phone link from vault-chat Settings once — it carries the token, which is then remembered on this device.</div></div>";
+  const toast = (m) => { toastEl.textContent = m; toastEl.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove("show"), 2600); };
+  if (!TOKEN && !MOCK) {
+    document.body.innerHTML = '<div class="gate"><b style="color:var(--text)">No access token</b><div>Open the phone link from vault-chat Settings once — it carries the token, which is then remembered on this device.</div></div>';
     return;
   }
-  const api = (path, opts = {}) =>
-    fetch(path, { ...opts, headers: { "X-Vault-Token": TOKEN, ...(opts.headers || {}) } });
+
+  // ---------- mock box (test mode only) ----------
+  if (MOCK) installMock();
+  function installMock() {
+    const now = Date.now();
+    const DB = {
+      vault: "summer", model: "claude-opus-4-8",
+      convs: [
+        { id: "w1", title: "3-seed BitNet repro", source: "worker", role: "", lastActivityAt: now - 90000, msgCount: 6, preview: "all three seeds done; gap held at +0.13 nat", goal: "train + eval seeds 42/43/44 on the 1700-step config, commit eval.loss, draft a writeup" },
+        { id: "sup", title: "cockpit nav testing", source: "phone", role: "supervisor", lastActivityAt: now - 300000, msgCount: 14, preview: "shipped the unified app; working through nav", goal: "" },
+        { id: "c1", title: "densing law — readings", source: "manual", role: "", lastActivityAt: now - 5400000, msgCount: 10, preview: "the crossover moves with task difficulty, not just scale", goal: "" },
+      ],
+      runs: [{ convId: "w2", title: "seed-2 retry", lastTool: "Bash", lastProgressAt: now - 60000 }],
+      schedules: [{ id: "s1", name: "Morning briefing", label: "daily · 7:00 AM", enabled: true, lastFiredAt: now - 7200000, quietUnlessAlert: false }],
+      notifs: [
+        { id: "n1", ts: now - 90000, kind: "ask", title: "Seed 3 diverged", body: "step 800, +0.05 nat above seed 1. real effect, or match the LR and rerun? tell me how to play it.", convId: "w1", read: false },
+        { id: "n2", ts: now - 1080000, kind: "info", title: "Worker finished — 3-seed BitNet repro", body: "all three seeds done; final eval committed; gap held at +0.13 nat.", convId: "w1", read: false },
+        { id: "n3", ts: now - 5400000, kind: "info", title: "Stopped an idle box", body: "a box sat at zero GPU utilization for 12 minutes after its job exited — killed it. ~$0.26, nothing billing now.", read: true },
+      ],
+      threads: {
+        w1: { id: "w1", title: "3-seed BitNet repro", source: "worker", status: "idle", messages: [
+          { role: "user", content: "train + eval seeds 42/43/44 on the 1700-step config, commit eval.loss, draft a writeup" },
+          { role: "assistant", content: "Locked the config, streaming c4. Starting seed 42.", tools: ["Bash"] },
+          { role: "assistant", content: "## Result\n\nAll three seeds done.\n\n| seed | eval loss |\n|---|---|\n| 42 | 1.5576 |\n| 43 | 1.5601 |\n| 44 | 1.5588 |\n\nGap held at **+0.13 nat**, U-shaped, plateaus. `eval.loss` JSONL committed under `results/`. Writeup drafted at `docs/bitnet-160m-mvp/writeup.md`.", tools: ["Write", "Bash"] },
+        ] },
+        sup: { id: "sup", title: "cockpit nav testing", source: "phone", status: "idle", messages: [
+          { role: "user", content: "rebuild the phone nav — no bottom bar, pages from the menu" },
+          { role: "assistant", content: "Done — pages live behind the ☰ menu now, and conversations are the left button. Try going back to an old chat from there." },
+        ] },
+        c1: { id: "c1", title: "densing law — readings", source: "manual", status: "idle", messages: [
+          { role: "user", content: "what's the densing law actually claiming" },
+          { role: "assistant", content: "That capability density doubles on a roughly fixed cadence — so a model half the size matches last season's at the same quality. The crossover you care about moves with **task difficulty**, not only parameter count." },
+        ] },
+      },
+    };
+    const reply = (obj) => new Response(JSON.stringify(obj), { status: 200, headers: { "Content-Type": "application/json" } });
+    let pollWaited = false;
+    window.fetch = async (url, opts) => {
+      const u = String(url).split("?")[0];
+      const q = new URLSearchParams(String(url).split("?")[1] || "");
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      if (u === "/conversations") return reply({ vault: DB.vault, conversations: DB.convs });
+      if (u === "/conversation") { const t = DB.threads[q.get("id")]; return t ? reply(t) : reply({ error: "not found" }); }
+      if (u === "/status") return reply({ vault: DB.vault, model: DB.model, runs: DB.runs });
+      if (u === "/schedules") return reply({ schedules: DB.schedules });
+      if (u === "/notifications") return reply({ unread: DB.notifs.filter((n) => !n.read).length, notifications: DB.notifs });
+      if (u === "/notifications/read") { const n = DB.notifs.find((x) => x.id === body.id); if (n) n.read = true; return reply({ ok: true }); }
+      if (u === "/poll") { if (!pollWaited) { pollWaited = true; return reply({ events: [], next: "1" }); } await new Promise((r) => setTimeout(r, 8000)); return reply({ events: [], next: "1" }); }
+      if (u === "/message") return reply({ ok: true, convId: body.convId || "new-" + Date.now() });
+      if (u === "/kill") return reply({ ok: true, result: "Kill sent." });
+      if (u === "/schedule") return reply({ ok: true });
+      if (u === "/push/vapid") return reply({ key: "" });
+      if (u === "/push/subscribe" || u === "/push/test") return reply({ ok: true });
+      if (u === "/file") return new Response("(mock file)", { status: 200 });
+      return reply({});
+    };
+  }
+
+  const api = (path, opts = {}) => fetch(path, { ...opts, headers: { "X-Vault-Token": TOKEN, ...(opts.headers || {}) } });
   const fileUrl = (p) => "/file?path=" + encodeURIComponent(p) + "&token=" + encodeURIComponent(TOKEN);
 
-  // ---- markdown (escape first; no raw HTML passthrough, ever) ----
-  const esc = (s) =>
-    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  // ---------- markdown ----------
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const isVaultPath = (u) => !/^[a-z][a-z0-9+.-]*:/i.test(u) && !u.startsWith("//");
   const inline = (s) => {
     let out = "";
-    const parts = s.split(/(`[^`]+`)/);
-    for (const part of parts) {
-      if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
-        out += "<code>" + esc(part.slice(1, -1)) + "</code>";
-        continue;
-      }
+    for (const part of s.split(/(`[^`]+`)/)) {
+      if (part.startsWith("`") && part.endsWith("`") && part.length > 2) { out += "<code>" + esc(part.slice(1, -1)) + "</code>"; continue; }
       let t = esc(part);
-      t = t.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, url) => {
-        const src = isVaultPath(url) ? fileUrl(url) : url;
-        return '<img src="' + src + '" alt="' + alt + '" loading="lazy">';
-      });
-      t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => {
-        const href = isVaultPath(url) ? fileUrl(url) : url;
-        return '<a href="' + href + '" target="_blank" rel="noopener">' + label + "</a>";
-      });
-      t = t.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
-      t = t.replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, "$1<i>$2</i>");
-      t = t.replace(/~~([^~]+)~~/g, "<s>$1</s>");
+      t = t.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, url) => '<img src="' + (isVaultPath(url) ? fileUrl(url) : url) + '" alt="' + alt + '" loading="lazy">');
+      t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => '<a href="' + (isVaultPath(url) ? fileUrl(url) : url) + '" target="_blank" rel="noopener">' + label + "</a>");
+      t = t.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, "$1<i>$2</i>").replace(/~~([^~]+)~~/g, "<s>$1</s>");
       out += t;
     }
     return out;
@@ -382,170 +393,130 @@
   const md = (src) => {
     const lines = (src || "").replace(/\r\n/g, "\n").split("\n");
     let html = "", i = 0;
-    const flushP = (buf) => {
-      if (buf.length) html += "<p>" + buf.map(inline).join("<br>") + "</p>";
-      buf.length = 0;
-    };
     const pbuf = [];
+    const flushP = () => { if (pbuf.length) html += "<p>" + pbuf.map(inline).join("<br>") + "</p>"; pbuf.length = 0; };
     while (i < lines.length) {
       const l = lines[i];
-      if (/^```/.test(l)) {
-        flushP(pbuf);
-        const fence = [];
-        i++;
-        while (i < lines.length && !/^```/.test(lines[i])) fence.push(lines[i++]);
-        i++;
-        html += "<pre><code>" + esc(fence.join("\n")) + "</code></pre>";
-        continue;
-      }
-      if (/^\s*$/.test(l)) { flushP(pbuf); i++; continue; }
+      if (/^```/.test(l)) { flushP(); const f = []; i++; while (i < lines.length && !/^```/.test(lines[i])) f.push(lines[i++]); i++; html += "<pre><code>" + esc(f.join("\n")) + "</code></pre>"; continue; }
+      if (/^\s*$/.test(l)) { flushP(); i++; continue; }
       const h = l.match(/^(#{1,6})\s+(.*)$/);
-      if (h) { flushP(pbuf); const n = Math.min(h[1].length, 3); html += `<h${n}>` + inline(h[2]) + `</h${n}>`; i++; continue; }
-      if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(l)) { flushP(pbuf); html += "<hr>"; i++; continue; }
-      if (/^\s*>/.test(l)) {
-        flushP(pbuf);
-        const q = [];
-        while (i < lines.length && /^\s*>/.test(lines[i])) q.push(lines[i++].replace(/^\s*>\s?/, ""));
-        html += "<blockquote>" + md(q.join("\n")) + "</blockquote>";
-        continue;
-      }
-      if (/^\s*[-*+]\s+/.test(l)) {
-        flushP(pbuf);
-        html += "<ul>";
-        while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i]))
-          html += "<li>" + inline(lines[i++].replace(/^\s*[-*+]\s+/, "")) + "</li>";
-        html += "</ul>";
-        continue;
-      }
-      if (/^\s*\d+[.)]\s+/.test(l)) {
-        flushP(pbuf);
-        html += "<ol>";
-        while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i]))
-          html += "<li>" + inline(lines[i++].replace(/^\s*\d+[.)]\s+/, "")) + "</li>";
-        html += "</ol>";
-        continue;
-      }
+      if (h) { flushP(); const n = Math.min(h[1].length, 3); html += `<h${n}>` + inline(h[2]) + `</h${n}>`; i++; continue; }
+      if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(l)) { flushP(); html += "<hr>"; i++; continue; }
+      if (/^\s*>/.test(l)) { flushP(); const qd = []; while (i < lines.length && /^\s*>/.test(lines[i])) qd.push(lines[i++].replace(/^\s*>\s?/, "")); html += "<blockquote>" + md(qd.join("\n")) + "</blockquote>"; continue; }
+      if (/^\s*[-*+]\s+/.test(l)) { flushP(); html += "<ul>"; while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) html += "<li>" + inline(lines[i++].replace(/^\s*[-*+]\s+/, "")) + "</li>"; html += "</ul>"; continue; }
+      if (/^\s*\d+[.)]\s+/.test(l)) { flushP(); html += "<ol>"; while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) html += "<li>" + inline(lines[i++].replace(/^\s*\d+[.)]\s+/, "")) + "</li>"; html += "</ol>"; continue; }
       if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
-        flushP(pbuf);
+        flushP();
         const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(c.trim()));
         html += "<table><thead><tr>" + cells(l).map((c) => "<th>" + c + "</th>").join("") + "</tr></thead><tbody>";
         i += 2;
-        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i]))
-          html += "<tr>" + cells(lines[i++]).map((c) => "<td>" + c + "</td>").join("") + "</tr>";
-        html += "</tbody></table>";
-        continue;
+        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) html += "<tr>" + cells(lines[i++]).map((c) => "<td>" + c + "</td>").join("") + "</tr>";
+        html += "</tbody></table>"; continue;
       }
-      pbuf.push(l);
-      i++;
+      pbuf.push(l); i++;
     }
-    flushP(pbuf);
+    flushP();
     return html;
   };
 
-  // ---- shell state ----
-  let tab = "chat";
-  let convId = null;          // null = fresh chat (Atlas thread starts on first send)
-  let convTitle = "New chat";
-  let running = false;
-  let streamText = "", streamTool = "";
+  // ---------- state ----------
+  let page = "chat";
+  let convId = null, convTitle = "New chat";
+  let running = false, streamText = "", streamTool = "";
   let vaultName = "", boxModel = "";
-  let runCount = 0, unreadN = 0;
-  let offlineStreak = 0;
-
+  let runCount = 0, unreadN = 0, offlineStreak = 0;
   const msgsEl = $("msgs"), input = $("input");
 
-  const age = (ts) => {
-    const m = Math.floor((Date.now() - ts) / 60000);
-    if (m < 1) return "now";
-    if (m < 60) return m + "m";
-    const h = Math.floor(m / 60);
-    if (h < 24) return h + "h";
-    return Math.floor(h / 24) + "d";
-  };
+  const age = (ts) => { const m = Math.floor((Date.now() - ts) / 60000); if (m < 1) return "now"; if (m < 60) return m + "m"; const h = Math.floor(m / 60); if (h < 24) return h + "h"; return Math.floor(h / 24) + "d"; };
 
-  function setTab(name) {
-    tab = name;
-    // classList toggles only — never wipe kbopen/voice/fresh.
-    document.body.classList.remove("tab-chat", "tab-activity", "tab-alerts");
-    document.body.classList.add("tab-" + name);
-    document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t.dataset.tab === name));
+  // ---------- pages ----------
+  function setPage(name) {
+    page = name;
+    document.body.classList.remove("page-chat", "page-activity", "page-alerts");
+    document.body.classList.add("page-" + name);
+    document.querySelectorAll(".mrow[data-page]").forEach((r) => r.classList.toggle("cur", r.dataset.page === name));
     if (name !== "chat") hideKb();
     if (name === "activity") void loadActivity();
     if (name === "alerts") void loadAlerts();
+    setHeader();
   }
-  document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => setTab(t.dataset.tab)));
+  document.querySelectorAll(".mrow[data-page]").forEach((r) => (r.onclick = () => { closeMenu(); setPage(r.dataset.page); }));
 
-  function setShell() {
+  function setHeader() {
     const off = document.body.classList.contains("offline");
-    $("statetext").textContent = off ? "offline" : "awake";
-    $("statesub").textContent = off
-      ? "· reconnecting"
-      : runCount > 0
-        ? `· ${runCount} running`
-        : "· idle";
-    $("thname").textContent = convTitle;
-    $("thbar").classList.toggle("on", !!convId && tab === "chat");
-    const b = $("badge");
-    b.textContent = unreadN;
-    b.classList.toggle("zero", unreadN === 0);
+    const tx = $("titleTx"), sub = $("titleSub");
+    if (page === "chat") {
+      if (convId && convTitle && convTitle !== "New chat") { tx.textContent = convTitle; sub.textContent = ""; }
+      else { tx.textContent = off ? "offline" : "awake"; sub.textContent = off ? "· reconnecting" : runCount > 0 ? "· " + runCount + " running" : "· idle"; }
+    } else { tx.textContent = page === "activity" ? "Activity" : "Alerts"; sub.textContent = ""; }
+    const mAct = $("mAct"); mAct.textContent = runCount; mAct.classList.toggle("zero", runCount === 0);
+    const mAl = $("mAl"); mAl.textContent = unreadN; mAl.classList.toggle("zero", unreadN === 0);
+    $("menudot").classList.toggle("on", unreadN > 0 && page !== "alerts");
   }
-  function setOffline(off) {
-    document.body.classList.toggle("offline", off);
-    setShell();
-  }
+  function setOffline(off) { document.body.classList.toggle("offline", off); setHeader(); }
 
-  // ---- menu ----
+  // ---------- menus ----------
   const menu = $("menu");
-  $("menuBtn").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("on"); if (menu.classList.contains("on")) void loadRecents(); };
-  document.addEventListener("click", () => menu.classList.remove("on"));
+  function closeMenu() { menu.classList.remove("on"); }
+  $("menuBtn").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("on"); };
+  document.addEventListener("click", closeMenu);
   menu.addEventListener("click", (e) => e.stopPropagation());
-  $("newBtn").onclick = () => { menu.classList.remove("on"); newChat(); };
-  $("settingsBtn").onclick = () => { menu.classList.remove("on"); openDrawer(); };
+  $("settingsRow").onclick = () => { closeMenu(); openDrawer(); };
 
-  async function loadRecents() {
+  const cdraw = $("cdraw"), scrim = $("scrim");
+  function openConvs() { scrim.classList.add("on"); cdraw.classList.add("on"); void loadConvs(); }
+  function closeConvs() { scrim.classList.remove("on"); cdraw.classList.remove("on"); }
+  $("convBtn").onclick = openConvs;
+  scrim.onclick = closeConvs;
+  $("newBtn").onclick = () => { closeConvs(); newChat(); };
+  $("titleBtn").onclick = () => { if (page === "chat") openDrawer(); else setPage("chat"); };
+
+  async function loadConvs() {
+    const box = $("clist");
     try {
-      const r = await api("/conversations");
+      const [r, sr] = await Promise.all([api("/conversations"), api("/status").catch(() => null)]);
       const d = await r.json();
       if (d.error) throw new Error(d.error);
-      vaultName = d.vault || "";
-      $("mfoot").textContent = "vault: " + (vaultName || "—");
-      const box = $("recents");
+      vaultName = d.vault || vaultName;
+      const runIds = new Set();
+      if (sr && sr.ok) { const sd = await sr.json().catch(() => ({})); for (const x of sd.runs || []) runIds.add(x.convId); }
+      const convs = d.conversations || [];
+      const workers = convs.filter((c) => c.source === "worker");
+      const chats = convs.filter((c) => c.source !== "worker");
       box.innerHTML = "";
-      for (const c of d.conversations.slice(0, 8)) {
-        const b = document.createElement("button");
-        b.className = "mi";
-        b.innerHTML = '<span class="nm"></span><span class="k"></span>';
-        b.querySelector(".nm").textContent = c.title;
-        b.querySelector(".k").textContent = age(c.lastActivityAt);
-        b.onclick = () => { menu.classList.remove("on"); openThread(c.id, c.title); };
-        box.appendChild(b);
-      }
-    } catch {
-      $("recents").innerHTML = '<div class="mfoot">couldn’t load recents</div>';
+      const addRows = (label, arr) => {
+        if (!arr.length) return;
+        const h = document.createElement("div"); h.className = "csec"; h.textContent = label; box.appendChild(h);
+        for (const c of arr) box.appendChild(convRow(c, runIds.has(c.id)));
+      };
+      addRows("Chats", chats);
+      addRows("Workers", workers);
+      if (!convs.length) box.innerHTML = '<div class="empty">No conversations yet. Tap New to start.</div>';
+    } catch (e) {
+      box.innerHTML = '<div class="empty">Couldn’t load: ' + esc(String(e.message || e)) + "</div>";
     }
   }
+  function convRow(c, isRunning) {
+    const b = document.createElement("button");
+    b.className = "crow2";
+    b.innerHTML = '<div class="t">' + (isRunning ? '<span class="rd"></span>' : "") + '<span class="nm"></span><span class="ag"></span></div><div class="p"></div>';
+    b.querySelector(".nm").textContent = c.title;
+    b.querySelector(".ag").textContent = age(c.lastActivityAt);
+    b.querySelector(".p").textContent = c.preview || c.msgCount + " messages";
+    b.onclick = () => { closeConvs(); openThread(c.id, c.title); };
+    return b;
+  }
 
-  // ---- chat ----
+  // ---------- chat ----------
   function bubble(role, content, tools, opts = {}) {
     const div = document.createElement("div");
     div.className = "m " + (role === "user" ? "user" : opts.system ? "sys" : "asst") + (opts.queued ? " queued" : "");
     if (role === "user" || opts.system) div.textContent = content;
     else div.innerHTML = '<div class="md">' + md(content) + "</div>";
     if (tools && tools.length) {
-      const wrap = document.createElement("div");
-      wrap.className = "toolchips";
-      for (const t of tools.slice(0, 8)) {
-        const c = document.createElement("span");
-        c.className = "toolchip";
-        c.textContent = t;
-        wrap.appendChild(c);
-      }
-      if (tools.length > 8) {
-        const c = document.createElement("span");
-        c.className = "toolchip";
-        c.textContent = "+" + (tools.length - 8);
-        wrap.appendChild(c);
-      }
+      const wrap = document.createElement("div"); wrap.className = "toolchips";
+      for (const t of tools.slice(0, 8)) { const c = document.createElement("span"); c.className = "toolchip"; c.textContent = t; wrap.appendChild(c); }
+      if (tools.length > 8) { const c = document.createElement("span"); c.className = "toolchip"; c.textContent = "+" + (tools.length - 8); wrap.appendChild(c); }
       div.appendChild(wrap);
     }
     return div;
@@ -557,110 +528,59 @@
   function renderRunline() {
     if (!running) { if (runlineEl) { runlineEl.remove(); runlineEl = null; } return; }
     if (!runlineEl) {
-      runlineEl = document.createElement("div");
-      runlineEl.className = "runline";
-      runlineEl.innerHTML = '<span class="dot"></span><span class="lbl"></span><button class="kill">Kill</button>';
+      runlineEl = document.createElement("div"); runlineEl.className = "runline";
+      runlineEl.innerHTML = '<span class="rd"></span><span class="rlbl"></span><button class="kill">Kill</button>';
       runlineEl.querySelector(".kill").onclick = killCurrent;
       msgsEl.appendChild(runlineEl);
     }
-    runlineEl.querySelector(".lbl").textContent = streamTool ? "running · " + streamTool : "running…";
+    runlineEl.querySelector(".rlbl").textContent = streamTool ? "running · " + streamTool : "running…";
     msgsEl.appendChild(runlineEl);
   }
   function renderStream() {
     if (!streamText) { if (streamEl) { streamEl.remove(); streamEl = null; } renderRunline(); return; }
-    if (!streamEl) {
-      streamEl = document.createElement("div");
-      streamEl.className = "m asst stream";
-      msgsEl.appendChild(streamEl);
-    }
+    if (!streamEl) { streamEl = document.createElement("div"); streamEl.className = "m asst stream"; msgsEl.appendChild(streamEl); }
     streamEl.innerHTML = '<div class="md">' + md(streamText) + '</div><span class="cursor"></span>';
-    renderRunline();
-    scrollDown(false);
+    renderRunline(); scrollDown(false);
   }
+  function clearThreadUi() { running = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; }
+  function showHint() { msgsEl.innerHTML = '<div class="hint"><b>What needs doing?</b>quick questions get answers. bigger asks get scoped before anything runs.</div>'; }
 
-  function clearThreadUi() {
-    running = false;
-    streamText = ""; streamTool = ""; streamEl = null; runlineEl = null;
-    msgsEl.querySelectorAll(".m, .runline").forEach((n) => n.remove());
-  }
-  function newChat() {
-    convId = null;
-    convTitle = "New chat";
-    clearThreadUi();
-    document.body.classList.add("fresh");
-    setTab("chat");
-    setShell();
-  }
+  function newChat() { convId = null; convTitle = "New chat"; clearThreadUi(); showHint(); setPage("chat"); setHeader(); }
   async function openThread(id, title) {
-    convId = id;
-    convTitle = title || "New chat";
-    clearThreadUi();
-    document.body.classList.remove("fresh");
-    setTab("chat");
-    setShell();
+    convId = id; convTitle = title || "New chat"; clearThreadUi();
+    setPage("chat"); setHeader();
     try {
-      const r = await api("/conversation?id=" + encodeURIComponent(id) + "&n=80");
+      const r = await api("/conversation?id=" + encodeURIComponent(id) + "&n=120");
       if (!r.ok) throw new Error((await r.json()).error || r.status);
       const d = await r.json();
-      convTitle = d.title;
-      running = d.status === "running";
-      clearThreadUi();
-      running = d.status === "running";
-      for (const m of d.messages) msgsEl.appendChild(bubble(m.role, m.content, m.tools, { system: m.system }));
-      renderRunline();
-      setShell();
-      scrollDown(true);
-    } catch (e) {
-      toast("Load failed: " + (e.message || e));
-    }
+      convTitle = d.title; running = d.status === "running";
+      clearThreadUi(); running = d.status === "running";
+      if (!d.messages || !d.messages.length) showHint();
+      else for (const m of d.messages) msgsEl.appendChild(bubble(m.role, m.content, m.tools, { system: m.system }));
+      renderRunline(); setHeader(); scrollDown(true);
+    } catch (e) { toast("Load failed: " + (e.message || e)); }
   }
-  $("thclose").onclick = newChat;
 
-  // ---- send (every fresh cockpit chat carries the agent role) ----
   let lastSentText = null;
   async function send() {
-    const text = input.value.trim();
-    if (!text) return;
-    input.value = "";
-    input.style.height = "auto";
-    lastSentText = text;
-    document.body.classList.remove("fresh");
-    const mine = bubble("user", text, null);
-    msgsEl.appendChild(mine);
-    scrollDown(true);
+    const text = input.value.trim(); if (!text) return;
+    input.value = ""; input.style.height = "auto"; lastSentText = text;
+    if (msgsEl.querySelector(".hint")) msgsEl.innerHTML = "";
+    msgsEl.appendChild(bubble("user", text, null)); scrollDown(true);
+    const mine = msgsEl.lastChild;
     try {
-      const r = await api("/message", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ convId, text, supervisor: convId ? undefined : true }),
-      });
+      const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, text, supervisor: convId ? undefined : true }) });
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || r.status);
-      if (!convId && d.convId) {
-        convId = d.convId;
-        convTitle = text.split("\n")[0].slice(0, 60);
-      }
-      if (d.queued) {
-        mine.classList.add("queued");
-        toast("Mid-run — queued, sends when it finishes.");
-      } else {
-        running = true;
-        renderRunline();
-      }
-      setShell();
-    } catch (e) {
-      mine.classList.add("queued");
-      toast("Send failed: " + (e.message || e));
-    }
+      if (!convId && d.convId) { convId = d.convId; convTitle = text.split("\n")[0].slice(0, 60); }
+      if (d.queued) { mine.classList.add("queued"); toast("Mid-run — queued, sends when it finishes."); }
+      else { running = true; renderRunline(); }
+      setHeader();
+    } catch (e) { mine.classList.add("queued"); toast("Send failed: " + (e.message || e)); }
   }
   $("sendBtn").onclick = send;
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
-  });
-  input.addEventListener("input", () => {
-    input.style.height = "auto";
-    input.style.height = Math.min(input.scrollHeight, 120) + "px";
-  });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 120) + "px"; });
   async function killCurrent() {
     if (!convId) return;
     const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId }) }).catch(() => null);
@@ -668,184 +588,87 @@
     toast(d.result || "Kill sent.");
   }
 
-  // ---- live events: long-poll ----
+  // ---------- live events ----------
   let pollGen = 0;
   async function pollLoop() {
-    const gen = ++pollGen;
-    let after = "latest";
+    const gen = ++pollGen; let after = "latest";
     while (gen === pollGen) {
       try {
         const r = await api("/poll?after=" + after);
         if (!r.ok) throw new Error("poll " + r.status);
-        const d = await r.json();
-        after = d.next;
-        offlineStreak = 0;
+        const d = await r.json(); after = d.next; offlineStreak = 0;
         if (document.body.classList.contains("offline")) setOffline(false);
         for (const ev of d.events || []) handleEvent(ev);
-      } catch {
-        offlineStreak++;
-        if (offlineStreak >= 2) setOffline(true);
-        await new Promise((res) => setTimeout(res, 3000));
-      }
+      } catch { offlineStreak++; if (offlineStreak >= 2) setOffline(true); await new Promise((res) => setTimeout(res, 3000)); }
     }
   }
   function handleEvent(d) {
-    if (d.type === "runtime" && d.convId === convId) {
-      running = true;
-      streamText = d.text || "";
-      streamTool = d.tool || "";
-      renderStream();
-      setShell();
-    } else if (d.type === "message" && d.convId === convId) {
-      if (d.role === "user" && lastSentText !== null && d.content === lastSentText) {
-        lastSentText = null;
-        return;
-      }
-      streamText = ""; streamTool = "";
-      renderStream();
-      msgsEl.appendChild(bubble(d.role, d.content, d.tools));
-      scrollDown(false);
+    if (d.type === "runtime" && d.convId === convId) { running = true; streamText = d.text || ""; streamTool = d.tool || ""; renderStream(); setHeader(); }
+    else if (d.type === "message" && d.convId === convId) {
+      if (d.role === "user" && lastSentText !== null && d.content === lastSentText) { lastSentText = null; return; }
+      streamText = ""; streamTool = ""; renderStream(); msgsEl.appendChild(bubble(d.role, d.content, d.tools)); scrollDown(false);
     } else if (d.type === "status") {
-      if (d.convId === convId) {
-        running = d.status === "running";
-        if (!running) { streamText = ""; streamTool = ""; renderStream(); }
-        renderRunline();
-      }
-      void refreshState();
-      if (tab === "activity") void loadActivity();
-    } else if (d.type === "title" && d.convId === convId) {
-      convTitle = d.title;
-      setShell();
-    } else if (d.type === "notif") {
-      void refreshBadge();
-      if (tab === "alerts") void loadAlerts();
-    }
+      if (d.convId === convId) { running = d.status === "running"; if (!running) { streamText = ""; streamTool = ""; renderStream(); } renderRunline(); }
+      void refreshState(); if (page === "activity") void loadActivity();
+    } else if (d.type === "title" && d.convId === convId) { convTitle = d.title; setHeader(); }
+    else if (d.type === "notif") { void refreshBadge(); if (page === "alerts") void loadAlerts(); }
   }
 
-  // ---- header state ----
-  async function refreshState() {
-    try {
-      const r = await api("/status");
-      const d = await r.json();
-      if (d.error) throw new Error(d.error);
-      vaultName = d.vault || vaultName;
-      boxModel = d.model || "";
-      runCount = (d.runs || []).length;
-      setShell();
-      return d;
-    } catch {
-      return null;
-    }
-  }
-  async function refreshBadge() {
-    try {
-      const r = await api("/notifications");
-      const d = await r.json();
-      if (typeof d.unread === "number") { unreadN = d.unread; setShell(); }
-    } catch {}
-  }
+  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; runCount = (d.runs || []).length; setHeader(); return d; } catch { return null; } }
+  async function refreshBadge() { try { const d = await (await api("/notifications")).json(); if (typeof d.unread === "number") { unreadN = d.unread; setHeader(); } } catch {} }
 
-  // ---- ACTIVITY ----
-  function el(html) {
-    const t = document.createElement("template");
-    t.innerHTML = html.trim();
-    return t.content.firstChild;
-  }
+  // ---------- activity ----------
+  function el(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
   async function loadActivity() {
     const box = $("actScroll");
     try {
       const [sr, cr, schr] = await Promise.all([api("/status"), api("/conversations"), api("/schedules")]);
       const sd = await sr.json(), cd = await cr.json(), schd = await schr.json().catch(() => ({ schedules: [] }));
       if (cd.error) throw new Error(cd.error);
-      const runs = sd.runs || [];
-      const runIds = new Set(runs.map((x) => x.convId));
-      const convs = cd.conversations || [];
-      const byId = new Map(convs.map((c) => [c.id, c]));
-      runCount = runs.length;
-      setShell();
+      const runs = sd.runs || [], runIds = new Set(runs.map((x) => x.convId));
+      const convs = cd.conversations || [], byId = new Map(convs.map((c) => [c.id, c]));
+      runCount = runs.length; setHeader();
       box.innerHTML = "";
-
-      // Active: every running thread, with goal + heartbeat + kill.
       box.appendChild(el('<div class="sec">Active</div>'));
-      if (!runs.length) {
-        box.appendChild(el('<div class="empty">Nothing running. Ask for something in Chat — big asks get scoped, then land here.</div>'));
-      }
+      if (!runs.length) box.appendChild(el('<div class="empty">Nothing running. Ask for something in Chat — big asks get scoped, then land here.</div>'));
       for (const run of runs) {
         const c = byId.get(run.convId) || {};
-        const card = el(
-          '<div class="wk open"><button class="wh"><span class="s run">●</span><span class="nm"></span><span class="mt"></span></button>' +
-          '<div class="wd"><div class="lbl">Goal</div><span class="g"></span>' +
-          '<div class="wbtns"><button class="wbtn op">Open thread</button><button class="wbtn danger kl">Kill</button></div></div></div>',
-        );
+        const card = el('<div class="wk open"><button class="wh"><span class="s run">●</span><span class="nm"></span><span class="mt"></span></button><div class="wd"><div class="lbl">Goal</div><span class="gv"></span><div class="wbtns"><button class="wbtn op">Open thread</button><button class="wbtn danger kl">Kill</button></div></div></div>');
         card.querySelector(".nm").textContent = run.title || c.title || run.convId;
-        card.querySelector(".mt").textContent = run.lastTool
-          ? run.lastTool + " · " + (run.lastProgressAt ? age(run.lastProgressAt) : "now")
-          : "running";
-        card.querySelector(".g").textContent = c.goal || c.preview || "(no goal recorded)";
+        card.querySelector(".mt").textContent = run.lastTool ? run.lastTool + " · " + (run.lastProgressAt ? age(run.lastProgressAt) : "now") : "running";
+        card.querySelector(".gv").textContent = c.goal || c.preview || "(no goal recorded)";
         card.querySelector(".wh").onclick = () => card.classList.toggle("open");
         card.querySelector(".op").onclick = (e) => { e.stopPropagation(); openThread(run.convId, run.title || c.title); };
         const kl = card.querySelector(".kl");
         kl.onclick = async (e) => {
           e.stopPropagation();
-          if (!kl.classList.contains("confirm")) {
-            kl.classList.add("confirm");
-            kl.textContent = "Confirm kill";
-            setTimeout(() => { kl.classList.remove("confirm"); kl.textContent = "Kill"; }, 2600);
-            return;
-          }
+          if (!kl.classList.contains("confirm")) { kl.classList.add("confirm"); kl.textContent = "Confirm kill"; setTimeout(() => { kl.classList.remove("confirm"); kl.textContent = "Kill"; }, 2600); return; }
           await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: run.convId }) }).catch(() => {});
-          toast("Kill sent.");
-          setTimeout(loadActivity, 800);
+          toast("Kill sent."); setTimeout(loadActivity, 800);
         };
         box.appendChild(card);
       }
-
-      // Workers not currently running, touched in the last 24h → Done today.
-      const dayAgo = Date.now() - 24 * 3600_000;
-      const doneToday = convs.filter(
-        (c) => c.source === "worker" && !runIds.has(c.id) && c.lastActivityAt > dayAgo,
-      );
-
-      // Recurring (schedules — toggle/delete; creation happens by asking).
       box.appendChild(el('<div class="sec">Recurring</div>'));
       const scheds = schd.schedules || [];
-      if (!scheds.length) {
-        box.appendChild(el('<div class="empty">No recurring missions. Tell the agent — “brief me every morning at 7” is enough.</div>'));
-      }
+      if (!scheds.length) box.appendChild(el('<div class="empty">No recurring missions. Tell the agent — “brief me every morning at 7” is enough.</div>'));
       for (const sc of scheds) {
-        const card = el(
-          '<div class="card"><div class="schedrow"><div class="info"><b></b><small></small></div>' +
-          '<button class="sw"></button><button class="del">✕</button></div></div>',
-        );
+        const card = el('<div class="card"><div class="schedrow"><div class="info"><b></b><small></small></div><button class="sw"></button><button class="del">✕</button></div></div>');
         card.querySelector("b").textContent = sc.name;
-        card.querySelector("small").textContent =
-          sc.label + (sc.quietUnlessAlert ? " · quiet" : "") + (sc.lastFiredAt ? " · fired " + age(sc.lastFiredAt) + " ago" : "");
-        const sw = card.querySelector(".sw");
-        sw.textContent = sc.enabled ? "On" : "Off";
-        sw.className = "sw" + (sc.enabled ? " on" : "");
-        sw.onclick = async () => {
-          await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle", id: sc.id, enabled: !sc.enabled }) }).catch(() => {});
-          loadActivity();
-        };
-        card.querySelector(".del").onclick = async () => {
-          if (!confirm('Delete "' + sc.name + '"?')) return;
-          await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", id: sc.id }) }).catch(() => {});
-          loadActivity();
-        };
+        card.querySelector("small").textContent = sc.label + (sc.quietUnlessAlert ? " · quiet" : "") + (sc.lastFiredAt ? " · fired " + age(sc.lastFiredAt) + " ago" : "");
+        const sw = card.querySelector(".sw"); sw.textContent = sc.enabled ? "On" : "Off"; sw.className = "sw" + (sc.enabled ? " on" : "");
+        sw.onclick = async () => { await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle", id: sc.id, enabled: !sc.enabled }) }).catch(() => {}); loadActivity(); };
+        card.querySelector(".del").onclick = async () => { if (!confirm('Delete "' + sc.name + '"?')) return; await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", id: sc.id }) }).catch(() => {}); loadActivity(); };
         box.appendChild(card);
       }
-
-      if (doneToday.length) {
+      const dayAgo = Date.now() - 24 * 3600000;
+      const done = convs.filter((c) => c.source === "worker" && !runIds.has(c.id) && c.lastActivityAt > dayAgo);
+      if (done.length) {
         box.appendChild(el('<div class="sec">Done · today</div>'));
-        for (const c of doneToday.slice(0, 10)) {
-          const card = el(
-            '<div class="wk"><button class="wh"><span class="s g">✓</span><span class="nm"></span><span class="mt"></span></button>' +
-            '<div class="wd"><div class="lbl">Goal</div><span class="g"></span><div class="lbl">Last update</div><span class="p"></span>' +
-            '<div class="wbtns"><button class="wbtn op">Open thread</button></div></div></div>',
-          );
+        for (const c of done.slice(0, 12)) {
+          const card = el('<div class="wk"><button class="wh"><span class="s g">✓</span><span class="nm"></span><span class="mt"></span></button><div class="wd"><div class="lbl">Goal</div><span class="gv"></span><div class="lbl">Last update</div><span class="p"></span><div class="wbtns"><button class="wbtn op">Open thread</button></div></div></div>');
           card.querySelector(".nm").textContent = c.title;
           card.querySelector(".mt").textContent = age(c.lastActivityAt);
-          card.querySelector(".g").textContent = c.goal || "(no goal recorded)";
+          card.querySelector(".gv").textContent = c.goal || "(no goal recorded)";
           card.querySelector(".p").textContent = c.preview || "—";
           card.querySelector(".wh").onclick = () => card.classList.toggle("open");
           card.querySelector(".op").onclick = (e) => { e.stopPropagation(); openThread(c.id, c.title); };
@@ -853,616 +676,230 @@
         }
       }
       box.appendChild(el('<div style="height:18px"></div>'));
-    } catch (e) {
-      box.innerHTML = '<div class="empty">Activity unavailable: ' + esc(String(e.message || e)) + "</div>";
-    }
+    } catch (e) { box.innerHTML = '<div class="empty">Activity unavailable: ' + esc(String(e.message || e)) + "</div>"; }
   }
 
-  // ---- ALERTS ----
+  // ---------- alerts ----------
   async function loadAlerts() {
     const box = $("alScroll");
     try {
-      const r = await api("/notifications");
-      const d = await r.json();
+      const d = await (await api("/notifications")).json();
       if (d.error) throw new Error(d.error);
-      unreadN = d.unread || 0;
-      setShell();
+      unreadN = d.unread || 0; setHeader();
       const list = d.notifications || [];
       box.innerHTML = "";
       const asks = list.filter((n) => n.kind === "ask" && !n.read);
       const rest = list.filter((n) => !(n.kind === "ask" && !n.read));
-      if (!list.length) {
-        box.appendChild(el('<div class="empty">Nothing yet. Mission completions, worker results, and your recurring briefings land here — with a push if notifications are on.</div>'));
-      }
+      if (!list.length) box.appendChild(el('<div class="empty">Nothing yet. Mission completions, worker results, and your recurring briefings land here — with a push if notifications are on and the app isn’t already open.</div>'));
       if (asks.length) box.appendChild(el('<div class="sec">Needs you</div>'));
       for (const n of asks) box.appendChild(alertCard(n, true));
       if (rest.length) box.appendChild(el('<div class="sec">For you</div>'));
       for (const n of rest) box.appendChild(alertCard(n, false));
       box.appendChild(el('<div style="height:18px"></div>'));
-    } catch (e) {
-      box.innerHTML = '<div class="empty">Alerts unavailable: ' + esc(String(e.message || e)) + "</div>";
-    }
+    } catch (e) { box.innerHTML = '<div class="empty">Alerts unavailable: ' + esc(String(e.message || e)) + "</div>"; }
   }
-  function markRead(id) {
-    return api("/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
-  }
+  const markRead = (id) => api("/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
   function alertCard(n, needsYou) {
-    const card = el(
-      '<div class="card' + (needsYou ? " ask" : n.read ? "" : " unread") + '">' +
-      '<div class="crow"><div class="ico"></div><div class="cb">' +
-      '<div class="ct"><b></b><span class="t"></span></div><p class="cs"></p><span class="tag"></span>' +
-      "</div></div></div>",
-    );
+    const card = el('<div class="card' + (needsYou ? " ask" : n.read ? "" : " unread") + '"><div class="crow"><div class="ico"></div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><p class="cs"></p><span class="tag"></span></div></div></div>');
     const ico = card.querySelector(".ico");
     if (needsYou) { ico.textContent = "?"; ico.classList.add("a"); }
-    else if (/worker/i.test(n.title)) { ico.textContent = "✓"; ico.classList.add("g"); }
+    else if (/worker|complete|done|finished/i.test(n.title)) { ico.textContent = "✓"; ico.classList.add("g"); }
+    else if (/stopped|idle|cost|\$/i.test(n.title)) { ico.textContent = "$"; ico.classList.add("r"); }
     else { ico.textContent = "•"; }
     card.querySelector("b").textContent = n.title;
     card.querySelector(".t").textContent = age(n.ts);
     card.querySelector(".cs").textContent = n.body || "";
-    card.querySelector(".tag").textContent = n.kind === "ask" ? "answer below" : n.convId ? "tap to open the thread" : "info";
+    card.querySelector(".tag").textContent = needsYou ? "answer below" : n.convId ? "tap to open the thread" : "info";
     if (needsYou && n.convId) {
-      const rep = el(
-        '<div class="reply"><input class="rinp" placeholder="tell it what to do…" autocomplete="off" />' +
-        '<button class="rsend">↑</button></div>',
-      );
-      const doReply = async () => {
-        const v = rep.querySelector(".rinp").value.trim();
-        if (!v) return;
+      const rep = el('<div class="reply"><input class="rinp" placeholder="tell it what to do…" autocomplete="off" /><button class="rsend">↑</button></div>');
+      const go = async () => {
+        const v = rep.querySelector(".rinp").value.trim(); if (!v) return;
         await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: v }) }).catch(() => {});
-        await markRead(n.id);
-        toast("Sent.");
-        loadAlerts();
+        await markRead(n.id); toast("Sent."); loadAlerts();
       };
-      rep.querySelector(".rsend").onclick = doReply;
-      rep.querySelector(".rinp").addEventListener("keydown", (e) => { if (e.key === "Enter") doReply(); });
+      rep.querySelector(".rsend").onclick = go;
+      rep.querySelector(".rinp").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
       card.querySelector(".cb").appendChild(rep);
     } else {
-      card.onclick = async () => {
-        if (!n.read) await markRead(n.id);
-        if (n.convId) openThread(n.convId, n.title);
-        else loadAlerts();
-      };
+      card.onclick = async () => { if (!n.read) await markRead(n.id); if (n.convId) openThread(n.convId, n.title); else loadAlerts(); };
     }
     return card;
   }
 
-  // ---- settings drawer ----
+  // ---------- settings drawer ----------
   function openDrawer() {
-    $("drawer").classList.add("open");
-    refreshPushUi();
-    void (async () => {
-      const d = await refreshState();
-      $("boxRow").innerHTML = "<b></b><small></small>";
-      $("boxRow").querySelector("b").textContent = vaultName || "?";
-      $("boxRow").querySelector("small").textContent =
-        (boxModel ? "model: " + boxModel : "model: ?") + (d ? " · " + (d.runs || []).length + " running" : "");
-    })();
+    $("drawer").classList.add("open"); refreshPushUi();
+    void (async () => { const d = await refreshState(); $("boxRow").innerHTML = "<b></b><small></small>"; $("boxRow").querySelector("b").textContent = vaultName || "?"; $("boxRow").querySelector("small").textContent = (boxModel ? "model: " + boxModel : "model: ?") + (d ? " · " + (d.runs || []).length + " running" : ""); })();
   }
-  $("statebtn").onclick = openDrawer;
   $("drawer").addEventListener("click", (e) => { if (e.target === $("drawer")) $("drawer").classList.remove("open"); });
-  $("killAllBtn").onclick = async () => {
-    const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
-    const d = r ? await r.json().catch(() => ({})) : {};
-    toast(d.result || "Kill-all sent.");
-  };
+  $("killAllBtn").onclick = async () => { const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null); const d = r ? await r.json().catch(() => ({})) : {}; toast(d.result || "Kill-all sent."); };
 
-  // ---- push ----
-  const b64uToBytes = (s) => {
-    const pad = "=".repeat((4 - (s.length % 4)) % 4);
-    const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
-    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
-  };
+  // ---------- push ----------
+  const b64uToBytes = (s) => { const pad = "=".repeat((4 - (s.length % 4)) % 4); const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(raw, (c) => c.charCodeAt(0)); };
   const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window;
-  async function currentSub() {
-    if (!pushSupported()) return null;
-    const reg = await navigator.serviceWorker.getRegistration().catch(() => null);
-    return reg ? await reg.pushManager.getSubscription().catch(() => null) : null;
-  }
+  async function currentSub() { if (!pushSupported()) return null; const reg = await navigator.serviceWorker.getRegistration().catch(() => null); return reg ? await reg.pushManager.getSubscription().catch(() => null) : null; }
   async function refreshPushUi() {
-    if (!pushSupported()) {
-      $("pushState").textContent = navigator.standalone === false
-        ? "Add this page to your Home Screen first — Safari tabs can't receive push."
-        : "Push not supported in this browser.";
-      $("pushBtn").style.display = "none";
-      $("pushTestBtn").style.display = "none";
-      return;
-    }
-    const sub = await currentSub();
-    $("pushState").textContent = sub ? "Notifications are ON for this device." : "Notifications are off.";
-    $("pushBtn").style.display = sub ? "none" : "block";
-    $("pushTestBtn").style.display = sub ? "block" : "none";
+    if (!pushSupported()) { $("pushState").textContent = navigator.standalone === false ? "Add this page to your Home Screen first — Safari tabs can't receive push." : "Push not supported in this browser."; $("pushBtn").style.display = "none"; $("pushTestBtn").style.display = "none"; return; }
+    const sub = await currentSub(); $("pushState").textContent = sub ? "Notifications are ON for this device." : "Notifications are off."; $("pushBtn").style.display = sub ? "none" : "block"; $("pushTestBtn").style.display = sub ? "block" : "none";
   }
   $("pushBtn").onclick = async () => {
     try {
-      const perm = await Notification.requestPermission();
-      if (perm !== "granted") { toast("Notifications not allowed."); return; }
-      const reg = await navigator.serviceWorker.register("/phone-sw.js");
-      await navigator.serviceWorker.ready;
-      const vr = await api("/push/vapid");
-      const vd = await vr.json();
-      if (!vr.ok || !vd.key) throw new Error(vd.error || "no VAPID key from box");
+      const perm = await Notification.requestPermission(); if (perm !== "granted") { toast("Notifications not allowed."); return; }
+      const reg = await navigator.serviceWorker.register("/phone-sw.js"); await navigator.serviceWorker.ready;
+      const vd = await (await api("/push/vapid")).json(); if (!vd.key) throw new Error(vd.error || "no VAPID key from box");
       const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(vd.key) });
       const r = await api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) });
       if (!r.ok) throw new Error("subscribe store failed");
-      toast("Notifications enabled.");
-      refreshPushUi();
-    } catch (e) {
-      toast("Push setup failed: " + (e.message || e));
-    }
+      toast("Notifications enabled."); refreshPushUi();
+    } catch (e) { toast("Push setup failed: " + (e.message || e)); }
   };
-  $("pushTestBtn").onclick = async () => {
-    const r = await api("/push/test", { method: "POST" }).catch(() => null);
-    const d = r ? await r.json().catch(() => ({})) : {};
-    toast(d.error ? "Test failed: " + d.error : "Test sent — should arrive in seconds.");
-  };
-  (async () => {
-    const sub = await currentSub();
-    if (sub) api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) }).catch(() => {});
-  })();
+  $("pushTestBtn").onclick = async () => { const r = await api("/push/test", { method: "POST" }).catch(() => null); const d = r ? await r.json().catch(() => ({})) : {}; toast(d.error ? "Test failed: " + d.error : "Test sent — should arrive in seconds."); };
+  if (!MOCK) (async () => { const sub = await currentSub(); if (sub) api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) }).catch(() => {}); })();
 
-  // ---- in-app keyboard (verbatim module: built once, never rebuilt) ----
+  // ---------- in-app keyboard (verbatim) ----------
   const KB_SYS_FLAG = "vc_kb_system";
   const CUSTOM_KB = localStorage.getItem(KB_SYS_FLAG) !== "1";
   const kbEl = $("kb");
   let kbLayer = 0, kbShift = false, kbCaps = false, lastShiftAt = 0, lastSpaceAt = 0;
   const KB_LAYERS = [
-    [
-      [..."qwertyuiop"].map((c) => ({ k: "ch", t: c })),
-      [..."asdfghjkl"].map((c) => ({ k: "ch", t: c })),
-      [{ k: "shift", t: "⇧" }, ...[..."zxcvbnm"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }],
-      [{ k: "layer1", t: "123" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }],
-    ],
-    [
-      [..."1234567890"].map((c) => ({ k: "ch", t: c })),
-      [..."-/:;()$&@\""].map((c) => ({ k: "ch", t: c })),
-      [{ k: "layer2", t: "#+=" }, ...[...".,?!'"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }],
-      [{ k: "layer0", t: "ABC" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }],
-    ],
-    [
-      [..."[]{}#%^*+="].map((c) => ({ k: "ch", t: c })),
-      [..."_\\|~<>€£¥•"].map((c) => ({ k: "ch", t: c })),
-      [{ k: "layer1", t: "123" }, ...[...".,?!'"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }],
-      [{ k: "layer0", t: "ABC" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }],
-    ],
+    [[..."qwertyuiop"].map((c) => ({ k: "ch", t: c })), [..."asdfghjkl"].map((c) => ({ k: "ch", t: c })), [{ k: "shift", t: "⇧" }, ...[..."zxcvbnm"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }], [{ k: "layer1", t: "123" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }]],
+    [[..."1234567890"].map((c) => ({ k: "ch", t: c })), [..."-/:;()$&@\""].map((c) => ({ k: "ch", t: c })), [{ k: "layer2", t: "#+=" }, ...[...".,?!'"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }], [{ k: "layer0", t: "ABC" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }]],
+    [[..."[]{}#%^*+="].map((c) => ({ k: "ch", t: c })), [..."_\\|~<>€£¥•"].map((c) => ({ k: "ch", t: c })), [{ k: "layer1", t: "123" }, ...[...".,?!'"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }], [{ k: "layer0", t: "ABC" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }]],
   ];
-  const kbLayerDivs = [], kbLetterKeys = [];
-  let kbShiftKeyEl = null;
+  const kbLayerDivs = [], kbLetterKeys = []; let kbShiftKeyEl = null;
   function kbBuild() {
     kbEl.innerHTML = "";
     KB_LAYERS.forEach((rows, li) => {
-      const layer = document.createElement("div");
-      layer.className = "kblayer" + (li === 0 ? " active" : "");
+      const layer = document.createElement("div"); layer.className = "kblayer" + (li === 0 ? " active" : "");
       rows.forEach((row, ri) => {
-        const r = document.createElement("div");
-        r.className = "kbrow" + (li === 0 && ri === 1 ? " indent" : "");
+        const r = document.createElement("div"); r.className = "kbrow" + (li === 0 && ri === 1 ? " indent" : "");
         for (const key of row) {
-          const b = document.createElement("div");
-          const spec = key.k !== "ch";
-          b.className = "kbk" + (spec ? " spec" : "");
-          if (key.k === "space") b.classList.add("space");
-          if (key.k === "ret") b.classList.add("ret");
-          b.dataset.k = key.k;
-          b.dataset.t = key.t;
-          b.textContent = key.t;
+          const b = document.createElement("div"); const spec = key.k !== "ch"; b.className = "kbk" + (spec ? " spec" : "");
+          if (key.k === "space") b.classList.add("space"); if (key.k === "ret") b.classList.add("ret");
+          b.dataset.k = key.k; b.dataset.t = key.t; b.textContent = key.t;
           if (key.k === "ch" && /[a-z]/i.test(key.t)) kbLetterKeys.push({ el: b, base: key.t });
-          if (key.k === "shift") kbShiftKeyEl = b;
-          r.appendChild(b);
+          if (key.k === "shift") kbShiftKeyEl = b; r.appendChild(b);
         }
         layer.appendChild(r);
       });
-      kbEl.appendChild(layer);
-      kbLayerDivs.push(layer);
+      kbEl.appendChild(layer); kbLayerDivs.push(layer);
     });
   }
-  function kbApplyShift() {
-    const up = kbShift || kbCaps;
-    for (const lk of kbLetterKeys) lk.el.textContent = up ? lk.base.toUpperCase() : lk.base;
-    if (kbShiftKeyEl) {
-      kbShiftKeyEl.classList.toggle("lit", up);
-      kbShiftKeyEl.classList.toggle("caps", kbCaps);
-    }
-  }
-  function kbSetLayer(i) {
-    kbLayer = i;
-    kbLayerDivs.forEach((d, li) => d.classList.toggle("active", li === i));
-    if (i === 0) kbAutoShift();
-    kbApplyShift();
-  }
-  function kbSel() {
-    const len = input.value.length;
-    let s = input.selectionStart, e = input.selectionEnd;
-    if (s == null || e == null) { s = len; e = len; }
-    return [s, e];
-  }
-  function kbAfterEdit() {
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    kbAutoShift();
-  }
-  function kbAutoShift() {
-    if (kbCaps || kbLayer !== 0) return;
-    const [s] = kbSel();
-    const before = input.value.slice(0, s);
-    const want = before === "" || /[.!?]\s$/.test(before) || /\n$/.test(before);
-    if (want !== kbShift) { kbShift = want; kbApplyShift(); }
-  }
-  function kbInsert(str) {
-    const [s, e] = kbSel();
-    input.setRangeText(str, s, e, "end");
-    kbAfterEdit();
-  }
-  function kbBackspaceOnce() {
-    let [s, e] = kbSel();
-    if (s === e) {
-      if (s === 0) return;
-      let n = 1;
-      const code = input.value.charCodeAt(s - 1);
-      if (code >= 0xdc00 && code <= 0xdfff && s > 1) n = 2;
-      s -= n;
-    }
-    input.setRangeText("", s, e, "end");
-    kbAfterEdit();
-  }
+  function kbApplyShift() { const up = kbShift || kbCaps; for (const lk of kbLetterKeys) lk.el.textContent = up ? lk.base.toUpperCase() : lk.base; if (kbShiftKeyEl) { kbShiftKeyEl.classList.toggle("lit", up); kbShiftKeyEl.classList.toggle("caps", kbCaps); } }
+  function kbSetLayer(i) { kbLayer = i; kbLayerDivs.forEach((d, li) => d.classList.toggle("active", li === i)); if (i === 0) kbAutoShift(); kbApplyShift(); }
+  function kbSel() { const len = input.value.length; let s = input.selectionStart, e = input.selectionEnd; if (s == null || e == null) { s = len; e = len; } return [s, e]; }
+  function kbAfterEdit() { input.dispatchEvent(new Event("input", { bubbles: true })); kbAutoShift(); }
+  function kbAutoShift() { if (kbCaps || kbLayer !== 0) return; const [s] = kbSel(); const before = input.value.slice(0, s); const want = before === "" || /[.!?]\s$/.test(before) || /\n$/.test(before); if (want !== kbShift) { kbShift = want; kbApplyShift(); } }
+  function kbInsert(str) { const [s, e] = kbSel(); input.setRangeText(str, s, e, "end"); kbAfterEdit(); }
+  function kbBackspaceOnce() { let [s, e] = kbSel(); if (s === e) { if (s === 0) return; let n = 1; const code = input.value.charCodeAt(s - 1); if (code >= 0xdc00 && code <= 0xdfff && s > 1) n = 2; s -= n; } input.setRangeText("", s, e, "end"); kbAfterEdit(); }
   let bkspT1 = 0, bkspIv = 0;
   function kbStopRepeat() { clearTimeout(bkspT1); clearInterval(bkspIv); bkspT1 = bkspIv = 0; }
   function kbKeyDown(elk) {
-    const k = elk.dataset.k, t = elk.dataset.t;
-    elk.classList.add("down");
-    if (k === "ch") {
-      const pop = document.createElement("div");
-      pop.className = "kbpop";
-      pop.textContent = elk.textContent;
-      elk.appendChild(pop);
-      kbInsert(kbShift || kbCaps ? t.toUpperCase() : t);
-      if (kbShift && !kbCaps && /[a-z]/i.test(t)) { kbShift = false; kbApplyShift(); }
-    } else if (k === "bksp") {
-      kbBackspaceOnce();
-      kbStopRepeat();
-      bkspT1 = setTimeout(() => { bkspIv = setInterval(kbBackspaceOnce, 55); }, 420);
-    } else if (k === "shift") {
-      const now = Date.now();
-      if (now - lastShiftAt < 350) { kbCaps = true; kbShift = true; }
-      else if (kbCaps) { kbCaps = false; kbShift = false; }
-      else { kbShift = !kbShift; }
-      lastShiftAt = now;
-      kbApplyShift();
-    } else if (k === "space") {
-      const [caret] = kbSel();
-      const now = Date.now();
-      if (now - lastSpaceAt < 350 && caret >= 2 && input.value[caret - 1] === " " && /[\w)\]'"’”]/.test(input.value[caret - 2])) {
-        input.setRangeText(". ", caret - 2, caret, "end");
-        kbAfterEdit();
-      } else kbInsert(" ");
-      lastSpaceAt = now;
-    } else if (k === "ret") kbInsert("\n");
-    else if (k === "layer0") kbSetLayer(0);
-    else if (k === "layer1") kbSetLayer(1);
-    else if (k === "layer2") kbSetLayer(2);
+    const k = elk.dataset.k, t = elk.dataset.t; elk.classList.add("down");
+    if (k === "ch") { const pop = document.createElement("div"); pop.className = "kbpop"; pop.textContent = elk.textContent; elk.appendChild(pop); kbInsert(kbShift || kbCaps ? t.toUpperCase() : t); if (kbShift && !kbCaps && /[a-z]/i.test(t)) { kbShift = false; kbApplyShift(); } }
+    else if (k === "bksp") { kbBackspaceOnce(); kbStopRepeat(); bkspT1 = setTimeout(() => { bkspIv = setInterval(kbBackspaceOnce, 55); }, 420); }
+    else if (k === "shift") { const now = Date.now(); if (now - lastShiftAt < 350) { kbCaps = true; kbShift = true; } else if (kbCaps) { kbCaps = false; kbShift = false; } else { kbShift = !kbShift; } lastShiftAt = now; kbApplyShift(); }
+    else if (k === "space") { const [caret] = kbSel(); const now = Date.now(); if (now - lastSpaceAt < 350 && caret >= 2 && input.value[caret - 1] === " " && /[\w)\]'"’”]/.test(input.value[caret - 2])) { input.setRangeText(". ", caret - 2, caret, "end"); kbAfterEdit(); } else kbInsert(" "); lastSpaceAt = now; }
+    else if (k === "ret") kbInsert("\n");
+    else if (k === "layer0") kbSetLayer(0); else if (k === "layer1") kbSetLayer(1); else if (k === "layer2") kbSetLayer(2);
   }
-  function kbKeyUp(elk) {
-    elk.classList.remove("down");
-    const p = elk.querySelector(".kbpop");
-    if (p) p.remove();
-  }
-  function showKb() {
-    if (!CUSTOM_KB || tab !== "chat") return;
-    if (!document.body.classList.contains("kbopen")) {
-      document.body.classList.add("kbopen");
-      scrollDown(true);
-    }
-    if (document.activeElement !== input) {
-      try { input.focus({ preventScroll: true }); } catch {}
-    }
-    kbApplyShift();
-    kbAutoShift();
-  }
-  function hideKb() {
-    if (!document.body.classList.contains("kbopen")) return;
-    document.body.classList.remove("kbopen");
-    kbStopRepeat();
-  }
+  function kbKeyUp(elk) { elk.classList.remove("down"); const p = elk.querySelector(".kbpop"); if (p) p.remove(); }
+  function showKb() { if (!CUSTOM_KB || page !== "chat") return; if (!document.body.classList.contains("kbopen")) { document.body.classList.add("kbopen"); scrollDown(true); } if (document.activeElement !== input) { try { input.focus({ preventScroll: true }); } catch {} } kbApplyShift(); kbAutoShift(); }
+  function hideKb() { if (!document.body.classList.contains("kbopen")) return; document.body.classList.remove("kbopen"); kbStopRepeat(); }
   if (CUSTOM_KB) {
-    input.setAttribute("inputmode", "none");
-    input.setAttribute("autocapitalize", "off");
-    input.setAttribute("autocorrect", "off");
-    input.setAttribute("autocomplete", "off");
-    input.setAttribute("spellcheck", "false");
-    kbBuild();
-    kbApplyShift();
-    const hasTouch = "ontouchstart" in window;
-    const downByKey = new Map();
+    input.setAttribute("inputmode", "none"); input.setAttribute("autocapitalize", "off"); input.setAttribute("autocorrect", "off"); input.setAttribute("autocomplete", "off"); input.setAttribute("spellcheck", "false");
+    kbBuild(); kbApplyShift();
+    const hasTouch = "ontouchstart" in window; const downByKey = new Map();
     const keyFrom = (target) => (target && target.closest ? target.closest(".kbk") : null);
     if (hasTouch) {
-      kbEl.addEventListener("touchstart", (e) => {
-        e.preventDefault();
-        for (const t of e.changedTouches) {
-          const key = keyFrom(t.target);
-          if (!key) continue;
-          downByKey.set(t.identifier, key);
-          kbKeyDown(key);
-        }
-      }, { passive: false });
-      const endTouch = (e) => {
-        for (const t of e.changedTouches) {
-          const key = downByKey.get(t.identifier);
-          if (!key) continue;
-          downByKey.delete(t.identifier);
-          kbKeyUp(key);
-          if (key.dataset.k === "bksp") kbStopRepeat();
-        }
-      };
-      kbEl.addEventListener("touchend", endTouch);
-      kbEl.addEventListener("touchcancel", endTouch);
+      kbEl.addEventListener("touchstart", (e) => { e.preventDefault(); for (const t of e.changedTouches) { const key = keyFrom(t.target); if (!key) continue; downByKey.set(t.identifier, key); kbKeyDown(key); } }, { passive: false });
+      const endTouch = (e) => { for (const t of e.changedTouches) { const key = downByKey.get(t.identifier); if (!key) continue; downByKey.delete(t.identifier); kbKeyUp(key); if (key.dataset.k === "bksp") kbStopRepeat(); } };
+      kbEl.addEventListener("touchend", endTouch); kbEl.addEventListener("touchcancel", endTouch);
     } else {
-      kbEl.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        const key = keyFrom(e.target);
-        if (!key) return;
-        downByKey.set("mouse", key);
-        kbKeyDown(key);
-      });
-      window.addEventListener("mouseup", () => {
-        const key = downByKey.get("mouse");
-        if (!key) return;
-        downByKey.delete("mouse");
-        kbKeyUp(key);
-        if (key.dataset.k === "bksp") kbStopRepeat();
-      });
+      kbEl.addEventListener("mousedown", (e) => { e.preventDefault(); const key = keyFrom(e.target); if (!key) return; downByKey.set("mouse", key); kbKeyDown(key); });
+      window.addEventListener("mouseup", () => { const key = downByKey.get("mouse"); if (!key) return; downByKey.delete("mouse"); kbKeyUp(key); if (key.dataset.k === "bksp") kbStopRepeat(); });
     }
-    input.addEventListener("focus", showKb);
-    input.addEventListener("click", showKb);
-    msgsEl.addEventListener("touchstart", hideKb, { passive: true });
-    msgsEl.addEventListener("mousedown", hideKb);
+    input.addEventListener("focus", showKb); input.addEventListener("click", showKb);
+    msgsEl.addEventListener("touchstart", hideKb, { passive: true }); msgsEl.addEventListener("mousedown", hideKb);
   }
-  const kbOn = CUSTOM_KB;
-  $("kbState").textContent = kbOn ? "In-app keyboard is ON — no iOS form bar." : "Using the iOS system keyboard.";
-  $("kbToggleBtn").textContent = kbOn ? "Switch to system keyboard" : "Switch to in-app keyboard";
-  $("kbToggleBtn").onclick = () => {
-    localStorage.setItem(KB_SYS_FLAG, kbOn ? "1" : "0");
-    location.reload();
-  };
+  $("kbState").textContent = CUSTOM_KB ? "In-app keyboard is ON — no iOS form bar." : "Using the iOS system keyboard.";
+  $("kbToggleBtn").textContent = CUSTOM_KB ? "Switch to system keyboard" : "Switch to in-app keyboard";
+  $("kbToggleBtn").onclick = () => { localStorage.setItem(KB_SYS_FLAG, CUSTOM_KB ? "1" : "0"); location.reload(); };
 
-  // ---- VOICE (ported from voice.html — the iOS-hardened connect, verbatim
-  // semantics: synchronous unlock in the tap, 503 retry, 15s watchdog,
-  // audio-driven bars, one auto-retry) ----
+  // ---------- voice (verbatim iOS-hardened connect) ----------
   const NUM_BARS = 12, DECAY = 0.85;
-  const vizEl = $("viz"), verrEl = $("verr");
-  const vBars = [];
-  for (let i = 0; i < NUM_BARS; i++) {
-    const b = document.createElement("div");
-    b.className = "vbar";
-    vizEl.appendChild(b);
-    vBars.push(b);
-  }
+  const vizEl = $("viz"), verrEl = $("verr"); const vBars = [];
+  for (let i = 0; i < NUM_BARS; i++) { const b = document.createElement("div"); b.className = "vbar"; vizEl.appendChild(b); vBars.push(b); }
   let vConv = null, vConnecting = false, vRafId = 0, vLive = false, vAutoRetried = false;
   const vSmoothed = new Array(NUM_BARS).fill(0);
-  let vMicCtx = null, vMicAnalyser = null, vMicBuf = null;
-  let vAgentLevel = 0, vAgentActiveUntil = 0;
+  let vMicCtx = null, vMicAnalyser = null, vMicBuf = null, vAgentLevel = 0, vAgentActiveUntil = 0;
   const setVErr = (e) => { verrEl.textContent = e || ""; };
   const micAvailable = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-  function vTeardownAudio() {
-    try { if (vMicCtx) vMicCtx.close(); } catch {}
-    vMicCtx = null; vMicAnalyser = null; vMicBuf = null;
-  }
-  function pcmLevel(b64) {
-    const s = atob(b64);
-    const n = s.length;
-    if (n < 2) return 0;
-    const step = n > 4000 ? 8 : 2;
-    let sum = 0, count = 0;
-    for (let i = 0; i + 1 < n; i += step) {
-      let v = s.charCodeAt(i) | (s.charCodeAt(i + 1) << 8);
-      if (v >= 32768) v -= 65536;
-      sum += v * v; count++;
-    }
-    const rms = count ? Math.sqrt(sum / count) / 32768 : 0;
-    return Math.min(1, rms * 4);
-  }
-  function vBin(data, n) {
-    const out = new Array(n).fill(0);
-    if (!data || !data.length) return out;
-    const per = Math.max(1, Math.floor(data.length / n));
-    for (let i = 0; i < n; i++) {
-      let s = 0;
-      for (let j = 0; j < per; j++) s += data[i * per + j] || 0;
-      out[i] = s / per / 255;
-    }
-    return out;
-  }
+  function vTeardownAudio() { try { if (vMicCtx) vMicCtx.close(); } catch {} vMicCtx = null; vMicAnalyser = null; vMicBuf = null; }
+  function pcmLevel(b64) { const s = atob(b64); const n = s.length; if (n < 2) return 0; const step = n > 4000 ? 8 : 2; let sum = 0, count = 0; for (let i = 0; i + 1 < n; i += step) { let v = s.charCodeAt(i) | (s.charCodeAt(i + 1) << 8); if (v >= 32768) v -= 65536; sum += v * v; count++; } const rms = count ? Math.sqrt(sum / count) / 32768 : 0; return Math.min(1, rms * 4); }
+  function vBin(data, n) { const out = new Array(n).fill(0); if (!data || !data.length) return out; const per = Math.max(1, Math.floor(data.length / n)); for (let i = 0; i < n; i++) { let s = 0; for (let j = 0; j < per; j++) s += data[i * per + j] || 0; out[i] = s / per / 255; } return out; }
   function vMeter() {
     if (!vLive) return;
-    const speaking = Date.now() < vAgentActiveUntil;
-    let raw;
-    try {
-      if (speaking) {
-        raw = [];
-        for (let i = 0; i < NUM_BARS; i++) {
-          const shape = 0.55 + 0.45 * Math.sin((i / (NUM_BARS - 1)) * Math.PI);
-          raw.push(vAgentLevel * shape);
-        }
-      } else if (vMicAnalyser) {
-        vMicAnalyser.getByteFrequencyData(vMicBuf);
-        raw = vBin(vMicBuf, NUM_BARS);
-      } else {
-        raw = vBin(vConv && vConv.getInputByteFrequencyData && vConv.getInputByteFrequencyData(), NUM_BARS);
-      }
-    } catch { raw = new Array(NUM_BARS).fill(0); }
-    for (let i = 0; i < NUM_BARS; i++) {
-      const decayed = vSmoothed[i] * DECAY;
-      vSmoothed[i] = raw[i] > decayed ? raw[i] : decayed;
-      const h = 0.16 + Math.min(1, vSmoothed[i]) * 0.84;
-      vBars[i].style.transform = `scaleY(${h.toFixed(3)})`;
-    }
+    const speaking = Date.now() < vAgentActiveUntil; let raw;
+    try { if (speaking) { raw = []; for (let i = 0; i < NUM_BARS; i++) { const shape = 0.55 + 0.45 * Math.sin((i / (NUM_BARS - 1)) * Math.PI); raw.push(vAgentLevel * shape); } } else if (vMicAnalyser) { vMicAnalyser.getByteFrequencyData(vMicBuf); raw = vBin(vMicBuf, NUM_BARS); } else { raw = vBin(vConv && vConv.getInputByteFrequencyData && vConv.getInputByteFrequencyData(), NUM_BARS); } } catch { raw = new Array(NUM_BARS).fill(0); }
+    for (let i = 0; i < NUM_BARS; i++) { const decayed = vSmoothed[i] * DECAY; vSmoothed[i] = raw[i] > decayed ? raw[i] : decayed; const h = 0.16 + Math.min(1, vSmoothed[i]) * 0.84; vBars[i].style.transform = `scaleY(${h.toFixed(3)})`; }
     vRafId = requestAnimationFrame(vMeter);
   }
-  function vClientTools(toolNames) {
-    const tools = {};
-    for (const name of toolNames || []) {
-      tools[name] = async (params) => {
-        try {
-          const r = await api("/tool", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, arguments: params || {} }),
-          });
-          return await r.text();
-        } catch (e) { return "error: " + String(e); }
-      };
-    }
-    return tools;
-  }
+  function vClientTools(toolNames) { const tools = {}; for (const name of toolNames || []) { tools[name] = async (params) => { try { const r = await api("/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, arguments: params || {} }) }); return await r.text(); } catch (e) { return "error: " + String(e); } }; } return tools; }
   async function vStart() {
     if (vConnecting || vConv) return;
-    if (!micAvailable()) {
-      setVErr("This page isn't HTTPS, so the browser blocks the mic. Open the https://…ts.net link from Settings → Phone.");
-      return;
-    }
-    vConnecting = true;
-    setVErr("");
-    document.body.classList.add("vconnecting");
+    if (!micAvailable()) { setVErr("This page isn't HTTPS, so the browser blocks the mic. Open the https://…ts.net link from Settings → Phone."); return; }
+    vConnecting = true; setVErr(""); document.body.classList.add("vconnecting");
     try {
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      try {
-        vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext)();
-        vMicCtx.resume().catch(() => {});
-        const src = vMicCtx.createMediaStreamSource(micStream);
-        vMicAnalyser = vMicCtx.createAnalyser();
-        vMicAnalyser.fftSize = 64;
-        vMicAnalyser.smoothingTimeConstant = 0.5;
-        src.connect(vMicAnalyser);
-        vMicBuf = new Uint8Array(vMicAnalyser.frequencyBinCount);
-      } catch { vMicAnalyser = null; }
+      try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext)(); vMicCtx.resume().catch(() => {}); const src = vMicCtx.createMediaStreamSource(micStream); vMicAnalyser = vMicCtx.createAnalyser(); vMicAnalyser.fftSize = 64; vMicAnalyser.smoothingTimeConstant = 0.5; src.connect(vMicAnalyser); vMicBuf = new Uint8Array(vMicAnalyser.frequencyBinCount); } catch { vMicAnalyser = null; }
       let cfg = null;
-      for (let attempt = 0; attempt < 6; attempt++) {
-        const r = await api("/session", { method: "POST" });
-        if (r.ok) { cfg = await r.json(); break; }
-        if (r.status === 503 && attempt < 5) {
-          await new Promise((res) => setTimeout(res, 2000));
-          continue;
-        }
-        throw new Error(`session ${r.status}: ${(await r.text()).slice(0, 200)}`);
-      }
+      for (let a = 0; a < 6; a++) { const r = await api("/session", { method: "POST" }); if (r.ok) { cfg = await r.json(); break; } if (r.status === 503 && a < 5) { await new Promise((res) => setTimeout(res, 2000)); continue; } throw new Error(`session ${r.status}: ${(await r.text()).slice(0, 200)}`); }
       if (!cfg) throw new Error("session not ready");
-      const sdk = (await sdkPromise) || (await import("https://esm.sh/@elevenlabs/client@1.7.0"));
-      const { Conversation } = sdk;
+      const sdk = (await sdkPromise) || (await import("https://esm.sh/@elevenlabs/client@1.7.0")); const { Conversation } = sdk;
       let timedOut = false, watchdog = 0;
       const sessionPromise = Conversation.startSession({
         signedUrl: cfg.signedUrl,
-        overrides: {
-          agent: { prompt: { prompt: cfg.systemPrompt || "" }, language: "en", firstMessage: "" },
-          tts: { voiceId: cfg.voiceId },
-        },
-        dynamicVariables: cfg.dynamicVariables || {},
-        clientTools: vClientTools(cfg.toolNames),
-        onConnect: () => {
-          if (timedOut) return;
-          vConnecting = false; vAutoRetried = false; vLive = true;
-          document.body.classList.remove("vconnecting");
-          vMeter();
-        },
+        overrides: { agent: { prompt: { prompt: cfg.systemPrompt || "" }, language: "en", firstMessage: "" }, tts: { voiceId: cfg.voiceId } },
+        dynamicVariables: cfg.dynamicVariables || {}, clientTools: vClientTools(cfg.toolNames),
+        onConnect: () => { if (timedOut) return; vConnecting = false; vAutoRetried = false; vLive = true; document.body.classList.remove("vconnecting"); vMeter(); },
         onDisconnect: () => { if (!timedOut) vTeardown(); },
         onError: (m) => setVErr(typeof m === "string" ? m : (m && m.message) || "voice error"),
-        onAudio: (b64) => {
-          try {
-            const lvl = pcmLevel(b64);
-            vAgentLevel = Math.max(lvl, vAgentLevel * 0.6);
-            vAgentActiveUntil = Date.now() + 280;
-          } catch {}
-        },
+        onAudio: (b64) => { try { const lvl = pcmLevel(b64); vAgentLevel = Math.max(lvl, vAgentLevel * 0.6); vAgentActiveUntil = Date.now() + 280; } catch {} },
       });
-      sessionPromise.then((c) => {
-        clearTimeout(watchdog);
-        if (timedOut && c) { try { c.endSession(); } catch {} }
-      }).catch(() => clearTimeout(watchdog));
-      vConv = await Promise.race([
-        sessionPromise,
-        new Promise((_, rej) => { watchdog = setTimeout(() => { timedOut = true; rej(new Error("connect timed out after 15s")); }, 15000); }),
-      ]);
+      sessionPromise.then((c) => { clearTimeout(watchdog); if (timedOut && c) { try { c.endSession(); } catch {} } }).catch(() => clearTimeout(watchdog));
+      vConv = await Promise.race([sessionPromise, new Promise((_, rej) => { watchdog = setTimeout(() => { timedOut = true; rej(new Error("connect timed out after 15s")); }, 15000); })]);
       clearTimeout(watchdog);
     } catch (e) {
-      vConnecting = false;
-      vTeardownAudio();
-      document.body.classList.remove("vconnecting");
-      if (!vAutoRetried) {
-        vAutoRetried = true;
-        setTimeout(() => vStart(), 800);
-        return;
-      }
+      vConnecting = false; vTeardownAudio(); document.body.classList.remove("vconnecting");
+      if (!vAutoRetried) { vAutoRetried = true; setTimeout(() => vStart(), 800); return; }
       setVErr(String((e && e.message) || e));
     }
   }
-  function vTeardown() {
-    vLive = false;
-    cancelAnimationFrame(vRafId); vRafId = 0;
-    vTeardownAudio();
-    vAutoRetried = false;
-    vSmoothed.fill(0);
-    for (const b of vBars) b.style.transform = "scaleY(.16)";
-    document.body.classList.remove("voice", "voicemin", "vconnecting");
-    vConv = null; vConnecting = false;
-  }
-  async function vStop() {
-    try { if (vConv) await vConv.endSession(); } catch {}
-    vTeardown();
-  }
-  // The mic tap IS the iOS unlock: resume a context and play a silent blip
-  // synchronously inside the gesture so the SDK's later resume()/addModule()
-  // succeed (the user-activation root cause).
+  function vTeardown() { vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting"); vConv = null; vConnecting = false; }
+  async function vStop() { try { if (vConv) await vConv.endSession(); } catch {} vTeardown(); }
   $("micBtn").onclick = () => {
-    if (vLive || vConnecting) {
-      document.body.classList.add("voice");
-      document.body.classList.remove("voicemin");
-      return;
-    }
-    try {
-      vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext)();
-      if (vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {});
-      const b = vMicCtx.createBuffer(1, 1, 22050);
-      const s = vMicCtx.createBufferSource();
-      s.buffer = b; s.connect(vMicCtx.destination); s.start(0);
-    } catch {}
-    hideKb();
-    document.body.classList.add("voice");
-    document.body.classList.remove("voicemin");
-    vStart();
+    if (vLive || vConnecting) { document.body.classList.add("voice"); document.body.classList.remove("voicemin"); return; }
+    try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext)(); if (vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {}); const b = vMicCtx.createBuffer(1, 1, 22050); const s = vMicCtx.createBufferSource(); s.buffer = b; s.connect(vMicCtx.destination); s.start(0); } catch {}
+    hideKb(); document.body.classList.add("voice"); document.body.classList.remove("voicemin"); vStart();
   };
   $("vEndBtn").onclick = vStop;
-  $("vMinBtn").onclick = () => {
-    if (vLive || vConnecting) {
-      document.body.classList.add("voicemin");
-      document.body.classList.remove("voice");
-    } else vStop();
-  };
-  $("vpill").onclick = () => {
-    document.body.classList.add("voice");
-    document.body.classList.remove("voicemin");
-  };
+  $("vMinBtn").onclick = () => { if (vLive || vConnecting) { document.body.classList.add("voicemin"); document.body.classList.remove("voice"); } else vStop(); };
+  $("vpill").onclick = () => { document.body.classList.add("voice"); document.body.classList.remove("voicemin"); };
 
-  // ---- lifecycle ----
+  // ---------- lifecycle ----------
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") {
-      void pollLoop();
-      void refreshState();
-      void refreshBadge();
-      if (tab === "activity") void loadActivity();
-      if (tab === "alerts") void loadAlerts();
-    } else {
-      ++pollGen;
-    }
+    if (document.visibilityState === "visible") { void pollLoop(); void refreshState(); void refreshBadge(); if (page === "activity") void loadActivity(); if (page === "alerts") void loadAlerts(); }
+    else ++pollGen;
   });
   if (window.visualViewport) {
     const vv = window.visualViewport;
-    const fit = () => {
-      document.body.style.height = vv.height + "px";
-      window.scrollTo(0, 0);
-      scrollDown(false);
-    };
-    vv.addEventListener("resize", fit);
-    vv.addEventListener("scroll", () => window.scrollTo(0, 0));
+    const fit = () => { document.body.style.height = vv.height + "px"; window.scrollTo(0, 0); scrollDown(false); };
+    vv.addEventListener("resize", fit); vv.addEventListener("scroll", () => window.scrollTo(0, 0));
   }
 
-  // Boot: fresh chat, live state, badge, poll.
-  setShell();
+  showHint();
+  setHeader();
   void refreshState();
   void refreshBadge();
   void pollLoop();

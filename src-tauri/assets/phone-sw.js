@@ -12,11 +12,22 @@ self.addEventListener("push", (e) => {
     d = { body: e.data ? e.data.text() : "" };
   }
   e.waitUntil(
-    self.registration.showNotification(d.title || "vault-chat", {
-      body: d.body || "",
-      tag: d.tag || undefined,
-      data: { url: d.url || "/phone" },
-    }),
+    (async () => {
+      // Don't buzz the user about something they're already looking at. If the
+      // app is open and focused/visible, skip the OS banner — the in-app Alerts
+      // badge already updates live. Only raise an OS notification when the app
+      // is backgrounded or closed, which is the only time a push earns a buzz.
+      const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const foreground = wins.some((w) => w.visibilityState === "visible" && w.focused);
+      if (foreground) return;
+      await self.registration.showNotification(d.title || "vault-chat", {
+        body: d.body || "",
+        tag: d.tag || undefined,
+        icon: "/icon.svg",
+        badge: "/icon.svg",
+        data: { url: d.url || "/phone" },
+      });
+    })(),
   );
 });
 
