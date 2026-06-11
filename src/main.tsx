@@ -31,6 +31,7 @@ import { installDebugLog, flushDebugLogToDisk, vlog } from "./debugLog";
 import { installAutosaveNet } from "./autosave";
 import { startPhoneVoiceHost } from "./phoneVoice";
 import { startPhoneAppHost } from "./phoneApp";
+import { initBackgroundMode } from "./background";
 
 // Install the freeze diagnostic logger before anything else runs, so a
 // crash during boot still leaves a trail.
@@ -98,6 +99,10 @@ if (isPopout) {
   // Phone chat host: relays /phone PWA traffic (messages, status, kill, push)
   // through the same server. Main window only.
   void startPhoneAppHost();
+  // Reconcile "run in background" (always-on tray daemon) with the Rust
+  // close-to-tray gate and the OS login item. Main window only; popouts must
+  // never register autostart or hold the app alive on close.
+  void initBackgroundMode();
 }
 
 const Root = isPopout ? ChatWindow : App;

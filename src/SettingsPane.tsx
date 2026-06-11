@@ -57,6 +57,7 @@ import {
   fireSchedulesOnThisMachine,
   setFireSchedulesOnThisMachine,
 } from "./schedulerLoop";
+import { isRunInBackground, setRunInBackground } from "./background";
 const PROVIDERS: ProviderId[] = ["anthropic", "openai", "google", "openrouter"];
 
 const KEY_PLACEHOLDER: Record<ProviderId, string> = {
@@ -895,9 +896,12 @@ function VaultSyncSection() {
   const [creatingRepo, setCreatingRepo] = useState(false);
   // Machine-local single-firer gate (localStorage, not synced config).
   const [fireHere, setFireHere] = useState(true);
+  // Machine-local "run in background" daemon toggle (close-to-tray + autostart).
+  const [runBg, setRunBg] = useState(false);
 
   useEffect(() => {
     setFireHere(fireSchedulesOnThisMachine());
+    setRunBg(isRunInBackground());
   }, []);
 
   useEffect(() => {
@@ -1056,6 +1060,35 @@ function VaultSyncSection() {
             onChange={(e) => {
               setFireSchedulesOnThisMachine(e.target.checked);
               setFireHere(e.target.checked);
+            }}
+          />
+        </label>
+      </div>
+      <div className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
+        <div>
+          <div className="text-[11.5px] font-medium text-foreground/90">
+            Run in background
+          </div>
+          <p className="text-[10.5px] text-muted-foreground/80 mt-0.5">
+            Keep vault-chat alive as an always-on daemon: closing the window
+            hides it to the tray instead of quitting, and the app starts at
+            login. Schedules and the supervisor keep running while hidden —
+            turn this on for the machine you want watching your long tasks.
+            Machine-local; quit from the tray icon.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 shrink-0 cursor-pointer">
+          <span className="text-[10.5px] text-muted-foreground">
+            {runBg ? "on" : "off"}
+          </span>
+          <input
+            type="checkbox"
+            className="vc-checkbox"
+            checked={runBg}
+            onChange={(e) => {
+              const on = e.target.checked;
+              setRunBg(on);
+              void setRunInBackground(on);
             }}
           />
         </label>
