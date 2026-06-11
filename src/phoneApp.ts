@@ -243,9 +243,16 @@ async function onRunEnded(convId: string): Promise<void> {
   if (!c) return;
   if (c.source === "worker") {
     const last = [...c.messages].reverse().find((m) => m.role === "assistant" && !m.hidden);
-    const body = (last?.content ?? "").trim().replace(/\s+/g, " ").slice(0, 180) || "finished.";
+    let body = (last?.content ?? "").trim().replace(/\s+/g, " ").slice(0, 180);
+    if (!body) {
+      // Tool-only turn (no prose) — name what it actually ran instead of a
+      // contentless "finished."
+      const names = (last?.toolCalls ?? []).map((t) => t.name);
+      body = names.length ? `ran ${[...new Set(names)].slice(0, 5).join(", ")}` : "finished.";
+    }
     void notify("info", `Worker finished — ${c.title}`, body, convId);
   }
+
 }
 
 // ---- the agent→you channel: record + push + live-update, one call ----

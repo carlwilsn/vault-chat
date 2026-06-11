@@ -520,6 +520,15 @@ export async function runWorkerTurn(
           runErr = e.message;
           acc = (acc + `\n\n⚠️ ${e.message}`).trim();
         }
+        // Mirror the worker's in-flight text + tools into convRuntime so the
+        // phone (phoneApp's runDiff) streams it live. Without this a spawned
+        // worker was invisible while grinding — and invisible afterward too if
+        // it ended on a tool-only turn with no prose (see the persist gate).
+        useStore.getState().setConvRuntime(conversationId, {
+          streamingText: acc,
+          streamingReasoning: "",
+          liveTools: tools.slice(),
+        });
       },
     });
   } catch (e) {
@@ -534,10 +543,13 @@ export async function runWorkerTurn(
     useStore.getState().setConversationStatus(conversationId, "idle");
   }
 
-  // Persist the worker's reply onto its thread so the exchange is coherent.
+  // Persist the worker's turn so the thread is coherent and visible on every
+  // surface. Persist when there was prose OR tool activity — a worker that only
+  // ran tools (e.g. a Bash one-liner) still did real work, and dropping it left
+  // the thread blank and the completion notice a bare "(done)".
   const finalList = await readConversations(vault);
   const fi = finalList.findIndex((c) => c.id === conversationId);
-  if (fi >= 0 && acc.trim()) {
+  if (fi >= 0 && (acc.trim() || tools.length)) {
     const assistantMsg: ChatMessage = {
       role: "assistant",
       content: acc,
@@ -551,6 +563,9 @@ export async function runWorkerTurn(
     await writeConversations(vault, finalList);
   }
   await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+  // Now that the final turn is on disk and in the store, drop the live stream
+  // so the phone swaps from the streaming bubble to the persisted message.
+  useStore.getState().clearConvRuntime(conversationId);
 
   return { reply: acc, error: runErr };
 }
