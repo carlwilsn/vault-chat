@@ -153,7 +153,16 @@ async function statusSnapshot(): Promise<Record<string, unknown>> {
     /* scheduler not loaded */
   }
   const vaultName = s.vaultPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? s.vaultPath;
-  return { vault: vaultName, model: s.modelId, runs, schedules };
+  // App version, so the phone can show what the box is actually running —
+  // "did the box pick up the update yet" stops being guesswork.
+  let version = "";
+  try {
+    const { getVersion } = await import("@tauri-apps/api/app");
+    version = await getVersion();
+  } catch {
+    /* version stays unknown */
+  }
+  return { vault: vaultName, model: s.modelId, version, runs, schedules };
 }
 
 // ---- outbound: store diffs → SSE ----
@@ -202,22 +211,27 @@ function runDiff(): void {
   }
   snaps = next;
 
-  // Streaming text: background runs mirror into convRuntime; the foreground
-  // run streams into the global view for the active conversation.
+  // Streaming progress: background runs mirror into convRuntime; the
+  // foreground run streams into the global view for the active conversation.
+  // Keyed on text AND current tool — a worker grinding through tool calls
+  // with no prose yet must still show signs of life on the phone (the old
+  // text-only gate left its thread a silent "running…" for minutes).
   for (const [id, rt] of Object.entries(s.convRuntime)) {
     const text = (rt.streamingText ?? "").slice(-STREAM_TAIL);
-    if (text && lastStreamSent.get(id) !== text) {
-      lastStreamSent.set(id, text);
-      const tool = rt.liveTools?.length ? rt.liveTools[rt.liveTools.length - 1]!.name : "";
+    const tool = rt.liveTools?.length ? rt.liveTools[rt.liveTools.length - 1]!.name : "";
+    const sig = tool + " " + text;
+    if ((text || tool) && lastStreamSent.get(id) !== sig) {
+      lastStreamSent.set(id, sig);
       broadcast({ type: "runtime", convId: id, text, tool });
     }
   }
-  if (s.busy && s.activeConversationId && s.streamingText) {
+  if (s.busy && s.activeConversationId && (s.streamingText || s.liveTools.length)) {
     const id = s.activeConversationId;
     const text = s.streamingText.slice(-STREAM_TAIL);
-    if (lastStreamSent.get(id) !== text) {
-      lastStreamSent.set(id, text);
-      const tool = s.liveTools.length ? s.liveTools[s.liveTools.length - 1]!.name : "";
+    const tool = s.liveTools.length ? s.liveTools[s.liveTools.length - 1]!.name : "";
+    const sig = tool + " " + text;
+    if (lastStreamSent.get(id) !== sig) {
+      lastStreamSent.set(id, sig);
       broadcast({ type: "runtime", convId: id, text, tool });
     }
   }

@@ -30,6 +30,19 @@ import { vlog } from "./debugLog";
 // so the phone gets "still working" signal without being spammed.
 const PROGRESS_MIN_GAP_MS = 25_000;
 
+// Serialize this module's read→modify→write cycles on the conversations
+// store. writeConversations rewrites the FULL list from whatever the caller
+// read — so two concurrent cycles interleave as lost updates. Real case: a
+// supervisor approving a plan spawns 3 workers in one turn; each startWorker/
+// runWorkerTurn pair read a stale list and overwrote the others' first
+// message, leaving "0-message" worker threads on disk.
+let convChain: Promise<unknown> = Promise.resolve();
+function withConvLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = convChain.then(fn, fn);
+  convChain = run.catch(() => undefined);
+  return run;
+}
+
 // Off-vault inbound handler. Runs the full Telegram round-trip for
 // a vault that is NOT currently open in the UI: load that vault's
 // conversations from disk, route the user message into the right
@@ -462,17 +475,20 @@ export async function runWorkerTurn(
     return { reply: "", error: "no model / API key configured" };
   }
 
-  const list = await readConversations(vault);
-  const idx = list.findIndex((c) => c.id === conversationId);
-  if (idx < 0) return { reply: "", error: `worker thread not found: ${conversationId}` };
-
   const userMsg: ChatMessage = { role: "user", content: message };
-  list[idx] = {
-    ...list[idx]!,
-    messages: [...list[idx]!.messages, userMsg],
-    lastActivityAt: Date.now(),
-  };
-  await writeConversations(vault, list);
+  const baseMessages = await withConvLock(async () => {
+    const list = await readConversations(vault);
+    const idx = list.findIndex((c) => c.id === conversationId);
+    if (idx < 0) return null;
+    list[idx] = {
+      ...list[idx]!,
+      messages: [...list[idx]!.messages, userMsg],
+      lastActivityAt: Date.now(),
+    };
+    await writeConversations(vault, list);
+    return list[idx]!.messages;
+  });
+  if (!baseMessages) return { reply: "", error: `worker thread not found: ${conversationId}` };
 
   // Surface the run to the live UI immediately: pull the just-written user
   // turn into the in-memory list so the worker chat shows the task it was
@@ -483,7 +499,7 @@ export async function runWorkerTurn(
   await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
   useStore.getState().setConversationStatus(conversationId, "running");
 
-  const baseHistory = list[idx]!.messages
+  const baseHistory = baseMessages
     .filter((m) => !m.system)
     .map((m) => ({ role: m.role, content: m.content }));
 
@@ -547,21 +563,23 @@ export async function runWorkerTurn(
   // surface. Persist when there was prose OR tool activity — a worker that only
   // ran tools (e.g. a Bash one-liner) still did real work, and dropping it left
   // the thread blank and the completion notice a bare "(done)".
-  const finalList = await readConversations(vault);
-  const fi = finalList.findIndex((c) => c.id === conversationId);
-  if (fi >= 0 && (acc.trim() || tools.length)) {
-    const assistantMsg: ChatMessage = {
-      role: "assistant",
-      content: acc,
-      toolCalls: tools.length ? tools : undefined,
-    };
-    finalList[fi] = {
-      ...finalList[fi]!,
-      messages: [...finalList[fi]!.messages, assistantMsg],
-      lastActivityAt: Date.now(),
-    };
-    await writeConversations(vault, finalList);
-  }
+  await withConvLock(async () => {
+    const finalList = await readConversations(vault);
+    const fi = finalList.findIndex((c) => c.id === conversationId);
+    if (fi >= 0 && (acc.trim() || tools.length)) {
+      const assistantMsg: ChatMessage = {
+        role: "assistant",
+        content: acc,
+        toolCalls: tools.length ? tools : undefined,
+      };
+      finalList[fi] = {
+        ...finalList[fi]!,
+        messages: [...finalList[fi]!.messages, assistantMsg],
+        lastActivityAt: Date.now(),
+      };
+      await writeConversations(vault, finalList);
+    }
+  });
   await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
   // Now that the final turn is on disk and in the store, drop the live stream
   // so the phone swaps from the streaming bubble to the persisted message.
@@ -587,7 +605,6 @@ export async function startWorker(
 ): Promise<{ id: string; title: string }> {
   const id = newConversationId();
   const t = title?.trim() || deriveConversationTitle([{ role: "user", content: task }]);
-  const list = await readConversations(vault);
   // Tagged "worker" so every surface (ChatsPanel, the phone app's list) can
   // tell spawned subagents apart from the user's own chats. The mission ties
   // it to the North Star it serves — Activity groups workers under it.
@@ -598,8 +615,11 @@ export async function startWorker(
     title: t,
     mission: mission?.trim() || undefined,
   };
-  list.unshift(fresh);
-  await writeConversations(vault, list);
+  await withConvLock(async () => {
+    const list = await readConversations(vault);
+    list.unshift(fresh);
+    await writeConversations(vault, list);
+  });
   await useStore.getState().refreshConversationFromDisk(vault, id).catch(() => {});
   // Fire-and-forget: the worker runs async; we don't await it so the caller
   // (and the user's chat) returns right away. runWorkerTurn appends the task

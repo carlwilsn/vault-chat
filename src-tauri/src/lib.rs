@@ -999,17 +999,25 @@ pub(crate) fn reconstruct_conversation(contents: &str) -> Option<String> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if v.get("role").is_some() {
-            // Every message line is kept — never dropped for being content-equal
-            // to another, or we'd delete legitimately repeated messages.
-            messages.push(v);
-        } else if v.get("id").is_some() {
+        // Classify by `id` FIRST: a conversation's meta line always carries the
+        // conversation id, and a ChatMessage line never has a top-level `id`.
+        // The old role-first order misclassified SUPERVISOR conversations —
+        // their meta line carries `role:"supervisor"` (the conversation-level
+        // role field) — as messages, so the whole file reconstructed to None:
+        // every phone cockpit chat was invisible to the drawer and /conversation,
+        // and (pre-tombstones) a restart would drop it from memory and the old
+        // delete-by-omission sweep then erased the file itself.
+        if v.get("id").is_some() {
             // A meta line. Keep the freshest if a union left more than one.
             let act = v.get("lastActivityAt").and_then(|x| x.as_i64()).unwrap_or(0);
             if meta.is_none() || act >= meta_activity {
                 meta_activity = act;
                 meta = Some(v);
             }
+        } else if v.get("role").is_some() {
+            // Every message line is kept — never dropped for being content-equal
+            // to another, or we'd delete legitimately repeated messages.
+            messages.push(v);
         }
     }
     let mut meta = meta?;
