@@ -29,6 +29,10 @@ export type Conversation = {
   // orchestrator prompt on every turn (the phone app's Supervisor button
   // binds to the one conversation carrying this).
   role?: "supervisor";
+  // The North Star this worker serves. Workers are never standalone: every
+  // one belongs to a mission (the user-approved goal that spawned it), and
+  // surfaces group workers under their mission. Only set on source "worker".
+  mission?: string;
 };
 
 // Attach a Telegram chat_id to one conversation, detaching it from any

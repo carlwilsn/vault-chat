@@ -1733,7 +1733,16 @@ export const useStore = create<State>((set) => ({
         liveTools: rt?.liveTools ?? [],
       };
     }),
-  deleteConversation: (id) =>
+  deleteConversation: (id) => {
+    // Tombstone on disk FIRST — removing it from the in-memory list alone no
+    // longer deletes anything (conversations_write_all never deletes by
+    // omission; see the multi-machine flapping bug it caused).
+    const vault = useStore.getState().vaultPath;
+    if (vault) {
+      void invoke("conversation_delete", { vault, id }).catch((e) =>
+        console.warn("[conversations] delete failed:", e),
+      );
+    }
     set((s) => {
       const next = s.conversations.filter((c) => c.id !== id);
       if (s.activeConversationId !== id) {
@@ -1775,7 +1784,8 @@ export const useStore = create<State>((set) => ({
         streamingReasoning: "",
         liveTools: [],
       };
-    }),
+    });
+  },
   setShowChatsPanel: (b) =>
     set(b ? { showChatsPanel: true, showNotesPanel: false, showSchedulesPanel: false } : { showChatsPanel: false }),
   setShowSchedulesPanel: (b) =>

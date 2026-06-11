@@ -1035,11 +1035,16 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           .string()
           .optional()
           .describe("Short title for the worker chat. Defaults to a slug of the task."),
+        mission: z
+          .string()
+          .describe(
+            "The North Star this worker serves — the short name of the user-approved goal (e.g. the plan title, or the goal slug). EVERY worker belongs to a mission; workers spawned for the same goal share the same mission string so the Activity surface groups them together. Never leave a worker standalone.",
+          ),
       }),
-      execute: async ({ task, title }) => {
+      execute: async ({ task, title, mission }) => {
         const { startWorker } = await import("./offVaultRun");
-        const { id, title: t } = await startWorker(vault, task, title);
-        return `Spawned worker "${t}" (id ${id}) — it's running the task in the background. It runs independently; keep talking to the user. Check on it with ReadConversation (id ${id}) or the run heartbeat, and relay to it with AskWorker.`;
+        const { id, title: t } = await startWorker(vault, task, title, undefined, mission);
+        return `Spawned worker "${t}" (id ${id}) under mission "${mission}" — it's running the task in the background. It runs independently; keep talking to the user. Check on it with ReadConversation (id ${id}) or the run heartbeat, and relay to it with AskWorker.`;
       },
     }),
     Notify: tool({

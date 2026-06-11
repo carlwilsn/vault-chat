@@ -909,6 +909,71 @@ fn conversation_file_stem(id: &str) -> String {
     }
 }
 
+/// Deleted-conversation tombstones. Deletion must be EXPLICIT: an append-only
+/// `{id, ts}` line in `.vault-chat/conversations-deleted.jsonl` (sibling of the
+/// conversations folder so directory-scanning readers never parse it as a
+/// conversation; `*.jsonl merge=union` makes it sync conflict-free).
+///
+/// Why this exists: conversations_write_all used to delete every file whose id
+/// wasn't in the WRITER'S in-memory list. With two machines syncing one vault
+/// that's delete-by-omission — machine A creates a chat, syncs it over, machine
+/// B's next persist (whose memory predates the chat) deletes the file, sync
+/// propagates the deletion back, and the chat flaps in and out of existence.
+/// Tombstones make every reader/writer agree on what's deleted, and nothing
+/// else is ever removed.
+pub(crate) fn conversation_tombstones_path(vault: &str) -> std::path::PathBuf {
+    std::path::Path::new(vault)
+        .join(NOTES_DIR)
+        .join("conversations-deleted.jsonl")
+}
+
+/// The set of tombstoned ids, as sanitized file STEMS (what both readers key
+/// their directory scans on).
+pub(crate) fn conversation_tombstone_stems(vault: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    if let Ok(raw) = std::fs::read_to_string(conversation_tombstones_path(vault)) {
+        for line in raw.lines() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                    out.insert(conversation_file_stem(id));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Explicitly delete one conversation: tombstone first (so every machine learns
+/// of the deletion through sync), then remove the local file.
+#[tauri::command]
+async fn conversation_delete(vault: String, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let p = conversation_tombstones_path(&vault);
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        use std::io::Write as _;
+        let line = serde_json::json!({ "id": id, "ts": ts }).to_string();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&p)
+            .map_err(|e| format!("open {}: {}", p.display(), e))?;
+        writeln!(f, "{}", line).map_err(|e| e.to_string())?;
+        let dir = std::path::Path::new(&vault).join(NOTES_DIR).join(CONVERSATIONS_DIR);
+        let stem = conversation_file_stem(&id);
+        let _ = std::fs::remove_file(dir.join(format!("{}.jsonl", stem)));
+        let _ = std::fs::remove_file(dir.join(format!("{}.json", stem)));
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Reassemble one conversation JSON string from a per-conversation `.jsonl`
 /// body: a `meta` line (the conversation object minus `messages`) plus one line
 /// per message. This append-only line layout is what lets `merge=union` resolve
@@ -964,12 +1029,18 @@ async fn conversations_read(vault: String) -> Result<Vec<String>, String> {
         // migrates it — read those too, but let a .jsonl win for the same stem.
         if dir.is_dir() {
             let mut out: Vec<String> = Vec::new();
+            let tombstones = conversation_tombstone_stems(&vault);
             let mut seen_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for e in entries.flatten() {
                     let p = e.path();
                     if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
                         continue;
+                    }
+                    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                        if tombstones.contains(stem) {
+                            continue; // deleted on some machine; sync may lag the file removal
+                        }
                     }
                     if let Ok(contents) = std::fs::read_to_string(&p) {
                         if let Some(conv) = reconstruct_conversation(&contents) {
@@ -988,8 +1059,8 @@ async fn conversations_read(vault: String) -> Result<Vec<String>, String> {
                         continue; // skip .tmp and anything else
                     }
                     let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                    if seen_stems.contains(&stem) {
-                        continue; // superseded by its .jsonl
+                    if seen_stems.contains(&stem) || tombstones.contains(&stem) {
+                        continue; // superseded by its .jsonl, or deleted
                     }
                     if let Ok(contents) = std::fs::read_to_string(&p) {
                         let t = contents.trim();
@@ -1035,7 +1106,7 @@ async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<()
         // two machines' concurrent edits losslessly instead of hard-conflicting
         // on one giant single-object line. Only written when changed, so an
         // untouched conversation produces no git diff.
-        let mut keep: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let tombstones = conversation_tombstone_stems(&vault);
         for line in &lines {
             let t = line.trim();
             if t.is_empty() {
@@ -1050,7 +1121,13 @@ async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<()
                 _ => continue,
             };
             let stem = conversation_file_stem(&id);
-            keep.insert(stem.clone());
+            // Deleted elsewhere (tombstoned): never resurrect it from this
+            // machine's memory, and clear any lingering file.
+            if tombstones.contains(&stem) {
+                let _ = std::fs::remove_file(dir.join(format!("{}.jsonl", stem)));
+                let _ = std::fs::remove_file(dir.join(format!("{}.json", stem)));
+                continue;
+            }
 
             // Build the jsonl body: meta line (conversation without messages),
             // then each message on its own line. serde_json sorts object keys, so
@@ -1094,21 +1171,12 @@ async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<()
             let _ = std::fs::remove_file(&stale_json);
         }
 
-        // Delete files (either format) for conversations no longer present.
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for e in entries.flatten() {
-                let p = e.path();
-                let ext = p.extension().and_then(|x| x.to_str());
-                if ext != Some("jsonl") && ext != Some("json") {
-                    continue;
-                }
-                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                    if !keep.contains(stem) {
-                        let _ = std::fs::remove_file(&p);
-                    }
-                }
-            }
-        }
+        // NOTE: no delete-by-omission sweep here. This used to remove every
+        // file whose id wasn't in the caller's in-memory list — which, with two
+        // machines syncing one vault, silently deleted conversations the OTHER
+        // machine had just created (its files arrive via sync; this machine's
+        // memory doesn't know them; the next persist swept them away). Deletion
+        // is now explicit-only via conversation_delete + tombstones above.
 
         // Migration complete: drop the legacy monolith so it stops being
         // re-stored on every sync.
@@ -6615,6 +6683,7 @@ pub fn run() {
             notes_write_all,
             conversations_read,
             conversations_write_all,
+            conversation_delete,
             schedules_read,
             schedules_write_all,
             open_terminal,

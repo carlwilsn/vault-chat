@@ -133,6 +133,8 @@ async function statusSnapshot(): Promise<Record<string, unknown>> {
     return {
       convId: id,
       title: c?.title ?? id,
+      mission: c?.mission ?? "",
+      source: c?.source ?? "",
       lastTool: beat?.lastTool,
       lastProgressAt: beat?.lastProgressAt,
     };
@@ -596,12 +598,22 @@ export async function startPhoneAppHost(): Promise<void> {
     try {
       if (convId) {
         const hit = abortRun(convId);
-        respond(reqId, { ok: true, result: hit ? "Run aborted." : "No active run on that conversation." });
+        // Broadcast the idle flip immediately. The store diff only catches
+        // status transitions on conversations whose `status` field was set
+        // (background runs); a stop on the foreground run otherwise leaves the
+        // phone's running indicator flashing until the next full refresh.
+        broadcast({ type: "status", convId, status: "idle" });
+        respond(reqId, { ok: true, result: hit ? "Stopped." : "Nothing running on that thread." });
       } else {
         const ids = activeRuns();
         let n = 0;
-        for (const id of ids) if (abortRun(id)) n++;
-        respond(reqId, { ok: true, result: n ? `Aborted ${n} run(s).` : "No active runs." });
+        for (const id of ids) {
+          if (abortRun(id)) {
+            n++;
+            broadcast({ type: "status", convId: id, status: "idle" });
+          }
+        }
+        respond(reqId, { ok: true, result: n ? `Stopped ${n} run(s).` : "Nothing running." });
       }
     } catch (e) {
       respond(reqId, { error: String(e) });

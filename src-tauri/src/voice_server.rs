@@ -822,12 +822,18 @@ fn dispatch_tool(raw: &str) -> String {
 
 fn conversations(vault: &str) -> Vec<Value> {
     let dir = Path::new(vault).join(crate::NOTES_DIR).join(crate::CONVERSATIONS_DIR);
+    let tombstones = crate::conversation_tombstone_stems(vault);
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
             let p = e.path();
             if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
                 continue;
+            }
+            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                if tombstones.contains(stem) {
+                    continue;
+                }
             }
             if let Ok(contents) = std::fs::read_to_string(&p) {
                 if let Some(s) = crate::reconstruct_conversation(&contents) {
@@ -1066,6 +1072,7 @@ fn conversations_summary_json(vault: &str) -> String {
                 "lastActivityAt": c.get("lastActivityAt").and_then(|x| x.as_i64()).unwrap_or(0),
                 "source": c.get("source").and_then(|x| x.as_str()).unwrap_or("manual"),
                 "role": c.get("role").and_then(|x| x.as_str()).unwrap_or(""),
+                "mission": c.get("mission").and_then(|x| x.as_str()).unwrap_or(""),
                 "msgCount": msgs.len(),
                 "preview": preview,
                 "goal": goal,

@@ -583,13 +583,21 @@ export async function startWorker(
   task: string,
   title?: string,
   modelId?: string,
+  mission?: string,
 ): Promise<{ id: string; title: string }> {
   const id = newConversationId();
   const t = title?.trim() || deriveConversationTitle([{ role: "user", content: task }]);
   const list = await readConversations(vault);
   // Tagged "worker" so every surface (ChatsPanel, the phone app's list) can
-  // tell spawned subagents apart from the user's own chats.
-  const fresh: Conversation = { ...emptyConversation(), id, source: "worker", title: t };
+  // tell spawned subagents apart from the user's own chats. The mission ties
+  // it to the North Star it serves — Activity groups workers under it.
+  const fresh: Conversation = {
+    ...emptyConversation(),
+    id,
+    source: "worker",
+    title: t,
+    mission: mission?.trim() || undefined,
+  };
   list.unshift(fresh);
   await writeConversations(vault, list);
   await useStore.getState().refreshConversationFromDisk(vault, id).catch(() => {});
