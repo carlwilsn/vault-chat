@@ -136,6 +136,11 @@
   }
   body.kbopen #kb{display:block}
   body.kbopen .composer{padding-bottom:8px}
+  /* All three layers are built once and live in the DOM; only the active
+     one is shown. Switching layers toggles .active — it never rebuilds, so
+     the key under your finger is never destroyed mid-tap. */
+  .kblayer{display:none}
+  .kblayer.active{display:block}
   .kbrow{display:flex;gap:5px;margin:0 0 8px;justify-content:center}
   .kbrow:last-child{margin-bottom:0}
   .kbrow.indent{padding:0 5%}
@@ -381,7 +386,10 @@
     $("hdrTitle").childNodes[0].nodeValue = view === "list" ? "vault-chat" : convTitle;
     $("hdrSub").textContent = view === "list" ? (vaultName ? "vault: " + vaultName : "") : "";
     $("runDot").className = "dot" + (running ? " run" : "");
-    document.body.className = view;
+    // Toggle ONLY the view classes — never `body.className = view`, which
+    // would wipe `kbopen` (the in-app keyboard) on every status tick.
+    document.body.classList.remove("list", "thread");
+    document.body.classList.add(view);
   };
 
   // ---- conversation list ----
@@ -820,11 +828,17 @@
   })();
 
   // ---- in-app keyboard ----
-  // inputmode="none" keeps the iOS keyboard (and its form-assistant bar)
-  // down; these keys are ours. Commit-on-touch-DOWN like the real iOS
-  // keyboard, key-pop bubbles, shift one-shot + double-tap caps lock,
-  // backspace auto-repeat, double-space period. Drawer toggle falls back
-  // to the system keyboard so a keyboard bug can never lock typing out.
+  // inputmode="none" suppresses the iOS keyboard (and its form-assistant
+  // bar); these keys are ours. Two rules keep it from collapsing:
+  //   1. Built ONCE. All three layers live in the DOM; switching toggles
+  //      .active and shift updates labels in place — the key under your
+  //      finger is never destroyed mid-tap (the old per-keystroke
+  //      innerHTML rebuild was the layer-switch collapse).
+  //   2. touchstart preventDefault keeps focus ON the textarea, so a key
+  //      tap never blurs it. Editing writes straight to the value — no
+  //      per-key refocus. (Paired with the setHeader fix that stopped
+  //      wiping `kbopen` on status ticks.)
+  // Drawer toggle restores the system keyboard so a bug can't lock typing.
   const KB_SYS_FLAG = "vc_kb_system";
   const CUSTOM_KB = localStorage.getItem(KB_SYS_FLAG) !== "1";
   const kbEl = $("kb");
@@ -851,67 +865,92 @@
     ],
   ];
 
-  function kbRender() {
-    if (!CUSTOM_KB) return;
+  const kbLayerDivs = [];
+  const kbLetterKeys = []; // { el, base } — letters, for in-place case updates
+  let kbShiftKeyEl = null;
+
+  // Build all three layers once. After this, nothing touches kbEl's child
+  // structure — only classes and the letter labels change.
+  function kbBuild() {
     kbEl.innerHTML = "";
-    KB_LAYERS[kbLayer].forEach((row, ri) => {
-      const r = document.createElement("div");
-      r.className = "kbrow" + (kbLayer === 0 && ri === 1 ? " indent" : "");
-      for (const key of row) {
-        const b = document.createElement("div");
-        const spec = key.k !== "ch";
-        b.className = "kbk" + (spec ? " spec" : "");
-        if (key.k === "space") b.classList.add("space");
-        if (key.k === "ret") b.classList.add("ret");
-        if (key.k === "shift") {
-          if (kbShift || kbCaps) b.classList.add("lit");
-          if (kbCaps) b.classList.add("caps");
+    KB_LAYERS.forEach((rows, li) => {
+      const layer = document.createElement("div");
+      layer.className = "kblayer" + (li === 0 ? " active" : "");
+      rows.forEach((row, ri) => {
+        const r = document.createElement("div");
+        r.className = "kbrow" + (li === 0 && ri === 1 ? " indent" : "");
+        for (const key of row) {
+          const b = document.createElement("div");
+          const spec = key.k !== "ch";
+          b.className = "kbk" + (spec ? " spec" : "");
+          if (key.k === "space") b.classList.add("space");
+          if (key.k === "ret") b.classList.add("ret");
+          b.dataset.k = key.k;
+          b.dataset.t = key.t;
+          b.textContent = key.t;
+          if (key.k === "ch" && /[a-z]/i.test(key.t)) kbLetterKeys.push({ el: b, base: key.t });
+          if (key.k === "shift") kbShiftKeyEl = b;
+          r.appendChild(b);
         }
-        b.textContent = key.k === "ch" && (kbShift || kbCaps) ? key.t.toUpperCase() : key.t;
-        b.dataset.k = key.k;
-        b.dataset.t = key.t;
-        r.appendChild(b);
-      }
-      kbEl.appendChild(r);
+        layer.appendChild(r);
+      });
+      kbEl.appendChild(layer);
+      kbLayerDivs.push(layer);
     });
   }
 
-  function kbEnsureFocus() {
-    if (document.activeElement !== input) input.focus({ preventScroll: true });
+  // Reflect shift/caps state without rebuilding: relabel letters, light the
+  // shift key.
+  function kbApplyShift() {
+    const up = kbShift || kbCaps;
+    for (const lk of kbLetterKeys) lk.el.textContent = up ? lk.base.toUpperCase() : lk.base;
+    if (kbShiftKeyEl) {
+      kbShiftKeyEl.classList.toggle("lit", up);
+      kbShiftKeyEl.classList.toggle("caps", kbCaps);
+    }
+  }
+
+  function kbSetLayer(i) {
+    kbLayer = i;
+    kbLayerDivs.forEach((d, li) => d.classList.toggle("active", li === i));
+    if (i === 0) kbAutoShift();
+    kbApplyShift();
+  }
+
+  // Current selection, defaulting to the end so editing works even if the
+  // textarea momentarily isn't focused.
+  function kbSel() {
+    const len = input.value.length;
+    let s = input.selectionStart, e = input.selectionEnd;
+    if (s == null || e == null) { s = len; e = len; }
+    return [s, e];
   }
   function kbAfterEdit() {
-    input.dispatchEvent(new Event("input", { bubbles: true })); // autosize hook
+    input.dispatchEvent(new Event("input", { bubbles: true })); // autosize
     kbAutoShift();
   }
   function kbAutoShift() {
     if (kbCaps || kbLayer !== 0) return;
-    const caret = input.selectionStart ?? input.value.length;
-    const before = input.value.slice(0, caret);
-    const want = before === "" || /[.!?]\s+$/.test(before) || /\n$/.test(before);
-    if (want !== kbShift) {
-      kbShift = want;
-      kbRender();
-    }
+    const [s] = kbSel();
+    const before = input.value.slice(0, s);
+    const want = before === "" || /[.!?]\s$/.test(before) || /\n$/.test(before);
+    if (want !== kbShift) { kbShift = want; kbApplyShift(); }
   }
-  function kbInsert(ch) {
-    kbEnsureFocus();
-    const s = input.selectionStart ?? input.value.length;
-    const e2 = input.selectionEnd ?? s;
-    input.setRangeText(ch, s, e2, "end");
+  function kbInsert(str) {
+    const [s, e] = kbSel();
+    input.setRangeText(str, s, e, "end");
     kbAfterEdit();
   }
   function kbBackspaceOnce() {
-    kbEnsureFocus();
-    let s = input.selectionStart ?? 0;
-    const e2 = input.selectionEnd ?? 0;
-    if (s === e2) {
+    let [s, e] = kbSel();
+    if (s === e) {
       if (s === 0) return;
       let n = 1;
       const code = input.value.charCodeAt(s - 1);
-      if (code >= 0xdc00 && code <= 0xdfff && s > 1) n = 2; // don't split pasted emoji
+      if (code >= 0xdc00 && code <= 0xdfff && s > 1) n = 2; // don't split surrogate pairs
       s -= n;
     }
-    input.setRangeText("", s, e2, "end");
+    input.setRangeText("", s, e, "end");
     kbAfterEdit();
   }
 
@@ -922,7 +961,6 @@
     bkspT1 = bkspIv = 0;
   }
 
-  const downKeys = new Map(); // pointerId → key element
   function kbKeyDown(el) {
     const k = el.dataset.k, t = el.dataset.t;
     el.classList.add("down");
@@ -931,34 +969,22 @@
       pop.className = "kbpop";
       pop.textContent = el.textContent;
       el.appendChild(pop);
-      const ch = kbShift || kbCaps ? t.toUpperCase() : t;
-      kbInsert(ch);
-      if (kbShift && !kbCaps && /[a-z]/i.test(t)) {
-        kbShift = false;
-        kbRender();
-      }
+      kbInsert(kbShift || kbCaps ? t.toUpperCase() : t);
+      if (kbShift && !kbCaps && /[a-z]/i.test(t)) { kbShift = false; kbApplyShift(); }
     } else if (k === "bksp") {
       kbBackspaceOnce();
       kbStopRepeat();
-      bkspT1 = setTimeout(() => {
-        bkspIv = setInterval(kbBackspaceOnce, 55);
-      }, 420);
+      bkspT1 = setTimeout(() => { bkspIv = setInterval(kbBackspaceOnce, 55); }, 420);
     } else if (k === "shift") {
       const now = Date.now();
-      if (now - lastShiftAt < 350) {
-        kbCaps = true;
-        kbShift = true;
-      } else if (kbCaps) {
-        kbCaps = false;
-        kbShift = false;
-      } else {
-        kbShift = !kbShift;
-      }
+      if (now - lastShiftAt < 350) { kbCaps = true; kbShift = true; }
+      else if (kbCaps) { kbCaps = false; kbShift = false; }
+      else { kbShift = !kbShift; }
       lastShiftAt = now;
-      kbRender();
+      kbApplyShift();
     } else if (k === "space") {
+      const [caret] = kbSel();
       const now = Date.now();
-      const caret = input.selectionStart ?? input.value.length;
       // double-space → ". " (the iOS period shortcut, autocorrect-independent)
       if (
         now - lastSpaceAt < 350 &&
@@ -966,7 +992,6 @@
         input.value[caret - 1] === " " &&
         /[\w)\]'"’”]/.test(input.value[caret - 2])
       ) {
-        kbEnsureFocus();
         input.setRangeText(". ", caret - 2, caret, "end");
         kbAfterEdit();
       } else {
@@ -975,68 +1000,97 @@
       lastSpaceAt = now;
     } else if (k === "ret") {
       kbInsert("\n");
-    } else if (k === "layer0") {
-      kbLayer = 0;
-      kbAutoShift();
-      kbRender();
-    } else if (k === "layer1") {
-      kbLayer = 1;
-      kbRender();
-    } else if (k === "layer2") {
-      kbLayer = 2;
-      kbRender();
-    }
+    } else if (k === "layer0") { kbSetLayer(0); }
+    else if (k === "layer1") { kbSetLayer(1); }
+    else if (k === "layer2") { kbSetLayer(2); }
   }
   function kbKeyUp(el) {
     el.classList.remove("down");
-    el.querySelector(".kbpop")?.remove();
+    const p = el.querySelector(".kbpop");
+    if (p) p.remove();
   }
 
   function showKb() {
-    if (!CUSTOM_KB) return;
+    if (!CUSTOM_KB || view !== "thread") return;
     if (!document.body.classList.contains("kbopen")) {
       document.body.classList.add("kbopen");
-      kbAutoShift();
       scrollDown(true);
     }
+    if (document.activeElement !== input) {
+      try { input.focus({ preventScroll: true }); } catch {}
+    }
+    kbApplyShift();
+    kbAutoShift();
   }
   function hideKb() {
+    if (!document.body.classList.contains("kbopen")) return;
     document.body.classList.remove("kbopen");
     kbStopRepeat();
   }
 
   if (CUSTOM_KB) {
     input.setAttribute("inputmode", "none");
-    kbRender();
-    // Keep the textarea focused while tapping keys: swallowing pointerdown/
-    // mousedown stops iOS from moving focus (and kills double-tap zoom).
-    kbEl.addEventListener("pointerdown", (e) => {
-      e.preventDefault();
-      const key = e.target.closest(".kbk");
-      if (!key) return;
-      downKeys.set(e.pointerId, key);
-      kbKeyDown(key);
-    });
-    kbEl.addEventListener("mousedown", (e) => e.preventDefault());
-    const endPointer = (e) => {
-      const key = downKeys.get(e.pointerId);
-      if (key) {
-        downKeys.delete(e.pointerId);
+    input.setAttribute("autocapitalize", "off");
+    input.setAttribute("autocorrect", "off");
+    input.setAttribute("autocomplete", "off");
+    input.setAttribute("spellcheck", "false");
+    kbBuild();
+    kbApplyShift();
+
+    const hasTouch = "ontouchstart" in window;
+    const downByKey = new Map(); // touch id / "mouse" → key element
+    const keyFrom = (target) => (target && target.closest ? target.closest(".kbk") : null);
+
+    if (hasTouch) {
+      // preventDefault on touchstart is the load-bearing line: it keeps
+      // focus on the textarea (no blur), kills the synthetic mouse events
+      // and the double-tap zoom, and never lets the tap escape to a
+      // dismiss handler. This is why typing no longer collapses the panel.
+      kbEl.addEventListener("touchstart", (e) => {
+        e.preventDefault();
+        for (const t of e.changedTouches) {
+          const key = keyFrom(t.target);
+          if (!key) continue;
+          downByKey.set(t.identifier, key);
+          kbKeyDown(key);
+        }
+      }, { passive: false });
+      const endTouch = (e) => {
+        for (const t of e.changedTouches) {
+          const key = downByKey.get(t.identifier);
+          if (!key) continue;
+          downByKey.delete(t.identifier);
+          kbKeyUp(key);
+          if (key.dataset.k === "bksp") kbStopRepeat();
+        }
+      };
+      kbEl.addEventListener("touchend", endTouch);
+      kbEl.addEventListener("touchcancel", endTouch);
+    } else {
+      // Desktop fallback (the page is reachable from a laptop too).
+      kbEl.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        const key = keyFrom(e.target);
+        if (!key) return;
+        downByKey.set("mouse", key);
+        kbKeyDown(key);
+      });
+      window.addEventListener("mouseup", () => {
+        const key = downByKey.get("mouse");
+        if (!key) return;
+        downByKey.delete("mouse");
         kbKeyUp(key);
         if (key.dataset.k === "bksp") kbStopRepeat();
-      }
-    };
-    window.addEventListener("pointerup", endPointer);
-    window.addEventListener("pointercancel", endPointer);
+      });
+    }
+
+    // Show when the composer gets focus / is tapped. Dismiss ONLY by an
+    // explicit tap on the message history (like iMessage) — no global
+    // outside-tap auto-hide, which was the other misfire.
     input.addEventListener("focus", showKb);
-    // Caret moves by tapping the textarea re-evaluate auto-shift.
-    input.addEventListener("pointerup", () => setTimeout(kbAutoShift, 0));
-    document.addEventListener("pointerdown", (e) => {
-      if (!document.body.classList.contains("kbopen")) return;
-      if (e.target.closest("#kb") || e.target.closest(".composer")) return;
-      hideKb();
-      input.blur();
-    });
+    input.addEventListener("click", showKb);
+    msgsEl.addEventListener("touchstart", hideKb, { passive: true });
+    msgsEl.addEventListener("mousedown", hideKb);
   }
 
   // Drawer toggle: custom ↔ system keyboard (reload applies inputmode).
@@ -1055,6 +1109,7 @@
     view = "list";
     convId = null;
     supervisorPending = false;
+    if (typeof hideKb === "function") hideKb();
     setHeader();
     loadList();
   };
