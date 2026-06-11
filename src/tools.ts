@@ -1042,6 +1042,40 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         return `Spawned worker "${t}" (id ${id}) — it's running the task in the background. It runs independently; keep talking to the user. Check on it with ReadConversation (id ${id}) or the run heartbeat, and relay to it with AskWorker.`;
       },
     }),
+    Notify: tool({
+      description:
+        "Proactively surface something to the user on their phone — it lands as a card in the Alerts feed AND as a push notification. Use it to tell them, without being asked, about something worth their attention: a mission or worker you finished, an action you took on your own (e.g. 'stopped an idle box'), a heads-up they'd want. This is ONE-WAY — it informs, it doesn't ask. For a decision you need back from them, use AskUser. Keep `title` to a short headline and `body` to one or two sentences (the essential update — depth goes to a file you point at). Don't notify for trivial chatter or for replies in a chat the user is actively having with you; reserve it for things that earn an interruption.",
+      inputSchema: z.object({
+        title: z.string().describe("Short headline, e.g. 'Shakedown run complete'."),
+        body: z
+          .string()
+          .describe("One or two sentences — the essential update. Point to a vault file for the depth."),
+      }),
+      execute: async ({ title, body }) => {
+        const { notify } = await import("./phoneApp");
+        await notify("info", title, body, conversationId);
+        return "Sent to the user's Alerts feed (and a push if enabled).";
+      },
+    }),
+    AskUser: tool({
+      description:
+        "Surface a decision you need from the user as a 'Needs you' card on their phone (plus a push). They answer in their OWN words — no fixed options — and their reply comes back as the next message in THIS conversation. So the pattern is: call AskUser, then END YOUR TURN and wait; you'll be re-run with their answer. Use it ONLY at a real fork you shouldn't settle alone — a scope or design choice, a spend approval, a genuinely ambiguous result, or to get a freshly-scoped mission approved before you build the team. Do NOT use it for things you can reasonably decide yourself; the whole point of the system is to keep the user out of the loop except where their judgment is the input.",
+      inputSchema: z.object({
+        about: z
+          .string()
+          .describe("Short title for the card, e.g. 'Seed 3 diverged' or 'Approve mission?'."),
+        question: z
+          .string()
+          .describe(
+            "The decision, stated tightly with the context/options they need — e.g. 'step 800, +0.05 nat above seed 1. real effect, or match the LR and rerun?'",
+          ),
+      }),
+      execute: async ({ about, question }) => {
+        const { notify } = await import("./phoneApp");
+        await notify("ask", about || "Needs your call", question, conversationId);
+        return "Asked the user — their reply will arrive as the next message in this conversation. End your turn now and wait for it; do not guess the answer.";
+      },
+    }),
     ListSchedules: tool({
       description:
         "List the scheduled prompts in this vault. Use to find a schedule's id before cancelling it, or to remind the user what they have set up. Returns id, name, prompt (truncated), recurrence, next-fire time, target conversation, and enabled state.",

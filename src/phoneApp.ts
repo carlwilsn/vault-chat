@@ -233,16 +233,17 @@ async function onRunEnded(convId: string): Promise<void> {
     );
     return; // the follow-up run's completion will handle notification
   }
-  // 2) Run-done notifications. Telegram-delivered replies are mirrored
-  // inside sendTelegramReplyWithImages instead, so the [[SILENT]] /
-  // quiet-unless-ALERT semantics carry over untouched.
+  // 2) Worker completions auto-notify — delegated background work you aren't
+  // watching, so a finish ping is the deterministic safety net. The MAIN
+  // cockpit chat does NOT auto-push every reply (spam while you're actively
+  // talking); there, the agent decides what's worth an interruption via the
+  // Notify / AskUser tools. Telegram-delivered replies are mirrored inside
+  // sendTelegramReplyWithImages, after the [[SILENT]]/ALERT gates.
   const c = useStore.getState().conversations.find((x) => x.id === convId);
   if (!c) return;
-  const last = [...c.messages].reverse().find((m) => m.role === "assistant" && !m.hidden);
-  const body = (last?.content ?? "").trim().replace(/\s+/g, " ").slice(0, 180) || "(done)";
-  if (c.source === "phone") {
-    void notify("info", c.title || "Reply ready", body, convId);
-  } else if (c.source === "worker") {
+  if (c.source === "worker") {
+    const last = [...c.messages].reverse().find((m) => m.role === "assistant" && !m.hidden);
+    const body = (last?.content ?? "").trim().replace(/\s+/g, " ").slice(0, 180) || "finished.";
     void notify("info", `Worker finished — ${c.title}`, body, convId);
   }
 }
