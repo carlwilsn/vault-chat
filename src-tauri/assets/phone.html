@@ -126,6 +126,7 @@
   .composer textarea{flex:1;resize:none;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:21px;padding:10px 50px 10px 15px;font-size:16px;line-height:1.4;font-family:inherit;max-height:120px;outline:none;min-width:0}
   .send{position:absolute;right:5px;bottom:5px;width:33px;height:33px;border-radius:50%;background:var(--primary);color:var(--primary-fg);font-weight:700;font-size:16px;display:flex;align-items:center;justify-content:center}
   .send:disabled{opacity:.35}
+  .send.stop{background:var(--err);color:#fff;font-size:13px}
 
   /* cards */
   .sec{font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;color:#8a8a8a;padding:15px 18px 7px;font-weight:600}
@@ -147,6 +148,14 @@
   .rinp::placeholder{color:#838383}
   .rsend{position:absolute;right:5px;width:28px;height:28px;border-radius:50%;background:var(--primary);color:var(--primary-fg);font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center}
   .empty{padding:30px 38px;text-align:center;color:var(--dim);font-size:13.5px;line-height:1.6}
+  .albar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 16px 4px}
+  .albar span{font-size:12px;color:var(--dim)}
+  .albar .clearbtn{font-size:12.5px;font-weight:600;color:var(--primary-fg);background:var(--primary);border-radius:9px;padding:7px 13px;min-height:32px}
+  .albar .clearbtn:active{opacity:.8}
+  .earlier{display:block;width:calc(100% - 28px);margin:6px 14px 0;text-align:center;font-size:12.5px;color:var(--dim);border:1px solid var(--line);border-radius:10px;padding:9px;min-height:38px}
+  .earlier:active{background:var(--surface)}
+  .dismiss{margin-top:10px;color:var(--dim);border:1px solid var(--line);border-radius:8px;padding:7px 14px;font-size:12.5px;min-height:34px}
+  .dismiss:active{background:var(--raised)}
 
   .mtitle{display:flex;justify-content:space-between;gap:10px;align-items:center}
   .mtitle b{font-weight:600;font-size:15px;line-height:1.35;min-width:0;overflow-wrap:anywhere}
@@ -191,7 +200,7 @@
   .kbk.down{background:#4d4d4d}.kbk.spec.down{background:#3a3a3a}
   .kbk.lit{background:var(--primary);color:var(--primary-fg)}
   .kbk.caps{box-shadow:inset 0 0 0 2px var(--primary)}
-  .kbpop{position:absolute;bottom:50px;left:50%;transform:translateX(-50%);min-width:46px;height:54px;background:#4d4d4d;border-radius:9px;color:var(--text);font-size:28px;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:5}
+  #kb.up .kbk.let{text-transform:uppercase}
 
   /* settings drawer (right) */
   #drawer{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:50}
@@ -426,7 +435,7 @@
   let running = false, streamText = "", streamTool = "";
   let vaultName = "", boxModel = "";
   let runCount = 0, unreadN = 0, offlineStreak = 0;
-  const msgsEl = $("msgs"), input = $("input");
+  const msgsEl = $("msgs"), input = $("input"), sendBtn = $("sendBtn");
 
   const age = (ts) => { const m = Math.floor((Date.now() - ts) / 60000); if (m < 1) return "now"; if (m < 60) return m + "m"; const h = Math.floor(m / 60); if (h < 24) return h + "h"; return Math.floor(h / 24) + "d"; };
 
@@ -484,6 +493,12 @@
       const convs = d.conversations || [];
       const workers = convs.filter((c) => c.source === "worker");
       const chats = convs.filter((c) => c.source !== "worker");
+      // The chat you're in may not be on disk yet (the box persists ~500ms
+      // after the first message). Show it anyway so a just-made chat never
+      // looks missing.
+      if (convId && !convs.some((c) => c.id === convId)) {
+        chats.unshift({ id: convId, title: convTitle || "New chat", lastActivityAt: Date.now(), source: "phone", msgCount: 0, preview: "" });
+      }
       box.innerHTML = "";
       const addRows = (label, arr) => {
         if (!arr.length) return;
@@ -526,7 +541,16 @@
   const scrollDown = (force) => { if (force || atBottom()) msgsEl.scrollTop = msgsEl.scrollHeight; };
 
   let streamEl = null, runlineEl = null;
+  // Send (↑) flips to stop (■) while the open thread is running — the standard
+  // chatbot interrupt. Tapping it aborts that conversation's run.
+  function syncSendBtn() {
+    const stop = running && !!convId;
+    sendBtn.classList.toggle("stop", stop);
+    sendBtn.textContent = stop ? "■" : "↑";
+    sendBtn.setAttribute("aria-label", stop ? "stop" : "send");
+  }
   function renderRunline() {
+    syncSendBtn();
     if (!running) { if (runlineEl) { runlineEl.remove(); runlineEl = null; } return; }
     if (!runlineEl) {
       runlineEl = document.createElement("div"); runlineEl.className = "runline";
@@ -542,7 +566,7 @@
     streamEl.innerHTML = '<div class="md">' + md(streamText) + '</div><span class="cursor"></span>';
     renderRunline(); scrollDown(false);
   }
-  function clearThreadUi() { running = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; }
+  function clearThreadUi() { running = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
   function showHint() { msgsEl.innerHTML = '<div class="hint"><b>What needs doing?</b>quick questions get answers. bigger asks get scoped before anything runs.</div>'; }
 
   function newChat() { convId = null; convTitle = "New chat"; clearThreadUi(); showHint(); setPage("chat"); setHeader(); }
@@ -578,7 +602,7 @@
       setHeader();
     } catch (e) { mine.classList.add("queued"); toast("Send failed: " + (e.message || e)); }
   }
-  $("sendBtn").onclick = send;
+  sendBtn.onclick = () => { if (running && convId) void killCurrent(); else void send(); };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
   let autosizeRAF = 0;
   function scheduleAutosize() {
@@ -590,7 +614,7 @@
     if (!convId) return;
     const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId }) }).catch(() => null);
     const d = r ? await r.json().catch(() => ({})) : {};
-    toast(d.result || "Kill sent.");
+    toast(d.result || "Stopping…");
   }
 
   // ---------- live events ----------
@@ -615,6 +639,7 @@
     } else if (d.type === "status") {
       if (d.convId === convId) { running = d.status === "running"; if (!running) { streamText = ""; streamTool = ""; renderStream(); } renderRunline(); }
       void refreshState(); if (page === "activity") void loadActivity();
+      if (cdraw.classList.contains("on")) void loadConvs();
     } else if (d.type === "title" && d.convId === convId) { convTitle = d.title; setHeader(); }
     else if (d.type === "notif") { void refreshBadge(); if (page === "alerts") void loadAlerts(); }
   }
@@ -693,17 +718,39 @@
       unreadN = d.unread || 0; setHeader();
       const list = d.notifications || [];
       box.innerHTML = "";
-      const asks = list.filter((n) => n.kind === "ask" && !n.read);
-      const rest = list.filter((n) => !(n.kind === "ask" && !n.read));
-      if (!list.length) box.appendChild(el('<div class="empty">Nothing yet. Mission completions, worker results, and your recurring briefings land here — with a push if notifications are on and the app isn’t already open.</div>'));
+      if (!list.length) { box.appendChild(el('<div class="empty">Nothing yet. Mission completions, worker results, and your recurring briefings land here — with a push if notifications are on and the app isn’t already open.</div>')); return; }
+      // Default view is unread-only — a clean board you can actually clear.
+      // Read items collapse behind "Show earlier" so nothing is lost.
+      const unread = list.filter((n) => !n.read);
+      const read = list.filter((n) => n.read);
+      const asks = unread.filter((n) => n.kind === "ask");
+      const info = unread.filter((n) => n.kind !== "ask");
+      if (unread.length) {
+        const bar = el('<div class="albar"><span></span><button class="clearbtn">Mark all read</button></div>');
+        bar.querySelector("span").textContent = unread.length + " new";
+        bar.querySelector(".clearbtn").onclick = async (ev) => { ev.currentTarget.disabled = true; await markAllRead(unread); loadAlerts(); };
+        box.appendChild(bar);
+      }
       if (asks.length) box.appendChild(el('<div class="sec">Needs you</div>'));
       for (const n of asks) box.appendChild(alertCard(n, true));
-      if (rest.length) box.appendChild(el('<div class="sec">For you</div>'));
-      for (const n of rest) box.appendChild(alertCard(n, false));
+      if (info.length) box.appendChild(el('<div class="sec">For you</div>'));
+      for (const n of info) box.appendChild(alertCard(n, false));
+      if (!unread.length) box.appendChild(el('<div class="empty">All caught up.</div>'));
+      if (read.length) {
+        const holder = el('<div></div>');
+        const t = el('<button class="earlier"></button>');
+        t.textContent = "Show " + read.length + " earlier";
+        t.onclick = () => {
+          if (holder.childElementCount) { holder.innerHTML = ""; t.textContent = "Show " + read.length + " earlier"; }
+          else { for (const n of read) holder.appendChild(alertCard(n, false)); t.textContent = "Hide earlier"; }
+        };
+        box.appendChild(t); box.appendChild(holder);
+      }
       box.appendChild(el('<div style="height:18px"></div>'));
     } catch (e) { box.innerHTML = '<div class="empty">Alerts unavailable: ' + esc(String(e.message || e)) + "</div>"; }
   }
   const markRead = (id) => api("/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
+  async function markAllRead(items) { await Promise.all(items.map((n) => markRead(n.id))); unreadN = 0; setHeader(); }
   function alertCard(n, needsYou) {
     const card = el('<div class="card' + (needsYou ? " ask" : n.read ? "" : " unread") + '"><div class="crow"><div class="ico"></div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><p class="cs"></p><span class="tag"></span></div></div></div>');
     const ico = card.querySelector(".ico");
@@ -725,6 +772,9 @@
       rep.querySelector(".rsend").onclick = go;
       rep.querySelector(".rinp").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
       card.querySelector(".cb").appendChild(rep);
+      const dismiss = el('<button class="dismiss">Mark read</button>');
+      dismiss.onclick = async (e) => { e.stopPropagation(); await markRead(n.id); toast("Marked read."); loadAlerts(); };
+      card.querySelector(".cb").appendChild(dismiss);
     } else {
       card.onclick = async () => { if (!n.read) await markRead(n.id); if (n.convId) openThread(n.convId, n.title); else loadAlerts(); };
     }
@@ -771,7 +821,7 @@
     [[..."1234567890"].map((c) => ({ k: "ch", t: c })), [..."-/:;()$&@\""].map((c) => ({ k: "ch", t: c })), [{ k: "layer2", t: "#+=" }, ...[...".,?!'"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }], [{ k: "layer0", t: "ABC" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }]],
     [[..."[]{}#%^*+="].map((c) => ({ k: "ch", t: c })), [..."_\\|~<>€£¥•"].map((c) => ({ k: "ch", t: c })), [{ k: "layer1", t: "123" }, ...[...".,?!'"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }], [{ k: "layer0", t: "ABC" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }]],
   ];
-  const kbLayerDivs = [], kbLetterKeys = []; let kbShiftKeyEl = null;
+  const kbLayerDivs = []; let kbShiftKeyEl = null;
   function kbBuild() {
     kbEl.innerHTML = "";
     KB_LAYERS.forEach((rows, li) => {
@@ -782,7 +832,7 @@
           const b = document.createElement("div"); const spec = key.k !== "ch"; b.className = "kbk" + (spec ? " spec" : "");
           if (key.k === "space") b.classList.add("space"); if (key.k === "ret") b.classList.add("ret");
           b.dataset.k = key.k; b.dataset.t = key.t; b.textContent = key.t;
-          if (key.k === "ch" && /[a-z]/i.test(key.t)) kbLetterKeys.push({ el: b, base: key.t });
+          if (key.k === "ch" && /[a-z]/i.test(key.t)) b.classList.add("let");
           if (key.k === "shift") kbShiftKeyEl = b; r.appendChild(b);
         }
         layer.appendChild(r);
@@ -790,13 +840,12 @@
       kbEl.appendChild(layer); kbLayerDivs.push(layer);
     });
   }
-  function kbApplyShift() { const up = kbShift || kbCaps; for (const lk of kbLetterKeys) lk.el.textContent = up ? lk.base.toUpperCase() : lk.base; if (kbShiftKeyEl) { kbShiftKeyEl.classList.toggle("lit", up); kbShiftKeyEl.classList.toggle("caps", kbCaps); } }
+  // Shift flip is now a single class toggle (CSS uppercases .let keys) instead
+  // of rewriting textContent on all 26 letter keys per keystroke.
+  function kbApplyShift() { const up = kbShift || kbCaps; kbEl.classList.toggle("up", up); if (kbShiftKeyEl) { kbShiftKeyEl.classList.toggle("lit", up); kbShiftKeyEl.classList.toggle("caps", kbCaps); } }
   function kbSetLayer(i) { kbLayer = i; kbLayerDivs.forEach((d, li) => d.classList.toggle("active", li === i)); if (i === 0) kbAutoShift(); kbApplyShift(); }
   function kbSel() { const len = input.value.length; let s = input.selectionStart, e = input.selectionEnd; if (s == null || e == null) { s = len; e = len; } return [s, e]; }
   function kbAfterEdit() { scheduleAutosize(); kbAutoShift(); }
-  let kbPopEl = null;
-  function kbShowPop(elk) { if (!kbPopEl) { kbPopEl = document.createElement("div"); kbPopEl.className = "kbpop"; } kbPopEl.textContent = elk.textContent; elk.appendChild(kbPopEl); }
-  function kbHidePop() { if (kbPopEl && kbPopEl.parentNode) kbPopEl.parentNode.removeChild(kbPopEl); }
   function kbAutoShift() { if (kbCaps || kbLayer !== 0) return; const [s] = kbSel(); const before = input.value.slice(0, s); const want = before === "" || /[.!?]\s$/.test(before) || /\n$/.test(before); if (want !== kbShift) { kbShift = want; kbApplyShift(); } }
   function kbInsert(str) { const [s, e] = kbSel(); input.setRangeText(str, s, e, "end"); kbAfterEdit(); }
   function kbBackspaceOnce() { let [s, e] = kbSel(); if (s === e) { if (s === 0) return; let n = 1; const code = input.value.charCodeAt(s - 1); if (code >= 0xdc00 && code <= 0xdfff && s > 1) n = 2; s -= n; } input.setRangeText("", s, e, "end"); kbAfterEdit(); }
@@ -804,14 +853,14 @@
   function kbStopRepeat() { clearTimeout(bkspT1); clearInterval(bkspIv); bkspT1 = bkspIv = 0; }
   function kbKeyDown(elk) {
     const k = elk.dataset.k, t = elk.dataset.t; elk.classList.add("down");
-    if (k === "ch") { kbInsert(kbShift || kbCaps ? t.toUpperCase() : t); kbShowPop(elk); if (kbShift && !kbCaps && /[a-z]/i.test(t)) { kbShift = false; kbApplyShift(); } }
+    if (k === "ch") { kbInsert(kbShift || kbCaps ? t.toUpperCase() : t); if (kbShift && !kbCaps && /[a-z]/i.test(t)) { kbShift = false; kbApplyShift(); } }
     else if (k === "bksp") { kbBackspaceOnce(); kbStopRepeat(); bkspT1 = setTimeout(() => { bkspIv = setInterval(kbBackspaceOnce, 55); }, 420); }
     else if (k === "shift") { const now = Date.now(); if (now - lastShiftAt < 350) { kbCaps = true; kbShift = true; } else if (kbCaps) { kbCaps = false; kbShift = false; } else { kbShift = !kbShift; } lastShiftAt = now; kbApplyShift(); }
     else if (k === "space") { const [caret] = kbSel(); const now = Date.now(); if (now - lastSpaceAt < 350 && caret >= 2 && input.value[caret - 1] === " " && /[\w)\]'"’”]/.test(input.value[caret - 2])) { input.setRangeText(". ", caret - 2, caret, "end"); kbAfterEdit(); } else kbInsert(" "); lastSpaceAt = now; }
     else if (k === "ret") kbInsert("\n");
     else if (k === "layer0") kbSetLayer(0); else if (k === "layer1") kbSetLayer(1); else if (k === "layer2") kbSetLayer(2);
   }
-  function kbKeyUp(elk) { elk.classList.remove("down"); kbHidePop(); }
+  function kbKeyUp(elk) { elk.classList.remove("down"); }
   function showKb() { if (!CUSTOM_KB || page !== "chat") return; if (!document.body.classList.contains("kbopen")) { document.body.classList.add("kbopen"); scrollDown(true); } if (document.activeElement !== input) { try { input.focus({ preventScroll: true }); } catch {} } kbApplyShift(); kbAutoShift(); }
   function hideKb() { if (!document.body.classList.contains("kbopen")) return; document.body.classList.remove("kbopen"); kbStopRepeat(); }
   if (CUSTOM_KB) {
