@@ -2900,6 +2900,114 @@ pub(crate) fn run_git(
     run_git_timeout(cwd, args, GIT_TIMEOUT_SECS)
 }
 
+// Absolute path to the `gh` CLI, resolved once. The GitHub HTTPS credential
+// helper below shells out to gh, and the shell git runs that helper through may
+// not inherit our PATH — so we hand git an absolute path when we can find one,
+// falling back to a bare `gh` (PATH lookup) otherwise.
+static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+fn find_gh() -> Option<PathBuf> {
+    GH_PATH
+        .get_or_init(|| {
+            #[cfg(windows)]
+            {
+                let candidates = [
+                    std::env::var("ProgramFiles")
+                        .ok()
+                        .map(|p| PathBuf::from(p).join("GitHub CLI").join("gh.exe")),
+                    std::env::var("ProgramFiles(x86)")
+                        .ok()
+                        .map(|p| PathBuf::from(p).join("GitHub CLI").join("gh.exe")),
+                    std::env::var("LocalAppData").ok().map(|p| {
+                        PathBuf::from(p)
+                            .join("Programs")
+                            .join("GitHub CLI")
+                            .join("gh.exe")
+                    }),
+                ];
+                for c in candidates.into_iter().flatten() {
+                    if c.is_file() {
+                        return Some(c);
+                    }
+                }
+                use std::os::windows::process::CommandExt;
+                let out = Command::new("where")
+                    .arg("gh")
+                    .creation_flags(0x08000000)
+                    .output()
+                    .ok()?;
+                if !out.status.success() {
+                    return None;
+                }
+                let first = String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())?
+                    .to_string();
+                let p = PathBuf::from(first);
+                if p.is_file() { Some(p) } else { None }
+            }
+            #[cfg(not(windows))]
+            {
+                // Common install locations first (apt/dnf, Homebrew on Intel and
+                // Apple Silicon, Linuxbrew), then a PATH lookup via `command -v`.
+                let candidates = [
+                    "/usr/bin/gh",
+                    "/usr/local/bin/gh",
+                    "/opt/homebrew/bin/gh",
+                    "/home/linuxbrew/.linuxbrew/bin/gh",
+                ];
+                for c in candidates {
+                    let p = PathBuf::from(c);
+                    if p.is_file() {
+                        return Some(p);
+                    }
+                }
+                let out = Command::new("sh").arg("-c").arg("command -v gh").output().ok()?;
+                if !out.status.success() {
+                    return None;
+                }
+                let first = String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())?
+                    .to_string();
+                let p = PathBuf::from(first);
+                if p.is_file() { Some(p) } else { None }
+            }
+        })
+        .clone()
+}
+
+/// The `-c credential.https://github.com.helper=…` arg that makes git
+/// authenticate GitHub HTTPS remotes through the (already-authenticated) `gh`
+/// CLI — the same wiring `gh auth setup-git` writes, but injected per-command.
+///
+/// Why per-command instead of stored config: the headless Linux server never
+/// ran `gh auth setup-git`, so over an `https://github.com/...` origin git had
+/// no credential helper and — with `GIT_TERMINAL_PROMPT=0` — died with
+/// "fatal: could not read Username for 'https://...'" instead of authenticating.
+/// Injecting it on every invocation also means it survives the global git config
+/// being wiped or NUL-corrupted, and is inherited by submodule sub-processes
+/// (via GIT_CONFIG_PARAMETERS) so nested-repo forks authenticate too.
+///
+/// We *append* gh as a helper rather than resetting: git tries helpers in order
+/// and stops at the first that returns a credential, so a box that already has a
+/// working helper (e.g. Windows Credential Manager) keeps using it first and
+/// only falls through to gh when it has nothing. If gh isn't installed the
+/// helper just yields no credential and git behaves exactly as before — no
+/// regression.
+fn gh_credential_helper_arg() -> String {
+    // Quote for the shell git runs the leading-`!` helper through. Forward
+    // slashes work on both platforms; single quotes survive spaces in the path
+    // ("C:/Program Files/GitHub CLI/gh.exe").
+    let cmd = match find_gh() {
+        Some(p) => format!("'{}'", p.to_string_lossy().replace('\\', "/")),
+        None => "gh".to_string(),
+    };
+    format!("credential.https://github.com.helper=!{} auth git-credential", cmd)
+}
+
 /// Like `run_git` but with a caller-chosen timeout. Used for operations that
 /// can legitimately run far longer than a normal git command — notably the
 /// first `submodule update --init`, which clones whole sub-repos.
@@ -2919,6 +3027,13 @@ fn run_git_timeout(
     #[cfg(not(windows))]
     let mut cmd = Command::new("git");
     cmd.current_dir(cwd);
+    // Authenticate GitHub HTTPS remotes through the `gh` CLI. Goes before the
+    // subcommand (a `-c` config override) and ahead of any `-c user.*` the
+    // caller passed in `args`. Harmless for local/offline git — git only ever
+    // consults a credential helper when a remote actually demands auth.
+    let cred = gh_credential_helper_arg();
+    cmd.arg("-c");
+    cmd.arg(&cred);
     cmd.args(args);
     // Never block on an interactive credential/passphrase prompt — on the
     // headless server that would hang the whole sync loop forever. Fail fast
