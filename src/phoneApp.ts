@@ -219,7 +219,7 @@ function runDiff(): void {
   for (const [id, rt] of Object.entries(s.convRuntime)) {
     const text = (rt.streamingText ?? "").slice(-STREAM_TAIL);
     const tool = rt.liveTools?.length ? rt.liveTools[rt.liveTools.length - 1]!.name : "";
-    const sig = tool + " " + text;
+    const sig = tool + "\u0000" + text;
     if ((text || tool) && lastStreamSent.get(id) !== sig) {
       lastStreamSent.set(id, sig);
       broadcast({ type: "runtime", convId: id, text, tool });
@@ -229,7 +229,7 @@ function runDiff(): void {
     const id = s.activeConversationId;
     const text = s.streamingText.slice(-STREAM_TAIL);
     const tool = s.liveTools.length ? s.liveTools[s.liveTools.length - 1]!.name : "";
-    const sig = tool + " " + text;
+    const sig = tool + "\u0000" + text;
     if (lastStreamSent.get(id) !== sig) {
       lastStreamSent.set(id, sig);
       broadcast({ type: "runtime", convId: id, text, tool });

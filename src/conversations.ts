@@ -7,7 +7,12 @@ export type ConversationSource =
   | "scheduled"
   | "voice"
   | "phone"
-  | "worker";
+  | "worker"
+  // A mission thread: the dedicated supervisor that owns one user-approved
+  // goal — it spawns and monitors that goal's workers and reports by Notify.
+  // Created by the assistant's StartMission tool; it lives on the Activity
+  // surface, not in the chats list.
+  | "mission";
 export type ConversationStatus = "idle" | "running";
 
 export type Conversation = {
@@ -29,9 +34,11 @@ export type Conversation = {
   // orchestrator prompt on every turn (the phone app's Supervisor button
   // binds to the one conversation carrying this).
   role?: "supervisor";
-  // The North Star this worker serves. Workers are never standalone: every
+  // The North Star this thread serves. Workers are never standalone: every
   // one belongs to a mission (the user-approved goal that spawned it), and
-  // surfaces group workers under their mission. Only set on source "worker".
+  // surfaces group workers under their mission. Set on source "worker" (the
+  // mission it serves) and on source "mission" (its own title — the group key
+  // its workers share).
   mission?: string;
 };
 

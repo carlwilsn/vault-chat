@@ -130,15 +130,14 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
     // path for the SchedulesPanel subscriber.
     let fromDisk = await readSchedules(vault).catch(() => null);
     if (fromDisk) {
-      // Lifecycle hygiene: a fired one-off is DONE — auto-disable it so the
-      // list doesn't accumulate stale "enabled" entries (and a stale watch
-      // can't look live). Covers rows fired by old builds too.
-      const swept = fromDisk.map((s) =>
-        s.recurrence.kind === "once" && s.enabled && s.lastFiredAt
-          ? { ...s, enabled: false }
-          : s,
+      // Lifecycle hygiene: a fired one-off is SPENT — delete it. Its result
+      // lives in the conversation it ran in (and any Notify it sent); keeping
+      // the row around just accumulates dead entries the user has to clean by
+      // hand. Covers rows fired (or merely disabled) by old builds too.
+      const swept = fromDisk.filter(
+        (s) => !(s.recurrence.kind === "once" && s.lastFiredAt),
       );
-      if (swept.some((s, i) => s !== fromDisk![i])) {
+      if (swept.length !== fromDisk.length) {
         fromDisk = swept;
         void writeSchedules(vault, swept).catch(() => {});
       }
@@ -160,14 +159,18 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
       if (fireAt === null) continue;
       if (fireAt > now) continue;
       // Optimistic mark so a slow agent run doesn't double-fire. A one-off
-      // that's firing right now is also spent — disable it in the same write.
+      // that's firing right now is spent — it self-destructs in the same
+      // write (fireOnce already holds its own copy of the schedule).
       const updated = {
         ...s,
         lastFiredAt: now,
         enabled: s.recurrence.kind === "once" ? false : s.enabled,
       };
       const cur = schedulesByVault.get(vault) ?? [];
-      const next = cur.map((x) => (x.id === s.id ? updated : x));
+      const next =
+        s.recurrence.kind === "once"
+          ? cur.filter((x) => x.id !== s.id)
+          : cur.map((x) => (x.id === s.id ? updated : x));
       schedulesByVault.set(vault, next);
       changed = true;
       void writeSchedules(vault, next).catch(() => {});

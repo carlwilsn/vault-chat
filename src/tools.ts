@@ -980,7 +980,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     }),
     AskWorker: tool({
       description:
-        "Relay a message to ANOTHER chat (a 'worker') in this vault and get its reply back — so you can hand an instruction or question to a long-running worker thread and report its answer. Find the worker's id with ListConversations. By default it does NOT interrupt a busy worker: if the worker is mid-run you'll get its current status instead of forcing an answer (use that for status checks — never disrupts a job). Set interrupt=true to abort its current turn and make it act on your message NOW (use to redirect it, or to nudge a stuck worker back to work). Returns the worker's reply, or its status when busy and not interrupted.",
+        "Relay a message to ANOTHER chat (a 'worker') in this vault and get its reply back — so you can hand an instruction or question to a long-running worker thread and report its answer. Find the worker's id with ListConversations. NOTE: on an idle worker this runs a FULL model turn and blocks until it answers — so for a plain status/progress check, prefer ReadConversation (its thread tells you what it did) and the heartbeat; reserve AskWorker for steering, correcting, or genuinely asking the worker something. By default it does NOT interrupt a busy worker: if the worker is mid-run you'll get its current status instead of forcing an answer. Set interrupt=true to abort its current turn and make it act on your message NOW (use to redirect it, or to nudge a stuck worker back to work). Returns the worker's reply, or its status when busy and not interrupted.",
       inputSchema: z.object({
         conversation_id: z
           .string()
@@ -1037,14 +1037,46 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           .describe("Short title for the worker chat. Defaults to a slug of the task."),
         mission: z
           .string()
+          .optional()
           .describe(
-            "The North Star this worker serves — the short name of the user-approved goal (e.g. the plan title, or the goal slug). EVERY worker belongs to a mission; workers spawned for the same goal share the same mission string so the Activity surface groups them together. Never leave a worker standalone.",
+            "The North Star this worker serves — the short name of the user-approved goal (e.g. the plan title, or the goal slug). EVERY worker belongs to a mission. If THIS chat is itself a mission thread, omit it — the worker joins your mission automatically. Otherwise it's required; workers for the same goal share the same mission string so Activity groups them.",
           ),
       }),
       execute: async ({ task, title, mission }) => {
+        // Workers are never standalone: a mission thread's workers inherit its
+        // mission automatically; any other caller must name one.
+        let effectiveMission = mission?.trim() || "";
+        if (!effectiveMission && conversationId) {
+          const caller = useStore
+            .getState()
+            .conversations.find((c) => c.id === conversationId);
+          effectiveMission = caller?.mission?.trim() || "";
+        }
+        if (!effectiveMission) {
+          return "Refused: every worker belongs to a mission. Pass `mission` (the user-approved goal's short name) — or, for a new substantial goal, create the mission first with StartMission and let IT spawn the workers.";
+        }
         const { startWorker } = await import("./offVaultRun");
-        const { id, title: t } = await startWorker(vault, task, title, undefined, mission);
-        return `Spawned worker "${t}" (id ${id}) under mission "${mission}" — it's running the task in the background. It runs independently; keep talking to the user. Check on it with ReadConversation (id ${id}) or the run heartbeat, and relay to it with AskWorker.`;
+        const { id, title: t } = await startWorker(vault, task, title, undefined, effectiveMission);
+        return `Spawned worker "${t}" (id ${id}) under mission "${effectiveMission}" — it's running the task in the background. It runs independently; keep talking to the user. Check on it with ReadConversation (id ${id}) or the run heartbeat, and relay to it with AskWorker.`;
+      },
+    }),
+    StartMission: tool({
+      description:
+        "Create a NEW MISSION: a dedicated supervisor thread that owns one user-approved goal end-to-end — it plans, spawns its own workers, monitors them on self-scheduled wakes, spawns MORE workers as monitoring teaches it something new, and reports milestones via Notify. Call this the moment the user approves a plan (or hands you a substantial multi-part goal): one mission per goal. Don't grind the goal in THIS chat and don't fan out loose workers from here — you stay the light conversational assistant; the mission does the running. It appears in Activity with its workers grouped beneath it.",
+      inputSchema: z.object({
+        goal: z
+          .string()
+          .describe(
+            "The approved goal, fully self-contained: the plan's tasks, key context, constraints, and the success criterion. The mission supervisor starts FRESH with only this brief.",
+          ),
+        title: z
+          .string()
+          .describe("Short mission name — the Activity group header (e.g. the plan title)."),
+      }),
+      execute: async ({ goal, title }) => {
+        const { startMission } = await import("./offVaultRun");
+        const { id, title: t } = await startMission(vault, goal, title);
+        return `Mission "${t}" started (thread ${id}). Its supervisor is briefing in now: it will spawn its own workers (grouped under this mission in Activity) and Notify the user at milestones. Tell the user it's underway — you stay free to keep talking.`;
       },
     }),
     Notify: tool({

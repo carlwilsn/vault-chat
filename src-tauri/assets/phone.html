@@ -35,13 +35,15 @@
   .reddot{position:absolute;top:7px;right:7px;width:8px;height:8px;border-radius:50%;background:var(--warn);display:none}
   .reddot.on{display:block}
   .title{flex:1;min-width:0;display:flex;align-items:center;gap:8px;justify-content:center;text-align:center}
-  .title .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse 1.7s ease-in-out infinite;flex:none}
-  body.offline .title .dot{background:var(--err);animation:none}
+  /* Solid connection dot — green = connected, red = offline. No pulsing:
+     it's a status light, not an activity meter. */
+  .title .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none}
+  body.offline .title .dot{background:var(--err)}
   .title .tx{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .title .sub{font-size:15px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:400}
   .vpill{display:none;align-items:center;gap:6px;font-size:12px;color:var(--ok);border:1px solid #34532f;border-radius:16px;padding:5px 11px;flex:none}
   body.voicemin .vpill{display:flex}
-  .vpill .d{width:6px;height:6px;border-radius:50%;background:var(--ok);animation:pulse 1.2s infinite}
+  .vpill .d{width:6px;height:6px;border-radius:50%;background:var(--ok)}
 
   .offbar{display:none;align-items:center;gap:9px;margin:0 14px 6px;background:#2a1d1c;border:1px solid #53312f;border-radius:11px;padding:8px 13px;font-size:12.5px;color:#e8b3b0;flex:0 0 auto}
   body.offline .offbar{display:flex}
@@ -77,7 +79,7 @@
   .crow2{display:block;width:100%;text-align:left;padding:11px 16px}
   .crow2:active{background:var(--surface)}
   .crow2 .t{display:flex;align-items:center;gap:8px}
-  .crow2 .rd{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse 1.4s infinite;flex:none}
+  .crow2 .rd{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none}
   .crow2 .nm{flex:1;min-width:0;font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .crow2 .ag{color:#7c7c7c;font-size:11.5px;flex:none}
   .crow2 .p{color:var(--dim);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;padding-left:0}
@@ -100,8 +102,10 @@
   .m .toolchips{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
   .toolchip{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 5px}
   .m.stream .cursor{display:inline-block;width:7px;height:14px;background:var(--primary);vertical-align:-2px;animation:pulse 1s infinite}
+  /* In-thread activity indicator: the desktop idiom — a white streaming
+     cursor — not a green status light. */
   .runline{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:12px;margin:2px 0 10px}
-  .runline .rd{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse 1.3s infinite;flex:none}
+  .runline .rd{width:7px;height:13px;background:var(--primary);animation:pulse 1s infinite;flex:none;border-radius:1px}
   .runline .rlbl{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .runline .kill{color:var(--err);border:1px solid #5a302e;border-radius:7px;padding:3px 11px;font-size:12px;flex:none}
   .hint{margin:auto;text-align:center;color:var(--dim);font-size:14px;line-height:1.65;padding:0 40px;max-width:340px}
@@ -150,10 +154,13 @@
 
   /* cards */
   .sec{font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;color:#8a8a8a;padding:15px 18px 7px;font-weight:600}
-  .msec{display:flex;align-items:baseline;gap:8px;padding:17px 18px 7px;min-width:0}
+  .msec{display:flex;align-items:baseline;gap:8px;padding:17px 18px 7px;min-width:0;width:100%;text-align:left}
+  .msec:active{background:var(--surface)}
   .msec>span:first-child{font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:var(--ok);font-weight:700;flex:none}
-  .msec b{font-size:14.5px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .msec b{font-size:14.5px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
   .msec .mc{font-size:11px;color:#8a8a8a;flex:none}
+  .msec .mc.dim{color:#6a6a6a}
+  .mnote{margin:0 18px 9px;font-size:12px;color:var(--dim);overflow-wrap:anywhere}
   .card{margin:0 14px 10px;background:var(--surface);border-radius:14px;padding:13px 14px;width:calc(100% - 28px);text-align:left;display:block}
   .card:active{background:#282828}
   .card.ask{border:1px solid #5a4a26}
@@ -190,7 +197,7 @@
   .wk{margin:0 14px 9px;background:#202020;border-radius:13px;overflow:hidden;width:calc(100% - 28px)}
   .wh{display:flex;align-items:center;gap:11px;padding:12px 13px;width:100%;text-align:left;min-height:46px}
   .wh .s{width:18px;height:18px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:700;border-radius:50%;font-size:11px;background:var(--raised);color:var(--dim)}
-  .wh .s.g{color:var(--ok)} .wh .s.run{color:var(--ok);animation:pulse 1.3s infinite}
+  .wh .s.g{color:var(--ok)} .wh .s.run{color:var(--ok)}
   .wh .nm{flex:1;font-size:14px;font-weight:600;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .wh .mt{font-size:11.5px;color:#8f8f8f;flex:none;max-width:42%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .wd{display:none;padding:0 14px 13px 14px;font-size:12.5px;color:#ababab;line-height:1.55;overflow-wrap:anywhere}
@@ -357,12 +364,14 @@
     const DB = {
       vault: "summer", model: "claude-opus-4-8",
       convs: [
+        { id: "m1", title: "BitNet 160M MVP", source: "mission", role: "supervisor", mission: "BitNet 160M MVP", lastActivityAt: now - 120000, msgCount: 9, preview: "seed 2 retry running; seeds 1/3 verified", goal: "reproduce the BitNet 160M MVP across 3 seeds" },
+        { id: "m2", title: "Quiet watch — repo hygiene", source: "mission", role: "supervisor", mission: "Quiet watch — repo hygiene", lastActivityAt: now - 3600000, msgCount: 4, preview: "all clean on last sweep; next check at 9pm", goal: "" },
         { id: "w1", title: "3-seed BitNet repro", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 90000, msgCount: 6, preview: "all three seeds done; gap held at +0.13 nat", goal: "train + eval seeds 42/43/44 on the 1700-step config, commit eval.loss, draft a writeup" },
         { id: "w3", title: "legacy untagged worker", source: "worker", role: "", lastActivityAt: now - 7200000, msgCount: 3, preview: "old standalone worker from before missions", goal: "" },
         { id: "sup", title: "cockpit nav testing", source: "phone", role: "supervisor", lastActivityAt: now - 300000, msgCount: 14, preview: "shipped the unified app; working through nav", goal: "" },
         { id: "c1", title: "densing law — readings", source: "manual", role: "", lastActivityAt: now - 5400000, msgCount: 10, preview: "the crossover moves with task difficulty, not just scale", goal: "" },
       ],
-      runs: [{ convId: "w2", title: "seed-2 retry", mission: "BitNet 160M MVP", lastTool: "Bash", lastProgressAt: now - 60000 }],
+      runs: [{ convId: "w2", title: "seed-2 retry", mission: "BitNet 160M MVP", source: "worker", lastTool: "Bash", lastProgressAt: now - 60000 }],
       schedules: [{ id: "s1", name: "Morning briefing", label: "daily · 7:00 AM", enabled: true, lastFiredAt: now - 7200000, quietUnlessAlert: false }],
       notifs: [
         { id: "n1", ts: now - 90000, kind: "ask", title: "Seed 3 diverged", body: "step 800, +0.05 nat above seed 1. real effect, or match the LR and rerun? tell me how to play it.", convId: "w1", read: false },
@@ -370,6 +379,10 @@
         { id: "n3", ts: now - 5400000, kind: "info", title: "Stopped an idle box", body: "a box sat at zero GPU utilization for 12 minutes after its job exited — killed it. ~$0.26, nothing billing now.", read: true },
       ],
       threads: {
+        m1: { id: "m1", title: "BitNet 160M MVP", source: "mission", status: "idle", messages: [
+          { role: "user", content: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP across 3 seeds; commit eval.loss; writeup under docs/." },
+          { role: "assistant", content: "Criterion pinned: three seeds within 0.005 nat, eval.loss committed. Spawned the 3-seed worker; watching on 15-min wakes.", tools: ["StartWorker", "Schedule"] },
+        ] },
         w1: { id: "w1", title: "3-seed BitNet repro", source: "worker", status: "idle", messages: [
           { role: "user", content: "train + eval seeds 42/43/44 on the 1700-step config, commit eval.loss, draft a writeup" },
           { role: "assistant", content: "Locked the config, streaming c4. Starting seed 42.", tools: ["Bash"] },
@@ -587,7 +600,9 @@
       if (sr && sr.ok) { const sd = await sr.json().catch(() => ({})); for (const x of sd.runs || []) runIds.add(x.convId); }
       const convs = d.conversations || [];
       const workers = convs.filter((c) => c.source === "worker");
-      const chats = convs.filter((c) => c.source !== "worker");
+      // Mission threads live on Activity (their group headers open them);
+      // the drawer stays your actual conversations.
+      const chats = convs.filter((c) => c.source !== "worker" && c.source !== "mission");
       // The chat you're in may not be on disk yet (the box persists ~500ms
       // after the first message). Show it anyway so a just-made chat never
       // looks missing.
@@ -817,16 +832,6 @@
     };
     return card;
   }
-  function doneCard(c) {
-    const card = el('<div class="wk"><button class="wh"><span class="s g">✓</span><span class="nm"></span><span class="mt"></span></button><div class="wd"><div class="lbl">Goal</div><span class="gv"></span><div class="lbl">Last update</div><span class="p"></span><div class="wbtns"><button class="wbtn op">Open thread</button></div></div></div>');
-    card.querySelector(".nm").textContent = c.title;
-    card.querySelector(".mt").textContent = age(c.lastActivityAt);
-    card.querySelector(".gv").textContent = c.goal || "(no goal recorded)";
-    card.querySelector(".p").textContent = c.preview || "—";
-    card.querySelector(".wh").onclick = () => card.classList.toggle("open");
-    card.querySelector(".op").onclick = (e) => { e.stopPropagation(); openThread(c.id, c.title); };
-    return card;
-  }
   async function loadActivity() {
     const box = $("actScroll");
     try {
@@ -838,34 +843,51 @@
       runCount = runs.length; setHeader();
       box.innerHTML = "";
 
-      const dayAgo = Date.now() - 24 * 3600000;
-      const doneWorkers = convs.filter((c) => c.source === "worker" && !runIds.has(c.id) && c.lastActivityAt > dayAgo);
-      // missions: name -> { active: [{run, c}], done: [c] }, in first-seen order.
-      const missions = new Map();
+      // Activity shows what's ALIVE: missions (their own thread + active
+      // workers) and loose running work. Finished workers don't pile up here —
+      // their completion notification in Alerts is the way back to the thread.
+      const missions = new Map(); // name -> { conv: mission thread | null, active: [{run, c}] }
       const missionOf = (run, c) => ((run && run.mission) || (c && c.mission) || "").trim();
-      const bucket = (name) => { if (!missions.has(name)) missions.set(name, { active: [], done: [] }); return missions.get(name); };
-      const looseRuns = [], looseDone = [];
+      const bucket = (name) => { if (!missions.has(name)) missions.set(name, { conv: null, active: [] }); return missions.get(name); };
+      const twoDays = Date.now() - 48 * 3600000;
+      // Mission threads seed the groups: recent ones show even between worker
+      // waves (a monitoring mission with everything idle is still a mission).
+      for (const c of convs) {
+        if (c.source !== "mission") continue;
+        if (c.lastActivityAt < twoDays && !runIds.has(c.id)) continue;
+        bucket((c.mission || c.title || "").trim() || c.title).conv = c;
+      }
+      const looseRuns = [];
       for (const run of runs) {
         const c = byId.get(run.convId) || {};
+        if (c.source === "mission") continue; // shown via its group header
         const m = missionOf(run, c);
         if (m) bucket(m).active.push({ run, c }); else looseRuns.push({ run, c });
-      }
-      for (const c of doneWorkers.slice(0, 24)) {
-        const m = missionOf(null, c);
-        if (m) bucket(m).done.push(c); else looseDone.push(c);
       }
 
       if (!missions.size && !looseRuns.length) {
         box.appendChild(el('<div class="sec">Missions</div>'));
-        box.appendChild(el('<div class="empty">Nothing in flight. Hand the agent a goal in Chat — it proposes a plan, you approve, and its workers land here under that mission.</div>'));
+        box.appendChild(el('<div class="empty">Nothing in flight. Hand the agent a goal in Chat — it proposes a plan, you approve, and the mission with its workers lands here.</div>'));
       }
       for (const [name, g] of missions) {
-        const head = el('<div class="msec"><span>Mission</span><b></b><span class="mc"></span></div>');
+        const head = el('<button class="msec"><span>Mission</span><b></b><span class="mc"></span></button>');
         head.querySelector("b").textContent = name;
-        head.querySelector(".mc").textContent = g.active.length ? g.active.length + " running" : "done";
+        const live = g.active.length || (g.conv && runIds.has(g.conv.id));
+        head.querySelector(".mc").textContent = g.active.length
+          ? g.active.length + " running"
+          : g.conv && runIds.has(g.conv.id) ? "planning" : "watching";
+        if (!live) head.querySelector(".mc").classList.add("dim");
+        if (g.conv) {
+          const mc = g.conv;
+          head.onclick = () => openThread(mc.id, mc.title);
+        }
         box.appendChild(head);
         for (const { run, c } of g.active) box.appendChild(runCard(run, c));
-        for (const c of g.done) box.appendChild(doneCard(c));
+        if (!g.active.length && g.conv) {
+          const note = el('<div class="mnote"></div>');
+          note.textContent = (g.conv.preview || "no workers running right now") + " · tap the header to open the mission";
+          box.appendChild(note);
+        }
       }
       if (looseRuns.length) {
         box.appendChild(el('<div class="sec">Also running</div>'));
@@ -883,10 +905,6 @@
         sw.onclick = async () => { await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle", id: sc.id, enabled: !sc.enabled }) }).catch(() => {}); loadActivity(); };
         card.querySelector(".del").onclick = async () => { if (!confirm('Delete "' + sc.name + '"?')) return; await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", id: sc.id }) }).catch(() => {}); loadActivity(); };
         box.appendChild(card);
-      }
-      if (looseDone.length) {
-        box.appendChild(el('<div class="sec">Older workers</div>'));
-        for (const c of looseDone.slice(0, 12)) box.appendChild(doneCard(c));
       }
       box.appendChild(el('<div style="height:18px"></div>'));
     } catch (e) { box.innerHTML = '<div class="empty">Activity unavailable: ' + esc(String(e.message || e)) + "</div>"; }
@@ -1021,8 +1039,12 @@
     const end = async () => {
       if (mode !== "h") { mode = null; return; }
       // A mouse drag fires a click on mouseup — flag it so the card's
-      // tap-for-summary handler swallows that one click.
+      // tap-for-summary handler swallows that one click. TIMED, not
+      // consume-on-next-click: touch swipes fire no click at all, and a
+      // lingering flag would eat the next real tap (the "tap does nothing"
+      // bug).
       card.dataset.swiped = "1";
+      setTimeout(() => { card.dataset.swiped = ""; }, 400);
       mode = null;
       card.style.transition = "transform .18s ease, opacity .18s ease";
       if (dx < -70) {

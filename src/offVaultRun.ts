@@ -476,7 +476,7 @@ export async function runWorkerTurn(
   }
 
   const userMsg: ChatMessage = { role: "user", content: message };
-  const baseMessages = await withConvLock(async () => {
+  const seeded = await withConvLock(async () => {
     const list = await readConversations(vault);
     const idx = list.findIndex((c) => c.id === conversationId);
     if (idx < 0) return null;
@@ -486,9 +486,14 @@ export async function runWorkerTurn(
       lastActivityAt: Date.now(),
     };
     await writeConversations(vault, list);
-    return list[idx]!.messages;
+    return { messages: list[idx]!.messages, role: list[idx]!.role };
   });
-  if (!baseMessages) return { reply: "", error: `worker thread not found: ${conversationId}` };
+  if (!seeded) return { reply: "", error: `worker thread not found: ${conversationId}` };
+  const baseMessages = seeded.messages;
+  // Mission threads (and any supervisor-role thread run headless) get the
+  // vault's supervisor.md orchestrator prompt, same as the cockpit path in
+  // chat-controller — a mission's turns ARE supervisor turns.
+  const supervisorMode = seeded.role === "supervisor";
 
   // Surface the run to the live UI immediately: pull the just-written user
   // turn into the in-memory list so the worker chat shows the task it was
@@ -521,6 +526,7 @@ export async function runWorkerTurn(
       bashDisabled: store.bashDisabled,
       voiceMode: false,
       telegramMode: false,
+      supervisorMode,
       conversationId,
       isTelegramSourced: false,
       reasoningEffort: store.reasoningEffort,
@@ -607,13 +613,15 @@ export async function startWorker(
   const t = title?.trim() || deriveConversationTitle([{ role: "user", content: task }]);
   // Tagged "worker" so every surface (ChatsPanel, the phone app's list) can
   // tell spawned subagents apart from the user's own chats. The mission ties
-  // it to the North Star it serves — Activity groups workers under it.
+  // it to the North Star it serves — Activity groups workers under it. A
+  // worker is NEVER standalone: if no mission was named, its own title is the
+  // mission of one, so the Activity grouping invariant holds everywhere.
   const fresh: Conversation = {
     ...emptyConversation(),
     id,
     source: "worker",
     title: t,
-    mission: mission?.trim() || undefined,
+    mission: mission?.trim() || t,
   };
   await withConvLock(async () => {
     const list = await readConversations(vault);
@@ -626,6 +634,44 @@ export async function startWorker(
   // as the worker's first user turn and persists its reply.
   void runWorkerTurn(vault, id, task, { modelId }).catch((e) =>
     console.warn("[worker] start failed:", e),
+  );
+  return { id, title: t };
+}
+
+// Start a MISSION: a dedicated supervisor thread that owns one user-approved
+// goal end-to-end. The assistant (cockpit chat) calls this on plan approval
+// instead of fanning out workers itself — the mission then plans, spawns its
+// own workers (which inherit its mission tag), monitors them on self-scheduled
+// wakes, spawns more as it learns, and reports milestones via Notify. This is
+// the middle layer of assistant → missions → workers: the user talks to the
+// assistant; missions do the running.
+export async function startMission(
+  vault: string,
+  goal: string,
+  title: string,
+): Promise<{ id: string; title: string }> {
+  const id = newConversationId();
+  const t = title.trim() || deriveConversationTitle([{ role: "user", content: goal }]);
+  const fresh: Conversation = {
+    ...emptyConversation(),
+    id,
+    source: "mission",
+    role: "supervisor", // its turns run with the vault's supervisor.md prompt
+    title: t,
+    mission: t, // its own group key — workers it spawns share this
+  };
+  await withConvLock(async () => {
+    const list = await readConversations(vault);
+    list.unshift(fresh);
+    await writeConversations(vault, list);
+  });
+  await useStore.getState().refreshConversationFromDisk(vault, id).catch(() => {});
+  const brief =
+    `MISSION BRIEF (user-approved, handed off by their assistant). You own this goal end-to-end.\n\n` +
+    `Mission: ${t}\n\n${goal.trim()}\n\n` +
+    `Start now: pin the success criterion, open the goal file, spawn your workers (they join this mission automatically), and set your first self-check wake.`;
+  void runWorkerTurn(vault, id, brief, {}).catch((e) =>
+    console.warn("[mission] start failed:", e),
   );
   return { id, title: t };
 }
