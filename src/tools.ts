@@ -267,6 +267,11 @@ export type BuildToolsOptions = {
   // back to Telegram if the conversation is telegram-sourced.
   conversationId?: string;
   isTelegramSourced?: boolean;
+  // Which layer this conversation sits in — assistant → missions → workers.
+  // The layers are enforced HERE, not by prompt discipline: assistants mint
+  // missions but cannot spawn workers; only a mission thread holds
+  // StartWorker; workers hold neither (they do the task, not orchestration).
+  tier?: "assistant" | "mission" | "worker";
 };
 
 // Pure-string path containment check. Symlinks are NOT resolved — a
@@ -380,6 +385,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     bashDisabled = false,
     conversationId,
     isTelegramSourced = false,
+    tier = "assistant",
   } = options;
   const guardPath = (path: string) => assertAllowed(path, vault, strictVault);
   const guardDenied = (path: string) => assertNotDenied(path, vault);
@@ -846,7 +852,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   // Only WebSearch needs the Tavily key. The git/conversation/schedule
   // tools below are always available, so headless coach and monitoring
   // runs can read git evidence and chat history without a key configured.
-  return {
+  const full = {
     ...base,
     ...(tavilyKey
       ? {
@@ -1024,7 +1030,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     }),
     StartWorker: tool({
       description:
-        "Spawn a NEW worker chat (a subagent) and kick off a task on it in the background — use when the user asks you to start a long or heavy job (e.g. 'run the BitNet training overnight', 'do the big refactor') so YOUR chat stays free to keep talking to them while the worker grinds. Returns the new worker's conversation id + title; afterward you watch it (via the heartbeat / ReadConversation) and relay to it (AskWorker). The worker starts FRESH with no other context, so make the task self-contained. Don't use this for quick things you can just do yourself in this chat.",
+        "Spawn a NEW worker (a subagent) for YOUR mission and kick its task off in the background. Only mission threads hold this tool: you spawn however many workers the goal needs — in parallel or in sequence — and spawn MORE later when monitoring teaches you something new. Returns the new worker's conversation id + title; afterward you watch it (heartbeat / ReadConversation) and steer it (AskWorker). The worker starts FRESH with no other context, so make the task self-contained. Don't use this for quick things you can just do yourself in this turn.",
       inputSchema: z.object({
         task: z
           .string()
@@ -1281,6 +1287,20 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       },
     }),
   };
+
+  // Enforce the layers in the toolset itself — prompt discipline is a
+  // suggestion; a missing tool is a guarantee:
+  //   assistant — mints missions (StartMission), talks to threads (AskWorker),
+  //               but can NEVER spawn a worker directly;
+  //   mission   — spawns and steers ITS workers, but can't mint sub-missions;
+  //   worker    — does the task; no orchestration tools at all.
+  const drop = (names: string[]) => {
+    for (const n of names) delete (full as Record<string, unknown>)[n];
+  };
+  if (tier === "mission") drop(["StartMission"]);
+  else if (tier === "worker") drop(["StartMission", "StartWorker", "AskWorker"]);
+  else drop(["StartWorker"]);
+  return full;
 }
 
 export type ToolName = keyof ReturnType<typeof buildTools>;

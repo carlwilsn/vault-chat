@@ -374,12 +374,38 @@ export async function runAgent(params: {
       finalUserMessage,
     ];
 
+    // Which layer this thread sits in (assistant → missions → workers): the
+    // toolset is hard-gated by it. Resolved from the conversation's source —
+    // store first (hot path), disk as fallback for headless off-vault runs —
+    // so every caller gets the right tools without wiring it through.
+    let tier: "assistant" | "mission" | "worker" = "assistant";
+    if (conversationId) {
+      let src: string | undefined;
+      try {
+        const { useStore } = await import("./store");
+        src = useStore.getState().conversations.find((c) => c.id === conversationId)?.source;
+      } catch {
+        /* store unavailable */
+      }
+      if (!src) {
+        try {
+          const { readConversations } = await import("./conversations");
+          src = (await readConversations(vault)).find((c) => c.id === conversationId)?.source;
+        } catch {
+          /* default assistant */
+        }
+      }
+      if (src === "mission") tier = "mission";
+      else if (src === "worker") tier = "worker";
+    }
+
     const builtinTools = buildTools(vault, {
       tavilyKey,
       strictVault: strictVault ?? false,
       bashDisabled: bashDisabled ?? false,
       conversationId,
       isTelegramSourced: isTelegramSourced ?? false,
+      tier,
     });
     const innerTools = { ...builtinTools, ...customTools };
 

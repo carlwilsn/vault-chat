@@ -750,9 +750,10 @@
     toast(d.result || "Stopped.");
   }
 
-  // North Star: approving a proposed plan tells the supervisor to fan out a
-  // worker per task. Sent as an explicit instruction so it works even on a
-  // vault whose supervisor prompt predates the plan convention.
+  // North Star: approving a proposed plan tells the assistant to mint the
+  // MISSION (StartMission) — the mission's own supervisor then spawns and
+  // monitors the workers. Sent as an explicit instruction so it works even on
+  // a vault whose supervisor prompt predates the convention.
   async function approvePlan(card) {
     if (card.classList.contains("approved")) return;
     if (!convId) { toast("Open the chat first."); return; }
@@ -760,9 +761,9 @@
     card.querySelectorAll("button").forEach((b) => { b.disabled = true; });
     const mt = card.querySelector(".pc-title");
     const mission = mt ? mt.textContent.trim() : "";
-    const text = "Approved — start a background worker for each task in that plan and run them now" +
-      (mission ? ', with mission "' + mission + '" on every one' : "") +
-      ", then tell me which are running.";
+    const text = "Approved — create the mission" +
+      (mission ? ' "' + mission + '"' : "") +
+      " for that plan now (StartMission with the full plan as its brief), then confirm it's underway.";
     if (msgsEl.querySelector(".hint")) msgsEl.innerHTML = "";
     msgsEl.appendChild(bubble("user", text, null)); scrollDown(true);
     try {
@@ -770,7 +771,7 @@
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || r.status);
       running = true; renderRunline(); setHeader();
-      toast("Approved — spawning workers.");
+      toast("Approved — starting the mission.");
     } catch (e) { card.classList.remove("approved"); card.querySelectorAll("button").forEach((b) => { b.disabled = false; }); toast("Approve failed: " + (e.message || e)); }
   }
   msgsEl.addEventListener("click", (e) => {
