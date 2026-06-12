@@ -6056,7 +6056,7 @@ dependencies = [
 
 [[package]]
 name = "vault-chat"
-version = "0.4.15"
+version = "0.4.18"
 dependencies = [
  "age",
  "base64 0.22.1",

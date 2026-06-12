@@ -332,11 +332,29 @@ export async function sendMessage(
         if (t) t.result = e.result;
         if (live) store.updateLiveToolResult(e.id, e.result);
       } else if (e.kind === "done") {
-        // User stopped/interrupted this run — stopAgent/interruptAndSend
-        // already finalized the partial reply and committed. Skip so we
-        // don't double-append. (Abort normally surfaces as `error`, not
-        // `done`; this guards providers that finish cleanly on abort.)
-        if (signal.aborted) return;
+        // User stopped/interrupted this run. For the FOREGROUND conversation
+        // stopAgent/interruptAndSend already finalized the partial reply and
+        // committed — skip so we don't double-append. But a BACKGROUND run
+        // aborted from the phone (abortRun via /kill) has no such finalizer:
+        // bailing without cleanup left the thread status "running" forever,
+        // so every later phone message queued behind a ghost and the queue
+        // never flushed (no running→idle transition). Finalize it here.
+        if (signal.aborted) {
+          if (!live && targetConvId) {
+            if (acc.trim() || tools.length) {
+              store.appendMessageToConversation(targetConvId, {
+                role: "assistant",
+                content: acc,
+                toolCalls: tools.length ? tools : undefined,
+              });
+            }
+            store.setConversationStatus(targetConvId, "idle");
+            store.clearConvRuntime(targetConvId);
+            void endHeartbeat(vault, targetConvId);
+            unregisterRun(targetConvId, controller);
+          }
+          return;
+        }
         if (e.usage && live) {
           store.addTokenUsage(e.usage);
           store.setLastContext(e.usage.context);
@@ -459,11 +477,27 @@ export async function sendMessage(
         }
       } else if (e.kind === "error") {
         // A user-initiated stop/interrupt aborts the run, which surfaces
-        // here as an error. It's not a real failure: stopAgent /
-        // interruptAndSend already captured the partial reply as an
-        // incomplete message and committed, so swallow it — no ⚠️ bubble,
-        // no duplicate, no lost context.
-        if (signal.aborted) return;
+        // here as an error. It's not a real failure: for the FOREGROUND
+        // conversation stopAgent / interruptAndSend already captured the
+        // partial reply, so swallow it — no ⚠️ bubble, no duplicate. A
+        // BACKGROUND run aborted from the phone has no finalizer though —
+        // same ghost-"running" bug as the done path; finalize it here.
+        if (signal.aborted) {
+          if (!live && targetConvId) {
+            if (acc.trim() || tools.length) {
+              store.appendMessageToConversation(targetConvId, {
+                role: "assistant",
+                content: acc,
+                toolCalls: tools.length ? tools : undefined,
+              });
+            }
+            store.setConversationStatus(targetConvId, "idle");
+            store.clearConvRuntime(targetConvId);
+            void endHeartbeat(vault, targetConvId);
+            unregisterRun(targetConvId, controller);
+          }
+          return;
+        }
         const errMsg: ChatMessage = {
           role: "assistant",
           content: `⚠️ ${e.message}`,

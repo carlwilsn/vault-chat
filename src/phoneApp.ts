@@ -249,13 +249,14 @@ async function onRunEnded(convId: string): Promise<void> {
     );
     return; // the follow-up run's completion will handle notification
   }
-  // 2) Worker completions auto-notify — delegated background work you aren't
-  // watching, so a finish ping is the deterministic safety net. The MAIN
-  // cockpit chat does NOT auto-push every reply (spam while you're actively
-  // talking); there, the agent decides what's worth an interruption via the
-  // Notify / AskUser tools. Telegram-delivered replies are mirrored inside
-  // sendTelegramReplyWithImages, after the [[SILENT]]/ALERT gates.
-  const c = useStore.getState().conversations.find((x) => x.id === convId);
+  // 2) A finished worker reports UP, not out: its completion wakes its
+  // MISSION thread, which reviews the result and decides — verify, steer,
+  // respawn, or (only when it genuinely needs the user) Notify/AskUser. The
+  // user hears from supervisors, not from every worker. Legacy workers with
+  // no mission thread keep the old direct ping as the safety net so nothing
+  // ever finishes silently.
+  const s = useStore.getState();
+  const c = s.conversations.find((x) => x.id === convId);
   if (!c) return;
   if (c.source === "worker") {
     const last = [...c.messages].reverse().find((m) => m.role === "assistant" && !m.hidden);
@@ -266,9 +267,33 @@ async function onRunEnded(convId: string): Promise<void> {
       const names = (last?.toolCalls ?? []).map((t) => t.name);
       body = names.length ? `ran ${[...new Set(names)].slice(0, 5).join(", ")}` : "finished.";
     }
-    void notify("info", `Worker finished — ${c.title}`, body, convId);
+    const missionKey = (c.mission ?? "").trim();
+    const missionConv = missionKey
+      ? s.conversations.find(
+          (x) => x.source === "mission" && (x.mission ?? x.title).trim() === missionKey,
+        )
+      : undefined;
+    if (missionConv && missionConv.id !== convId) {
+      const wake =
+        `Your worker "${c.title}" (id ${convId}) just finished its turn. Last output: ${body}\n\n` +
+        `Review its thread and decide: verified done, steer it (AskWorker), respawn with learnings, or — only if you can't resolve it yourself — bring the user in.`;
+      if (isThreadBusy(missionConv)) {
+        // Mission is mid-turn (likely the very AskWorker that drove this
+        // worker). Queue the wake — it flushes when the mission's run ends,
+        // same path as phone messages.
+        const q = queued.get(missionConv.id) ?? [];
+        q.push(wake);
+        queued.set(missionConv.id, q);
+      } else {
+        const { sendMessage } = await import("./chat-controller");
+        void sendMessage(wake, undefined, undefined, missionConv.id).catch((e) =>
+          console.warn("[phone-app] mission wake failed:", e),
+        );
+      }
+    } else {
+      void notify("info", `Worker finished — ${c.title}`, body, convId);
+    }
   }
-
 }
 
 // ---- the agent→you channel: record + push + live-update, one call ----
@@ -631,6 +656,29 @@ export async function startPhoneAppHost(): Promise<void> {
       }
     } catch (e) {
       respond(reqId, { error: String(e) });
+    }
+  });
+
+  // Purge the chats list: tombstone-delete every idle assistant chat. Workers
+  // and missions are untouched (Activity owns them), as is anything mid-run.
+  await listen<{ reqId: string }>("phone:clearchats", async (event) => {
+    try {
+      const s = useStore.getState();
+      if (!s.vaultPath) {
+        respond(event.payload.reqId, { error: "no vault open" });
+        return;
+      }
+      const victims = s.conversations.filter(
+        (c) =>
+          c.source !== "worker" &&
+          c.source !== "mission" &&
+          c.status !== "running" &&
+          !(s.busy && s.activeConversationId === c.id),
+      );
+      for (const v of victims) useStore.getState().deleteConversation(v.id);
+      respond(event.payload.reqId, { ok: true, cleared: victims.length });
+    } catch (e) {
+      respond(event.payload.reqId, { error: String(e) });
     }
   });
 

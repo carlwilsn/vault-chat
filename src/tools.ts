@@ -1293,12 +1293,16 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   //   assistant — mints missions (StartMission), talks to threads (AskWorker),
   //               but can NEVER spawn a worker directly;
   //   mission   — spawns and steers ITS workers, but can't mint sub-missions;
-  //   worker    — does the task; no orchestration tools at all.
+  //   worker    — does the task, nothing else. No orchestration, and no
+  //               direct line to the user (Notify/AskUser): a worker reports
+  //               by ENDING its turn with a clear report — its mission is
+  //               woken with the result and decides what reaches the user.
   const drop = (names: string[]) => {
     for (const n of names) delete (full as Record<string, unknown>)[n];
   };
   if (tier === "mission") drop(["StartMission"]);
-  else if (tier === "worker") drop(["StartMission", "StartWorker", "AskWorker"]);
+  else if (tier === "worker")
+    drop(["StartMission", "StartWorker", "AskWorker", "Notify", "AskUser"]);
   else drop(["StartWorker"]);
   return full;
 }

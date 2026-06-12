@@ -386,6 +386,14 @@ fn handle(mut req: Request, token: &str) {
             };
             let _ = req.respond(body);
         }
+        (Method::Post, "/chats/clear") => {
+            // Purge idle assistant chats (workers/missions/running untouched).
+            let body = match relay_request("phone:clearchats", json!({}), Duration::from_secs(15)) {
+                Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
+                _ => resp_text(503, "application/json", "{\"error\":\"app not answering\"}".into()),
+            };
+            let _ = req.respond(body);
+        }
         (Method::Get, "/push/vapid") => {
             let body = match vapid_pub() {
                 Some(k) => resp_text(200, "application/json", json!({ "key": k }).to_string()),

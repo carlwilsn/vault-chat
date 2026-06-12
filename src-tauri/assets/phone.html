@@ -71,7 +71,9 @@
   .cdtop b{flex:1;font-size:16px;font-weight:600}
   .newbtn{display:flex;align-items:center;gap:7px;font-size:13.5px;font-weight:600;color:var(--primary-fg);background:var(--primary);border-radius:10px;padding:8px 13px}
   .newbtn svg{width:16px;height:16px}
-  .clist{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:4px 0 calc(env(safe-area-inset-bottom) + 12px)}
+  .clist{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:4px 0 12px}
+  .cclear{flex:0 0 auto;margin:0 14px calc(env(safe-area-inset-bottom) + 14px);border:1px solid #5a302e;border-radius:10px;padding:10px;font-size:13px;color:var(--err);min-height:40px}
+  .cclear:active{background:var(--surface)}
   .csec{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#7c7c7c;padding:12px 16px 5px;font-weight:600}
   button.csec.wsec{display:flex;align-items:center;justify-content:space-between;width:100%;text-align:left;padding:12px 16px;min-height:40px}
   button.csec.wsec:active{background:var(--surface)}
@@ -160,7 +162,18 @@
   .msec b{font-size:14.5px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
   .msec .mc{font-size:11px;color:#8a8a8a;flex:none}
   .msec .mc.dim{color:#6a6a6a}
+  .msec .watch{font-size:11px;color:var(--dim);flex:none;border:1px solid var(--line);border-radius:7px;padding:3px 9px}
   .mnote{margin:0 18px 9px;font-size:12px;color:var(--dim);overflow-wrap:anywhere}
+  /* worker pills: one short line per worker, tap to expand state + actions */
+  .wpill{margin:0 14px 7px;border:1px solid var(--line);border-radius:17px;background:var(--surface);overflow:hidden}
+  .wp-head{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:8px 14px;min-height:37px}
+  .wp-head:active{background:var(--raised)}
+  .wp-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none}
+  .wp-t{flex:1;min-width:0;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wp-age{font-size:10.5px;color:#8a8a8a;flex:none;max-width:40%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wp-body{display:none;padding:0 14px 11px}
+  .wp-state{margin:2px 0 0;font-size:12.5px;color:#ababab;line-height:1.5;overflow-wrap:anywhere}
+  .wpill.open .wp-body{display:block}
   .card{margin:0 14px 10px;background:var(--surface);border-radius:14px;padding:13px 14px;width:calc(100% - 28px);text-align:left;display:block}
   .card:active{background:#282828}
   .card.ask{border:1px solid #5a4a26}
@@ -294,6 +307,7 @@
   <div class="cdraw" id="cdraw">
     <div class="cdtop"><b>Conversations</b><button class="newbtn" id="newBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>New</button></div>
     <div class="clist" id="clist"></div>
+    <button class="cclear" id="clearChatsBtn">Clear all chats</button>
   </div>
 
   <div class="body">
@@ -371,7 +385,11 @@
         { id: "sup", title: "cockpit nav testing", source: "phone", role: "supervisor", lastActivityAt: now - 300000, msgCount: 14, preview: "shipped the unified app; working through nav", goal: "" },
         { id: "c1", title: "densing law — readings", source: "manual", role: "", lastActivityAt: now - 5400000, msgCount: 10, preview: "the crossover moves with task difficulty, not just scale", goal: "" },
       ],
-      runs: [{ convId: "w2", title: "seed-2 retry", mission: "BitNet 160M MVP", source: "worker", lastTool: "Bash", lastProgressAt: now - 60000 }],
+      runs: [
+        { convId: "w2", title: "seed-2 retry", mission: "BitNet 160M MVP", source: "worker", lastTool: "Bash", lastProgressAt: now - 60000 },
+        // An assistant chat mid-turn: must NOT appear on the Activity page.
+        { convId: "sup", title: "cockpit nav testing", mission: "", source: "phone", lastTool: "Read", lastProgressAt: now - 5000 },
+      ],
       schedules: [{ id: "s1", name: "Morning briefing", label: "daily · 7:00 AM", enabled: true, lastFiredAt: now - 7200000, quietUnlessAlert: false }],
       notifs: [
         { id: "n1", ts: now - 90000, kind: "ask", title: "Seed 3 diverged", body: "step 800, +0.05 nat above seed 1. real effect, or match the LR and rerun? tell me how to play it.", convId: "w1", read: false },
@@ -413,6 +431,7 @@
       if (u === "/poll") { if (!pollWaited) { pollWaited = true; return reply({ events: [], next: "1" }); } await new Promise((r) => setTimeout(r, 8000)); return reply({ events: [], next: "1" }); }
       if (u === "/message") return reply({ ok: true, convId: body.convId || "new-" + Date.now() });
       if (u === "/kill") return reply({ ok: true, result: "Kill sent." });
+      if (u === "/chats/clear") { DB.convs = DB.convs.filter((c) => c.source === "worker" || c.source === "mission"); return reply({ ok: true, cleared: 3 }); }
       if (u === "/schedule") return reply({ ok: true });
       if (u === "/push/vapid") return reply({ key: "" });
       if (u === "/push/subscribe" || u === "/push/test") return reply({ ok: true });
@@ -587,6 +606,13 @@
   $("convBtn").onclick = openConvs;
   scrim.onclick = closeConvs;
   $("newBtn").onclick = () => { closeConvs(); newChat(); };
+  $("clearChatsBtn").onclick = async () => {
+    if (!confirm("Delete ALL idle chats? Missions and workers are untouched. This can't be undone.")) return;
+    const r = await api("/chats/clear", { method: "POST" }).catch(() => null);
+    const d = r ? await r.json().catch(() => ({})) : {};
+    if (d.ok) { toast("Cleared " + (d.cleared ?? 0) + " chats."); closeConvs(); newChat(); }
+    else toast("Clear failed: " + (d.error || "box not answering"));
+  };
   $("titleBtn").onclick = () => { if (page === "chat") openDrawer(); else setPage("chat"); };
 
   async function loadConvs() {
@@ -599,36 +625,22 @@
       const runIds = new Set();
       if (sr && sr.ok) { const sd = await sr.json().catch(() => ({})); for (const x of sd.runs || []) runIds.add(x.convId); }
       const convs = d.conversations || [];
-      const workers = convs.filter((c) => c.source === "worker");
-      // Mission threads live on Activity (their group headers open them);
-      // the drawer stays your actual conversations.
+      // The drawer is YOUR conversations with the assistant, nothing else —
+      // workers and missions live on Activity.
       const chats = convs.filter((c) => c.source !== "worker" && c.source !== "mission");
       // The chat you're in may not be on disk yet (the box persists ~500ms
       // after the first message). Show it anyway so a just-made chat never
       // looks missing.
-      if (convId && !convs.some((c) => c.id === convId)) {
+      if (convId && !chats.some((c) => c.id === convId)) {
         chats.unshift({ id: convId, title: convTitle || "New chat", lastActivityAt: Date.now(), source: "phone", msgCount: 0, preview: "" });
       }
       box.innerHTML = "";
-      // Workers: one collapsed row at the top (no scrolling past every chat
-      // to reach them) — your chats stay the list's substance. Activity is
-      // still the real home for workers; this is just an index.
-      if (workers.length) {
-        const h = el('<button class="csec wsec">Workers · ' + workers.length + '<span class="chv">▸</span></button>');
-        const holder = el('<div style="display:none"></div>');
-        for (const c of workers) holder.appendChild(convRow(c, runIds.has(c.id)));
-        h.onclick = () => {
-          const open = holder.style.display !== "none";
-          holder.style.display = open ? "none" : "";
-          h.querySelector(".chv").textContent = open ? "▸" : "▾";
-        };
-        box.appendChild(h); box.appendChild(holder);
-      }
       if (chats.length) {
         const h = document.createElement("div"); h.className = "csec"; h.textContent = "Chats"; box.appendChild(h);
         for (const c of chats) box.appendChild(convRow(c, runIds.has(c.id)));
+      } else {
+        box.innerHTML = '<div class="empty">No conversations yet. Tap New to start.</div>';
       }
-      if (!convs.length) box.innerHTML = '<div class="empty">No conversations yet. Tap New to start.</div>';
     } catch (e) {
       box.innerHTML = '<div class="empty">Couldn’t load: ' + esc(String(e.message || e)) + "</div>";
     }
@@ -813,25 +825,25 @@
 
   // ---------- activity ----------
   function el(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
-  // Workers are never standalone: each belongs to a mission (the approved
-  // North Star), and Activity renders mission groups — the mission header,
-  // then its running workers, then its finished ones. Untagged legacy workers
-  // fall into an "Older workers" group at the end.
-  function runCard(run, c) {
-    const card = el('<div class="wk open"><button class="wh"><span class="s run">●</span><span class="nm"></span><span class="mt"></span></button><div class="wd"><div class="lbl">Goal</div><span class="gv"></span><div class="wbtns"><button class="wbtn op">Open thread</button><button class="wbtn danger kl">Kill worker</button></div></div></div>');
-    card.querySelector(".nm").textContent = run.title || c.title || run.convId;
-    card.querySelector(".mt").textContent = run.lastTool ? run.lastTool + " · " + (run.lastProgressAt ? age(run.lastProgressAt) : "now") : "running";
-    card.querySelector(".gv").textContent = c.goal || c.preview || "(no goal recorded)";
-    card.querySelector(".wh").onclick = () => card.classList.toggle("open");
-    card.querySelector(".op").onclick = (e) => { e.stopPropagation(); openThread(run.convId, run.title || c.title); };
-    const kl = card.querySelector(".kl");
+  // Activity is missions. Each mission renders as a header (its supervisor —
+  // tap to watch the conversation) with its running workers as PILLS beneath:
+  // one short line each; tap a pill to see its state plus Open thread / Kill.
+  // Finished workers don't accumulate here — their alert is the way back.
+  function workerPill(run, c) {
+    const pill = el('<div class="wpill"><button class="wp-head"><span class="wp-dot"></span><span class="wp-t"></span><span class="wp-age"></span></button><div class="wp-body"><p class="wp-state"></p><div class="wbtns"><button class="wbtn op">Open thread</button><button class="wbtn danger kl">Kill worker</button></div></div></div>');
+    pill.querySelector(".wp-t").textContent = run.title || c.title || run.convId;
+    pill.querySelector(".wp-age").textContent = run.lastTool ? run.lastTool + " · " + (run.lastProgressAt ? age(run.lastProgressAt) : "now") : "running";
+    pill.querySelector(".wp-state").textContent = c.goal || c.preview || "(no goal recorded)";
+    pill.querySelector(".wp-head").onclick = () => pill.classList.toggle("open");
+    pill.querySelector(".op").onclick = (e) => { e.stopPropagation(); openThread(run.convId, run.title || c.title); };
+    const kl = pill.querySelector(".kl");
     kl.onclick = async (e) => {
       e.stopPropagation();
       if (!kl.classList.contains("confirm")) { kl.classList.add("confirm"); kl.textContent = "Confirm kill"; setTimeout(() => { kl.classList.remove("confirm"); kl.textContent = "Kill worker"; }, 2600); return; }
       await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: run.convId }) }).catch(() => {});
       toast("Worker killed."); setTimeout(loadActivity, 800);
     };
-    return card;
+    return pill;
   }
   async function loadActivity() {
     const box = $("actScroll");
@@ -844,9 +856,9 @@
       runCount = runs.length; setHeader();
       box.innerHTML = "";
 
-      // Activity shows what's ALIVE: missions (their own thread + active
-      // workers) and loose running work. Finished workers don't pile up here —
-      // their completion notification in Alerts is the way back to the thread.
+      // Activity is missions, full stop. Assistant chats never appear here —
+      // you know what you're talking about; the drawer has those. Finished
+      // workers don't pile up either; their alert is the way back.
       const missions = new Map(); // name -> { conv: mission thread | null, active: [{run, c}] }
       const missionOf = (run, c) => ((run && run.mission) || (c && c.mission) || "").trim();
       const bucket = (name) => { if (!missions.has(name)) missions.set(name, { conv: null, active: [] }); return missions.get(name); };
@@ -858,20 +870,21 @@
         if (c.lastActivityAt < twoDays && !runIds.has(c.id)) continue;
         bucket((c.mission || c.title || "").trim() || c.title).conv = c;
       }
-      const looseRuns = [];
       for (const run of runs) {
         const c = byId.get(run.convId) || {};
-        if (c.source === "mission") continue; // shown via its group header
-        const m = missionOf(run, c);
-        if (m) bucket(m).active.push({ run, c }); else looseRuns.push({ run, c });
+        const src = run.source || c.source || "";
+        if (src === "mission") continue; // shown as its header's state
+        if (src && src !== "worker") continue; // assistant/chat runs don't belong here
+        const m = missionOf(run, c) || run.title || c.title;
+        if (m) bucket(m).active.push({ run, c });
       }
 
-      if (!missions.size && !looseRuns.length) {
+      if (!missions.size) {
         box.appendChild(el('<div class="sec">Missions</div>'));
         box.appendChild(el('<div class="empty">Nothing in flight. Hand the agent a goal in Chat — it proposes a plan, you approve, and the mission with its workers lands here.</div>'));
       }
       for (const [name, g] of missions) {
-        const head = el('<button class="msec"><span>Mission</span><b></b><span class="mc"></span></button>');
+        const head = el('<button class="msec"><span>Mission</span><b></b><span class="mc"></span><span class="watch">watch ›</span></button>');
         head.querySelector("b").textContent = name;
         const live = g.active.length || (g.conv && runIds.has(g.conv.id));
         head.querySelector(".mc").textContent = g.active.length
@@ -880,19 +893,17 @@
         if (!live) head.querySelector(".mc").classList.add("dim");
         if (g.conv) {
           const mc = g.conv;
-          head.onclick = () => openThread(mc.id, mc.title);
+          head.onclick = () => openThread(mc.id, mc.title); // watch the supervisor
+        } else {
+          head.querySelector(".watch").remove(); // legacy string-only mission: no thread
         }
         box.appendChild(head);
-        for (const { run, c } of g.active) box.appendChild(runCard(run, c));
+        for (const { run, c } of g.active) box.appendChild(workerPill(run, c));
         if (!g.active.length && g.conv) {
           const note = el('<div class="mnote"></div>');
-          note.textContent = (g.conv.preview || "no workers running right now") + " · tap the header to open the mission";
+          note.textContent = g.conv.preview || "no workers running right now";
           box.appendChild(note);
         }
-      }
-      if (looseRuns.length) {
-        box.appendChild(el('<div class="sec">Also running</div>'));
-        for (const { run, c } of looseRuns) box.appendChild(runCard(run, c));
       }
 
       box.appendChild(el('<div class="sec">Recurring</div>'));
