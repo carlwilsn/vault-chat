@@ -342,6 +342,20 @@ fn handle(mut req: Request, token: &str) {
                 let _ = req.respond(resp_text(400, "application/json", "{\"error\":\"missing id or vault\"}".into()));
             }
         }
+        (Method::Post, "/notifications/hide") => {
+            // Swipe in the Archive: remove from view for good. Append-only
+            // marker — the underlying record stays in the jsonl.
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+            if let (Some(vault), Some(id)) = (current_vault(), v.get("id").and_then(|x| x.as_str())) {
+                let marker = json!({ "type": "hide", "id": id, "ts": now_ms() }).to_string();
+                notification_append(&vault, &marker);
+                let _ = req.respond(resp_text(200, "application/json", "{\"ok\":true}".into()));
+            } else {
+                let _ = req.respond(resp_text(400, "application/json", "{\"error\":\"missing id or vault\"}".into()));
+            }
+        }
         (Method::Get, "/schedules") => {
             let body = match relay_request("phone:schedules", json!({}), Duration::from_secs(10)) {
                 Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
@@ -1002,16 +1016,35 @@ fn notifications_json(vault: &str) -> String {
     let raw = std::fs::read_to_string(notifications_path(vault)).unwrap_or_default();
     let mut items: Vec<Value> = Vec::new();
     let mut read_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // "hide" markers: swiped out of the Archive view. The jsonl line stays
+    // (append-only, sync-friendly) — the notification just never renders again.
+    let mut hidden_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for line in raw.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        if v.get("type").and_then(|x| x.as_str()) == Some("read") {
-            if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
-                read_ids.insert(id.to_string());
+        match v.get("type").and_then(|x| x.as_str()) {
+            Some("read") => {
+                if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                    read_ids.insert(id.to_string());
+                }
             }
-        } else if v.get("id").and_then(|x| x.as_str()).is_some() {
-            items.push(v);
+            Some("hide") => {
+                if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                    hidden_ids.insert(id.to_string());
+                }
+            }
+            _ => {
+                if v.get("id").and_then(|x| x.as_str()).is_some() {
+                    items.push(v);
+                }
+            }
         }
     }
+    items.retain(|v| {
+        v.get("id")
+            .and_then(|x| x.as_str())
+            .map(|id| !hidden_ids.contains(id))
+            .unwrap_or(false)
+    });
     // Dedupe by id (union merges can duplicate lines), newest wins.
     let mut by_id: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
     for it in items {

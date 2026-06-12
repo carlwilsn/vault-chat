@@ -6653,6 +6653,15 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        // FIRST plugin, per the single-instance docs: a second launch (user
+        // double-click while one sits in the tray, updater overlap, etc.)
+        // exits immediately and focuses the existing window instead of racing
+        // it for the embedded server port, the scheduler, and git sync. The
+        // port race is exactly how "voice broke": the loser's voice/phone
+        // server died at bind (os error 10048) and stayed dead all session.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())

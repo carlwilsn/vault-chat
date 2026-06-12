@@ -28,6 +28,9 @@ tauri-plugin-process = "2"
 # always-on daemon (scheduler + supervisor wakes keep firing) without a
 # visible window. autostart registers the OS login item.
 tauri-plugin-autostart = "2"
+# One process per machine: a second launch focuses the existing window instead
+# of racing it for the embedded server port / scheduler / git sync.
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2"

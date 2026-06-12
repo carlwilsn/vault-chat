@@ -428,6 +428,7 @@
       if (u === "/schedules") return reply({ schedules: DB.schedules });
       if (u === "/notifications") return reply({ unread: DB.notifs.filter((n) => !n.read).length, notifications: DB.notifs });
       if (u === "/notifications/read") { const n = DB.notifs.find((x) => x.id === body.id); if (n) n.read = true; return reply({ ok: true }); }
+      if (u === "/notifications/hide") { DB.notifs = DB.notifs.filter((x) => x.id !== body.id); return reply({ ok: true }); }
       if (u === "/poll") { if (!pollWaited) { pollWaited = true; return reply({ events: [], next: "1" }); } await new Promise((r) => setTimeout(r, 8000)); return reply({ events: [], next: "1" }); }
       if (u === "/message") return reply({ ok: true, convId: body.convId || "new-" + Date.now() });
       if (u === "/kill") return reply({ ok: true, result: "Kill sent." });
@@ -1027,13 +1028,17 @@
         }
       });
     }
-    if (!n.read) attachSwipeArchive(card, n);
+    // Inbox cards swipe to archive (mark read); archived cards swipe to hide
+    // for good (append-only "hide" marker — gone from the view, not the file).
+    attachSwipeArchive(card, n.read
+      ? () => api("/notifications/hide", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: n.id }) }).catch(() => {})
+      : () => markRead(n.id));
     return card;
   }
-  // Swipe right-to-left to archive (mark read). Horizontal intent is locked in
+  // Swipe right-to-left to archive / hide. Horizontal intent is locked in
   // only once the finger clearly moves sideways, so vertical scrolling through
   // the list never fights the gesture. Mouse drag works too (desktop testing).
-  function attachSwipeArchive(card, n) {
+  function attachSwipeArchive(card, action) {
     let x0 = 0, y0 = 0, dx = 0, mode = null;
     const start = (x, y) => { x0 = x; y0 = y; dx = 0; mode = null; card.style.transition = "none"; };
     const move = (x, y) => {
@@ -1061,7 +1066,7 @@
       card.style.transition = "transform .18s ease, opacity .18s ease";
       if (dx < -70) {
         card.style.transform = "translateX(-110%)"; card.style.opacity = "0";
-        await markRead(n.id);
+        await action();
         setTimeout(loadAlerts, 180);
       } else {
         card.style.transform = "";

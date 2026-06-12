@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { buildPhoneVoiceContext, buildClientToolHandlers } from "./voice-elevenlabs";
 import { useStore } from "./store";
+import { vlog } from "./debugLog";
 
 // The box relays each phone tool call here; we run the EXACT same handler the
 // desktop voice agent uses (full parity — file ops, git, schedules, etc.) and
@@ -93,10 +94,30 @@ async function pushContext(): Promise<void> {
 export async function startPhoneVoiceHost(): Promise<void> {
   if (started) return;
   started = true;
-  try {
-    await invoke("voice_server_start", { port: PORT, token: getToken() });
-  } catch (e) {
-    console.warn("[phone-voice] server start failed:", e);
+  // The port can be briefly held by a previous instance — an auto-update
+  // restart overlaps old and new processes, and a second launch can race a
+  // closing first one. Giving up on the first EADDRINUSE left the voice/phone
+  // host dead for the whole session (the "voice broke" report — os error
+  // 10048 in the app log). Retry with backoff until the old holder exits.
+  const ATTEMPTS = 15;
+  let bound = false;
+  for (let i = 0; i < ATTEMPTS; i++) {
+    try {
+      await invoke("voice_server_start", { port: PORT, token: getToken() });
+      bound = true;
+      if (i > 0) vlog("phone-voice server bound after retry", { attempt: i + 1 });
+      break;
+    } catch (e) {
+      if (i === 0) console.warn("[phone-voice] server start failed (will retry):", e);
+      if (i === ATTEMPTS - 1) {
+        vlog("phone-voice server start gave up", String(e).slice(0, 200));
+        console.warn("[phone-voice] server start gave up after retries:", e);
+      } else {
+        await new Promise((r) => setTimeout(r, 4000));
+      }
+    }
+  }
+  if (!bound) {
     started = false;
     return;
   }
