@@ -117,6 +117,8 @@
   .steps.open .steps-list{display:flex}
   .steps-list .step{font-size:12px;color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-word}
   .thinking{display:flex;align-items:center;gap:11px;padding:11px 0 6px;color:var(--dim);font-size:12px}
+  .thinking .tlbl{color:var(--dim);font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;opacity:0;transition:opacity .3s ease;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .thinking .tlbl.show{opacity:.7}
   .pulse{display:inline-block;position:relative;width:8px;height:8px;margin-left:2px;flex:none}
   .pulse:before{content:"";position:absolute;inset:0;border-radius:50%;background:var(--primary);animation:pul 1.5s infinite}
   .pulse:after{content:"";position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--primary);animation:ping 1.8s infinite}
@@ -333,6 +335,9 @@
   .sheet-scrim.on{opacity:1;pointer-events:auto}
   .sheet{position:fixed;left:0;right:0;bottom:0;background:#101012;border-top-left-radius:18px;border-top-right-radius:18px;transform:translateY(110%);transition:transform .3s cubic-bezier(.32,.72,0,1),height .26s ease;z-index:81;max-height:64%;display:flex;flex-direction:column;box-shadow:0 -12px 40px rgba(0,0,0,.55)}
   .sheet.on{transform:none}
+  /* Editing the reply expands the sheet so its body scrolls and the input sits
+     right above the keyboard (the visualViewport handler lifts it). */
+  .sheet.editing{max-height:94%}
   .sheet-grabwrap{padding:7px 0 3px;flex:none;cursor:grab;touch-action:none;display:flex;justify-content:center}
   .sheet-grab{width:40px;height:5px;border-radius:3px;background:#303036}
   .sheet-head{display:flex;align-items:flex-start;gap:11px;padding:4px 16px 8px;flex:none;touch-action:none}
@@ -367,6 +372,7 @@
   .speclist{list-style:none;margin:9px 0 0;padding:0}
   .speclist li{display:flex;gap:9px;font-size:13px;color:#cfcfcf;margin:7px 0;line-height:1.45}
   .speclist .bx{flex:none;color:var(--ok)} .speclist .bx.off{color:#6a6a6a}
+  .gtxt{font-size:14.5px;color:var(--text);line-height:1.45;margin-top:3px;font-weight:500}
   /* "Done when" components — the approved checklist that defines the mission. */
   .dwlist{list-style:none;margin:6px 0 0;padding:0}
   .dwlist li{display:flex;gap:11px;align-items:flex-start;font-size:13.5px;color:#d4d4da;line-height:1.45;padding:8px 0;border-bottom:1px solid var(--line)}
@@ -840,7 +846,7 @@
   const atBottom = () => msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 80;
   const scrollDown = (force) => { if (force || atBottom()) msgsEl.scrollTop = msgsEl.scrollHeight; };
 
-  let streamEl = null, runlineEl = null;
+  let streamEl = null, runlineEl = null, _shownTool = null;
   // Send (↑) flips to stop (■) while the open thread is running — the standard
   // chatbot interrupt. Tapping it aborts that conversation's run.
   function syncSendBtn() {
@@ -851,15 +857,23 @@
   }
   function renderRunline() {
     syncSendBtn();
-    if (!running) { if (runlineEl) { runlineEl.remove(); runlineEl = null; } return; }
+    if (!running) { if (runlineEl) { runlineEl.remove(); runlineEl = null; } _shownTool = null; return; }
     if (!runlineEl) {
       runlineEl = document.createElement("div"); runlineEl.className = "thinking";
-      msgsEl.appendChild(runlineEl);
+      runlineEl.innerHTML = '<span class="pulse"></span><span class="tlbl"></span>';
+      msgsEl.appendChild(runlineEl); _shownTool = null;
     }
-    // A circular pulse is the only "working" sign — no tool name, no bar. The
-    // honest stopping note still shows (the box's real run-end clears it).
-    runlineEl.innerHTML = '<span class="pulse"></span>' + (stopping ? "<span>stopping — finishes after this step…</span>" : "");
     msgsEl.appendChild(runlineEl);
+    // The pulse is the "working" sign; beside it, the current tool's name
+    // cross-fades in/out — like the desktop app: a tool starts, its name fades
+    // in; the next swaps it. No "running" bar. Honest "stopping…" still shows.
+    const lbl = runlineEl.querySelector(".tlbl");
+    const txt = stopping ? "stopping — finishes after this step…" : (streamTool || "");
+    if (txt !== _shownTool) {
+      _shownTool = txt;
+      lbl.classList.remove("show");
+      setTimeout(() => { if (!running || !runlineEl) return; lbl.textContent = txt; lbl.classList.toggle("show", !!txt); }, 150);
+    }
   }
   function renderStream() {
     if (!streamText) { if (streamEl) { streamEl.remove(); streamEl = null; } renderRunline(); return; }
@@ -1042,6 +1056,18 @@
     const ta = foot.querySelector(".rinp"); if (!ta) return;
     const autosize = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; };
     ta.addEventListener("input", autosize);
+    // Focusing the reply expands the sheet to fill the space above the keyboard
+    // so the body stays scrollable and the input sits right at the keyboard. The
+    // custom chat keyboard is force-hidden — only the native one shows here, so
+    // nothing double-pops. (The visualViewport handler keeps the lift in sync.)
+    ta.addEventListener("focus", () => {
+      hideKb();
+      const sheet = $("sheet");
+      sheet.style.height = ""; sheet.style.maxHeight = "";
+      sheet.classList.add("editing");
+      setTimeout(() => { try { ta.scrollIntoView({ block: "nearest" }); } catch {} }, 60);
+    });
+    ta.addEventListener("blur", () => { $("sheet").classList.remove("editing"); });
     const go = () => { const v = ta.value.trim(); if (!v) return; ta.value = ""; autosize(); onSend(v); };
     foot.querySelector(".rsend").onclick = go;
     ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); go(); } });
@@ -1088,19 +1114,37 @@
     }
     return out;
   }
-  // The mission's spec = the "done when" components you approved, plus a live
-  // state line. Tap the [spec] chip to check what "done" means at a glance.
-  function openSpec(mc, g) {
+  // The mission's spec = the GOAL it was approved for + the "Done when"
+  // components that define it complete + a live state line. The brief (where the
+  // done-when lives) isn't in the conversation summary, so fetch the mission's
+  // first message and parse it. Tap the [spec] chip to see this at a glance.
+  async function openSpec(mc, g) {
     const running = g.active.length;
-    const goal = (mc.goal || mc.preview || "").trim();
-    const comps = parseDoneWhen(goal);
     const stateLine = running ? running + " worker" + (running === 1 ? "" : "s") + " running" : (g.conv ? "watching — no workers running right now" : "—");
-    let body = comps.length
-      ? '<div class="lbl">Done when</div><ul class="dwlist">' + comps.map((c) => '<li><span class="dwb"></span><span>' + inline(c) + "</span></li>").join("") + "</ul>"
-      : '<div class="lbl">Goal &amp; success criterion</div><div class="md">' + md(goal || "*(no brief recorded)*") + "</div>";
+    openSheet({ intent: "Mission · the goal + done when", title: mc.title, ico: "◎", cls: "", bodyHtml: '<div class="alsum-load" id="specLoad">loading…</div>' });
+    let brief = (mc.goal || "").trim();
+    if (mc.id) {
+      try {
+        const d = await (await api("/conversation?id=" + encodeURIComponent(mc.id) + "&n=3")).json();
+        const first = (d.messages || []).find((m) => m.role === "user");
+        const fetched = (first && first.content ? String(first.content) : "").trim();
+        // The real mission brief (first user message) carries the done-when
+        // bullets. Prefer it only when it actually has them; otherwise keep what
+        // the summary gave us, so we never lose a recorded criterion.
+        if (parseDoneWhen(fetched).length || !brief) brief = fetched || brief;
+      } catch {}
+    }
+    const comps = parseDoneWhen(brief);
+    let body = '<div class="lbl">Goal</div><div class="gtxt">' + esc(mc.title || "(mission)") + "</div>";
+    if (comps.length) {
+      body += '<div class="lbl">Done when</div><ul class="dwlist">' + comps.map((c) => '<li><span class="dwb"></span><span>' + inline(c) + "</span></li>").join("") + "</ul>";
+    } else if (brief) {
+      body += '<div class="lbl">Success criterion</div><div class="md">' + md(brief) + "</div>";
+    }
     body += '<div class="specrow"><div class="lbl">State</div><div class="sc">' + esc(stateLine) + "</div></div>";
     if (running) body += '<ul class="speclist">' + g.active.map(({ run, c }) => '<li><span class="bx">•</span><span>' + esc(run.title || c.title || "worker") + (run.lastTool ? " · " + esc(run.lastTool) : "") + "</span></li>").join("") + "</ul>";
-    openSheet({ intent: "Mission · done when", title: mc.title, ico: "◎", cls: "", bodyHtml: body });
+    const sl = document.getElementById("specLoad");
+    if (sl) { sl.outerHTML = body; typeset(document.getElementById("sheetBody")); }
   }
   // The mission = the supervisor's thread: its thinking + what it saw from the
   // workers. Steer it here (or Stop). The action lives on the header bar so the
@@ -1242,7 +1286,9 @@
       }
 
       box.appendChild(el('<div class="sec">Scheduled</div>'));
-      const scheds = schd.schedules || [];
+      // Hide one-off schedules — those are the agents' own self-scheduled wakes
+      // (background plumbing), not things you monitor. Recurring ones are yours.
+      const scheds = (schd.schedules || []).filter((s) => !s.once);
       if (!scheds.length) box.appendChild(el('<div class="empty">Nothing scheduled. Tell the agent — “brief me every morning at 7” is enough.</div>'));
       for (const sc of scheds) {
         const card = el('<button class="card schedcard"><div class="schedrow"><div class="info"><b></b><small></small></div><span class="chev">›</span></div></button>');

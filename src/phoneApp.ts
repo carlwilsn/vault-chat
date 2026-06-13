@@ -631,6 +631,11 @@ export async function startPhoneAppHost(): Promise<void> {
           lastFiredAt: sc.lastFiredAt,
           sendViaTelegram: sc.sendViaTelegram,
           quietUnlessAlert: !!sc.quietUnlessAlert,
+          // One-offs are the agent's own self-scheduled wakes (it sets a one-time
+          // Schedule for its next check, which self-destructs after firing).
+          // Those are background plumbing, not something the user monitors — the
+          // phone hides them from the Scheduled list.
+          once: sc.recurrence.kind === "once",
         })),
       });
     } catch (e) {
