@@ -344,7 +344,10 @@ export async function notify(
     ts: Date.now(),
     kind,
     title: title.slice(0, 90),
-    body: body.slice(0, 400),
+    // The Alerts sheet renders + scrolls the full body, so don't guillotine a
+    // summary mid-word (the "…[SECONDARY" cutoff). Keep it generous here; the
+    // push text below is truncated separately to a notification-sized line.
+    body: body.slice(0, 2000),
     convId,
   };
   // Structured-deliverable fields. Alerts renders these directly (a real
@@ -358,7 +361,9 @@ export async function notify(
   if (extra?.cls) rec.cls = String(extra.cls).slice(0, 4);
   await invoke("notification_add", { vault, json: JSON.stringify(rec) }).catch(() => {});
   broadcast({ type: "notif" });
-  await sendPush(rec.title as string, rec.body as string).catch(() => {});
+  // The push itself stays one notification-sized line; the full body lives in
+  // the feed.
+  await sendPush(rec.title as string, (rec.body as string).slice(0, 180)).catch(() => {});
 }
 
 // ---- Web Push: VAPID + RFC 8291 (aes128gcm), all WebCrypto ----
