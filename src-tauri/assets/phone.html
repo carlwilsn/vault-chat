@@ -336,7 +336,14 @@
   .sheet-action:active{background:var(--raised)}
   .sheet-action.danger{color:var(--err);border-color:#5a302e}
   .sheet-action.confirm{background:var(--err);color:#fff;border-color:var(--err)}
-  .sheet-body{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:4px 16px 24px}
+  .sheet-body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding:4px 16px 24px}
+  /* conversation content wraps; only code/tables keep their own internal scroll */
+  .sheet-body .md{overflow-wrap:anywhere}
+  .thread,.tmsg,.amsg{min-width:0;max-width:100%}
+  /* the reply is an auto-growing textarea that sits above the keyboard */
+  .sheet-foot .reply{align-items:flex-end}
+  .sheet-foot .rinp{resize:none;line-height:1.4;max-height:120px;overflow-y:auto}
+  .sheet-foot .rsend{bottom:6px;top:auto}
   .sheet-body .md{font-size:13.5px;color:#cfcfcf;line-height:1.55}
   .sheet-body .lbl{color:#8a8a8a;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;margin:14px 0 5px}
   .sheet-foot{flex:none;padding:8px 14px calc(env(safe-area-inset-bottom) + 8px);border-top:1px solid var(--line);background:#1f1f1f}
@@ -999,6 +1006,19 @@
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
   }
   function closeSheet() { $("sheetScrim").classList.remove("on"); $("sheet").classList.remove("on"); }
+  // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
+  // chat composer), Enter sends, Shift+Enter is a newline. The pinned footer +
+  // the visualViewport lift keep it above the keyboard.
+  function wireReply(foot, onSend) {
+    if (!foot) return;
+    const ta = foot.querySelector(".rinp"); if (!ta) return;
+    const autosize = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; };
+    ta.addEventListener("input", autosize);
+    const go = () => { const v = ta.value.trim(); if (!v) return; ta.value = ""; autosize(); onSend(v); };
+    foot.querySelector(".rsend").onclick = go;
+    ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); go(); } });
+    setTimeout(autosize, 0);
+  }
   $("sheetScrim").onclick = closeSheet; $("sheetX").onclick = closeSheet;
   // Drag the grab/header: pull up to fill the screen for a long thread, pull
   // down past the threshold to dismiss. Snaps to peek / full / closed.
@@ -1050,19 +1070,12 @@
     openSheet({
       intent: "Mission supervisor", title: mc.title, ico: "◇", cls: "",
       bodyHtml: '<div class="lbl">Its thinking — what it concluded from the workers</div><div class="alsum-load" id="supLoad">loading…</div>',
-      footHtml: '<div class="reply"><input class="rinp" placeholder="ask the supervisor, or tell it to spawn a worker…" autocomplete="off"><button class="rsend">↑</button></div>',
+      footHtml: '<div class="reply"><textarea class="rinp" rows="1" placeholder="ask the supervisor, or tell it to spawn a worker…" autocomplete="off"></textarea><button class="rsend">↑</button></div>',
       action: { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
-      wire: (body, foot) => {
-        const rep = foot.querySelector(".reply");
-        const go = async () => {
-          const v = rep.querySelector(".rinp").value.trim(); if (!v) return;
-          rep.querySelector(".rinp").value = "";
-          await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v }) }).catch(() => {});
-          closeSheet(); toast("Sent to the supervisor.");
-        };
-        rep.querySelector(".rsend").onclick = go;
-        rep.querySelector(".rinp").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
-      },
+      wire: (body, foot) => wireReply(foot, async (v) => {
+        await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v }) }).catch(() => {});
+        closeSheet(); toast("Sent to the supervisor.");
+      }),
     });
     try {
       const r = await api("/conversation?id=" + encodeURIComponent(mc.id) + "&n=60");
@@ -1271,18 +1284,11 @@
       intent: n.intention || meta.intention, title: n.title, ico: n.icon || meta.icon, cls: n.cls || meta.cls,
       action: n.convId ? { label: "Open thread", onClick: () => { closeSheet(); openThread(n.convId, n.title); } } : null,
       bodyHtml: '<div class="md">' + md(n.body || "") + "</div>" + (n.convId ? '<div class="lbl">What it did</div><div class="alsum-load" id="alLoad">loading…</div>' : ""),
-      footHtml: (isAction && n.convId) ? '<div class="reply"><input class="rinp" placeholder="tell the mission what to do…" autocomplete="off"><button class="rsend">↑</button></div>' : "",
-      wire: (body, foot) => {
-        if (!foot) return;
-        const rep = foot.querySelector(".reply"); if (!rep) return;
-        const go = async () => {
-          const v = rep.querySelector(".rinp").value.trim(); if (!v) return;
-          await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: v }) }).catch(() => {});
-          await markRead(n.id); closeSheet(); toast("Sent."); loadAlerts();
-        };
-        rep.querySelector(".rsend").onclick = go;
-        rep.querySelector(".rinp").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
-      },
+      footHtml: (isAction && n.convId) ? '<div class="reply"><textarea class="rinp" rows="1" placeholder="tell the mission what to do…" autocomplete="off"></textarea><button class="rsend">↑</button></div>' : "",
+      wire: (body, foot) => wireReply(foot, async (v) => {
+        await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: v }) }).catch(() => {});
+        await markRead(n.id); closeSheet(); toast("Sent."); loadAlerts();
+      }),
     });
     if (n.convId) {
       try {
