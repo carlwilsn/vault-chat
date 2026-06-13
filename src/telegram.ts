@@ -606,6 +606,11 @@ export async function sendTelegramReplyWithImages(
   vault: string,
   chatId: number,
   reply: string,
+  // Mirror to the phone's Alerts feed ONLY when asked — i.e. a scheduled
+  // briefing, which passes notify:true and its thread id. Normal Telegram
+  // chats and worker/mission replies leave this unset: missions speak through
+  // Notify, and you don't want your own back-and-forth pinging Alerts.
+  opts?: { notify?: boolean; convId?: string },
 ): Promise<void> {
   // Supervisor "nothing to report" turn — don't ping the phone.
   if (isSilentReply(reply)) return;
@@ -639,14 +644,16 @@ export async function sendTelegramReplyWithImages(
       // send threw before the mirror below.
       console.warn("[telegram] send failed; still mirroring to phone:", e);
     }
-    // Mirror to the phone PWA's push channel + Alerts feed. Deliberately AFTER
-    // the [[SILENT]] / quiet-unless-ALERT gates upstream — whatever clears them
-    // reaches the phone — and now independent of whether Telegram itself
-    // delivered. Dynamic import to avoid a static cycle (phoneApp →
-    // chat-controller → telegram).
-    import("./phoneApp")
-      .then(({ mirrorPushNotify }) => mirrorPushNotify("vault-chat", text))
-      .catch(() => {});
+    // Mirror to the phone's Alerts feed — ONLY for scheduled briefings (opts.
+    // notify). Deliberately AFTER the [[SILENT]] / quiet-unless-ALERT gates
+    // upstream, and independent of whether Telegram itself delivered (a
+    // phone-first user's 7am coach check-in must still reach Alerts). Dynamic
+    // import to avoid a static cycle (phoneApp → chat-controller → telegram).
+    if (opts?.notify) {
+      import("./phoneApp")
+        .then(({ mirrorPushNotify }) => mirrorPushNotify(text, opts.convId))
+        .catch(() => {});
+    }
   }
 }
 

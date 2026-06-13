@@ -453,9 +453,13 @@ export async function sendMessage(
           // Quiet supervisor: only deliver an explicit ALERT:, nothing else.
           const deliver = scheduledDeliveryText(reply, quietUnlessAlert ?? false);
           if (deliver != null) {
-            sendTelegramReplyWithImages(vault, telegramChatId, deliver).catch((err) =>
-              console.warn("[telegram] outbound reply failed:", err),
-            );
+            // Only a SCHEDULED briefing (sendViaTelegram) earns a phone Alert —
+            // and it links to its own thread. A normal Telegram chat delivers to
+            // Telegram without pinging Alerts.
+            sendTelegramReplyWithImages(vault, telegramChatId, deliver, {
+              notify: !!sendViaTelegram,
+              convId: targetConvId ?? undefined,
+            }).catch((err) => console.warn("[telegram] outbound reply failed:", err));
           }
           // Bind the DM to this thread so phone replies continue it — but not
           // for a quiet supervisor that had nothing to say (no delivery).

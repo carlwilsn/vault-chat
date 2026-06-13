@@ -7,7 +7,7 @@ import { machineSummary } from "./machine-info";
 // available fast model by id pattern.
 const FAST_PREF: ProviderId[] = ["anthropic", "google", "openai", "openrouter"];
 
-function pickFastModel(apiKeys: Partial<Record<ProviderId, string>>) {
+export function pickFastModel(apiKeys: Partial<Record<ProviderId, string>>) {
   for (const p of FAST_PREF) {
     if (!apiKeys[p]) continue;
     const m =

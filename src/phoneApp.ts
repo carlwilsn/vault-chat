@@ -567,23 +567,27 @@ export async function sendPush(title: string, body: string, url = "/phone"): Pro
   return sent;
 }
 
-/** Mirror a phone-bound Telegram delivery into the notification feed + push.
- * Called (dynamically) from sendTelegramReplyWithImages AFTER the silence
- * gates, so a quiet supervisor stays quiet here too. */
-export async function mirrorPushNotify(title: string, text: string): Promise<void> {
+/** Surface a finished SCHEDULED briefing in the notification feed + push.
+ * Called (dynamically) from sendTelegramReplyWithImages ONLY when the caller
+ * passes a convId — i.e. a scheduled briefing, never a normal chat or a
+ * worker/mission reply. The reply is run through the general alert summarizer
+ * so the feed shows a clean headline + a few sentences (not raw narration);
+ * the full text stays one tap away via "Open thread" (convId). Falls back to
+ * the raw reply if no summary can be produced. */
+export async function mirrorPushNotify(text: string, convId?: string): Promise<void> {
   const raw = text.trim();
   if (!raw) return;
-  // Keep the message's own markdown/newlines (the Alerts sheet renders it) and
-  // give a briefing room to breathe — collapsing to one 300-char line turned a
-  // structured briefing into an unreadable wall. The card preview is truncated
-  // by CSS; the sheet scrolls, so a fuller body is fine.
-  const body = raw.slice(0, 1800).trim();
-  // For the generic mirror, lead with the message's first line as the title so
-  // the Alert reads like the message itself (e.g. a coach check-in's opening
-  // line) instead of a meta "Delivered to your phone".
-  const head =
-    title === "vault-chat" ? raw.split("\n")[0]!.trim().slice(0, 80) || "New message" : title;
-  await notify("info", head, body);
+  const apiKeys = useStore.getState().apiKeys;
+  const { summarizeForAlert } = await import("./alert-summary");
+  const sum = await summarizeForAlert(raw, apiKeys).catch(() => null);
+  const title = (sum?.title || raw.split("\n")[0]?.trim() || "New briefing").slice(0, 90);
+  const body = sum?.body || raw.slice(0, 1800).trim();
+  await notify("info", title, body, convId, {
+    intention: "Scheduled briefing",
+    summary: (sum?.body ?? body).slice(0, 200),
+    icon: "✦",
+    cls: "g",
+  });
 }
 
 // ---- wiring ----

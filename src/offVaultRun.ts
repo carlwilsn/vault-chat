@@ -434,9 +434,13 @@ export async function runScheduledHeadlessTurn(
     .catch(() => {});
 
   if (deliver != null && telegramChatId != null) {
-    await sendTelegramReplyWithImages(vault, telegramChatId, deliver).catch((e) =>
-      console.warn("[scheduler] telegram send failed:", e),
-    );
+    // Headless scheduled briefing → mirror to Telegram AND surface a summarized
+    // Alert linked to this thread (the active-vault path does the same in
+    // chat-controller). Only scheduled runs reach this block.
+    await sendTelegramReplyWithImages(vault, telegramChatId, deliver, {
+      notify: true,
+      convId: conversationId,
+    }).catch((e) => console.warn("[scheduler] telegram send failed:", e));
   }
 }
 
