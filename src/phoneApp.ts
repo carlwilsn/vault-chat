@@ -685,12 +685,18 @@ export async function startPhoneAppHost(): Promise<void> {
     try {
       if (convId) {
         const hit = abortRun(convId);
-        // Broadcast the idle flip immediately. The store diff only catches
-        // status transitions on conversations whose `status` field was set
-        // (background runs); a stop on the foreground run otherwise leaves the
-        // phone's running indicator flashing until the next full refresh.
-        broadcast({ type: "status", convId, status: "idle" });
-        respond(reqId, { ok: true, result: hit ? "Stopped." : "Nothing running on that thread." });
+        // Only claim idle when nothing was actually running. If we DID abort a
+        // live run, it may be mid-tool-call and keep going until that tool
+        // returns — its REAL end broadcasts idle via runDiff. Broadcasting idle
+        // prematurely here was the bug: the phone flipped between stopped and
+        // running and the user couldn't tell whether it was truly off.
+        if (!hit) broadcast({ type: "status", convId, status: "idle" });
+        respond(reqId, {
+          ok: true,
+          result: hit
+            ? "Stopping — it stops after the current step finishes."
+            : "Nothing running on that thread.",
+        });
       } else {
         const ids = activeRuns();
         let n = 0;

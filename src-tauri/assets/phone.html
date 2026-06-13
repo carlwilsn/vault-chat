@@ -98,7 +98,8 @@
   .scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 
   /* chat */
-  #msgs{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:8px 14px 6px;display:flex;flex-direction:column}
+  #msgs{flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding:8px 14px 6px;display:flex;flex-direction:column}
+  #msgs .md,#msgs .amsg,#msgs .m{overflow-wrap:anywhere}
   .m{max-width:90%;margin:0 0 10px;border-radius:15px;padding:9px 13px;word-wrap:break-word;overflow-wrap:anywhere}
   .m.user{align-self:flex-end;background:var(--raised);white-space:pre-wrap;border-bottom-right-radius:5px}
   .m.asst{align-self:flex-start;background:var(--surface);border-bottom-left-radius:5px}
@@ -685,7 +686,7 @@
   // ---------- state ----------
   let page = "chat";
   let convId = null, convTitle = "New chat";
-  let running = false, streamText = "", streamTool = "";
+  let running = false, stopping = false, streamText = "", streamTool = "";
   let vaultName = "", boxModel = "";
   let runCount = 0, unreadN = 0, offlineStreak = 0;
   const msgsEl = $("msgs"), input = $("input"), sendBtn = $("sendBtn");
@@ -835,7 +836,7 @@
       runlineEl.innerHTML = '<span class="rd"></span><span class="rlbl"></span>';
       msgsEl.appendChild(runlineEl);
     }
-    runlineEl.querySelector(".rlbl").textContent = streamTool ? "running · " + streamTool : "running…";
+    runlineEl.querySelector(".rlbl").textContent = stopping ? "stopping — finishes after the current step…" : streamTool ? "running · " + streamTool : "running…";
     msgsEl.appendChild(runlineEl);
   }
   function renderStream() {
@@ -844,7 +845,7 @@
     streamEl.innerHTML = '<div class="md">' + md(streamText) + '</div><span class="cursor"></span>';
     renderRunline(); scrollDown(false);
   }
-  function clearThreadUi() { running = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
+  function clearThreadUi() { running = false; stopping = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
   function showHint() { msgsEl.innerHTML = '<div class="hint"><b>What needs doing?</b>quick questions get answers. bigger asks get scoped before anything runs.</div>'; }
 
   // The open thread is sticky: reopening the app returns you to the chat you
@@ -883,7 +884,7 @@
       if (!r.ok || d.error) throw new Error(d.error || r.status);
       if (!convId && d.convId) { convId = d.convId; convTitle = text.split("\n")[0].slice(0, 60); rememberConv(); }
       if (d.queued) { mine.classList.add("queued"); toast("Mid-run — queued, sends when it finishes."); }
-      else { running = true; renderRunline(); }
+      else { running = true; stopping = false; renderRunline(); }
       setHeader();
     } catch (e) { mine.classList.add("queued"); toast("Send failed: " + (e.message || e)); }
   }
@@ -901,10 +902,13 @@
   // successful stop.
   async function killCurrent() {
     if (!convId) return;
-    running = false; streamText = ""; streamTool = ""; renderStream(); renderRunline(); setHeader();
+    // Honest stop: don't claim it's stopped — the run may be mid-tool-call and
+    // keep going until that returns. Show "stopping…" and let the box's REAL
+    // run-end flip it to idle, so the phone never lies about whether it's off.
+    stopping = true; streamText = ""; streamTool = ""; renderStream(); renderRunline(); setHeader();
     const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId }) }).catch(() => null);
     const d = r ? await r.json().catch(() => ({})) : {};
-    toast(d.result || "Stopped.");
+    toast(d.result || "Stop sent.");
   }
 
   // North Star: approving a proposed plan tells the assistant to mint the
@@ -956,7 +960,7 @@
       if (d.role === "user" && lastSentText !== null && d.content === lastSentText) { lastSentText = null; return; }
       streamText = ""; streamTool = ""; renderStream(); msgsEl.appendChild(bubble(d.role, d.content, d.tools)); scrollDown(false);
     } else if (d.type === "status") {
-      if (d.convId === convId) { running = d.status === "running"; if (!running) { streamText = ""; streamTool = ""; renderStream(); } renderRunline(); }
+      if (d.convId === convId) { running = d.status === "running"; stopping = false; if (!running) { streamText = ""; streamTool = ""; renderStream(); } renderRunline(); }
       void refreshState(); if (page === "activity") void loadActivity();
       if (cdraw.classList.contains("on")) void loadConvs();
     } else if (d.type === "title" && d.convId === convId) { convTitle = d.title; setHeader(); }
@@ -1240,7 +1244,7 @@
       for (const n of infos) box.appendChild(alertCard(n, false));
       if (!unread.length) box.appendChild(el('<div class="empty">All caught up — swipe a card left to archive it.</div>'));
       if (archived.length) {
-        const holder = el("<div></div>"); holder.style.display = alertArchiveOpen ? "" : "none";
+        const holder = el('<div style="margin-top:8px"></div>'); holder.style.display = alertArchiveOpen ? "" : "none";
         for (const n of archived) holder.appendChild(alertCard(n, false));
         const t = el('<button class="earlier"></button>');
         const label = () => { t.textContent = (alertArchiveOpen ? "Hide archive · " : "Archive · ") + archived.length; };
