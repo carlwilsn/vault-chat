@@ -46,13 +46,15 @@ export const MODELS: ModelSpec[] = [
 export const DEFAULT_MODEL_ID = "claude-opus-4-8";
 
 // Workers spawned by the supervisor are heavy, long-horizon jobs — not the
-// daily chat-pane default. Fable 5 is the expert long-running worker: stays
-// coherent across millions of tokens and self-corrects from its own notes,
-// which is exactly what a multi-step grind needs and overkill for a chat reply.
-// Decoupled from DEFAULT_MODEL_ID on purpose — a lighter chat default must
-// never drag a worker down, and a pricey worker must never become the chat
-// default. Override per-run by passing modelId to startWorker/runWorkerTurn.
-export const DEFAULT_WORKER_MODEL_ID = "claude-fable-5";
+// daily chat-pane default. Decoupled from DEFAULT_MODEL_ID on purpose — a
+// lighter chat default must never drag a worker down, and a pricey worker must
+// never become the chat default. Override per-run by passing modelId to
+// startWorker/runWorkerTurn (and, soon, per the Settings model-role config).
+// NOTE: was claude-fable-5 (the long-horizon expert), but that tier is
+// currently unavailable, which silently failed every worker. Opus 4.8 is the
+// heaviest reliably-available model, so it's the safe default until the role is
+// user-configurable / Fable returns.
+export const DEFAULT_WORKER_MODEL_ID = "claude-opus-4-8";
 
 // Sentinel value stored in the model picker when the user selects "Auto".
 // At send-time `resolveAutoModel` turns this into a concrete model:
