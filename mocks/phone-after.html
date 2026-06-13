@@ -1,0 +1,730 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>vault-chat phone — AFTER</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
+<style>
+  :root{
+    --bg:#1a1a1a; --surface:#242424; --raised:#333333; --line:#383838;
+    --text:#ebebeb; --dim:#999999; --primary:#d9d9d9; --primary-fg:#1a1a1a;
+    --err:#e14746; --ok:#7fbf7f; --warn:#e0a35a;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html{background:var(--bg)}
+  html,body{margin:0;position:fixed;inset:0;overflow:hidden;overscroll-behavior:none}
+  body{display:flex;flex-direction:column;background:var(--bg);color:var(--text);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;padding:0}
+  svg{display:block}
+
+  .hdr{display:flex;align-items:center;gap:6px;flex:0 0 auto;padding:12px 12px 8px;position:relative;z-index:21}
+  .icbtn{color:var(--dim);min-width:40px;min-height:40px;display:flex;align-items:center;justify-content:center;border-radius:10px;position:relative;flex:none}
+  .icbtn:active{background:var(--surface)}
+  .icbtn svg{width:22px;height:22px}
+  body:not(.page-chat) #convBtn{visibility:hidden}
+  .reddot{position:absolute;top:7px;right:7px;width:8px;height:8px;border-radius:50%;background:var(--warn);display:none}
+  .reddot.on{display:block}
+  /* connection status moved off the title: a dot at the burger's bottom-right,
+     revealed when the menu is open. green = connected, red = offline. */
+  /* connection light: right edge of the Box & settings row */
+  .connpip{width:9px;height:9px;border-radius:50%;background:var(--ok);flex:none;box-shadow:0 0 7px rgba(127,191,127,.75)}
+  body.offline .connpip{background:var(--err);box-shadow:0 0 7px rgba(225,71,70,.75)}
+  .title{flex:1;min-width:0;display:flex;align-items:center;gap:8px;justify-content:center;text-align:center}
+  .title .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none}
+  .title .tx{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .title .sub{font-size:15px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:400}
+
+  .menu{position:absolute;top:54px;right:10px;background:#262626;border:1px solid var(--line);border-radius:14px;padding:6px;z-index:46;min-width:220px;display:none;box-shadow:0 14px 40px rgba(0,0,0,.5)}
+  .menu.on{display:block}
+  .mrow{display:flex;align-items:center;gap:11px;padding:12px 13px;border-radius:10px;font-size:14.5px;width:100%;text-align:left}
+  .mrow:active{background:var(--raised)}
+  .mrow.cur{background:#2e2e2e}
+  .mrow svg{width:19px;height:19px;color:var(--dim);flex:none}
+  .mrow .nm{flex:1}
+  .mrow .ct{font-size:11.5px;color:var(--primary-fg);background:var(--primary);border-radius:10px;min-width:18px;height:18px;display:flex;align-items:center;justify-content:center;padding:0 5px;font-weight:600}
+  .mrow .ct.warn{background:var(--warn)}
+  .mdiv{height:1px;background:#2e2e2e;margin:5px 8px}
+
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;z-index:48}
+  .scrim.on{display:block}
+  .cdraw{position:fixed;top:0;left:0;bottom:0;width:min(84vw,300px);background:#202020;z-index:49;transform:translateX(-102%);transition:transform .2s ease;display:flex;flex-direction:column}
+  .cdraw.on{transform:none}
+  .cdtop{display:flex;align-items:center;gap:10px;padding:14px 14px 4px}
+  .cdtop b{flex:1;font-size:16px;font-weight:600}
+  .cdsub{font-size:11.5px;color:#7c7c7c;padding:0 14px 8px;line-height:1.45}
+  .newbtn{display:flex;align-items:center;gap:7px;font-size:13.5px;font-weight:600;color:var(--primary-fg);background:var(--primary);border-radius:10px;padding:8px 13px}
+  .newbtn svg{width:16px;height:16px}
+  .clist{flex:1;overflow-y:auto;padding:4px 0 12px}
+  .cclear{flex:0 0 auto;margin:0 14px 14px;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:13px;color:var(--dim);min-height:40px}
+  .cclear:active{background:var(--surface)}
+  .csec{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#7c7c7c;padding:12px 16px 5px;font-weight:600}
+  .crow2{display:block;width:100%;text-align:left;padding:11px 16px}
+  .crow2:active{background:var(--surface)}
+  .crow2 .t{display:flex;align-items:center;gap:8px}
+  .crow2 .nm{flex:1;min-width:0;font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .crow2 .ag{color:#7c7c7c;font-size:11.5px;flex:none}
+  .crow2 .p{color:var(--dim);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+
+  .body{flex:1;min-height:0;position:relative;display:flex;flex-direction:column}
+  .page{flex:1;min-height:0;display:none;flex-direction:column}
+  body.page-chat #pChat{display:flex}
+  body.page-activity #pAct{display:flex}
+  body.page-alerts #pAl{display:flex}
+  .scroll{flex:1;overflow-y:auto;overscroll-behavior:contain}
+
+  #msgs{flex:1;overflow-y:auto;padding:8px 14px 6px;display:flex;flex-direction:column}
+  .m{max-width:90%;margin:0 0 10px;border-radius:15px;padding:9px 13px;word-wrap:break-word;overflow-wrap:anywhere}
+  .m.user{align-self:flex-end;background:var(--raised);white-space:pre-wrap;border-bottom-right-radius:5px}
+  .m.asst{align-self:flex-start;background:var(--surface);border-bottom-left-radius:5px}
+  /* agent replies are bubble-free (ChatGPT / Claude-style): just rendered
+     markdown across the full width. user messages stay in bubbles. */
+  .amsg{align-self:flex-start;max-width:100%;width:100%;margin:2px 0 15px}
+  .katex-display{overflow-x:auto;overflow-y:hidden;padding:1px 0;margin:.5em 0}
+  .hint{margin:auto;text-align:center;color:var(--dim);font-size:14px;line-height:1.65;padding:0 34px;max-width:340px}
+  .hint b{color:var(--text);font-weight:600;display:block;font-size:15.5px;margin-bottom:6px}
+  .ephem{flex:0 0 auto;text-align:center;font-size:10.5px;color:#6f6f6f;padding:2px 18px 6px}
+
+  .md p{margin:.35em 0}
+  .md h1,.md h2,.md h3{margin:.5em 0 .25em;line-height:1.25}
+  .md h1{font-size:1.2em}.md h2{font-size:1.1em}.md h3{font-size:1.02em}
+  .md pre{background:#161616;border:1px solid var(--line);border-radius:8px;padding:8px 10px;overflow-x:auto;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace}
+  .md code{background:#161616;border-radius:4px;padding:1px 4px;font:12px ui-monospace,Menlo,Consolas,monospace}
+  .md pre code{background:none;border:none;padding:0}
+  .md ul,.md ol{margin:.35em 0;padding-left:1.4em}
+  .md table{border-collapse:collapse;margin:.4em 0;font-size:13px;display:block;overflow-x:auto}
+  .md th,.md td{border:1px solid var(--line);padding:3px 8px;text-align:left}
+  .toolchips{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
+  .toolchip{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 5px}
+
+  .plancard{background:#1d2420;border:1px solid #34532f;border-radius:13px;padding:12px 13px;margin:3px 0}
+  .pc-h{font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:var(--ok);font-weight:700;margin-bottom:6px}
+  .pc-title{font-weight:600;font-size:14.5px;line-height:1.35;margin-bottom:4px}
+  .pc-desc{font-size:13px;color:#bdbdbd;line-height:1.5;margin-bottom:4px}
+  .pc-tasks{margin:5px 0 0;padding-left:18px}
+  .pc-tasks li{font-size:13px;color:#d7d7d7;margin:3px 0;line-height:1.45}
+  .pc-btns{display:flex;gap:8px;margin-top:12px}
+  .pc-approve{flex:1;background:var(--ok);color:#11240f;font-weight:700;font-size:13px;border-radius:9px;padding:9px;min-height:38px}
+  .pc-refine{background:var(--surface);border:1px solid var(--line);color:var(--text);font-size:13px;border-radius:9px;padding:9px 16px;min-height:38px}
+  .plancard.approved{opacity:.6}
+  .plancard.approved .pc-btns{display:none}
+
+  .composer{flex:0 0 auto;display:flex;align-items:flex-end;gap:9px;padding:6px 12px 8px}
+  .mic{width:42px;height:42px;border-radius:50%;background:var(--surface);border:1px solid var(--line);color:var(--text);flex:none;display:flex;align-items:center;justify-content:center}
+  .mic svg{width:20px;height:20px}
+  .field{flex:1;position:relative;display:flex;align-items:flex-end;min-width:0}
+  .composer textarea{flex:1;resize:none;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:21px;padding:10px 50px 10px 15px;font-size:16px;line-height:1.4;font-family:inherit;max-height:120px;outline:none;min-width:0}
+  .send{position:absolute;right:5px;bottom:5px;width:33px;height:33px;border-radius:50%;background:var(--primary);color:var(--primary-fg);font-weight:700;font-size:16px;display:flex;align-items:center;justify-content:center}
+
+  .sec{font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;color:#8a8a8a;padding:15px 18px 7px;font-weight:600}
+  /* mission header: tap the row → supervisor thread; tap [spec] → criterion */
+  .msec{display:flex;align-items:center;gap:8px;padding:16px 16px 7px;min-width:0;width:100%;text-align:left}
+  .msec:active{background:var(--surface)}
+  .msec>span.k{font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:var(--ok);font-weight:700;flex:none}
+  .msec b{font-size:14.5px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+  .msec .mc{font-size:11px;color:#8a8a8a;flex:none}
+  .msec .mc.dim{color:#6a6a6a}
+  .spec{font-size:11px;color:var(--ok);flex:none;border:1px solid #34532f;border-radius:7px;padding:4px 11px;font-weight:600}
+  .spec:active{background:#16271a}
+  .mnote{margin:0 18px 9px;font-size:12px;color:var(--dim);overflow-wrap:anywhere}
+  .wpill{margin:0 14px 7px;border:1px solid var(--line);border-radius:17px;background:var(--surface);overflow:hidden}
+  .wp-head{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:9px 13px 9px 14px;min-height:40px}
+  .wp-head:active{background:var(--raised)}
+  .wp-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none}
+  .wp-dot.warn{background:var(--warn)} .wp-dot.done{background:#6a6a6a}
+  .wp-main{flex:1;min-width:0}
+  .wp-t{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wp-sum{font-size:11.5px;color:#9a9a9a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+  .wp-age{font-size:10.5px;color:#8a8a8a;flex:none;max-width:30%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}
+  .chev{color:#6f6f6f;font-size:15px;flex:none}
+  .wbtns{display:flex;flex-wrap:wrap;gap:9px;margin-top:13px}
+  .wbtn{font-size:12.5px;border:1px solid var(--line);border-radius:8px;padding:8px 15px;color:#dcdcdc;min-height:36px}
+  .wbtn:active{background:var(--raised)}
+  .wbtn.danger{color:var(--err);border-color:#5a302e}
+  .wbtn.confirm{background:var(--err);color:#fff;border-color:var(--err)}
+
+  .card{margin:0 14px 10px;background:var(--surface);border-radius:14px;padding:13px 14px;width:calc(100% - 28px);text-align:left;display:block}
+  .card:active{background:#282828}
+  .card.ask{border:1px solid #5a4a26}
+  .card.unread{box-shadow:inset 2.5px 0 0 #6f6f6f}
+  .crow{display:flex;gap:12px}
+  .ico{width:31px;height:31px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:none;font-size:13.5px;font-weight:700;background:var(--raised);color:var(--dim)}
+  .ico.g{color:var(--ok)} .ico.a{color:var(--warn)} .ico.r{color:var(--err)}
+  .cb{flex:1;min-width:0}
+  .ct{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+  .ct b{font-weight:600;font-size:14.5px;min-width:0;overflow-wrap:anywhere}
+  .ct .t{font-size:11px;color:#8a8a8a;flex:none}
+  .metabar{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#8a8a8a;font-weight:600;margin:3px 0 0}
+  .cs{margin:4px 0 0;font-size:13px;color:#ababab;line-height:1.5;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .earlier{display:block;width:calc(100% - 28px);margin:6px 14px 0;text-align:center;font-size:12.5px;color:var(--dim);border:1px solid var(--line);border-radius:10px;padding:9px;min-height:38px}
+  .empty{padding:30px 38px;text-align:center;color:var(--dim);font-size:13.5px;line-height:1.6}
+
+  .schedrow{display:flex;align-items:center;gap:10px}
+  .schedrow .info{flex:1;min-width:0}
+  .schedrow .info b{font-weight:600;font-size:14px;display:block}
+  .schedrow .info small{color:var(--dim);font-size:11.5px}
+  .sw{font-size:11.5px;border:1px solid var(--line);border-radius:7px;padding:5px 11px;color:var(--dim);flex:none;min-height:32px}
+  .sw.on{color:var(--primary-fg);background:var(--primary);border-color:var(--primary)}
+  .del{color:var(--err);font-size:15px;padding:4px 8px;flex:none}
+
+  /* ---- bottom sheet ---- */
+  .sheet-scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:opacity .25s;z-index:80}
+  .sheet-scrim.on{opacity:1;pointer-events:auto}
+  .sheet{position:fixed;left:0;right:0;bottom:0;background:#1f1f1f;border-top-left-radius:18px;border-top-right-radius:18px;transform:translateY(110%);transition:transform .3s cubic-bezier(.32,.72,0,1),height .26s ease;z-index:81;max-height:64%;display:flex;flex-direction:column;box-shadow:0 -12px 40px rgba(0,0,0,.55)}
+  .sheet.on{transform:none}
+  /* grab handle + header are the drag zone: pull up to fill the screen for
+     long threads, pull down to dismiss. */
+  .sheet-grabwrap{padding:7px 0 3px;flex:none;cursor:grab;touch-action:none;display:flex;justify-content:center}
+  .sheet-grabwrap:active{cursor:grabbing}
+  .sheet-grab{width:40px;height:5px;border-radius:3px;background:#565656}
+  .sheet-head{display:flex;align-items:flex-start;gap:11px;padding:4px 16px 8px;flex:none;touch-action:none}
+  .sheet-ico{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:none;font-size:15px;font-weight:700;background:var(--raised);color:var(--dim)}
+  .sheet-ico.g{color:var(--ok)} .sheet-ico.a{color:var(--warn)} .sheet-ico.r{color:var(--err)}
+  .sh-meta{flex:1;min-width:0}
+  .sheet-intent{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#8a8a8a;font-weight:600}
+  .sheet-title{font-size:16px;font-weight:600;line-height:1.3;margin-top:2px;overflow-wrap:anywhere}
+  .sheet-x{color:var(--dim);font-size:16px;width:32px;height:32px;border-radius:8px;flex:none;display:flex;align-items:center;justify-content:center;align-self:center}
+  /* header-bar action: destructive / primary actions live HERE, not under the
+     text input, so the keyboard can never bury them. */
+  .sheet-action{font-size:12px;border:1px solid var(--line);border-radius:8px;padding:5px 11px;color:var(--dim);flex:none;align-self:center;min-height:30px;white-space:nowrap}
+  .sheet-action:active{background:var(--raised)}
+  .sheet-action.danger{color:var(--err);border-color:#5a302e}
+  .sheet-action.confirm{background:var(--err);color:#fff;border-color:var(--err)}
+  .sheet-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:4px 16px 24px;-webkit-overflow-scrolling:touch}
+  /* pinned footer: the text input lives here, not in the scroll area, so it
+     stays put when the keyboard is up. */
+  .sheet-foot{flex:none;padding:8px 14px calc(env(safe-area-inset-bottom) + 8px);border-top:1px solid var(--line);background:#1f1f1f}
+  .sheet-foot .reply{margin-top:0}
+  .sheet-body .md{font-size:13.5px;color:#cfcfcf;line-height:1.55}
+  .sheet-body .lbl{color:#8a8a8a;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;margin:14px 0 5px}
+  .thread{display:flex;flex-direction:column;margin:4px 0 2px}
+  .tmsg{display:flex;flex-direction:column;margin-bottom:10px}
+  .tmsg.user{align-items:flex-end} .tmsg.asst{align-items:flex-start}
+  .tmsg .sender{font-size:9.5px;letter-spacing:.3px;text-transform:uppercase;color:#7c7c7c;font-weight:700;margin:0 5px 3px}
+  .tmsg .m{font-size:13px;margin:0;max-width:92%}
+  .speclist{list-style:none;margin:9px 0 0;padding:0}
+  .speclist li{display:flex;gap:9px;font-size:13px;color:#cfcfcf;margin:7px 0;line-height:1.45}
+  .speclist .bx{flex:none;color:var(--ok)} .speclist .bx.off{color:#6a6a6a}
+  .specrow{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-top:6px}
+  .specrow .sc{font-size:13px;color:var(--ok);font-weight:700}
+  .readonly{font-size:11.5px;color:#7c7c7c;margin-top:14px;border-top:1px solid var(--line);padding-top:10px;line-height:1.5}
+  .reply{position:relative;display:flex;align-items:center;margin-top:13px}
+  .rinp{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:18px;padding:10px 44px 10px 14px;color:var(--text);font-size:14px;outline:none;min-width:0;font-family:inherit}
+  .rsend{position:absolute;right:5px;width:30px;height:30px;border-radius:50%;background:var(--primary);color:var(--primary-fg);font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center}
+
+  #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:80px;background:#333;color:var(--text);border-radius:9px;padding:8px 14px;font-size:13px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:90;max-width:86%;text-align:center}
+  #toast.show{opacity:1}
+  .tag{position:fixed;top:0;left:0;background:#16271a;color:#7fbf7f;font-size:9px;letter-spacing:.5px;text-transform:uppercase;font-weight:700;padding:2px 7px;border-bottom-right-radius:8px;z-index:95}
+</style>
+</head>
+<body class="page-chat">
+  <div class="tag">After</div>
+
+  <div class="hdr">
+    <button class="icbtn" id="convBtn" aria-label="conversations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+    <button class="title" id="titleBtn"><span class="tx" id="titleTx"></span><span class="sub" id="titleSub"></span></button>
+    <button class="icbtn" id="menuBtn" aria-label="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span class="reddot on" id="menudot"></span></button>
+  </div>
+
+  <div class="menu" id="menu">
+    <button class="mrow cur" data-page="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="nm">Chat</span></button>
+    <button class="mrow" data-page="activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg><span class="nm">Activity</span><span class="ct" id="mAct">2</span></button>
+    <button class="mrow" data-page="alerts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg><span class="nm">Alerts</span><span class="ct warn" id="mAl">3</span></button>
+    <button class="mrow" id="voiceRow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 19v3"/></svg><span class="nm">Voice</span></button>
+    <button class="mrow" id="settingsRow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="nm">Box &amp; settings</span><span class="connpip" id="connpip" title="connected"></span></button>
+  </div>
+
+  <div class="scrim" id="scrim"></div>
+  <div class="cdraw" id="cdraw">
+    <div class="cdtop"><b>Conversations</b><button class="newbtn" id="newBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>New</button></div>
+    <div class="clist" id="clist"></div>
+    <button class="cclear" id="clearChatsBtn">Clear chats from this view</button>
+  </div>
+
+  <div class="body">
+    <section class="page" id="pChat">
+      <div id="msgs"></div>
+      <div class="composer">
+        <div class="field"><textarea id="input" rows="1" placeholder="Message…"></textarea><button class="send" id="sendBtn">↑</button></div>
+      </div>
+    </section>
+    <section class="page" id="pAct"><div class="scroll" id="actScroll"></div></section>
+    <section class="page" id="pAl"><div class="scroll" id="alScroll"></div></section>
+  </div>
+
+  <div id="toast"></div>
+
+  <div class="sheet-scrim" id="sheetScrim"></div>
+  <div class="sheet" id="sheet">
+    <div class="sheet-grabwrap" id="sheetGrab"><div class="sheet-grab"></div></div>
+    <div class="sheet-head" id="sheetHead"><div class="sheet-ico" id="sheetIco"></div><div class="sh-meta"><div class="sheet-intent" id="sheetIntent"></div><div class="sheet-title" id="sheetTitle"></div></div><button class="sheet-action" id="sheetAction" style="display:none"></button><button class="sheet-x" id="sheetX">✕</button></div>
+    <div class="sheet-body" id="sheetBody"></div>
+    <div class="sheet-foot" id="sheetFoot" style="display:none"></div>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const el = (h) => { const t = document.createElement("template"); t.innerHTML = h.trim(); return t.content.firstChild; };
+  const esc = (s) => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  let toastT = 0;
+  const toast = (m) => { const t = $("toast"); t.textContent = m; t.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2400); };
+
+  function mdCore(src){
+    const inline=s=>{let t=esc(s);t=t.replace(/`([^`]+)`/g,"<code>$1</code>");t=t.replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>");t=t.replace(/(^|[\s(])\*([^*\s][^*]*)\*/g,"$1<i>$2</i>");return t;};
+    const lines=(src||"").replace(/\r\n/g,"\n").split("\n");let html="",i=0,p=[];
+    const flush=()=>{if(p.length){html+="<p>"+p.map(inline).join("<br>")+"</p>";p=[];}};
+    while(i<lines.length){const l=lines[i];
+      if(/^```/.test(l)){flush();const f=[];i++;while(i<lines.length&&!/^```/.test(lines[i]))f.push(lines[i++]);i++;html+="<pre><code>"+esc(f.join("\n"))+"</code></pre>";continue;}
+      if(/^\s*$/.test(l)){flush();i++;continue;}
+      const h=l.match(/^(#{1,3})\s+(.*)$/);if(h){flush();const n=h[1].length;html+="<h"+n+">"+inline(h[2])+"</h"+n+">";i++;continue;}
+      if(/^\s*\d+[.)]\s+/.test(l)){flush();html+="<ol>";while(i<lines.length&&/^\s*\d+[.)]\s+/.test(lines[i])){html+="<li>"+inline(lines[i].replace(/^\s*\d+[.)]\s+/,""))+"</li>";i++;}html+="</ol>";continue;}
+      if(/^\s*[-*]\s+/.test(l)){flush();html+="<ul>";while(i<lines.length&&/^\s*[-*]\s+/.test(lines[i])){html+="<li>"+inline(lines[i].replace(/^\s*[-*]\s+/,""))+"</li>";i++;}html+="</ul>";continue;}
+      if(/^\s*\|.*\|\s*$/.test(l)&&i+1<lines.length&&/^\s*\|[\s:|-]+\|\s*$/.test(lines[i+1])){flush();const cells=r=>r.trim().replace(/^\||\|$/g,"").split("|").map(c=>inline(c.trim()));html+="<table><thead><tr>"+cells(l).map(c=>"<th>"+c+"</th>").join("")+"</tr></thead><tbody>";i+=2;while(i<lines.length&&/^\s*\|.*\|\s*$/.test(lines[i]))html+="<tr>"+cells(lines[i++]).map(c=>"<td>"+c+"</td>").join("")+"</tr>";html+="</tbody></table>";continue;}
+      p.push(l);i++;}
+    flush();return html;
+  }
+  // math-aware markdown: protect $…$ / $$…$$ from the markdown pass, restore the
+  // raw delimiters, then KaTeX auto-render typesets them in the DOM.
+  let mathSeq=0;
+  function md(src){
+    const id=++mathSeq, math=[];
+    const s=String(src==null?"":src)
+      .replace(/\$\$([\s\S]+?)\$\$/g,(m,x)=>{math.push("$$"+x+"$$");return "@@M"+id+"_"+(math.length-1)+"@@";})
+      .replace(/\$([^$\n]+?)\$/g,(m,x)=>{math.push("$"+x+"$");return "@@M"+id+"_"+(math.length-1)+"@@";});
+    return mdCore(s).replace(new RegExp("@@M"+id+"_(\\d+)@@","g"),(m,i)=>math[+i]);
+  }
+  function typeset(elm){ if(elm&&window.renderMathInElement){ try{ renderMathInElement(elm,{delimiters:[{left:"$$",right:"$$",display:true},{left:"$",right:"$",display:false}],throwOnError:false}); }catch(e){} } }
+  window.addEventListener("load",()=>typeset(document.body));
+  function threadHtml(msgs,labels){
+    labels=labels||{user:"You",assistant:"Assistant"};
+    return '<div class="thread">'+msgs.map(m=>{
+      const side=m.role==="user"?"user":"asst";
+      let sender=m.from||(m.role==="user"?labels.user:labels.assistant);
+      if(m.role==="user"&&/^MISSION BRIEF/i.test(m.content)) sender="Mission brief · approved";
+      const chips=(m.tools&&m.tools.length)?'<div class="toolchips">'+m.tools.slice(0,8).map(t=>'<span class="toolchip">'+esc(t)+"</span>").join("")+"</div>":"";
+      const body=m.role==="user"
+        ? '<div class="m user">'+esc(m.content)+'</div>'
+        : '<div class="amsg"><div class="md">'+md(m.content)+'</div>'+chips+'</div>';
+      return '<div class="tmsg '+side+'"><span class="sender">'+esc(sender)+'</span>'+body+'</div>';
+    }).join("")+"</div>";
+  }
+
+  // ---------- mock data ----------
+  const CHATS = [
+    { id: "sup", title: "cockpit nav testing", age: "5m", preview: "shipped the unified app; working through nav" },
+    { id: "c1", title: "densing law — readings", age: "90m", preview: "the crossover moves with task difficulty, not just scale" },
+    { id: "c2", title: "quick latex question", age: "3h", preview: "block math needs the fences on their own lines" },
+  ];
+
+  // A mission OWNS a goal, holds MANY workers, and is watched through its
+  // supervisor's thread. Its spec is the success criterion you approved.
+  const MISSIONS = [
+    { name: "BitNet 160M MVP", convId: "m1",
+      spec: {
+        goal: "Reproduce the BitNet 160M MVP across 3 seeds.",
+        criterion: "Three seeds within **0.005 nat** of each other · `eval.loss` committed · writeup under `docs/`.",
+        score: "2 / 3 met",
+        items: [
+          { done: true,  t: "eval.loss committed (seeds 42 & 44)" },
+          { done: true,  t: "writeup drafted under docs/" },
+          { done: false, t: "all three seeds within 0.005 nat — seed 43 diverged" },
+        ],
+      },
+      supervisor: [
+        { role: "user", content: "MISSION BRIEF (approved). Reproduce the BitNet 160M MVP across 3 seeds; commit eval.loss; writeup under docs/. Done = three seeds within 0.005 nat." },
+        { role: "assistant", content: "Criterion pinned. Fanning out one worker per seed plus an eval/writeup worker; I’ll watch on 15-min wakes and verify before I call it done.", tools: ["StartWorker","StartWorker","StartWorker","Schedule"] },
+        { role: "assistant", content: "Read the worker threads. Seeds **42 & 44 landed in tolerance**, eval.loss committed. **Seed 43 diverged** at step 800 (+0.05 nat) — its warmup landed differently. I held it and surfaced the call to you rather than guess. Kicked the eval/writeup worker since 2 of 3 are in." },
+        { role: "user", from: "You", content: "don’t wait on it — spin up a worker to rerun seed 43 at seed 42’s LR in parallel." },
+        { role: "assistant", content: "On it — spawning a worker to rerun seed 43 at seed 42’s LR. If the divergence was just warmup, we won’t have lost any time.", tools: ["StartWorker"] },
+      ],
+      workers: [
+        { convId: "w42", title: "seed 42", lastTool: "done", age: "22m", dot: "done", sum: "verified · eval.loss committed",
+          state: "Finished. eval.loss **1.5576**, within tolerance, committed under `results/`.",
+          thread: [ { role:"user", content:"train + eval seed 42 on the 1700-step config; commit eval.loss" }, { role:"assistant", content:"Done. eval.loss 1.5576. Committed `results/seed42.jsonl`.", tools:["Bash","Write"] } ] },
+        { convId: "w43", title: "seed 43 (diverged)", lastTool: "held", age: "4m", dot: "warn", sum: "+0.05 nat above seed 42 — held for the supervisor",
+          state: "Diverged at step 800, **+0.05 nat** above seed 42. The supervisor paused it and surfaced the call to you (see Alerts). Best theory: LR-warmup mismatch.",
+          thread: [ { role:"user", content:"train + eval seed 43 on the 1700-step config; commit eval.loss" }, { role:"assistant", content:"Step 800: loss is +0.05 nat above seed 42 and not closing. Flagging to the mission before burning more compute.", tools:["Bash"] } ] },
+        { convId: "w44", title: "seed 44", lastTool: "done", age: "19m", dot: "done", sum: "verified · eval.loss committed",
+          state: "Finished. eval.loss **1.5588**, within tolerance, committed under `results/`.",
+          thread: [ { role:"user", content:"train + eval seed 44 on the 1700-step config; commit eval.loss" }, { role:"assistant", content:"Done. eval.loss 1.5588. Committed `results/seed44.jsonl`.", tools:["Bash","Write"] } ] },
+        { convId: "wev", title: "eval + writeup", lastTool: "Write", age: "2m", dot: "ok", sum: "drafting the comparison table + writeup",
+          state: "Running. Building the per-seed comparison table and drafting `docs/bitnet-160m-mvp/writeup.md`.",
+          thread: [ { role:"user", content:"once 2+ seeds are in, build the comparison table and draft the writeup under docs/" }, { role:"assistant", content:"Have seeds 42 & 44. Table built; drafting the writeup now.", tools:["Read","Write"] } ] },
+      ],
+    },
+    { name: "Quiet watch — repo hygiene", convId: "m2",
+      spec: { goal: "Keep the repos clean while you’re heads-down.", criterion: "No uncommitted drift > 30 min · main pre-commit green · ping only on a real problem.",
+        score: "all green", items: [ { done:true, t:"no drift on last sweep" }, { done:true, t:"main pre-commit green" } ] },
+      supervisor: [
+        { role: "user", content: "MISSION BRIEF (approved). Quiet watch on repo hygiene; only ping me if something’s wrong." },
+        { role: "assistant", content: "Watching on a 3-hour sweep. All clean so far — staying silent per the brief. Next check 9pm." },
+      ],
+      workers: [], note: "all clean on last sweep; next check at 9pm" },
+  ];
+
+  const SCHEDULES = [
+    { id: "s1", name: "Daily coach", label: "daily · 7:00 AM", target: "summer vault", enabled: true, fired: "5h",
+      runs: "Runs the summer-vault coach prompt as a worker; its deliverable becomes your **Morning briefing** alert." },
+    { id: "s2", name: "Repo hygiene sweep", label: "every 3h", target: "this vault", enabled: true, fired: "40m",
+      runs: "Sweeps the repos for uncommitted drift and a failing pre-commit on main; pings only on a real problem." },
+  ];
+  const NOTIFS = [
+    { id: "n1", kind: "ask", title: "Seed 3 diverged", intention: "Mission needs your call · BitNet 160M MVP",
+      ico: "?", cls: "a", age: "2m", read: false, convId: "w1",
+      summary: "step 800, +0.05 nat above seed 1 — real effect, or match the LR and rerun?",
+      body: "Seed 3 is **+0.05 nat above seed 1** at step 800 and still drifting.\n\nTwo readings:\n- **Real effect** — seed sensitivity worth reporting; let it finish and document the spread.\n- **LR mismatch** — its warmup landed differently; match seed 1's LR and rerun (~9 min).\n\nReply and the mission’s supervisor takes it from there." },
+    { id: "n0", kind: "info", title: "Morning briefing", intention: "Scheduled worker · summer vault",
+      ico: "≡", cls: "", age: "5h", read: false, convId: "cch",
+      summary: "3 things moved overnight; today: finish the 3-seed writeup + push.",
+      body: "## Overnight\n- **3-seed BitNet** repro nearly there — seeds 42 & 44 in tolerance, writeup drafting.\n- Repo-hygiene sweep: clean, nothing to do.\n- Idle GPU box auto-killed (~$0.26).\n\n## Today\n1. Resolve the seed-43 divergence (open question in Alerts).\n2. Finish the writeup and push.\n\n## Still watching\n- eval + writeup worker (live)" },
+    { id: "n2", kind: "info", title: "Worker finished — seed 44", intention: "Worker deliverable · BitNet 160M MVP",
+      ico: "✓", cls: "g", age: "18m", read: false, convId: "w44",
+      summary: "eval.loss 1.5588, within tolerance; committed under results/.",
+      body: "## Seed 44\n\neval.loss **1.5588** — within the 0.005 nat tolerance against seed 42.\n\n`results/seed44.jsonl` committed. Two of three seeds now in." },
+    { id: "n3", kind: "info", title: "Stopped an idle box", intention: "Cost / cleanup · autonomous action",
+      ico: "$", cls: "r", age: "90m", read: true,
+      summary: "idle GPU box auto-killed after its job exited; ~$0.26, nothing billing now.",
+      body: "A box sat at **zero GPU utilization for 12 minutes** after its job exited — I killed it. Total spend ~$0.26; nothing billing now." },
+  ];
+
+  // ---------- bottom sheet ----------
+  function openSheet(opts){
+    const sh=$("sheet"); sh.style.height=""; sh.style.maxHeight=""; sh.style.transition="";
+    $("sheetIco").textContent = opts.ico || "•";
+    $("sheetIco").className = "sheet-ico" + (opts.cls ? " " + opts.cls : "");
+    $("sheetIntent").textContent = opts.intent || "";
+    $("sheetTitle").textContent = opts.title || "";
+    $("sheetBody").innerHTML = opts.bodyHtml || "";
+    const foot=$("sheetFoot");
+    if(opts.footHtml){ foot.style.display=""; foot.innerHTML=opts.footHtml; } else { foot.style.display="none"; foot.innerHTML=""; }
+    const act=$("sheetAction");
+    if(opts.action){ act.style.display=""; act.textContent=opts.action.label; act.className="sheet-action"+(opts.action.danger?" danger":""); act.onclick=opts.action.onClick; }
+    else { act.style.display="none"; act.className="sheet-action"; act.onclick=null; }
+    if (opts.wire) opts.wire($("sheetBody"), foot);
+    typeset($("sheetBody"));
+    $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
+  }
+  function closeSheet(){ $("sheetScrim").classList.remove("on"); $("sheet").classList.remove("on"); }
+  $("sheetScrim").onclick = closeSheet; $("sheetX").onclick = closeSheet;
+  // Drag the grab/header: pull up to fill the screen for long threads, pull
+  // down past a threshold to dismiss. Snaps to peek / full / closed on release.
+  (function sheetDrag(){
+    const sheet=$("sheet"); let startY=0, startH=0, dragging=false, H=0;
+    const down=(y)=>{ dragging=true; startY=y; startH=sheet.offsetHeight; H=window.innerHeight; sheet.style.transition="none"; sheet.style.maxHeight="none"; };
+    const move=(y)=>{ if(!dragging) return; const h=Math.max(80, Math.min(startH-(y-startY), Math.round(0.97*H))); sheet.style.height=h+"px"; };
+    const up=()=>{ if(!dragging) return; dragging=false; sheet.style.transition=""; const h=sheet.offsetHeight;
+      if(h < 0.30*H){ closeSheet(); return; }
+      if(h > 0.55*H){ sheet.style.height=Math.round(0.96*H)+"px"; }
+      else { sheet.style.height=Math.min(sheet.scrollHeight, Math.round(0.62*H))+"px"; } };
+    for(const elx of [$("sheetGrab"), $("sheetHead")]){
+      elx.addEventListener("touchstart",(e)=>down(e.touches[0].clientY),{passive:true});
+      elx.addEventListener("mousedown",(e)=>{ if(e.target.closest(".sheet-x")) return; e.preventDefault(); down(e.clientY); });
+    }
+    window.addEventListener("touchmove",(e)=>{ if(dragging) move(e.touches[0].clientY); },{passive:true});
+    window.addEventListener("touchend",up); window.addEventListener("touchcancel",up);
+    window.addEventListener("mousemove",(e)=>{ if(dragging) move(e.clientY); });
+    window.addEventListener("mouseup",up);
+  })();
+
+  // Keep the app and the sheet's pinned input above the on-screen keyboard:
+  // when the keyboard ("bottom bar") raises, the visual viewport shrinks, so we
+  // shrink the app to it and lift the sheet by the keyboard's height.
+  if(window.visualViewport){
+    const vv=window.visualViewport;
+    const fit=()=>{ const inset=Math.max(0, window.innerHeight - vv.height - vv.offsetTop); document.body.style.height=vv.height+"px"; $("sheet").style.bottom=inset+"px"; window.scrollTo(0,0); };
+    vv.addEventListener("resize",fit); vv.addEventListener("scroll",()=>window.scrollTo(0,0));
+  }
+
+  // ---------- pages / menu ----------
+  function setPage(name){
+    document.body.classList.remove("page-chat","page-activity","page-alerts");
+    document.body.classList.add("page-"+name);
+    document.querySelectorAll(".mrow[data-page]").forEach(r=>r.classList.toggle("cur",r.dataset.page===name));
+    const tx=$("titleTx"),sub=$("titleSub");
+    if(name==="chat"){tx.textContent="";sub.textContent="";}
+    else{tx.textContent=name==="activity"?"Activity":"Alerts";sub.textContent="";}
+    if(name==="activity") loadActivity();
+    if(name==="alerts") loadAlerts();
+  }
+  function closeMenu(){ $("menu").classList.remove("on"); document.body.classList.remove("menuopen"); }
+  document.querySelectorAll(".mrow[data-page]").forEach(r=>r.onclick=()=>{closeMenu();setPage(r.dataset.page);});
+  $("menuBtn").onclick=(e)=>{e.stopPropagation();const on=$("menu").classList.toggle("on");document.body.classList.toggle("menuopen",on);};
+  document.addEventListener("click",closeMenu);
+  $("menu").addEventListener("click",e=>e.stopPropagation());
+  $("voiceRow").onclick=()=>{closeMenu();toast("Starting voice… same agent, same memory.");};
+  $("settingsRow").onclick=()=>{closeMenu();toast("(settings drawer)");};
+  $("titleBtn").onclick=()=>{ if(!document.body.classList.contains("page-chat")) setPage("chat"); };
+
+  // ---------- conversations drawer ----------
+  $("convBtn").onclick=()=>{$("scrim").classList.add("on");$("cdraw").classList.add("on");loadConvs();};
+  $("scrim").onclick=()=>{$("scrim").classList.remove("on");$("cdraw").classList.remove("on");};
+  $("newBtn").onclick=()=>{$("scrim").classList.remove("on");$("cdraw").classList.remove("on");showHint();toast("New chat");};
+  function loadConvs(){
+    const box=$("clist");box.innerHTML="";
+    box.appendChild(el('<div class="csec">Chats</div>'));
+    for(const c of CHATS){
+      const b=el('<button class="crow2"><div class="t"><span class="nm"></span><span class="ag"></span></div><div class="p"></div></button>');
+      b.querySelector(".nm").textContent=c.title;b.querySelector(".ag").textContent=c.age;b.querySelector(".p").textContent=c.preview;
+      b.onclick=()=>{$("scrim").classList.remove("on");$("cdraw").classList.remove("on");setPage("chat");toast("Opened: "+c.title);};
+      box.appendChild(b);
+    }
+    if(!CHATS.length) box.appendChild(el('<div class="empty">Cleared from this view. They’re still on the box — nothing was deleted.</div>'));
+  }
+  $("clearChatsBtn").onclick=()=>{
+    if(!confirm("Clear these chats from this view? Nothing is deleted — they stay on the box and in git, and reappear on a fresh load.")) return;
+    CHATS.length=0; loadConvs(); toast("Cleared from this view — nothing deleted.");
+  };
+
+  // ---------- chat (the assistant: read/write/answer + propose a mission) ----------
+  function showHint(){ $("msgs").innerHTML='<div class="hint"><b>What needs doing?</b>I can read, write, and answer right here. I can’t run workers myself — for real work I <b style="display:inline">propose a mission</b> you approve, and its supervisor runs the team.</div>'; }
+  function bubble(role,content){
+    const d=document.createElement("div");
+    if(role==="user"){ d.className="m user"; d.textContent=content; }
+    else { d.className="amsg"; d.innerHTML='<div class="md">'+md(content)+"</div>"; typeset(d); }
+    return d;
+  }
+  // A proposed plan is STRUCTURED DATA, not chat text — the card carries the
+  // goal, criterion and one task per worker.
+  const PLAN = {
+    title: "Reproduce the BitNet 160M MVP",
+    criterion: "Three seeds within 0.005 nat · eval.loss committed · writeup under docs/.",
+    tasks: [
+      "Train seed 42 on the 1700-step config and commit eval.loss",
+      "Train seed 43 on the same config",
+      "Eval all seeds and draft the writeup under docs/",
+    ],
+  };
+  const taskTitle = (t) => { const w=t.split(/\s+/); return w.slice(0,4).join(" ")+(w.length>4?"…":""); };
+  function planCard(plan){
+    const tasks=plan.tasks.map(t=>"<li>"+esc(t)+"</li>").join("");
+    const card=el('<div class="plancard"><div class="pc-h">Proposed mission · approve to start</div><div class="pc-title"></div><div class="pc-desc"></div><ul class="pc-tasks">'+tasks+'</ul><div class="pc-btns"><button class="pc-approve">Approve &amp; run</button></div></div>');
+    card.querySelector(".pc-title").textContent=plan.title;
+    card.querySelector(".pc-desc").textContent="Success criterion: "+plan.criterion;
+    card.querySelector(".pc-approve").onclick=()=>approvePlan(plan,card);
+    return card;
+  }
+  // Approving is a STRUCTURED action (StartMission with the plan as data) — it
+  // builds the mission object and creates a real Activity directly. It does NOT
+  // send a natural-language prompt for the agent to interpret.
+  function approvePlan(plan,card){
+    if(card.classList.contains("approved"))return;
+    card.classList.add("approved"); card.querySelectorAll("button").forEach(b=>b.disabled=true);
+    const m={
+      name:plan.title, convId:"m_new",
+      spec:{ goal:plan.title+".", criterion:plan.criterion, score:"0 / "+plan.tasks.length+" met",
+             items:plan.tasks.map(t=>({done:false,t})) },
+      supervisor:[
+        { role:"user", content:"MISSION BRIEF (approved as structured input). "+plan.title+". Done = "+plan.criterion },
+        { role:"assistant", content:"Brief arrived as data — nothing to parse. Criterion pinned; spawning a worker per task now.", tools:plan.tasks.map(()=>"StartWorker") },
+      ],
+      workers:plan.tasks.map((t,i)=>({ convId:"nw"+i, title:taskTitle(t), lastTool:"queued", age:"now", dot:"ok", sum:"queued by the supervisor", state:t, thread:[{role:"user",content:t}] })),
+    };
+    if(!MISSIONS.some(x=>x.name===m.name)) MISSIONS.unshift(m);
+    toast("Mission created (structured) — no prompt sent.");
+    setTimeout(()=>setPage("activity"),550);
+  }
+  function seedChat(){
+    const m=$("msgs"); m.innerHTML="";
+    m.appendChild(bubble("user","can we reproduce the BitNet 160M MVP? i want it solid across a few seeds."));
+    m.appendChild(bubble("asst","That’s real work, so I’ll **propose a mission** — I don’t run workers myself. Approving it is a structured action that creates the Activity directly (no prompt sent); its supervisor then spawns and steers the team:"));
+    m.appendChild(planCard(PLAN));
+  }
+  // demonstrates rich Markdown + KaTeX in a bubble-free agent reply
+  function showRenderSample(){
+    const m=$("msgs"); m.innerHTML="";
+    m.appendChild(bubble("user","summarize BitNet’s ternary quantization + the STE trick, with the loss gap"));
+    m.appendChild(bubble("asst",
+      "## BitNet 160M — quick notes\n\n"+
+      "Weights are **ternary**, mapped to $\\{-1,0,+1\\}$ by a scaled sign:\n\n"+
+      "$$\\hat{w}=\\alpha\\cdot\\operatorname{sign}(w),\\qquad \\alpha=\\frac{1}{n}\\sum_i |w_i|$$\n\n"+
+      "Training uses the *straight-through estimator* — forward quantizes, backward passes the gradient through unchanged:\n\n"+
+      "$$\\frac{\\partial\\mathcal{L}}{\\partial w}\\approx\\frac{\\partial\\mathcal{L}}{\\partial\\hat{w}}$$\n\n"+
+      "Across three seeds the eval-loss gap held at about $+0.13$ nat:\n\n"+
+      "| seed | eval loss |\n|---|---|\n| 42 | 1.5576 |\n| 43 | 1.5601 |\n| 44 | 1.5588 |\n\n"+
+      "- inline code `eval.loss` and lists render too\n"+
+      "- weights live in $w\\in\\mathbb{R}^{d}$\n\n"+
+      "```python\nq = alpha * torch.sign(w)   # ternary\n```"));
+    typeset(m);
+  }
+  $("sendBtn").onclick=()=>{const v=$("input").value.trim();if(!v)return;$("input").value="";$("msgs").querySelector(".hint")&&($("msgs").innerHTML="");$("msgs").appendChild(bubble("user",v));toast("(mock) sent");};
+  $("input").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();$("sendBtn").click();}});
+
+  // ---------- activity ----------
+  function loadActivity(){
+    const box=$("actScroll");box.innerHTML="";
+    for(const g of MISSIONS){
+      const live=g.workers.filter(w=>w.dot!=="done");
+      const running=live.filter(w=>w.dot!=="warn").length, blocked=live.filter(w=>w.dot==="warn").length;
+      let status= g.workers.length ? [running?running+" running":"", blocked?blocked+" blocked":""].filter(Boolean).join(" · ") : "watching";
+      if(!status) status="all done";
+      const head=el('<div class="msec"><span class="k">Mission</span><b></b><span class="mc"></span><button class="spec">spec</button></div>');
+      head.querySelector("b").textContent=g.name;
+      head.querySelector(".mc").textContent=status;
+      if(!live.length) head.querySelector(".mc").classList.add("dim");
+      head.onclick=()=>openSupervisor(g);
+      head.querySelector(".spec").onclick=(e)=>{e.stopPropagation();openSpec(g);};
+      box.appendChild(head);
+      for(const w of g.workers) box.appendChild(workerPill(w,g));
+      if(!g.workers.length&&g.note){const n=el('<div class="mnote"></div>');n.textContent=g.note;box.appendChild(n);}
+    }
+    box.appendChild(el('<div class="sec">Scheduled</div>'));
+    for(const sc of SCHEDULES){
+      const card=el('<button class="card schedcard"><div class="schedrow"><div class="info"><b></b><small></small></div><span class="chev">›</span></div></button>');
+      card.querySelector("b").textContent=sc.name;
+      card.querySelector("small").textContent=[sc.label, sc.target, sc.enabled?null:"paused", sc.fired?("fired "+sc.fired+" ago"):null].filter(Boolean).join(" · ");
+      if(!sc.enabled) card.style.opacity=".55";
+      card.onclick=()=>openSchedule(sc);
+      box.appendChild(card);
+    }
+    box.appendChild(el('<div style="height:18px"></div>'));
+  }
+  // pill = one-line summary; tap → read-only worker artifact (no steering)
+  function workerPill(w,g){
+    const pill=el('<div class="wpill"><button class="wp-head"><span class="wp-dot"></span><span class="wp-main"><span class="wp-t"></span><span class="wp-sum"></span></span><span class="wp-age"></span><span class="chev">›</span></button></div>');
+    if(w.dot==="warn")pill.querySelector(".wp-dot").classList.add("warn"); else if(w.dot==="done")pill.querySelector(".wp-dot").classList.add("done");
+    pill.querySelector(".wp-t").textContent=w.title;
+    pill.querySelector(".wp-sum").textContent=w.sum;
+    pill.querySelector(".wp-age").textContent=w.lastTool+" · "+w.age;
+    pill.querySelector(".wp-head").onclick=()=>openWorkerArtifact(w,g);
+    return pill;
+  }
+  // The mission = the supervisor's thread: its thinking + what it saw from the
+  // workers. This is where you steer (or stop). You operate here, not on workers.
+  function openSupervisor(g){
+    openSheet({
+      intent:"Mission supervisor", title:g.name, ico:"◇", cls:"",
+      action:{ label:"Stop", danger:true, onClick:()=>{ const a=$("sheetAction"); if(!a.classList.contains("confirm")){a.classList.add("confirm");a.textContent="Confirm?";setTimeout(()=>{a.classList.remove("confirm");a.textContent="Stop";},2200);return;} closeSheet(); toast("Mission stopped."); } },
+      bodyHtml:'<div class="lbl">Its thinking — what it concluded from the workers</div>'+threadHtml(g.supervisor,{user:"You",assistant:"Supervisor"}),
+      footHtml:'<div class="reply"><input class="rinp" placeholder="ask the supervisor, or tell it to spawn a worker…"><button class="rsend">↑</button></div>',
+      wire:(body,foot)=>{
+        const rep=foot.querySelector(".reply");
+        const go=()=>{const v=rep.querySelector(".rinp").value.trim();if(!v)return;rep.querySelector(".rinp").value="";closeSheet();toast("Sent to the supervisor.");};
+        rep.querySelector(".rsend").onclick=go; rep.querySelector(".rinp").addEventListener("keydown",e=>{if(e.key==="Enter")go();});
+      }
+    });
+  }
+  function openSpec(g){
+    const s=g.spec;
+    const items=s.items.map(it=>'<li><span class="bx'+(it.done?"":" off")+'">'+(it.done?"☑":"☐")+'</span><span>'+md(it.t).replace(/^<p>|<\/p>$/g,"")+"</span></li>").join("");
+    openSheet({
+      intent:"Spec · the criterion you approved", title:g.name, ico:"◎", cls:"",
+      bodyHtml:'<div class="lbl">Goal</div><div class="md">'+md(s.goal)+"</div>"+
+               '<div class="lbl">Done when</div><div class="md">'+md(s.criterion)+"</div>"+
+               '<div class="specrow"><div class="lbl" style="margin:0">Score</div><div class="sc">'+esc(s.score)+"</div></div>"+
+               '<ul class="speclist">'+items+"</ul>"
+    });
+  }
+  // Tap a schedule → its spec (what it runs, when), with toggle / edit / delete
+  // inside. No inline on/off clutter on the row.
+  function openSchedule(sc){
+    openSheet({
+      intent:"Scheduled · "+sc.label, title:sc.name, ico:"◷", cls:"",
+      bodyHtml:'<div class="lbl">What it runs</div><div class="md">'+md(sc.runs||"(scheduled prompt)")+"</div>"+
+               '<div class="lbl">When</div><div class="md">'+md(sc.label+(sc.target?" · "+sc.target:"")+(sc.fired?" · last fired "+sc.fired+" ago":""))+"</div>"+
+               '<div class="lbl">Status</div><div class="md">'+(sc.enabled?"Active":"Paused")+"</div>"+
+               '<div class="wbtns"><button class="wbtn tog">'+(sc.enabled?"Pause":"Enable")+'</button><button class="wbtn edit">Edit</button><button class="wbtn danger del">Delete</button></div>',
+      wire:(b)=>{
+        b.querySelector(".tog").onclick=()=>{ sc.enabled=!sc.enabled; closeSheet(); toast(sc.enabled?"Schedule on.":"Schedule paused."); loadActivity(); };
+        b.querySelector(".edit").onclick=()=>{ toast("(edit — name, cadence, prompt, target)"); };
+        const del=b.querySelector(".del");
+        del.onclick=()=>{ if(!del.classList.contains("confirm")){del.classList.add("confirm");del.textContent="Confirm delete";setTimeout(()=>{del.classList.remove("confirm");del.textContent="Delete";},2200);return;} SCHEDULES.splice(SCHEDULES.indexOf(sc),1); closeSheet(); toast("Schedule deleted."); loadActivity(); };
+      }
+    });
+  }
+  function openWorkerArtifact(w,g){
+    openSheet({
+      intent:"Worker · "+g.name+" · read-only", title:w.title, ico:"●", cls:(w.dot==="warn"?"a":""),
+      bodyHtml:'<div class="lbl">State</div><div class="md">'+md(w.state)+"</div>"+
+               (w.thread?'<div class="lbl">Thread · supervisor ↔ worker</div>'+threadHtml(w.thread,{user:"Supervisor",assistant:"Worker"}):"")+
+               '<div class="readonly">This back-and-forth is the <b>supervisor</b> briefing and steering the <b>worker</b> — not you. Read-only: if it’s off track, steer the supervisor or re-scope the mission.</div>'
+    });
+  }
+
+  // ---------- alerts ----------
+  // remember whether the archive is expanded so a delete doesn't re-collapse it
+  let alertArchiveOpen=false;
+  function loadAlerts(){
+    const box=$("alScroll");box.innerHTML="";
+    const list=NOTIFS.filter(n=>!n.hidden);
+    const unread=list.filter(n=>!n.read),archived=list.filter(n=>n.read);
+    const actions=unread.filter(n=>n.kind==="ask"),infos=unread.filter(n=>n.kind!=="ask");
+    if(actions.length)box.appendChild(el('<div class="sec">Needs a reply</div>'));
+    for(const n of actions)box.appendChild(alertCard(n,true));
+    if(infos.length)box.appendChild(el('<div class="sec">Heads-up</div>'));
+    for(const n of infos)box.appendChild(alertCard(n,false));
+    if(!unread.length)box.appendChild(el('<div class="empty">All caught up — swipe a card left to archive it.</div>'));
+    if(archived.length){
+      const holder=el('<div></div>'); holder.style.display=alertArchiveOpen?"":"none";
+      for(const n of archived)holder.appendChild(alertCard(n,false));
+      const t=el('<button class="earlier"></button>');
+      const label=()=>t.textContent=(alertArchiveOpen?"Hide archive · ":"Archive · ")+archived.length;
+      label();
+      t.onclick=()=>{ alertArchiveOpen=!alertArchiveOpen; holder.style.display=alertArchiveOpen?"":"none"; label(); };
+      box.appendChild(t);box.appendChild(holder);
+    } else { alertArchiveOpen=false; }
+    box.appendChild(el('<div style="height:18px"></div>'));
+  }
+  function alertCard(n,isAction){
+    const card=el('<div class="card'+(isAction?" ask":n.read?"":" unread")+'"><div class="crow"><div class="ico"></div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><div class="metabar"></div><p class="cs"></p></div></div></div>');
+    const ico=card.querySelector(".ico");ico.textContent=n.ico||"•";if(n.cls)ico.classList.add(n.cls);
+    card.querySelector("b").textContent=n.title;
+    card.querySelector(".t").textContent=n.age;
+    card.querySelector(".metabar").textContent=n.intention;
+    card.querySelector(".cs").textContent=n.summary;
+    card.addEventListener("click",()=>{ if(card.dataset.swiped==="1"){card.dataset.swiped="";return;} openAlertSheet(n,isAction); });
+    attachSwipe(card,()=>{ if(n.read) n.hidden=true; else n.read=true; setTimeout(loadAlerts,160); });
+    return card;
+  }
+  function openAlertSheet(n,isAction){
+    openSheet({
+      intent:n.intention, title:n.title, ico:n.ico, cls:n.cls,
+      action:{ label:"Open thread", onClick:()=>{closeSheet();setPage("chat");toast("Opened thread");} },
+      bodyHtml:'<div class="md">'+md(n.body)+"</div>",
+      footHtml: isAction ? '<div class="reply"><input class="rinp" placeholder="tell the mission what to do…"><button class="rsend">↑</button></div>' : "",
+      wire:(body,foot)=>{
+        const rep=foot.querySelector(".reply");
+        if(rep){const go=()=>{const v=rep.querySelector(".rinp").value.trim();if(!v)return;n.read=true;closeSheet();toast("Sent.");loadAlerts();};rep.querySelector(".rsend").onclick=go;rep.querySelector(".rinp").addEventListener("keydown",e=>{if(e.key==="Enter")go();});}
+      }
+    });
+  }
+  function attachSwipe(card,action){
+    let x0=0,y0=0,dx=0,mode=null;
+    const start=(x,y)=>{x0=x;y0=y;dx=0;mode=null;card.style.transition="none";};
+    const move=(x,y)=>{if(mode==="v")return;const ndx=x-x0,ndy=y-y0;if(mode===null){if(Math.abs(ndx)<9&&Math.abs(ndy)<9)return;mode=Math.abs(ndx)>Math.abs(ndy)?"h":"v";if(mode==="v")return;}dx=Math.min(0,ndx);card.style.transform="translateX("+dx+"px)";};
+    const end=()=>{if(mode!=="h"){mode=null;return;}card.dataset.swiped="1";setTimeout(()=>card.dataset.swiped="",400);mode=null;card.style.transition="transform .18s ease, opacity .18s ease";if(dx<-70){card.style.transform="translateX(-110%)";card.style.opacity="0";action();}else card.style.transform="";};
+    card.addEventListener("touchstart",e=>start(e.touches[0].clientX,e.touches[0].clientY),{passive:true});
+    card.addEventListener("touchmove",e=>move(e.touches[0].clientX,e.touches[0].clientY),{passive:true});
+    card.addEventListener("touchend",end);
+    let down=false;
+    card.addEventListener("mousedown",e=>{down=true;start(e.clientX,e.clientY);});
+    window.addEventListener("mousemove",e=>{if(down)move(e.clientX,e.clientY);});
+    window.addEventListener("mouseup",()=>{if(down){down=false;end();}});
+  }
+
+  seedChat();
+
+  // deep-link for the demo gallery: ?page=… & demo=alert|coach|ask|worker|supervisor|spec|drawer
+  (function demo(){
+    const P=new URLSearchParams(location.search);
+    const pg=P.get("page"); if(pg) setPage(pg);
+    const d=P.get("demo"), g=MISSIONS[0];
+    if(d==="alert"){ const n=NOTIFS.find(x=>/Worker finished/.test(x.title)); if(n) openAlertSheet(n,false); }
+    else if(d==="coach"){ const n=NOTIFS.find(x=>/Morning briefing/.test(x.title)); if(n) openAlertSheet(n,false); }
+    else if(d==="ask"){ const n=NOTIFS.find(x=>x.kind==="ask"); if(n) openAlertSheet(n,true); }
+    else if(d==="worker"){ openWorkerArtifact(g.workers[1],g); }
+    else if(d==="supervisor"){ openSupervisor(g); }
+    else if(d==="spec"){ openSpec(g); }
+    else if(d==="schedule"){ openSchedule(SCHEDULES[0]); }
+    else if(d==="approve"){ const c=document.querySelector(".pc-approve"); if(c) c.click(); }
+    else if(d==="render"){ showRenderSample(); }
+    else if(d==="drawer"){ $("convBtn").click(); }
+  })();
+})();
+</script>
+</body>
+</html>

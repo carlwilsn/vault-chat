@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>vault-chat phone — before / after</title>
+<style>
+  :root{ --bg:#141414; --text:#ebebeb; --dim:#9a9a9a; --warn:#e0a35a; --ok:#7fbf7f; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;padding:16px 14px 40px}
+  .rows{display:flex;flex-direction:column;gap:16px;align-items:center}
+  .row{width:100%;max-width:760px}
+  .rowcap{display:flex;align-items:baseline;gap:9px;justify-content:center;margin:2px 0 8px;text-align:center;flex-wrap:wrap}
+  .rowcap b{font-size:14px;font-weight:650}
+  .rowcap span{font-size:12px;color:var(--dim)}
+  .pair{display:flex;gap:18px;justify-content:center;flex-wrap:wrap}
+  .col{display:flex;flex-direction:column;align-items:center;gap:6px}
+  .pip{font-size:9px;letter-spacing:.5px;text-transform:uppercase;font-weight:700;padding:2px 9px;border-radius:999px}
+  .pip.b{background:#3a2f12;color:var(--warn)}
+  .pip.a{background:#16271a;color:var(--ok)}
+  .device{width:328px;height:680px;background:#000;border-radius:38px;padding:9px;box-shadow:0 16px 44px rgba(0,0,0,.5),0 0 0 1px #2a2a2a}
+  .device iframe{width:100%;height:100%;border:0;border-radius:30px;background:#1a1a1a;display:block}
+  @media(max-width:740px){ .device{width:300px;height:620px} }
+</style>
+</head>
+<body>
+  <div class="rows" id="rows"></div>
+  <script>
+    // Each row deep-links both phones to the exact screen where they differ.
+    const ROWS = [
+      { title: "Markdown & math", note: "bubble-free agent replies + KaTeX vs. text bubbles, no math",
+        before: "phone-before.html?demo=render", after: "phone-after.html?demo=render" },
+      { title: "The alerts feed", note: "structured intention + tidy summary vs. keyword-guessed category",
+        before: "phone-before.html?page=alerts", after: "phone-after.html?page=alerts" },
+      { title: "Open an alert", note: "roomy bottom sheet vs. cramped inline expansion that fights the swipe",
+        before: "phone-before.html?page=alerts&demo=alert", after: "phone-after.html?page=alerts&demo=alert" },
+      { title: "The daily-coach alert", note: "rich structured deliverable vs. thin one-line Notify",
+        before: "phone-before.html?page=alerts", after: "phone-after.html?page=alerts&demo=coach" },
+      { title: "Approve a plan", note: "structured → a real Activity (StartMission) vs. a natural-language prompt sent to the agent",
+        before: "phone-before.html?demo=approve", after: "phone-after.html?demo=approve" },
+      { title: "A mission & its workers", note: "many workers + a ‘spec’ chip vs. a vague ‘watch ›’",
+        before: "phone-before.html?page=activity", after: "phone-after.html?page=activity" },
+      { title: "The mission spec", note: "tap ‘spec’ → the success criterion + score you approved (new)",
+        before: "phone-before.html?page=activity", after: "phone-after.html?page=activity&demo=spec" },
+      { title: "The supervisor’s thinking", note: "tap the mission → its reasoning + steer/stop vs. nothing to open",
+        before: "phone-before.html?page=activity", after: "phone-after.html?page=activity&demo=supervisor" },
+      { title: "A worker", note: "read-only artifact (steer the mission, not the worker) vs. open/kill it directly",
+        before: "phone-before.html?page=activity&demo=worker", after: "phone-after.html?page=activity&demo=worker" },
+      { title: "A schedule", note: "tap → its spec (toggle / edit / delete) vs. inline On/Off + ✕",
+        before: "phone-before.html?page=activity", after: "phone-after.html?page=activity&demo=schedule" },
+      { title: "Clear all chats", note: "cosmetic ‘clear from this view’ vs. destructive disk delete",
+        before: "phone-before.html?demo=drawer", after: "phone-after.html?demo=drawer" },
+    ];
+    const rows = document.getElementById("rows");
+    for (const r of ROWS) {
+      const row = document.createElement("div"); row.className = "row";
+      row.innerHTML =
+        '<div class="rowcap"><b>'+r.title+'</b><span>'+r.note+'</span></div>'+
+        '<div class="pair">'+
+          '<div class="col"><span class="pip b">Before</span><div class="device"><iframe loading="eager" src="'+r.before+'"></iframe></div></div>'+
+          '<div class="col"><span class="pip a">After</span><div class="device"><iframe loading="eager" src="'+r.after+'"></iframe></div></div>'+
+        '</div>';
+      rows.appendChild(row);
+    }
+  </script>
+</body>
+</html>
