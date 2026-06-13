@@ -11,11 +11,13 @@ import {
   saveVaultSupervisorPrompt,
   loadVaultAssistantPrompt,
   saveVaultAssistantPrompt,
+  loadVaultTelegramPrompt,
+  saveVaultTelegramPrompt,
 } from "./meta";
 
 // The agent's editable config for a vault, all under .vault-chat/agent/.
 // Each tab is one file; Save writes whichever tabs changed.
-type TabKey = "north" | "system" | "voice" | "assistant" | "supervisor";
+type TabKey = "north" | "system" | "voice" | "assistant" | "supervisor" | "telegram";
 
 const TABS: {
   key: TabKey;
@@ -72,9 +74,18 @@ const TABS: {
     load: loadVaultSupervisorPrompt,
     save: saveVaultSupervisorPrompt,
   },
+  {
+    key: "telegram",
+    label: "Telegram",
+    file: ".vault-chat/agent/telegram.md",
+    desc: "How the agent replies over the vault's Telegram bot — short, plain-text, phone-friendly. Only used when Telegram is enabled for this vault. Seeded from the app default.",
+    placeholder: "The Telegram-reply style for this vault.",
+    load: loadVaultTelegramPrompt,
+    save: saveVaultTelegramPrompt,
+  },
 ];
 
-const EMPTY: Record<TabKey, string> = { north: "", system: "", voice: "", assistant: "", supervisor: "" };
+const EMPTY: Record<TabKey, string> = { north: "", system: "", voice: "", assistant: "", supervisor: "", telegram: "" };
 
 export function NorthStarModal({
   vault,
@@ -99,14 +110,15 @@ export function NorthStarModal({
     setLoaded(false);
     setError(null);
     void (async () => {
-      const [north, system, voice, assistant, supervisor] = await Promise.all([
+      const [north, system, voice, assistant, supervisor, telegram] = await Promise.all([
         loadVaultNorthStar(vault),
         loadVaultSystemPrompt(vault),
         loadVaultVoicePrompt(vault),
         loadVaultAssistantPrompt(vault),
         loadVaultSupervisorPrompt(vault),
+        loadVaultTelegramPrompt(vault),
       ]);
-      const next: Record<TabKey, string> = { north, system, voice, assistant, supervisor };
+      const next: Record<TabKey, string> = { north, system, voice, assistant, supervisor, telegram };
       setTexts(next);
       setOrig(next);
       setLoaded(true);
