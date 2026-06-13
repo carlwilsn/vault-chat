@@ -1290,8 +1290,11 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
 
   // Enforce the layers in the toolset itself — prompt discipline is a
   // suggestion; a missing tool is a guarantee:
-  //   assistant — mints missions (StartMission), talks to threads (AskWorker),
-  //               but can NEVER spawn a worker directly;
+  //   assistant — PROPOSES missions (a ```plan``` block) and waits for the
+  //               user's approval; it can NEVER start one itself, and can never
+  //               spawn a worker. Approval mints the mission deterministically
+  //               (the cockpit's structured Approve → startMission), not the
+  //               model — so a mission only ever exists because the user said so.
   //   mission   — spawns and steers ITS workers, but can't mint sub-missions;
   //   worker    — does the task, nothing else. No orchestration, and no
   //               direct line to the user (Notify/AskUser): a worker reports
@@ -1303,7 +1306,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   if (tier === "mission") drop(["StartMission"]);
   else if (tier === "worker")
     drop(["StartMission", "StartWorker", "AskWorker", "Notify", "AskUser"]);
-  else drop(["StartWorker"]);
+  else drop(["StartWorker", "StartMission"]);
   return full;
 }
 

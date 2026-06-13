@@ -530,7 +530,7 @@
       if (u === "/notifications/hide") { DB.notifs = DB.notifs.filter((x) => x.id !== body.id); return reply({ ok: true }); }
       if (u === "/poll") { if (!pollWaited) { pollWaited = true; return reply({ events: [], next: "1" }); } await new Promise((r) => setTimeout(r, 8000)); return reply({ events: [], next: "1" }); }
       if (u === "/message") { if (body.mission) return reply({ ok: true, convId: "m_new", mission: body.mission.title }); return reply({ ok: true, convId: body.convId || "new-" + Date.now() }); }
-      if (u === "/kill") return reply({ ok: true, result: "Kill sent." });
+      if (u === "/kill") { if (body.convId) DB.runs = DB.runs.filter((r) => r.convId !== body.convId); return reply({ ok: true, result: "Kill sent." }); }
       if (u === "/chats/clear") return reply({ ok: true, cleared: 0 });
       if (u === "/schedule") { if (body.action === "toggle") { const s = DB.schedules.find((x) => x.id === body.id); if (s) s.enabled = body.enabled; } else if (body.action === "delete") { DB.schedules = DB.schedules.filter((x) => x.id !== body.id); } return reply({ ok: true }); }
       if (u === "/push/vapid") return reply({ key: "" });
@@ -689,6 +689,11 @@
   let lastChatList = [];
   function hiddenChats() { try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_KEY) || "[]")); } catch { return new Set(); } }
   function saveHiddenChats(set) { try { localStorage.setItem(HIDDEN_KEY, JSON.stringify([...set])); } catch {} }
+  // Stopped missions: dismissed from this device's Activity. They reappear only
+  // if a worker of theirs actually starts running again.
+  const HIDDEN_MISSIONS_KEY = "vc_phone_hidden_missions";
+  function hiddenMissions() { try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_MISSIONS_KEY) || "[]")); } catch { return new Set(); } }
+  function saveHiddenMissions(set) { try { localStorage.setItem(HIDDEN_MISSIONS_KEY, JSON.stringify([...set])); } catch {} }
 
   const age = (ts) => { const m = Math.floor((Date.now() - ts) / 60000); if (m < 1) return "now"; if (m < 60) return m + "m"; const h = Math.floor(m / 60); if (h < 24) return h + "h"; return Math.floor(h / 24) + "d"; };
 
@@ -1003,7 +1008,7 @@
     const move = (y) => { if (!dragging) return; const h = Math.max(80, Math.min(startH - (y - startY), Math.round(0.97 * H))); sheet.style.height = h + "px"; };
     const up = () => { if (!dragging) return; dragging = false; sheet.style.transition = ""; const h = sheet.offsetHeight; if (h < 0.30 * H) { closeSheet(); return; } if (h > 0.55 * H) sheet.style.height = Math.round(0.96 * H) + "px"; else sheet.style.height = Math.min(sheet.scrollHeight, Math.round(0.62 * H)) + "px"; };
     for (const elx of [$("sheetGrab"), $("sheetHead")]) {
-      elx.addEventListener("touchstart", (e) => down(e.touches[0].clientY), { passive: true });
+      elx.addEventListener("touchstart", (e) => { if (e.target.closest(".sheet-x,.sheet-action")) return; down(e.touches[0].clientY); }, { passive: true });
       elx.addEventListener("mousedown", (e) => { if (e.target.closest(".sheet-x,.sheet-action")) return; e.preventDefault(); down(e.clientY); });
     }
     window.addEventListener("touchmove", (e) => { if (dragging) move(e.touches[0].clientY); }, { passive: true });
@@ -1070,8 +1075,11 @@
   function stopMission(mc, g) {
     const a = $("sheetAction");
     if (!a.classList.contains("confirm")) { a.classList.add("confirm"); a.textContent = "Confirm?"; setTimeout(() => { a.classList.remove("confirm"); a.textContent = "Stop"; }, 2200); return; }
-    const ids = new Set([mc.id, ...g.active.map((x) => x.run.convId)]);
+    const ids = new Set([mc.id, ...g.active.map((x) => x.run.convId)].filter(Boolean));
     for (const id of ids) api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: id }) }).catch(() => {});
+    // Dismiss it from Activity too — a stopped mission shouldn't keep lingering
+    // in the 48h watch window.
+    if (mc.id) { const hm = hiddenMissions(); hm.add(mc.id); saveHiddenMissions(hm); }
     closeSheet(); toast("Mission stopped."); setTimeout(loadActivity, 600);
   }
   // A worker is a read-only artifact: state + its Supervisor ⇄ Worker thread.
@@ -1099,10 +1107,9 @@
         '<div class="lbl">What it runs</div><div class="md">' + md(sc.prompt || "(scheduled prompt)") + "</div>" +
         '<div class="lbl">When</div><div class="md">' + esc(sc.label || "") + (sc.lastFiredAt ? " · last fired " + age(sc.lastFiredAt) + " ago" : "") + "</div>" +
         '<div class="lbl">Status</div><div class="md">' + (sc.enabled ? "Active" : "Paused") + (sc.quietUnlessAlert ? " · quiet unless ALERT" : "") + "</div>" +
-        '<div class="wbtns"><button class="wbtn tog">' + (sc.enabled ? "Pause" : "Enable") + '</button><button class="wbtn edit">Edit</button><button class="wbtn danger del">Delete</button></div>',
+        '<div class="wbtns"><button class="wbtn tog">' + (sc.enabled ? "Pause" : "Enable") + '</button><button class="wbtn danger del">Delete</button></div>',
       wire: (body) => {
         body.querySelector(".tog").onclick = async () => { await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle", id: sc.id, enabled: !sc.enabled }) }).catch(() => {}); closeSheet(); toast(sc.enabled ? "Schedule paused." : "Schedule on."); loadActivity(); };
-        body.querySelector(".edit").onclick = () => { closeSheet(); newChat(); input.value = 'Edit the schedule "' + sc.name + '": '; scheduleAutosize(); try { input.focus({ preventScroll: true }); } catch {} toast("Tell the agent the change."); };
         const del = body.querySelector(".del");
         del.onclick = async () => { if (!del.classList.contains("confirm")) { del.classList.add("confirm"); del.textContent = "Confirm delete"; setTimeout(() => { del.classList.remove("confirm"); del.textContent = "Delete"; }, 2200); return; } await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", id: sc.id }) }).catch(() => {}); closeSheet(); toast("Schedule deleted."); loadActivity(); };
       },
@@ -1158,8 +1165,10 @@
         box.appendChild(el('<div class="sec">Missions</div>'));
         box.appendChild(el('<div class="empty">Nothing in flight. Hand the agent a goal in Chat — it proposes a plan, you approve, and the mission with its workers lands here.</div>'));
       }
+      const hm = hiddenMissions();
       for (const [name, g] of missions) {
         const mc = g.conv || { id: "", title: name, goal: "", preview: "" };
+        if (mc.id && hm.has(mc.id) && !g.active.length) continue; // stopped + idle → dismissed on this device
         const head = el('<div class="msec"><span class="k">Mission</span><b></b><span class="mc"></span><button class="spec">spec</button></div>');
         head.querySelector("b").textContent = name;
         const live = g.active.length || (g.conv && runIds.has(g.conv.id));
