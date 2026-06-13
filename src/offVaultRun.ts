@@ -671,7 +671,7 @@ export async function startMission(
   const brief =
     `MISSION BRIEF (user-approved, handed off by their assistant). You own this goal end-to-end.\n\n` +
     `Mission: ${t}\n\n${goal.trim()}\n\n` +
-    `Start now: pin the success criterion, open the goal file, spawn your workers (they join this mission automatically), and set your first self-check wake.`;
+    `The "Done when" items ARE your success criterion — each is a sub-result that defines this complete. Each is likely its own worker, but that's your call: split, merge, or sequence them as the work actually needs. Start now: open the goal file, spawn your workers (they join this mission automatically), and set your first self-check wake.`;
   void runWorkerTurn(vault, id, brief, { modelId: useStore.getState().supervisorModelId }).catch((e) =>
     console.warn("[mission] start failed:", e),
   );

@@ -1092,16 +1092,16 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     }),
     ProposeMission: tool({
       description:
-        "Propose a mission to the user as an Approve card — the ONLY way you (the assistant) put real work in motion. Call this for any substantial, multi-part ask instead of grinding it in this chat. It does NOT start anything: it renders a card (title + the tasks you'd hand to separate workers) that the user taps to approve, and approval mints the mission deterministically. You can't start a mission or spawn workers — proposing is your job; running is the mission's. Keep `tasks` to the few that genuinely parallelize (three crisp tasks beat ten). After calling it, tell the user it's ready to approve and stay conversational — do NOT claim you started anything.",
+        "Propose a mission to the user as an Approve card — the ONLY way you (the assistant) put real work in motion. Call this for any substantial ask instead of grinding it in this chat. A mission is a briefly-stated GOAL plus the sub-results that DEFINE IT DONE. It does NOT start anything: it renders a card the user taps to approve, and approval mints the mission deterministically. You can't start a mission or spawn workers — proposing is your job; running is the mission's. After calling it, tell the user it's ready to approve and stay conversational — do NOT claim you started anything.",
       inputSchema: z.object({
         title: z
           .string()
-          .describe("Short mission name — the card heading and the Activity group header, e.g. '160M gap-attribution sweep'."),
+          .describe("The mission, briefly stated — the goal in a short phrase. Heads the card and groups its workers in Activity. e.g. 'Fix BitNet gamma-scale and rerun the A/B'."),
         tasks: z
           .array(z.string())
           .min(1)
           .describe(
-            "One entry per task you'd hand to a separate worker — each a crisp, self-contained instruction. Only the tasks that genuinely parallelize; prefer 2-4.",
+            "The sub-components that define the mission DONE — each a concrete sub-result, not a vague aim. Together they ARE the success criterion. Each is likely to become its own worker, but you're describing what 'complete' means, not assigning workers — the supervisor decides how to break the work down (it may merge or split). Prefer 2-4; each should be checkable.",
           ),
       }),
       execute: async ({ title, tasks }) => {
@@ -1109,7 +1109,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         // injects the canonical plan block into the cockpit reply). Here we only
         // confirm back to the model so it doesn't re-propose or claim it started.
         const n = Array.isArray(tasks) ? tasks.length : 0;
-        return `Proposed mission "${title}" (${n} task${n === 1 ? "" : "s"}) — shown to the user as an Approve card. Nothing has started: if they approve, the mission is created and runs itself. Don't repeat the proposal or start work yourself; tell them it's ready to approve and stay conversational.`;
+        return `Proposed mission "${title}" — ${n} done-when component${n === 1 ? "" : "s"}, shown to the user as an Approve card. Nothing has started: if they approve, the mission is created and runs itself. Don't repeat the proposal or start work yourself; tell them it's ready to approve and stay conversational.`;
       },
     }),
     Notify: tool({

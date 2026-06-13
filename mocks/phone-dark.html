@@ -47,9 +47,11 @@
   .plan{border:1px solid var(--line-2);border-radius:15px;overflow:hidden;background:var(--surface)}
   .plan-h{padding:10px 14px;color:var(--dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;border-bottom:1px solid var(--line)}
   .plan-b{padding:14px}
-  .plan-t{font-weight:600;font-size:14.5px;margin:0 0 11px}
+  .plan-t{font-weight:600;font-size:14.5px;margin:0 0 4px}
+  .plan-dw{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:600;margin:9px 0 3px}
   .ptask{display:flex;gap:10px;align-items:flex-start;color:#cdcdd2;font-size:12.5px;line-height:1.45;padding:4px 0}
   .ptask .n{flex:0 0 19px;height:19px;border-radius:6px;border:1px solid var(--line-2);color:var(--dim);font-size:10.5px;display:flex;align-items:center;justify-content:center;margin-top:1px;font-family:var(--mono)}
+  .ptask .pb{flex:0 0 8px;width:8px;height:8px;border-radius:50%;border:1.5px solid var(--faint);margin-top:4px}
   .approve{width:100%;margin-top:13px;background:var(--white);color:#000;border:none;border-radius:11px;padding:12px;font-family:inherit;font-size:13.5px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px}
   .approve svg{width:15px;height:15px}
   .approve.done{background:var(--surface);color:var(--dim);border:1px solid var(--line)}
@@ -204,10 +206,11 @@
         <div class="plan">
           <div class="plan-h">Proposed mission · approve to start</div>
           <div class="plan-b">
-            <div class="plan-t">160M gap-attribution sweep</div>
-            <div class="ptask"><span class="n">1</span>Run arms stock + bitnet, commit eval loss</div>
-            <div class="ptask"><span class="n">2</span>Run fp16-weights + no-act-quant arms</div>
-            <div class="ptask"><span class="n">3</span>Run structure-only, summarise the gap</div>
+            <div class="plan-t">Run the 160M gap-attribution sweep</div>
+            <div class="plan-dw">Done when</div>
+            <div class="ptask"><span class="pb"></span>All 5 arms trained, eval.loss committed for each</div>
+            <div class="ptask"><span class="pb"></span>Ternary-vs-FP16 gap computed per arm</div>
+            <div class="ptask"><span class="pb"></span>Gap table written under docs/ with the readout</div>
             <button class="approve"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M5 12l5 5L20 7"/></svg>Approve &amp; run</button>
             <div class="pmeta">or reply to refine</div>
           </div>

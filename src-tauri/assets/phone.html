@@ -136,6 +136,7 @@
   .pc-h{font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:var(--ok);font-weight:700;margin-bottom:6px}
   .pc-title{font-weight:600;font-size:14.5px;line-height:1.35;margin-bottom:4px}
   .pc-desc{font-size:13px;color:#bdbdbd;line-height:1.5;margin-bottom:4px}
+  .pc-dw{font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:var(--dim);font-weight:700;margin:9px 0 3px}
   .pc-tasks{margin:5px 0 0;padding-left:18px}
   .pc-tasks li{font-size:13px;color:#d7d7d7;margin:3px 0;line-height:1.45}
   .pc-btns{display:flex;gap:8px;margin-top:12px}
@@ -678,7 +679,7 @@
     let h = '<div class="plancard"><div class="pc-h">Proposed mission · approve to start</div>';
     if (title) h += '<div class="pc-title">' + inline(title) + "</div>";
     if (desc) h += '<div class="pc-desc">' + inline(desc) + "</div>";
-    if (tasks.length) { h += '<ul class="pc-tasks">'; for (const t of tasks) h += "<li>" + inline(t) + "</li>"; h += "</ul>"; }
+    if (tasks.length) { h += '<div class="pc-dw">Done when</div><ul class="pc-tasks">'; for (const t of tasks) h += "<li>" + inline(t) + "</li>"; h += "</ul>"; }
     h += '<div class="pc-btns"><button class="pc-approve">Approve &amp; run</button></div></div>';
     return h;
   }
@@ -928,7 +929,7 @@
     // Approval is a STRUCTURED action, not a chat prompt: hand the plan over as
     // data and the box mints the mission deterministically. Its own supervisor
     // then spawns and runs the workers.
-    const goal = [title, desc, tasks.length ? "Tasks:\n" + tasks.join("\n") : ""].filter(Boolean).join("\n\n");
+    const goal = [title, desc, tasks.length ? "Done when (each defines completion — likely one worker each, but split or merge as you see fit):\n" + tasks.join("\n") : ""].filter(Boolean).join("\n\n");
     try {
       const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mission: { title, goal } }) });
       const d = await r.json();
