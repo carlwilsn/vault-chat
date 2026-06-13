@@ -3,6 +3,9 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Sparkles, X, RefreshCcw } from "lucide-react";
 import { Button } from "./ui";
+import { isRunInBackground } from "./background";
+import { activeRuns } from "./runRegistry";
+import { useStore } from "./store";
 
 type Phase =
   | { kind: "idle" }
@@ -13,23 +16,89 @@ type Phase =
 
 const isDev = import.meta.env.DEV;
 
+// How often a long-lived process re-checks for updates. The on-mount check only
+// fires at launch; an always-on box can run for days without relaunching, so it
+// would never see a new release without this.
+const RECHECK_MS = 2 * 60 * 60 * 1000;
+
+// Module-level: once an unattended download has staged the new version, only a
+// relaunch is needed to apply it — don't re-download on every later check.
+let unattendedStaged = false;
+
+// The box is safe to restart only when nothing is mid-run — otherwise an
+// auto-relaunch would kill a live mission/worker. activeRuns() is the headless
+// run registry; conversation status covers in-window turns.
+function boxIsIdle(): boolean {
+  if (activeRuns().length > 0) return false;
+  return !useStore.getState().conversations.some((c) => c.status === "running");
+}
+
+// Best-effort heads-up to the user's phone that the box updated itself.
+async function notifyUpdated(version: string): Promise<void> {
+  try {
+    const { notify } = await import("./phoneApp");
+    await notify(
+      "info",
+      "Updated & restarting",
+      `vault-chat updated to v${version} on this box — restarting now.`,
+    );
+  } catch {
+    /* the heads-up is optional; the restart is what matters */
+  }
+}
+
 export function UpdateBanner() {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
 
   useEffect(() => {
     if (isDev) return;
     let cancelled = false;
-    (async () => {
+
+    // The always-on box (Run in background) has nobody to click "Install &
+    // restart", so it would sit on a stale build forever — which is exactly how
+    // the box kept missing shipped fixes. Auto-apply updates there, but only
+    // when idle so a restart never kills a live mission. Interactive machines
+    // keep the manual banner.
+    const unattended = isRunInBackground();
+
+    const applyUnattended = async (update: Update) => {
+      try {
+        if (!unattendedStaged) {
+          await update.downloadAndInstall();
+          unattendedStaged = true;
+        }
+        // Staged but busy → leave it; a later idle check (or any restart)
+        // applies it. Re-check idle right before the restart, not just before
+        // the download, since a run can start during the download.
+        if (cancelled || !boxIsIdle()) return;
+        await notifyUpdated(update.version);
+        await relaunch();
+      } catch (e) {
+        // A non-AppImage Linux install (deb/rpm can't self-replace) or a
+        // transient error. Don't hard-loop or crash the box; surface the banner
+        // in case a human is watching, and reset so a later check can retry.
+        console.error("[updater] unattended update failed:", e);
+        unattendedStaged = false;
+        if (!cancelled) setPhase({ kind: "available", update });
+      }
+    };
+
+    const runCheck = async () => {
       try {
         const update = await check();
         if (cancelled || !update) return;
-        setPhase({ kind: "available", update });
+        if (unattended) await applyUnattended(update);
+        else setPhase({ kind: "available", update });
       } catch (e) {
         console.warn("[updater] check failed:", e);
       }
-    })();
+    };
+
+    void runCheck();
+    const timer = window.setInterval(() => void runCheck(), RECHECK_MS);
     return () => {
       cancelled = true;
+      clearInterval(timer);
     };
   }, []);
 
