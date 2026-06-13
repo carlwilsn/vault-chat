@@ -155,6 +155,27 @@ export async function saveVaultSupervisorPrompt(vault: string, contents: string)
   });
 }
 
+/** Per-vault cockpit-assistant prompt at `.vault-chat/agent/assistant.md`. Steers
+ *  the interactive phone-cockpit chat — light, conversational, proposes missions
+ *  via plan cards instead of running work itself. "" when absent (the agent then
+ *  falls back to the compiled-in cockpit baseline). */
+export async function loadVaultAssistantPrompt(vault: string | null): Promise<string> {
+  if (!vault) return "";
+  return readAgentConfig(vault, "assistant.md");
+}
+
+export async function ensureVaultAssistantPrompt(vault: string | null): Promise<void> {
+  if (!vault) return;
+  await ensureAgentConfig(vault, "assistant.md", "default_assistant_prompt");
+}
+
+export async function saveVaultAssistantPrompt(vault: string, contents: string): Promise<void> {
+  await invoke("write_text_file", {
+    path: `${vault}/${AGENT_DIR}/assistant.md`,
+    contents,
+  });
+}
+
 /** Read the per-vault north-star brief (the user's declaration of
  *  what the vault is for). Stored at <vault>/.vault-chat/agent/north-star.md
  *  (migrated from the older flat `.vault-chat/north-star.md`). Prepended to

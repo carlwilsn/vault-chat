@@ -704,7 +704,12 @@ export const useStore = create<State>((set) => ({
   // New installs start on Auto (cost-aware routing) rather than the most
   // expensive model. Anyone who has already picked a model keeps it.
   modelId: localStorage.getItem(MODEL_STORAGE) ?? AUTO_MODEL_ID,
-  assistantModelId: localStorage.getItem(ASSISTANT_MODEL_STORAGE) ?? AUTO_MODEL_ID,
+  // The phone assistant (cockpit) is the hardest agentic surface — it has to
+  // hold a multi-step orchestration prompt, drive tools, and emit structured
+  // plan cards. Auto's cost router was picking models too weak for that
+  // (sycophantic loops, lost context, ignored conventions), so default it to a
+  // strong model — same tier as supervisors/workers — not the cheap router.
+  assistantModelId: localStorage.getItem(ASSISTANT_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
   supervisorModelId: localStorage.getItem(SUPERVISOR_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
   workerModelId: localStorage.getItem(WORKER_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
   theme: loadTheme(),

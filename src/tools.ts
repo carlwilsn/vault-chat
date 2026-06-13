@@ -806,12 +806,36 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         path: z.string(),
       }),
       execute: async ({ path }) => {
-        guardPath(path);
-        await guardDenied(path);
-        const entries = await invoke<{ path: string; name: string; is_dir: boolean }[]>(
-          "list_dir",
-          { path }
-        );
+        // Models often write a vault-relative path with a leading slash
+        // ("/DeepDL") or bare ("DeepDL") when they mean "<vault>/DeepDL". Try
+        // the literal path first; if that fails and the path isn't already a
+        // real absolute path under the vault, retry the vault-relative reading
+        // before giving up — a sloppy path shouldn't dead-end the agent.
+        const candidates = [path];
+        if (vault) {
+          const v = vault.replace(/\\/g, "/").replace(/\/+$/, "");
+          const norm = path.replace(/\\/g, "/");
+          const vaultRel = `${v}/${norm.replace(/^\/+/, "")}`;
+          if (vaultRel !== path && norm !== v && !norm.startsWith(v + "/")) {
+            candidates.push(vaultRel);
+          }
+        }
+        let entries: { path: string; name: string; is_dir: boolean }[] | undefined;
+        let lastErr: unknown;
+        for (const p of candidates) {
+          try {
+            guardPath(p);
+            await guardDenied(p);
+            entries = await invoke<{ path: string; name: string; is_dir: boolean }[]>(
+              "list_dir",
+              { path: p }
+            );
+            break;
+          } catch (e) {
+            lastErr = e;
+          }
+        }
+        if (!entries) throw lastErr;
         // Hide denied descendants from the listing too — otherwise the
         // agent would see filenames inside a restricted folder even
         // though it can't open them.

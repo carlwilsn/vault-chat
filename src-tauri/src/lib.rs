@@ -5211,6 +5211,7 @@ const DEFAULT_SYSTEM_MD: &str = include_str!("../defaults/system.md");
 const DEFAULT_VOICE_MD: &str = include_str!("../defaults/voice.md");
 const DEFAULT_TELEGRAM_MD: &str = include_str!("../defaults/telegram.md");
 const DEFAULT_SUPERVISOR_MD: &str = include_str!("../defaults/supervisor.md");
+const DEFAULT_ASSISTANT_MD: &str = include_str!("../defaults/assistant.md");
 
 /// The bundled default agent system prompt. New vaults seed
 /// `<vault>/.vault-chat/agent/system.md` from this; it can then be
@@ -5243,6 +5244,15 @@ fn default_telegram_prompt() -> String {
 #[tauri::command]
 fn default_supervisor_prompt() -> String {
     DEFAULT_SUPERVISOR_MD.to_string()
+}
+
+/// The bundled default cockpit-assistant prompt. New vaults seed
+/// `<vault>/.vault-chat/agent/assistant.md` from this. It steers the
+/// interactive phone-cockpit chat (light, conversational, proposes missions
+/// via plan cards rather than running work itself), and is editable per vault.
+#[tauri::command]
+fn default_assistant_prompt() -> String {
+    DEFAULT_ASSISTANT_MD.to_string()
 }
 
 // ----- run_script -----
@@ -6892,6 +6902,7 @@ pub fn run() {
             default_voice_prompt,
             default_telegram_prompt,
             default_supervisor_prompt,
+            default_assistant_prompt,
             run_script,
             keychain_get,
             keychain_set,

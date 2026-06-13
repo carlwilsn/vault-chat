@@ -291,6 +291,10 @@ export async function sendMessage(
     voiceMode: cur.voiceMode,
     telegramMode: targetConv?.source === "telegram",
     supervisorMode: targetConv?.role === "supervisor",
+    // The interactive phone cockpit: a supervisor-role thread sourced from the
+    // phone. Gets the lighter assistant.md prompt instead of the heavy
+    // orchestrator supervisor.md (which stays for mission threads + telegram).
+    cockpitMode: targetConv?.source === "phone",
     conversationId: targetConvId ?? undefined,
     isTelegramSourced: targetConv?.source === "telegram",
     reasoningEffort: cur.reasoningEffort,

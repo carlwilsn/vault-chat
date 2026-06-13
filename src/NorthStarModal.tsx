@@ -9,11 +9,13 @@ import {
   saveVaultVoicePrompt,
   loadVaultSupervisorPrompt,
   saveVaultSupervisorPrompt,
+  loadVaultAssistantPrompt,
+  saveVaultAssistantPrompt,
 } from "./meta";
 
 // The agent's editable config for a vault, all under .vault-chat/agent/.
 // Each tab is one file; Save writes whichever tabs changed.
-type TabKey = "north" | "system" | "voice" | "supervisor";
+type TabKey = "north" | "system" | "voice" | "assistant" | "supervisor";
 
 const TABS: {
   key: TabKey;
@@ -53,6 +55,15 @@ const TABS: {
     save: saveVaultVoicePrompt,
   },
   {
+    key: "assistant",
+    label: "Assistant",
+    file: ".vault-chat/agent/assistant.md",
+    desc: "The phone-cockpit chat — light and conversational. How it talks, when it just answers vs. proposes a mission for you to approve, and how it reads whether you want to learn something or offload it. Seeded from the app default.",
+    placeholder: "The cockpit-assistant role for this vault.",
+    load: loadVaultAssistantPrompt,
+    save: saveVaultAssistantPrompt,
+  },
+  {
     key: "supervisor",
     label: "Supervisor",
     file: ".vault-chat/agent/supervisor.md",
@@ -63,7 +74,7 @@ const TABS: {
   },
 ];
 
-const EMPTY: Record<TabKey, string> = { north: "", system: "", voice: "", supervisor: "" };
+const EMPTY: Record<TabKey, string> = { north: "", system: "", voice: "", assistant: "", supervisor: "" };
 
 export function NorthStarModal({
   vault,
@@ -88,13 +99,14 @@ export function NorthStarModal({
     setLoaded(false);
     setError(null);
     void (async () => {
-      const [north, system, voice, supervisor] = await Promise.all([
+      const [north, system, voice, assistant, supervisor] = await Promise.all([
         loadVaultNorthStar(vault),
         loadVaultSystemPrompt(vault),
         loadVaultVoicePrompt(vault),
+        loadVaultAssistantPrompt(vault),
         loadVaultSupervisorPrompt(vault),
       ]);
-      const next: Record<TabKey, string> = { north, system, voice, supervisor };
+      const next: Record<TabKey, string> = { north, system, voice, assistant, supervisor };
       setTexts(next);
       setOrig(next);
       setLoaded(true);
