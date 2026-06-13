@@ -12,6 +12,9 @@
 <link rel="icon" type="image/svg+xml" href="/icon.svg" />
 <link rel="manifest" href="/manifest.webmanifest" />
 <title>vault-chat</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous" />
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
 <style>
   :root{
     --bg:#1a1a1a; --surface:#242424; --raised:#333333; --line:#383838;
@@ -282,13 +285,81 @@
   .vhint .chev{display:inline-block;width:12px;height:12px;vertical-align:-1px}
 
   @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+
+  /* ===== redesign: bubble-free replies, bottom sheets, spec, scheduled ===== */
+  /* agent replies render bubble-free (ChatGPT/Claude-style): full-width markdown,
+     no surface. user + system messages keep their bubbles. */
+  .amsg{align-self:stretch;max-width:100%;width:100%;margin:2px 0 14px}
+  .amsg.queued{opacity:.55}
+  .amsg.stream .cursor{display:inline-block;width:7px;height:14px;background:var(--primary);vertical-align:-2px;animation:pulse 1s infinite}
+  .katex-display{overflow-x:auto;overflow-y:hidden;padding:1px 0;margin:.5em 0}
+
+  /* connection light lives in the menu, right edge of Box & settings */
+  .connpip{width:9px;height:9px;border-radius:50%;background:var(--ok);flex:none;box-shadow:0 0 7px rgba(127,191,127,.75)}
+  body.offline .connpip{background:var(--err);box-shadow:0 0 7px rgba(225,71,70,.75)}
+
+  /* clearing chats is cosmetic — neutral, not a destructive red */
+  .cclear{color:var(--dim);border-color:var(--line)}
+
+  /* mission header: tap row → supervisor thread; [spec] → criterion + state */
+  .msec{align-items:center}
+  .spec{font-size:11px;color:var(--ok);flex:none;border:1px solid #34532f;border-radius:7px;padding:4px 11px;font-weight:600;min-height:30px}
+  .spec:active{background:#16271a}
+
+  /* worker pill = one-line summary; tap opens its read-only artifact sheet */
+  .wp-head{padding:9px 13px 9px 14px}
+  .wp-main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .wp-main .wp-t{flex:none;display:block}
+  .wp-sum{font-size:11.5px;color:#9a9a9a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+  .wp-dot.warn{background:var(--warn)} .wp-dot.done{background:#6a6a6a}
+  .chev{color:#6f6f6f;font-size:15px;flex:none}
+
+  /* alerts: 2-line summary clamp on the card; full report lives in the sheet */
+  .cs{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .schedcard .chev{margin-left:auto}
+
+  /* ---- bottom sheet (the detail surface) ---- */
+  .sheet-scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:opacity .25s;z-index:80}
+  .sheet-scrim.on{opacity:1;pointer-events:auto}
+  .sheet{position:fixed;left:0;right:0;bottom:0;background:#1f1f1f;border-top-left-radius:18px;border-top-right-radius:18px;transform:translateY(110%);transition:transform .3s cubic-bezier(.32,.72,0,1),height .26s ease;z-index:81;max-height:64%;display:flex;flex-direction:column;box-shadow:0 -12px 40px rgba(0,0,0,.55)}
+  .sheet.on{transform:none}
+  .sheet-grabwrap{padding:7px 0 3px;flex:none;cursor:grab;touch-action:none;display:flex;justify-content:center}
+  .sheet-grab{width:40px;height:5px;border-radius:3px;background:#565656}
+  .sheet-head{display:flex;align-items:flex-start;gap:11px;padding:4px 16px 8px;flex:none;touch-action:none}
+  .sheet-ico{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:none;font-size:15px;font-weight:700;background:var(--raised);color:var(--dim)}
+  .sheet-ico.g{color:var(--ok)} .sheet-ico.a{color:var(--warn)} .sheet-ico.r{color:var(--err)}
+  .sh-meta{flex:1;min-width:0}
+  .sheet-intent{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#8a8a8a;font-weight:600}
+  .sheet-title{font-size:16px;font-weight:600;line-height:1.3;margin-top:2px;overflow-wrap:anywhere}
+  .sheet-x{color:var(--dim);font-size:16px;width:32px;height:32px;border-radius:8px;flex:none;display:flex;align-items:center;justify-content:center;align-self:center}
+  .sheet-action{font-size:12px;border:1px solid var(--line);border-radius:8px;padding:5px 11px;color:var(--dim);flex:none;align-self:center;min-height:30px;white-space:nowrap}
+  .sheet-action:active{background:var(--raised)}
+  .sheet-action.danger{color:var(--err);border-color:#5a302e}
+  .sheet-action.confirm{background:var(--err);color:#fff;border-color:var(--err)}
+  .sheet-body{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:4px 16px 24px}
+  .sheet-body .md{font-size:13.5px;color:#cfcfcf;line-height:1.55}
+  .sheet-body .lbl{color:#8a8a8a;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;margin:14px 0 5px}
+  .sheet-foot{flex:none;padding:8px 14px calc(env(safe-area-inset-bottom) + 8px);border-top:1px solid var(--line);background:#1f1f1f}
+  .sheet-foot .reply{margin-top:0}
+  .thread{display:flex;flex-direction:column;margin:4px 0 2px}
+  .tmsg{display:flex;flex-direction:column;margin-bottom:10px}
+  .tmsg.user{align-items:flex-end} .tmsg.asst{align-items:flex-start}
+  .tmsg .sender{font-size:9.5px;letter-spacing:.3px;text-transform:uppercase;color:#7c7c7c;font-weight:700;margin:0 5px 3px}
+  .tmsg .m{font-size:13px;margin:0;max-width:92%}
+  .tmsg .amsg{font-size:13px;margin:0}
+  .speclist{list-style:none;margin:9px 0 0;padding:0}
+  .speclist li{display:flex;gap:9px;font-size:13px;color:#cfcfcf;margin:7px 0;line-height:1.45}
+  .speclist .bx{flex:none;color:var(--ok)} .speclist .bx.off{color:#6a6a6a}
+  .specrow{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-top:6px}
+  .specrow .sc{font-size:13px;color:var(--ok);font-weight:700}
+  .readonly{font-size:11.5px;color:#7c7c7c;margin-top:14px;border-top:1px solid var(--line);padding-top:10px;line-height:1.5}
 </style>
 </head>
 <body class="page-chat">
 
   <div class="hdr">
     <button class="icbtn" id="convBtn" aria-label="conversations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
-    <button class="title" id="titleBtn"><span class="dot" id="livedot"></span><span class="tx" id="titleTx">connecting…</span><span class="sub" id="titleSub"></span></button>
+    <button class="title" id="titleBtn"><span class="tx" id="titleTx">connecting…</span><span class="sub" id="titleSub"></span></button>
     <button class="vpill" id="vpill"><span class="d"></span> voice</button>
     <button class="icbtn" id="menuBtn" aria-label="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span class="reddot" id="menudot"></span></button>
   </div>
@@ -299,22 +370,21 @@
     <button class="mrow" data-page="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="nm">Chat</span></button>
     <button class="mrow" data-page="activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg><span class="nm">Activity</span><span class="ct zero" id="mAct">0</span></button>
     <button class="mrow" data-page="alerts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg><span class="nm">Alerts</span><span class="ct warn zero" id="mAl">0</span></button>
-    <div class="mdiv"></div>
-    <button class="mrow" id="settingsRow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="nm">Box &amp; settings</span></button>
+    <button class="mrow" id="voiceRow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 19v3"/></svg><span class="nm">Voice</span></button>
+    <button class="mrow" id="settingsRow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="nm">Box &amp; settings</span><span class="connpip" id="connpip"></span></button>
   </div>
 
   <div class="scrim" id="scrim"></div>
   <div class="cdraw" id="cdraw">
     <div class="cdtop"><b>Conversations</b><button class="newbtn" id="newBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>New</button></div>
     <div class="clist" id="clist"></div>
-    <button class="cclear" id="clearChatsBtn">Clear all chats</button>
+    <button class="cclear" id="clearChatsBtn">Clear chats from this view</button>
   </div>
 
   <div class="body">
     <section class="page" id="pChat">
       <div id="msgs"></div>
       <div class="composer">
-        <button class="mic" id="micBtn" aria-label="voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 19v3"/></svg></button>
         <div class="field">
           <textarea id="input" rows="1" placeholder="Message…" enterkeyhint="send" autocomplete="off"></textarea>
           <button class="send" id="sendBtn" aria-label="send">↑</button>
@@ -342,6 +412,15 @@
     </div>
   </div>
   <div id="toast"></div>
+
+  <!-- bottom sheet: the detail surface for workers, missions, alerts, schedules -->
+  <div class="sheet-scrim" id="sheetScrim"></div>
+  <div class="sheet" id="sheet">
+    <div class="sheet-grabwrap" id="sheetGrab"><div class="sheet-grab"></div></div>
+    <div class="sheet-head" id="sheetHead"><div class="sheet-ico" id="sheetIco"></div><div class="sh-meta"><div class="sheet-intent" id="sheetIntent"></div><div class="sheet-title" id="sheetTitle"></div></div><button class="sheet-action" id="sheetAction" style="display:none"></button><button class="sheet-x" id="sheetX">✕</button></div>
+    <div class="sheet-body" id="sheetBody"></div>
+    <div class="sheet-foot" id="sheetFoot" style="display:none"></div>
+  </div>
 
   <div id="voice">
     <div class="vtop"><span class="vlbl">voice · same agent, same memory</span><button class="icbtn" id="vMinBtn" aria-label="minimize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button></div>
@@ -378,41 +457,61 @@
     const DB = {
       vault: "summer", model: "claude-opus-4-8",
       convs: [
-        { id: "m1", title: "BitNet 160M MVP", source: "mission", role: "supervisor", mission: "BitNet 160M MVP", lastActivityAt: now - 120000, msgCount: 9, preview: "seed 2 retry running; seeds 1/3 verified", goal: "reproduce the BitNet 160M MVP across 3 seeds" },
-        { id: "m2", title: "Quiet watch — repo hygiene", source: "mission", role: "supervisor", mission: "Quiet watch — repo hygiene", lastActivityAt: now - 3600000, msgCount: 4, preview: "all clean on last sweep; next check at 9pm", goal: "" },
-        { id: "w1", title: "3-seed BitNet repro", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 90000, msgCount: 6, preview: "all three seeds done; gap held at +0.13 nat", goal: "train + eval seeds 42/43/44 on the 1700-step config, commit eval.loss, draft a writeup" },
-        { id: "w3", title: "legacy untagged worker", source: "worker", role: "", lastActivityAt: now - 7200000, msgCount: 3, preview: "old standalone worker from before missions", goal: "" },
+        { id: "m1", title: "BitNet 160M MVP", source: "mission", role: "supervisor", mission: "BitNet 160M MVP", lastActivityAt: now - 120000, msgCount: 9, preview: "seeds 1 & 3 verified; seed 2 rerunning", goal: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP across 3 seeds; commit eval.loss; writeup under docs/. Done = three seeds within 0.005 nat of each other." },
+        { id: "m2", title: "Quiet watch — repo hygiene", source: "mission", role: "supervisor", mission: "Quiet watch — repo hygiene", lastActivityAt: now - 3600000, msgCount: 4, preview: "all clean on last sweep; next check at 9pm", goal: "MISSION BRIEF (user-approved). Quiet watch on repo hygiene; only ping me if something's wrong. Done = no uncommitted drift > 30 min and main pre-commit green." },
+        { id: "w2", title: "seed-2 retry", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 60000, msgCount: 4, preview: "seed 2 retry running at matched LR", goal: "retry seed 2 at seed 1's LR; commit eval.loss" },
+        { id: "w4", title: "eval + writeup", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 30000, msgCount: 3, preview: "building the comparison table + writeup", goal: "build the per-seed comparison table and draft the writeup under docs/" },
+        { id: "w1", title: "3-seed BitNet repro", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 1080000, msgCount: 6, preview: "all three seeds done; gap held at +0.13 nat", goal: "train + eval seeds 42/43/44 on the 1700-step config" },
         { id: "sup", title: "cockpit nav testing", source: "phone", role: "supervisor", lastActivityAt: now - 300000, msgCount: 14, preview: "shipped the unified app; working through nav", goal: "" },
         { id: "c1", title: "densing law — readings", source: "manual", role: "", lastActivityAt: now - 5400000, msgCount: 10, preview: "the crossover moves with task difficulty, not just scale", goal: "" },
       ],
       runs: [
         { convId: "w2", title: "seed-2 retry", mission: "BitNet 160M MVP", source: "worker", lastTool: "Bash", lastProgressAt: now - 60000 },
+        { convId: "w4", title: "eval + writeup", mission: "BitNet 160M MVP", source: "worker", lastTool: "Write", lastProgressAt: now - 30000 },
         // An assistant chat mid-turn: must NOT appear on the Activity page.
         { convId: "sup", title: "cockpit nav testing", mission: "", source: "phone", lastTool: "Read", lastProgressAt: now - 5000 },
       ],
-      schedules: [{ id: "s1", name: "Morning briefing", label: "daily · 7:00 AM", enabled: true, lastFiredAt: now - 7200000, quietUnlessAlert: false }],
+      schedules: [
+        { id: "s1", name: "Daily coach", prompt: "Run the summer-vault coach prompt and produce the morning briefing.", label: "daily · 7:00 AM · summer vault", enabled: true, lastFiredAt: now - 18000000, quietUnlessAlert: false },
+        { id: "s2", name: "Repo hygiene sweep", prompt: "Sweep the repos for uncommitted drift and a failing pre-commit on main; ping only on a real problem.", label: "every 3h", enabled: true, lastFiredAt: now - 2400000, quietUnlessAlert: true },
+      ],
       notifs: [
-        { id: "n1", ts: now - 90000, kind: "ask", title: "Seed 3 diverged", body: "step 800, +0.05 nat above seed 1. real effect, or match the LR and rerun? tell me how to play it.", convId: "w1", read: false },
-        { id: "n2", ts: now - 1080000, kind: "info", title: "Worker finished — 3-seed BitNet repro", body: "all three seeds done; final eval committed; gap held at +0.13 nat.", convId: "w1", read: false },
-        { id: "n3", ts: now - 5400000, kind: "info", title: "Stopped an idle box", body: "a box sat at zero GPU utilization for 12 minutes after its job exited — killed it. ~$0.26, nothing billing now.", read: true },
+        { id: "n1", ts: now - 120000, kind: "ask", title: "Seed 3 diverged", intention: "Mission needs your call · BitNet 160M MVP", icon: "?", cls: "a", summary: "step 800, +0.05 nat above seed 1 — real effect, or match the LR and rerun?", body: "Seed 3 is **+0.05 nat above seed 1** at step 800 and still drifting.\n\nTwo readings:\n- **Real effect** — seed sensitivity worth reporting.\n- **LR mismatch** — match seed 1's LR and rerun (~9 min).\n\nReply and the mission's supervisor takes it from there.", convId: "m1", read: false },
+        { id: "n0", ts: now - 18000000, kind: "info", title: "Morning briefing", intention: "Scheduled worker · summer vault", icon: "≡", cls: "", summary: "3 things moved overnight; today: finish the 3-seed writeup + push.", body: "## Overnight\n- 3-seed BitNet nearly there.\n- Repo sweep clean.\n- Idle box auto-killed (~$0.26).\n\n## Today\n1. Resolve the seed-3 divergence.\n2. Finish the writeup and push.", convId: "cch", read: false },
+        { id: "n2", ts: now - 1080000, kind: "info", title: "Worker finished — seed 44", intention: "Worker deliverable · BitNet 160M MVP", icon: "✓", cls: "g", summary: "eval.loss 1.5588, within tolerance; committed under results/.", body: "Seed 44 eval.loss **1.5588** — within the 0.005 nat tolerance. `results/seed44.jsonl` committed.", convId: "w1", read: false },
+        { id: "n3", ts: now - 5400000, kind: "info", title: "Stopped an idle box", intention: "Cost / cleanup · autonomous action", icon: "$", cls: "r", summary: "idle GPU box auto-killed after its job exited; ~$0.26, nothing billing now.", body: "A box sat at zero GPU utilization for 12 minutes after its job exited — killed it. ~$0.26, nothing billing now.", read: true },
       ],
       threads: {
         m1: { id: "m1", title: "BitNet 160M MVP", source: "mission", status: "idle", messages: [
-          { role: "user", content: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP across 3 seeds; commit eval.loss; writeup under docs/." },
-          { role: "assistant", content: "Criterion pinned: three seeds within 0.005 nat, eval.loss committed. Spawned the 3-seed worker; watching on 15-min wakes.", tools: ["StartWorker", "Schedule"] },
+          { role: "user", content: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP across 3 seeds; commit eval.loss; writeup under docs/. Done = three seeds within 0.005 nat." },
+          { role: "assistant", content: "Criterion pinned. Fanning out a worker per seed plus an eval/writeup worker; I'll watch on 15-min wakes and verify before I call it.", tools: ["StartWorker", "StartWorker", "StartWorker", "Schedule"] },
+          { role: "assistant", content: "Read the worker threads. Seeds **42 & 44 landed in tolerance**, eval.loss committed. **Seed 3 diverged** at step 800 (+0.05 nat) — I held it and surfaced the call to you. Kicked the eval/writeup worker since 2 of 3 are in." },
+          { role: "user", content: "don't wait on it — spin up a worker to rerun seed 3 at seed 42's LR." },
+          { role: "assistant", content: "On it — spawning a worker to rerun seed 3 at seed 42's LR.", tools: ["StartWorker"] },
+        ] },
+        w2: { id: "w2", title: "seed-2 retry", source: "worker", status: "running", messages: [
+          { role: "user", content: "retry seed 2 at seed 1's LR; commit eval.loss" },
+          { role: "assistant", content: "Matched the LR, streaming c4. Step 600, tracking seed 1 within 0.01 nat so far.", tools: ["Bash"] },
+        ] },
+        w4: { id: "w4", title: "eval + writeup", source: "worker", status: "running", messages: [
+          { role: "user", content: "build the per-seed comparison table and draft the writeup under docs/" },
+          { role: "assistant", content: "Have seeds 42 & 44. Table built; drafting docs/bitnet-160m-mvp/writeup.md now.", tools: ["Read", "Write"] },
         ] },
         w1: { id: "w1", title: "3-seed BitNet repro", source: "worker", status: "idle", messages: [
-          { role: "user", content: "train + eval seeds 42/43/44 on the 1700-step config, commit eval.loss, draft a writeup" },
-          { role: "assistant", content: "Locked the config, streaming c4. Starting seed 42.", tools: ["Bash"] },
-          { role: "assistant", content: "## Result\n\nAll three seeds done.\n\n| seed | eval loss |\n|---|---|\n| 42 | 1.5576 |\n| 43 | 1.5601 |\n| 44 | 1.5588 |\n\nGap held at **+0.13 nat**, U-shaped, plateaus. `eval.loss` JSONL committed under `results/`. Writeup drafted at `docs/bitnet-160m-mvp/writeup.md`.", tools: ["Write", "Bash"] },
+          { role: "user", content: "train + eval seeds 42/43/44 on the 1700-step config" },
+          { role: "assistant", content: "## Result\n\nAll three seeds done.\n\n| seed | eval loss |\n|---|---|\n| 42 | 1.5576 |\n| 43 | 1.5601 |\n| 44 | 1.5588 |\n\nGap held at **+0.13 nat**. `eval.loss` committed under `results/`.", tools: ["Write", "Bash"] },
+        ] },
+        cch: { id: "cch", title: "Morning briefing", source: "scheduled", status: "idle", messages: [
+          { role: "user", content: "Run the summer-vault coach prompt and produce the morning briefing." },
+          { role: "assistant", content: "## Overnight\n- **3-seed BitNet** repro nearly there.\n- Repo-hygiene sweep: clean.\n- Idle GPU box auto-killed (~$0.26).\n\n## Today\n1. Resolve the seed-3 divergence.\n2. Finish the writeup and push." },
         ] },
         sup: { id: "sup", title: "cockpit nav testing", source: "phone", status: "idle", messages: [
-          { role: "user", content: "rebuild the phone nav — no bottom bar, pages from the menu" },
-          { role: "assistant", content: "Done — pages live behind the ☰ menu now, and conversations are the left button. Try going back to an old chat from there." },
+          { role: "user", content: "rebuild the phone nav — pages from the menu" },
+          { role: "assistant", content: "Done — pages live behind the menu now, conversations are the left button." },
         ] },
         c1: { id: "c1", title: "densing law — readings", source: "manual", status: "idle", messages: [
-          { role: "user", content: "what's the densing law actually claiming" },
-          { role: "assistant", content: "That capability density doubles on a roughly fixed cadence — so a model half the size matches last season's at the same quality. The crossover you care about moves with **task difficulty**, not only parameter count." },
+          { role: "user", content: "summarize BitNet's ternary quantization + the STE trick, with the loss gap" },
+          { role: "assistant", content: "## BitNet 160M — quick notes\n\nWeights are **ternary**, mapped to $\\{-1,0,+1\\}$ by a scaled sign:\n\n$$\\hat{w}=\\alpha\\cdot\\operatorname{sign}(w),\\qquad \\alpha=\\frac{1}{n}\\sum_i |w_i|$$\n\nThe *straight-through estimator* passes the gradient through unchanged:\n\n$$\\frac{\\partial\\mathcal{L}}{\\partial w}\\approx\\frac{\\partial\\mathcal{L}}{\\partial\\hat{w}}$$\n\nAcross three seeds the eval-loss gap held at about $+0.13$ nat." },
         ] },
       },
     };
@@ -424,16 +523,16 @@
       const body = opts && opts.body ? JSON.parse(opts.body) : {};
       if (u === "/conversations") return reply({ vault: DB.vault, conversations: DB.convs });
       if (u === "/conversation") { const t = DB.threads[q.get("id")]; return t ? reply(t) : reply({ error: "not found" }); }
-      if (u === "/status") return reply({ vault: DB.vault, model: DB.model, version: "0.4.16-mock", runs: DB.runs });
+      if (u === "/status") return reply({ vault: DB.vault, model: DB.model, version: "0.4.21-mock", runs: DB.runs });
       if (u === "/schedules") return reply({ schedules: DB.schedules });
       if (u === "/notifications") return reply({ unread: DB.notifs.filter((n) => !n.read).length, notifications: DB.notifs });
       if (u === "/notifications/read") { const n = DB.notifs.find((x) => x.id === body.id); if (n) n.read = true; return reply({ ok: true }); }
       if (u === "/notifications/hide") { DB.notifs = DB.notifs.filter((x) => x.id !== body.id); return reply({ ok: true }); }
       if (u === "/poll") { if (!pollWaited) { pollWaited = true; return reply({ events: [], next: "1" }); } await new Promise((r) => setTimeout(r, 8000)); return reply({ events: [], next: "1" }); }
-      if (u === "/message") return reply({ ok: true, convId: body.convId || "new-" + Date.now() });
+      if (u === "/message") { if (body.mission) return reply({ ok: true, convId: "m_new", mission: body.mission.title }); return reply({ ok: true, convId: body.convId || "new-" + Date.now() }); }
       if (u === "/kill") return reply({ ok: true, result: "Kill sent." });
-      if (u === "/chats/clear") { DB.convs = DB.convs.filter((c) => c.source === "worker" || c.source === "mission"); return reply({ ok: true, cleared: 3 }); }
-      if (u === "/schedule") return reply({ ok: true });
+      if (u === "/chats/clear") return reply({ ok: true, cleared: 0 });
+      if (u === "/schedule") { if (body.action === "toggle") { const s = DB.schedules.find((x) => x.id === body.id); if (s) s.enabled = body.enabled; } else if (body.action === "delete") { DB.schedules = DB.schedules.filter((x) => x.id !== body.id); } return reply({ ok: true }); }
       if (u === "/push/vapid") return reply({ key: "" });
       if (u === "/push/subscribe" || u === "/push/test") return reply({ ok: true });
       if (u === "/file") return new Response("(mock file)", { status: 200 });
@@ -492,7 +591,7 @@
     while (stack.length) close1();
     return h;
   }
-  const md = (src) => {
+  const mdCore = (src) => {
     const lines = (src || "").replace(/\r\n/g, "\n").split("\n");
     let html = "", i = 0;
     const pbuf = [];
@@ -532,6 +631,25 @@
     return html;
   };
 
+  // Math-aware markdown: protect $…$ / $$…$$ from the markdown pass so emphasis
+  // (_x_, *y*) never mangles TeX, restore the raw delimiters, then KaTeX
+  // auto-render typesets them in the DOM (loaded from CDN; degrades to raw text
+  // when the box has no internet).
+  let mathSeq = 0;
+  const md = (src) => {
+    const id = ++mathSeq, math = [];
+    const s = String(src == null ? "" : src)
+      .replace(/\$\$([\s\S]+?)\$\$/g, (m, x) => { math.push("$$" + x + "$$"); return "@@M" + id + "_" + (math.length - 1) + "@@"; })
+      .replace(/\$([^$\n]+?)\$/g, (m, x) => { math.push("$" + x + "$"); return "@@M" + id + "_" + (math.length - 1) + "@@"; });
+    return mdCore(s).replace(new RegExp("@@M" + id + "_(\\d+)@@", "g"), (m, i) => math[+i]);
+  };
+  function typeset(elm) {
+    if (elm && window.renderMathInElement) {
+      try { window.renderMathInElement(elm, { delimiters: [{ left: "$$", right: "$$", display: true }, { left: "$", right: "$", display: false }], throwOnError: false }); } catch {}
+    }
+  }
+  window.addEventListener("load", () => typeset(document.body));
+
   // A ```plan fenced block (the cockpit "North Star" proposal) renders as an
   // approve/refine card instead of code. Format: a `title:` line, then one
   // `- task` bullet per worker the agent would fan out. Buttons are wired by
@@ -549,11 +667,11 @@
   }
   function renderPlanCard(lines) {
     const { title, tasks, desc } = planParse(lines);
-    let h = '<div class="plancard"><div class="pc-h">Proposed plan</div>';
+    let h = '<div class="plancard"><div class="pc-h">Proposed mission · approve to start</div>';
     if (title) h += '<div class="pc-title">' + inline(title) + "</div>";
     if (desc) h += '<div class="pc-desc">' + inline(desc) + "</div>";
     if (tasks.length) { h += '<ul class="pc-tasks">'; for (const t of tasks) h += "<li>" + inline(t) + "</li>"; h += "</ul>"; }
-    h += '<div class="pc-btns"><button class="pc-approve">Approve &amp; run</button><button class="pc-refine">Refine</button></div></div>';
+    h += '<div class="pc-btns"><button class="pc-approve">Approve &amp; run</button></div></div>';
     return h;
   }
 
@@ -564,6 +682,13 @@
   let vaultName = "", boxModel = "";
   let runCount = 0, unreadN = 0, offlineStreak = 0;
   const msgsEl = $("msgs"), input = $("input"), sendBtn = $("sendBtn");
+
+  // Cosmetic "clear chats": a per-device hidden set. Never deletes anything on
+  // the box or in git — the chats just stop rendering in this drawer.
+  const HIDDEN_KEY = "vc_phone_hidden_chats";
+  let lastChatList = [];
+  function hiddenChats() { try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_KEY) || "[]")); } catch { return new Set(); } }
+  function saveHiddenChats(set) { try { localStorage.setItem(HIDDEN_KEY, JSON.stringify([...set])); } catch {} }
 
   const age = (ts) => { const m = Math.floor((Date.now() - ts) / 60000); if (m < 1) return "now"; if (m < 60) return m + "m"; const h = Math.floor(m / 60); if (h < 24) return h + "h"; return Math.floor(h / 24) + "d"; };
 
@@ -585,7 +710,7 @@
     const tx = $("titleTx"), sub = $("titleSub");
     if (page === "chat") {
       if (convId && convTitle && convTitle !== "New chat") { tx.textContent = convTitle; sub.textContent = ""; }
-      else { tx.textContent = off ? "offline" : "awake"; sub.textContent = off ? "· reconnecting" : runCount > 0 ? "· " + runCount + " running" : "· idle"; }
+      else { tx.textContent = ""; sub.textContent = ""; }
     } else { tx.textContent = page === "activity" ? "Activity" : "Alerts"; sub.textContent = ""; }
     const mAct = $("mAct"); mAct.textContent = runCount; mAct.classList.toggle("zero", runCount === 0);
     const mAl = $("mAl"); mAl.textContent = unreadN; mAl.classList.toggle("zero", unreadN === 0);
@@ -607,12 +732,12 @@
   $("convBtn").onclick = openConvs;
   scrim.onclick = closeConvs;
   $("newBtn").onclick = () => { closeConvs(); newChat(); };
-  $("clearChatsBtn").onclick = async () => {
-    if (!confirm("Delete ALL idle chats? Missions and workers are untouched. This can't be undone.")) return;
-    const r = await api("/chats/clear", { method: "POST" }).catch(() => null);
-    const d = r ? await r.json().catch(() => ({})) : {};
-    if (d.ok) { toast("Cleared " + (d.cleared ?? 0) + " chats."); closeConvs(); newChat(); }
-    else toast("Clear failed: " + (d.error || "box not answering"));
+  $("clearChatsBtn").onclick = () => {
+    if (!confirm("Clear these chats from this view? Nothing is deleted — they stay on the box and in git; this only hides them on this device.")) return;
+    const set = hiddenChats();
+    for (const c of lastChatList) set.add(c.id);
+    saveHiddenChats(set);
+    toast("Cleared from this view — nothing deleted."); closeConvs(); newChat();
   };
   $("titleBtn").onclick = () => { if (page === "chat") openDrawer(); else setPage("chat"); };
 
@@ -627,14 +752,17 @@
       if (sr && sr.ok) { const sd = await sr.json().catch(() => ({})); for (const x of sd.runs || []) runIds.add(x.convId); }
       const convs = d.conversations || [];
       // The drawer is YOUR conversations with the assistant, nothing else —
-      // workers and missions live on Activity.
-      const chats = convs.filter((c) => c.source !== "worker" && c.source !== "mission");
+      // workers and missions live on Activity. The cosmetic hidden set (cleared
+      // "from this view") is filtered out, except the chat you're currently in.
+      const hidden = hiddenChats();
+      const chats = convs.filter((c) => c.source !== "worker" && c.source !== "mission" && (!hidden.has(c.id) || c.id === convId));
       // The chat you're in may not be on disk yet (the box persists ~500ms
       // after the first message). Show it anyway so a just-made chat never
       // looks missing.
       if (convId && !chats.some((c) => c.id === convId)) {
         chats.unshift({ id: convId, title: convTitle || "New chat", lastActivityAt: Date.now(), source: "phone", msgCount: 0, preview: "" });
       }
+      lastChatList = chats.slice();
       box.innerHTML = "";
       if (chats.length) {
         const h = document.createElement("div"); h.className = "csec"; h.textContent = "Chats"; box.appendChild(h);
@@ -660,8 +788,11 @@
   // ---------- chat ----------
   function bubble(role, content, tools, opts = {}) {
     const div = document.createElement("div");
-    div.className = "m " + (role === "user" ? "user" : opts.system ? "sys" : "asst") + (opts.queued ? " queued" : "");
-    if (role === "user" || opts.system) div.textContent = content;
+    // Agent replies are bubble-free (full-width markdown); user + system keep
+    // their bubbles.
+    const asst = role !== "user" && !opts.system;
+    div.className = (asst ? "amsg" : "m " + (role === "user" ? "user" : "sys")) + (opts.queued ? " queued" : "");
+    if (!asst) div.textContent = content;
     else div.innerHTML = '<div class="md">' + md(content) + "</div>";
     if (tools && tools.length) {
       const wrap = document.createElement("div"); wrap.className = "toolchips";
@@ -669,6 +800,7 @@
       if (tools.length > 8) { const c = document.createElement("span"); c.className = "toolchip"; c.textContent = "+" + (tools.length - 8); wrap.appendChild(c); }
       div.appendChild(wrap);
     }
+    if (asst) typeset(div);
     return div;
   }
   const atBottom = () => msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 80;
@@ -696,7 +828,7 @@
   }
   function renderStream() {
     if (!streamText) { if (streamEl) { streamEl.remove(); streamEl = null; } renderRunline(); return; }
-    if (!streamEl) { streamEl = document.createElement("div"); streamEl.className = "m asst stream"; msgsEl.appendChild(streamEl); }
+    if (!streamEl) { streamEl = document.createElement("div"); streamEl.className = "amsg stream"; msgsEl.appendChild(streamEl); }
     streamEl.innerHTML = '<div class="md">' + md(streamText) + '</div><span class="cursor"></span>';
     renderRunline(); scrollDown(false);
   }
@@ -769,22 +901,20 @@
   // a vault whose supervisor prompt predates the convention.
   async function approvePlan(card) {
     if (card.classList.contains("approved")) return;
-    if (!convId) { toast("Open the chat first."); return; }
     card.classList.add("approved");
     card.querySelectorAll("button").forEach((b) => { b.disabled = true; });
-    const mt = card.querySelector(".pc-title");
-    const mission = mt ? mt.textContent.trim() : "";
-    const text = "Approved — create the mission" +
-      (mission ? ' "' + mission + '"' : "") +
-      " for that plan now (StartMission with the full plan as its brief), then confirm it's underway.";
-    if (msgsEl.querySelector(".hint")) msgsEl.innerHTML = "";
-    msgsEl.appendChild(bubble("user", text, null)); scrollDown(true);
+    const title = (card.querySelector(".pc-title")?.textContent || "Mission").trim();
+    const desc = (card.querySelector(".pc-desc")?.textContent || "").trim();
+    const tasks = [...card.querySelectorAll(".pc-tasks li")].map((li) => "- " + li.textContent.trim());
+    // Approval is a STRUCTURED action, not a chat prompt: hand the plan over as
+    // data and the box mints the mission deterministically (StartMission). Its
+    // own supervisor then spawns and runs the workers.
+    const goal = [title, desc, tasks.length ? "Tasks:\n" + tasks.join("\n") : ""].filter(Boolean).join("\n\n");
     try {
-      const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, text }) });
+      const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mission: { title, goal } }) });
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || r.status);
-      running = true; renderRunline(); setHeader();
-      toast("Approved — starting the mission.");
+      toast("Mission created — it’s underway."); setPage("activity");
     } catch (e) { card.classList.remove("approved"); card.querySelectorAll("button").forEach((b) => { b.disabled = false; }); toast("Approve failed: " + (e.message || e)); }
   }
   msgsEl.addEventListener("click", (e) => {
@@ -826,24 +956,168 @@
 
   // ---------- activity ----------
   function el(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
+
+  // ---------- bottom sheet (the detail surface) ----------
+  // Threads render as a transcript with sender labels and bubble-free agent
+  // turns. A worker thread is Supervisor ⇄ Worker; a mission thread is You ⇄
+  // Supervisor. You operate at the mission layer — never type at a worker.
+  function threadHtml(msgs, labels) {
+    labels = labels || { user: "You", assistant: "Assistant" };
+    return '<div class="thread">' + (msgs || []).map((m) => {
+      const side = m.role === "user" ? "user" : "asst";
+      let sender = m.role === "user" ? labels.user : labels.assistant;
+      const content = m.content || "";
+      if (m.role === "user" && /^MISSION BRIEF/i.test(content)) sender = "Mission brief · approved";
+      else if (m.role === "user" && /^Your worker /i.test(content)) sender = "Worker report";
+      const chips = (m.tools && m.tools.length) ? '<div class="toolchips">' + m.tools.slice(0, 8).map((t) => '<span class="toolchip">' + esc(t) + "</span>").join("") + "</div>" : "";
+      const inner = m.role === "user"
+        ? '<div class="m user">' + esc(content) + "</div>"
+        : '<div class="amsg"><div class="md">' + md(content) + "</div>" + chips + "</div>";
+      return '<div class="tmsg ' + side + '"><span class="sender">' + esc(sender) + "</span>" + inner + "</div>";
+    }).join("") + "</div>";
+  }
+  function openSheet(opts) {
+    const sh = $("sheet");
+    sh.style.height = ""; sh.style.maxHeight = ""; sh.style.transition = "";
+    $("sheetIco").textContent = opts.ico || "•";
+    $("sheetIco").className = "sheet-ico" + (opts.cls ? " " + opts.cls : "");
+    $("sheetIntent").textContent = opts.intent || "";
+    $("sheetTitle").textContent = opts.title || "";
+    $("sheetBody").innerHTML = opts.bodyHtml || "";
+    const foot = $("sheetFoot");
+    if (opts.footHtml) { foot.style.display = ""; foot.innerHTML = opts.footHtml; } else { foot.style.display = "none"; foot.innerHTML = ""; }
+    const act = $("sheetAction");
+    if (opts.action) { act.style.display = ""; act.textContent = opts.action.label; act.className = "sheet-action" + (opts.action.danger ? " danger" : ""); act.onclick = opts.action.onClick; }
+    else { act.style.display = "none"; act.className = "sheet-action"; act.onclick = null; }
+    if (opts.wire) opts.wire($("sheetBody"), foot);
+    typeset($("sheetBody"));
+    $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
+  }
+  function closeSheet() { $("sheetScrim").classList.remove("on"); $("sheet").classList.remove("on"); }
+  $("sheetScrim").onclick = closeSheet; $("sheetX").onclick = closeSheet;
+  // Drag the grab/header: pull up to fill the screen for a long thread, pull
+  // down past the threshold to dismiss. Snaps to peek / full / closed.
+  (function sheetDrag() {
+    const sheet = $("sheet"); let startY = 0, startH = 0, dragging = false, H = 0;
+    const down = (y) => { dragging = true; startY = y; startH = sheet.offsetHeight; H = window.innerHeight; sheet.style.transition = "none"; sheet.style.maxHeight = "none"; };
+    const move = (y) => { if (!dragging) return; const h = Math.max(80, Math.min(startH - (y - startY), Math.round(0.97 * H))); sheet.style.height = h + "px"; };
+    const up = () => { if (!dragging) return; dragging = false; sheet.style.transition = ""; const h = sheet.offsetHeight; if (h < 0.30 * H) { closeSheet(); return; } if (h > 0.55 * H) sheet.style.height = Math.round(0.96 * H) + "px"; else sheet.style.height = Math.min(sheet.scrollHeight, Math.round(0.62 * H)) + "px"; };
+    for (const elx of [$("sheetGrab"), $("sheetHead")]) {
+      elx.addEventListener("touchstart", (e) => down(e.touches[0].clientY), { passive: true });
+      elx.addEventListener("mousedown", (e) => { if (e.target.closest(".sheet-x,.sheet-action")) return; e.preventDefault(); down(e.clientY); });
+    }
+    window.addEventListener("touchmove", (e) => { if (dragging) move(e.touches[0].clientY); }, { passive: true });
+    window.addEventListener("touchend", up); window.addEventListener("touchcancel", up);
+    window.addEventListener("mousemove", (e) => { if (dragging) move(e.clientY); });
+    window.addEventListener("mouseup", up);
+  })();
+
+  // structured-first alert metadata; falls back to derivation (no longer a
+  // pure keyword sniff once the producer ships intention/summary/icon).
+  function alertMeta(n) {
+    if (n.intention || n.icon) return { intention: n.intention || "Update", icon: n.icon || "•", cls: n.cls || "" };
+    if (n.kind === "ask") return { intention: "Needs your call", icon: "?", cls: "a" };
+    if (/fail|error|diverg|crash|wedge|❌|⚠/i.test(n.title)) return { intention: "Something failed", icon: "!", cls: "r" };
+    if (/worker|complete|done|finished/i.test(n.title)) return { intention: "Worker deliverable", icon: "✓", cls: "g" };
+    if (/stopped|idle|cost|\$/i.test(n.title)) return { intention: "Cost / cleanup", icon: "$", cls: "r" };
+    if (/brief|coach|morning|daily|check-?in/i.test(n.title)) return { intention: "Briefing", icon: "≡", cls: "" };
+    return { intention: "Update", icon: "•", cls: "" };
+  }
+
+  // The mission's spec = the criterion you approved (its brief), plus a live
+  // state line. Tap the [spec] chip to check what "done" means at a glance.
+  function openSpec(mc, g) {
+    const running = g.active.length;
+    const goal = (mc.goal || mc.preview || "").trim();
+    const stateLine = running ? running + " worker" + (running === 1 ? "" : "s") + " running" : (g.conv ? "watching — no workers running right now" : "—");
+    openSheet({
+      intent: "Spec · the criterion you approved", title: mc.title, ico: "◎", cls: "",
+      bodyHtml:
+        '<div class="lbl">Goal &amp; success criterion</div><div class="md">' + md(goal || "*(no brief recorded)*") + "</div>" +
+        '<div class="specrow"><div class="lbl" style="margin:0">State</div><div class="sc">' + esc(stateLine) + "</div></div>" +
+        (running ? '<ul class="speclist">' + g.active.map(({ run, c }) => '<li><span class="bx">•</span><span>' + esc(run.title || c.title || "worker") + (run.lastTool ? " · " + esc(run.lastTool) : "") + "</span></li>").join("") + "</ul>" : ""),
+    });
+  }
+  // The mission = the supervisor's thread: its thinking + what it saw from the
+  // workers. Steer it here (or Stop). The action lives on the header bar so the
+  // keyboard can't bury it.
+  async function openSupervisor(mc, g) {
+    openSheet({
+      intent: "Mission supervisor", title: mc.title, ico: "◇", cls: "",
+      bodyHtml: '<div class="lbl">Its thinking — what it concluded from the workers</div><div class="alsum-load" id="supLoad">loading…</div>',
+      footHtml: '<div class="reply"><input class="rinp" placeholder="ask the supervisor, or tell it to spawn a worker…" autocomplete="off"><button class="rsend">↑</button></div>',
+      action: { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
+      wire: (body, foot) => {
+        const rep = foot.querySelector(".reply");
+        const go = async () => {
+          const v = rep.querySelector(".rinp").value.trim(); if (!v) return;
+          rep.querySelector(".rinp").value = "";
+          await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v }) }).catch(() => {});
+          closeSheet(); toast("Sent to the supervisor.");
+        };
+        rep.querySelector(".rsend").onclick = go;
+        rep.querySelector(".rinp").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+      },
+    });
+    try {
+      const r = await api("/conversation?id=" + encodeURIComponent(mc.id) + "&n=60");
+      const d = await r.json(); if (d.error) throw new Error(d.error);
+      const bodyEl = $("sheetBody");
+      bodyEl.innerHTML = '<div class="lbl">Its thinking — what it concluded from the workers</div>' + threadHtml(d.messages, { user: "You", assistant: "Supervisor" });
+      typeset(bodyEl); bodyEl.scrollTop = bodyEl.scrollHeight;
+    } catch (e) { const l = $("supLoad"); if (l) l.textContent = "Couldn’t load: " + (e.message || e); }
+  }
+  function stopMission(mc, g) {
+    const a = $("sheetAction");
+    if (!a.classList.contains("confirm")) { a.classList.add("confirm"); a.textContent = "Confirm?"; setTimeout(() => { a.classList.remove("confirm"); a.textContent = "Stop"; }, 2200); return; }
+    const ids = new Set([mc.id, ...g.active.map((x) => x.run.convId)]);
+    for (const id of ids) api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: id }) }).catch(() => {});
+    closeSheet(); toast("Mission stopped."); setTimeout(loadActivity, 600);
+  }
+  // A worker is a read-only artifact: state + its Supervisor ⇄ Worker thread.
+  // No reply, no kill — you steer the supervisor, not the worker.
+  async function openWorkerArtifact(run, c) {
+    const head = '<div class="lbl">State</div><div class="md">' + md(c.goal || c.preview || "*(running)*") + "</div>";
+    openSheet({
+      intent: "Worker · " + ((run.mission || c.mission || "mission")) + " · read-only", title: run.title || c.title || "worker", ico: "●", cls: "",
+      bodyHtml: head + '<div class="lbl">Thread · supervisor ↔ worker</div><div class="alsum-load" id="wkLoad">loading…</div>',
+    });
+    try {
+      const r = await api("/conversation?id=" + encodeURIComponent(run.convId) + "&n=60");
+      const d = await r.json(); if (d.error) throw new Error(d.error);
+      const bodyEl = $("sheetBody");
+      bodyEl.innerHTML = head + '<div class="lbl">Thread · supervisor ↔ worker</div>' + threadHtml(d.messages, { user: "Supervisor", assistant: "Worker" }) +
+        '<div class="readonly">This back-and-forth is the <b>supervisor</b> briefing and steering the <b>worker</b> — not you. Read-only: if it’s off track, steer the supervisor or re-scope the mission.</div>';
+      typeset(bodyEl);
+    } catch (e) { const l = $("wkLoad"); if (l) l.textContent = "Couldn’t load: " + (e.message || e); }
+  }
+  // Tap a schedule → its spec (what it runs, when, status) with the controls.
+  function openSchedule(sc) {
+    openSheet({
+      intent: "Scheduled · " + (sc.label || ""), title: sc.name, ico: "◷", cls: "",
+      bodyHtml:
+        '<div class="lbl">What it runs</div><div class="md">' + md(sc.prompt || "(scheduled prompt)") + "</div>" +
+        '<div class="lbl">When</div><div class="md">' + esc(sc.label || "") + (sc.lastFiredAt ? " · last fired " + age(sc.lastFiredAt) + " ago" : "") + "</div>" +
+        '<div class="lbl">Status</div><div class="md">' + (sc.enabled ? "Active" : "Paused") + (sc.quietUnlessAlert ? " · quiet unless ALERT" : "") + "</div>" +
+        '<div class="wbtns"><button class="wbtn tog">' + (sc.enabled ? "Pause" : "Enable") + '</button><button class="wbtn edit">Edit</button><button class="wbtn danger del">Delete</button></div>',
+      wire: (body) => {
+        body.querySelector(".tog").onclick = async () => { await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle", id: sc.id, enabled: !sc.enabled }) }).catch(() => {}); closeSheet(); toast(sc.enabled ? "Schedule paused." : "Schedule on."); loadActivity(); };
+        body.querySelector(".edit").onclick = () => { closeSheet(); newChat(); input.value = 'Edit the schedule "' + sc.name + '": '; scheduleAutosize(); try { input.focus({ preventScroll: true }); } catch {} toast("Tell the agent the change."); };
+        const del = body.querySelector(".del");
+        del.onclick = async () => { if (!del.classList.contains("confirm")) { del.classList.add("confirm"); del.textContent = "Confirm delete"; setTimeout(() => { del.classList.remove("confirm"); del.textContent = "Delete"; }, 2200); return; } await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", id: sc.id }) }).catch(() => {}); closeSheet(); toast("Schedule deleted."); loadActivity(); };
+      },
+    });
+  }
   // Activity is missions. Each mission renders as a header (its supervisor —
   // tap to watch the conversation) with its running workers as PILLS beneath:
   // one short line each; tap a pill to see its state plus Open thread / Kill.
   // Finished workers don't accumulate here — their alert is the way back.
   function workerPill(run, c) {
-    const pill = el('<div class="wpill"><button class="wp-head"><span class="wp-dot"></span><span class="wp-t"></span><span class="wp-age"></span></button><div class="wp-body"><p class="wp-state"></p><div class="wbtns"><button class="wbtn op">Open thread</button><button class="wbtn danger kl">Kill worker</button></div></div></div>');
+    const pill = el('<div class="wpill"><button class="wp-head"><span class="wp-dot"></span><span class="wp-main"><span class="wp-t"></span><span class="wp-sum"></span></span><span class="wp-age"></span><span class="chev">›</span></button></div>');
     pill.querySelector(".wp-t").textContent = run.title || c.title || run.convId;
+    pill.querySelector(".wp-sum").textContent = c.goal || c.preview || "running…";
     pill.querySelector(".wp-age").textContent = run.lastTool ? run.lastTool + " · " + (run.lastProgressAt ? age(run.lastProgressAt) : "now") : "running";
-    pill.querySelector(".wp-state").textContent = c.goal || c.preview || "(no goal recorded)";
-    pill.querySelector(".wp-head").onclick = () => pill.classList.toggle("open");
-    pill.querySelector(".op").onclick = (e) => { e.stopPropagation(); openThread(run.convId, run.title || c.title); };
-    const kl = pill.querySelector(".kl");
-    kl.onclick = async (e) => {
-      e.stopPropagation();
-      if (!kl.classList.contains("confirm")) { kl.classList.add("confirm"); kl.textContent = "Confirm kill"; setTimeout(() => { kl.classList.remove("confirm"); kl.textContent = "Kill worker"; }, 2600); return; }
-      await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: run.convId }) }).catch(() => {});
-      toast("Worker killed."); setTimeout(loadActivity, 800);
-    };
+    pill.querySelector(".wp-head").onclick = () => openWorkerArtifact(run, c);
     return pill;
   }
   async function loadActivity() {
@@ -885,19 +1159,16 @@
         box.appendChild(el('<div class="empty">Nothing in flight. Hand the agent a goal in Chat — it proposes a plan, you approve, and the mission with its workers lands here.</div>'));
       }
       for (const [name, g] of missions) {
-        const head = el('<button class="msec"><span>Mission</span><b></b><span class="mc"></span><span class="watch">watch ›</span></button>');
+        const mc = g.conv || { id: "", title: name, goal: "", preview: "" };
+        const head = el('<div class="msec"><span class="k">Mission</span><b></b><span class="mc"></span><button class="spec">spec</button></div>');
         head.querySelector("b").textContent = name;
         const live = g.active.length || (g.conv && runIds.has(g.conv.id));
         head.querySelector(".mc").textContent = g.active.length
           ? g.active.length + " running"
           : g.conv && runIds.has(g.conv.id) ? "planning" : "watching";
         if (!live) head.querySelector(".mc").classList.add("dim");
-        if (g.conv) {
-          const mc = g.conv;
-          head.onclick = () => openThread(mc.id, mc.title); // watch the supervisor
-        } else {
-          head.querySelector(".watch").remove(); // legacy string-only mission: no thread
-        }
+        head.querySelector(".spec").onclick = (e) => { e.stopPropagation(); openSpec(mc, g); };
+        if (g.conv) head.onclick = () => openSupervisor(g.conv, g); // watch its thinking, steer, stop
         box.appendChild(head);
         for (const { run, c } of g.active) box.appendChild(workerPill(run, c));
         if (!g.active.length && g.conv) {
@@ -907,16 +1178,15 @@
         }
       }
 
-      box.appendChild(el('<div class="sec">Recurring</div>'));
+      box.appendChild(el('<div class="sec">Scheduled</div>'));
       const scheds = schd.schedules || [];
-      if (!scheds.length) box.appendChild(el('<div class="empty">No recurring missions. Tell the agent — “brief me every morning at 7” is enough.</div>'));
+      if (!scheds.length) box.appendChild(el('<div class="empty">Nothing scheduled. Tell the agent — “brief me every morning at 7” is enough.</div>'));
       for (const sc of scheds) {
-        const card = el('<div class="card"><div class="schedrow"><div class="info"><b></b><small></small></div><button class="sw"></button><button class="del">✕</button></div></div>');
+        const card = el('<button class="card schedcard"><div class="schedrow"><div class="info"><b></b><small></small></div><span class="chev">›</span></div></button>');
         card.querySelector("b").textContent = sc.name;
-        card.querySelector("small").textContent = sc.label + (sc.quietUnlessAlert ? " · quiet" : "") + (sc.lastFiredAt ? " · fired " + age(sc.lastFiredAt) + " ago" : "");
-        const sw = card.querySelector(".sw"); sw.textContent = sc.enabled ? "On" : "Off"; sw.className = "sw" + (sc.enabled ? " on" : "");
-        sw.onclick = async () => { await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle", id: sc.id, enabled: !sc.enabled }) }).catch(() => {}); loadActivity(); };
-        card.querySelector(".del").onclick = async () => { if (!confirm('Delete "' + sc.name + '"?')) return; await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", id: sc.id }) }).catch(() => {}); loadActivity(); };
+        card.querySelector("small").textContent = [sc.label, sc.enabled ? null : "paused", sc.quietUnlessAlert ? "quiet" : null, sc.lastFiredAt ? "fired " + age(sc.lastFiredAt) + " ago" : null].filter(Boolean).join(" · ");
+        if (!sc.enabled) card.style.opacity = ".55";
+        card.onclick = () => openSchedule(sc);
         box.appendChild(card);
       }
       box.appendChild(el('<div style="height:18px"></div>'));
@@ -928,6 +1198,7 @@
   // reply inline. INFO (everything else) — a heads-up. Archiving is the ONE
   // explicit acknowledge gesture: swipe a card right-to-left and it's read.
   // Archived items live behind the Archive toggle at the bottom.
+  let alertArchiveOpen = false;
   async function loadAlerts() {
     const box = $("alScroll");
     try {
@@ -947,97 +1218,73 @@
       for (const n of infos) box.appendChild(alertCard(n, false));
       if (!unread.length) box.appendChild(el('<div class="empty">All caught up — swipe a card left to archive it.</div>'));
       if (archived.length) {
-        const holder = el('<div style="display:none"></div>');
+        const holder = el("<div></div>"); holder.style.display = alertArchiveOpen ? "" : "none";
         for (const n of archived) holder.appendChild(alertCard(n, false));
         const t = el('<button class="earlier"></button>');
-        t.textContent = "Archive · " + archived.length;
-        t.onclick = () => {
-          const open = holder.style.display !== "none";
-          holder.style.display = open ? "none" : "";
-          t.textContent = (open ? "Archive · " : "Hide archive · ") + archived.length;
-        };
+        const label = () => { t.textContent = (alertArchiveOpen ? "Hide archive · " : "Archive · ") + archived.length; };
+        label();
+        t.onclick = () => { alertArchiveOpen = !alertArchiveOpen; holder.style.display = alertArchiveOpen ? "" : "none"; label(); };
         box.appendChild(t); box.appendChild(holder);
-      }
+      } else { alertArchiveOpen = false; }
       box.appendChild(el('<div style="height:18px"></div>'));
     } catch (e) { box.innerHTML = '<div class="empty">Alerts unavailable: ' + esc(String(e.message || e)) + "</div>"; }
   }
   const markRead = (id) => api("/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
-  // The "bar" line between title and summary: what kind of alert this is.
-  function alertClass(n) {
-    if (n.kind === "ask") return { label: "Needs your reply", ico: "?", cls: "a" };
-    if (/fail|error|diverg|crash|wedge|❌|⚠/i.test(n.title)) return { label: "Something failed", ico: "!", cls: "r" };
-    if (/worker|complete|done|finished/i.test(n.title)) return { label: "Worker finished", ico: "✓", cls: "g" };
-    if (/stopped|idle|cost|\$/i.test(n.title)) return { label: "Cost / cleanup", ico: "$", cls: "r" };
-    if (/brief|coach|morning|daily|check-?in/i.test(n.title)) return { label: "Briefing", ico: "≡", cls: "" };
-    return { label: "Update", ico: "•", cls: "" };
-  }
+  // The card is a SUMMARY (icon + title + intention + 2-line summary) built from
+  // the producer's structured deliverable, falling back to a derived category.
+  // Tap opens the bottom sheet with the full report; swipe left archives.
   function alertCard(n, isAction) {
-    const meta = alertClass(n);
+    const meta = alertMeta(n);
     const card = el('<div class="card' + (isAction ? " ask" : n.read ? "" : " unread") + '"><div class="crow"><div class="ico"></div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><div class="metabar"></div><p class="cs"></p></div></div></div>');
     const ico = card.querySelector(".ico");
-    ico.textContent = meta.ico; if (meta.cls) ico.classList.add(meta.cls);
+    const cls = n.cls || meta.cls;
+    ico.textContent = n.icon || meta.icon; if (cls) ico.classList.add(cls);
     card.querySelector("b").textContent = n.title;
     card.querySelector(".t").textContent = age(n.ts);
-    card.querySelector(".metabar").textContent = meta.label + (n.convId ? " · tap for summary" : "");
-    card.querySelector(".cs").textContent = n.body || "";
-    if (isAction && n.convId) {
-      const rep = el('<div class="reply"><input class="rinp" placeholder="tell it what to do…" autocomplete="off" /><button class="rsend">↑</button></div>');
-      const go = async () => {
-        const v = rep.querySelector(".rinp").value.trim(); if (!v) return;
-        await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: v }) }).catch(() => {});
-        await markRead(n.id); toast("Sent."); loadAlerts();
-      };
-      rep.querySelector(".rsend").onclick = go;
-      rep.querySelector(".rinp").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
-      card.querySelector(".cb").appendChild(rep);
-    }
-    // Tap → inline summary: what the thread behind this alert actually did
-    // (its last report), fetched on first expand. Swipe still archives; the
-    // summary is read-only plus an explicit Open-thread button.
-    if (n.convId) {
-      const det = el('<div class="alsum" style="display:none"></div>');
-      card.querySelector(".cb").appendChild(det);
-      let loaded = false;
-      card.addEventListener("click", async (e) => {
-        if (e.target.closest(".rinp,.rsend,.wbtn,a")) return;
-        if (card.dataset.swiped === "1") { card.dataset.swiped = ""; return; }
-        const open = det.style.display !== "none";
-        det.style.display = open ? "none" : "";
-        if (open || loaded) return;
-        det.innerHTML = '<div class="alsum-load">loading…</div>';
-        try {
-          const r = await api("/conversation?id=" + encodeURIComponent(n.convId) + "&n=40");
-          const d = await r.json();
-          if (d.error) throw new Error(d.error);
-          const last = (d.messages || []).slice().reverse().find((m) => m.role === "assistant" && (m.content || "").trim());
-          det.innerHTML = '<div class="lbl">What it did</div>';
-          const bodyEl = el('<div class="md"></div>');
-          bodyEl.innerHTML = md(last ? last.content.slice(0, 4000) : "*(no report yet — it may still be working; open the thread to watch live)*");
-          det.appendChild(bodyEl);
-          if (last && last.tools && last.tools.length) {
-            const wrap = el('<div class="toolchips"></div>');
-            for (const t of last.tools.slice(0, 8)) { const c = el('<span class="toolchip"></span>'); c.textContent = t; wrap.appendChild(c); }
-            det.appendChild(wrap);
-          }
-          const btns = el('<div class="wbtns"><button class="wbtn op">Open thread</button></div>');
-          btns.querySelector(".op").onclick = (ev) => { ev.stopPropagation(); openThread(n.convId, n.title); };
-          det.appendChild(btns);
-          loaded = true;
-        } catch (err) {
-          det.innerHTML = '<div class="alsum-load">Couldn’t load: ' + esc(String(err.message || err)) + "</div>";
-        }
-      });
-    }
-    // Inbox cards swipe to archive (mark read); archived cards swipe to hide
-    // for good (append-only "hide" marker — gone from the view, not the file).
+    card.querySelector(".metabar").textContent = n.intention || meta.intention;
+    card.querySelector(".cs").textContent = n.summary || n.body || "";
+    card.addEventListener("click", (e) => {
+      if (e.target.closest("a")) return;
+      if (card.dataset.swiped === "1") { card.dataset.swiped = ""; return; }
+      openAlertSheet(n, isAction);
+    });
     attachSwipeArchive(card, n.read
       ? () => api("/notifications/hide", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: n.id }) }).catch(() => {})
       : () => markRead(n.id));
     return card;
   }
-  // Swipe right-to-left to archive / hide. Horizontal intent is locked in
-  // only once the finger clearly moves sideways, so vertical scrolling through
-  // the list never fights the gesture. Mouse drag works too (desktop testing).
+  // Tap -> bottom sheet: the full report (the thread's last assistant turn).
+  // An ask answers back TO THE SUPERVISOR (its convId); the box queues it if the
+  // supervisor is mid-run, then clears the alert.
+  async function openAlertSheet(n, isAction) {
+    const meta = alertMeta(n);
+    openSheet({
+      intent: n.intention || meta.intention, title: n.title, ico: n.icon || meta.icon, cls: n.cls || meta.cls,
+      action: n.convId ? { label: "Open thread", onClick: () => { closeSheet(); openThread(n.convId, n.title); } } : null,
+      bodyHtml: '<div class="md">' + md(n.body || "") + "</div>" + (n.convId ? '<div class="lbl">What it did</div><div class="alsum-load" id="alLoad">loading…</div>' : ""),
+      footHtml: (isAction && n.convId) ? '<div class="reply"><input class="rinp" placeholder="tell the mission what to do…" autocomplete="off"><button class="rsend">↑</button></div>' : "",
+      wire: (body, foot) => {
+        if (!foot) return;
+        const rep = foot.querySelector(".reply"); if (!rep) return;
+        const go = async () => {
+          const v = rep.querySelector(".rinp").value.trim(); if (!v) return;
+          await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: v }) }).catch(() => {});
+          await markRead(n.id); closeSheet(); toast("Sent."); loadAlerts();
+        };
+        rep.querySelector(".rsend").onclick = go;
+        rep.querySelector(".rinp").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+      },
+    });
+    if (n.convId) {
+      try {
+        const r = await api("/conversation?id=" + encodeURIComponent(n.convId) + "&n=40");
+        const d = await r.json(); if (d.error) throw new Error(d.error);
+        const last = (d.messages || []).slice().reverse().find((m) => m.role === "assistant" && (m.content || "").trim());
+        const l = $("alLoad");
+        if (l) { l.outerHTML = '<div class="md">' + md(last ? last.content.slice(0, 6000) : "*(no report yet — it may still be working; tap Open thread to watch live)*") + "</div>"; typeset($("sheetBody")); }
+      } catch (e) { const l = $("alLoad"); if (l) l.textContent = "Couldn't load: " + (e.message || e); }
+    }
+  }
   function attachSwipeArchive(card, action) {
     let x0 = 0, y0 = 0, dx = 0, mode = null;
     const start = (x, y) => { x0 = x; y0 = y; dx = 0; mode = null; card.style.transition = "none"; };
@@ -1238,7 +1485,8 @@
   }
   function vTeardown() { vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting"); vConv = null; vConnecting = false; }
   async function vStop() { try { if (vConv) await vConv.endSession(); } catch {} vTeardown(); }
-  $("micBtn").onclick = () => {
+  $("voiceRow").onclick = () => {
+    closeMenu();
     if (vLive || vConnecting) { document.body.classList.add("voice"); document.body.classList.remove("voicemin"); return; }
     try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext)(); if (vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {}); const b = vMicCtx.createBuffer(1, 1, 22050); const s = vMicCtx.createBufferSource(); s.buffer = b; s.connect(vMicCtx.destination); s.start(0); } catch {}
     hideKb(); document.body.classList.add("voice"); document.body.classList.remove("voicemin"); vStart();
@@ -1254,7 +1502,7 @@
   });
   if (window.visualViewport) {
     const vv = window.visualViewport;
-    const fit = () => { document.body.style.height = vv.height + "px"; window.scrollTo(0, 0); scrollDown(false); };
+    const fit = () => { document.body.style.height = vv.height + "px"; const inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop); $("sheet").style.bottom = inset + "px"; window.scrollTo(0, 0); scrollDown(false); };
     vv.addEventListener("resize", fit); vv.addEventListener("scroll", () => window.scrollTo(0, 0));
   }
 

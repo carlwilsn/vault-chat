@@ -106,6 +106,27 @@ async function handlePhoneMessage(
   return { ok: true, convId: conv.id };
 }
 
+// ---- inbound: structured mission approval (deterministic — zero model tokens) ----
+// The phone approved a proposed plan. Approval is a CODE path, not a natural-
+// language instruction the model re-interprets: we mint the mission directly
+// from the plan data. Its own supervisor then spawns and runs the workers.
+async function handlePhoneStartMission(mission: {
+  title?: string;
+  goal?: string;
+}): Promise<Record<string, unknown>> {
+  const s = useStore.getState();
+  if (!s.vaultPath) return { error: "no vault open on the box" };
+  if (!s.conversationsLoaded)
+    return { error: "box is still loading conversations — retry in a few seconds" };
+  const goal = String(mission.goal ?? "").trim();
+  const title =
+    String(mission.title ?? "").trim() || goal.split("\n")[0]!.slice(0, 60) || "Mission";
+  if (!goal) return { error: "empty mission brief" };
+  const { startMission } = await import("./offVaultRun");
+  const { id } = await startMission(s.vaultPath, goal, title);
+  return { ok: true, convId: id, mission: title };
+}
+
 // ---- inbound: status snapshot (deterministic — zero model tokens) ----
 
 type HeartbeatFile = Record<string, { lastProgressAt: number; lastTool?: string; running: boolean }>;
@@ -291,7 +312,15 @@ async function onRunEnded(convId: string): Promise<void> {
         );
       }
     } else {
-      void notify("info", `Worker finished — ${c.title}`, body, convId);
+      // No mission thread to report up to (legacy standalone worker): tell the
+      // user directly, but as a structured deliverable so Alerts renders it as
+      // cleanly as any mission-routed one.
+      void notify("info", `Worker finished — ${c.title}`, body, convId, {
+        intention: `Worker deliverable${c.mission ? " · " + c.mission : ""}`,
+        summary: body,
+        icon: "✓",
+        cls: "g",
+      });
     }
   }
 }
@@ -300,15 +329,17 @@ async function onRunEnded(convId: string): Promise<void> {
 // Every notification is (a) appended to <vault>/.vault-chat/notifications.jsonl
 // (the Alerts tab reads this), (b) delivered as Web Push, and (c) broadcast so
 // an open phone page updates its badge live.
+export type NotifyExtra = { intention?: string; summary?: string; icon?: string; cls?: string };
 export async function notify(
   kind: "info" | "ask",
   title: string,
   body: string,
   convId?: string,
+  extra?: NotifyExtra,
 ): Promise<void> {
   const vault = useStore.getState().vaultPath;
   if (!vault) return;
-  const rec = {
+  const rec: Record<string, unknown> = {
     id: Math.random().toString(36).slice(2, 10) + Date.now().toString(36),
     ts: Date.now(),
     kind,
@@ -316,9 +347,18 @@ export async function notify(
     body: body.slice(0, 400),
     convId,
   };
+  // Structured-deliverable fields. Alerts renders these directly (a real
+  // intention line + summary) instead of guessing a category from the title.
+  // All optional and backward-compatible: notifications_json on the box passes
+  // any extra fields straight through, and the page falls back to derived
+  // values when they're absent.
+  if (extra?.intention) rec.intention = String(extra.intention).slice(0, 90);
+  if (extra?.summary) rec.summary = String(extra.summary).slice(0, 200);
+  if (extra?.icon) rec.icon = String(extra.icon).slice(0, 4);
+  if (extra?.cls) rec.cls = String(extra.cls).slice(0, 4);
   await invoke("notification_add", { vault, json: JSON.stringify(rec) }).catch(() => {});
   broadcast({ type: "notif" });
-  await sendPush(rec.title, rec.body).catch(() => {});
+  await sendPush(rec.title as string, rec.body as string).catch(() => {});
 }
 
 // ---- Web Push: VAPID + RFC 8291 (aes128gcm), all WebCrypto ----
@@ -550,17 +590,25 @@ export async function startPhoneAppHost(): Promise<void> {
     .then(({ pubB64u }) => invoke("phone_set_vapid", { key: pubB64u }))
     .catch((e) => console.warn("[phone-app] vapid init failed:", e));
 
-  await listen<{ reqId: string; convId?: string | null; text?: string; supervisor?: boolean }>(
-    "phone:msg",
-    async (event) => {
-      const { reqId, convId, text, supervisor } = event.payload;
-      try {
-        respond(reqId, await handlePhoneMessage(convId ?? null, String(text ?? ""), !!supervisor));
-      } catch (e) {
-        respond(reqId, { error: String(e) });
+  await listen<{
+    reqId: string;
+    convId?: string | null;
+    text?: string;
+    supervisor?: boolean;
+    mission?: { title?: string; goal?: string };
+  }>("phone:msg", async (event) => {
+    const { reqId, convId, text, supervisor, mission } = event.payload;
+    try {
+      // Structured approval payload → mint the mission deterministically.
+      if (mission && (mission.goal || mission.title)) {
+        respond(reqId, await handlePhoneStartMission(mission));
+        return;
       }
-    },
-  );
+      respond(reqId, await handlePhoneMessage(convId ?? null, String(text ?? ""), !!supervisor));
+    } catch (e) {
+      respond(reqId, { error: String(e) });
+    }
+  });
 
   // Full schedule list for the phone's drawer — read fresh from disk so the
   // phone sees the same truth as the SchedulesPanel.
