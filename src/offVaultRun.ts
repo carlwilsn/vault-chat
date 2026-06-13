@@ -678,6 +678,22 @@ export async function startMission(
   return { id, title: t };
 }
 
+// Drop a stopped mission from the phone's Activity on EVERY client. Activity
+// shows missions within a 48h recency window; this ages the thread's
+// lastActivityAt past that cutoff so loadActivity stops listing it. This is
+// box state (synced via the vault), so Safari and the home-screen app agree —
+// replacing the old per-device localStorage hide that made the two diverge.
+export async function dismissMissionFromActivity(vault: string, conversationId: string): Promise<void> {
+  await withConvLock(async () => {
+    const list = await readConversations(vault);
+    const i = list.findIndex((c) => c.id === conversationId);
+    if (i < 0 || list[i]!.source !== "mission") return;
+    list[i] = { ...list[i]!, lastActivityAt: Date.now() - 49 * 60 * 60 * 1000 };
+    await writeConversations(vault, list);
+  });
+  await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+}
+
 // Create a fresh conversation entry on disk for a vault that's not
 // currently in memory. Returns the new conversation's id so the
 // scheduler can bind subsequent runs to it.

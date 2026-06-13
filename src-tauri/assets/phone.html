@@ -1129,9 +1129,9 @@
     if (!a.classList.contains("confirm")) { a.classList.add("confirm"); a.textContent = "Confirm?"; setTimeout(() => { a.classList.remove("confirm"); a.textContent = "Stop"; }, 2200); return; }
     const ids = new Set([mc.id, ...g.active.map((x) => x.run.convId)].filter(Boolean));
     for (const id of ids) api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: id }) }).catch(() => {});
-    // Dismiss it from Activity too — a stopped mission shouldn't keep lingering
-    // in the 48h watch window.
-    if (mc.id) { const hm = hiddenMissions(); hm.add(mc.id); saveHiddenMissions(hm); }
+    // The box drops the mission from Activity (it ages the thread out of the
+    // 48h window) when it handles the /kill above — consistently on every
+    // client, instead of a per-device hide. Re-load after a beat to reflect it.
     closeSheet(); toast("Mission stopped."); setTimeout(loadActivity, 600);
   }
   // A worker is a read-only artifact: state + its Supervisor ⇄ Worker thread.
@@ -1217,10 +1217,12 @@
         box.appendChild(el('<div class="sec">Missions</div>'));
         box.appendChild(el('<div class="empty">Nothing in flight. Hand the agent a goal in Chat — it proposes a plan, you approve, and the mission with its workers lands here.</div>'));
       }
-      const hm = hiddenMissions();
+      // Activity reflects the box's state ONLY — no per-device filtering, so
+      // every client (Safari, home-screen app) shows the same thing. A stopped
+      // mission is dropped box-side (dismissMissionFromActivity) and ages out
+      // of this window for everyone, rather than being hidden on one device.
       for (const [name, g] of missions) {
         const mc = g.conv || { id: "", title: name, goal: "", preview: "" };
-        if (mc.id && hm.has(mc.id) && !g.active.length) continue; // stopped + idle → dismissed on this device
         const head = el('<div class="msec"><span class="k">Mission</span><b></b><span class="mc"></span><button class="spec">spec</button></div>');
         head.querySelector("b").textContent = name;
         const live = g.active.length || (g.conv && runIds.has(g.conv.id));
