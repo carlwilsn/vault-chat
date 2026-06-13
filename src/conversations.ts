@@ -10,8 +10,8 @@ export type ConversationSource =
   | "worker"
   // A mission thread: the dedicated supervisor that owns one user-approved
   // goal — it spawns and monitors that goal's workers and reports by Notify.
-  // Created by the assistant's StartMission tool; it lives on the Activity
-  // surface, not in the chats list.
+  // Created deterministically when the user approves a proposed mission (no
+  // agent mints one); it lives on the Activity surface, not the chats list.
   | "mission";
 export type ConversationStatus = "idle" | "running";
 

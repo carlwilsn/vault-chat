@@ -914,10 +914,10 @@
     toast(d.result || "Stop sent.");
   }
 
-  // North Star: approving a proposed plan tells the assistant to mint the
-  // MISSION (StartMission) — the mission's own supervisor then spawns and
-  // monitors the workers. Sent as an explicit instruction so it works even on
-  // a vault whose supervisor prompt predates the convention.
+  // North Star: approving a proposed plan mints the MISSION directly — no
+  // agent does it. The plan is handed over as structured data and the box
+  // creates the mission deterministically; its supervisor then spawns and
+  // monitors the workers.
   async function approvePlan(card) {
     if (card.classList.contains("approved")) return;
     card.classList.add("approved");
@@ -926,8 +926,8 @@
     const desc = (card.querySelector(".pc-desc")?.textContent || "").trim();
     const tasks = [...card.querySelectorAll(".pc-tasks li")].map((li) => "- " + li.textContent.trim());
     // Approval is a STRUCTURED action, not a chat prompt: hand the plan over as
-    // data and the box mints the mission deterministically (StartMission). Its
-    // own supervisor then spawns and runs the workers.
+    // data and the box mints the mission deterministically. Its own supervisor
+    // then spawns and runs the workers.
     const goal = [title, desc, tasks.length ? "Tasks:\n" + tasks.join("\n") : ""].filter(Boolean).join("\n\n");
     try {
       const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mission: { title, goal } }) });

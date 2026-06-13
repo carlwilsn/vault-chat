@@ -1083,7 +1083,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           effectiveMission = caller?.mission?.trim() || "";
         }
         if (!effectiveMission) {
-          return "Refused: every worker belongs to a mission. Pass `mission` (the user-approved goal's short name) — or, for a new substantial goal, create the mission first with StartMission and let IT spawn the workers.";
+          return "Refused: every worker belongs to a mission. You're inside one, so this should inherit automatically — pass `mission` (this goal's short name) if it didn't. Workers only ever run under a mission; nothing spawns them standalone.";
         }
         const { startWorker } = await import("./offVaultRun");
         const { id, title: t } = await startWorker(vault, task, title, undefined, effectiveMission);
@@ -1092,7 +1092,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     }),
     ProposeMission: tool({
       description:
-        "Propose a mission to the user as an Approve card — the ONLY way you (the assistant) put real work in motion. Call this for any substantial, multi-part ask instead of grinding it in this chat. It does NOT start anything: it renders a card (title + the tasks you'd hand to separate workers) that the user taps to approve, and approval mints the mission deterministically. You have no StartMission/StartWorker — proposing is your job; running is the mission's. Keep `tasks` to the few that genuinely parallelize (three crisp tasks beat ten). After calling it, tell the user it's ready to approve and stay conversational — do NOT claim you started anything.",
+        "Propose a mission to the user as an Approve card — the ONLY way you (the assistant) put real work in motion. Call this for any substantial, multi-part ask instead of grinding it in this chat. It does NOT start anything: it renders a card (title + the tasks you'd hand to separate workers) that the user taps to approve, and approval mints the mission deterministically. You can't start a mission or spawn workers — proposing is your job; running is the mission's. Keep `tasks` to the few that genuinely parallelize (three crisp tasks beat ten). After calling it, tell the user it's ready to approve and stay conversational — do NOT claim you started anything.",
       inputSchema: z.object({
         title: z
           .string()
@@ -1110,25 +1110,6 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         // confirm back to the model so it doesn't re-propose or claim it started.
         const n = Array.isArray(tasks) ? tasks.length : 0;
         return `Proposed mission "${title}" (${n} task${n === 1 ? "" : "s"}) — shown to the user as an Approve card. Nothing has started: if they approve, the mission is created and runs itself. Don't repeat the proposal or start work yourself; tell them it's ready to approve and stay conversational.`;
-      },
-    }),
-    StartMission: tool({
-      description:
-        "Create a NEW MISSION: a dedicated supervisor thread that owns one user-approved goal end-to-end — it plans, spawns its own workers, monitors them on self-scheduled wakes, spawns MORE workers as monitoring teaches it something new, and reports milestones via Notify. Call this the moment the user approves a plan (or hands you a substantial multi-part goal): one mission per goal. Don't grind the goal in THIS chat and don't fan out loose workers from here — you stay the light conversational assistant; the mission does the running. It appears in Activity with its workers grouped beneath it.",
-      inputSchema: z.object({
-        goal: z
-          .string()
-          .describe(
-            "The approved goal, fully self-contained: the plan's tasks, key context, constraints, and the success criterion. The mission supervisor starts FRESH with only this brief.",
-          ),
-        title: z
-          .string()
-          .describe("Short mission name — the Activity group header (e.g. the plan title)."),
-      }),
-      execute: async ({ goal, title }) => {
-        const { startMission } = await import("./offVaultRun");
-        const { id, title: t } = await startMission(vault, goal, title);
-        return `Mission "${t}" started (thread ${id}). Its supervisor is briefing in now: it will spawn its own workers (grouped under this mission in Activity) and Notify the user at milestones. Tell the user it's underway — you stay free to keep talking.`;
       },
     }),
     Notify: tool({
@@ -1335,26 +1316,23 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   };
 
   // Enforce the layers in the toolset itself — prompt discipline is a
-  // suggestion; a missing tool is a guarantee:
-  //   assistant — PROPOSES missions (the ProposeMission tool → an Approve card)
-  //               and waits for the user's approval; it can NEVER start one
-  //               itself, and can never spawn a worker. Approval mints the
-  //               mission deterministically (the cockpit's structured Approve →
-  //               startMission), not the model — so a mission only ever exists
-  //               because the user said so.
-  //   mission   — spawns and steers ITS workers, but can't propose or mint
-  //               sub-missions;
-  //   worker    — does the task, nothing else. No orchestration, and no
-  //               direct line to the user (Notify/AskUser): a worker reports
-  //               by ENDING its turn with a clear report — its mission is
-  //               woken with the result and decides what reaches the user.
+  // suggestion; a missing tool is a guarantee. No agent can START a mission:
+  // the assistant PROPOSES (ProposeMission → an Approve card) and the user's
+  // approval mints it deterministically (Approve → startMission in code), so a
+  // mission only ever exists because the user said so.
+  //   assistant — has ProposeMission; can't spawn a worker.
+  //   mission   — spawns and steers ITS workers (StartWorker); can't propose.
+  //   worker    — does the task, nothing else. No orchestration, and no direct
+  //               line to the user (Notify/AskUser): a worker reports by ENDING
+  //               its turn with a clear report — its mission is woken with the
+  //               result and decides what reaches the user.
   const drop = (names: string[]) => {
     for (const n of names) delete (full as Record<string, unknown>)[n];
   };
-  if (tier === "mission") drop(["StartMission", "ProposeMission"]);
+  if (tier === "mission") drop(["ProposeMission"]);
   else if (tier === "worker")
-    drop(["StartMission", "StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission"]);
-  else drop(["StartWorker", "StartMission"]);
+    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission"]);
+  else drop(["StartWorker"]);
   return full;
 }
 
