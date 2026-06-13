@@ -6,7 +6,39 @@ import {
   writeSchedules,
 } from "./schedules";
 import { sendMessage } from "./chat-controller";
+import { readConversations } from "./conversations";
 import { vlog } from "./debugLog";
+
+// Resume sweep runs at most once per vault per app session.
+const resumedVaults = new Set<string>();
+
+// Recover missions interrupted by a crash, OS restart, or update relaunch. A
+// mission turn flips its thread to "running" before the model call and only
+// resets it in a `finally`; a hard process kill skips that, so the mission
+// comes back (status reset to idle on load) with an UNANSWERED brief — no
+// assistant turn, no workers, wedged forever. On boot we re-run any mission
+// whose last message is still a user turn so the supervisor actually starts
+// (and ends up with at least one worker, as it always should). Server box only
+// — gated by fireSchedulesOnThisMachine, same as schedule firing, so a client
+// machine viewing the same vault never double-runs it.
+async function resumeInterruptedMissions(vault: string): Promise<void> {
+  if (!fireSchedulesOnThisMachine()) return;
+  const convs = await readConversations(vault).catch(() => []);
+  const cutoff = Date.now() - 72 * 60 * 60 * 1000; // don't resurrect ancient threads
+  for (const c of convs) {
+    if (c.source !== "mission") continue;
+    if ((c.lastActivityAt ?? 0) < cutoff) continue;
+    const msgs = (c.messages ?? []).filter((m) => !m.hidden);
+    const last = msgs[msgs.length - 1];
+    if (!last || last.role !== "user") continue; // completed turns end on an assistant message
+    vlog(`[mission-resume] ${c.id} (${c.title}) — re-running interrupted turn`);
+    const { runWorkerTurn } = await import("./offVaultRun");
+    void runWorkerTurn(vault, c.id, last.content, {
+      modelId: useStore.getState().supervisorModelId,
+      resume: true,
+    }).catch((e) => console.warn("[mission-resume] failed:", e));
+  }
+}
 
 // Multi-vault scheduler. Each tracked vault gets its own loop that
 // reads its schedules.jsonl every 30s and fires any due schedules.
@@ -119,6 +151,14 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
   const initialSchedules = await readSchedules(vault).catch(() => []);
   schedulesByVault.set(vault, initialSchedules);
   emit();
+  // One-shot on the server box: resume any mission left mid-turn by a
+  // crash/restart, so an approved mission never just sits there unworked.
+  if (!resumedVaults.has(vault)) {
+    resumedVaults.add(vault);
+    void resumeInterruptedMissions(vault).catch((e) =>
+      console.warn("[mission-resume] sweep failed:", e),
+    );
+  }
   let cancelled = false;
 
   const tick = async () => {

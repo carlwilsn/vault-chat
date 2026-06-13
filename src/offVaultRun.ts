@@ -450,7 +450,7 @@ export async function runWorkerTurn(
   vault: string,
   conversationId: string,
   message: string,
-  opts: { modelId?: string } = {},
+  opts: { modelId?: string; resume?: boolean } = {},
 ): Promise<{ reply: string; error?: string }> {
   const store = useStore.getState();
   // Workers default to the heavy long-horizon worker model (Fable), NOT the
@@ -480,13 +480,15 @@ export async function runWorkerTurn(
     const list = await readConversations(vault);
     const idx = list.findIndex((c) => c.id === conversationId);
     if (idx < 0) return null;
-    list[idx] = {
-      ...list[idx]!,
-      messages: [...list[idx]!.messages, userMsg],
-      lastActivityAt: Date.now(),
-    };
+    // Resume mode: `message` is ALREADY the thread's last turn (an interrupted
+    // mission/worker we're re-running after a crash/restart) — don't append a
+    // duplicate. Normal mode appends the new user turn.
+    const messages = opts.resume
+      ? list[idx]!.messages
+      : [...list[idx]!.messages, userMsg];
+    list[idx] = { ...list[idx]!, messages, lastActivityAt: Date.now() };
     await writeConversations(vault, list);
-    return { messages: list[idx]!.messages, role: list[idx]!.role };
+    return { messages, role: list[idx]!.role };
   });
   if (!seeded) return { reply: "", error: `worker thread not found: ${conversationId}` };
   const baseMessages = seeded.messages;
