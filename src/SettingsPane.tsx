@@ -53,6 +53,11 @@ import {
   setTelegramModelId,
   type TelegramSnapshot,
 } from "./telegram";
+
+// Telegram UI is hidden for now — the phone surface replaced it. The poller and
+// telegram.ts plumbing are left intact (dormant) so already-enabled vaults keep
+// working; flip this to re-expose the settings.
+const TELEGRAM_UI_ENABLED = false;
 import {
   fireSchedulesOnThisMachine,
   setFireSchedulesOnThisMachine,
@@ -630,7 +635,7 @@ export function SettingsPane() {
 
         <div className="h-px bg-border" />
 
-        <TelegramSection />
+        {TELEGRAM_UI_ENABLED && <TelegramSection />}
 
         <div className="h-px bg-border" />
 
@@ -1841,20 +1846,13 @@ function PhoneLinkRow({ link }: { link: string }) {
 }
 
 function PhoneVoiceSection() {
-  const [voiceLink, setVoiceLink] = useState<string | null>(null);
   const [chatLink, setChatLink] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     void (async () => {
-      const { getPhoneVoiceLink, getPhoneChatLink } = await import("./phoneVoice");
-      const [v, c] = await Promise.all([
-        getPhoneVoiceLink().catch(() => null),
-        getPhoneChatLink().catch(() => null),
-      ]);
-      if (alive) {
-        setVoiceLink(v);
-        setChatLink(c);
-      }
+      const { getPhoneChatLink } = await import("./phoneVoice");
+      const c = await getPhoneChatLink().catch(() => null);
+      if (alive) setChatLink(c);
     })();
     return () => {
       alive = false;
@@ -1867,10 +1865,11 @@ function PhoneVoiceSection() {
         Phone
       </h3>
       <p className="text-[11px] text-muted-foreground/70">
-        <span className="font-medium text-muted-foreground">Chat</span> — the full agent
-        from your phone (over Tailscale): send messages, watch runs stream, open vault
-        files, kill runs. Add it to your Home Screen, then enable notifications from the
-        ☰ menu for coach check-ins and run-done pings.
+        One link — the full agent on your phone over Tailscale: send messages, watch runs
+        stream, open vault files, stop runs, and start{" "}
+        <span className="font-medium text-muted-foreground">voice</span> from the ☰ menu. Add
+        it to your Home Screen, then enable notifications from the menu for coach check-ins
+        and run-done pings.
       </p>
       {chatLink ? (
         <PhoneLinkRow link={chatLink} />
@@ -1879,21 +1878,12 @@ function PhoneVoiceSection() {
           Link appears once Tailscale is up on this box.
         </p>
       )}
-      <p className="text-[11px] text-muted-foreground/70 pt-1">
-        <span className="font-medium text-muted-foreground">Voice</span> — tap the orb to
-        talk: mic and speaker on your phone, brain and vault on this box. Must be an{" "}
-        <span className="font-mono">https://</span> link for the phone mic to work; if it
-        shows <span className="font-mono">http://</span>, enable HTTPS in your Tailscale
-        admin (DNS). On this computer, <span className="font-mono">http://localhost:8848</span>{" "}
-        also works for a quick test.
+      <p className="text-[11px] text-muted-foreground/60 pt-1">
+        Voice needs an <span className="font-mono">https://</span> link for the phone mic; if
+        it shows <span className="font-mono">http://</span>, enable HTTPS in your Tailscale
+        admin (DNS). <span className="font-mono">http://localhost:8848</span> also works here
+        for a quick test.
       </p>
-      {voiceLink ? (
-        <PhoneLinkRow link={voiceLink} />
-      ) : (
-        <p className="text-[11px] text-muted-foreground/60">
-          Link appears once Tailscale is up on this box.
-        </p>
-      )}
     </section>
   );
 }

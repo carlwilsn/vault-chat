@@ -7,13 +7,13 @@ import {
   saveVaultSystemPrompt,
   loadVaultVoicePrompt,
   saveVaultVoicePrompt,
-  loadVaultTelegramPrompt,
-  saveVaultTelegramPrompt,
+  loadVaultSupervisorPrompt,
+  saveVaultSupervisorPrompt,
 } from "./meta";
 
 // The agent's editable config for a vault, all under .vault-chat/agent/.
 // Each tab is one file; Save writes whichever tabs changed.
-type TabKey = "north" | "system" | "voice" | "telegram";
+type TabKey = "north" | "system" | "voice" | "supervisor";
 
 const TABS: {
   key: TabKey;
@@ -53,17 +53,17 @@ const TABS: {
     save: saveVaultVoicePrompt,
   },
   {
-    key: "telegram",
-    label: "Telegram",
-    file: ".vault-chat/agent/telegram.md",
-    desc: "How the agent replies to messages from this vault's Telegram bot — length, formatting, image handling. Edit this to make the Telegram agent actually follow your rules. Seeded from the app default.",
-    placeholder: "The Telegram-mode reply rules for this vault.",
-    load: loadVaultTelegramPrompt,
-    save: saveVaultTelegramPrompt,
+    key: "supervisor",
+    label: "Supervisor",
+    file: ".vault-chat/agent/supervisor.md",
+    desc: "The always-on supervisor role — how it orchestrates missions and workers, paces its goal loop on self-scheduled wakes, and decides what reaches you. Layers on top of the system prompt for mission and background runs. Seeded from the app default.",
+    placeholder: "The supervisor / mission-orchestration role for this vault.",
+    load: loadVaultSupervisorPrompt,
+    save: saveVaultSupervisorPrompt,
   },
 ];
 
-const EMPTY: Record<TabKey, string> = { north: "", system: "", voice: "", telegram: "" };
+const EMPTY: Record<TabKey, string> = { north: "", system: "", voice: "", supervisor: "" };
 
 export function NorthStarModal({
   vault,
@@ -88,13 +88,13 @@ export function NorthStarModal({
     setLoaded(false);
     setError(null);
     void (async () => {
-      const [north, system, voice, telegram] = await Promise.all([
+      const [north, system, voice, supervisor] = await Promise.all([
         loadVaultNorthStar(vault),
         loadVaultSystemPrompt(vault),
         loadVaultVoicePrompt(vault),
-        loadVaultTelegramPrompt(vault),
+        loadVaultSupervisorPrompt(vault),
       ]);
-      const next: Record<TabKey, string> = { north, system, voice, telegram };
+      const next: Record<TabKey, string> = { north, system, voice, supervisor };
       setTexts(next);
       setOrig(next);
       setLoaded(true);
