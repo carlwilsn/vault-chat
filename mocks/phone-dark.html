@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>vault-chat phone — dark theme, full states</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --page:#0a0a0a;--bg:#000;--surface:#111112;--raised:#1a1a1b;
+    --line:rgba(255,255,255,.08);--line-2:rgba(255,255,255,.15);
+    --text:#f0f0f0;--dim:#8c8c92;--faint:#56565c;--white:#fff;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--page);color:var(--text);
+    font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    -webkit-font-smoothing:antialiased;padding:36px 24px 80px}
+  h2.sec{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);
+    font-weight:600;margin:44px 0 22px;text-align:center}
+  .stage{display:flex;gap:40px 44px;justify-content:center;flex-wrap:wrap;align-items:flex-start}
+  .col{display:flex;flex-direction:column;align-items:center;gap:13px}
+  .caption{font-size:12px;color:var(--dim)}
+
+  .phone{width:336px;height:706px;background:var(--bg);border-radius:42px;
+    border:1px solid var(--line-2);position:relative;overflow:hidden;
+    display:flex;flex-direction:column;box-shadow:0 0 0 7px #0c0c0c,0 24px 50px rgba(0,0,0,.6)}
+  .island{position:absolute;top:10px;left:50%;transform:translateX(-50%);width:98px;height:27px;background:#000;border-radius:16px;z-index:30}
+  .sb{height:46px;flex:0 0 46px;display:flex;align-items:flex-end;justify-content:space-between;padding:0 23px 6px;font-size:12.5px;font-weight:600}
+  .sb .ic{display:flex;gap:6px}.sb .ic svg{width:15px;height:15px}
+
+  .hdr{height:52px;flex:0 0 52px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;gap:10px}
+  .hbtn{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;color:var(--dim);background:none;border:none;flex:none}
+  .hbtn svg{width:21px;height:21px}
+  .htitle{flex:1;text-align:center;font-size:14px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .htitle.empty{color:var(--faint);font-weight:400}
+
+  .body{flex:1;overflow:auto;padding:12px 16px 6px;display:flex;flex-direction:column;gap:18px}
+  .who{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);font-weight:600;margin-bottom:7px}
+  .u{align-self:flex-end;max-width:84%;background:var(--raised);border-radius:17px 17px 6px 17px;padding:10px 13px;font-size:13.5px;line-height:1.5}
+  .a{align-self:stretch}.a p{margin:0 0 9px;font-size:13.5px;line-height:1.6;color:#dcdce0}
+  .chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;padding:4px 9px;font-size:11px;color:var(--dim);font-family:var(--mono);margin-bottom:10px}
+  .chip svg{width:12px;height:12px;color:var(--text)}
+
+  .plan{border:1px solid var(--line-2);border-radius:15px;overflow:hidden;background:var(--surface)}
+  .plan-h{padding:10px 14px;color:var(--dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;border-bottom:1px solid var(--line)}
+  .plan-b{padding:14px}
+  .plan-t{font-weight:600;font-size:14.5px;margin:0 0 11px}
+  .ptask{display:flex;gap:10px;align-items:flex-start;color:#cdcdd2;font-size:12.5px;line-height:1.45;padding:4px 0}
+  .ptask .n{flex:0 0 19px;height:19px;border-radius:6px;border:1px solid var(--line-2);color:var(--dim);font-size:10.5px;display:flex;align-items:center;justify-content:center;margin-top:1px;font-family:var(--mono)}
+  .approve{width:100%;margin-top:13px;background:var(--white);color:#000;border:none;border-radius:11px;padding:12px;font-family:inherit;font-size:13.5px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px}
+  .approve svg{width:15px;height:15px}
+  .approve.done{background:var(--surface);color:var(--dim);border:1px solid var(--line)}
+  .pmeta{text-align:center;font-size:11.5px;color:var(--faint);margin-top:10px}
+
+  .hint{margin:auto;text-align:center;padding:0 28px}
+  .hint b{display:block;font-size:19px;font-weight:600;margin-bottom:9px;letter-spacing:-.01em}
+  .hint span{font-size:13px;color:var(--dim);line-height:1.55}
+
+  @keyframes pul{0%,100%{opacity:1}50%{opacity:.25}}
+  /* tool calls: collapsed summary when done, live list while working */
+  .steps{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:9px;padding:6px 11px;font-size:11.5px;color:var(--dim);margin-top:13px;font-family:var(--mono)}
+  .steps .ck{width:13px;height:13px;color:var(--text);flex:none}
+  .steps .cv{width:13px;height:13px;color:var(--faint);flex:none}
+  .steplist{display:flex;flex-direction:column;gap:11px;margin-bottom:12px}
+  .step{display:flex;align-items:center;gap:11px;font-size:12.5px;font-family:var(--mono)}
+  .step .nm{color:var(--text)}.step .tg{color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ind{width:14px;height:14px;flex:none;display:flex;align-items:center;justify-content:center}
+  .ind .chk{width:13px;height:13px;color:var(--dim)}
+  .pulse{position:relative;width:13px;height:13px}
+  .pulse:before{content:"";position:absolute;inset:0;border-radius:50%;background:var(--white);animation:pul 1.5s infinite}
+  .pulse:after{content:"";position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--white);animation:ping 1.7s infinite}
+  @keyframes ping{0%{transform:scale(1);opacity:.55}100%{transform:scale(2.6);opacity:0}}
+  .stream{font-size:13.5px;line-height:1.6;color:#dcdce0}
+  .thinking{padding:14px 0 8px}
+
+  .offbar{display:flex;align-items:center;gap:8px;margin:8px 16px 0;border:1px solid var(--line-2);border-radius:11px;padding:8px 12px;font-size:12px;color:var(--dim);flex:0 0 auto}
+  .offbar b{color:var(--text);font-weight:600}
+  .offbar .od{width:6px;height:6px;border-radius:50%;background:var(--dim);animation:pul 1.4s infinite}
+
+  .composer{flex:0 0 auto;padding:11px 14px 26px}
+  .inwrap{display:flex;align-items:center;gap:9px;background:var(--surface);border:1px solid var(--line-2);border-radius:23px;padding:6px 6px 6px 17px;min-height:46px}
+  .inwrap .ph{flex:1;font-size:13.5px;color:var(--faint)}
+  .send{width:34px;height:34px;border-radius:50%;background:var(--white);color:#000;display:flex;align-items:center;justify-content:center;flex:none}
+  .send svg{width:17px;height:17px}
+  .send.stop{background:var(--white)}.send.stop .sq{width:11px;height:11px;background:#000;border-radius:3px}
+
+  .atitle{font-size:24px;font-weight:600;letter-spacing:-.02em;padding:4px 2px 14px}
+  .mcard{border:1px solid var(--line);border-radius:15px;background:var(--surface);margin-bottom:14px;overflow:hidden}
+  .mcard-h{display:flex;align-items:center;gap:10px;padding:14px 14px 0}
+  .mcard-h .mt{flex:1;font-weight:600;font-size:14px}
+  .mcard-h .spec{font-size:10.5px;color:var(--dim);border:1px solid var(--line-2);border-radius:8px;padding:4px 10px;font-weight:500}
+  .mstate{display:flex;align-items:center;gap:8px;padding:8px 14px 13px;font-size:12px;color:var(--dim)}
+  .mstate .run{width:6px;height:6px;border-radius:50%;background:var(--white)}
+  .mstate .run.done{background:var(--faint)}
+  .wk{display:flex;align-items:center;gap:11px;padding:12px 14px;border-top:1px solid var(--line)}
+  .wk .wd{width:6px;height:6px;border-radius:50%;flex:none}
+  .wk .wd.run{background:var(--white)}.wk .wd.idle{background:var(--faint)}
+  .wk .wn{flex:1;font-size:13px}.wk .wt{font-size:11px;color:var(--faint);font-family:var(--mono)}
+
+  /* overlay menu / drawer / sheet / voice sit on a dimmed body */
+  .dim{position:absolute;inset:0;background:rgba(0,0,0,.55);z-index:20}
+  .menu{position:absolute;top:88px;right:12px;width:228px;background:#0e0e0f;border:1px solid var(--line-2);border-radius:16px;padding:7px;z-index:25}
+  .mrow{display:flex;align-items:center;gap:12px;padding:12px 12px;border-radius:11px;font-size:14px;color:var(--text)}
+  .mrow.cur{background:var(--raised)}
+  .mrow svg{width:19px;height:19px;color:var(--dim);flex:none}
+  .mrow .nm{flex:1}
+  .mrow .ct{font-size:11px;background:var(--white);color:#000;border-radius:9px;min-width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-weight:600;padding:0 5px}
+  .mrow .pip{width:7px;height:7px;border-radius:50%;background:var(--white)}
+  .mdiv{height:1px;background:var(--line);margin:5px 9px}
+
+  .drawer{position:absolute;top:0;left:0;bottom:0;width:270px;background:#0c0c0d;border-right:1px solid var(--line-2);z-index:25;display:flex;flex-direction:column;padding-top:46px}
+  .dtop{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 10px}
+  .dtop b{font-size:15px;font-weight:600}
+  .newb{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;background:var(--white);color:#000;border:none;border-radius:10px;padding:7px 12px}
+  .newb svg{width:14px;height:14px}
+  .clist{flex:1;overflow:auto;padding:4px 8px}
+  .crow{padding:11px 12px;border-radius:11px}
+  .crow.cur{background:var(--raised)}
+  .crow .ct2{font-size:13.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .crow .cp{font-size:11.5px;color:var(--faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  .alert{border:1px solid var(--line);border-radius:14px;background:var(--surface);padding:13px 14px;margin-bottom:12px}
+  .alert.ask{border-color:var(--line-2);background:#141415}
+  .al-top{display:flex;align-items:center;gap:9px;margin-bottom:7px}
+  .al-ico{width:24px;height:24px;border-radius:7px;border:1px solid var(--line-2);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex:none}
+  .alert.ask .al-ico{background:var(--white);color:#000;border:none}
+  .al-int{font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  .al-t{font-size:14px;font-weight:600;margin-bottom:5px}
+  .al-s{font-size:12.5px;color:var(--dim);line-height:1.5}
+  .al-rep{margin-top:11px;display:flex;align-items:center;gap:9px;background:var(--bg);border:1px solid var(--line-2);border-radius:20px;padding:7px 7px 7px 14px}
+  .al-rep .ph{flex:1;font-size:12.5px;color:var(--faint)}
+  .al-rep .send{width:30px;height:30px}.al-rep .send svg{width:15px;height:15px}
+  .al-time{font-size:11px;color:var(--faint);margin-left:auto}
+
+  .sheet{position:absolute;left:0;right:0;bottom:0;background:#0e0e0f;border-top:1px solid var(--line-2);border-radius:22px 22px 0 0;z-index:25;padding:0 18px 26px}
+  .grab{width:38px;height:4px;border-radius:2px;background:var(--line-2);margin:11px auto 4px}
+  .sh-head{display:flex;align-items:center;gap:11px;padding:8px 0 14px;border-bottom:1px solid var(--line)}
+  .sh-ico{width:34px;height:34px;border-radius:10px;border:1px solid var(--line-2);display:flex;align-items:center;justify-content:center;flex:none}
+  .sh-ico svg{width:18px;height:18px}
+  .sh-int{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  .sh-t{font-size:15px;font-weight:600}
+  .speclist{list-style:none;margin:14px 0 0;padding:0}
+  .speclist li{display:flex;gap:10px;font-size:13px;color:#d2d2d8;padding:8px 0;border-bottom:1px solid var(--line);line-height:1.45}
+  .speclist .k{color:var(--faint);min-width:74px;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;padding-top:1px}
+  .crit{margin-top:14px;background:var(--bg);border:1px solid var(--line);border-radius:11px;padding:12px;font-family:var(--mono);font-size:12px;color:#dcdce0;line-height:1.55}
+
+  .voice{position:absolute;inset:0;background:#000;z-index:25;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:46px;padding:40px}
+  .wave{display:flex;align-items:center;gap:6px;height:84px}
+  .wave i{width:5px;background:var(--white);border-radius:3px;animation:wv 1s infinite ease-in-out}
+  .wave i:nth-child(odd){animation-delay:.22s}.wave i:nth-child(3n){animation-delay:.46s}.wave i:nth-child(4n){animation-delay:.66s}
+  @keyframes wv{0%,100%{height:10px;opacity:.45}50%{height:64px;opacity:1}}
+  .vend{font-size:13.5px;color:var(--dim)}
+
+  /* app icon proposals */
+  .iconrow{display:flex;gap:32px;justify-content:center;flex-wrap:wrap;margin-top:6px}
+  .ic-wrap{display:flex;flex-direction:column;align-items:center;gap:12px}
+  .tile{width:96px;height:96px;border-radius:22px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line-2);background:#0b0b0c}
+  .tile.inv{background:#fff;border-color:#fff}
+  .tile.sel{box-shadow:0 0 0 2px var(--white)}
+  .tile svg{width:46px;height:46px}
+  .ic-lbl{font-size:12px;color:var(--dim)}
+  .ic-lbl.sel{color:var(--text);font-weight:500}
+</style>
+</head>
+<body>
+
+<h2 class="sec">Chat — the core surface</h2>
+<div class="stage">
+
+  <div class="col"><div class="phone">
+    <div class="island"></div>
+    <div class="sb"><span>9:41</span><span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 16h3v4H2zM8 12h3v8H8zM14 8h3v12h-3zM20 4h3v16h-3z"/></svg></span></div>
+    <div class="hdr">
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg></button>
+      <div class="htitle empty">New chat</div>
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    </div>
+    <div class="body"><div class="hint"><b>What needs doing?</b><span>quick questions get answers. bigger asks get scoped before anything runs.</span></div></div>
+    <div class="composer"><div class="inwrap"><span class="ph">Message…</span><button class="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div></div>
+  </div><div class="caption">Empty — new chat</div></div>
+
+  <div class="col"><div class="phone">
+    <div class="island"></div>
+    <div class="sb"><span>9:41</span><span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 16h3v4H2zM8 12h3v8H8zM14 8h3v12h-3zM20 4h3v16h-3z"/></svg></span></div>
+    <div class="hdr">
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg></button>
+      <div class="htitle">Gap-attribution sweep</div>
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    </div>
+    <div class="body">
+      <div><div class="who" style="text-align:right">you</div><div class="u">Kick off the 160M gap-attribution sweep — all five arms.</div></div>
+      <div class="a">
+        <div class="who">agent</div>
+        <p>Real multi-part work — I won't grind it here. Approve and its supervisor owns the sweep.</p>
+        <div class="plan">
+          <div class="plan-h">Proposed mission · approve to start</div>
+          <div class="plan-b">
+            <div class="plan-t">160M gap-attribution sweep</div>
+            <div class="ptask"><span class="n">1</span>Run arms stock + bitnet, commit eval loss</div>
+            <div class="ptask"><span class="n">2</span>Run fp16-weights + no-act-quant arms</div>
+            <div class="ptask"><span class="n">3</span>Run structure-only, summarise the gap</div>
+            <button class="approve"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M5 12l5 5L20 7"/></svg>Approve &amp; run</button>
+            <div class="pmeta">or reply to refine</div>
+          </div>
+        </div>
+        <div class="steps"><svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7"/></svg>Ran 2 steps<svg class="cv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+      </div>
+    </div>
+    <div class="composer"><div class="inwrap"><span class="ph">Message…</span><button class="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div></div>
+  </div><div class="caption">Proposing — approve card</div></div>
+
+  <div class="col"><div class="phone">
+    <div class="island"></div>
+    <div class="sb"><span>9:42</span><span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 16h3v4H2zM8 12h3v8H8zM14 8h3v12h-3zM20 4h3v16h-3z"/></svg></span></div>
+    <div class="hdr">
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg></button>
+      <div class="htitle">densing-law notes</div>
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    </div>
+    <div class="body">
+      <div><div class="who" style="text-align:right">you</div><div class="u">Summarise the three densing-law papers into one note.</div></div>
+      <div class="a">
+        <div class="who">agent</div>
+        <div class="stream">Pulling the three papers together — the through-line is capability-density doubling about every few months, so the note should lead with that and treat the rest as evidence.</div>
+        <div class="thinking"><span class="pulse"></span></div>
+      </div>
+    </div>
+    <div class="composer"><div class="inwrap"><span class="ph">Message…</span><button class="send stop"><span class="sq"></span></button></div></div>
+  </div><div class="caption">Running — stream + stop</div></div>
+
+  <div class="col"><div class="phone">
+    <div class="island"></div>
+    <div class="sb"><span>9:44</span><span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 16h3v4H2zM8 12h3v8H8zM14 8h3v12h-3zM20 4h3v16h-3z"/></svg></span></div>
+    <div class="hdr">
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg></button>
+      <div class="htitle">Gap-attribution sweep</div>
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    </div>
+    <div class="offbar"><span class="od"></span><b>box unreachable</b> — retrying, messages queue</div>
+    <div class="body">
+      <div><div class="who" style="text-align:right">you</div><div class="u">How's arm 2 looking?</div></div>
+      <div class="a"><div class="who">queued</div><p style="color:var(--faint)">Will send when the box is back.</p></div>
+    </div>
+    <div class="composer"><div class="inwrap"><span class="ph">Message…</span><button class="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div></div>
+  </div><div class="caption">Offline — queued</div></div>
+
+</div>
+
+<h2 class="sec">Navigation — menu &amp; conversations</h2>
+<div class="stage">
+
+  <div class="col"><div class="phone">
+    <div class="island"></div>
+    <div class="sb"><span>9:41</span><span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 16h3v4H2zM8 12h3v8H8zM14 8h3v12h-3zM20 4h3v16h-3z"/></svg></span></div>
+    <div class="hdr">
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg></button>
+      <div class="htitle">Gap-attribution sweep</div>
+      <button class="hbtn" style="color:var(--text)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    </div>
+    <div class="body"></div>
+    <div class="dim"></div>
+    <div class="menu">
+      <div class="mrow cur"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg><span class="nm">Chat</span></div>
+      <div class="mrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg><span class="nm">Activity</span><span class="ct">2</span></div>
+      <div class="mrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg><span class="nm">Alerts</span><span class="ct">1</span></div>
+      <div class="mrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 19v3"/></svg><span class="nm">Voice</span></div>
+      <div class="mdiv"></div>
+      <div class="mrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M4 6h4M4 12h2M4 18h6"/></svg><span class="nm">Box &amp; settings</span><span class="pip"></span></div>
+    </div>
+  </div><div class="caption">☰ menu — nav lives here</div></div>
+
+  <div class="col"><div class="phone">
+    <div class="island"></div>
+    <div class="sb"><span>9:41</span><span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 16h3v4H2zM8 12h3v8H8zM14 8h3v12h-3zM20 4h3v16h-3z"/></svg></span></div>
+    <div class="body"></div>
+    <div class="dim"></div>
+    <div class="drawer">
+      <div class="dtop"><b>Conversations</b><button class="newb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>New</button></div>
+      <div class="clist">
+        <div class="crow cur"><div class="ct2">Gap-attribution sweep</div><div class="cp">Approve &amp; run · 2m</div></div>
+        <div class="crow"><div class="ct2">densing-law notes</div><div class="cp">Wrote densing-law.md · 14m</div></div>
+        <div class="crow"><div class="ct2">Morning briefing</div><div class="cp">3 things on deck today · 6h</div></div>
+        <div class="crow"><div class="ct2">torchtitan config Qs</div><div class="cp">the warmup is set in… · 1d</div></div>
+      </div>
+    </div>
+  </div><div class="caption">Conversations drawer</div></div>
+
+</div>
+
+<h2 class="sec">Missions &amp; alerts</h2>
+<div class="stage">
+
+  <div class="col"><div class="phone">
+    <div class="island"></div>
+    <div class="sb"><span>9:43</span><span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 16h3v4H2zM8 12h3v8H8zM14 8h3v12h-3zM20 4h3v16h-3z"/></svg></span></div>
+    <div class="hdr">
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg></button>
+      <div class="htitle empty"></div>
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    </div>
+    <div class="body">
+      <div class="atitle">Activity</div>
+      <div class="mcard">
+        <div class="mcard-h"><span class="mt">160M gap-attribution sweep</span><span class="spec">spec</span></div>
+        <div class="mstate"><span class="run"></span>2 running · 1 queued · watching</div>
+        <div class="wk"><span class="wd run"></span><span class="wn">arm: bitnet</span><span class="wt">Bash · 8m</span></div>
+        <div class="wk"><span class="wd run"></span><span class="wn">arm: fp16-weights</span><span class="wt">eval · 2m</span></div>
+        <div class="wk"><span class="wd idle"></span><span class="wn">arm: structure-only</span><span class="wt">queued</span></div>
+      </div>
+      <div class="mcard">
+        <div class="mcard-h"><span class="mt">Lyric — densing readings</span><span class="spec">spec</span></div>
+        <div class="mstate"><span class="run done"></span>done · 3 sources summarised</div>
+      </div>
+    </div>
+  </div><div class="caption">Activity — missions &amp; workers</div></div>
+
+  <div class="col"><div class="phone">
+    <div class="island"></div>
+    <div class="sb"><span>9:43</span><span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 16h3v4H2zM8 12h3v8H8zM14 8h3v12h-3zM20 4h3v16h-3z"/></svg></span></div>
+    <div class="hdr">
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg></button>
+      <div class="htitle empty"></div>
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    </div>
+    <div class="body">
+      <div class="atitle">Alerts</div>
+      <div class="alert ask">
+        <div class="al-top"><div class="al-ico">?</div><div><div class="al-int">Needs your call · 160M MVP</div></div><span class="al-time">2m</span></div>
+        <div class="al-t">Seed 3 diverged</div>
+        <div class="al-s">step 800, +0.05 nat above seed 1 — real effect, or match the LR and rerun (~9 min)?</div>
+        <div class="al-rep"><span class="ph">Reply…</span><button class="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div>
+      </div>
+      <div class="alert">
+        <div class="al-top"><div class="al-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12l5 5L20 7"/></svg></div><div><div class="al-int">Mission done · densing readings</div></div><span class="al-time">1h</span></div>
+        <div class="al-t">3 sources summarised</div>
+        <div class="al-s">wrote lyric/densing-law.md — capability-density doubling, with the three sources cited.</div>
+      </div>
+      <div class="alert">
+        <div class="al-top"><div class="al-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></div><div><div class="al-int">Action taken</div></div><span class="al-time">3h</span></div>
+        <div class="al-t">Terminated an idle GPU box</div>
+        <div class="al-s">gap-attr run finished; box was idle 6 min, so I shut it down.</div>
+      </div>
+    </div>
+  </div><div class="caption">Alerts — "needs you" + info</div></div>
+
+  <div class="col"><div class="phone">
+    <div class="island"></div>
+    <div class="sb"><span>9:43</span><span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 16h3v4H2zM8 12h3v8H8zM14 8h3v12h-3zM20 4h3v16h-3z"/></svg></span></div>
+    <div class="hdr">
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg></button>
+      <div class="htitle empty"></div>
+      <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    </div>
+    <div class="body" style="filter:brightness(.5)">
+      <div class="atitle">Activity</div>
+      <div class="mcard"><div class="mcard-h"><span class="mt">160M gap-attribution sweep</span><span class="spec">spec</span></div><div class="mstate"><span class="run"></span>2 running · 1 queued</div></div>
+    </div>
+    <div class="dim"></div>
+    <div class="sheet">
+      <div class="grab"></div>
+      <div class="sh-head">
+        <div class="sh-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
+        <div style="flex:1"><div class="sh-int">Mission · success criterion</div><div class="sh-t">160M gap-attribution sweep</div></div>
+      </div>
+      <ul class="speclist">
+        <li><span class="k">state</span><span>2 of 5 arms done · 2 running · 1 queued</span></li>
+        <li><span class="k">started</span><span>today 02:10 · ETA ~05:40 UTC</span></li>
+        <li><span class="k">owner</span><span>worker f80b251a holds the GPU box</span></li>
+      </ul>
+      <div class="crit">done when: all 5 arms' eval.loss committed to<br>docs/.../gap-attribution/results/ and the gap table is written.</div>
+    </div>
+  </div><div class="caption">Spec sheet — the criterion</div></div>
+
+</div>
+
+<h2 class="sec">Voice</h2>
+<div class="stage">
+  <div class="col"><div class="phone">
+    <div class="island"></div>
+    <div class="sb"><span>9:45</span><span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 16h3v4H2zM8 12h3v8H8zM14 8h3v12h-3zM20 4h3v16h-3z"/></svg></span></div>
+    <div class="voice">
+      <div class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="vend">tap to end</div>
+    </div>
+  </div><div class="caption">Voice — live session</div></div>
+</div>
+
+<h2 class="sec">App icon — same minimal idea</h2>
+<div class="iconrow">
+  <div class="ic-wrap">
+    <div class="tile"><svg viewBox="0 0 48 48" fill="none" stroke="#fff" stroke-width="2.6" stroke-linejoin="round"><path d="M11 11h26a4 4 0 0 1 4 4v13a4 4 0 0 1-4 4H21l-8 6v-6a4 4 0 0 1-2-3.5V15a4 4 0 0 1 4-4Z"/></svg></div>
+    <div class="ic-lbl">Bubble</div>
+  </div>
+  <div class="ic-wrap">
+    <div class="tile"><svg viewBox="0 0 48 48" fill="none"><path d="M11 11h26a4 4 0 0 1 4 4v13a4 4 0 0 1-4 4H21l-8 6v-6a4 4 0 0 1-2-3.5V15a4 4 0 0 1 4-4Z" stroke="#fff" stroke-width="2.6" stroke-linejoin="round"/><circle cx="24" cy="21.5" r="3.2" fill="#fff"/></svg></div>
+    <div class="ic-lbl">Bubble + pulse</div>
+  </div>
+  <div class="ic-wrap">
+    <div class="tile"><svg viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="5" fill="#fff"/><circle cx="24" cy="24" r="12.5" stroke="#fff" stroke-width="2.4" opacity=".85"/><circle cx="24" cy="24" r="19" stroke="#fff" stroke-width="2.2" opacity=".4"/></svg></div>
+    <div class="ic-lbl">Pulse</div>
+  </div>
+  <div class="ic-wrap">
+    <div class="tile sel"><svg viewBox="0 0 48 48" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13 13 24 35 35 13"/></svg></div>
+    <div class="ic-lbl sel">Monogram v · chosen</div>
+  </div>
+  <div class="ic-wrap">
+    <div class="tile inv"><svg viewBox="0 0 48 48" fill="none"><path d="M11 11h26a4 4 0 0 1 4 4v13a4 4 0 0 1-4 4H21l-8 6v-6a4 4 0 0 1-2-3.5V15a4 4 0 0 1 4-4Z" stroke="#000" stroke-width="2.6" stroke-linejoin="round"/><circle cx="24" cy="21.5" r="3.2" fill="#000"/></svg></div>
+    <div class="ic-lbl">Inverse (light)</div>
+  </div>
+</div>
+
+</body>
+</html>
