@@ -71,12 +71,12 @@
   .step .nm{color:var(--text)}.step .tg{color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ind{width:14px;height:14px;flex:none;display:flex;align-items:center;justify-content:center}
   .ind .chk{width:13px;height:13px;color:var(--dim)}
-  .pulse{position:relative;width:20px;height:20px;margin-left:3px}
+  .pulse{display:inline-block;position:relative;width:8px;height:8px;margin-left:3px}
   .pulse:before{content:"";position:absolute;inset:0;border-radius:50%;background:var(--white);animation:pul 1.5s infinite}
-  .pulse:after{content:"";position:absolute;inset:0;border-radius:50%;border:2px solid var(--white);animation:ping 1.8s infinite}
-  @keyframes ping{0%{transform:scale(1);opacity:.5}100%{transform:scale(2.3);opacity:0}}
+  .pulse:after{content:"";position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--white);animation:ping 1.8s infinite}
+  @keyframes ping{0%{transform:scale(1);opacity:.5}100%{transform:scale(2.6);opacity:0}}
   .stream{font-size:13.5px;line-height:1.6;color:#dcdce0}
-  .thinking{padding:18px 0 16px}
+  .thinking{padding:11px 0 9px}
 
   .offbar{display:flex;align-items:center;gap:8px;margin:8px 16px 0;border:1px solid var(--line-2);border-radius:11px;padding:8px 12px;font-size:12px;color:var(--dim);flex:0 0 auto}
   .offbar b{color:var(--text);font-weight:600}
@@ -371,16 +371,15 @@
       <div class="grab"></div>
       <div class="sh-head">
         <div class="sh-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
-        <div style="flex:1"><div class="sh-int">Mission · the approved plan</div><div class="sh-t">160M gap-attribution sweep</div></div>
+        <div style="flex:1"><div class="sh-int">Mission · done when</div><div class="sh-t">Run the 160M gap-attribution sweep</div></div>
       </div>
       <div class="mtasks">
-        <div class="mtask"><span class="st"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7"/></svg></span><span class="lbl2">Run arms stock + bitnet, commit eval loss</span><span class="tag">done</span></div>
-        <div class="mtask"><span class="st"><span class="dot"></span></span><span class="lbl2">Run fp16-weights + no-act-quant arms</span><span class="tag">running</span></div>
-        <div class="mtask"><span class="st"><span class="hollow"></span></span><span class="lbl2">Run structure-only, summarise the gap table</span><span class="tag">queued</span></div>
+        <div class="mtask"><span class="st"><span class="dot"></span></span><span class="lbl2">All 5 arms trained, eval.loss committed for each</span><span class="tag">2 / 5</span></div>
+        <div class="mtask"><span class="st"><span class="hollow"></span></span><span class="lbl2">Ternary-vs-FP16 gap computed per arm</span><span class="tag">pending</span></div>
+        <div class="mtask"><span class="st"><span class="hollow"></span></span><span class="lbl2">Gap table written under docs/ with the readout</span><span class="tag">pending</span></div>
       </div>
-      <div class="crit"><div class="ck2">done when</div><div class="cv2">all 5 arms' eval.loss is committed and the gap table is written.</div></div>
     </div>
-  </div><div class="caption">Mission detail — the approved plan, live</div>
+  </div><div class="caption">Mission spec — the done-when, live</div>
 
 </div>
 
