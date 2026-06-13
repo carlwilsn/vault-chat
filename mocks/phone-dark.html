@@ -69,12 +69,12 @@
   .step .nm{color:var(--text)}.step .tg{color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ind{width:14px;height:14px;flex:none;display:flex;align-items:center;justify-content:center}
   .ind .chk{width:13px;height:13px;color:var(--dim)}
-  .pulse{position:relative;width:13px;height:13px}
+  .pulse{position:relative;width:20px;height:20px;margin-left:3px}
   .pulse:before{content:"";position:absolute;inset:0;border-radius:50%;background:var(--white);animation:pul 1.5s infinite}
-  .pulse:after{content:"";position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--white);animation:ping 1.7s infinite}
-  @keyframes ping{0%{transform:scale(1);opacity:.55}100%{transform:scale(2.6);opacity:0}}
+  .pulse:after{content:"";position:absolute;inset:0;border-radius:50%;border:2px solid var(--white);animation:ping 1.8s infinite}
+  @keyframes ping{0%{transform:scale(1);opacity:.5}100%{transform:scale(2.3);opacity:0}}
   .stream{font-size:13.5px;line-height:1.6;color:#dcdce0}
-  .thinking{padding:14px 0 8px}
+  .thinking{padding:18px 0 16px}
 
   .offbar{display:flex;align-items:center;gap:8px;margin:8px 16px 0;border:1px solid var(--line-2);border-radius:11px;padding:8px 12px;font-size:12px;color:var(--dim);flex:0 0 auto}
   .offbar b{color:var(--text);font-weight:600}
@@ -142,10 +142,17 @@
   .sh-ico svg{width:18px;height:18px}
   .sh-int{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);font-weight:600}
   .sh-t{font-size:15px;font-weight:600}
-  .speclist{list-style:none;margin:14px 0 0;padding:0}
-  .speclist li{display:flex;gap:10px;font-size:13px;color:#d2d2d8;padding:8px 0;border-bottom:1px solid var(--line);line-height:1.45}
-  .speclist .k{color:var(--faint);min-width:74px;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;padding-top:1px}
-  .crit{margin-top:14px;background:var(--bg);border:1px solid var(--line);border-radius:11px;padding:12px;font-family:var(--mono);font-size:12px;color:#dcdce0;line-height:1.55}
+  .mtasks{margin:14px 0 0}
+  .mtask{display:flex;gap:12px;align-items:flex-start;padding:11px 0;border-bottom:1px solid var(--line);font-size:13.5px;color:#d2d2d8;line-height:1.45}
+  .mtask .st{width:16px;flex:none;display:flex;align-items:center;justify-content:center;margin-top:1px}
+  .mtask .st .chk{width:15px;height:15px;color:var(--dim)}
+  .mtask .st .dot{width:8px;height:8px;border-radius:50%;background:var(--white)}
+  .mtask .st .hollow{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--faint)}
+  .mtask .lbl2{flex:1}
+  .mtask .tag{font-size:10.5px;color:var(--faint);font-family:var(--mono);margin-top:2px;flex:none}
+  .crit{margin-top:15px}
+  .crit .ck2{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:600;margin-bottom:6px}
+  .crit .cv2{font-size:13px;color:#d2d2d8;line-height:1.5}
 
   .voice{position:absolute;inset:0;background:#000;z-index:25;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:46px;padding:40px}
   .wave{display:flex;align-items:center;gap:6px;height:84px}
@@ -191,9 +198,8 @@
       <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
     </div>
     <div class="body">
-      <div><div class="who" style="text-align:right">you</div><div class="u">Kick off the 160M gap-attribution sweep — all five arms.</div></div>
+      <div class="u">Kick off the 160M gap-attribution sweep — all five arms.</div>
       <div class="a">
-        <div class="who">agent</div>
         <p>Real multi-part work — I won't grind it here. Approve and its supervisor owns the sweep.</p>
         <div class="plan">
           <div class="plan-h">Proposed mission · approve to start</div>
@@ -221,9 +227,8 @@
       <button class="hbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
     </div>
     <div class="body">
-      <div><div class="who" style="text-align:right">you</div><div class="u">Summarise the three densing-law papers into one note.</div></div>
+      <div class="u">Summarise the three densing-law papers into one note.</div>
       <div class="a">
-        <div class="who">agent</div>
         <div class="stream">Pulling the three papers together — the through-line is capability-density doubling about every few months, so the note should lead with that and treat the rest as evidence.</div>
         <div class="thinking"><span class="pulse"></span></div>
       </div>
@@ -241,8 +246,8 @@
     </div>
     <div class="offbar"><span class="od"></span><b>box unreachable</b> — retrying, messages queue</div>
     <div class="body">
-      <div><div class="who" style="text-align:right">you</div><div class="u">How's arm 2 looking?</div></div>
-      <div class="a"><div class="who">queued</div><p style="color:var(--faint)">Will send when the box is back.</p></div>
+      <div class="u">How's arm 2 looking?</div>
+      <div class="a"><p style="color:var(--faint)">Will send when the box is back.</p></div>
     </div>
     <div class="composer"><div class="inwrap"><span class="ph">Message…</span><button class="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div></div>
   </div><div class="caption">Offline — queued</div></div>
@@ -268,7 +273,7 @@
       <div class="mrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg><span class="nm">Alerts</span><span class="ct">1</span></div>
       <div class="mrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 19v3"/></svg><span class="nm">Voice</span></div>
       <div class="mdiv"></div>
-      <div class="mrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M4 6h4M4 12h2M4 18h6"/></svg><span class="nm">Box &amp; settings</span><span class="pip"></span></div>
+      <div class="mrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M4 6h4M4 12h2M4 18h6"/></svg><span class="nm">Box &amp; settings</span></div>
     </div>
   </div><div class="caption">☰ menu — nav lives here</div></div>
 
@@ -363,16 +368,16 @@
       <div class="grab"></div>
       <div class="sh-head">
         <div class="sh-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
-        <div style="flex:1"><div class="sh-int">Mission · success criterion</div><div class="sh-t">160M gap-attribution sweep</div></div>
+        <div style="flex:1"><div class="sh-int">Mission · the approved plan</div><div class="sh-t">160M gap-attribution sweep</div></div>
       </div>
-      <ul class="speclist">
-        <li><span class="k">state</span><span>2 of 5 arms done · 2 running · 1 queued</span></li>
-        <li><span class="k">started</span><span>today 02:10 · ETA ~05:40 UTC</span></li>
-        <li><span class="k">owner</span><span>worker f80b251a holds the GPU box</span></li>
-      </ul>
-      <div class="crit">done when: all 5 arms' eval.loss committed to<br>docs/.../gap-attribution/results/ and the gap table is written.</div>
+      <div class="mtasks">
+        <div class="mtask"><span class="st"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7"/></svg></span><span class="lbl2">Run arms stock + bitnet, commit eval loss</span><span class="tag">done</span></div>
+        <div class="mtask"><span class="st"><span class="dot"></span></span><span class="lbl2">Run fp16-weights + no-act-quant arms</span><span class="tag">running</span></div>
+        <div class="mtask"><span class="st"><span class="hollow"></span></span><span class="lbl2">Run structure-only, summarise the gap table</span><span class="tag">queued</span></div>
+      </div>
+      <div class="crit"><div class="ck2">done when</div><div class="cv2">all 5 arms' eval.loss is committed and the gap table is written.</div></div>
     </div>
-  </div><div class="caption">Spec sheet — the criterion</div></div>
+  </div><div class="caption">Mission detail — the approved plan, live</div>
 
 </div>
 
