@@ -1370,22 +1370,15 @@
     openSheet({
       intent: n.intention || meta.intention, title: n.title, ico: n.icon || meta.icon, cls: n.cls || meta.cls,
       action: n.convId ? { label: "Open thread", onClick: () => { closeSheet(); openThread(n.convId, n.title); } } : null,
-      bodyHtml: '<div class="md">' + md(n.body || "") + "</div>" + (n.convId ? '<div class="lbl">What it did</div><div class="alsum-load" id="alLoad">loading…</div>' : ""),
+      // Show the agent's POLISHED summary (the Notify body) — not the raw
+      // thread. "Open thread" is right there for the unedited transcript.
+      bodyHtml: '<div class="md">' + md(n.body || "*(no summary)*") + "</div>",
       footHtml: (isAction && n.convId) ? '<div class="reply"><textarea class="rinp" rows="1" placeholder="tell the mission what to do…" autocomplete="off"></textarea><button class="rsend">↑</button></div>' : "",
       wire: (body, foot) => wireReply(foot, async (v) => {
         await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: v }) }).catch(() => {});
         await markRead(n.id); closeSheet(); toast("Sent."); loadAlerts();
       }),
     });
-    if (n.convId) {
-      try {
-        const r = await api("/conversation?id=" + encodeURIComponent(n.convId) + "&n=40");
-        const d = await r.json(); if (d.error) throw new Error(d.error);
-        const last = (d.messages || []).slice().reverse().find((m) => m.role === "assistant" && (m.content || "").trim());
-        const l = $("alLoad");
-        if (l) { l.outerHTML = '<div class="md">' + md(last ? last.content.slice(0, 6000) : "*(no report yet — it may still be working; tap Open thread to watch live)*") + "</div>"; typeset($("sheetBody")); }
-      } catch (e) { const l = $("alLoad"); if (l) l.textContent = "Couldn't load: " + (e.message || e); }
-    }
   }
   function attachSwipeArchive(card, action) {
     let x0 = 0, y0 = 0, dx = 0, mode = null;

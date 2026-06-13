@@ -568,7 +568,11 @@ export async function sendPush(title: string, body: string, url = "/phone"): Pro
 export async function mirrorPushNotify(title: string, text: string): Promise<void> {
   const raw = text.trim();
   if (!raw) return;
-  const body = raw.replace(/\s+/g, " ").slice(0, 300);
+  // Keep the message's own markdown/newlines (the Alerts sheet renders it) and
+  // give a briefing room to breathe — collapsing to one 300-char line turned a
+  // structured briefing into an unreadable wall. The card preview is truncated
+  // by CSS; the sheet scrolls, so a fuller body is fine.
+  const body = raw.slice(0, 1800).trim();
   // For the generic mirror, lead with the message's first line as the title so
   // the Alert reads like the message itself (e.g. a coach check-in's opening
   // line) instead of a meta "Delivered to your phone".
