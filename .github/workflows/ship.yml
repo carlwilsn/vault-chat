@@ -165,8 +165,12 @@ jobs:
           releaseBody: ${{ needs.prepare.outputs.body }}
           releaseDraft: false
           prerelease: false
-          includeUpdaterJson: true
-          updaterJsonPreferNsis: true
+          # No per-job manifest: the Windows and Linux jobs used to each upload
+          # their own latest.json (only their platforms) and race — last write
+          # won, sometimes dropping a platform and breaking its updater. The
+          # `manifest` job below assembles one complete latest.json from all the
+          # signatures instead. The signed `.sig` artifacts still upload here.
+          includeUpdaterJson: false
           args: ''
 
       # Demo vault attachment — Windows job only (runs once, no duplication).
@@ -260,6 +264,48 @@ jobs:
           releaseBody: ${{ needs.prepare.outputs.body }}
           releaseDraft: false
           prerelease: false
-          includeUpdaterJson: true
-          updaterJsonPreferNsis: false
+          # See build_windows: the merged manifest is built by the `manifest`
+          # job from the signatures, not per-platform here (which raced).
+          includeUpdaterJson: false
           args: '--bundles appimage,deb --config src-tauri/tauri.linux.conf.json'
+
+  # ── Phase 3: one complete updater manifest ───────────────────────────────
+  # Both platforms are built and their signed installers + `.sig` files are on
+  # the release. Assemble a SINGLE latest.json covering every platform and
+  # upload it — replacing the per-job race that kept dropping a platform and
+  # breaking that platform's in-app updater.
+  manifest:
+    needs: [prepare, build_windows, build_linux]
+    if: needs.prepare.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+
+      - name: Download release signatures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p sigs
+          gh release download "v${{ needs.prepare.outputs.version }}" \
+            --repo "${{ github.repository }}" --pattern '*.sig' --dir sigs
+          ls -1 sigs
+
+      - name: Assemble complete latest.json
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          NOTES: ${{ needs.prepare.outputs.body }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/build-updater-manifest.mjs
+
+      - name: Publish merged manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "v${{ needs.prepare.outputs.version }}" latest.json --clobber
