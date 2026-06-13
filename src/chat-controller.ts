@@ -22,6 +22,25 @@ let abortRef: AbortController | null = null;
 const COMPACT_THRESHOLD = 0.85;
 const KEEP_RECENT = 4;
 
+// Build the canonical ```plan``` block from a ProposeMission tool call. The
+// cockpit renders this block as an Approve card; generating it from the
+// validated tool args (not the model's free text) is what makes the proposal
+// robust — it can't be malformed or silently dropped. "" when there's nothing
+// to propose (no title and no tasks).
+function planBlockFromProposal(input: unknown): string {
+  const o = (input ?? {}) as { title?: unknown; tasks?: unknown };
+  const title = typeof o.title === "string" ? o.title.trim() : "";
+  const tasks = Array.isArray(o.tasks) ? o.tasks : [];
+  const lines = ["```plan"];
+  if (title) lines.push(`title: ${title}`);
+  for (const t of tasks) {
+    const s = String(t ?? "").trim();
+    if (s) lines.push(`- ${s}`);
+  }
+  lines.push("```");
+  return lines.length > 2 ? lines.join("\n") : "";
+}
+
 export async function sendMessage(
   text: string,
   contextPreamble?: string,
@@ -318,6 +337,19 @@ export async function sendMessage(
         const t: LiveTool = { id: e.id, name: e.name, input: e.input, startedAt: Date.now() };
         tools.push(t);
         if (live) store.pushLiveTool(t);
+        // A ProposeMission call becomes the Approve card on the cockpit. Inject
+        // the canonical plan block (built from the validated args) into the
+        // reply so the card is robust to model formatting drift. Cockpit only —
+        // other surfaces have no card renderer, and Telegram would show the raw
+        // fences as literal text.
+        if (e.name === "ProposeMission" && targetConv?.source === "phone") {
+          const block = planBlockFromProposal(e.input);
+          if (block) {
+            const sep = !acc ? "" : acc.endsWith("\n\n") ? "" : acc.endsWith("\n") ? "\n" : "\n\n";
+            acc += sep + block;
+            if (live) store.appendStreamingText(sep + block);
+          }
+        }
         // Progress heartbeat so a supervisor can tell this run is alive even
         // mid-turn (throttled inside bumpHeartbeat).
         if (targetConvId) void bumpHeartbeat(vault, targetConvId, e.name);

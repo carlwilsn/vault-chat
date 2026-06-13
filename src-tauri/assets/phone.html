@@ -807,10 +807,13 @@
     div.className = (asst ? "amsg" : "m " + (role === "user" ? "user" : "sys")) + (opts.queued ? " queued" : "");
     if (!asst) div.textContent = content;
     else div.innerHTML = '<div class="md">' + md(content) + "</div>";
-    if (tools && tools.length) {
+    // ProposeMission already shows as its own Approve card (the plan block in
+    // the content) — a redundant "ProposeMission" chip would just be noise.
+    const chips = (tools || []).filter((t) => t !== "ProposeMission");
+    if (chips.length) {
       const wrap = document.createElement("div"); wrap.className = "toolchips";
-      for (const t of tools.slice(0, 8)) { const c = document.createElement("span"); c.className = "toolchip"; c.textContent = t; wrap.appendChild(c); }
-      if (tools.length > 8) { const c = document.createElement("span"); c.className = "toolchip"; c.textContent = "+" + (tools.length - 8); wrap.appendChild(c); }
+      for (const t of chips.slice(0, 8)) { const c = document.createElement("span"); c.className = "toolchip"; c.textContent = t; wrap.appendChild(c); }
+      if (chips.length > 8) { const c = document.createElement("span"); c.className = "toolchip"; c.textContent = "+" + (chips.length - 8); wrap.appendChild(c); }
       div.appendChild(wrap);
     }
     if (asst) typeset(div);

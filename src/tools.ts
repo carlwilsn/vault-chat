@@ -1090,6 +1090,28 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         return `Spawned worker "${t}" (id ${id}) under mission "${effectiveMission}" — it's running the task in the background. It runs independently; keep talking to the user. Check on it with ReadConversation (id ${id}) or the run heartbeat, and relay to it with AskWorker.`;
       },
     }),
+    ProposeMission: tool({
+      description:
+        "Propose a mission to the user as an Approve card — the ONLY way you (the assistant) put real work in motion. Call this for any substantial, multi-part ask instead of grinding it in this chat. It does NOT start anything: it renders a card (title + the tasks you'd hand to separate workers) that the user taps to approve, and approval mints the mission deterministically. You have no StartMission/StartWorker — proposing is your job; running is the mission's. Keep `tasks` to the few that genuinely parallelize (three crisp tasks beat ten). After calling it, tell the user it's ready to approve and stay conversational — do NOT claim you started anything.",
+      inputSchema: z.object({
+        title: z
+          .string()
+          .describe("Short mission name — the card heading and the Activity group header, e.g. '160M gap-attribution sweep'."),
+        tasks: z
+          .array(z.string())
+          .min(1)
+          .describe(
+            "One entry per task you'd hand to a separate worker — each a crisp, self-contained instruction. Only the tasks that genuinely parallelize; prefer 2-4.",
+          ),
+      }),
+      execute: async ({ title, tasks }) => {
+        // The card itself is rendered client-side from this call (chat-controller
+        // injects the canonical plan block into the cockpit reply). Here we only
+        // confirm back to the model so it doesn't re-propose or claim it started.
+        const n = Array.isArray(tasks) ? tasks.length : 0;
+        return `Proposed mission "${title}" (${n} task${n === 1 ? "" : "s"}) — shown to the user as an Approve card. Nothing has started: if they approve, the mission is created and runs itself. Don't repeat the proposal or start work yourself; tell them it's ready to approve and stay conversational.`;
+      },
+    }),
     StartMission: tool({
       description:
         "Create a NEW MISSION: a dedicated supervisor thread that owns one user-approved goal end-to-end — it plans, spawns its own workers, monitors them on self-scheduled wakes, spawns MORE workers as monitoring teaches it something new, and reports milestones via Notify. Call this the moment the user approves a plan (or hands you a substantial multi-part goal): one mission per goal. Don't grind the goal in THIS chat and don't fan out loose workers from here — you stay the light conversational assistant; the mission does the running. It appears in Activity with its workers grouped beneath it.",
@@ -1314,12 +1336,14 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
 
   // Enforce the layers in the toolset itself — prompt discipline is a
   // suggestion; a missing tool is a guarantee:
-  //   assistant — PROPOSES missions (a ```plan``` block) and waits for the
-  //               user's approval; it can NEVER start one itself, and can never
-  //               spawn a worker. Approval mints the mission deterministically
-  //               (the cockpit's structured Approve → startMission), not the
-  //               model — so a mission only ever exists because the user said so.
-  //   mission   — spawns and steers ITS workers, but can't mint sub-missions;
+  //   assistant — PROPOSES missions (the ProposeMission tool → an Approve card)
+  //               and waits for the user's approval; it can NEVER start one
+  //               itself, and can never spawn a worker. Approval mints the
+  //               mission deterministically (the cockpit's structured Approve →
+  //               startMission), not the model — so a mission only ever exists
+  //               because the user said so.
+  //   mission   — spawns and steers ITS workers, but can't propose or mint
+  //               sub-missions;
   //   worker    — does the task, nothing else. No orchestration, and no
   //               direct line to the user (Notify/AskUser): a worker reports
   //               by ENDING its turn with a clear report — its mission is
@@ -1327,9 +1351,9 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   const drop = (names: string[]) => {
     for (const n of names) delete (full as Record<string, unknown>)[n];
   };
-  if (tier === "mission") drop(["StartMission"]);
+  if (tier === "mission") drop(["StartMission", "ProposeMission"]);
   else if (tier === "worker")
-    drop(["StartMission", "StartWorker", "AskWorker", "Notify", "AskUser"]);
+    drop(["StartMission", "StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission"]);
   else drop(["StartWorker", "StartMission"]);
   return full;
 }
