@@ -131,6 +131,13 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         unread: parsed.unread ?? false,
         telegramChatId: parsed.telegramChatId,
         role: parsed.role,
+        // The North Star tag MUST survive read-modify-write. Dropping it here
+        // was a load-bearing bug: every message a worker/mission appended ran
+        // through this read and stripped `mission`, so (a) Activity could no
+        // longer group workers under their mission, and (b) after a reload a
+        // mission's own tag was gone, so StartWorker's inheritance came up empty
+        // and refused — the supervisor could spawn no workers at all.
+        mission: parsed.mission,
       });
     } catch {
       // skip
