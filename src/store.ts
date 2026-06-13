@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import type { ModelSpec, ProviderId } from "./providers";
-import { AUTO_MODEL_ID, setLiveCatalog, setAutoRouterCostBias } from "./providers";
+import { AUTO_MODEL_ID, DEFAULT_WORKER_MODEL_ID, setLiveCatalog, setAutoRouterCostBias } from "./providers";
 import type { Skill } from "./skills";
 import type { Note } from "./notes";
 import { readNotes, appendNote, writeAllNotes } from "./notes";
@@ -161,6 +161,14 @@ type ApiKeys = Partial<Record<ProviderId, string>>;
 export type ServiceKeys = { tavily?: string; elevenlabs?: string };
 
 const MODEL_STORAGE = "vault_chat_model";
+// Per-role model overrides. MODEL_STORAGE above is the chat-pane (desktop)
+// model; voice has its own vault_chat_elevenlabs_llm. Each role's run reads its
+// own model so e.g. workers can run a heavy model while the phone assistant
+// stays cheap. Routed in sendMessage (by conversation source) + the worker /
+// mission spawn paths.
+const ASSISTANT_MODEL_STORAGE = "vault_chat_assistant_model";
+const SUPERVISOR_MODEL_STORAGE = "vault_chat_supervisor_model";
+const WORKER_MODEL_STORAGE = "vault_chat_worker_model";
 const THEME_STORAGE = "vault_chat_theme";
 const VAULT_STORAGE = "vault_chat_last_vault";
 const CHAT_STORAGE = "vault_chat_history";
@@ -358,6 +366,9 @@ type State = {
   catalogRefreshing: boolean;
   catalogErrors: Partial<Record<ProviderId, string>>;
   modelId: string;
+  assistantModelId: string;
+  supervisorModelId: string;
+  workerModelId: string;
   theme: Theme;
   // Restrict file-op tools (Read/Write/Edit/Delete/Glob/Grep/ListDir/
   // NotebookEdit/PdfExtract) to the active vault + meta vault. Bash is
@@ -546,6 +557,9 @@ type State = {
   clearServiceKey: (name: keyof ServiceKeys) => void;
   refreshCatalog: () => Promise<void>;
   setModelId: (id: string) => void;
+  setAssistantModelId: (id: string) => void;
+  setSupervisorModelId: (id: string) => void;
+  setWorkerModelId: (id: string) => void;
   setTheme: (t: Theme) => void;
   applyThemeFromEvent: (t: Theme) => void;
   // Turning strict mode ON also flips bashDisabled ON (it's the matching
@@ -690,6 +704,9 @@ export const useStore = create<State>((set) => ({
   // New installs start on Auto (cost-aware routing) rather than the most
   // expensive model. Anyone who has already picked a model keeps it.
   modelId: localStorage.getItem(MODEL_STORAGE) ?? AUTO_MODEL_ID,
+  assistantModelId: localStorage.getItem(ASSISTANT_MODEL_STORAGE) ?? AUTO_MODEL_ID,
+  supervisorModelId: localStorage.getItem(SUPERVISOR_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
+  workerModelId: localStorage.getItem(WORKER_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
   theme: loadTheme(),
   strictVaultMode: loadBoolFlag(STRICT_VAULT_STORAGE, true),
   bashDisabled: loadBoolFlag(BASH_DISABLED_STORAGE, true),
@@ -1203,6 +1220,9 @@ export const useStore = create<State>((set) => ({
     localStorage.setItem(MODEL_STORAGE, id);
     set({ modelId: id });
   },
+  setAssistantModelId: (id) => { localStorage.setItem(ASSISTANT_MODEL_STORAGE, id); set({ assistantModelId: id }); },
+  setSupervisorModelId: (id) => { localStorage.setItem(SUPERVISOR_MODEL_STORAGE, id); set({ supervisorModelId: id }); },
+  setWorkerModelId: (id) => { localStorage.setItem(WORKER_MODEL_STORAGE, id); set({ workerModelId: id }); },
   setTheme: (t) => {
     localStorage.setItem(THEME_STORAGE, t);
     set({ theme: t });

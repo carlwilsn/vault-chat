@@ -632,7 +632,7 @@ export async function startWorker(
   // Fire-and-forget: the worker runs async; we don't await it so the caller
   // (and the user's chat) returns right away. runWorkerTurn appends the task
   // as the worker's first user turn and persists its reply.
-  void runWorkerTurn(vault, id, task, { modelId }).catch((e) =>
+  void runWorkerTurn(vault, id, task, { modelId: modelId || useStore.getState().workerModelId }).catch((e) =>
     console.warn("[worker] start failed:", e),
   );
   return { id, title: t };
@@ -670,7 +670,7 @@ export async function startMission(
     `MISSION BRIEF (user-approved, handed off by their assistant). You own this goal end-to-end.\n\n` +
     `Mission: ${t}\n\n${goal.trim()}\n\n` +
     `Start now: pin the success criterion, open the goal file, spawn your workers (they join this mission automatically), and set your first self-check wake.`;
-  void runWorkerTurn(vault, id, brief, {}).catch((e) =>
+  void runWorkerTurn(vault, id, brief, { modelId: useStore.getState().supervisorModelId }).catch((e) =>
     console.warn("[mission] start failed:", e),
   );
   return { id, title: t };

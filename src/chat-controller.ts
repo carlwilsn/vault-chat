@@ -80,10 +80,19 @@ export async function sendMessage(
   const targetForModelLookup = targetConvIdOverride
     ? s.conversations.find((c) => c.id === targetConvIdOverride)
     : s.conversations.find((c) => c.id === s.activeConversationId);
+  // Route the model by the conversation's role/source: missions run on the
+  // supervisor model, phone (cockpit) chats on the assistant model, telegram on
+  // its own model, and the desktop chat pane on the default modelId. Each falls
+  // back to the chat model if its slot is empty.
+  const convSource = targetForModelLookup?.source;
   let modelId = s.modelId;
-  if (targetForModelLookup?.source === "telegram") {
+  if (convSource === "telegram") {
     const { getTelegramModelId } = await import("./telegram");
     modelId = getTelegramModelId();
+  } else if (convSource === "mission") {
+    modelId = s.supervisorModelId || modelId;
+  } else if (convSource === "phone") {
+    modelId = s.assistantModelId || modelId;
   }
   // Auto mode: resolve the "auto" sentinel to a concrete model. With an
   // OpenRouter key this becomes `openrouter/auto` (server-side trained

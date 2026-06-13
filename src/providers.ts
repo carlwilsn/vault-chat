@@ -18,6 +18,7 @@ export const MODELS: ModelSpec[] = [
   { provider: "anthropic", id: "claude-opus-4-6", label: "Claude Opus 4.6" },
   { provider: "anthropic", id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
   { provider: "anthropic", id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
+  { provider: "openai", id: "gpt-5.5", label: "GPT-5.5" },
   { provider: "openai", id: "gpt-4.1", label: "GPT-4.1" },
   { provider: "openai", id: "gpt-4.1-mini", label: "GPT-4.1 mini" },
   { provider: "google", id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },

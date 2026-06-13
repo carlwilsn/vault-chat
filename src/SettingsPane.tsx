@@ -93,6 +93,12 @@ export function SettingsPane() {
   } = useStore();
   const autoRouterCostBias = useStore((s) => s.autoRouterCostBias);
   const setAutoRouterCostBias = useStore((s) => s.setAutoRouterCostBias);
+  const assistantModelId = useStore((s) => s.assistantModelId);
+  const supervisorModelId = useStore((s) => s.supervisorModelId);
+  const workerModelId = useStore((s) => s.workerModelId);
+  const setAssistantModelId = useStore((s) => s.setAssistantModelId);
+  const setSupervisorModelId = useStore((s) => s.setSupervisorModelId);
+  const setWorkerModelId = useStore((s) => s.setWorkerModelId);
   const vaultPath = useStore((s) => s.vaultPath);
   const [modelSearch, setModelSearch] = useState("");
   const filteredCatalog = (() => {
@@ -351,6 +357,9 @@ export function SettingsPane() {
                 .join(" · ")}
             </p>
           )}
+          <p className="text-[11px] text-muted-foreground/70">
+            This is the <span className="font-medium text-foreground/80">Chat pane</span> (desktop) model. Set the other surfaces under <span className="font-medium text-foreground/80">Models by role</span> below.
+          </p>
           {modelId === AUTO_MODEL_ID && (
             <div className="rounded-md border border-border/60 bg-accent/20 p-3 space-y-2">
               {apiKeys.openrouter ? (
@@ -391,6 +400,53 @@ export function SettingsPane() {
               )}
             </div>
           )}
+        </section>
+
+        <div className="h-px bg-border" />
+
+        <section className="space-y-2">
+          <div>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Models by role
+            </h3>
+            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
+              Each surface runs its own model. <span className="font-medium text-foreground/80">Chat pane</span> is the model above; <span className="font-medium text-foreground/80">Voice</span> is in the Voice section.
+            </p>
+          </div>
+          {(
+            [
+              ["Assistant (phone)", assistantModelId, setAssistantModelId],
+              ["Supervisors (missions)", supervisorModelId, setSupervisorModelId],
+              ["Workers", workerModelId, setWorkerModelId],
+            ] as [string, string, (id: string) => void][]
+          ).map(([label, val, setter]) => (
+            <div key={label} className="flex items-center justify-between gap-3">
+              <span className="text-[12px] text-foreground/90 shrink-0">{label}</span>
+              <div className="min-w-0 flex-1 max-w-[62%]">
+                <MenuSelect
+                  value={val}
+                  onChange={setter}
+                  triggerLabel={
+                    val === AUTO_MODEL_ID
+                      ? "Auto — smart routing"
+                      : (() => {
+                          const m = catalog.find((c) => c.id === val);
+                          return m ? `[${PROVIDER_LABEL[m.provider]}] ${m.label}` : val;
+                        })()
+                  }
+                  groups={[
+                    { options: [{ value: AUTO_MODEL_ID, label: "Auto — smart routing" }] },
+                    {
+                      options: catalog.map((m) => ({
+                        value: m.id,
+                        label: `[${PROVIDER_LABEL[m.provider]}] ${m.label}`,
+                      })),
+                    },
+                  ]}
+                />
+              </div>
+            </div>
+          ))}
         </section>
 
         <div className="h-px bg-border" />
