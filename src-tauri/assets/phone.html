@@ -693,21 +693,37 @@
     return html;
   };
 
-  // Math-aware markdown: protect $…$ / $$…$$ from the markdown pass so emphasis
-  // (_x_, *y*) never mangles TeX, restore the raw delimiters, then KaTeX
-  // auto-render typesets them in the DOM (loaded from CDN; degrades to raw text
-  // when the box has no internet).
+  // Math-aware markdown: protect $$…$$ and *math-like* $…$ from the markdown pass
+  // (so emphasis never mangles TeX), then KaTeX auto-renders them in the DOM.
+  //
+  // A bare "$" is usually CURRENCY, not math ("$0 GPU cost", "~$0.26"). The old
+  // greedy /\$…\$/ matched from one dollar to the next and KaTeX's single-"$"
+  // delimiter rendered the text between as math — eating chunks of supervisor
+  // threads. So: only treat $…$ as math when it looks like math (the char after
+  // the opening "$" is non-space AND non-digit, and the char before the closing
+  // "$" is non-space — currency like $0/$5 never qualifies), restore it as
+  // \(…\), and give the DOM typeset NO single-"$" delimiter at all. Bare dollars
+  // then always stay literal text.
   let mathSeq = 0;
   const md = (src) => {
     const id = ++mathSeq, math = [];
     const s = String(src == null ? "" : src)
       .replace(/\$\$([\s\S]+?)\$\$/g, (m, x) => { math.push("$$" + x + "$$"); return "@@M" + id + "_" + (math.length - 1) + "@@"; })
-      .replace(/\$([^$\n]+?)\$/g, (m, x) => { math.push("$" + x + "$"); return "@@M" + id + "_" + (math.length - 1) + "@@"; });
+      .replace(/\$([^\s\d$][^\n$]*?[^\s$]|[^\s\d$])\$/g, (m, x) => { math.push("\\(" + x + "\\)"); return "@@M" + id + "_" + (math.length - 1) + "@@"; });
     return mdCore(s).replace(new RegExp("@@M" + id + "_(\\d+)@@", "g"), (m, i) => math[+i]);
   };
   function typeset(elm) {
     if (elm && window.renderMathInElement) {
-      try { window.renderMathInElement(elm, { delimiters: [{ left: "$$", right: "$$", display: true }, { left: "$", right: "$", display: false }], throwOnError: false }); } catch {}
+      try {
+        window.renderMathInElement(elm, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "\\[", right: "\\]", display: true },
+            { left: "\\(", right: "\\)", display: false },
+          ],
+          throwOnError: false,
+        });
+      } catch {}
     }
   }
   window.addEventListener("load", () => typeset(document.body));

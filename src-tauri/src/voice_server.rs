@@ -1122,8 +1122,9 @@ fn conversations_summary_json(vault: &str) -> String {
                 // liners over the raw goal/preview slices above.
                 "taskSummary": c.get("taskSummary").and_then(|x| x.as_str()).unwrap_or(""),
                 "statusSummary": c.get("statusSummary").and_then(|x| x.as_str()).unwrap_or(""),
-                // Mode B: cleaned "thinking" digest for the detail view.
-                "thinkingDigest": c.get("thinkingDigest").and_then(|x| x.as_str()).unwrap_or(""),
+                // (thinkingDigest deliberately dropped — the summarized "what the
+                // agent was thinking" overview is gone from the thread; the
+                // per-turn thought-by-thought timeline replaced it.)
                 // Per-criterion "done when" progress: which bullets are verified.
                 "doneWhenDone": c.get("doneWhenDone").cloned().unwrap_or(Value::Array(Vec::new())),
                 // When a mission's supervisor called CompleteMission. The phone
