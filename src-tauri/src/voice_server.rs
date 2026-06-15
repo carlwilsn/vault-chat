@@ -1126,6 +1126,12 @@ fn conversations_summary_json(vault: &str) -> String {
                 "thinkingDigest": c.get("thinkingDigest").and_then(|x| x.as_str()).unwrap_or(""),
                 // Per-criterion "done when" progress: which bullets are verified.
                 "doneWhenDone": c.get("doneWhenDone").cloned().unwrap_or(Value::Array(Vec::new())),
+                // When a mission's supervisor called CompleteMission. The phone
+                // uses this to drop a finished mission off the Activity board (and
+                // surface it in the drawer's Completed list). WITHOUT it the phone
+                // never learns a mission is done, so it lingered on Activity — the
+                // "mission never cleared" bug.
+                "completedAt": c.get("completedAt").and_then(|x| x.as_i64()),
             })
         })
         .collect();
