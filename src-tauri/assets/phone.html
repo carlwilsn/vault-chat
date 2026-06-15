@@ -180,6 +180,13 @@
   .msec .mc.dim{color:#6a6a6a}
   .msec .watch{font-size:11px;color:var(--dim);flex:none;border:1px solid var(--line);border-radius:7px;padding:3px 9px}
   .mnote{margin:0 18px 9px;font-size:12px;color:var(--dim);overflow-wrap:anywhere}
+  /* A mission is a CONTAINER card — its name on top, its worker pills nested
+     inside it — so a mission and its workers read as one unit. */
+  .mgroup{margin:11px 14px 4px;background:var(--surface);border:1px solid var(--line);border-radius:20px;overflow:hidden}
+  .mgroup .msec{padding:14px 17px 10px}
+  .mgroup .wpill{margin:0 9px 9px;background:var(--raised);border-color:#303036}
+  .mgroup .wpill:last-child{margin-bottom:11px}
+  .mgroup .wp-head:active{background:#26262c}
   /* worker pills: one short line per worker, tap to expand state + actions */
   .wpill{margin:0 14px 7px;border:1px solid var(--line);border-radius:17px;background:var(--surface);overflow:hidden}
   .wp-head{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:8px 14px;min-height:37px}
@@ -1398,12 +1405,14 @@
         // Just the mission name — no state chip, no "supervisor" button. Tapping
         // the row opens the one mission view (goal + done-when + thread). The
         // workers below are the at-a-glance state.
+        const group = el('<div class="mgroup"></div>');
         const head = el('<div class="msec"><b></b></div>');
         head.querySelector("b").textContent = name;
         head.onclick = () => openMission(mc, g);
-        box.appendChild(head);
-        for (const { run, c } of g.active) box.appendChild(workerPill(run, c)); // running first
-        for (const c of g.done) box.appendChild(workerPill(null, c)); // then completed
+        group.appendChild(head);
+        for (const { run, c } of g.active) group.appendChild(workerPill(run, c)); // running first
+        for (const c of g.done) group.appendChild(workerPill(null, c)); // then completed
+        box.appendChild(group);
       }
 
       box.appendChild(el('<div class="sec">Scheduled</div>'));
