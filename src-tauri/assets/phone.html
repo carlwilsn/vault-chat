@@ -1192,6 +1192,13 @@
         for (const { run, c } of g.active) wbox.appendChild(workerPill(run, c));
         for (const c of (g.done || [])) wbox.appendChild(workerPill(null, c));
       }
+      // Jump to the supervisor's own thread (brief + thinking + log) — the other
+      // half of "review the supervisor + worker logs" for a completed mission.
+      if (g.conv) {
+        const sup = el('<button class="wbtn" style="margin:12px 14px 2px">View supervisor thread →</button>');
+        sup.onclick = () => openSupervisor(g.conv, g);
+        document.getElementById("sheetBody").appendChild(sup);
+      }
       typeset(document.getElementById("sheetBody"));
     }
   }
@@ -1346,8 +1353,19 @@
         const m = (c.mission || "").trim();
         if (m && !completedKeys.has(m) && missions.has(m)) missions.get(m).done.push(c);
       }
+      // Completed (archived) missions: kept on the page in their own section —
+      // not vanished — so you can review the supervisor + worker logs, then
+      // delete them yourself. Each carries all its workers for the spec view.
+      const archived = [];
+      for (const c of convs) {
+        if (c.source !== "mission" || !c.completedAt) continue;
+        const key = (c.mission || c.title || "").trim() || c.title;
+        const workers = convs.filter((w) => w.source === "worker" && (w.mission || "").trim() === key);
+        archived.push({ conv: c, active: [], done: workers, completedAt: c.completedAt });
+      }
+      archived.sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
 
-      if (!missions.size) {
+      if (!missions.size && !archived.length) {
         box.appendChild(el('<div class="sec">Missions</div>'));
         box.appendChild(el('<div class="empty">Nothing in flight. Hand the agent a goal in Chat — it proposes a plan, you approve, and the mission with its workers lands here.</div>'));
       }
@@ -1372,6 +1390,28 @@
         box.appendChild(head);
         for (const { run, c } of g.active) box.appendChild(workerPill(run, c)); // running first
         for (const c of g.done) box.appendChild(workerPill(null, c)); // then completed
+      }
+
+      // Completed archive: finished missions stay here for review (tap → spec,
+      // with the worker pills + a link to the supervisor thread) until you
+      // delete them yourself — like clearing a notification.
+      if (archived.length) {
+        box.appendChild(el('<div class="sec">Completed</div>'));
+        for (const g of archived) {
+          const mc = g.conv;
+          const head = el('<div class="msec done"><b></b><span class="mc">done</span><button class="spec danger">delete</button></div>');
+          head.querySelector("b").textContent = mc.mission || mc.title;
+          head.onclick = () => openSpec(mc, g);
+          const del = head.querySelector(".spec");
+          del.onclick = async (e) => {
+            e.stopPropagation();
+            if (!del.classList.contains("confirm")) { del.classList.add("confirm"); del.textContent = "confirm?"; setTimeout(() => { if (del.isConnected) { del.classList.remove("confirm"); del.textContent = "delete"; } }, 2200); return; }
+            await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id }) }).catch(() => {});
+            toast("Mission deleted."); setTimeout(loadActivity, 500);
+          };
+          box.appendChild(head);
+          for (const c of g.done) box.appendChild(workerPill(null, c)); // its workers, reviewable
+        }
       }
 
       box.appendChild(el('<div class="sec">Scheduled</div>'));
