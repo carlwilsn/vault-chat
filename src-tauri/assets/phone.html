@@ -433,9 +433,6 @@
 
   <div id="drawer">
     <div class="panel">
-      <h3>Keyboard</h3>
-      <div class="note" id="kbState"></div>
-      <button class="btn" id="kbToggleBtn"></button>
       <h3>Notifications</h3>
       <div class="note" id="pushState">Checking…</div>
       <button class="btn solid" id="pushBtn">Enable notifications</button>
@@ -1499,7 +1496,9 @@
 
   // ---------- in-app keyboard (verbatim) ----------
   const KB_SYS_FLAG = "vc_kb_system";
-  const CUSTOM_KB = localStorage.getItem(KB_SYS_FLAG) !== "1";
+  // In-app keyboard removed — always use the system keyboard. (Was a toggle;
+  // the user moved to the system keyboard, so the custom one is retired.)
+  const CUSTOM_KB = false;
   const kbEl = $("kb");
   let kbLayer = 0, kbShift = false, kbCaps = false, lastShiftAt = 0, lastSpaceAt = 0;
   const KB_LAYERS = [
@@ -1565,9 +1564,6 @@
     input.addEventListener("focus", showKb); input.addEventListener("click", showKb);
     msgsEl.addEventListener("touchstart", hideKb, { passive: true }); msgsEl.addEventListener("mousedown", hideKb);
   }
-  $("kbState").textContent = CUSTOM_KB ? "In-app keyboard is ON — no iOS form bar." : "Using the iOS system keyboard.";
-  $("kbToggleBtn").textContent = CUSTOM_KB ? "Switch to system keyboard" : "Switch to in-app keyboard";
-  $("kbToggleBtn").onclick = () => { localStorage.setItem(KB_SYS_FLAG, CUSTOM_KB ? "1" : "0"); location.reload(); };
 
   // ---------- voice (verbatim iOS-hardened connect) ----------
   const NUM_BARS = 12, DECAY = 0.85;
