@@ -51,12 +51,21 @@ export function FileTree() {
   // Drag threshold. Rows stay statically `draggable` — WebKitGTK (the Linux
   // webview) only honors the draggable flag as it stood at mousedown and
   // ignores a later flip, so the old "arm draggable after movement" trick
-  // killed drag-and-drop entirely on Linux. Instead we record the press
-  // origin here and, in onDragStart, cancel the drag unless the pointer has
-  // travelled past DRAG_THRESHOLD px — so a 1-2px click-twitch no longer
-  // turns into an accidental move, while real drags still work everywhere.
-  const pressRef = useRef<{ x: number; y: number; el: HTMLElement } | null>(null);
-  const DRAG_THRESHOLD = 5;
+  // killed drag-and-drop entirely on Linux. So instead we record the press
+  // origin on mousedown and watch real pointer travel via a window mousemove
+  // listener, flipping `moved` once it passes DRAG_THRESHOLD px. onDragStart
+  // then cancels the drag only when the pointer never actually moved.
+  //
+  // We deliberately do NOT recompute the distance from the dragstart event's
+  // own clientX/clientY: Chromium (Windows WebView2) reports those at the
+  // mousedown origin rather than the moved position, so that check read as
+  // "didn't move" and silently cancelled every drag on Windows. Tracking the
+  // pre-dragstart mousemoves works the same on both webviews. Threshold is
+  // kept under the OS-native drag threshold (~4px) so a deliberate drag's
+  // movement always registers before dragstart fires, while a 1-2px
+  // click-twitch is still rejected.
+  const pressRef = useRef<{ x: number; y: number; el: HTMLElement; moved: boolean } | null>(null);
+  const DRAG_THRESHOLD = 3;
 
   useEffect(() => {
     if (vaultPath && vaultPath !== lastVaultRef.current) {
@@ -78,14 +87,27 @@ export function FileTree() {
     }
   }, [renaming?.path]);
 
-  // Clear a recorded press when the button is released anywhere, so a click
-  // that never became a drag doesn't leave a stale press origin behind.
+  // Watch pointer travel while a row is pressed: flip `moved` once it crosses
+  // the threshold (these mousemoves fire before the webview's dragstart on
+  // both Chromium and WebKitGTK). Clear the recorded press on mouseup so a
+  // click that never became a drag doesn't leave a stale press origin behind.
   useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const p = pressRef.current;
+      if (!p || p.moved) return;
+      if (Math.hypot(e.clientX - p.x, e.clientY - p.y) >= DRAG_THRESHOLD) {
+        p.moved = true;
+      }
+    };
     const onUp = () => {
       pressRef.current = null;
     };
+    window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
-    return () => window.removeEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
   }, []);
 
   useEffect(() => {
@@ -864,24 +886,24 @@ export function FileTree() {
                       return;
                     }
                     if (e.button !== 0) return;
-                    // Record the press origin; onDragStart uses it to apply
-                    // the movement threshold (see DRAG_THRESHOLD note above).
-                    pressRef.current = { x: e.clientX, y: e.clientY, el: e.currentTarget };
+                    // Record the press origin; the window mousemove listener
+                    // flips `moved` once travel passes the threshold, and
+                    // onDragStart reads that flag (see DRAG_THRESHOLD note).
+                    pressRef.current = { x: e.clientX, y: e.clientY, el: e.currentTarget, moved: false };
                   }}
                   onDragEnd={() => {
                     pressRef.current = null;
                   }}
                   onDragStart={(e) => {
                     // Cancel a drag that a tiny click-twitch would otherwise
-                    // start: require a deliberate move past the threshold from
-                    // the press origin. Real drags have already travelled well
-                    // past it by the time dragstart fires.
+                    // start: only proceed if the pointer actually travelled
+                    // past the threshold (tracked by the window mousemove
+                    // listener). We do NOT recompute from this event's own
+                    // clientX/clientY — Chromium/WebView2 reports those at the
+                    // mousedown origin, which read as "no movement" and killed
+                    // every drag on Windows.
                     const p = pressRef.current;
-                    if (
-                      p &&
-                      p.el === e.currentTarget &&
-                      Math.hypot(e.clientX - p.x, e.clientY - p.y) < DRAG_THRESHOLD
-                    ) {
+                    if (p && p.el === e.currentTarget && !p.moved) {
                       e.preventDefault();
                       return;
                     }
