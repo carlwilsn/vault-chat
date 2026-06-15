@@ -927,7 +927,25 @@
       if (d.queued) { mine.classList.add("queued"); toast("Mid-run — queued, sends when it finishes."); }
       else { running = true; stopping = false; renderRunline(); }
       setHeader();
-    } catch (e) { mine.classList.add("queued"); toast("Send failed: " + (e.message || e)); }
+    } catch (e) {
+      const msg = String(e.message || e);
+      // The thread is gone on the box (deleted, or a stale pointer the server's
+      // disk refresh couldn't resolve). Don't dead-end — drop to a fresh chat and
+      // resend as a new conversation, the same recovery openThread uses.
+      if (/not found/i.test(msg) && convId) {
+        convId = null; rememberConv();
+        try {
+          const r2 = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, supervisor: true }) });
+          const d2 = await r2.json();
+          if (r2.ok && !d2.error) {
+            if (d2.convId) { convId = d2.convId; convTitle = text.split("\n")[0].slice(0, 60); rememberConv(); }
+            running = true; stopping = false; renderRunline(); setHeader();
+            return;
+          }
+        } catch {}
+      }
+      mine.classList.add("queued"); toast("Send failed: " + msg);
+    }
   }
   sendBtn.onclick = () => { if (running && convId) void killCurrent(); else void send(); };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });

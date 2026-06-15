@@ -64,6 +64,17 @@ async function handlePhoneMessage(
   let conv: Conversation | undefined;
   if (convId) {
     conv = s.conversations.find((c) => c.id === convId);
+    if (!conv) {
+      // The phone lists and opens threads straight from disk (the /conversations
+      // and /conversation endpoints read the files fresh on every call), but
+      // this lookup uses the in-memory store — which can lag disk: a thread
+      // synced in from another machine, written since the box last loaded, or
+      // dropped by a load race. The phone showed it, so it IS on disk; pull it
+      // in (non-destructive — doesn't disturb the box's active view) and retry
+      // before giving up with "not found".
+      await useStore.getState().refreshConversationFromDisk(s.vaultPath, convId).catch(() => {});
+      conv = useStore.getState().conversations.find((c) => c.id === convId);
+    }
     if (!conv) return { error: `conversation ${convId} not found` };
   } else if (supervisor) {
     // Cockpit chats: every new thread IS the agent — a fresh conversation
