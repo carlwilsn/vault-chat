@@ -1165,6 +1165,17 @@ async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<()
                     let _ = std::fs::remove_file(&stale_json);
                     continue;
                 }
+                // Never SHRINK a conversation. Messages are append-only, so a
+                // conversation only ever grows — an incoming version with FEWER
+                // lines (meta line + one per message) than what's on disk is a
+                // STALE write racing richer disk state: the debounced autosave
+                // flushing an in-memory copy that lags a withConvLock writer
+                // (the brief seed, a worker/supervisor turn) or another machine's
+                // synced-in appends. Honoring it dropped real turns — e.g. a
+                // mission's brief + first turn. Keep the longer on-disk version.
+                if body.lines().count() < existing.lines().count() {
+                    continue;
+                }
             }
             // Write-temp-then-rename so a crash mid-write leaves the previous good
             // file in place. The temp sits at `.vault-chat/` top level so the
