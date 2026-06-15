@@ -372,6 +372,10 @@
   .reply-cta{display:block;width:100%;background:var(--ok);color:#101012;font-weight:700;font-size:15px;border-radius:12px;padding:13px;min-height:46px;text-align:center;border:none;font-family:inherit}
   .reply-cta:active{opacity:.85}
   .thread{display:flex;flex-direction:column;margin:4px 0 2px}
+  /* Internal worker-report wake: a neutral centered note, distinct from the
+     user's own (right) and the supervisor's (left) turns. */
+  .treport{align-self:center;max-width:92%;margin:2px 0 10px;padding:6px 11px;background:var(--raised);border:1px solid var(--line);border-radius:10px;font-size:11.5px;color:var(--dim);text-align:center;line-height:1.45;overflow-wrap:anywhere}
+  .treport b{color:#bcbcbc;font-weight:600}
   .tmsg{display:flex;flex-direction:column;margin-bottom:10px}
   .tmsg.user{align-items:flex-end} .tmsg.asst{align-items:flex-start}
   .tmsg .sender{font-size:9.5px;letter-spacing:.3px;text-transform:uppercase;color:#7c7c7c;font-weight:700;margin:0 5px 3px}
@@ -517,6 +521,7 @@
         m1: { id: "m1", title: "BitNet 160M MVP", source: "mission", status: "idle", messages: [
           { role: "user", content: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP across 3 seeds; commit eval.loss; writeup under docs/. Done = three seeds within 0.005 nat." },
           { role: "assistant", content: "Criterion pinned. Fanning out a worker per seed plus an eval/writeup worker; I'll watch on 15-min wakes and verify before I call it.", tools: ["StartWorker", "StartWorker", "StartWorker", "Schedule"] },
+          { role: "user", content: "Your worker \"seed-42\" (id 99284a75) just finished its turn. Last output: seed 42 trained, eval.loss 1.553 committed under results/.\n\nReview its thread and decide: verified done, steer it (AskWorker), respawn with learnings, or — only if you can't resolve it yourself — bring the user in." },
           { role: "assistant", content: "Read the worker threads. Seeds **42 & 44 landed in tolerance**, eval.loss committed. **Seed 3 diverged** at step 800 (+0.05 nat) — I held it and surfaced the call to you. Kicked the eval/writeup worker since 2 of 3 are in." },
           { role: "user", content: "don't wait on it — spin up a worker to rerun seed 3 at seed 42's LR." },
           { role: "assistant", content: "On it — spawning a worker to rerun seed 3 at seed 42's LR.", tools: ["StartWorker"] },
@@ -1047,11 +1052,20 @@
   function threadHtml(msgs, labels) {
     labels = labels || { user: "You", assistant: "Assistant" };
     return '<div class="thread">' + (msgs || []).map((m) => {
+      const content = m.content || "";
+      // Internal worker-report wakes are system-generated, not the user's own
+      // turn — render them as a compact NEUTRAL note (not a right-aligned "You"
+      // bubble that looks like the user said it) and drop the boilerplate
+      // "review its thread and decide…" steering instruction.
+      if (m.role === "user" && /^Your worker /i.test(content)) {
+        const mm = content.match(/^Your worker\s+"?([^"(]+?)"?\s*(?:\([^)]*\))?\s*just finished[^:]*:\s*([\s\S]*?)(?:\n\nReview its thread|$)/i);
+        const who = (mm ? mm[1] : "a worker").trim();
+        const out = (mm ? mm[2] : content).trim().replace(/\s+/g, " ").slice(0, 200);
+        return '<div class="treport">↳ <b>' + esc(who) + "</b> reported — " + esc(out) + "</div>";
+      }
       const side = m.role === "user" ? "user" : "asst";
       let sender = m.role === "user" ? labels.user : labels.assistant;
-      const content = m.content || "";
       if (m.role === "user" && /^MISSION BRIEF/i.test(content)) sender = "Mission brief · approved";
-      else if (m.role === "user" && /^Your worker /i.test(content)) sender = "Worker report";
       const chips = stepsStr(m.tools);
       const inner = m.role === "user"
         ? '<div class="m user">' + esc(content) + "</div>"
