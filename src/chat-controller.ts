@@ -337,12 +337,16 @@ export async function sendMessage(
         const t: LiveTool = { id: e.id, name: e.name, input: e.input, startedAt: Date.now() };
         tools.push(t);
         if (live) store.pushLiveTool(t);
-        // A ProposeMission call becomes the Approve card on the cockpit. Inject
-        // the canonical plan block (built from the validated args) into the
-        // reply so the card is robust to model formatting drift. Cockpit only —
-        // other surfaces have no card renderer, and Telegram would show the raw
-        // fences as literal text.
-        if (e.name === "ProposeMission" && targetConv?.source === "phone") {
+        // A ProposeMission call becomes an Approve card. Inject the canonical
+        // plan block (built from the validated args) into the reply so the card
+        // is robust to model formatting drift. Surfaces that render the card:
+        // the phone cockpit (source "phone") and the desktop ChatPane (source
+        // "manual"). NOT telegram/scheduled — those go out as plain text, where
+        // raw ``` fences would just read as literal junk.
+        if (
+          e.name === "ProposeMission" &&
+          (targetConv?.source === "phone" || targetConv?.source === "manual")
+        ) {
           const block = planBlockFromProposal(e.input);
           if (block) {
             const sep = !acc ? "" : acc.endsWith("\n\n") ? "" : acc.endsWith("\n") ? "\n" : "\n\n";

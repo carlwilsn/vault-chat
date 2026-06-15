@@ -1073,6 +1073,129 @@ function stripAttachedFooter(src: string): string {
   return src.replace(/\n*\[attached:[^\]]*\]\s*$/, "");
 }
 
+// ---- Mission proposal cards ----
+// The agent's ProposeMission tool makes chat-controller inject a canonical
+// ```plan fenced block into the reply (same block the phone cockpit renders as
+// an Approve card). On the desktop ChatPane we render that block as a card with
+// an "Approve & run" button that mints the mission deterministically — matching
+// the phone's behavior so a chat here has the same mission powers as the phone.
+type PlanSeg =
+  | { kind: "md"; text: string }
+  | { kind: "plan"; title: string; tasks: string[]; desc: string };
+
+function parsePlanBlock(body: string): { title: string; tasks: string[]; desc: string } {
+  let title = "";
+  const tasks: string[] = [];
+  const desc: string[] = [];
+  for (const raw of body.split(/\r?\n/)) {
+    const t = raw.trim();
+    if (!t) continue;
+    const m = t.match(/^title:\s*(.+)$/i);
+    if (m) {
+      title = m[1].trim();
+      continue;
+    }
+    if (/^[-*]\s+/.test(t)) {
+      tasks.push(t.replace(/^[-*]\s+/, ""));
+      continue;
+    }
+    desc.push(t);
+  }
+  return { title, tasks, desc: desc.join(" ") };
+}
+
+// Split assistant content into markdown runs and ```plan cards, preserving
+// order. Whitespace-only markdown runs (the gaps around a block) are dropped so
+// they don't render empty paragraphs.
+function segmentAssistant(content: string): PlanSeg[] {
+  const segs: PlanSeg[] = [];
+  const re = /```plan[ \t]*\r?\n([\s\S]*?)```/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    const before = content.slice(last, m.index);
+    if (before.trim()) segs.push({ kind: "md", text: before });
+    segs.push({ kind: "plan", ...parsePlanBlock(m[1]) });
+    last = re.lastIndex;
+  }
+  if (last === 0) return [{ kind: "md", text: content }];
+  const after = content.slice(last);
+  if (after.trim()) segs.push({ kind: "md", text: after });
+  return segs;
+}
+
+function PlanCard({ title, tasks, desc }: { title: string; tasks: string[]; desc: string }) {
+  const vaultPath = useStore((s) => s.vaultPath);
+  const [state, setState] = useState<"idle" | "approving" | "approved">("idle");
+  const [err, setErr] = useState<string | null>(null);
+
+  const approve = async () => {
+    if (!vaultPath || state !== "idle") return;
+    setState("approving");
+    setErr(null);
+    try {
+      // Same goal shape the phone hands to startMission on approval, so the
+      // mission brief (and its "Done when" checklist) reads identically.
+      const goal = [
+        title,
+        desc,
+        tasks.length
+          ? "Done when (each defines completion — likely one worker each, but split or merge as you see fit):\n" +
+            tasks.map((t) => `- ${t}`).join("\n")
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      const { startMission } = await import("./offVaultRun");
+      await startMission(vaultPath, goal, title || "Mission");
+      setState("approved");
+    } catch (e) {
+      setState("idle");
+      setErr(String((e as { message?: string })?.message ?? e));
+    }
+  };
+
+  return (
+    <div
+      className={cn(
+        "rounded-xl border border-border bg-muted/30 p-3.5 space-y-2.5",
+        state === "approved" && "opacity-60",
+      )}
+    >
+      <div className="text-[10.5px] uppercase tracking-wide text-muted-foreground font-semibold">
+        {state === "approved" ? "Mission created · running" : "Proposed mission · approve to start"}
+      </div>
+      {title && <div className="text-[14px] font-semibold leading-snug">{title}</div>}
+      {desc && <div className="text-[12.5px] text-muted-foreground leading-relaxed">{desc}</div>}
+      {tasks.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-[10.5px] uppercase tracking-wide text-muted-foreground/80">Done when</div>
+          <ul className="space-y-1">
+            {tasks.map((t, i) => (
+              <li key={i} className="flex items-start gap-2 text-[12.5px] leading-relaxed">
+                <span className="mt-[6px] h-1.5 w-1.5 shrink-0 rounded-full bg-primary/60" />
+                <span className="min-w-0">{t}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {state !== "approved" && (
+        <div className="flex items-center gap-2 pt-0.5">
+          <Button
+            onClick={approve}
+            disabled={state === "approving" || !vaultPath}
+            className="h-8 px-4 text-[12.5px]"
+          >
+            {state === "approving" ? "Starting…" : "Approve & run"}
+          </Button>
+          {err && <span className="text-[11px] text-destructive">{err}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const MessageBubble = memo(function MessageBubble({
   message,
 }: {
@@ -1125,16 +1248,22 @@ const MessageBubble = memo(function MessageBubble({
         </div>
       ) : (
         <div className="w-full space-y-2">
-          <div className="prose-chat text-foreground/95">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
-              urlTransform={allowImageDataUrls}
-              components={chatComponents}
-            >
-              {preprocessMarkdownMath(message.content)}
-            </ReactMarkdown>
-          </div>
+          {segmentAssistant(message.content).map((seg, idx) =>
+            seg.kind === "plan" ? (
+              <PlanCard key={idx} title={seg.title} desc={seg.desc} tasks={seg.tasks} />
+            ) : (
+              <div key={idx} className="prose-chat text-foreground/95">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm, remarkMath]}
+                  rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
+                  urlTransform={allowImageDataUrls}
+                  components={chatComponents}
+                >
+                  {preprocessMarkdownMath(seg.text)}
+                </ReactMarkdown>
+              </div>
+            ),
+          )}
           {message.toolCalls && message.toolCalls.length > 0 && (
             <details className="group">
               <summary className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer hover:text-foreground list-none select-none">
