@@ -3,6 +3,7 @@ import matter from "gray-matter";
 import { tool } from "ai";
 import { z } from "zod";
 import { getUserKeysAsEnv } from "./keychain";
+import { DEFAULT_PROMPT_HISTORY } from "./defaultPromptHistory";
 
 // ----- per-vault agent config -----
 //
@@ -12,6 +13,19 @@ import { getUserKeysAsEnv } from "./keychain";
 // new vaults seed each file from the app's bundled defaults on open.
 
 const AGENT_DIR = ".vault-chat/agent";
+
+// Canonical prompt normalization — MUST stay identical to the normalize() in
+// scripts/gen-default-hashes.mjs, so a file written on Windows (CRLF) hashes the
+// same as the LF-seeded original: CRLF/CR → LF, strip trailing whitespace, one
+// trailing newline.
+function normalizePrompt(text: string): string {
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\s+$/, "") + "\n";
+}
+async function normalizedPromptHash(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(normalizePrompt(text));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 /** Read a config file from `.vault-chat/agent/<name>`, falling back to an
  *  older flat `.vault-chat/<legacyRel>` location if present. "" if absent. */
@@ -39,9 +53,15 @@ async function readAgentConfig(
   return "";
 }
 
-/** Seed `.vault-chat/agent/<name>` if absent: migrate a legacy flat file
- *  into the agent/ folder if one exists, otherwise write the app's bundled
- *  default (via the given Rust command). Never clobbers an existing file. */
+/** Ensure `.vault-chat/agent/<name>` is present AND not a stale default:
+ *  - absent  → migrate a legacy flat file if one exists, else seed the bundled
+ *    default (via the given Rust command).
+ *  - present AND byte-identical (modulo line endings) to a default we once
+ *    shipped → it's a pristine-but-OLD seed: upgrade it to the current bundle so
+ *    a vault seeded before a prompt improved actually picks up the improvement.
+ *  - present and customized (matches no shipped default) → never touched.
+ *  This is what lets a supervisor/assistant prompt improvement reach existing
+ *  vaults instead of only new ones — without ever clobbering a user's edits. */
 async function ensureAgentConfig(
   vault: string,
   name: string,
@@ -49,12 +69,36 @@ async function ensureAgentConfig(
   legacyRel?: string,
 ): Promise<void> {
   const path = `${vault}/${AGENT_DIR}/${name}`;
+  let existing: string | null = null;
   try {
-    const existing = await invoke<string>("read_text_file", { path });
-    if (existing.trim()) return; // already present — keep the customization
+    existing = await invoke<string>("read_text_file", { path });
   } catch {
     /* absent — seed below */
   }
+
+  if (existing && existing.trim()) {
+    // Present: keep it, UNLESS it's an unmodified default we shipped in an
+    // earlier version — those are safe to refresh to the current bundle.
+    try {
+      const current = (await invoke<string>(defaultCommand)).trim();
+      if (!current) return;
+      const [existingHash, currentHash] = await Promise.all([
+        normalizedPromptHash(existing),
+        normalizedPromptHash(current),
+      ]);
+      if (existingHash === currentHash) return; // already current
+      if ((DEFAULT_PROMPT_HISTORY[name] ?? []).includes(existingHash)) {
+        await invoke("write_text_file", { path, contents: current });
+        console.log(`[agent-cfg] upgraded ${name}: pristine old default → current bundle`);
+      }
+      // else: the user edited it (matches no shipped default) — leave it be.
+    } catch (e) {
+      console.warn(`[agent-cfg] upgrade check ${name} failed:`, e);
+    }
+    return;
+  }
+
+  // Absent — migrate a legacy flat file if present, else seed the bundled default.
   if (legacyRel) {
     try {
       const legacy = await invoke<string>("read_text_file", {
