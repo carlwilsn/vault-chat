@@ -12,6 +12,7 @@ import {
   emptyConversation,
   readConversations,
   writeConversations,
+  withConvLock,
 } from "./conversations";
 import { formatNote } from "./notes-format";
 import { findModel } from "./providers";
@@ -2040,11 +2041,31 @@ function scheduleConversationsPersist(vault: string) {
     conversationsPersistTimer = null;
     const v = conversationsPersistVault;
     if (!v) return;
-    const state = useStore.getState();
-    if (state.vaultPath !== v) return;
-    writeConversations(v, state.conversations).catch((e) =>
-      console.warn("[conversations] persist failed:", e),
-    );
+    // Persist UNDER the shared conversation lock with a non-destructive merge.
+    // Background runs (offVaultRun: missions, workers, wakes) advance
+    // conversations on disk via the same lock; a blind memory→disk rewrite here
+    // would clobber their appends — that's what dropped the mission brief and
+    // truncated worker threads. Inside the lock, read disk and, per
+    // conversation, keep whichever copy has MORE messages (append-only ⇒ more =
+    // newer), then union in disk-only conversations memory hasn't seen.
+    void withConvLock(async () => {
+      const state = useStore.getState();
+      if (state.vaultPath !== v) return;
+      let disk: Conversation[] = [];
+      try {
+        disk = await readConversations(v);
+      } catch {
+        disk = [];
+      }
+      const diskById = new Map(disk.map((c) => [c.id, c]));
+      const memIds = new Set(state.conversations.map((c) => c.id));
+      const merged = state.conversations.map((c) => {
+        const d = diskById.get(c.id);
+        return d && d.messages.length > c.messages.length ? d : c;
+      });
+      for (const d of disk) if (!memIds.has(d.id)) merged.push(d);
+      await writeConversations(v, merged);
+    }).catch((e) => console.warn("[conversations] persist failed:", e));
   }, 500);
 }
 

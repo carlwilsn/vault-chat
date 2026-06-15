@@ -13,6 +13,7 @@ import {
   deriveConversationTitle,
   newConversationId,
   bindTelegramChatId,
+  withConvLock,
   type Conversation,
 } from "./conversations";
 import {
@@ -30,18 +31,8 @@ import { vlog } from "./debugLog";
 // so the phone gets "still working" signal without being spammed.
 const PROGRESS_MIN_GAP_MS = 25_000;
 
-// Serialize this module's read→modify→write cycles on the conversations
-// store. writeConversations rewrites the FULL list from whatever the caller
-// read — so two concurrent cycles interleave as lost updates. Real case: a
-// supervisor approving a plan spawns 3 workers in one turn; each startWorker/
-// runWorkerTurn pair read a stale list and overwrote the others' first
-// message, leaving "0-message" worker threads on disk.
-let convChain: Promise<unknown> = Promise.resolve();
-function withConvLock<T>(fn: () => Promise<T>): Promise<T> {
-  const run = convChain.then(fn, fn);
-  convChain = run.catch(() => undefined);
-  return run;
-}
+// withConvLock (shared read→modify→write serializer for the conversations
+// store) now lives in ./conversations so the store's autosave can share it.
 
 // Off-vault inbound handler. Runs the full Telegram round-trip for
 // a vault that is NOT currently open in the UI: load that vault's

@@ -185,3 +185,18 @@ export async function writeConversations(
   const lines = conversations.map((c) => JSON.stringify(c));
   await invoke("conversations_write_all", { vault, lines });
 }
+
+// Serialize read→modify→write cycles on the conversations store. write_all
+// rewrites each conversation file from whatever the caller read, so two
+// concurrent cycles interleave as lost updates ("0-message worker threads", a
+// dropped mission brief, truncated worker logs). This lock is SHARED across
+// every writer — the background runs in offVaultRun AND the store's debounced
+// autosave — so a stale in-memory snapshot can't clobber a richer disk copy a
+// background run just appended. Lives here (not offVaultRun) so the store can
+// import it without a circular dependency.
+let convChain: Promise<unknown> = Promise.resolve();
+export function withConvLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = convChain.then(fn, fn);
+  convChain = run.catch(() => undefined);
+  return run;
+}
