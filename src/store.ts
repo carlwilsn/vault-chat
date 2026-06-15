@@ -176,6 +176,32 @@ const STRICT_VAULT_STORAGE = "vault_chat_strict_vault";
 const BASH_DISABLED_STORAGE = "vault_chat_bash_disabled";
 const REASONING_EFFORT_STORAGE = "vault_chat_reasoning_effort";
 const AUTO_COST_BIAS_STORAGE = "vault_chat_auto_cost_bias";
+// The active/open conversation is PER-DEVICE, not synced: your phone chat and
+// your desktop chat are independent (message CONTENT still syncs via the vault).
+// Persisted per vault so reopening the app restores THIS device's last-open
+// thread instead of auto-jumping to whatever was most-recently touched — a
+// phone chat bumps a thread to the top, which used to yank the desktop onto it.
+const ACTIVE_CONV_STORAGE = "vault_chat_active_conv";
+function activeConvKey(vault: string): string {
+  return `${ACTIVE_CONV_STORAGE}:${vault}`;
+}
+function savedActiveConvId(vault: string | null): string | null {
+  if (!vault) return null;
+  try {
+    return localStorage.getItem(activeConvKey(vault));
+  } catch {
+    return null;
+  }
+}
+function persistActiveConvId(vault: string | null, id: string | null): void {
+  if (!vault) return;
+  try {
+    if (id) localStorage.setItem(activeConvKey(vault), id);
+    else localStorage.removeItem(activeConvKey(vault));
+  } catch {
+    /* localStorage unavailable — non-fatal */
+  }
+}
 // Rolling buffer of the last few finalised conversations. Capped at
 // SAVED_CHATS_MAX entries (newest first), shared across vaults — the
 // UI filters to the active vault on display.
@@ -1641,8 +1667,17 @@ export const useStore = create<State>((set) => ({
       const sorted = list
         .slice()
         .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+      // Per-device active conversation: restore THIS device's last-open thread
+      // (persisted per vault) rather than auto-jumping to whatever was most-
+      // recently touched — that's what let a phone chat steal the desktop's open
+      // pane. Fall back to most-recent non-telegram only when there's no saved
+      // pick or it was deleted elsewhere.
+      const savedId = savedActiveConvId(vault);
       const active =
-        sorted.find((c) => c.source !== "telegram") ?? sorted[0];
+        (savedId ? sorted.find((c) => c.id === savedId) : undefined) ??
+        sorted.find((c) => c.source !== "telegram") ??
+        sorted[0];
+      persistActiveConvId(vault, active.id);
       useStore.setState({
         conversations: sorted,
         activeConversationId: active.id,
@@ -1716,10 +1751,14 @@ export const useStore = create<State>((set) => ({
         liveTools: [],
       };
     });
+    persistActiveConvId(useStore.getState().vaultPath, fresh.id);
     return fresh.id;
   },
   selectConversation: (id) =>
     set((s) => {
+      // Remember this device's pick so app restart / a vault-sync reload keeps
+      // it, instead of jumping to the most-recently-touched (phone) thread.
+      persistActiveConvId(s.vaultPath, id);
       if (s.activeConversationId === id) {
         // Selecting the already-active chat is just a clear-unread.
         return {
