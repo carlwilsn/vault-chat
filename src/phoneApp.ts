@@ -42,6 +42,14 @@ function broadcast(event: Record<string, unknown>): void {
 // one turn) the moment the run ends — see the status-flip handler below.
 const queued = new Map<string, string[]>();
 
+// Worker conversation ids we've already sent a "worker done" notification for.
+// A worker runs many turns (initial + AskWorker kicks + duplicate wakes), each
+// ending → onRunEnded; without this, a single worker pinged the user several
+// times (the old 5x "Worker finished — …" spam). Dedupe so each worker notifies
+// exactly once. In-memory is enough: after a box restart a finished worker has
+// no live run to end, so it can't re-fire.
+const notifiedWorkers = new Set<string>();
+
 function isThreadBusy(conv: Conversation): boolean {
   const s = useStore.getState();
   return (
@@ -324,11 +332,25 @@ async function onRunEnded(convId: string): Promise<void> {
       const names = (last?.toolCalls ?? []).map((t) => t.name);
       body = names.length ? `ran ${[...new Set(names)].slice(0, 5).join(", ")}` : "finished.";
     }
-    // A worker reports UP to its mission, never straight to the user: the user
-    // hears from supervisors, not from every worker. (The old "card per worker"
-    // ping is what produced the duplicate "Worker finished — …" spam, several
-    // per worker on retry/duplicate wakes.) Find this worker's mission thread;
-    // it reviews the result and decides whether anything earns the user's phone.
+    // (a) Tell the user this worker is done — ONCE per worker. The user asked to
+    // see each worker finish (3 workers → 3 "done" cards) plus a separate mission
+    // complete; the old bug wasn't that workers notified, it was that each one
+    // notified several times (every turn-end / duplicate wake). Dedupe by convId.
+    if (!notifiedWorkers.has(convId)) {
+      notifiedWorkers.add(convId);
+      const { summarizeForAlert } = await import("./alert-summary");
+      const sum = await summarizeForAlert(last?.content ?? body, useStore.getState().apiKeys).catch(() => null);
+      void notify("info", sum?.title || `Worker done — ${c.title}`, sum?.body || body, convId, {
+        intention: `Worker deliverable${c.mission ? " · " + c.mission : ""}`,
+        summary: (sum?.body || body).slice(0, 200),
+        icon: "✓",
+        cls: "g",
+      });
+    }
+    // (b) Report UP to the mission so its supervisor reviews + continues — UNLESS
+    // the mission is already complete. A late worker-finish must not re-wake a
+    // retired mission (that's what kept the supervisor running extra turns and
+    // re-calling CompleteMission after it was already done).
     const missionKey = (c.mission ?? "").trim();
     const missionConv = missionKey
       ? s.conversations.find(
@@ -338,35 +360,24 @@ async function onRunEnded(convId: string): Promise<void> {
             x.id !== convId,
         )
       : undefined;
-    if (missionConv) {
+    if (missionConv && !missionConv.completedAt) {
       const wake =
         `Your worker "${c.title}" (id ${convId}) just finished its turn. Last output: ${body}\n\n` +
         `Review its thread and decide: verified done, steer it (AskWorker), respawn with learnings, or — only if you can't resolve it yourself — bring the user in.`;
       if (isThreadBusy(missionConv)) {
         // Mission is mid-turn (likely the very AskWorker that drove this
-        // worker). Queue the wake — it flushes when the mission's run ends,
-        // same path as phone messages.
+        // worker). Queue the wake — it flushes when the mission's run ends.
         const q = queued.get(missionConv.id) ?? [];
         q.push(wake);
         queued.set(missionConv.id, q);
       } else {
-        const { sendMessage } = await import("./chat-controller");
-        void sendMessage(wake, undefined, undefined, missionConv.id).catch((e) =>
-          console.warn("[phone-app] mission wake failed:", e),
-        );
+        // Durable disk-lock path (same as a phone message / queued flush to a
+        // mission) so the wake can't be clobbered by a concurrent refresh.
+        const { runWorkerTurn } = await import("./offVaultRun");
+        void runWorkerTurn(useStore.getState().vaultPath!, missionConv.id, wake, {
+          modelId: useStore.getState().supervisorModelId,
+        }).catch((e) => console.warn("[phone-app] mission wake failed:", e));
       }
-    } else {
-      // Orphan/legacy worker with no mission thread — keep ONE direct ping as
-      // the safety net so nothing ever finishes silently. Every worker should
-      // belong to a mission now; this is only the fallback for older threads.
-      const { summarizeForAlert } = await import("./alert-summary");
-      const sum = await summarizeForAlert(last?.content ?? body, useStore.getState().apiKeys).catch(() => null);
-      void notify("info", sum?.title || `Worker — ${c.title}`, sum?.body || body, convId, {
-        intention: `Worker deliverable${c.mission ? " · " + c.mission : ""}`,
-        summary: (sum?.body || body).slice(0, 200),
-        icon: "✓",
-        cls: "g",
-      });
     }
   }
 }

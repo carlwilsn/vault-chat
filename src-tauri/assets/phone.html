@@ -187,6 +187,14 @@
   .mgroup .wpill{margin:0 9px 9px;background:var(--raised);border-color:#303036}
   .mgroup .wpill:last-child{margin-bottom:11px}
   .mgroup .wp-head:active{background:#26262c}
+  /* Archive: collapsed list of completed missions, low-key under the live board. */
+  .arch-h{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:15px 18px 8px;font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;color:#8a8a8a;font-weight:600}
+  .arch-h:active{color:var(--text)}
+  .arch-cv{font-size:10px;color:#6f6f6f;width:11px;flex:none}
+  .arch-row{display:flex;align-items:center;gap:9px;width:100%;text-align:left;margin:0 14px 7px;width:calc(100% - 28px);padding:10px 14px;background:var(--surface);border:1px solid var(--line);border-radius:14px}
+  .arch-row:active{background:var(--raised)}
+  .arch-t{flex:1;min-width:0;font-size:13px;font-weight:600;color:#cfcfcf;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .arch-age{font-size:10.5px;color:#8a8a8a;flex:none}
   /* worker pills: one short line per worker, tap to expand state + actions */
   .wpill{margin:0 14px 7px;border:1px solid var(--line);border-radius:17px;background:var(--surface);overflow:hidden}
   .wp-head{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:8px 14px;min-height:37px}
@@ -846,27 +854,14 @@
         chats.unshift({ id: convId, title: convTitle || "New chat", lastActivityAt: Date.now(), source: "phone", msgCount: 0, preview: "" });
       }
       lastChatList = chats.slice();
-      // Completed missions live here (not on Activity) — done work, reviewable as
-      // history. Newest first; tapping opens the read-only mission view.
-      const doneMissions = convs
-        .filter((c) => c.source === "mission" && c.completedAt)
-        .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
       box.innerHTML = "";
-      if (!chats.length && !doneMissions.length) {
-        box.innerHTML = '<div class="empty">No conversations yet. Tap New to start.</div>';
+      if (chats.length) {
+        const h = document.createElement("div"); h.className = "csec"; h.textContent = "Chats"; box.appendChild(h);
+        for (const c of chats) box.appendChild(convRow(c, runIds.has(c.id)));
       } else {
-        if (chats.length) {
-          const h = document.createElement("div"); h.className = "csec"; h.textContent = "Chats"; box.appendChild(h);
-          for (const c of chats) box.appendChild(convRow(c, runIds.has(c.id)));
-        }
-        if (doneMissions.length) {
-          const h = document.createElement("div"); h.className = "csec"; h.textContent = "Completed missions"; box.appendChild(h);
-          for (const mc of doneMissions) {
-            const key = (mc.mission || mc.title || "").trim() || mc.title;
-            const workers = convs.filter((w) => w.source === "worker" && (w.mission || "").trim() === key);
-            box.appendChild(missionRow(mc, { conv: mc, active: [], done: workers }));
-          }
-        }
+        // Completed missions live in the Activity-page Archive now, not here —
+        // the drawer is your assistant chats.
+        box.innerHTML = '<div class="empty">No conversations yet. Tap New to start.</div>';
       }
     } catch (e) {
       box.innerHTML = '<div class="empty">Couldn’t load: ' + esc(String(e.message || e)) + "</div>";
@@ -880,19 +875,6 @@
     b.querySelector(".ag").textContent = age(c.lastActivityAt);
     b.querySelector(".p").textContent = c.preview || c.msgCount + " messages";
     b.onclick = () => { closeConvs(); openThread(c.id, c.title); };
-    return b;
-  }
-  // A finished-mission row for the drawer: opens the read-only mission view
-  // (goal + done-when + thread), not a live chat.
-  function missionRow(mc, g) {
-    const b = document.createElement("button");
-    b.className = "crow2";
-    b.innerHTML = '<div class="t"><span class="nm"></span><span class="ag"></span></div><div class="p"></div>';
-    b.querySelector(".nm").textContent = "✓ " + (mc.mission || mc.title);
-    b.querySelector(".ag").textContent = age(mc.completedAt || mc.lastActivityAt);
-    const n = g.done.length;
-    b.querySelector(".p").textContent = (n ? n + " worker" + (n === 1 ? "" : "s") + " · " : "") + "completed";
-    b.onclick = () => { closeConvs(); openMission(mc, g, { readonly: true }); };
     return b;
   }
 
@@ -1419,6 +1401,8 @@
     pill.querySelector(".wp-head").onclick = () => openWorkerArtifact(r, c);
     return pill;
   }
+  // Archive (completed missions) collapsed by default on the Activity page.
+  let archiveOpen = false;
   async function loadActivity() {
     const box = $("actScroll");
     try {
@@ -1494,6 +1478,28 @@
         for (const { run, c } of g.active) group.appendChild(workerPill(run, c)); // running first
         for (const c of g.done) group.appendChild(workerPill(null, c)); // then completed
         box.appendChild(group);
+      }
+
+      // Completed missions hide into a collapsed ARCHIVE right here on the page —
+      // they leave the active board the moment they finish, but stay one tap away
+      // to re-inspect (scope + done-when, the supervisor thread, the worker
+      // threads). Collapsed by default so done work doesn't clutter what's live.
+      const archived = convs
+        .filter((c) => c.source === "mission" && c.completedAt)
+        .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
+      if (archived.length) {
+        const ah = el('<button class="arch-h"><span class="arch-cv">' + (archiveOpen ? "▾" : "▸") + "</span><span>Archive · " + archived.length + " completed</span></button>");
+        ah.onclick = () => { archiveOpen = !archiveOpen; loadActivity(); };
+        box.appendChild(ah);
+        if (archiveOpen) for (const mc of archived) {
+          const key = (mc.mission || mc.title || "").trim() || mc.title;
+          const workers = convs.filter((w) => w.source === "worker" && (w.mission || "").trim() === key);
+          const row = el('<button class="arch-row"><span class="arch-t"></span><span class="arch-age"></span><span class="chev">›</span></button>');
+          row.querySelector(".arch-t").textContent = "✓ " + (mc.mission || mc.title);
+          row.querySelector(".arch-age").textContent = age(mc.completedAt);
+          row.onclick = () => openMission(mc, { conv: mc, active: [], done: workers }, { readonly: true });
+          box.appendChild(row);
+        }
       }
 
       box.appendChild(el('<div class="sec">Scheduled</div>'));
