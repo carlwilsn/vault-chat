@@ -724,7 +724,7 @@ export async function startPhoneAppHost(): Promise<void> {
         respond(reqId, {
           ok: true,
           result: hit
-            ? "Stopping — it stops after the current step finishes."
+            ? "Stopped — interrupting now (an in-flight command is killed)."
             : "Nothing running on that thread.",
         });
       } else {

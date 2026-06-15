@@ -435,6 +435,7 @@ export async function runAgent(params: {
       conversationId,
       isTelegramSourced: isTelegramSourced ?? false,
       tier,
+      abortSignal,
     });
     const innerTools = { ...builtinTools, ...customTools };
 

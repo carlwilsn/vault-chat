@@ -272,6 +272,9 @@ export type BuildToolsOptions = {
   // missions but cannot spawn workers; only a mission thread holds
   // StartWorker; workers hold neither (they do the task, not orchestration).
   tier?: "assistant" | "mission" | "worker";
+  // The run's abort signal. Used to HARD-interrupt a long tool (Bash) — on
+  // Stop we kill the subprocess instead of waiting for it to run to completion.
+  abortSignal?: AbortSignal;
 };
 
 // Pure-string path containment check. Symlinks are NOT resolved — a
@@ -386,6 +389,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     conversationId,
     isTelegramSourced = false,
     tier = "assistant",
+    abortSignal,
   } = options;
   const guardPath = (path: string) => assertAllowed(path, vault, strictVault);
   const guardDenied = (path: string) => assertNotDenied(path, vault);
@@ -564,16 +568,32 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         } catch {
           // fall through
         }
-        const result = await invoke<{
-          stdout: string;
-          stderr: string;
-          code: number;
-          timed_out: boolean;
-        }>("bash_exec", {
-          command,
-          cwd: cwd ?? vault,
-          timeoutMs: timeout_ms ?? 120_000,
-        });
+        // Hard interrupt: Stop should KILL an in-flight command, not wait for it
+        // to finish. Hand the Rust side a cancel id and, when the run's abort
+        // fires, signal it — the bash poll loop kills the subprocess within a
+        // few ms. Without this, hitting Stop mid-`pytest`/`git`/training left the
+        // command running to completion (or its 120s timeout) before the turn
+        // could end.
+        const cancelId = `bash_${conversationId ?? "fg"}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+        let aborted = abortSignal?.aborted ?? false;
+        const onAbort = () => {
+          aborted = true;
+          void invoke("bash_cancel", { cancelId }).catch(() => {});
+        };
+        if (aborted) onAbort();
+        else abortSignal?.addEventListener("abort", onAbort, { once: true });
+        let result: { stdout: string; stderr: string; code: number; timed_out: boolean };
+        try {
+          result = await invoke("bash_exec", {
+            command,
+            cwd: cwd ?? vault,
+            timeoutMs: timeout_ms ?? 120_000,
+            cancelId,
+          });
+        } finally {
+          abortSignal?.removeEventListener("abort", onAbort);
+        }
+        if (aborted) return "(interrupted — command killed)";
         const parts: string[] = [];
         parts.push(`exit: ${result.code}${result.timed_out ? " (TIMED OUT)" : ""}`);
         if (result.stdout) parts.push(`stdout:\n${truncate(result.stdout, SHORT_CAP)}`);

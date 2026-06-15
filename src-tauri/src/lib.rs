@@ -1783,13 +1783,37 @@ struct BashResult {
     timed_out: bool,
 }
 
+// Cancel registry for in-flight Bash commands. Stop sets the flag for the
+// command's cancel id; the poll loop in bash_exec_sync sees it and kills the
+// subprocess within a few ms — a HARD interrupt instead of waiting for the
+// command to run to completion (or hit its timeout).
+static BASH_CANCELS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+> = std::sync::OnceLock::new();
+
+fn bash_cancels() -> &'static std::sync::Mutex<
+    std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
+> {
+    BASH_CANCELS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[tauri::command]
+fn bash_cancel(cancel_id: String) {
+    if let Ok(map) = bash_cancels().lock() {
+        if let Some(flag) = map.get(&cancel_id) {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
 #[tauri::command]
 async fn bash_exec(
     command: String,
     cwd: Option<String>,
     timeout_ms: Option<u64>,
+    cancel_id: Option<String>,
 ) -> Result<BashResult, String> {
-    tauri::async_runtime::spawn_blocking(move || bash_exec_sync(command, cwd, timeout_ms))
+    tauri::async_runtime::spawn_blocking(move || bash_exec_sync(command, cwd, timeout_ms, cancel_id))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1798,6 +1822,7 @@ fn bash_exec_sync(
     command: String,
     cwd: Option<String>,
     timeout_ms: Option<u64>,
+    cancel_id: Option<String>,
 ) -> Result<BashResult, String> {
     use std::io::Read;
     use std::time::{Duration, Instant};
@@ -1854,6 +1879,14 @@ fn bash_exec_sync(
     cmd.stderr(std::process::Stdio::piped());
 
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    // Register a cancel flag so a Stop can kill THIS subprocess (see bash_cancel).
+    let cancel_flag = cancel_id.as_ref().map(|id| {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Ok(mut map) = bash_cancels().lock() {
+            map.insert(id.clone(), flag.clone());
+        }
+        flag
+    });
     let start = Instant::now();
     let mut timed_out = false;
     let code;
@@ -1864,14 +1897,29 @@ fn bash_exec_sync(
                 break;
             }
             None => {
+                // Hard interrupt: Stop set the cancel flag — kill the subprocess now.
+                if cancel_flag
+                    .as_ref()
+                    .map_or(false, |f| f.load(std::sync::atomic::Ordering::SeqCst))
+                {
+                    let _ = child.kill();
+                    code = -1;
+                    break;
+                }
                 if start.elapsed() > timeout {
                     let _ = child.kill();
                     timed_out = true;
                     code = -1;
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(50));
+                // Tight poll so a kill lands within ~15ms of Stop.
+                std::thread::sleep(Duration::from_millis(15));
             }
+        }
+    }
+    if let Some(id) = &cancel_id {
+        if let Ok(mut map) = bash_cancels().lock() {
+            map.remove(id);
         }
     }
 
@@ -6842,6 +6890,7 @@ pub fn run() {
             glob_files,
             grep_files,
             bash_exec,
+            bash_cancel,
             bash_shell_kind,
             list_dir,
             http_fetch,
