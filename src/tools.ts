@@ -1122,6 +1122,16 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       }),
       execute: async ({ summary }) => {
         if (!conversationId) return "No mission context — can't complete.";
+        // Idempotent: a supervisor sometimes calls this again in a follow-up
+        // turn. If it's already completed, do NOT re-notify (that was the
+        // duplicate "Mission complete" card) — just tell it to stop.
+        const { readConversations } = await import("./conversations");
+        const existing = (await readConversations(vault).catch(() => [])).find(
+          (c) => c.id === conversationId,
+        );
+        if (existing?.completedAt) {
+          return "This mission is already complete — nothing more to do. End your turn.";
+        }
         const { completeMission } = await import("./offVaultRun");
         const { notify } = await import("./phoneApp");
         await notify("info", "Mission complete", summary, conversationId, {

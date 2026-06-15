@@ -1203,11 +1203,14 @@
       const r = await api("/conversation?id=" + encodeURIComponent(mc.id) + "&n=60");
       const d = await r.json(); if (d.error) throw new Error(d.error);
       const msgs = d.messages || [];
-      // Split the brief (the first user turn — what the supervisor was handed)
-      // from the rest of the thread, so it's clear what it was asked to own.
-      const briefIdx = msgs.findIndex((m) => m.role === "user");
+      // The brief is the actual MISSION BRIEF turn — not merely "the first user
+      // message". When the brief is missing (older threads) or the thread opens
+      // on a worker-wake, that fallback mislabelled internal plumbing as the
+      // goal. Find the real one; if there isn't one, skip the Brief section
+      // rather than present a wake message as the brief.
+      const briefIdx = msgs.findIndex((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || ""));
       const brief = briefIdx >= 0 ? msgs[briefIdx] : null;
-      const rest = briefIdx >= 0 ? msgs.slice(briefIdx + 1) : msgs;
+      const rest = briefIdx >= 0 ? msgs.filter((_, i) => i !== briefIdx) : msgs;
       let html = "";
       if (brief && brief.content) html += '<div class="lbl">Brief — what the supervisor was given</div><div class="md">' + md(String(brief.content)) + "</div>";
       if (mc.thinkingDigest) html += '<div class="lbl">Thinking — its reasoning, cleaned up</div><div class="md">' + md(String(mc.thinkingDigest)) + "</div>";
@@ -1267,14 +1270,20 @@
   // one short line each; tap a pill to see its state plus Open thread / Kill.
   // Finished workers don't accumulate here — their alert is the way back.
   function workerPill(run, c) {
-    const pill = el('<div class="wpill"><button class="wp-head"><span class="wp-dot"></span><span class="wp-main"><span class="wp-t"></span><span class="wp-sum"></span></span><span class="wp-age"></span><span class="chev">›</span></button></div>');
+    const done = !run; // no live run → a completed/idle worker
+    const pill = el('<div class="wpill"><button class="wp-head"><span class="wp-dot' + (done ? " done" : "") + '"></span><span class="wp-main"><span class="wp-t"></span><span class="wp-sum"></span></span><span class="wp-age"></span><span class="chev">›</span></button></div>');
     // Summarized task on the title line, summarized status beneath — never the
     // raw direction prompt (that's in the thread). Fall back to title/preview
     // until the first turn-completion summary lands.
-    pill.querySelector(".wp-t").textContent = c.taskSummary || run.title || c.title || run.convId;
-    pill.querySelector(".wp-sum").textContent = c.statusSummary || c.preview || "running…";
-    pill.querySelector(".wp-age").textContent = run.lastTool ? run.lastTool + " · " + (run.lastProgressAt ? age(run.lastProgressAt) : "now") : "running";
-    pill.querySelector(".wp-head").onclick = () => openWorkerArtifact(run, c);
+    pill.querySelector(".wp-t").textContent = c.taskSummary || (run && run.title) || c.title || (run && run.convId) || c.id;
+    pill.querySelector(".wp-sum").textContent = c.statusSummary || c.preview || (done ? "done" : "running…");
+    pill.querySelector(".wp-age").textContent = run
+      ? (run.lastTool ? run.lastTool + " · " + (run.lastProgressAt ? age(run.lastProgressAt) : "now") : "running")
+      : "done";
+    // A completed worker has no live run — synthesize one so the read-only
+    // artifact (its thread + Haiku summary) opens exactly the same way.
+    const r = run || { convId: c.id, title: c.title, mission: c.mission };
+    pill.querySelector(".wp-head").onclick = () => openWorkerArtifact(r, c);
     return pill;
   }
   async function loadActivity() {
@@ -1293,7 +1302,7 @@
       // workers don't pile up either; their alert is the way back.
       const missions = new Map(); // name -> { conv: mission thread | null, active: [{run, c}] }
       const missionOf = (run, c) => ((run && run.mission) || (c && c.mission) || "").trim();
-      const bucket = (name) => { if (!missions.has(name)) missions.set(name, { conv: null, active: [] }); return missions.get(name); };
+      const bucket = (name) => { if (!missions.has(name)) missions.set(name, { conv: null, active: [], done: [] }); return missions.get(name); };
       const twoDays = Date.now() - 48 * 3600000;
       // A finished mission (its supervisor called CompleteMission) leaves the
       // Activity surface entirely — and so do its workers, so a stray running
@@ -1318,6 +1327,15 @@
         const m = missionOf(run, c) || run.title || c.title;
         if (m && !completedKeys.has(m)) bucket(m).active.push({ run, c });
       }
+      // Completed workers: idle worker threads under an active mission's key,
+      // not currently running. Shown beneath the running ones so the mission's
+      // FULL state — done + in-flight — is visible, and tappable for the same
+      // stored Haiku summary as a running worker.
+      for (const c of convs) {
+        if (c.source !== "worker" || runIds.has(c.id)) continue;
+        const m = (c.mission || "").trim();
+        if (m && !completedKeys.has(m) && missions.has(m)) missions.get(m).done.push(c);
+      }
 
       if (!missions.size) {
         box.appendChild(el('<div class="sec">Missions</div>'));
@@ -1334,13 +1352,16 @@
         // supervisor thread. Only a worker count surfaces as state.
         const head = el('<div class="msec"><b></b><span class="mc"></span><button class="spec">supervisor</button></div>');
         head.querySelector("b").textContent = name;
-        head.querySelector(".mc").textContent = g.active.length ? g.active.length + " running" : "";
+        // State chip reflects both in-flight and finished work for the mission.
+        const a = g.active.length, d = g.done.length;
+        head.querySelector(".mc").textContent = a ? (a + " running" + (d ? " · " + d + " done" : "")) : (d ? d + " done" : "");
         const supBtn = head.querySelector(".spec");
         if (g.conv) supBtn.onclick = (e) => { e.stopPropagation(); openSupervisor(g.conv, g); };
         else supBtn.remove(); // virtual mission (running workers, no supervisor thread)
         head.onclick = () => openSpec(mc, g);
         box.appendChild(head);
-        for (const { run, c } of g.active) box.appendChild(workerPill(run, c));
+        for (const { run, c } of g.active) box.appendChild(workerPill(run, c)); // running first
+        for (const c of g.done) box.appendChild(workerPill(null, c)); // then completed
       }
 
       box.appendChild(el('<div class="sec">Scheduled</div>'));
