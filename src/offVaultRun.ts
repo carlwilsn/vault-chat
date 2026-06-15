@@ -807,6 +807,68 @@ export async function completeMission(vault: string, conversationId: string): Pr
   await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
 }
 
+// "Done when" bullets parsed from a mission brief — same shape the phone's
+// spec view parses, so a marked criterion matches what the user sees.
+function parseDoneWhenCriteria(brief: string): string[] {
+  const out: string[] = [];
+  for (const ln of (brief || "").split(/\r?\n/)) {
+    const m = ln.match(/^\s*(?:[-*•]|\d+[.)])\s+(.+)$/);
+    if (m) out.push(m[1].trim());
+  }
+  return out;
+}
+const normalizeCriterion = (s: string) =>
+  s.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+
+// Mark ONE of a mission's "Done when" criteria verified-complete. The supervisor
+// passes the criterion (a paraphrase is fine); we fuzzy-match it to the brief's
+// bullets and store the matched bullet's exact text in doneWhenDone, so the
+// spec checks off that one bullet (per-criterion progress, not all-at-once).
+export async function markDoneWhen(
+  vault: string,
+  conversationId: string,
+  criterion: string,
+): Promise<string | null> {
+  let matched: string | null = null;
+  await withConvLock(async () => {
+    const list = await readConversations(vault);
+    const i = list.findIndex((c) => c.id === conversationId && c.source === "mission");
+    if (i < 0) return;
+    const mission = list[i]!;
+    const briefMsg =
+      mission.messages.find((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || "")) ??
+      mission.messages.find((m) => m.role === "user");
+    const criteria = parseDoneWhenCriteria(briefMsg?.content ?? "");
+    const cn = normalizeCriterion(criterion);
+    const cwords = new Set(cn.split(" ").filter((w) => w.length > 2));
+    let best: string | null = null;
+    let bestScore = 0;
+    for (const cand of criteria) {
+      const candn = normalizeCriterion(cand);
+      if (candn === cn || candn.includes(cn) || cn.includes(candn)) {
+        best = cand;
+        bestScore = 1;
+        break;
+      }
+      const candWords = new Set(candn.split(" ").filter((w) => w.length > 2));
+      let shared = 0;
+      for (const w of cwords) if (candWords.has(w)) shared++;
+      const score = shared / Math.max(1, Math.min(cwords.size, candWords.size));
+      if (score > bestScore) {
+        bestScore = score;
+        best = cand;
+      }
+    }
+    matched = bestScore >= 0.5 ? best : criterion.trim();
+    const done = new Set(mission.doneWhenDone ?? []);
+    if (matched) done.add(matched);
+    list[i] = { ...mission, doneWhenDone: [...done] };
+    await writeConversations(vault, list);
+  });
+  await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+  return matched;
+}
+
 // Create a fresh conversation entry on disk for a vault that's not
 // currently in memory. Returns the new conversation's id so the
 // scheduler can bind subsequent runs to it.

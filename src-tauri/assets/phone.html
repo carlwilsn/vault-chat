@@ -495,7 +495,7 @@
     const DB = {
       vault: "summer", model: "claude-opus-4-8",
       convs: [
-        { id: "m1", title: "BitNet 160M MVP", source: "mission", role: "supervisor", mission: "BitNet 160M MVP", lastActivityAt: now - 120000, msgCount: 9, preview: "seeds 1 & 3 verified; seed 2 rerunning", goal: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP.\n\nDone when (each defines completion — likely one worker each):\n- All 3 seeds trained, eval.loss committed for each\n- The three seeds land within 0.005 nat of each other\n- A short writeup lands under docs/", taskSummary: "Reproduce the BitNet 160M MVP across 3 seeds", statusSummary: "Seeds 1 & 3 verified; seed 2 rerunning", thinkingDigest: "Seeds 1 and 3 landed within tolerance, but seed 2 came in 0.13 nat high — likely an LR mismatch, so it respawned that worker at seed 1's learning rate rather than accept the gap. Holding the eval/writeup worker until seed 2 confirms." },
+        { id: "m1", title: "BitNet 160M MVP", source: "mission", role: "supervisor", mission: "BitNet 160M MVP", lastActivityAt: now - 120000, msgCount: 9, preview: "seeds 1 & 3 verified; seed 2 rerunning", goal: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP.\n\nDone when (each defines completion — likely one worker each):\n- All 3 seeds trained, eval.loss committed for each\n- The three seeds land within 0.005 nat of each other\n- A short writeup lands under docs/", taskSummary: "Reproduce the BitNet 160M MVP across 3 seeds", statusSummary: "Seeds 1 & 3 verified; seed 2 rerunning", thinkingDigest: "Seeds 1 and 3 landed within tolerance, but seed 2 came in 0.13 nat high — likely an LR mismatch, so it respawned that worker at seed 1's learning rate rather than accept the gap. Holding the eval/writeup worker until seed 2 confirms.", doneWhenDone: ["All 3 seeds trained, eval.loss committed for each"] },
         { id: "m2", title: "Quiet watch — repo hygiene", source: "mission", role: "supervisor", mission: "Quiet watch — repo hygiene", lastActivityAt: now - 3600000, msgCount: 4, preview: "all clean on last sweep; next check at 9pm", goal: "MISSION BRIEF (user-approved). Quiet watch on repo hygiene.\n\nDone when:\n- No uncommitted drift older than 30 min\n- main pre-commit hook green", completedAt: now - 1800000 },
         { id: "w2", title: "seed-2 retry", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 60000, msgCount: 4, preview: "seed 2 retry running at matched LR", goal: "retry seed 2 at seed 1's LR; commit eval.loss", taskSummary: "Retry seed 2 at seed 1's LR", statusSummary: "Training relaunched; eval pending" },
         { id: "w4", title: "eval + writeup", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 30000, msgCount: 3, preview: "building the comparison table + writeup", goal: "build the per-seed comparison table and draft the writeup under docs/", taskSummary: "Per-seed comparison table + writeup", statusSummary: "Drafting the comparison table" },
@@ -1190,10 +1190,13 @@
     // fallback was the inconsistent label that varied mission to mission.)
     body += '<div class="lbl">Done when</div>';
     if (comps.length) {
-      // Once the supervisor has agreed the mission is complete (CompleteMission),
-      // the criteria are met — check the bullets off (filled green dot).
-      const dwDone = !!mc.completedAt;
-      body += '<ul class="dwlist">' + comps.map((c) => '<li><span class="dwb' + (dwDone ? " done" : "") + '"></span><span>' + inline(c) + "</span></li>").join("") + "</ul>";
+      // Per-criterion checkoff: a bullet goes green when the supervisor has
+      // VERIFIED that specific criterion (MarkDoneWhen → doneWhenDone), so the
+      // user watches progress accrue one at a time. A completed mission shows
+      // them all done.
+      const dwDone = new Set(mc.doneWhenDone || []);
+      const allDone = !!mc.completedAt;
+      body += '<ul class="dwlist">' + comps.map((c) => '<li><span class="dwb' + ((allDone || dwDone.has(c)) ? " done" : "") + '"></span><span>' + inline(c) + "</span></li>").join("") + "</ul>";
     } else if (brief) {
       body += '<div class="md">' + md(brief) + "</div>";
     } else {

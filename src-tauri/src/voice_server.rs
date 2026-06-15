@@ -1124,6 +1124,8 @@ fn conversations_summary_json(vault: &str) -> String {
                 "statusSummary": c.get("statusSummary").and_then(|x| x.as_str()).unwrap_or(""),
                 // Mode B: cleaned "thinking" digest for the detail view.
                 "thinkingDigest": c.get("thinkingDigest").and_then(|x| x.as_str()).unwrap_or(""),
+                // Per-criterion "done when" progress: which bullets are verified.
+                "doneWhenDone": c.get("doneWhenDone").cloned().unwrap_or(Value::Array(Vec::new())),
             })
         })
         .collect();

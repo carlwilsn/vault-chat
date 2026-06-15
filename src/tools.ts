@@ -1146,6 +1146,23 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         return "Mission marked complete, the user notified, and it's cleared from Activity. End your turn — the mission is done.";
       },
     }),
+    MarkDoneWhen: tool({
+      description:
+        "Check off ONE of this mission's 'Done when' criteria — call it the moment you've VERIFIED that specific criterion is met (by the success test / on disk, not on a worker's word). The bullet turns green in the user's mission spec, so they watch progress accrue one criterion at a time. Pass the criterion as it reads in the brief (a close paraphrase is fine — it's fuzzy-matched). Mark each as you confirm it; this is NOT completing the mission (use CompleteMission only once every criterion is done). Mission-tier only.",
+      inputSchema: z.object({
+        criterion: z
+          .string()
+          .describe("The 'Done when' item you've just verified, roughly as it reads in the brief."),
+      }),
+      execute: async ({ criterion }) => {
+        if (!conversationId) return "No mission context — can't mark a criterion.";
+        const { markDoneWhen } = await import("./offVaultRun");
+        const matched = await markDoneWhen(vault, conversationId, criterion).catch(() => null);
+        return matched
+          ? `Checked off "${matched}" — the user sees that criterion go green.`
+          : `Recorded "${criterion}". Couldn't match it to a listed criterion, but noted it.`;
+      },
+    }),
     ProposeMission: tool({
       description:
         "Propose a mission to the user as an Approve card — the ONLY way you (the assistant) put real work in motion. Call this for any substantial ask instead of grinding it in this chat. A mission is a briefly-stated GOAL plus the sub-results that DEFINE IT DONE. It does NOT start anything: it renders a card the user taps to approve, and approval mints the mission deterministically. You can't start a mission or spawn workers — proposing is your job; running is the mission's. After calling it, tell the user it's ready to approve and stay conversational — do NOT claim you started anything.",
@@ -1390,8 +1407,8 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   };
   if (tier === "mission") drop(["ProposeMission"]);
   else if (tier === "worker")
-    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission"]);
-  else drop(["StartWorker", "CompleteMission"]);
+    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission", "MarkDoneWhen"]);
+  else drop(["StartWorker", "CompleteMission", "MarkDoneWhen"]);
   return full;
 }
 

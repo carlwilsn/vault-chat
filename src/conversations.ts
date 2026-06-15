@@ -62,6 +62,10 @@ export type Conversation = {
   // that left done missions lingering for 48h. The thread is kept (not deleted)
   // so the user can still open the finished mission; it just leaves the surface.
   completedAt?: number;
+  // The "Done when" criteria the supervisor has VERIFIED met so far (matched to
+  // the brief's bullets). Drives per-criterion checkoff in the mission spec, so
+  // the user watches progress accrue one bullet at a time — set via MarkDoneWhen.
+  doneWhenDone?: string[];
 };
 
 // Attach a Telegram chat_id to one conversation, detaching it from any
@@ -168,6 +172,7 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         summaryRev: parsed.summaryRev,
         thinkingDigest: parsed.thinkingDigest,
         completedAt: parsed.completedAt,
+        doneWhenDone: parsed.doneWhenDone,
       });
     } catch {
       // skip
