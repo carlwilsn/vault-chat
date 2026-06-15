@@ -14,14 +14,31 @@ const SYSTEM = `You turn an agent's finished work into a phone notification. You
 - A blank line.
 - Then 1-3 plain-text sentences: the essential summary of what was done or found and why it matters.
 
-Rules: no markdown, no bullets, no preamble, no meta ("the agent…", "this briefing…"). Write it as the finished result itself, skimmable on a phone. If the reply is just process narration with no real result, say so plainly in one line.`;
+Rules: no markdown, no bullets, no preamble, no meta ("the agent…", "this briefing…"). Write it as the finished result itself, skimmable on a phone. Output ONLY the notification text — never address me, never describe your own task, never ask for input. If the input is empty or has no real result to report, output exactly the single word NONE and nothing else.`;
+
+// The summarizer occasionally answers ABOUT its task instead of producing a
+// summary — "I need the agent's actual reply…", "I'm ready to convert results
+// into notifications", "Please provide the…". That meta-commentary used to leak
+// straight into the Alerts feed as a notification title. Reject any output that
+// reads as the model talking to us rather than reporting the result.
+function looksLikeMeta(s: string): boolean {
+  const t = s.trim().toLowerCase();
+  if (!t || t === "none") return true;
+  if (/^(i need|i'?m ready|i am ready|please provide|i don'?t have|i do not have|there (is|are) no|it seems|i cannot|i can'?t|sorry|as an ai|i'?ll convert|i will convert|once you|provide the)/.test(t))
+    return true;
+  if (/(actual reply|to turn into a notification|convert (agent )?results?|into (a )?phone notification|no (content|reply|result|output|text)\b.*(to|was|provided)|nothing to (summari|report))/.test(t))
+    return true;
+  return false;
+}
 
 export async function summarizeForAlert(
   reply: string,
   apiKeys: Partial<Record<ProviderId, string>>,
 ): Promise<{ title: string; body: string } | null> {
   const text = (reply ?? "").trim();
-  if (!text) return null;
+  // Nothing substantive to summarize — don't even ask the model (that's exactly
+  // what produced the "I need the agent's actual reply" meta-notifications).
+  if (text.length < 4) return null;
   const picked = pickFastModel(apiKeys);
   if (!picked) return null;
   try {
@@ -32,11 +49,11 @@ export async function summarizeForAlert(
       prompt: text.slice(0, 8000),
     });
     const out = res.text.trim();
-    if (!out) return null;
+    if (!out || looksLikeMeta(out)) return null;
     const lines = out.split("\n");
     const title = lines[0]!.replace(/^#+\s*/, "").trim().slice(0, 90);
     const body = lines.slice(1).join("\n").trim() || title;
-    if (!title) return null;
+    if (!title || looksLikeMeta(title)) return null;
     return { title, body };
   } catch {
     return null;

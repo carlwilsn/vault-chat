@@ -1122,17 +1122,18 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       }),
       execute: async ({ summary }) => {
         if (!conversationId) return "No mission context — can't complete.";
-        // Idempotent: a supervisor sometimes calls this again in a follow-up
-        // turn. If it's already completed, do NOT re-notify (that was the
-        // duplicate "Mission complete" card) — just tell it to stop.
-        const { readConversations } = await import("./conversations");
-        const existing = (await readConversations(vault).catch(() => [])).find(
-          (c) => c.id === conversationId,
-        );
-        if (existing?.completedAt) {
+        // completeMission atomically stamps completedAt and returns true only on
+        // the call that actually retired the mission — so the "Mission complete"
+        // notification fires exactly once, even if this tool is called twice
+        // (parallel calls, or a follow-up turn re-confirming done).
+        const { completeMission } = await import("./offVaultRun");
+        const didComplete = await completeMission(vault, conversationId).catch((e) => {
+          console.warn("[mission] complete failed:", e);
+          return false;
+        });
+        if (!didComplete) {
           return "This mission is already complete — nothing more to do. End your turn.";
         }
-        const { completeMission } = await import("./offVaultRun");
         const { notify } = await import("./phoneApp");
         await notify("info", "Mission complete", summary, conversationId, {
           intention: "Mission complete",
@@ -1140,9 +1141,6 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           icon: "✓",
           cls: "g",
         });
-        await completeMission(vault, conversationId).catch((e) =>
-          console.warn("[mission] complete failed:", e),
-        );
         return "Mission marked complete, the user notified, and it's cleared from Activity. End your turn — the mission is done.";
       },
     }),

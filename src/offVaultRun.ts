@@ -775,11 +775,32 @@ export async function stopAndDeleteMission(vault: string, conversationId: string
 // wakes so it can't re-wake itself back onto Activity. Unlike
 // stopAndDeleteMission this KEEPS the threads: the user can still open the
 // finished mission to review it; it just leaves the live surface.
-export async function completeMission(vault: string, conversationId: string): Promise<void> {
-  const list = await readConversations(vault);
-  const mission = list.find((c) => c.id === conversationId && c.source === "mission");
-  if (!mission) return;
+// Returns true only when THIS call actually retired the mission; false if it
+// was already complete. The caller notifies the user only on a true, so the
+// "Mission complete" card fires exactly once even when CompleteMission is
+// invoked twice (parallel tool calls, or a follow-up turn re-confirming done).
+export async function completeMission(vault: string, conversationId: string): Promise<boolean> {
+  // Atomic check-and-set of completedAt: the FIRST caller inside the lock wins;
+  // a racing/repeat caller sees it already stamped and bails. This is what kills
+  // the duplicate "Mission complete" notification (two CompleteMission tool
+  // calls in one turn used to both read no-completedAt and both notify).
+  let mission: Conversation | undefined;
+  let didComplete = false;
+  await withConvLock(async () => {
+    const fresh = await readConversations(vault);
+    const i = fresh.findIndex((c) => c.id === conversationId && c.source === "mission");
+    if (i < 0) return;
+    mission = fresh[i];
+    if (fresh[i]!.completedAt) return; // already complete — leave didComplete false
+    fresh[i] = { ...fresh[i]!, completedAt: Date.now() };
+    await writeConversations(vault, fresh);
+    didComplete = true;
+  });
+  if (!didComplete || !mission) return false;
+  // Real completion: stop leftover workers + cancel self-scheduled wakes so it
+  // can't re-wake itself back onto Activity.
   const key = (mission.mission ?? mission.title ?? "").trim();
+  const list = await readConversations(vault);
   const workers = key
     ? list.filter((c) => c.source === "worker" && (c.mission ?? "").trim() === key)
     : [];
@@ -797,14 +818,8 @@ export async function completeMission(vault: string, conversationId: string): Pr
   } catch (e) {
     console.warn("[mission] complete: schedule cleanup failed:", e);
   }
-  await withConvLock(async () => {
-    const fresh = await readConversations(vault);
-    const i = fresh.findIndex((c) => c.id === conversationId);
-    if (i < 0) return;
-    fresh[i] = { ...fresh[i]!, completedAt: Date.now() };
-    await writeConversations(vault, fresh);
-  });
   await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+  return true;
 }
 
 // "Done when" bullets parsed from a mission brief — same shape the phone's

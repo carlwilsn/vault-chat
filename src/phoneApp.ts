@@ -299,29 +299,21 @@ async function onRunEnded(convId: string): Promise<void> {
       const names = (last?.toolCalls ?? []).map((t) => t.name);
       body = names.length ? `ran ${[...new Set(names)].slice(0, 5).join(", ")}` : "finished.";
     }
-    // A CARD PER WORKER: surface every finished worker's deliverable to the user
-    // — a clean Haiku summary of what it produced (Mode C) — in addition to
-    // reporting up to its mission. The user wants to see the workers' actual
-    // work, not only a single mission-done card. Falls back to the raw slice if
-    // no fast model is configured.
-    {
-      const { summarizeForAlert } = await import("./alert-summary");
-      const sum = await summarizeForAlert(last?.content ?? body, useStore.getState().apiKeys).catch(() => null);
-      void notify("info", sum?.title || `Worker — ${c.title}`, sum?.body || body, convId, {
-        intention: `Worker deliverable${c.mission ? " · " + c.mission : ""}`,
-        summary: (sum?.body || body).slice(0, 200),
-        icon: "✓",
-        cls: "g",
-      });
-    }
-    // Still report UP to the mission so its supervisor reviews + decides.
+    // A worker reports UP to its mission, never straight to the user: the user
+    // hears from supervisors, not from every worker. (The old "card per worker"
+    // ping is what produced the duplicate "Worker finished — …" spam, several
+    // per worker on retry/duplicate wakes.) Find this worker's mission thread;
+    // it reviews the result and decides whether anything earns the user's phone.
     const missionKey = (c.mission ?? "").trim();
     const missionConv = missionKey
       ? s.conversations.find(
-          (x) => x.source === "mission" && (x.mission ?? x.title).trim() === missionKey,
+          (x) =>
+            x.source === "mission" &&
+            (x.mission ?? x.title).trim() === missionKey &&
+            x.id !== convId,
         )
       : undefined;
-    if (missionConv && missionConv.id !== convId) {
+    if (missionConv) {
       const wake =
         `Your worker "${c.title}" (id ${convId}) just finished its turn. Last output: ${body}\n\n` +
         `Review its thread and decide: verified done, steer it (AskWorker), respawn with learnings, or — only if you can't resolve it yourself — bring the user in.`;
@@ -338,6 +330,18 @@ async function onRunEnded(convId: string): Promise<void> {
           console.warn("[phone-app] mission wake failed:", e),
         );
       }
+    } else {
+      // Orphan/legacy worker with no mission thread — keep ONE direct ping as
+      // the safety net so nothing ever finishes silently. Every worker should
+      // belong to a mission now; this is only the fallback for older threads.
+      const { summarizeForAlert } = await import("./alert-summary");
+      const sum = await summarizeForAlert(last?.content ?? body, useStore.getState().apiKeys).catch(() => null);
+      void notify("info", sum?.title || `Worker — ${c.title}`, sum?.body || body, convId, {
+        intention: `Worker deliverable${c.mission ? " · " + c.mission : ""}`,
+        summary: (sum?.body || body).slice(0, 200),
+        icon: "✓",
+        cls: "g",
+      });
     }
   }
 }
