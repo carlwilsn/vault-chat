@@ -1119,7 +1119,10 @@
   function parseDoneWhen(goal) {
     const out = [];
     for (const ln of (goal || "").split(/\r?\n/)) {
-      const m = ln.match(/^\s*[-*]\s+(.+)$/);
+      // Accept dash/star/bullet AND numbered list markers — briefs phrase the
+      // criteria a few different ways and we want them all to parse so the spec
+      // shows a real checklist instead of falling back to a raw blob.
+      const m = ln.match(/^\s*(?:[-*•]|\d+[.)])\s+(.+)$/);
       if (m) out.push(m[1].trim());
     }
     return out;
@@ -1146,10 +1149,17 @@
     }
     const comps = parseDoneWhen(brief);
     let body = '<div class="lbl">Goal</div><div class="gtxt">' + esc(mc.title || "(mission)") + "</div>";
+    // ALWAYS labelled "Done when" — consistent across every mission. A parseable
+    // checklist renders as the list; an unparseable brief shows under the same
+    // heading; a missing brief shows a plain note. (The old "Success criterion"
+    // fallback was the inconsistent label that varied mission to mission.)
+    body += '<div class="lbl">Done when</div>';
     if (comps.length) {
-      body += '<div class="lbl">Done when</div><ul class="dwlist">' + comps.map((c) => '<li><span class="dwb"></span><span>' + inline(c) + "</span></li>").join("") + "</ul>";
+      body += '<ul class="dwlist">' + comps.map((c) => '<li><span class="dwb"></span><span>' + inline(c) + "</span></li>").join("") + "</ul>";
     } else if (brief) {
-      body += '<div class="lbl">Success criterion</div><div class="md">' + md(brief) + "</div>";
+      body += '<div class="md">' + md(brief) + "</div>";
+    } else {
+      body += '<div class="md dim">No explicit criteria recorded for this mission.</div>';
     }
     body += '<div class="specrow"><div class="lbl">State</div><div class="sc">' + esc(stateLine) + "</div></div>";
     if (running) body += '<ul class="speclist">' + g.active.map(({ run, c }) => '<li><span class="bx">•</span><span>' + esc(run.title || c.title || "worker") + (run.lastTool ? " · " + esc(run.lastTool) : "") + "</span></li>").join("") + "</ul>";
@@ -1162,7 +1172,7 @@
   async function openSupervisor(mc, g) {
     openSheet({
       intent: "Mission supervisor", title: mc.title, ico: "◇", cls: "",
-      bodyHtml: '<div class="lbl">Its thinking — what it concluded from the workers</div><div class="alsum-load" id="supLoad">loading…</div>',
+      bodyHtml: '<div class="alsum-load" id="supLoad">loading…</div>',
       footHtml: '<div class="reply"><textarea class="rinp" rows="1" placeholder="ask the supervisor, or tell it to spawn a worker…" autocomplete="off"></textarea><button class="rsend">↑</button></div>',
       action: { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
       wire: (body, foot) => wireReply(foot, async (v) => {
@@ -1173,8 +1183,17 @@
     try {
       const r = await api("/conversation?id=" + encodeURIComponent(mc.id) + "&n=60");
       const d = await r.json(); if (d.error) throw new Error(d.error);
+      const msgs = d.messages || [];
+      // Split the brief (the first user turn — what the supervisor was handed)
+      // from the rest of the thread, so it's clear what it was asked to own.
+      const briefIdx = msgs.findIndex((m) => m.role === "user");
+      const brief = briefIdx >= 0 ? msgs[briefIdx] : null;
+      const rest = briefIdx >= 0 ? msgs.slice(briefIdx + 1) : msgs;
+      let html = "";
+      if (brief && brief.content) html += '<div class="lbl">Brief — what the supervisor was given</div><div class="md">' + md(String(brief.content)) + "</div>";
+      html += '<div class="lbl">Supervisor thread</div>' + (rest.length ? threadHtml(rest, { user: "You", assistant: "Supervisor" }) : '<div class="md dim">No turns yet — it hasn’t run since being briefed.</div>');
       const bodyEl = $("sheetBody");
-      bodyEl.innerHTML = '<div class="lbl">Its thinking — what it concluded from the workers</div>' + threadHtml(d.messages, { user: "You", assistant: "Supervisor" });
+      bodyEl.innerHTML = html;
       typeset(bodyEl); bodyEl.scrollTop = bodyEl.scrollHeight;
     } catch (e) { const l = $("supLoad"); if (l) l.textContent = "Couldn’t load: " + (e.message || e); }
   }
@@ -1281,21 +1300,18 @@
       // of this window for everyone, rather than being hidden on one device.
       for (const [name, g] of missions) {
         const mc = g.conv || { id: "", title: name, goal: "", preview: "" };
-        const head = el('<div class="msec"><span class="k">Mission</span><b></b><span class="mc"></span><button class="spec">spec</button></div>');
+        // Just the mission name — no "Mission" tag, no summary line. Tapping the
+        // row opens its SPEC (goal + done-when + state); the chip jumps to the
+        // supervisor thread. Only a worker count surfaces as state.
+        const head = el('<div class="msec"><b></b><span class="mc"></span><button class="spec">supervisor</button></div>');
         head.querySelector("b").textContent = name;
-        // Only surface a state when workers are actually grinding. The old
-        // "planning" / "watching" labels confused more than they informed — an
-        // idle mission just shows its name + last note, no cryptic state chip.
         head.querySelector(".mc").textContent = g.active.length ? g.active.length + " running" : "";
-        head.querySelector(".spec").onclick = (e) => { e.stopPropagation(); openSpec(mc, g); };
-        if (g.conv) head.onclick = () => openSupervisor(g.conv, g); // watch its thinking, steer, stop
+        const supBtn = head.querySelector(".spec");
+        if (g.conv) supBtn.onclick = (e) => { e.stopPropagation(); openSupervisor(g.conv, g); };
+        else supBtn.remove(); // virtual mission (running workers, no supervisor thread)
+        head.onclick = () => openSpec(mc, g);
         box.appendChild(head);
         for (const { run, c } of g.active) box.appendChild(workerPill(run, c));
-        if (!g.active.length && g.conv) {
-          const note = el('<div class="mnote"></div>');
-          note.textContent = g.conv.statusSummary || g.conv.preview || "no workers running right now";
-          box.appendChild(note);
-        }
       }
 
       box.appendChild(el('<div class="sec">Scheduled</div>'));
