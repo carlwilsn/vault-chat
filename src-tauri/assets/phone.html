@@ -367,6 +367,10 @@
   .sheet-body .lbl{color:#8a8a8a;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;margin:14px 0 5px}
   .sheet-foot{flex:none;padding:8px 14px calc(env(safe-area-inset-bottom) + 8px);border-top:1px solid var(--line);background:#101012}
   .sheet-foot .reply{margin-top:0}
+  /* A decision alert's single bottom CTA — opens the asking chat to reply there
+     (no inline composer in alerts). Primary, full-width, centered. */
+  .reply-cta{display:block;width:100%;background:var(--ok);color:#101012;font-weight:700;font-size:15px;border-radius:12px;padding:13px;min-height:46px;text-align:center;border:none;font-family:inherit}
+  .reply-cta:active{opacity:.85}
   .thread{display:flex;flex-direction:column;margin:4px 0 2px}
   .tmsg{display:flex;flex-direction:column;margin-bottom:10px}
   .tmsg.user{align-items:flex-end} .tmsg.asst{align-items:flex-start}
@@ -1398,15 +1402,21 @@
     const meta = alertMeta(n);
     openSheet({
       intent: n.intention || meta.intention, title: n.title, ico: n.icon || meta.icon, cls: n.cls || meta.cls,
-      action: n.convId ? { label: "Open thread", onClick: () => { closeSheet(); openThread(n.convId, n.title); } } : null,
-      // Show the agent's POLISHED summary (the Notify body) — not the raw
-      // thread. "Open thread" is right there for the unedited transcript.
+      // "Open thread" (upper-right, both types) — read the full context before
+      // deciding. For a decision, the centered "Reply" CTA below is the prominent
+      // path; both land in the asking chat.
+      action: n.convId ? { label: "Open thread", onClick: () => { markRead(n.id); closeSheet(); openThread(n.convId, n.title); } } : null,
+      // Show the agent's POLISHED summary (the Notify body) — not the raw thread.
       bodyHtml: '<div class="md">' + md(n.body || "*(no summary)*") + "</div>",
-      footHtml: (isAction && n.convId) ? '<div class="reply"><textarea class="rinp" rows="1" placeholder="tell the mission what to do…" autocomplete="off"></textarea><button class="rsend">↑</button></div>' : "",
-      wire: (body, foot) => wireReply(foot, async (v) => {
-        await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: v }) }).catch(() => {});
-        await markRead(n.id); closeSheet(); toast("Sent."); loadAlerts();
-      }),
+      // A decision (ask) gets ONE centered "Reply" CTA where the text box used to
+      // be — tapping it opens the asking chat so the user types THERE, not in the
+      // alert. No inline composer anywhere in alerts, per the user. An info alert
+      // ("here's what happened") has no foot.
+      footHtml: (isAction && n.convId) ? '<button class="reply-cta">Reply</button>' : "",
+      wire: (body, foot) => {
+        const btn = foot && foot.querySelector(".reply-cta");
+        if (btn) btn.onclick = () => { markRead(n.id); closeSheet(); openThread(n.convId, n.title); };
+      },
     });
   }
   function attachSwipeArchive(card, action) {

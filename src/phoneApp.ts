@@ -313,11 +313,15 @@ async function onRunEnded(convId: string): Promise<void> {
       }
     } else {
       // No mission thread to report up to (legacy standalone worker): tell the
-      // user directly, but as a structured deliverable so Alerts renders it as
-      // cleanly as any mission-routed one.
-      void notify("info", `Worker finished — ${c.title}`, body, convId, {
+      // user directly. Run the worker's output through the alert summarizer
+      // (Mode C) so the card reads as a clean "here's what happened" headline +
+      // summary, not a raw 180-char slice. Falls back to the slice if no fast
+      // model is configured.
+      const { summarizeForAlert } = await import("./alert-summary");
+      const sum = await summarizeForAlert(last?.content ?? body, useStore.getState().apiKeys).catch(() => null);
+      void notify("info", sum?.title || `Worker finished — ${c.title}`, sum?.body || body, convId, {
         intention: `Worker deliverable${c.mission ? " · " + c.mission : ""}`,
-        summary: body,
+        summary: (sum?.body || body).slice(0, 200),
         icon: "✓",
         cls: "g",
       });
