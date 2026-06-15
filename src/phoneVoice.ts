@@ -123,6 +123,15 @@ export async function startPhoneVoiceHost(): Promise<void> {
   }
   await wireToolRelay();
   await pushContext();
+  // Eagerly stand up the Tailscale HTTPS funnel (Rust `voice_server_url` runs
+  // `tailscale serve --bg`) so the phone can reach this box over
+  // https://<name>.ts.net the moment it connects. Without this the funnel was
+  // only created as a side effect of the desktop Settings pane rendering
+  // (getPhoneChatLink/getPhoneVoiceLink) — so until the user happened to open
+  // Settings, the .ts.net host pointed nowhere and phone voice looped
+  // "connecting…". Idempotent on the Rust side, so this is safe to fire on
+  // every boot; fire-and-forget since `tailscale serve` can take a beat.
+  void invoke("voice_server_url", { port: PORT }).catch(() => {});
   // Push the instant the vault opens/switches or the ElevenLabs key changes —
   // that's the moment the host first has something to serve, and waiting for the
   // next heartbeat is exactly what caused the phone's transient 503s.
