@@ -75,6 +75,15 @@ export type ChatMessage = {
   // Render as thumbnails under the bubble; sent to the agent as
   // structured image parts on that turn.
   attachments?: ChatAttachment[];
+  // Haiku-cleaned thought-by-thought timeline for a worker/mission turn:
+  // the agent's reasoning broken into modular thoughts, each paired with the
+  // action it led to, plus the turn's final reply. Computed at turn completion
+  // and rendered in the cockpit thread so the user follows the supervisor's
+  // logic (observed → decided → did) instead of one run-on blob + a tool chip.
+  timeline?: {
+    steps: { thought: string; action: string }[];
+    reply: string;
+  };
 };
 
 // Shallow content-compare for the chat message list. The popout

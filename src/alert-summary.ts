@@ -1,4 +1,5 @@
-import { generateText } from "ai";
+import { generateText, generateObject } from "ai";
+import { z } from "zod";
 import { buildModel, type ProviderId } from "./providers";
 import { pickFastModel } from "./eta-estimator";
 
@@ -136,6 +137,97 @@ export async function summarizeThinking(
     });
     const out = res.text.trim();
     return out ? out.slice(0, 600) : null;
+  } catch {
+    return null;
+  }
+}
+
+// The thought-by-thought timeline: turn ONE worker/mission turn into the
+// supervisor's actual line of logic — a sequence of cleaned micro-thoughts, each
+// paired with the concrete action it led to — instead of one run-on narration
+// blob plus a collapsed "N steps" chip. The model already thinks this way
+// ("observed X → decided Y → did Z"); this just untangles the concatenated prose
+// and aligns each thought to the real tool call it triggered. NOT a summary —
+// every step is preserved; only cleaned and ordered.
+export type TimelineStep = { thought: string; action: string };
+export type Timeline = { steps: TimelineStep[]; reply: string };
+
+const TIMELINE_SCHEMA = z.object({
+  steps: z
+    .array(
+      z.object({
+        thought: z
+          .string()
+          .describe(
+            "ONE cleaned micro-thought — what the agent observed or decided at this point, ~6-20 words. Plain text.",
+          ),
+        action: z
+          .string()
+          .describe(
+            "The concrete action this thought led to, in plain words derived from the ACTIONS list (e.g. 'spawned 3 audit workers', 'asked gpu-seed-sweep-launch to start now', 'wrote the goal file', 'verified the 3 deliverables on disk'). Empty string if this thought led to no tool action.",
+          ),
+      }),
+    )
+    .describe("The agent's logic, in order — one step per distinct thought→action."),
+  reply: z
+    .string()
+    .describe(
+      "The turn's final user-facing conclusion, copied VERBATIM from the END of the narration (do not rewrite or summarize it). Empty string if the turn is pure working with no concluding message.",
+    ),
+});
+
+const TIMELINE_SYSTEM = `You untangle ONE agent turn into a clean, thought-by-thought timeline for a phone UI. You get the agent's NARRATION (its prose — several micro-thoughts run together with no breaks), optionally its raw REASONING, and the ORDERED list of ACTIONS (tools) it actually took.
+
+Produce an ordered \`steps\` list: each step is ONE cleaned micro-thought (what it observed or decided) paired with the concrete \`action\` it led to, named from the ACTIONS list in plain human words. Keep the REAL sequence and the REAL actions — do NOT invent thoughts or actions, only clean, split, and align what you're given. If several actions share one thought, put them in one step's action ("spawned 3 workers"). A thought with no tool gets an empty action.
+
+\`reply\` = the turn's final user-facing conclusion, copied verbatim from the end of the narration (NOT rewritten); empty if there's no distinct conclusion. No markdown in thoughts/actions.`;
+
+export async function summarizeTimeline(
+  narration: string,
+  reasoning: string,
+  actions: { name: string; input?: unknown }[],
+  apiKeys: Partial<Record<ProviderId, string>>,
+): Promise<Timeline | null> {
+  const text = (narration ?? "").trim();
+  // Nothing to lay out: no prose AND no actions → no timeline.
+  if (text.length < 4 && actions.length === 0) return null;
+  const picked = pickFastModel(apiKeys);
+  if (!picked) return null;
+  const actionList = actions
+    .map((a, i) => {
+      let detail = "";
+      try {
+        detail = a.input != null ? JSON.stringify(a.input) : "";
+      } catch {
+        detail = "";
+      }
+      return `${i + 1}. ${a.name}${detail ? " " + detail.slice(0, 200) : ""}`;
+    })
+    .join("\n");
+  const prompt = [
+    `NARRATION:\n${text.slice(0, 7000) || "(no prose)"}`,
+    reasoning?.trim() && `REASONING:\n${reasoning.trim().slice(0, 5000)}`,
+    `ACTIONS (in order):\n${actionList || "(none)"}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  try {
+    const model = buildModel(picked.spec, picked.apiKey);
+    const { object } = await generateObject({
+      model,
+      schema: TIMELINE_SCHEMA,
+      system: TIMELINE_SYSTEM,
+      prompt,
+    });
+    const steps = (object.steps ?? [])
+      .map((s) => ({
+        thought: String(s.thought ?? "").trim().slice(0, 240),
+        action: String(s.action ?? "").trim().slice(0, 160),
+      }))
+      .filter((s) => s.thought || s.action);
+    const reply = String(object.reply ?? "").trim();
+    if (!steps.length && !reply) return null;
+    return { steps, reply };
   } catch {
     return null;
   }

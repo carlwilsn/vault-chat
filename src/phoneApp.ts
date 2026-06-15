@@ -110,6 +110,22 @@ async function handlePhoneMessage(
     return { ok: true, convId: conv.id, queued: true };
   }
 
+  // A MISSION (supervisor) thread is written by two paths — the user's messages
+  // AND its own self-scheduled wakes. The wake path is disk-lock based
+  // (runWorkerTurn) and refreshes the in-memory store from disk; if the user's
+  // message only lived in memory (chat-controller's off-target append + deferred
+  // autosave), a concurrent wake's refresh CLOBBERED it — the "message I sent to
+  // the supervisor vanished" bug. Route mission messages through the SAME
+  // disk-lock path so the user's turn is durably persisted before anything else
+  // can refresh over it.
+  if (conv.source === "mission") {
+    const { runWorkerTurn } = await import("./offVaultRun");
+    void runWorkerTurn(s.vaultPath, conv.id, trimmed, {
+      modelId: useStore.getState().supervisorModelId,
+    }).catch((e) => console.warn("[phone-app] supervisor turn failed:", e));
+    return { ok: true, convId: conv.id };
+  }
+
   const { sendMessage } = await import("./chat-controller");
   void sendMessage(trimmed, undefined, undefined, conv.id).catch((e) =>
     console.warn("[phone-app] agent run failed:", e),
@@ -275,10 +291,19 @@ async function onRunEnded(convId: string): Promise<void> {
   if (q && q.length > 0) {
     queued.delete(convId);
     const text = q.join("\n\n");
-    const { sendMessage } = await import("./chat-controller");
-    void sendMessage(text, undefined, undefined, convId).catch((e) =>
-      console.warn("[phone-app] queued send failed:", e),
-    );
+    const conv = useStore.getState().conversations.find((c) => c.id === convId);
+    if (conv?.source === "mission") {
+      // Same durable disk-lock path as a direct mission message (above).
+      const { runWorkerTurn } = await import("./offVaultRun");
+      void runWorkerTurn(useStore.getState().vaultPath!, convId, text, {
+        modelId: useStore.getState().supervisorModelId,
+      }).catch((e) => console.warn("[phone-app] queued supervisor flush failed:", e));
+    } else {
+      const { sendMessage } = await import("./chat-controller");
+      void sendMessage(text, undefined, undefined, convId).catch((e) =>
+        console.warn("[phone-app] queued send failed:", e),
+      );
+    }
     return; // the follow-up run's completion will handle notification
   }
   // 2) A finished worker reports UP, not out: its completion wakes its

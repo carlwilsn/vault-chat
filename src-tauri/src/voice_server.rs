@@ -1170,6 +1170,10 @@ fn conversation_json(vault: &str, id: &str, n: usize) -> Option<String> {
                 "content": truncate(m.get("content").and_then(|x| x.as_str()).unwrap_or(""), 20_000),
                 "system": m.get("system").and_then(|x| x.as_bool()).unwrap_or(false),
                 "tools": tools,
+                // Haiku-cleaned thought-by-thought timeline for this turn (steps +
+                // reply), when one was computed. The phone renders it instead of
+                // the run-on content + collapsed tool chip.
+                "timeline": m.get("timeline").cloned().unwrap_or(Value::Null),
             })
         })
         .collect();

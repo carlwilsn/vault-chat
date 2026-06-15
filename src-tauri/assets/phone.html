@@ -383,9 +383,17 @@
      user's own (right) and the supervisor's (left) turns. */
   .treport{align-self:center;max-width:92%;margin:2px 0 10px;padding:6px 11px;background:var(--raised);border:1px solid var(--line);border-radius:10px;font-size:11.5px;color:var(--dim);text-align:center;line-height:1.45;overflow-wrap:anywhere}
   .treport b{color:#bcbcbc;font-weight:600}
-  /* Thinking woven into the thread as a dim thought, not a labelled section. */
-  .thought{align-self:flex-start;max-width:92%;margin:0 0 6px;padding-left:11px;border-left:2px solid var(--line);color:#8f8f8f;font-size:12px;font-style:italic;line-height:1.5;overflow-wrap:anywhere}
-  .thought :is(p,ul,ol){margin:.2em 0} .thought code{font-style:normal}
+  /* Thought-by-thought timeline: each step is a modular thought + the action it
+     led to. A faint rail down the left ties the steps into one line of logic. */
+  .ttl{margin:1px 0 0;border-left:1.5px solid var(--line);padding-left:13px}
+  .ttl-step{position:relative;margin:0 0 12px}
+  .ttl-step:last-child{margin-bottom:2px}
+  .ttl-step::before{content:"";position:absolute;left:-17px;top:5px;width:6px;height:6px;border-radius:50%;background:#5a5a62}
+  .ttl-th{font-size:13px;color:var(--text);line-height:1.5;overflow-wrap:anywhere}
+  .ttl-act{font-size:12px;color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:3px;overflow-wrap:anywhere}
+  .ttl-act::before{content:"→ ";color:#6f6f6f}
+  .tl-reply{margin-top:11px;padding-top:11px;border-top:1px solid var(--line)}
+  .working{font-size:12px;color:var(--dim);margin-top:6px;font-style:italic;opacity:.85}
   .tmsg{display:flex;flex-direction:column;margin-bottom:10px}
   .tmsg.user{align-items:flex-end} .tmsg.asst{align-items:flex-start}
   .tmsg .sender{font-size:9.5px;letter-spacing:.3px;text-transform:uppercase;color:#7c7c7c;font-weight:700;margin:0 5px 3px}
@@ -534,7 +542,12 @@
           { role: "user", content: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP across 3 seeds; commit eval.loss; writeup under docs/. Done = three seeds within 0.005 nat." },
           { role: "assistant", content: "Criterion pinned. Fanning out a worker per seed plus an eval/writeup worker; I'll watch on 15-min wakes and verify before I call it.", tools: ["StartWorker", "StartWorker", "StartWorker", "Schedule"] },
           { role: "user", content: "Your worker \"seed-42\" (id 99284a75) just finished its turn. Last output: seed 42 trained, eval.loss 1.553 committed under results/.\n\nReview its thread and decide: verified done, steer it (AskWorker), respawn with learnings, or — only if you can't resolve it yourself — bring the user in." },
-          { role: "assistant", content: "Read the worker threads. Seeds **42 & 44 landed in tolerance**, eval.loss committed. **Seed 3 diverged** at step 800 (+0.05 nat) — I held it and surfaced the call to you. Kicked the eval/writeup worker since 2 of 3 are in." },
+          { role: "assistant", content: "Read the worker threads. Seeds **42 & 44 landed in tolerance**, eval.loss committed. **Seed 3 diverged** at step 800 (+0.05 nat) — I held it and surfaced the call to you. Kicked the eval/writeup worker since 2 of 3 are in.", timeline: { steps: [
+            { thought: "Three seeds are running — read each worker's thread before trusting any 'done'", action: "read 3 worker threads" },
+            { thought: "Seeds 42 & 44 landed in tolerance with eval.loss committed; seed 3 diverged +0.05 nat at step 800", action: "" },
+            { thought: "Seed 3's gap is a real call I can't make myself — surface it to the user", action: "asked the user: real effect, or rerun at matched LR?" },
+            { thought: "Two of three are already in, so don't block — kick off the eval + writeup worker now", action: "spawned the eval+writeup worker" },
+          ], reply: "Seeds **42 & 44** landed in tolerance; **seed 3 diverged** at step 800 (+0.05 nat) — I held it and surfaced the call to you. Kicked the eval/writeup worker since 2 of 3 are in." } },
           { role: "user", content: "don't wait on it — spin up a worker to rerun seed 3 at seed 42's LR." },
           { role: "assistant", content: "On it — spawning a worker to rerun seed 3 at seed 42's LR.", tools: ["StartWorker"] },
         ] },
@@ -1089,7 +1102,30 @@
   // Threads render as a transcript with sender labels and bubble-free agent
   // turns. A worker thread is Supervisor ⇄ Worker; a mission thread is You ⇄
   // Supervisor. You operate at the mission layer — never type at a worker.
-  function threadHtml(msgs, labels, thought) {
+  // The agent's thought-by-thought timeline (Haiku-cleaned): modular thoughts,
+  // each with the concrete action it led to. This is what makes the supervisor's
+  // logic legible — observed → decided → did — instead of one run-on paragraph
+  // plus a collapsed "N steps" chip.
+  function timelineHtml(tl) {
+    if (!tl || !Array.isArray(tl.steps) || !tl.steps.length) return "";
+    return '<div class="ttl">' + tl.steps.map((s) =>
+      '<div class="ttl-step">' +
+        (s.thought ? '<div class="ttl-th">' + esc(s.thought) + "</div>" : "") +
+        (s.action ? '<div class="ttl-act">' + esc(s.action) + "</div>" : "") +
+      "</div>").join("") + "</div>";
+  }
+  // An assistant turn renders as its timeline (+ the turn's final reply) when one
+  // was computed; otherwise the raw content + a collapsed tool chip (older turns,
+  // or turns where no fast model was configured to clean them).
+  function assistantBody(m) {
+    const tl = m.timeline;
+    if (tl && Array.isArray(tl.steps) && tl.steps.length) {
+      const reply = (tl.reply || "").trim();
+      return '<div class="amsg">' + timelineHtml(tl) + (reply ? '<div class="md tl-reply">' + md(reply) + "</div>" : "") + "</div>";
+    }
+    return '<div class="amsg"><div class="md">' + md(m.content || "") + "</div>" + stepsStr(m.tools) + "</div>";
+  }
+  function threadHtml(msgs, labels) {
     labels = labels || { user: "You", assistant: "Assistant" };
     return '<div class="thread">' + (msgs || []).map((m) => {
       const content = m.content || "";
@@ -1106,18 +1142,17 @@
       const side = m.role === "user" ? "user" : "asst";
       let sender = m.role === "user" ? labels.user : labels.assistant;
       if (m.role === "user" && /^MISSION BRIEF/i.test(content)) sender = "Mission brief · approved";
-      const chips = stepsStr(m.tools);
       const inner = m.role === "user"
         ? '<div class="m user">' + esc(content) + "</div>"
-        : '<div class="amsg"><div class="md">' + md(content) + "</div>" + chips + "</div>";
+        : assistantBody(m);
       return '<div class="tmsg ' + side + '"><span class="sender">' + esc(sender) + "</span>" + inner + "</div>";
-    }).join("") +
-    // Thinking woven in as a dim thought at the live edge of the feed — the
-    // latest reasoning, read as a thought, not a labelled "Thinking" section.
-    ((thought || "").trim() ? '<div class="thought">' + md(String(thought)) + "</div>" : "") +
-    "</div>";
+    }).join("") + "</div>";
   }
+  // Refresh handle for the live mission view — any new sheet (and closing one)
+  // cancels it so a mission's poll never bleeds into another sheet's body.
+  let missionPoll = 0;
   function openSheet(opts) {
+    clearInterval(missionPoll); missionPoll = 0;
     const sh = $("sheet");
     sh.style.height = ""; sh.style.maxHeight = ""; sh.style.transition = "";
     $("sheetIco").textContent = opts.ico || "•";
@@ -1134,7 +1169,7 @@
     typeset($("sheetBody"));
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
   }
-  function closeSheet() { $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; }
+  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; }
   // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
   // chat composer), Enter sends, Shift+Enter is a newline. The pinned footer +
   // the visualViewport lift keep it above the keyboard.
@@ -1220,58 +1255,88 @@
   async function openMission(mc, g, opts) {
     opts = opts || {};
     const readonly = !!opts.readonly || !!mc.completedAt;
+    // Messages sent this session, shown immediately and kept until the on-disk
+    // thread folds them in — so a reply never blanks out while the box persists.
+    const optimistic = [];
+    let lastSig = "";
     openSheet({
       intent: readonly ? "Mission · complete" : "Mission",
       title: mc.title, ico: readonly ? "✓" : "◎", cls: readonly ? "g" : "",
       bodyHtml: '<div class="alsum-load" id="mLoad">loading…</div>',
       footHtml: readonly ? "" : '<div class="reply"><textarea class="rinp" rows="1" placeholder="steer the supervisor, or tell it to spawn a worker…" autocomplete="off"></textarea><button class="rsend">↑</button></div>',
       action: readonly ? null : { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
+      // A NORMAL conversation: sending keeps the sheet open, shows the message
+      // right away, and the poll below folds in the supervisor's reply. Not a
+      // one-and-done — send follow-ups without reopening.
       wire: readonly ? undefined : (body, foot) => wireReply(foot, async (v) => {
+        optimistic.push(v);
+        lastSig = ""; // force the next paint to re-render with the new bubble
+        paint();
+        toast("Sent.");
         await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v }) }).catch(() => {});
-        closeSheet(); toast("Sent to the supervisor.");
+        setTimeout(paint, 900); // pick up the durably-persisted turn quickly
       }),
     });
-    let brief = (mc.goal || "").trim();
-    let rest = [];
-    let threadErr = "";
-    if (mc.id) {
-      try {
-        const d = await (await api("/conversation?id=" + encodeURIComponent(mc.id) + "&n=60")).json();
-        if (d.error) throw new Error(d.error);
-        const msgs = d.messages || [];
-        // The real brief is the MISSION BRIEF turn (it carries the done-when
-        // bullets) — not merely the first user message, which on a worker-wake
-        // could be internal plumbing.
-        const bi = msgs.findIndex((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || ""));
-        if (bi >= 0 && msgs[bi].content) brief = String(msgs[bi].content).trim() || brief;
-        rest = bi >= 0 ? msgs.filter((_, i) => i !== bi) : msgs;
-      } catch (e) {
-        // Don't dead-end: the conversation summary's goal still carries the
-        // done-when, so render the spec and just note the thread couldn't load.
-        threadErr = String(e.message || e);
+    async function paint() {
+      let brief = (mc.goal || "").trim();
+      let rest = [];
+      let threadErr = "";
+      let running = false;
+      if (mc.id) {
+        try {
+          const d = await (await api("/conversation?id=" + encodeURIComponent(mc.id) + "&n=60")).json();
+          if (d.error) throw new Error(d.error);
+          const msgs = d.messages || [];
+          running = d.status === "running";
+          // The real brief is the MISSION BRIEF turn (it carries the done-when
+          // bullets) — not merely the first user message, which on a worker-wake
+          // could be internal plumbing.
+          const bi = msgs.findIndex((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || ""));
+          if (bi >= 0 && msgs[bi].content) brief = String(msgs[bi].content).trim() || brief;
+          rest = bi >= 0 ? msgs.filter((_, i) => i !== bi) : msgs;
+          // Drop optimistic messages the persisted thread now contains.
+          for (let k = optimistic.length - 1; k >= 0; k--) {
+            if (rest.some((m) => m.role === "user" && (m.content || "").trim() === optimistic[k].trim())) optimistic.splice(k, 1);
+          }
+        } catch (e) {
+          // Don't dead-end: the conversation summary's goal still carries the
+          // done-when, so render the spec and just note the thread couldn't load.
+          threadErr = String(e.message || e);
+        }
       }
+      const restPlus = rest.concat(optimistic.map((t) => ({ role: "user", content: t })));
+      const sig = JSON.stringify(restPlus.map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + running;
+      if (sig === lastSig) return; // nothing changed — don't disrupt reading
+      lastSig = sig;
+      const comps = parseDoneWhen(brief);
+      let body = '<div class="lbl">Done when</div>';
+      if (comps.length) {
+        const dwDone = new Set(mc.doneWhenDone || []);
+        const allDone = !!mc.completedAt;
+        body += '<ul class="dwlist">' + comps.map((c) => '<li><span class="dwb' + ((allDone || dwDone.has(c)) ? " done" : "") + '"></span><span>' + inline(c) + "</span></li>").join("") + "</ul>";
+      } else if (brief) {
+        body += '<div class="md">' + md(brief) + "</div>";
+      } else {
+        body += '<div class="md dim">No explicit criteria recorded for this mission.</div>';
+      }
+      body += '<div class="lbl">Thread</div>' + (restPlus.length
+        ? threadHtml(restPlus, { user: "You", assistant: "Supervisor" }) + (running ? '<div class="working">⏳ supervisor working…</div>' : "")
+        : (threadErr
+            ? '<div class="md dim">Thread unavailable: ' + esc(threadErr) + "</div>"
+            : '<div class="md dim">No turns yet — it hasn’t run since being briefed.</div>'));
+      const be = $("sheetBody");
+      const atBottom = be.scrollHeight - be.scrollTop - be.clientHeight < 80;
+      be.innerHTML = body; typeset(be);
+      if (atBottom) be.scrollTop = be.scrollHeight;
     }
-    const comps = parseDoneWhen(brief);
-    let body = '<div class="lbl">Done when</div>';
-    if (comps.length) {
-      // Per-criterion checkoff: a bullet goes green once the supervisor VERIFIES
-      // that criterion (MarkDoneWhen → doneWhenDone). A completed mission shows
-      // them all done.
-      const dwDone = new Set(mc.doneWhenDone || []);
-      const allDone = !!mc.completedAt;
-      body += '<ul class="dwlist">' + comps.map((c) => '<li><span class="dwb' + ((allDone || dwDone.has(c)) ? " done" : "") + '"></span><span>' + inline(c) + "</span></li>").join("") + "</ul>";
-    } else if (brief) {
-      body += '<div class="md">' + md(brief) + "</div>";
-    } else {
-      body += '<div class="md dim">No explicit criteria recorded for this mission.</div>';
-    }
-    body += '<div class="lbl">Thread</div>' + (rest.length
-      ? threadHtml(rest, { user: "You", assistant: "Supervisor" }, mc.thinkingDigest)
-      : (threadErr
-          ? '<div class="md dim">Thread unavailable: ' + esc(threadErr) + "</div>"
-          : '<div class="md dim">No turns yet — it hasn’t run since being briefed.</div>'));
-    const be = $("sheetBody");
-    be.innerHTML = body; typeset(be); be.scrollTop = be.scrollHeight;
+    await paint();
+    // Poll while the sheet stays open (a live mission only) so the supervisor's
+    // turns — its reply to what you sent AND its in-flight self-checks — appear
+    // without reopening. openSheet/closeSheet clear this.
+    if (!readonly) missionPoll = setInterval(() => {
+      if (!$("sheet").classList.contains("on")) { clearInterval(missionPoll); missionPoll = 0; return; }
+      void paint();
+    }, 3000);
   }
   function stopMission(mc, g) {
     const a = $("sheetAction");
@@ -1297,7 +1362,7 @@
       const r = await api("/conversation?id=" + encodeURIComponent(run.convId) + "&n=60");
       const d = await r.json(); if (d.error) throw new Error(d.error);
       const bodyEl = $("sheetBody");
-      bodyEl.innerHTML = '<div class="lbl">Thread · supervisor ↔ worker</div>' + threadHtml(d.messages, { user: "Supervisor", assistant: "Worker" }, c.thinkingDigest) +
+      bodyEl.innerHTML = '<div class="lbl">Thread · supervisor ↔ worker</div>' + threadHtml(d.messages, { user: "Supervisor", assistant: "Worker" }) +
         '<div class="readonly">This back-and-forth is the <b>supervisor</b> briefing and steering the <b>worker</b> — not you. Read-only: if it’s off track, steer the supervisor or re-scope the mission.</div>';
       typeset(bodyEl);
     } catch (e) { const l = $("wkLoad"); if (l) l.textContent = "Couldn’t load: " + (e.message || e); }

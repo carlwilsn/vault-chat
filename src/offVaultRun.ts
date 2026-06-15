@@ -594,49 +594,62 @@ export async function runWorkerTurn(
   // so the phone swaps from the streaming bubble to the persisted message.
   useStore.getState().clearConvRuntime(conversationId);
 
-  // Mode A of the cockpit transform: refresh the Activity status line — a clean
-  // one-line TASK + STATUS — for worker/mission threads, on turn completion.
-  // Best-effort and fired AFTER the turn is persisted so it never delays the
-  // thread landing; if no fast model is configured it's a no-op and Activity
-  // falls back to the raw slice. The supervisor's MISSION BRIEF / a worker's
-  // task is the first user message; the status comes from this turn's output.
+  // Cockpit transform, fired AFTER the turn is persisted so it never delays the
+  // thread landing (a no-op if no fast model is configured). Two fast-model
+  // passes off the same finished turn:
+  //   - Mode A: the Activity status line — a clean one-line TASK (for the pill).
+  //   - Timeline: the thought-by-thought trace — the agent's run-on narration +
+  //     its actions, untangled into modular thoughts each aligned to the action
+  //     it led to, stored ON this turn's assistant message. Replaces the old
+  //     summarized "thinking digest" (the user wanted thought-by-thought, not a
+  //     summary at the top).
   void (async () => {
     try {
       const list = await readConversations(vault);
       const c = list.find((x) => x.id === conversationId);
       if (!c || (c.source !== "worker" && c.source !== "mission")) return;
       const task = c.messages.find((m) => m.role === "user" && !m.hidden)?.content ?? "";
-      if (!task.trim()) return;
       const toolNote = tools.length
         ? `\n\nTools run this turn: ${[...new Set(tools.map((t) => t.name))].join(", ")}`
         : "";
       const activity = (acc.trim() || "(tool-only turn, no prose)") + toolNote;
-      const toolTrace = tools.map((t) => t.name).join(" → ");
       const apiKeys = useStore.getState().apiKeys;
-      const { summarizeWorkerState, summarizeThinking } = await import("./alert-summary");
-      // Mode A (task + status line) and Mode B (cleaned thinking digest) run in
-      // parallel off the same finished turn — one fast-model pass each.
-      const [sum, digest] = await Promise.all([
-        summarizeWorkerState(task, activity, apiKeys),
-        summarizeThinking(reasoningAcc, toolTrace, acc, apiKeys),
+      const { summarizeWorkerState, summarizeTimeline } = await import("./alert-summary");
+      const actionsForTimeline = tools.map((t) => ({ name: t.name, input: t.input }));
+      const [sum, timeline] = await Promise.all([
+        task.trim() ? summarizeWorkerState(task, activity, apiKeys) : Promise.resolve(null),
+        summarizeTimeline(acc, reasoningAcc, actionsForTimeline, apiKeys),
       ]);
-      if (!sum && !digest) return;
+      if (!sum && !timeline) return;
       await withConvLock(async () => {
         const fresh = await readConversations(vault);
         const i = fresh.findIndex((x) => x.id === conversationId);
         if (i < 0) return;
+        const msgs = fresh[i]!.messages.slice();
+        if (timeline) {
+          // Attach to THIS turn's assistant message: the last one whose content
+          // matches what we just ran, else simply the last assistant turn.
+          let mi = -1;
+          for (let k = msgs.length - 1; k >= 0; k--) {
+            if (msgs[k]!.role === "assistant") {
+              if (mi < 0) mi = k;
+              if (msgs[k]!.content === acc) { mi = k; break; }
+            }
+          }
+          if (mi >= 0) msgs[mi] = { ...msgs[mi]!, timeline };
+        }
         fresh[i] = {
           ...fresh[i]!,
+          messages: msgs,
           taskSummary: sum?.task || fresh[i]!.taskSummary,
           statusSummary: sum?.status || fresh[i]!.statusSummary,
-          thinkingDigest: digest || fresh[i]!.thinkingDigest,
-          summaryRev: fresh[i]!.messages.length,
+          summaryRev: msgs.length,
         };
         await writeConversations(vault, fresh);
       });
       await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
     } catch (e) {
-      console.warn("[cockpit] state summary failed:", e);
+      console.warn("[cockpit] timeline/state summary failed:", e);
     }
   })();
 
