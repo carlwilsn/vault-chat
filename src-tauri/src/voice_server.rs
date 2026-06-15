@@ -1117,6 +1117,11 @@ fn conversations_summary_json(vault: &str) -> String {
                 "msgCount": msgs.len(),
                 "preview": preview,
                 "goal": goal,
+                // Mode A presentation summaries (produced by TS at turn
+                // completion). The Activity surface prefers these clean one-
+                // liners over the raw goal/preview slices above.
+                "taskSummary": c.get("taskSummary").and_then(|x| x.as_str()).unwrap_or(""),
+                "statusSummary": c.get("statusSummary").and_then(|x| x.as_str()).unwrap_or(""),
             })
         })
         .collect();

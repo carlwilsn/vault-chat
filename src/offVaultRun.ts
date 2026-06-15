@@ -597,6 +597,44 @@ export async function runWorkerTurn(
   // so the phone swaps from the streaming bubble to the persisted message.
   useStore.getState().clearConvRuntime(conversationId);
 
+  // Mode A of the cockpit transform: refresh the Activity status line — a clean
+  // one-line TASK + STATUS — for worker/mission threads, on turn completion.
+  // Best-effort and fired AFTER the turn is persisted so it never delays the
+  // thread landing; if no fast model is configured it's a no-op and Activity
+  // falls back to the raw slice. The supervisor's MISSION BRIEF / a worker's
+  // task is the first user message; the status comes from this turn's output.
+  void (async () => {
+    try {
+      const list = await readConversations(vault);
+      const c = list.find((x) => x.id === conversationId);
+      if (!c || (c.source !== "worker" && c.source !== "mission")) return;
+      const task = c.messages.find((m) => m.role === "user" && !m.hidden)?.content ?? "";
+      if (!task.trim()) return;
+      const toolNote = tools.length
+        ? `\n\nTools run this turn: ${[...new Set(tools.map((t) => t.name))].join(", ")}`
+        : "";
+      const activity = (acc.trim() || "(tool-only turn, no prose)") + toolNote;
+      const { summarizeWorkerState } = await import("./alert-summary");
+      const sum = await summarizeWorkerState(task, activity, useStore.getState().apiKeys);
+      if (!sum) return;
+      await withConvLock(async () => {
+        const fresh = await readConversations(vault);
+        const i = fresh.findIndex((x) => x.id === conversationId);
+        if (i < 0) return;
+        fresh[i] = {
+          ...fresh[i]!,
+          taskSummary: sum.task || fresh[i]!.taskSummary,
+          statusSummary: sum.status || fresh[i]!.statusSummary,
+          summaryRev: fresh[i]!.messages.length,
+        };
+        await writeConversations(vault, fresh);
+      });
+      await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+    } catch (e) {
+      console.warn("[cockpit] state summary failed:", e);
+    }
+  })();
+
   return { reply: acc, error: runErr };
 }
 

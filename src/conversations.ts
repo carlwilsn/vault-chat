@@ -40,6 +40,17 @@ export type Conversation = {
   // mission it serves) and on source "mission" (its own title — the group key
   // its workers share).
   mission?: string;
+  // Phone-presentation summaries (Mode A of the cockpit transform layer). At
+  // each worker/mission turn completion a fast model distills the thread into
+  // two clean one-liners: what it was asked to do (`taskSummary`) and what it's
+  // doing / has done now (`statusSummary`). The Activity surface shows these
+  // instead of a raw slice of the task input. `summaryRev` is the message count
+  // they were computed at, so an unchanged thread isn't re-summarized. These
+  // MUST be carried through readConversations (below) or they're stripped on
+  // every read-modify-write — the same load-bearing trap as `mission`.
+  taskSummary?: string;
+  statusSummary?: string;
+  summaryRev?: number;
 };
 
 // Attach a Telegram chat_id to one conversation, detaching it from any
@@ -138,6 +149,12 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         // mission's own tag was gone, so StartWorker's inheritance came up empty
         // and refused — the supervisor could spawn no workers at all.
         mission: parsed.mission,
+        // Carry the presentation summaries through read-modify-write (same
+        // load-bearing reason as `mission` — drop them and every appended
+        // worker turn would strip the Activity surface back to raw slices).
+        taskSummary: parsed.taskSummary,
+        statusSummary: parsed.statusSummary,
+        summaryRev: parsed.summaryRev,
       });
     } catch {
       // skip
