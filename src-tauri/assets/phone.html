@@ -1151,8 +1151,8 @@
   // done-when lives) isn't in the conversation summary, so fetch the mission's
   // first message and parse it. Tap the [spec] chip to see this at a glance.
   async function openSpec(mc, g) {
-    const running = g.active.length;
-    const stateLine = running ? running + " worker" + (running === 1 ? "" : "s") + " running" : (g.conv ? "no workers running right now" : "—");
+    const running = g.active.length, doneN = g.done ? g.done.length : 0;
+    const stateLine = running ? (running + " running" + (doneN ? " · " + doneN + " done" : "")) : (doneN ? doneN + " done" : (g.conv ? "no workers running right now" : "—"));
     openSheet({ intent: "Mission · the goal + done when", title: mc.title, ico: "◎", cls: "", bodyHtml: '<div class="alsum-load" id="specLoad">loading…</div>' });
     let brief = (mc.goal || "").trim();
     if (mc.id) {
@@ -1181,9 +1181,19 @@
       body += '<div class="md dim">No explicit criteria recorded for this mission.</div>';
     }
     body += '<div class="specrow"><div class="lbl">State</div><div class="sc">' + esc(stateLine) + "</div></div>";
-    if (running) body += '<ul class="speclist">' + g.active.map(({ run, c }) => '<li><span class="bx">•</span><span>' + esc(run.title || c.title || "worker") + (run.lastTool ? " · " + esc(run.lastTool) : "") + "</span></li>").join("") + "</ul>";
+    // Workers: running first, then completed — each a tappable pill that opens
+    // its read-only artifact + Haiku summary, not just a static line.
+    if (running || doneN) body += '<div class="lbl">Workers</div><div id="specWorkers"></div>';
     const sl = document.getElementById("specLoad");
-    if (sl) { sl.outerHTML = body; typeset(document.getElementById("sheetBody")); }
+    if (sl) {
+      sl.outerHTML = body;
+      const wbox = document.getElementById("specWorkers");
+      if (wbox) {
+        for (const { run, c } of g.active) wbox.appendChild(workerPill(run, c));
+        for (const c of (g.done || [])) wbox.appendChild(workerPill(null, c));
+      }
+      typeset(document.getElementById("sheetBody"));
+    }
   }
   // The mission = the supervisor's thread: its thinking + what it saw from the
   // workers. Steer it here (or Stop). The action lives on the header bar so the
