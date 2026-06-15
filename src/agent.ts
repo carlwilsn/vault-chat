@@ -44,7 +44,7 @@ const FALLBACK_TELEGRAM = `Your reply will be sent to the user's phone via Teleg
 // (or the user emptied) `.vault-chat/agent/assistant.md`. The seeded file is the
 // editable source of truth — kept in sync with defaults/assistant.md. Distilled
 // to the load-bearing behaviors; the full guidance lives in the seeded file.
-const FALLBACK_ASSISTANT = `## Cockpit assistant\n\nYou are the light, conversational chat the user talks to on their phone. You answer, look things up, read/write this vault, take notes, set reminders. You do NOT grind long jobs here and you cannot spawn workers.\n\n- Talk like a person. A greeting gets a short human reply — never a status dump of what's running or what you read. Give a briefing only when asked, and keep it tight.\n- Read whose task it is: "walk me through / help me understand / I'm implementing" = coach and let them hold the pen; "do X for me / a task that'd take YOU 20 minutes / go research X" = own it yourself or propose a mission. Don't hand work back when they asked you to take it.\n- Missions are the heart of the workflow: almost anything where the user wants you to actually DO / build / run / figure out something is a mission, not this chat — only quick answers, lookups, notes, and "check in on X" aren't. Lean toward missions when unsure. When they're heading toward real work, either propose it or OFFER first ("want me to set this up as a mission?") when they haven't committed — don't silently fire the tool, and don't let a real task dissolve into chat. To propose, call \`ProposeMission\` with a \`title\` (the goal, briefly stated) and \`tasks\` — the sub-components that DEFINE IT DONE (each a concrete sub-result that'll likely become a worker; the supervisor decides how to split). Approval mints the mission; you can't start one or spawn workers yourself.\n- Don't claim you "started" something you only proposed, and don't narrate mission progress you haven't verified by reading its thread.`;
+const FALLBACK_ASSISTANT = `## Assistant\n\nYou are the light, conversational chat the user talks to directly — the same assistant on their phone and in the desktop app. You answer, look things up, read/write this vault, take notes, set reminders. You do NOT grind long jobs here and you cannot spawn workers.\n\n- Talk like a person. A greeting gets a short human reply — never a status dump of what's running or what you read. Give a briefing only when asked, and keep it tight.\n- Read whose task it is: "walk me through / help me understand / I'm implementing" = coach and let them hold the pen; "do X for me / a task that'd take YOU 20 minutes / go research X" = own it yourself or propose a mission. Don't hand work back when they asked you to take it.\n- Missions are the heart of the workflow: almost anything where the user wants you to actually DO / build / run / figure out something is a mission, not this chat — only quick answers, lookups, notes, and "check in on X" aren't. Lean toward missions when unsure. When they're heading toward real work, either propose it or OFFER first ("want me to set this up as a mission?") when they haven't committed — don't silently fire the tool, and don't let a real task dissolve into chat. To propose, call \`ProposeMission\` with a \`title\` (the goal, briefly stated) and \`tasks\` — the sub-components that DEFINE IT DONE (each a concrete sub-result that'll likely become a worker; the supervisor decides how to split). Approval mints the mission; you can't start one or spawn workers yourself.\n- Don't claim you "started" something you only proposed, and don't narrate mission progress you haven't verified by reading its thread.`;
 
 function detectPlatform(): "windows" | "mac" | "linux" {
   const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
@@ -173,16 +173,19 @@ export async function runAgent(params: {
   // orchestrator prompt used by mission threads (and the classic Telegram
   // channel). telegramMode implies it.
   supervisorMode?: boolean;
-  // The interactive phone cockpit. A lighter, conversational role (proposes
-  // missions via plan cards, doesn't orchestrate) — loads assistant.md instead
-  // of the heavy supervisor.md. Takes precedence over supervisorMode (the
-  // cockpit thread is role "supervisor" so supervisorMode is also set).
-  cockpitMode?: boolean;
+  // The interactive assistant persona — the chat the user talks to directly,
+  // on the phone OR the desktop ChatPane. A light, conversational role that
+  // proposes missions via plan cards and doesn't orchestrate; loads
+  // assistant.md instead of the heavy supervisor.md. Same agent on both
+  // surfaces, per the user — no second-class phone brain. Takes precedence
+  // over supervisorMode (the phone cockpit thread is role "supervisor", so
+  // supervisorMode is also set there).
+  assistantMode?: boolean;
   conversationId?: string;
   isTelegramSourced?: boolean;
   reasoningEffort?: import("./store").ReasoningEffort;
 }) {
-  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, telegramMode, supervisorMode, cockpitMode, conversationId, isTelegramSourced } = params;
+  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, telegramMode, supervisorMode, assistantMode, conversationId, isTelegramSourced } = params;
   const reasoningEffort = params.reasoningEffort ?? "medium";
 
   try {
@@ -204,12 +207,12 @@ export async function runAgent(params: {
       // The supervisor role layers an always-on orchestrator (persistent mind,
       // goal loop, worker steering) onto the agent. Loaded for telegramMode
       // (the classic phone channel) and mission threads (supervisorMode) — but
-      // NOT the cockpit, which gets the lighter assistant prompt below.
-      (telegramMode || supervisorMode) && !cockpitMode
+      // NOT the interactive assistant, which gets the lighter assistant prompt.
+      (telegramMode || supervisorMode) && !assistantMode
         ? loadVaultSupervisorPrompt(vault)
         : Promise.resolve(""),
-      // The lighter cockpit-assistant prompt for the interactive phone chat.
-      cockpitMode ? loadVaultAssistantPrompt(vault) : Promise.resolve(""),
+      // The light assistant prompt for the interactive chat (phone + desktop).
+      assistantMode ? loadVaultAssistantPrompt(vault) : Promise.resolve(""),
     ]);
 
     const { body: expandedMessage } = expandSkillInvocation(userMessage, skills);
@@ -250,18 +253,20 @@ export async function runAgent(params: {
 
     // Supervisor role: an always-on orchestrator layered onto the Telegram /
     // mission agent. Applied for telegram + mission threads, but NOT the
-    // cockpit (it gets the lighter assistant prompt below). A vault that
-    // doesn't want a supervisor leaves the file empty and stays a plain agent.
+    // interactive assistant (it gets the lighter assistant prompt below). A
+    // vault that doesn't want a supervisor leaves the file empty and stays a
+    // plain agent.
     const supervisorNote =
-      (telegramMode || supervisorMode) && !cockpitMode && vaultSupervisor.trim()
+      (telegramMode || supervisorMode) && !assistantMode && vaultSupervisor.trim()
         ? `\n${vaultSupervisor.trim()}`
         : "";
 
-    // Cockpit role: the lighter, conversational phone-chat prompt. Falls back
-    // to the compiled-in baseline when the vault hasn't seeded assistant.md
-    // (e.g. an existing vault on a fresh update, before the seed/git-sync runs)
-    // so the cockpit is never left with no role at all.
-    const assistantNote = cockpitMode
+    // Assistant role: the light, conversational chat prompt the user talks to
+    // directly — same on the phone and the desktop ChatPane. Falls back to the
+    // compiled-in baseline when the vault hasn't seeded assistant.md (e.g. an
+    // existing vault on a fresh update, before the seed/git-sync runs) so the
+    // assistant is never left with no role at all.
+    const assistantNote = assistantMode
       ? `\n${vaultAssistant.trim() || FALLBACK_ASSISTANT}`
       : "";
 

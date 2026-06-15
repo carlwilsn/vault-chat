@@ -310,10 +310,12 @@ export async function sendMessage(
     voiceMode: cur.voiceMode,
     telegramMode: targetConv?.source === "telegram",
     supervisorMode: targetConv?.role === "supervisor",
-    // The interactive phone cockpit: a supervisor-role thread sourced from the
-    // phone. Gets the lighter assistant.md prompt instead of the heavy
-    // orchestrator supervisor.md (which stays for mission threads + telegram).
-    cockpitMode: targetConv?.source === "phone",
+    // The interactive assistant persona — the chat the user talks to directly,
+    // on the phone (source "phone") OR the desktop ChatPane (source "manual").
+    // Both get the light assistant.md prompt (casual + propose-missions), NOT
+    // the heavy orchestrator supervisor.md (which stays for mission threads +
+    // telegram). Same agent, different surface — no second-class phone brain.
+    assistantMode: targetConv?.source === "phone" || targetConv?.source === "manual",
     conversationId: targetConvId ?? undefined,
     isTelegramSourced: targetConv?.source === "telegram",
     reasoningEffort: cur.reasoningEffort,
