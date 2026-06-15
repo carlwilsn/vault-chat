@@ -51,6 +51,12 @@ export type Conversation = {
   taskSummary?: string;
   statusSummary?: string;
   summaryRev?: number;
+  // Mode B of the cockpit transform: a short, Haiku-cleaned digest of the
+  // thread's THINKING — what the worker/supervisor reasoned through and why —
+  // for the Activity detail view. Cleaned, not the raw rambling chain. Computed
+  // at turn completion alongside the summaries above; carried through
+  // readConversations (below) like the rest.
+  thinkingDigest?: string;
 };
 
 // Attach a Telegram chat_id to one conversation, detaching it from any
@@ -155,6 +161,7 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         taskSummary: parsed.taskSummary,
         statusSummary: parsed.statusSummary,
         summaryRev: parsed.summaryRev,
+        thinkingDigest: parsed.thinkingDigest,
       });
     } catch {
       // skip

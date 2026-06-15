@@ -87,3 +87,39 @@ export async function summarizeWorkerState(
     return null;
   }
 }
+
+// Mode B of the cockpit transform: turn an agent's raw thinking + actions into a
+// SHORT, clean digest of its reasoning — what it reasoned through and why it
+// decided what it did — for the Activity supervisor/worker detail view. The user
+// wants the cleaned thought, NOT the raw rambling chain. Uses the reasoning text
+// when the model emits it, else falls back to the actions + conclusion. Returns
+// null when there's nothing to digest or no fast model is configured.
+const THINKING_SYSTEM = `You distill an agent's work into a short "what it was thinking" digest for a phone. You'll get some of: its raw REASONING, the ACTIONS it took (tools), and its CONCLUSION (final reply). Produce 1-3 plain-prose sentences capturing what it reasoned through and why it decided what it did. Drop false starts, rambling, and tool-by-tool narration — keep the line of thought. No markdown, no preamble, no meta ("the agent…"). If there's nothing substantive, give a single short line on what it did.`;
+
+export async function summarizeThinking(
+  reasoning: string,
+  toolTrace: string,
+  reply: string,
+  apiKeys: Partial<Record<ProviderId, string>>,
+): Promise<string | null> {
+  const parts = [
+    reasoning?.trim() && `REASONING:\n${reasoning.trim().slice(0, 6000)}`,
+    toolTrace?.trim() && `ACTIONS: ${toolTrace.trim().slice(0, 1000)}`,
+    reply?.trim() && `CONCLUSION:\n${reply.trim().slice(0, 3000)}`,
+  ].filter(Boolean) as string[];
+  if (parts.length === 0) return null;
+  const picked = pickFastModel(apiKeys);
+  if (!picked) return null;
+  try {
+    const model = buildModel(picked.spec, picked.apiKey);
+    const res = await generateText({
+      model,
+      system: THINKING_SYSTEM,
+      prompt: parts.join("\n\n"),
+    });
+    const out = res.text.trim();
+    return out ? out.slice(0, 600) : null;
+  } catch {
+    return null;
+  }
+}

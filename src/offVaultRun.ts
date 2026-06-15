@@ -515,6 +515,11 @@ export async function runWorkerTurn(
     .map((m) => ({ role: m.role, content: m.content }));
 
   let acc = "";
+  // Accumulate the model's reasoning across the turn so the turn-completion hook
+  // can distill it into a cleaned "thinking" digest (Mode B). Headless workers/
+  // supervisors used to drop reasoning entirely, which is why their thought
+  // traces were invisible.
+  let reasoningAcc = "";
   const tools: LiveTool[] = [];
   let runErr: string | undefined;
   const controller = new AbortController();
@@ -538,6 +543,7 @@ export async function runWorkerTurn(
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
         if (e.kind === "text") acc += e.delta;
+        else if (e.kind === "reasoning") reasoningAcc += e.delta;
         else if (e.kind === "tool_use") {
           tools.push({ id: e.id, name: e.name, input: e.input, startedAt: Date.now() });
           void bumpHeartbeat(vault, conversationId, e.name);
@@ -614,17 +620,25 @@ export async function runWorkerTurn(
         ? `\n\nTools run this turn: ${[...new Set(tools.map((t) => t.name))].join(", ")}`
         : "";
       const activity = (acc.trim() || "(tool-only turn, no prose)") + toolNote;
-      const { summarizeWorkerState } = await import("./alert-summary");
-      const sum = await summarizeWorkerState(task, activity, useStore.getState().apiKeys);
-      if (!sum) return;
+      const toolTrace = tools.map((t) => t.name).join(" → ");
+      const apiKeys = useStore.getState().apiKeys;
+      const { summarizeWorkerState, summarizeThinking } = await import("./alert-summary");
+      // Mode A (task + status line) and Mode B (cleaned thinking digest) run in
+      // parallel off the same finished turn — one fast-model pass each.
+      const [sum, digest] = await Promise.all([
+        summarizeWorkerState(task, activity, apiKeys),
+        summarizeThinking(reasoningAcc, toolTrace, acc, apiKeys),
+      ]);
+      if (!sum && !digest) return;
       await withConvLock(async () => {
         const fresh = await readConversations(vault);
         const i = fresh.findIndex((x) => x.id === conversationId);
         if (i < 0) return;
         fresh[i] = {
           ...fresh[i]!,
-          taskSummary: sum.task || fresh[i]!.taskSummary,
-          statusSummary: sum.status || fresh[i]!.statusSummary,
+          taskSummary: sum?.task || fresh[i]!.taskSummary,
+          statusSummary: sum?.status || fresh[i]!.statusSummary,
+          thinkingDigest: digest || fresh[i]!.thinkingDigest,
           summaryRev: fresh[i]!.messages.length,
         };
         await writeConversations(vault, fresh);

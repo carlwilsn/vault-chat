@@ -1122,6 +1122,8 @@ fn conversations_summary_json(vault: &str) -> String {
                 // liners over the raw goal/preview slices above.
                 "taskSummary": c.get("taskSummary").and_then(|x| x.as_str()).unwrap_or(""),
                 "statusSummary": c.get("statusSummary").and_then(|x| x.as_str()).unwrap_or(""),
+                // Mode B: cleaned "thinking" digest for the detail view.
+                "thinkingDigest": c.get("thinkingDigest").and_then(|x| x.as_str()).unwrap_or(""),
             })
         })
         .collect();
