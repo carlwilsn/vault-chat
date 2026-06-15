@@ -595,14 +595,16 @@ export async function runWorkerTurn(
   useStore.getState().clearConvRuntime(conversationId);
 
   // Cockpit transform, fired AFTER the turn is persisted so it never delays the
-  // thread landing (a no-op if no fast model is configured). Two fast-model
-  // passes off the same finished turn:
+  // thread landing (a no-op if no fast model is configured).
   //   - Mode A: the Activity status line — a clean one-line TASK (for the pill).
-  //   - Timeline: the thought-by-thought trace — the agent's run-on narration +
-  //     its actions, untangled into modular thoughts each aligned to the action
-  //     it led to, stored ON this turn's assistant message. Replaces the old
-  //     summarized "thinking digest" (the user wanted thought-by-thought, not a
-  //     summary at the top).
+  //   - Timeline: EVERY supervisor/worker message is cleaned by a fast model into
+  //     its own thought-by-thought trace (run-on narration + actions → modular
+  //     thoughts each aligned to the action it led to), stored ON that message.
+  //     The user reads the whole thread, so we clean per-message — never one
+  //     summary at the end. We clean THIS turn (with its reasoning) and BACKFILL
+  //     any recent prior turn that doesn't have a timeline yet, bounded to the
+  //     last dozen assistant turns; already-cleaned turns are skipped, so steady
+  //     state is one pass per new turn while old threads catch up as they run.
   void (async () => {
     try {
       const list = await readConversations(vault);
@@ -615,28 +617,38 @@ export async function runWorkerTurn(
       const activity = (acc.trim() || "(tool-only turn, no prose)") + toolNote;
       const apiKeys = useStore.getState().apiKeys;
       const { summarizeWorkerState, summarizeTimeline } = await import("./alert-summary");
-      const actionsForTimeline = tools.map((t) => ({ name: t.name, input: t.input }));
-      const [sum, timeline] = await Promise.all([
-        task.trim() ? summarizeWorkerState(task, activity, apiKeys) : Promise.resolve(null),
-        summarizeTimeline(acc, reasoningAcc, actionsForTimeline, apiKeys),
-      ]);
-      if (!sum && !timeline) return;
+      // Recent assistant turns still needing a clean (this turn always qualifies —
+      // it has no timeline yet).
+      const toClean = c.messages
+        .filter((m) => m.role === "assistant")
+        .slice(-12)
+        .filter((m) => !m.timeline && ((m.content || "").trim() || (m.toolCalls || []).length));
+      const cleaned = await Promise.all(
+        toClean.map((m) => {
+          const isThisTurn = m.content === acc; // only this turn has captured reasoning
+          const actions = (m.toolCalls || []).map((t) => ({ name: t.name, input: t.input }));
+          return summarizeTimeline(m.content || "", isThisTurn ? reasoningAcc : "", actions, apiKeys)
+            .then((tl) => ({ content: m.content || "", tl }))
+            .catch(() => ({ content: m.content || "", tl: null }));
+        }),
+      );
+      const sum = task.trim() ? await summarizeWorkerState(task, activity, apiKeys) : null;
+      const haveTimelines = cleaned.filter((x) => x.tl);
+      if (!sum && !haveTimelines.length) return;
       await withConvLock(async () => {
         const fresh = await readConversations(vault);
         const i = fresh.findIndex((x) => x.id === conversationId);
         if (i < 0) return;
         const msgs = fresh[i]!.messages.slice();
-        if (timeline) {
-          // Attach to THIS turn's assistant message: the last one whose content
-          // matches what we just ran, else simply the last assistant turn.
-          let mi = -1;
+        // Apply each timeline to its assistant message by CONTENT match — robust
+        // to any turns appended since we read above.
+        for (const { content, tl } of haveTimelines) {
           for (let k = msgs.length - 1; k >= 0; k--) {
-            if (msgs[k]!.role === "assistant") {
-              if (mi < 0) mi = k;
-              if (msgs[k]!.content === acc) { mi = k; break; }
+            if (msgs[k]!.role === "assistant" && (msgs[k]!.content || "") === content && !msgs[k]!.timeline) {
+              msgs[k] = { ...msgs[k]!, timeline: tl! };
+              break;
             }
           }
-          if (mi >= 0) msgs[mi] = { ...msgs[mi]!, timeline };
         }
         fresh[i] = {
           ...fresh[i]!,
