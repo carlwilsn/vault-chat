@@ -709,14 +709,16 @@ export async function startPhoneAppHost(): Promise<void> {
         // prematurely here was the bug: the phone flipped between stopped and
         // running and the user couldn't tell whether it was truly off.
         if (!hit) broadcast({ type: "status", convId, status: "idle" });
-        // Stopping a MISSION drops it from Activity for every client (box state,
-        // synced) — not a per-device hide, which made two clients disagree.
+        // Stopping a MISSION tears the whole thing down — supervisor, its
+        // workers, its scheduled wakes — and tombstone-deletes them so it
+        // actually disappears for every client and can't resurrect (via a
+        // worker-finish wake, a scheduled wake, or a git-sync pull).
         const stopped = useStore.getState().conversations.find((c) => c.id === convId);
         const vault = useStore.getState().vaultPath;
         if (stopped?.source === "mission" && vault) {
-          const { dismissMissionFromActivity } = await import("./offVaultRun");
-          await dismissMissionFromActivity(vault, convId).catch((e) =>
-            console.warn("[phone-app] dismiss mission failed:", e),
+          const { stopAndDeleteMission } = await import("./offVaultRun");
+          await stopAndDeleteMission(vault, convId).catch((e) =>
+            console.warn("[phone-app] stop mission failed:", e),
           );
         }
         respond(reqId, {

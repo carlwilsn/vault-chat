@@ -682,20 +682,47 @@ export async function startMission(
   return { id, title: t };
 }
 
-// Drop a stopped mission from the phone's Activity on EVERY client. Activity
-// shows missions within a 48h recency window; this ages the thread's
-// lastActivityAt past that cutoff so loadActivity stops listing it. This is
-// box state (synced via the vault), so Safari and the home-screen app agree —
-// replacing the old per-device localStorage hide that made the two diverge.
-export async function dismissMissionFromActivity(vault: string, conversationId: string): Promise<void> {
-  await withConvLock(async () => {
-    const list = await readConversations(vault);
-    const i = list.findIndex((c) => c.id === conversationId);
-    if (i < 0 || list[i]!.source !== "mission") return;
-    list[i] = { ...list[i]!, lastActivityAt: Date.now() - 49 * 60 * 60 * 1000 };
-    await writeConversations(vault, list);
-  });
-  await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+// Fully tear a mission down so it actually goes away — not just off this
+// device's Activity, but for good. The old version only aged the thread's
+// lastActivityAt past the 48h window; that left two holes that made stopped
+// missions "come back": its workers kept grinding (a running worker re-creates
+// the mission's Activity group), and when any worker finished it WOKE the
+// supervisor (onRunEnded), which reset lastActivityAt and resurfaced it. A
+// self-scheduled wake did the same on a timer.
+//
+// So stopping a mission now: (1) aborts the supervisor AND every worker that
+// shares its mission key, (2) cancels any self-scheduled wakes bound to those
+// threads, and (3) tombstone-deletes the mission + its workers. Tombstones
+// survive git sync, so a pull from another machine can't bring them back, and
+// with the threads gone a late-finishing worker has no mission to wake.
+export async function stopAndDeleteMission(vault: string, conversationId: string): Promise<void> {
+  const list = await readConversations(vault);
+  const mission = list.find((c) => c.id === conversationId && c.source === "mission");
+  if (!mission) return;
+  const key = (mission.mission ?? mission.title ?? "").trim();
+  const workers = key
+    ? list.filter((c) => c.source === "worker" && (c.mission ?? "").trim() === key)
+    : [];
+  const ids = [mission.id, ...workers.map((w) => w.id)];
+  // 1) Stop anything mid-run. abortRun is a no-op for threads that aren't live.
+  for (const id of ids) abortRun(id);
+  // 2) Cancel self-scheduled wakes bound to any of these threads.
+  try {
+    const { readSchedules } = await import("./schedules");
+    const { deleteSchedule } = await import("./schedulerLoop");
+    const idSet = new Set(ids);
+    for (const sc of await readSchedules(vault)) {
+      const t = sc.target as { kind?: string; conversationId?: string };
+      if (t?.kind === "existing" && t.conversationId && idSet.has(t.conversationId)) {
+        await deleteSchedule(vault, sc.id).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.warn("[mission] schedule cleanup failed:", e);
+  }
+  // 3) Tombstone-delete the mission + its workers (durable, resurrection-proof).
+  const del = useStore.getState().deleteConversation;
+  for (const id of ids) del(id);
 }
 
 // Create a fresh conversation entry on disk for a vault that's not

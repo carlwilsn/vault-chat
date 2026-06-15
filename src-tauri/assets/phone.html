@@ -334,7 +334,11 @@
   .sheet-scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:opacity .25s;z-index:80}
   .sheet-scrim.on{opacity:1;pointer-events:auto}
   .sheet{position:fixed;left:0;right:0;bottom:0;background:#101012;border-top-left-radius:18px;border-top-right-radius:18px;transform:translateY(110%);transition:transform .3s cubic-bezier(.32,.72,0,1),height .26s ease;z-index:81;max-height:64%;display:flex;flex-direction:column;box-shadow:0 -12px 40px rgba(0,0,0,.55)}
-  .sheet.on{transform:none}
+  /* Lift the sheet above the on-screen keyboard with a compositor transform
+     (--kb = keyboard height, set by the visualViewport handler). iOS ignores a
+     `bottom` offset on position:fixed while the keyboard is up, so the reply box
+     used to stay buried under it; translateY moves reliably on both platforms. */
+  .sheet.on{transform:translateY(calc(-1 * var(--kb, 0px)))}
   /* Editing the reply expands the sheet so its body scrolls and the input sits
      right above the keyboard (the visualViewport handler lifts it). */
   .sheet.editing{max-height:94%}
@@ -1005,7 +1009,13 @@
     else if (d.type === "notif") { void refreshBadge(); if (page === "alerts") void loadAlerts(); }
   }
 
-  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; runCount = (d.runs || []).length; setHeader(); return d; } catch { return null; } }
+  // Activity badge counts what's ON the Activity page — missions + their
+  // workers — NOT every running thread. A normal chat mid-generation (source
+  // "phone"/"manual") is a run, but it isn't an "activity"; counting it made the
+  // burger badge read "1 activity" during an ordinary conversation and never
+  // clear once it idled. Filter to mission/worker so the badge tracks real work.
+  function activityRunCount(runs) { return (runs || []).filter((r) => r.source === "mission" || r.source === "worker").length; }
+  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; runCount = activityRunCount(d.runs); setHeader(); return d; } catch { return null; } }
   async function refreshBadge() { try { const d = await (await api("/notifications")).json(); if (typeof d.unread === "number") { unreadN = d.unread; setHeader(); } } catch {} }
 
   // ---------- activity ----------
@@ -1047,7 +1057,7 @@
     typeset($("sheetBody"));
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
   }
-  function closeSheet() { $("sheetScrim").classList.remove("on"); $("sheet").classList.remove("on"); }
+  function closeSheet() { $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; }
   // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
   // chat composer), Enter sends, Shift+Enter is a newline. The pinned footer +
   // the visualViewport lift keep it above the keyboard.
@@ -1067,7 +1077,7 @@
       sheet.classList.add("editing");
       setTimeout(() => { try { ta.scrollIntoView({ block: "nearest" }); } catch {} }, 60);
     });
-    ta.addEventListener("blur", () => { $("sheet").classList.remove("editing"); });
+    ta.addEventListener("blur", () => { const sh = $("sheet"); sh.classList.remove("editing"); sh.style.maxHeight = ""; });
     const go = () => { const v = ta.value.trim(); if (!v) return; ta.value = ""; autosize(); onSend(v); };
     foot.querySelector(".rsend").onclick = go;
     ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); go(); } });
@@ -1120,7 +1130,7 @@
   // first message and parse it. Tap the [spec] chip to see this at a glance.
   async function openSpec(mc, g) {
     const running = g.active.length;
-    const stateLine = running ? running + " worker" + (running === 1 ? "" : "s") + " running" : (g.conv ? "watching — no workers running right now" : "—");
+    const stateLine = running ? running + " worker" + (running === 1 ? "" : "s") + " running" : (g.conv ? "no workers running right now" : "—");
     openSheet({ intent: "Mission · the goal + done when", title: mc.title, ico: "◎", cls: "", bodyHtml: '<div class="alsum-load" id="specLoad">loading…</div>' });
     let brief = (mc.goal || "").trim();
     if (mc.id) {
@@ -1173,10 +1183,11 @@
     if (!a.classList.contains("confirm")) { a.classList.add("confirm"); a.textContent = "Confirm?"; setTimeout(() => { a.classList.remove("confirm"); a.textContent = "Stop"; }, 2200); return; }
     const ids = new Set([mc.id, ...g.active.map((x) => x.run.convId)].filter(Boolean));
     for (const id of ids) api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: id }) }).catch(() => {});
-    // The box drops the mission from Activity (it ages the thread out of the
-    // 48h window) when it handles the /kill above — consistently on every
-    // client, instead of a per-device hide. Re-load after a beat to reflect it.
-    closeSheet(); toast("Mission stopped."); setTimeout(loadActivity, 600);
+    // The box tears the mission down when it handles the /kill above — aborts
+    // the supervisor + its workers, cancels its scheduled wakes, and tombstone-
+    // deletes them, so it's gone for every client and can't resurrect. Reload
+    // after a beat to reflect it.
+    closeSheet(); toast("Mission stopped and cleared."); setTimeout(loadActivity, 600);
   }
   // A worker is a read-only artifact: state + its Supervisor ⇄ Worker thread.
   // No reply, no kill — you steer the supervisor, not the worker.
@@ -1231,7 +1242,7 @@
       if (cd.error) throw new Error(cd.error);
       const runs = sd.runs || [], runIds = new Set(runs.map((x) => x.convId));
       const convs = cd.conversations || [], byId = new Map(convs.map((c) => [c.id, c]));
-      runCount = runs.length; setHeader();
+      runCount = activityRunCount(runs); setHeader();
       box.innerHTML = "";
 
       // Activity is missions, full stop. Assistant chats never appear here —
@@ -1269,11 +1280,10 @@
         const mc = g.conv || { id: "", title: name, goal: "", preview: "" };
         const head = el('<div class="msec"><span class="k">Mission</span><b></b><span class="mc"></span><button class="spec">spec</button></div>');
         head.querySelector("b").textContent = name;
-        const live = g.active.length || (g.conv && runIds.has(g.conv.id));
-        head.querySelector(".mc").textContent = g.active.length
-          ? g.active.length + " running"
-          : g.conv && runIds.has(g.conv.id) ? "planning" : "watching";
-        if (!live) head.querySelector(".mc").classList.add("dim");
+        // Only surface a state when workers are actually grinding. The old
+        // "planning" / "watching" labels confused more than they informed — an
+        // idle mission just shows its name + last note, no cryptic state chip.
+        head.querySelector(".mc").textContent = g.active.length ? g.active.length + " running" : "";
         head.querySelector(".spec").onclick = (e) => { e.stopPropagation(); openSpec(mc, g); };
         if (g.conv) head.onclick = () => openSupervisor(g.conv, g); // watch its thinking, steer, stop
         box.appendChild(head);
@@ -1597,8 +1607,23 @@
   });
   if (window.visualViewport) {
     const vv = window.visualViewport;
-    const fit = () => { document.body.style.height = vv.height + "px"; const inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop); $("sheet").style.bottom = inset + "px"; window.scrollTo(0, 0); scrollDown(false); };
-    vv.addEventListener("resize", fit); vv.addEventListener("scroll", () => window.scrollTo(0, 0));
+    // Keyboard overlap of a bottom-anchored fixed element, in layout px. Use
+    // documentElement.clientHeight — the stable layout-viewport height that
+    // matches the position:fixed containing block. window.innerHeight diverges
+    // from it across iOS/Android, so the old innerHeight math under-computed the
+    // lift. Expose it as --kb; the .sheet transform consumes it. Re-applied on
+    // scroll too because iOS shifts the viewport as the keyboard animates.
+    const applyKb = () => {
+      const kb = Math.max(0, document.documentElement.clientHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty("--kb", kb + "px");
+      // While editing a reply, cap the sheet to the space above the keyboard so
+      // the whole sheet stays visible, not just the lifted foot.
+      const sheet = $("sheet");
+      if (sheet.classList.contains("editing")) sheet.style.maxHeight = vv.height + "px";
+    };
+    const fit = () => { document.body.style.height = vv.height + "px"; applyKb(); window.scrollTo(0, 0); scrollDown(false); };
+    vv.addEventListener("resize", fit);
+    vv.addEventListener("scroll", () => { window.scrollTo(0, 0); applyKb(); });
   }
 
   showHint();
