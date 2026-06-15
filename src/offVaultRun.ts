@@ -777,6 +777,45 @@ export async function stopAndDeleteMission(vault: string, conversationId: string
   for (const id of ids) del(id);
 }
 
+// Mark a mission FINISHED: its supervisor decided the goal is met. Stamps
+// completedAt on the mission so it drops off the Activity page (see
+// loadActivity) — the terminal state that was missing, which left done missions
+// lingering for 48h. Stops any lingering workers and cancels self-scheduled
+// wakes so it can't re-wake itself back onto Activity. Unlike
+// stopAndDeleteMission this KEEPS the threads: the user can still open the
+// finished mission to review it; it just leaves the live surface.
+export async function completeMission(vault: string, conversationId: string): Promise<void> {
+  const list = await readConversations(vault);
+  const mission = list.find((c) => c.id === conversationId && c.source === "mission");
+  if (!mission) return;
+  const key = (mission.mission ?? mission.title ?? "").trim();
+  const workers = key
+    ? list.filter((c) => c.source === "worker" && (c.mission ?? "").trim() === key)
+    : [];
+  for (const w of workers) abortRun(w.id);
+  try {
+    const { readSchedules } = await import("./schedules");
+    const { deleteSchedule } = await import("./schedulerLoop");
+    const ids = new Set([mission.id, ...workers.map((w) => w.id)]);
+    for (const sc of await readSchedules(vault)) {
+      const t = sc.target as { kind?: string; conversationId?: string };
+      if (t?.kind === "existing" && t.conversationId && ids.has(t.conversationId)) {
+        await deleteSchedule(vault, sc.id).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.warn("[mission] complete: schedule cleanup failed:", e);
+  }
+  await withConvLock(async () => {
+    const fresh = await readConversations(vault);
+    const i = fresh.findIndex((c) => c.id === conversationId);
+    if (i < 0) return;
+    fresh[i] = { ...fresh[i]!, completedAt: Date.now() };
+    await writeConversations(vault, fresh);
+  });
+  await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+}
+
 // Create a fresh conversation entry on disk for a vault that's not
 // currently in memory. Returns the new conversation's id so the
 // scheduler can bind subsequent runs to it.

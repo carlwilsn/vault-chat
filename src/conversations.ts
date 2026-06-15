@@ -57,6 +57,11 @@ export type Conversation = {
   // at turn completion alongside the summaries above; carried through
   // readConversations (below) like the rest.
   thinkingDigest?: string;
+  // When a mission is finished, its supervisor stamps this (via CompleteMission).
+  // A completed mission drops off the Activity page — the missing terminal state
+  // that left done missions lingering for 48h. The thread is kept (not deleted)
+  // so the user can still open the finished mission; it just leaves the surface.
+  completedAt?: number;
 };
 
 // Attach a Telegram chat_id to one conversation, detaching it from any
@@ -162,6 +167,7 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         statusSummary: parsed.statusSummary,
         summaryRev: parsed.summaryRev,
         thinkingDigest: parsed.thinkingDigest,
+        completedAt: parsed.completedAt,
       });
     } catch {
       // skip

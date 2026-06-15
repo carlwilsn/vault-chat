@@ -490,7 +490,7 @@
       vault: "summer", model: "claude-opus-4-8",
       convs: [
         { id: "m1", title: "BitNet 160M MVP", source: "mission", role: "supervisor", mission: "BitNet 160M MVP", lastActivityAt: now - 120000, msgCount: 9, preview: "seeds 1 & 3 verified; seed 2 rerunning", goal: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP.\n\nDone when (each defines completion — likely one worker each):\n- All 3 seeds trained, eval.loss committed for each\n- The three seeds land within 0.005 nat of each other\n- A short writeup lands under docs/", taskSummary: "Reproduce the BitNet 160M MVP across 3 seeds", statusSummary: "Seeds 1 & 3 verified; seed 2 rerunning", thinkingDigest: "Seeds 1 and 3 landed within tolerance, but seed 2 came in 0.13 nat high — likely an LR mismatch, so it respawned that worker at seed 1's learning rate rather than accept the gap. Holding the eval/writeup worker until seed 2 confirms." },
-        { id: "m2", title: "Quiet watch — repo hygiene", source: "mission", role: "supervisor", mission: "Quiet watch — repo hygiene", lastActivityAt: now - 3600000, msgCount: 4, preview: "all clean on last sweep; next check at 9pm", goal: "MISSION BRIEF (user-approved). Quiet watch on repo hygiene; only ping me if something's wrong. Done = no uncommitted drift > 30 min and main pre-commit green." },
+        { id: "m2", title: "Quiet watch — repo hygiene", source: "mission", role: "supervisor", mission: "Quiet watch — repo hygiene", lastActivityAt: now - 3600000, msgCount: 4, preview: "all clean on last sweep; next check at 9pm", goal: "MISSION BRIEF (user-approved). Quiet watch on repo hygiene; only ping me if something's wrong. Done = no uncommitted drift > 30 min and main pre-commit green.", completedAt: now - 1800000 },
         { id: "w2", title: "seed-2 retry", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 60000, msgCount: 4, preview: "seed 2 retry running at matched LR", goal: "retry seed 2 at seed 1's LR; commit eval.loss", taskSummary: "Retry seed 2 at seed 1's LR", statusSummary: "Training relaunched; eval pending" },
         { id: "w4", title: "eval + writeup", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 30000, msgCount: 3, preview: "building the comparison table + writeup", goal: "build the per-seed comparison table and draft the writeup under docs/", taskSummary: "Per-seed comparison table + writeup", statusSummary: "Drafting the comparison table" },
         { id: "w1", title: "3-seed BitNet repro", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 1080000, msgCount: 6, preview: "all three seeds done; gap held at +0.13 nat", goal: "train + eval seeds 42/43/44 on the 1700-step config" },
@@ -1277,10 +1277,18 @@
       const missionOf = (run, c) => ((run && run.mission) || (c && c.mission) || "").trim();
       const bucket = (name) => { if (!missions.has(name)) missions.set(name, { conv: null, active: [] }); return missions.get(name); };
       const twoDays = Date.now() - 48 * 3600000;
+      // A finished mission (its supervisor called CompleteMission) leaves the
+      // Activity surface entirely — and so do its workers, so a stray running
+      // worker can't resurrect a virtual group for a done mission.
+      const completedKeys = new Set();
+      for (const c of convs) {
+        if (c.source === "mission" && c.completedAt) completedKeys.add((c.mission || c.title || "").trim() || c.title);
+      }
       // Mission threads seed the groups: recent ones show even between worker
       // waves (a monitoring mission with everything idle is still a mission).
       for (const c of convs) {
         if (c.source !== "mission") continue;
+        if (c.completedAt) continue; // finished — off the surface
         if (c.lastActivityAt < twoDays && !runIds.has(c.id)) continue;
         bucket((c.mission || c.title || "").trim() || c.title).conv = c;
       }
@@ -1290,7 +1298,7 @@
         if (src === "mission") continue; // shown as its header's state
         if (src && src !== "worker") continue; // assistant/chat runs don't belong here
         const m = missionOf(run, c) || run.title || c.title;
-        if (m) bucket(m).active.push({ run, c });
+        if (m && !completedKeys.has(m)) bucket(m).active.push({ run, c });
       }
 
       if (!missions.size) {

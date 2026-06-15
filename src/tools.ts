@@ -1110,6 +1110,32 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         return `Spawned worker "${t}" (id ${id}) under mission "${effectiveMission}" — it's running the task in the background. It runs independently; keep talking to the user. Check on it with ReadConversation (id ${id}) or the run heartbeat, and relay to it with AskWorker.`;
       },
     }),
+    CompleteMission: tool({
+      description:
+        "Mark THIS mission FINISHED — call it once the goal's 'Done when' criteria are all met. It stamps the mission complete so it drops off the user's Activity page (a finished mission shouldn't linger there), stops any leftover workers, and sends the user a final wrap-up via the summary you pass. Only call it when the work is genuinely DONE — not to pause, abandon, or hand back. After calling it, end your turn: the mission is over.",
+      inputSchema: z.object({
+        summary: z
+          .string()
+          .describe(
+            "The final wrap-up for the user: what was accomplished and where the deliverables live. One short, headline-worthy paragraph.",
+          ),
+      }),
+      execute: async ({ summary }) => {
+        if (!conversationId) return "No mission context — can't complete.";
+        const { completeMission } = await import("./offVaultRun");
+        const { notify } = await import("./phoneApp");
+        await notify("info", "Mission complete", summary, conversationId, {
+          intention: "Mission complete",
+          summary: summary.slice(0, 200),
+          icon: "✓",
+          cls: "g",
+        });
+        await completeMission(vault, conversationId).catch((e) =>
+          console.warn("[mission] complete failed:", e),
+        );
+        return "Mission marked complete, the user notified, and it's cleared from Activity. End your turn — the mission is done.";
+      },
+    }),
     ProposeMission: tool({
       description:
         "Propose a mission to the user as an Approve card — the ONLY way you (the assistant) put real work in motion. Call this for any substantial ask instead of grinding it in this chat. A mission is a briefly-stated GOAL plus the sub-results that DEFINE IT DONE. It does NOT start anything: it renders a card the user taps to approve, and approval mints the mission deterministically. You can't start a mission or spawn workers — proposing is your job; running is the mission's. After calling it, tell the user it's ready to approve and stay conversational — do NOT claim you started anything.",
@@ -1340,19 +1366,22 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   // the assistant PROPOSES (ProposeMission → an Approve card) and the user's
   // approval mints it deterministically (Approve → startMission in code), so a
   // mission only ever exists because the user said so.
-  //   assistant — has ProposeMission; can't spawn a worker.
-  //   mission   — spawns and steers ITS workers (StartWorker); can't propose.
+  //   assistant — has ProposeMission; can't spawn a worker or complete a mission.
+  //   mission   — spawns/steers ITS workers (StartWorker) and decides when the
+  //               goal is met (CompleteMission); can't propose.
   //   worker    — does the task, nothing else. No orchestration, and no direct
   //               line to the user (Notify/AskUser): a worker reports by ENDING
   //               its turn with a clear report — its mission is woken with the
   //               result and decides what reaches the user.
+  // CompleteMission belongs ONLY to the mission tier: the supervisor is the one
+  // that decides the goal is done, so it's the one that retires the mission.
   const drop = (names: string[]) => {
     for (const n of names) delete (full as Record<string, unknown>)[n];
   };
   if (tier === "mission") drop(["ProposeMission"]);
   else if (tier === "worker")
-    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission"]);
-  else drop(["StartWorker"]);
+    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission"]);
+  else drop(["StartWorker", "CompleteMission"]);
   return full;
 }
 
