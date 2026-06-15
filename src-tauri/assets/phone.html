@@ -376,6 +376,9 @@
      user's own (right) and the supervisor's (left) turns. */
   .treport{align-self:center;max-width:92%;margin:2px 0 10px;padding:6px 11px;background:var(--raised);border:1px solid var(--line);border-radius:10px;font-size:11.5px;color:var(--dim);text-align:center;line-height:1.45;overflow-wrap:anywhere}
   .treport b{color:#bcbcbc;font-weight:600}
+  /* Thinking woven into the thread as a dim thought, not a labelled section. */
+  .thought{align-self:flex-start;max-width:92%;margin:0 0 6px;padding-left:11px;border-left:2px solid var(--line);color:#8f8f8f;font-size:12px;font-style:italic;line-height:1.5;overflow-wrap:anywhere}
+  .thought :is(p,ul,ol){margin:.2em 0} .thought code{font-style:normal}
   .tmsg{display:flex;flex-direction:column;margin-bottom:10px}
   .tmsg.user{align-items:flex-end} .tmsg.asst{align-items:flex-start}
   .tmsg .sender{font-size:9.5px;letter-spacing:.3px;text-transform:uppercase;color:#7c7c7c;font-weight:700;margin:0 5px 3px}
@@ -807,12 +810,27 @@
         chats.unshift({ id: convId, title: convTitle || "New chat", lastActivityAt: Date.now(), source: "phone", msgCount: 0, preview: "" });
       }
       lastChatList = chats.slice();
+      // Completed missions live here (not on Activity) — done work, reviewable as
+      // history. Newest first; tapping opens the read-only mission view.
+      const doneMissions = convs
+        .filter((c) => c.source === "mission" && c.completedAt)
+        .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
       box.innerHTML = "";
-      if (chats.length) {
-        const h = document.createElement("div"); h.className = "csec"; h.textContent = "Chats"; box.appendChild(h);
-        for (const c of chats) box.appendChild(convRow(c, runIds.has(c.id)));
-      } else {
+      if (!chats.length && !doneMissions.length) {
         box.innerHTML = '<div class="empty">No conversations yet. Tap New to start.</div>';
+      } else {
+        if (chats.length) {
+          const h = document.createElement("div"); h.className = "csec"; h.textContent = "Chats"; box.appendChild(h);
+          for (const c of chats) box.appendChild(convRow(c, runIds.has(c.id)));
+        }
+        if (doneMissions.length) {
+          const h = document.createElement("div"); h.className = "csec"; h.textContent = "Completed missions"; box.appendChild(h);
+          for (const mc of doneMissions) {
+            const key = (mc.mission || mc.title || "").trim() || mc.title;
+            const workers = convs.filter((w) => w.source === "worker" && (w.mission || "").trim() === key);
+            box.appendChild(missionRow(mc, { conv: mc, active: [], done: workers }));
+          }
+        }
       }
     } catch (e) {
       box.innerHTML = '<div class="empty">Couldn’t load: ' + esc(String(e.message || e)) + "</div>";
@@ -826,6 +844,19 @@
     b.querySelector(".ag").textContent = age(c.lastActivityAt);
     b.querySelector(".p").textContent = c.preview || c.msgCount + " messages";
     b.onclick = () => { closeConvs(); openThread(c.id, c.title); };
+    return b;
+  }
+  // A finished-mission row for the drawer: opens the read-only mission view
+  // (goal + done-when + thread), not a live chat.
+  function missionRow(mc, g) {
+    const b = document.createElement("button");
+    b.className = "crow2";
+    b.innerHTML = '<div class="t"><span class="nm"></span><span class="ag"></span></div><div class="p"></div>';
+    b.querySelector(".nm").textContent = "✓ " + (mc.mission || mc.title);
+    b.querySelector(".ag").textContent = age(mc.completedAt || mc.lastActivityAt);
+    const n = g.done.length;
+    b.querySelector(".p").textContent = (n ? n + " worker" + (n === 1 ? "" : "s") + " · " : "") + "completed";
+    b.onclick = () => { closeConvs(); openMission(mc, g, { readonly: true }); };
     return b;
   }
 
@@ -1051,7 +1082,7 @@
   // Threads render as a transcript with sender labels and bubble-free agent
   // turns. A worker thread is Supervisor ⇄ Worker; a mission thread is You ⇄
   // Supervisor. You operate at the mission layer — never type at a worker.
-  function threadHtml(msgs, labels) {
+  function threadHtml(msgs, labels, thought) {
     labels = labels || { user: "You", assistant: "Assistant" };
     return '<div class="thread">' + (msgs || []).map((m) => {
       const content = m.content || "";
@@ -1073,7 +1104,11 @@
         ? '<div class="m user">' + esc(content) + "</div>"
         : '<div class="amsg"><div class="md">' + md(content) + "</div>" + chips + "</div>";
       return '<div class="tmsg ' + side + '"><span class="sender">' + esc(sender) + "</span>" + inner + "</div>";
-    }).join("") + "</div>";
+    }).join("") +
+    // Thinking woven in as a dim thought at the live edge of the feed — the
+    // latest reasoning, read as a thought, not a labelled "Thinking" section.
+    ((thought || "").trim() ? '<div class="thought">' + md(String(thought)) + "</div>" : "") +
+    "</div>";
   }
   function openSheet(opts) {
     const sh = $("sheet");
@@ -1119,6 +1154,14 @@
     setTimeout(autosize, 0);
   }
   $("sheetScrim").onclick = closeSheet; $("sheetX").onclick = closeSheet;
+  // Tool-call "N steps" chips expand inside the sheet too. The chat has its own
+  // handler on msgsEl; the sheet's thread (worker / mission / alert detail) is a
+  // separate container, so it needs its own delegated toggle — without this,
+  // tapping the steps chip in a thread did nothing.
+  $("sheetBody").addEventListener("click", (e) => {
+    const sh = e.target.closest(".steps-h");
+    if (sh) sh.closest(".steps").classList.toggle("open");
+  });
   // Drag the grab/header: pull up to fill the screen for a long thread, pull
   // down past the threshold to dismiss. Snaps to peek / full / closed.
   (function sheetDrag() {
@@ -1162,37 +1205,50 @@
     }
     return out;
   }
-  // The mission's spec = the GOAL it was approved for + the "Done when"
-  // components that define it complete + a live state line. The brief (where the
-  // done-when lives) isn't in the conversation summary, so fetch the mission's
-  // first message and parse it. Tap the [spec] chip to see this at a glance.
-  async function openSpec(mc, g) {
-    const running = g.active.length, doneN = g.done ? g.done.length : 0;
-    const stateLine = running ? (running + " running" + (doneN ? " · " + doneN + " done" : "")) : (doneN ? doneN + " done" : (g.conv ? "no workers running right now" : "—"));
-    openSheet({ intent: "Mission · the goal + done when", title: mc.title, ico: "◎", cls: "", bodyHtml: '<div class="alsum-load" id="specLoad">loading…</div>' });
+  // A mission view = its goal's "Done when" checklist + the supervisor's THREAD
+  // (its operational feed: worker reports, its decisions, self-checks), with the
+  // latest thinking woven in as a dim thought. Steer it from the footer, or
+  // Stop. ONE surface — no "spec" page then a separate "view supervisor thread"
+  // hop. Read-only (no reply / Stop) for a completed mission opened from history.
+  async function openMission(mc, g, opts) {
+    opts = opts || {};
+    const readonly = !!opts.readonly || !!mc.completedAt;
+    openSheet({
+      intent: readonly ? "Mission · complete" : "Mission",
+      title: mc.title, ico: readonly ? "✓" : "◎", cls: readonly ? "g" : "",
+      bodyHtml: '<div class="alsum-load" id="mLoad">loading…</div>',
+      footHtml: readonly ? "" : '<div class="reply"><textarea class="rinp" rows="1" placeholder="steer the supervisor, or tell it to spawn a worker…" autocomplete="off"></textarea><button class="rsend">↑</button></div>',
+      action: readonly ? null : { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
+      wire: readonly ? undefined : (body, foot) => wireReply(foot, async (v) => {
+        await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v }) }).catch(() => {});
+        closeSheet(); toast("Sent to the supervisor.");
+      }),
+    });
     let brief = (mc.goal || "").trim();
+    let rest = [];
+    let threadErr = "";
     if (mc.id) {
       try {
-        const d = await (await api("/conversation?id=" + encodeURIComponent(mc.id) + "&n=3")).json();
-        const first = (d.messages || []).find((m) => m.role === "user");
-        const fetched = (first && first.content ? String(first.content) : "").trim();
-        // The real mission brief (first user message) carries the done-when
-        // bullets. Prefer it only when it actually has them; otherwise keep what
-        // the summary gave us, so we never lose a recorded criterion.
-        if (parseDoneWhen(fetched).length || !brief) brief = fetched || brief;
-      } catch {}
+        const d = await (await api("/conversation?id=" + encodeURIComponent(mc.id) + "&n=60")).json();
+        if (d.error) throw new Error(d.error);
+        const msgs = d.messages || [];
+        // The real brief is the MISSION BRIEF turn (it carries the done-when
+        // bullets) — not merely the first user message, which on a worker-wake
+        // could be internal plumbing.
+        const bi = msgs.findIndex((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || ""));
+        if (bi >= 0 && msgs[bi].content) brief = String(msgs[bi].content).trim() || brief;
+        rest = bi >= 0 ? msgs.filter((_, i) => i !== bi) : msgs;
+      } catch (e) {
+        // Don't dead-end: the conversation summary's goal still carries the
+        // done-when, so render the spec and just note the thread couldn't load.
+        threadErr = String(e.message || e);
+      }
     }
     const comps = parseDoneWhen(brief);
-    let body = '<div class="lbl">Goal</div><div class="gtxt">' + esc(mc.title || "(mission)") + "</div>";
-    // ALWAYS labelled "Done when" — consistent across every mission. A parseable
-    // checklist renders as the list; an unparseable brief shows under the same
-    // heading; a missing brief shows a plain note. (The old "Success criterion"
-    // fallback was the inconsistent label that varied mission to mission.)
-    body += '<div class="lbl">Done when</div>';
+    let body = '<div class="lbl">Done when</div>';
     if (comps.length) {
-      // Per-criterion checkoff: a bullet goes green when the supervisor has
-      // VERIFIED that specific criterion (MarkDoneWhen → doneWhenDone), so the
-      // user watches progress accrue one at a time. A completed mission shows
+      // Per-criterion checkoff: a bullet goes green once the supervisor VERIFIES
+      // that criterion (MarkDoneWhen → doneWhenDone). A completed mission shows
       // them all done.
       const dwDone = new Set(mc.doneWhenDone || []);
       const allDone = !!mc.completedAt;
@@ -1202,55 +1258,13 @@
     } else {
       body += '<div class="md dim">No explicit criteria recorded for this mission.</div>';
     }
-    body += '<div class="specrow"><div class="lbl">State</div><div class="sc">' + esc(stateLine) + "</div></div>";
-    // No worker pills here — the workers live as pills under the mission on the
-    // Activity list itself; the spec is the goal + criteria + state. The link
-    // below is the other half of the review: the supervisor's own thread.
-    const sl = document.getElementById("specLoad");
-    if (sl) {
-      sl.outerHTML = body;
-      if (g.conv) {
-        const sup = el('<button class="wbtn" style="margin:14px 14px 2px">View supervisor thread →</button>');
-        sup.onclick = () => openSupervisor(g.conv, g);
-        document.getElementById("sheetBody").appendChild(sup);
-      }
-      typeset(document.getElementById("sheetBody"));
-    }
-  }
-  // The mission = the supervisor's thread: its thinking + what it saw from the
-  // workers. Steer it here (or Stop). The action lives on the header bar so the
-  // keyboard can't bury it.
-  async function openSupervisor(mc, g) {
-    openSheet({
-      intent: "Mission supervisor", title: mc.title, ico: "◇", cls: "",
-      bodyHtml: '<div class="alsum-load" id="supLoad">loading…</div>',
-      footHtml: '<div class="reply"><textarea class="rinp" rows="1" placeholder="ask the supervisor, or tell it to spawn a worker…" autocomplete="off"></textarea><button class="rsend">↑</button></div>',
-      action: { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
-      wire: (body, foot) => wireReply(foot, async (v) => {
-        await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v }) }).catch(() => {});
-        closeSheet(); toast("Sent to the supervisor.");
-      }),
-    });
-    try {
-      const r = await api("/conversation?id=" + encodeURIComponent(mc.id) + "&n=60");
-      const d = await r.json(); if (d.error) throw new Error(d.error);
-      const msgs = d.messages || [];
-      // The brief is the actual MISSION BRIEF turn — not merely "the first user
-      // message". When the brief is missing (older threads) or the thread opens
-      // on a worker-wake, that fallback mislabelled internal plumbing as the
-      // goal. Find the real one; if there isn't one, skip the Brief section
-      // rather than present a wake message as the brief.
-      const briefIdx = msgs.findIndex((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || ""));
-      const brief = briefIdx >= 0 ? msgs[briefIdx] : null;
-      const rest = briefIdx >= 0 ? msgs.filter((_, i) => i !== briefIdx) : msgs;
-      let html = "";
-      if (brief && brief.content) html += '<div class="lbl">Brief — what the supervisor was given</div><div class="md">' + md(String(brief.content)) + "</div>";
-      if (mc.thinkingDigest) html += '<div class="lbl">Thinking — its reasoning, cleaned up</div><div class="md">' + md(String(mc.thinkingDigest)) + "</div>";
-      html += '<div class="lbl">Supervisor thread</div>' + (rest.length ? threadHtml(rest, { user: "You", assistant: "Supervisor" }) : '<div class="md dim">No turns yet — it hasn’t run since being briefed.</div>');
-      const bodyEl = $("sheetBody");
-      bodyEl.innerHTML = html;
-      typeset(bodyEl); bodyEl.scrollTop = bodyEl.scrollHeight;
-    } catch (e) { const l = $("supLoad"); if (l) l.textContent = "Couldn’t load: " + (e.message || e); }
+    body += '<div class="lbl">Thread</div>' + (rest.length
+      ? threadHtml(rest, { user: "You", assistant: "Supervisor" }, mc.thinkingDigest)
+      : (threadErr
+          ? '<div class="md dim">Thread unavailable: ' + esc(threadErr) + "</div>"
+          : '<div class="md dim">No turns yet — it hasn’t run since being briefed.</div>'));
+    const be = $("sheetBody");
+    be.innerHTML = body; typeset(be); be.scrollTop = be.scrollHeight;
   }
   function stopMission(mc, g) {
     const a = $("sheetAction");
@@ -1263,20 +1277,20 @@
     // after a beat to reflect it.
     closeSheet(); toast("Mission stopped and cleared."); setTimeout(loadActivity, 600);
   }
-  // A worker is a read-only artifact: state + its Supervisor ⇄ Worker thread.
-  // No reply, no kill — you steer the supervisor, not the worker.
+  // A worker is a read-only artifact: just its supervisor ⇄ worker thread, with
+  // the worker's latest thinking woven in. No "State" section (read the thread,
+  // not a summarized state line); no reply / kill — you steer the supervisor,
+  // not the worker.
   async function openWorkerArtifact(run, c) {
-    const head = '<div class="lbl">State</div><div class="md">' + md(c.statusSummary || c.preview || "*(running)*") + "</div>"
-      + (c.thinkingDigest ? '<div class="lbl">Thinking</div><div class="md">' + md(String(c.thinkingDigest)) + "</div>" : "");
     openSheet({
       intent: "Worker · " + ((run.mission || c.mission || "mission")) + " · read-only", title: run.title || c.title || "worker", ico: "●", cls: "",
-      bodyHtml: head + '<div class="lbl">Thread · supervisor ↔ worker</div><div class="alsum-load" id="wkLoad">loading…</div>',
+      bodyHtml: '<div class="lbl">Thread · supervisor ↔ worker</div><div class="alsum-load" id="wkLoad">loading…</div>',
     });
     try {
       const r = await api("/conversation?id=" + encodeURIComponent(run.convId) + "&n=60");
       const d = await r.json(); if (d.error) throw new Error(d.error);
       const bodyEl = $("sheetBody");
-      bodyEl.innerHTML = head + '<div class="lbl">Thread · supervisor ↔ worker</div>' + threadHtml(d.messages, { user: "Supervisor", assistant: "Worker" }) +
+      bodyEl.innerHTML = '<div class="lbl">Thread · supervisor ↔ worker</div>' + threadHtml(d.messages, { user: "Supervisor", assistant: "Worker" }, c.thinkingDigest) +
         '<div class="readonly">This back-and-forth is the <b>supervisor</b> briefing and steering the <b>worker</b> — not you. Read-only: if it’s off track, steer the supervisor or re-scope the mission.</div>';
       typeset(bodyEl);
     } catch (e) { const l = $("wkLoad"); if (l) l.textContent = "Couldn’t load: " + (e.message || e); }
@@ -1303,12 +1317,11 @@
   // Finished workers don't accumulate here — their alert is the way back.
   function workerPill(run, c) {
     const done = !run; // no live run → a completed/idle worker
-    const pill = el('<div class="wpill"><button class="wp-head"><span class="wp-dot' + (done ? " done" : "") + '"></span><span class="wp-main"><span class="wp-t"></span><span class="wp-sum"></span></span><span class="wp-age"></span><span class="chev">›</span></button></div>');
-    // Summarized task on the title line, summarized status beneath — never the
-    // raw direction prompt (that's in the thread). Fall back to title/preview
-    // until the first turn-completion summary lands.
+    const pill = el('<div class="wpill"><button class="wp-head"><span class="wp-dot' + (done ? " done" : "") + '"></span><span class="wp-main"><span class="wp-t"></span></span><span class="wp-age"></span><span class="chev">›</span></button></div>');
+    // Just the task + a live tool·age — no summarized "state" line (the user
+    // found it weak; the full thread is one tap away). Fall back to title until
+    // the first turn-completion task summary lands.
     pill.querySelector(".wp-t").textContent = c.taskSummary || (run && run.title) || c.title || (run && run.convId) || c.id;
-    pill.querySelector(".wp-sum").textContent = c.statusSummary || c.preview || (done ? "done" : "running…");
     pill.querySelector(".wp-age").textContent = run
       ? (run.lastTool ? run.lastTool + " · " + (run.lastProgressAt ? age(run.lastProgressAt) : "now") : "running")
       : "done";
@@ -1368,19 +1381,11 @@
         const m = (c.mission || "").trim();
         if (m && !completedKeys.has(m) && missions.has(m)) missions.get(m).done.push(c);
       }
-      // Completed (archived) missions: kept on the page in their own section —
-      // not vanished — so you can review the supervisor + worker logs, then
-      // delete them yourself. Each carries all its workers for the spec view.
-      const archived = [];
-      for (const c of convs) {
-        if (c.source !== "mission" || !c.completedAt) continue;
-        const key = (c.mission || c.title || "").trim() || c.title;
-        const workers = convs.filter((w) => w.source === "worker" && (w.mission || "").trim() === key);
-        archived.push({ conv: c, active: [], done: workers, completedAt: c.completedAt });
-      }
-      archived.sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
-
-      if (!missions.size && !archived.length) {
+      // A completed mission LEAVES the Activity board entirely — it's done, so it
+      // shouldn't linger here. It stays reviewable in the conversations drawer
+      // under "Completed missions" (loadConvs). Stopped/aged missions drop the
+      // same way.
+      if (!missions.size) {
         box.appendChild(el('<div class="sec">Missions</div>'));
         box.appendChild(el('<div class="empty">Nothing in flight. Hand the agent a goal in Chat — it proposes a plan, you approve, and the mission with its workers lands here.</div>'));
       }
@@ -1390,43 +1395,15 @@
       // of this window for everyone, rather than being hidden on one device.
       for (const [name, g] of missions) {
         const mc = g.conv || { id: "", title: name, goal: "", preview: "" };
-        // Just the mission name — no "Mission" tag, no summary line. Tapping the
-        // row opens its SPEC (goal + done-when + state); the chip jumps to the
-        // supervisor thread. Only a worker count surfaces as state.
-        const head = el('<div class="msec"><b></b><span class="mc"></span><button class="spec">supervisor</button></div>');
+        // Just the mission name — no state chip, no "supervisor" button. Tapping
+        // the row opens the one mission view (goal + done-when + thread). The
+        // workers below are the at-a-glance state.
+        const head = el('<div class="msec"><b></b></div>');
         head.querySelector("b").textContent = name;
-        // State chip reflects both in-flight and finished work for the mission.
-        const a = g.active.length, d = g.done.length;
-        head.querySelector(".mc").textContent = a ? (a + " running" + (d ? " · " + d + " done" : "")) : (d ? d + " done" : "");
-        const supBtn = head.querySelector(".spec");
-        if (g.conv) supBtn.onclick = (e) => { e.stopPropagation(); openSupervisor(g.conv, g); };
-        else supBtn.remove(); // virtual mission (running workers, no supervisor thread)
-        head.onclick = () => openSpec(mc, g);
+        head.onclick = () => openMission(mc, g);
         box.appendChild(head);
         for (const { run, c } of g.active) box.appendChild(workerPill(run, c)); // running first
         for (const c of g.done) box.appendChild(workerPill(null, c)); // then completed
-      }
-
-      // Completed archive: finished missions stay here for review (tap → spec,
-      // with the worker pills + a link to the supervisor thread) until you
-      // delete them yourself — like clearing a notification.
-      if (archived.length) {
-        box.appendChild(el('<div class="sec">Completed</div>'));
-        for (const g of archived) {
-          const mc = g.conv;
-          const head = el('<div class="msec done"><b></b><span class="mc">done</span><button class="spec danger">delete</button></div>');
-          head.querySelector("b").textContent = mc.mission || mc.title;
-          head.onclick = () => openSpec(mc, g);
-          const del = head.querySelector(".spec");
-          del.onclick = async (e) => {
-            e.stopPropagation();
-            if (!del.classList.contains("confirm")) { del.classList.add("confirm"); del.textContent = "confirm?"; setTimeout(() => { if (del.isConnected) { del.classList.remove("confirm"); del.textContent = "delete"; } }, 2200); return; }
-            await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id }) }).catch(() => {});
-            toast("Mission deleted."); setTimeout(loadActivity, 500);
-          };
-          box.appendChild(head);
-          for (const c of g.done) box.appendChild(workerPill(null, c)); // its workers, reviewable
-        }
       }
 
       box.appendChild(el('<div class="sec">Scheduled</div>'));
