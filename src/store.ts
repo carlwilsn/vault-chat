@@ -125,6 +125,13 @@ export type ConvRuntime = {
   streamingText: string;
   streamingReasoning: string;
   liveTools: LiveTool[];
+  // Live thought-by-thought steps for a background worker/supervisor turn,
+  // built on the fly from the interleaving of prose and tool calls (the server
+  // sees the exact order). The phone renders these as a GROWING timeline so you
+  // watch it work step by step — the live counterpart to the Haiku-cleaned
+  // timeline that lands on the message once the turn finishes. The last entry is
+  // the in-flight thought (action still pending).
+  liveSteps?: { thought: string; action: string }[];
   agentTodos?: TodoItem[];
   tokenUsage?: { prompt: number; completion: number; total: number };
   lastContext?: number;

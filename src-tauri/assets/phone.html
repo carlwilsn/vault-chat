@@ -409,6 +409,11 @@
   .liveedge{display:flex;align-items:flex-start;gap:9px;margin:11px 0 2px;padding:9px 12px;background:#141417;border:1px solid #26262c;border-radius:12px}
   .liveedge .lpulse{width:8px;height:8px;margin-top:4px;flex:none;border-radius:50%;background:var(--ok);animation:pul 1.5s infinite}
   .liveedge .ltext{font-size:12.5px;color:#a2a2a2;line-height:1.55;font-style:italic;overflow-wrap:anywhere;white-space:pre-wrap;min-width:0}
+  /* The live timeline reuses the .ttl look; its last (in-flight) step pulses green
+     on the rail so you can see where the agent is right now. */
+  .ttl.ttl-on{margin-top:11px}
+  .ttl.ttl-on .ttl-step.ttl-live::before{background:var(--ok);animation:pul 1.5s infinite}
+  .ttl-th.dim{color:var(--dim);font-style:italic}
   .tmsg{display:flex;flex-direction:column;margin-bottom:10px}
   .tmsg.user{align-items:flex-end} .tmsg.asst{align-items:flex-start}
   .tmsg .sender{font-size:9.5px;letter-spacing:.3px;text-transform:uppercase;color:#7c7c7c;font-weight:700;margin:0 5px 3px}
@@ -606,16 +611,20 @@
       if (u === "/notifications/read") { const n = DB.notifs.find((x) => x.id === body.id); if (n) n.read = true; return reply({ ok: true }); }
       if (u === "/notifications/hide") { DB.notifs = DB.notifs.filter((x) => x.id !== body.id); return reply({ ok: true }); }
       if (u === "/poll") {
-        // Running workers stream signs of life so the thread's live edge is real
-        // in mock mode — the same "runtime" events the box broadcasts per run.
+        // Running workers stream signs of life so the thread's live timeline is
+        // real in mock mode — the same "runtime" events (text + growing steps)
+        // the box broadcasts per run.
         pollTick += 1;
-        const frag = [
-          "reading the seed-1 config to match the learning rate",
-          "launching the c4 stream — step 0, warming up the run",
-          "step 420, loss is tracking seed 1 within 0.01 nat so far",
-          "step 600, still in tolerance; will commit eval.loss next",
-        ][pollTick % 4];
-        const evs = DB.runs.filter((r) => r.source === "worker").map((r) => ({ type: "runtime", convId: r.convId, text: frag, tool: "" }));
+        const allSteps = [
+          { thought: "Need seed 1's config to match its learning rate", action: "read config.yaml" },
+          { thought: "LR is 3e-4 — relaunching seed 2 at that rate", action: "ran a command" },
+          { thought: "Stream warming up; watching the loss from step 0", action: "" },
+          { thought: "Step 420, tracking seed 1 within 0.01 nat", action: "" },
+        ];
+        const k = 1 + (pollTick % allSteps.length);
+        const steps = allSteps.slice(0, k);
+        const frag = (steps[steps.length - 1] || {}).thought || "working";
+        const evs = DB.runs.filter((r) => r.source === "worker").map((r) => ({ type: "runtime", convId: r.convId, text: frag, tool: "", steps }));
         if (!pollWaited) { pollWaited = true; return reply({ events: evs, next: String(pollTick) }); }
         await new Promise((r) => setTimeout(r, 2500));
         return reply({ events: evs, next: String(pollTick) });
@@ -1098,8 +1107,8 @@
     // the worker working / the supervisor supervising on the fly — not a frozen
     // snapshot. Runs alongside (not instead of) the active-chat handling below.
     if (sheetConvId && d.convId === sheetConvId) {
-      if (d.type === "runtime") { sheetLiveText = d.text || ""; renderSheetLive(); }
-      else if (d.type === "status") { if (d.status !== "running") sheetLiveText = ""; if (sheetRepaint) void sheetRepaint(); }
+      if (d.type === "runtime") { sheetLiveText = d.text || ""; sheetLiveSteps = Array.isArray(d.steps) ? d.steps : []; renderSheetLive(); }
+      else if (d.type === "status") { if (d.status !== "running") { sheetLiveText = ""; sheetLiveSteps = []; } if (sheetRepaint) void sheetRepaint(); }
       else if (d.type === "message") { if (sheetRepaint) void sheetRepaint(); }
     }
     if (d.type === "runtime" && d.convId === convId) { running = true; streamText = d.text || ""; streamTool = d.tool || ""; renderStream(); setHeader(); }
@@ -1184,27 +1193,43 @@
   // and sheetRepaint folds in finalized turns. Reset whenever a sheet opens/closes.
   let sheetConvId = "";
   let sheetLiveText = "";
+  let sheetLiveSteps = [];
   let sheetRepaint = null;
-  // The live edge HTML appended to a running thread — the agent's streaming prose
-  // (its latest words), or a bare "working…" pulse when it's mid-tool with no
-  // prose yet. No tool names by design; the user wants to see it WORK, not a
-  // trace of Bash/Read calls.
+  // The live edge appended to a RUNNING thread: the agent's work as it happens,
+  // rendered as a GROWING thought→action timeline (same look as the finished,
+  // Haiku-cleaned timeline above it — but building step by step, the last step
+  // pulsing). Actions are humanized on the box ("read worker-a.md"), never raw
+  // tool names. Before the first step lands it falls back to the streaming prose
+  // tail so there's always a sign of life.
   function liveEdgeHtml() {
+    const steps = sheetLiveSteps || [];
+    if (steps.length) {
+      const inner = steps.map((s, i) => {
+        const live = i === steps.length - 1;
+        const th = (s.thought || "").trim();
+        const act = (s.action || "").trim();
+        return '<div class="ttl-step' + (live ? " ttl-live" : "") + '">' +
+          (th ? '<div class="ttl-th">' + esc(th) + "</div>" : (live && !act ? '<div class="ttl-th dim">working…</div>' : "")) +
+          (act ? '<div class="ttl-act">' + esc(act) + "</div>" : "") +
+        "</div>";
+      }).join("");
+      return '<div class="ttl ttl-on" id="liveEdge">' + inner + "</div>";
+    }
     const t = (sheetLiveText || "").trim();
-    const shown = t ? "…" + t.slice(-260) : "working…";
-    return '<div class="liveedge" id="liveEdge"><span class="lpulse"></span><span class="ltext" id="liveText">' + esc(shown) + "</span></div>";
+    return '<div class="liveedge" id="liveEdge"><span class="lpulse"></span><span class="ltext">' + esc(t ? "…" + t.slice(-260) : "working…") + "</span></div>";
   }
   function renderSheetLive() {
-    const el = $("liveText");
-    if (!el) return;
-    const t = (sheetLiveText || "").trim();
-    el.textContent = t ? "…" + t.slice(-260) : "working…";
+    const edge = $("liveEdge");
+    if (!edge) return;
+    const tpl = document.createElement("template");
+    tpl.innerHTML = liveEdgeHtml().trim();
+    edge.replaceWith(tpl.content.firstChild);
     const be = $("sheetBody");
-    if (be && be.scrollHeight - be.scrollTop - be.clientHeight < 120) be.scrollTop = be.scrollHeight;
+    if (be && be.scrollHeight - be.scrollTop - be.clientHeight < 140) be.scrollTop = be.scrollHeight;
   }
   function openSheet(opts) {
     clearInterval(missionPoll); missionPoll = 0;
-    sheetConvId = ""; sheetLiveText = ""; sheetRepaint = null;
+    sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null;
     const sh = $("sheet");
     sh.style.height = ""; sh.style.maxHeight = ""; sh.style.transition = "";
     $("sheetIco").textContent = opts.ico || "•";
@@ -1221,7 +1246,7 @@
     typeset($("sheetBody"));
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
   }
-  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; sheetConvId = ""; sheetLiveText = ""; sheetRepaint = null; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; }
+  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; }
   // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
   // chat composer), Enter sends, Shift+Enter is a newline. The pinned footer +
   // the visualViewport lift keep it above the keyboard.

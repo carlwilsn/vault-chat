@@ -275,10 +275,14 @@ function runDiff(): void {
   for (const [id, rt] of Object.entries(s.convRuntime)) {
     const text = (rt.streamingText ?? "").slice(-STREAM_TAIL);
     const tool = rt.liveTools?.length ? rt.liveTools[rt.liveTools.length - 1]!.name : "";
-    const sig = tool + "\u0000" + text;
-    if ((text || tool) && lastStreamSent.get(id) !== sig) {
+    // The live thought-by-thought timeline for this run - the phone renders it
+    // as a growing list so a thread opened mid-run shows it working step by step.
+    const steps = (rt.liveSteps ?? []).slice(-40);
+    const lastAction = steps.length ? steps[steps.length - 1]!.action : "";
+    const sig = [tool, text, steps.length, lastAction].join("|");
+    if ((text || tool || steps.length) && lastStreamSent.get(id) !== sig) {
       lastStreamSent.set(id, sig);
-      broadcast({ type: "runtime", convId: id, text, tool });
+      broadcast({ type: "runtime", convId: id, text, tool, steps });
     }
   }
   if (s.busy && s.activeConversationId && (s.streamingText || s.liveTools.length)) {

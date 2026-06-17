@@ -441,6 +441,41 @@ export async function runScheduledHeadlessTurn(
 // and get its answer back to relay. No Telegram delivery — the caller decides
 // what to do with the reply. The worker run registers an abort handle so a
 // concurrent interject can stop it.
+// Turn a raw tool call into a short human action phrase for the LIVE timeline —
+// "read worker-a.md", "spawned worker X" — never the raw tool name (the user
+// finds "Read"/"Bash" labels noise; the thread doesn't show them either). Unknown
+// tools return "" so only the thought renders. This is the on-the-fly counterpart
+// to the Haiku action-cleaning that runs once the turn finishes.
+function humanizeToolAction(name: string, input: unknown): string {
+  const base = (p: unknown) => String(p ?? "").split(/[\\/]/).filter(Boolean).pop() ?? "";
+  const i = (input ?? {}) as Record<string, unknown>;
+  const path = () => base(i.path ?? i.file ?? i.file_path);
+  switch (name) {
+    case "Read":
+    case "ReadFile": return `read ${path()}`.trim();
+    case "Write": return `wrote ${path()}`.trim();
+    case "Edit":
+    case "MultiEdit": return `edited ${path()}`.trim();
+    case "Bash": return "ran a command";
+    case "Glob":
+    case "Grep": return "searched the vault";
+    case "ListDir": return "listed files";
+    case "StartWorker": return `spawned worker ${i.title ? `"${String(i.title)}"` : ""}`.trim();
+    case "AskWorker": return "messaged a worker";
+    case "ReadConversation": return "read a worker thread";
+    case "GitLog": return "checked git history";
+    case "MarkDoneWhen": return "checked off a criterion";
+    case "CompleteMission": return "marked the mission done";
+    case "Schedule": return "scheduled a wake";
+    case "CancelSchedule": return "canceled a wake";
+    case "ListSchedules": return "checked its schedules";
+    case "WebSearch":
+    case "WebFetch": return "searched the web";
+    case "ProposeMission": return "proposed a plan";
+    default: return "";
+  }
+}
+
 export async function runWorkerTurn(
   vault: string,
   conversationId: string,
@@ -512,6 +547,11 @@ export async function runWorkerTurn(
   // traces were invisible.
   let reasoningAcc = "";
   const tools: LiveTool[] = [];
+  // The live timeline: prose accumulates into the trailing step's thought; each
+  // tool call finalizes that step's action and opens a fresh one. The phone
+  // renders this growing list so you watch the worker/supervisor move step by
+  // step on the fly — the last entry is the in-flight thought (action pending).
+  const liveSteps: { thought: string; action: string }[] = [{ thought: "", action: "" }];
   let runErr: string | undefined;
   const controller = new AbortController();
   registerRun(conversationId, controller);
@@ -533,10 +573,15 @@ export async function runWorkerTurn(
       isTelegramSourced: false,
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
-        if (e.kind === "text") acc += e.delta;
+        if (e.kind === "text") { acc += e.delta; liveSteps[liveSteps.length - 1]!.thought += e.delta; }
         else if (e.kind === "reasoning") reasoningAcc += e.delta;
         else if (e.kind === "tool_use") {
           tools.push({ id: e.id, name: e.name, input: e.input, startedAt: Date.now() });
+          // Finalize the current step with this tool's human action, then open a
+          // fresh step for the next thought. Consecutive tools with no prose
+          // between them each become their own action-only step (honest movement).
+          liveSteps[liveSteps.length - 1]!.action = humanizeToolAction(e.name, e.input);
+          liveSteps.push({ thought: "", action: "" });
           void bumpHeartbeat(vault, conversationId, e.name);
         } else if (e.kind === "tool_result") {
           const t = tools.find((x) => x.id === e.id);
@@ -545,14 +590,17 @@ export async function runWorkerTurn(
           runErr = e.message;
           acc = (acc + `\n\n⚠️ ${e.message}`).trim();
         }
-        // Mirror the worker's in-flight text + tools into convRuntime so the
-        // phone (phoneApp's runDiff) streams it live. Without this a spawned
-        // worker was invisible while grinding — and invisible afterward too if
-        // it ended on a tool-only turn with no prose (see the persist gate).
+        // Mirror the worker's in-flight text + tools + step timeline into
+        // convRuntime so the phone (phoneApp's runDiff) streams it live. Without
+        // this a spawned worker was invisible while grinding — and invisible
+        // afterward too if it ended on a tool-only turn with no prose.
         useStore.getState().setConvRuntime(conversationId, {
           streamingText: acc,
           streamingReasoning: "",
           liveTools: tools.slice(),
+          liveSteps: liveSteps
+            .map((s) => ({ thought: s.thought.trim().slice(0, 400), action: s.action }))
+            .filter((s) => s.thought || s.action),
         });
       },
     });
