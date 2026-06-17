@@ -84,6 +84,11 @@ export type ChatMessage = {
     steps: { thought: string; action?: string; snag?: boolean }[];
     reply: string;
   };
+  // A DIRECT reply to a message the user typed (vs. autonomous/background work
+  // like a worker-wake review or a scheduled self-check). Direct replies stay
+  // NATURAL — they're a conversation, not reasoning — so the cleaner leaves them
+  // as prose instead of chopping them into a thought-chain timeline.
+  direct?: boolean;
 };
 
 // Shallow content-compare for the chat message list. The popout

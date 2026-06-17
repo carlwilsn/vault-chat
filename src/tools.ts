@@ -1030,7 +1030,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     }),
     AskWorker: tool({
       description:
-        "Relay a message to ANOTHER chat (a 'worker') in this vault and get its reply back — so you can hand an instruction or question to a long-running worker thread and report its answer. Find the worker's id with ListConversations. NOTE: on an idle worker this runs a FULL model turn and blocks until it answers — so for a plain status/progress check, prefer ReadConversation (its thread tells you what it did) and the heartbeat; reserve AskWorker for steering, correcting, or genuinely asking the worker something. By default it does NOT interrupt a busy worker: if the worker is mid-run you'll get its current status instead of forcing an answer. Set interrupt=true to abort its current turn and make it act on your message NOW (use to redirect it, or to nudge a stuck worker back to work). Returns the worker's reply, or its status when busy and not interrupted.",
+        "Relay a message to ANOTHER thread in this vault and get its reply back — a long-running WORKER, or a MISSION's SUPERVISOR. Use this to ask a supervisor something for the user (\"what's the status of the BitNet mission?\", \"tell it to deprioritize seed 3\") and report its answer, or to hand a worker an instruction. Find the thread's id with ListConversations (a mission is source 'mission'). NOTE: on an idle thread this runs a FULL model turn and blocks until it answers — so for a plain status/progress check, prefer ReadConversation (its thread tells you what it did) and the heartbeat; reserve this for steering, correcting, or genuinely asking it something. By default it does NOT interrupt a busy thread: if it's mid-run you'll get its current status instead of forcing an answer. Set interrupt=true to abort its current turn and make it act on your message NOW. Returns the thread's reply, or its status when busy and not interrupted.",
       inputSchema: z.object({
         conversation_id: z
           .string()
@@ -1070,6 +1070,26 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         const { reply, error } = await runWorkerTurn(vault, conversation_id, message, {});
         if (error && !reply.trim()) return `Worker run failed: ${error}`;
         return `Worker "${conv.title || conversation_id}" replied:\n${reply}`;
+      },
+    }),
+    StopMission: tool({
+      description:
+        "STOP and clear a mission the user asks you to end. Full teardown: aborts its supervisor and every worker on it, cancels their scheduled wakes, and removes the mission from the user's Activity board — not a pause. Find the mission's id with ListConversations (source 'mission'). Use when the user says to kill/stop/cancel/scrap a mission. To merely PAUSE or redirect it, don't use this — relay to its supervisor with AskWorker instead.",
+      inputSchema: z.object({
+        conversation_id: z
+          .string()
+          .describe("The mission's conversation id (source 'mission', from ListConversations)."),
+      }),
+      execute: async ({ conversation_id }) => {
+        const { readConversations } = await import("./conversations");
+        const list = await readConversations(vault);
+        const conv = list.find((c) => c.id === conversation_id);
+        if (!conv) return `Mission thread not found: ${conversation_id}`;
+        if (conv.source !== "mission")
+          return `That thread isn't a mission (source: ${conv.source ?? "?"}). StopMission only stops missions; for a worker, steer its supervisor instead.`;
+        const { stopAndDeleteMission } = await import("./offVaultRun");
+        await stopAndDeleteMission(vault, conversation_id);
+        return `Mission "${conv.mission || conv.title || conversation_id}" stopped and cleared — its supervisor and all its workers are aborted and removed from Activity.`;
       },
     }),
     StartWorker: tool({
@@ -1391,9 +1411,14 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   // the assistant PROPOSES (ProposeMission → an Approve card) and the user's
   // approval mints it deterministically (Approve → startMission in code), so a
   // mission only ever exists because the user said so.
-  //   assistant — has ProposeMission; can't spawn a worker or complete a mission.
+  //   assistant — has ProposeMission; can ask a worker/supervisor (AskWorker) and
+  //               STOP a mission for the user (StopMission); can't spawn a worker
+  //               or complete a mission. This is the user's main interface: they
+  //               mostly talk to the assistant, which relays to and tears down
+  //               missions on their behalf.
   //   mission   — spawns/steers ITS workers (StartWorker) and decides when the
-  //               goal is met (CompleteMission); can't propose.
+  //               goal is met (CompleteMission); can't propose or StopMission (it
+  //               ends itself via CompleteMission, not by killing missions).
   //   worker    — does the task, nothing else. No orchestration, and no direct
   //               line to the user (Notify/AskUser): a worker reports by ENDING
   //               its turn with a clear report — its mission is woken with the
@@ -1403,9 +1428,9 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   const drop = (names: string[]) => {
     for (const n of names) delete (full as Record<string, unknown>)[n];
   };
-  if (tier === "mission") drop(["ProposeMission"]);
+  if (tier === "mission") drop(["ProposeMission", "StopMission"]);
   else if (tier === "worker")
-    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission", "MarkDoneWhen"]);
+    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission", "MarkDoneWhen", "StopMission"]);
   else drop(["StartWorker", "CompleteMission", "MarkDoneWhen"]);
   return full;
 }

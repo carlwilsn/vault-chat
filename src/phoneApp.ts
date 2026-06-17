@@ -128,8 +128,11 @@ async function handlePhoneMessage(
   // can refresh over it.
   if (conv.source === "mission") {
     const { runWorkerTurn } = await import("./offVaultRun");
+    // The user typed this straight to the supervisor — its reply stays natural
+    // prose (direct), not a cleaned thought-chain.
     void runWorkerTurn(s.vaultPath, conv.id, trimmed, {
       modelId: useStore.getState().supervisorModelId,
+      direct: true,
     }).catch((e) => console.warn("[phone-app] supervisor turn failed:", e));
     return { ok: true, convId: conv.id };
   }
@@ -309,17 +312,21 @@ async function onRunEnded(convId: string): Promise<void> {
     const isWake = (t: string) => /^Your worker "/.test(t);
     const userMsgs = q.filter((t) => !isWake(t));
     const wakes = q.filter(isWake);
-    const group = userMsgs.length ? userMsgs : wakes;
-    const leftover = userMsgs.length ? wakes : [];
+    const isUserGroup = userMsgs.length > 0;
+    const group = isUserGroup ? userMsgs : wakes;
+    const leftover = isUserGroup ? wakes : [];
     if (leftover.length) queued.set(convId, leftover);
     else queued.delete(convId);
     const text = group.join("\n\n");
     const conv = useStore.getState().conversations.find((c) => c.id === convId);
     if (conv?.source === "mission") {
-      // Same durable disk-lock path as a direct mission message (above).
+      // Same durable disk-lock path as a direct mission message (above). A
+      // user-message flush is a direct reply (natural prose); a wake flush is
+      // background review (cleaned into the thought-chain).
       const { runWorkerTurn } = await import("./offVaultRun");
       void runWorkerTurn(useStore.getState().vaultPath!, convId, text, {
         modelId: useStore.getState().supervisorModelId,
+        direct: isUserGroup,
       }).catch((e) => console.warn("[phone-app] queued supervisor flush failed:", e));
     } else {
       const { sendMessage } = await import("./chat-controller");

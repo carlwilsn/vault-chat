@@ -480,7 +480,7 @@ export async function runWorkerTurn(
   vault: string,
   conversationId: string,
   message: string,
-  opts: { modelId?: string; resume?: boolean } = {},
+  opts: { modelId?: string; resume?: boolean; direct?: boolean } = {},
 ): Promise<{ reply: string; error?: string }> {
   const store = useStore.getState();
   // Workers default to the heavy long-horizon worker model (Fable), NOT the
@@ -641,6 +641,9 @@ export async function runWorkerTurn(
         role: "assistant",
         content: acc,
         toolCalls: tools.length ? tools : undefined,
+        // A direct reply to something the user typed stays natural prose — the
+        // cleaner skips it (see the timeline pass below).
+        direct: opts.direct || undefined,
       };
       finalList[fi] = {
         ...finalList[fi]!,
@@ -686,7 +689,11 @@ export async function runWorkerTurn(
       const toClean = c.messages
         .filter((m) => m.role === "assistant")
         .slice(-12)
-        .filter((m) => !m.timeline && ((m.content || "").trim() || (m.toolCalls || []).length));
+        // Skip DIRECT replies to the user — those are conversation, kept natural,
+        // not chopped into a thought-chain. The timeline is for the reasoning the
+        // user doesn't otherwise see (wakes, self-checks), not for answers to a
+        // question they asked.
+        .filter((m) => !m.timeline && !m.direct && ((m.content || "").trim() || (m.toolCalls || []).length));
       const cleaned = await Promise.all(
         toClean.map((m) => {
           const isThisTurn = m.content === acc; // only this turn has captured reasoning
