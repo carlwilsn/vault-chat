@@ -402,6 +402,13 @@
   .ttl-act::before{content:"→ ";color:#6f6f6f}
   .tl-reply{margin-top:11px;padding-top:11px;border-top:1px solid var(--line)}
   .working{font-size:12px;color:var(--dim);margin-top:6px;font-style:italic;opacity:.85}
+  /* Live edge: an in-flight worker/supervisor turn streaming its own words as it
+     works — the agent thinking out loud — pulsing at the bottom of the thread.
+     No tool names (the user finds them noise); just the prose, or "working…"
+     when it's mid-tool with nothing to say yet. Updated in place between polls. */
+  .liveedge{display:flex;align-items:flex-start;gap:9px;margin:11px 0 2px;padding:9px 12px;background:#141417;border:1px solid #26262c;border-radius:12px}
+  .liveedge .lpulse{width:8px;height:8px;margin-top:4px;flex:none;border-radius:50%;background:var(--ok);animation:pul 1.5s infinite}
+  .liveedge .ltext{font-size:12.5px;color:#a2a2a2;line-height:1.55;font-style:italic;overflow-wrap:anywhere;white-space:pre-wrap;min-width:0}
   .tmsg{display:flex;flex-direction:column;margin-bottom:10px}
   .tmsg.user{align-items:flex-end} .tmsg.asst{align-items:flex-start}
   .tmsg .sender{font-size:9.5px;letter-spacing:.3px;text-transform:uppercase;color:#7c7c7c;font-weight:700;margin:0 5px 3px}
@@ -586,7 +593,7 @@
       },
     };
     const reply = (obj) => new Response(JSON.stringify(obj), { status: 200, headers: { "Content-Type": "application/json" } });
-    let pollWaited = false;
+    let pollWaited = false, pollTick = 0;
     window.fetch = async (url, opts) => {
       const u = String(url).split("?")[0];
       const q = new URLSearchParams(String(url).split("?")[1] || "");
@@ -598,9 +605,23 @@
       if (u === "/notifications") return reply({ unread: DB.notifs.filter((n) => !n.read).length, notifications: DB.notifs });
       if (u === "/notifications/read") { const n = DB.notifs.find((x) => x.id === body.id); if (n) n.read = true; return reply({ ok: true }); }
       if (u === "/notifications/hide") { DB.notifs = DB.notifs.filter((x) => x.id !== body.id); return reply({ ok: true }); }
-      if (u === "/poll") { if (!pollWaited) { pollWaited = true; return reply({ events: [], next: "1" }); } await new Promise((r) => setTimeout(r, 8000)); return reply({ events: [], next: "1" }); }
+      if (u === "/poll") {
+        // Running workers stream signs of life so the thread's live edge is real
+        // in mock mode — the same "runtime" events the box broadcasts per run.
+        pollTick += 1;
+        const frag = [
+          "reading the seed-1 config to match the learning rate",
+          "launching the c4 stream — step 0, warming up the run",
+          "step 420, loss is tracking seed 1 within 0.01 nat so far",
+          "step 600, still in tolerance; will commit eval.loss next",
+        ][pollTick % 4];
+        const evs = DB.runs.filter((r) => r.source === "worker").map((r) => ({ type: "runtime", convId: r.convId, text: frag, tool: "" }));
+        if (!pollWaited) { pollWaited = true; return reply({ events: evs, next: String(pollTick) }); }
+        await new Promise((r) => setTimeout(r, 2500));
+        return reply({ events: evs, next: String(pollTick) });
+      }
       if (u === "/message") { if (body.mission) return reply({ ok: true, convId: "m_new", mission: body.mission.title }); return reply({ ok: true, convId: body.convId || "new-" + Date.now() }); }
-      if (u === "/kill") { if (body.convId) DB.runs = DB.runs.filter((r) => r.convId !== body.convId); return reply({ ok: true, result: "Kill sent." }); }
+      if (u === "/kill") { if (body.convId) { DB.runs = DB.runs.filter((r) => r.convId !== body.convId); const m = DB.convs.find((c) => c.id === body.convId); if (m && m.source === "mission") { const key = (m.mission || m.title || "").trim(); DB.convs = DB.convs.filter((c) => c.id !== body.convId && !(c.source === "worker" && (c.mission || "").trim() === key)); } } return reply({ ok: true, result: "Kill sent." }); }
       if (u === "/chats/clear") return reply({ ok: true, cleared: 0 });
       if (u === "/schedule") { if (body.action === "toggle") { const s = DB.schedules.find((x) => x.id === body.id); if (s) s.enabled = body.enabled; } else if (body.action === "delete") { DB.schedules = DB.schedules.filter((x) => x.id !== body.id); } return reply({ ok: true }); }
       if (u === "/push/vapid") return reply({ key: "" });
@@ -1072,6 +1093,15 @@
     }
   }
   function handleEvent(d) {
+    // Live sheet: an open worker/mission thread streams its in-flight words and
+    // folds in its turns the moment they land, so a thread opened mid-run shows
+    // the worker working / the supervisor supervising on the fly — not a frozen
+    // snapshot. Runs alongside (not instead of) the active-chat handling below.
+    if (sheetConvId && d.convId === sheetConvId) {
+      if (d.type === "runtime") { sheetLiveText = d.text || ""; renderSheetLive(); }
+      else if (d.type === "status") { if (d.status !== "running") sheetLiveText = ""; if (sheetRepaint) void sheetRepaint(); }
+      else if (d.type === "message") { if (sheetRepaint) void sheetRepaint(); }
+    }
     if (d.type === "runtime" && d.convId === convId) { running = true; streamText = d.text || ""; streamTool = d.tool || ""; renderStream(); setHeader(); }
     else if (d.type === "message" && d.convId === convId) {
       if (d.role === "user" && lastSentText !== null && d.content === lastSentText) { lastSentText = null; return; }
@@ -1149,8 +1179,32 @@
   // Refresh handle for the live mission view — any new sheet (and closing one)
   // cancels it so a mission's poll never bleeds into another sheet's body.
   let missionPoll = 0;
+  // Live-sheet state: while a worker/mission thread is open AND running, its
+  // in-flight words stream into the sheet (sheetLiveText, fed by runtime events),
+  // and sheetRepaint folds in finalized turns. Reset whenever a sheet opens/closes.
+  let sheetConvId = "";
+  let sheetLiveText = "";
+  let sheetRepaint = null;
+  // The live edge HTML appended to a running thread — the agent's streaming prose
+  // (its latest words), or a bare "working…" pulse when it's mid-tool with no
+  // prose yet. No tool names by design; the user wants to see it WORK, not a
+  // trace of Bash/Read calls.
+  function liveEdgeHtml() {
+    const t = (sheetLiveText || "").trim();
+    const shown = t ? "…" + t.slice(-260) : "working…";
+    return '<div class="liveedge" id="liveEdge"><span class="lpulse"></span><span class="ltext" id="liveText">' + esc(shown) + "</span></div>";
+  }
+  function renderSheetLive() {
+    const el = $("liveText");
+    if (!el) return;
+    const t = (sheetLiveText || "").trim();
+    el.textContent = t ? "…" + t.slice(-260) : "working…";
+    const be = $("sheetBody");
+    if (be && be.scrollHeight - be.scrollTop - be.clientHeight < 120) be.scrollTop = be.scrollHeight;
+  }
   function openSheet(opts) {
     clearInterval(missionPoll); missionPoll = 0;
+    sheetConvId = ""; sheetLiveText = ""; sheetRepaint = null;
     const sh = $("sheet");
     sh.style.height = ""; sh.style.maxHeight = ""; sh.style.transition = "";
     $("sheetIco").textContent = opts.ico || "•";
@@ -1167,7 +1221,7 @@
     typeset($("sheetBody"));
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
   }
-  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; }
+  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; sheetConvId = ""; sheetLiveText = ""; sheetRepaint = null; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; }
   // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
   // chat composer), Enter sends, Shift+Enter is a newline. The pinned footer +
   // the visualViewport lift keep it above the keyboard.
@@ -1318,7 +1372,7 @@
         body += '<div class="md dim">No explicit criteria recorded for this mission.</div>';
       }
       body += '<div class="lbl">Thread</div>' + (restPlus.length
-        ? threadHtml(restPlus, { user: "You", assistant: "Supervisor" }) + (running ? '<div class="working">⏳ supervisor working…</div>' : "")
+        ? threadHtml(restPlus, { user: "You", assistant: "Supervisor" }) + (running ? liveEdgeHtml() : "")
         : (threadErr
             ? '<div class="md dim">Thread unavailable: ' + esc(threadErr) + "</div>"
             : '<div class="md dim">No turns yet — it hasn’t run since being briefed.</div>'));
@@ -1327,6 +1381,9 @@
       be.innerHTML = body; typeset(be);
       if (atBottom) be.scrollTop = be.scrollHeight;
     }
+    // Stream this supervisor's in-flight words into the thread (runtime events)
+    // and fold in its turns as they land — see it supervising on the fly.
+    if (!readonly) { sheetConvId = mc.id; sheetRepaint = paint; }
     await paint();
     // Poll while the sheet stays open (a live mission only) so the supervisor's
     // turns — its reply to what you sent AND its in-flight self-checks — appear
@@ -1348,22 +1405,45 @@
     closeSheet(); toast("Mission stopped and cleared."); setTimeout(loadActivity, 600);
   }
   // A worker is a read-only artifact: just its supervisor ⇄ worker thread, with
-  // the worker's latest thinking woven in. No "State" section (read the thread,
+  // the worker's thinking woven in per turn. No "State" section (read the thread,
   // not a summarized state line); no reply / kill — you steer the supervisor,
-  // not the worker.
+  // not the worker. Polls like the mission view so a worker opened mid-run shows
+  // it WORKING — its in-flight words stream into the live edge, and finished
+  // turns (with their cleaned timelines) fold in — instead of a frozen snapshot.
   async function openWorkerArtifact(run, c) {
+    const convId = run.convId;
     openSheet({
       intent: "Worker · " + ((run.mission || c.mission || "mission")) + " · read-only", title: run.title || c.title || "worker", ico: "●", cls: "",
       bodyHtml: '<div class="lbl">Thread · supervisor ↔ worker</div><div class="alsum-load" id="wkLoad">loading…</div>',
     });
-    try {
-      const r = await api("/conversation?id=" + encodeURIComponent(run.convId) + "&n=60");
-      const d = await r.json(); if (d.error) throw new Error(d.error);
-      const bodyEl = $("sheetBody");
-      bodyEl.innerHTML = '<div class="lbl">Thread · supervisor ↔ worker</div>' + threadHtml(d.messages, { user: "Supervisor", assistant: "Worker" }) +
+    sheetConvId = convId;
+    let lastSig = "";
+    async function paint() {
+      let msgs = [], running = false, err = "";
+      try {
+        const d = await (await api("/conversation?id=" + encodeURIComponent(convId) + "&n=60")).json();
+        if (d.error) throw new Error(d.error);
+        msgs = d.messages || []; running = d.status === "running";
+      } catch (e) { err = String(e.message || e); }
+      const sig = JSON.stringify((msgs || []).map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + running;
+      if (sig === lastSig) return; // unchanged — live edge updates itself; don't disrupt reading
+      lastSig = sig;
+      const be = $("sheetBody");
+      const atBottom = be.scrollHeight - be.scrollTop - be.clientHeight < 90;
+      be.innerHTML = '<div class="lbl">Thread · supervisor ↔ worker</div>' +
+        (err
+          ? '<div class="md dim">Couldn’t load: ' + esc(err) + "</div>"
+          : threadHtml(msgs, { user: "Supervisor", assistant: "Worker" }) + (running ? liveEdgeHtml() : "")) +
         '<div class="readonly">This back-and-forth is the <b>supervisor</b> briefing and steering the <b>worker</b> — not you. Read-only: if it’s off track, steer the supervisor or re-scope the mission.</div>';
-      typeset(bodyEl);
-    } catch (e) { const l = $("wkLoad"); if (l) l.textContent = "Couldn’t load: " + (e.message || e); }
+      typeset(be);
+      if (atBottom) be.scrollTop = be.scrollHeight;
+    }
+    sheetRepaint = paint;
+    await paint();
+    missionPoll = setInterval(() => {
+      if (!$("sheet").classList.contains("on")) { clearInterval(missionPoll); missionPoll = 0; return; }
+      void paint();
+    }, 3000);
   }
   // Tap a schedule → its spec (what it runs, when, status) with the controls.
   function openSchedule(sc) {
@@ -1392,8 +1472,11 @@
     // found it weak; the full thread is one tap away). Fall back to title until
     // the first turn-completion task summary lands.
     pill.querySelector(".wp-t").textContent = c.taskSummary || (run && run.title) || c.title || (run && run.convId) || c.id;
+    // Liveness, not tool-calls: the user doesn't want "Bash · 2m" on the pill —
+    // the raw tool name doesn't help when the thread doesn't show tools either.
+    // Just "working · <age>" while it runs, "done" when idle. Tap to watch it.
     pill.querySelector(".wp-age").textContent = run
-      ? (run.lastTool ? run.lastTool + " · " + (run.lastProgressAt ? age(run.lastProgressAt) : "now") : "running")
+      ? (run.lastProgressAt ? "working · " + age(run.lastProgressAt) : "working")
       : "done";
     // A completed worker has no live run — synthesize one so the read-only
     // artifact (its thread + Haiku summary) opens exactly the same way.
@@ -1497,7 +1580,18 @@
           const row = el('<button class="arch-row"><span class="arch-t"></span><span class="arch-age"></span><span class="chev">›</span></button>');
           row.querySelector(".arch-t").textContent = "✓ " + (mc.mission || mc.title);
           row.querySelector(".arch-age").textContent = age(mc.completedAt);
-          row.onclick = () => openMission(mc, { conv: mc, active: [], done: workers }, { readonly: true });
+          // Tap → re-inspect the finished mission. Swipe left → delete it (and its
+          // worker threads): /kill on a mission routes to stopAndDeleteMission,
+          // which tombstone-deletes the whole group so it's gone for every client.
+          row.addEventListener("click", () => {
+            if (row.dataset.swiped === "1") { row.dataset.swiped = ""; return; }
+            openMission(mc, { conv: mc, active: [], done: workers }, { readonly: true });
+          });
+          attachSwipeArchive(
+            row,
+            () => api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id }) }).then(() => toast("Mission deleted.")).catch(() => {}),
+            loadActivity,
+          );
           box.appendChild(row);
         }
       }
@@ -1603,7 +1697,8 @@
       },
     });
   }
-  function attachSwipeArchive(card, action) {
+  function attachSwipeArchive(card, action, reload) {
+    reload = reload || loadAlerts;
     let x0 = 0, y0 = 0, dx = 0, mode = null;
     const start = (x, y) => { x0 = x; y0 = y; dx = 0; mode = null; card.style.transition = "none"; };
     const move = (x, y) => {
@@ -1632,7 +1727,7 @@
       if (dx < -70) {
         card.style.transform = "translateX(-110%)"; card.style.opacity = "0";
         await action();
-        setTimeout(loadAlerts, 180);
+        setTimeout(reload, 180);
       } else {
         card.style.transform = "";
       }
