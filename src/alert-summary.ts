@@ -149,7 +149,7 @@ export async function summarizeThinking(
 // ("observed X → decided Y → did Z"); this just untangles the concatenated prose
 // and aligns each thought to the real tool call it triggered. NOT a summary —
 // every step is preserved; only cleaned and ordered.
-export type TimelineStep = { thought: string; action: string };
+export type TimelineStep = { thought: string; action: string; snag?: boolean };
 export type Timeline = { steps: TimelineStep[]; reply: string };
 
 const TIMELINE_SCHEMA = z.object({
@@ -159,16 +159,21 @@ const TIMELINE_SCHEMA = z.object({
         thought: z
           .string()
           .describe(
-            "The agent's ACTUAL reasoning at this point, cleaned but SUBSTANTIVE — 1-2 full sentences that preserve what it observed, what it concluded, and WHY, so a technical reader can judge the quality of the thinking. NOT a terse 6-word label. Keep the real content (numbers, tradeoffs, doubts); only drop rambling and false starts. Plain text.",
+            "ONE substantive update — a meaningful development, in 1-2 full sentences: either (a) something it DID and what that turned up, or (b) something it RAN INTO and how it corrected, and why that motivated the next move. Keep the real substance (numbers, tradeoffs, the obstacle, the fix) so a technical lead can see real progress and judge the thinking. NOT a terse label, and NOT one entry per tool call — merge routine mechanical steps into the development they served. Plain text.",
           ),
         action: z
           .string()
           .describe(
-            "The concrete action this thought led to, in plain words derived from the ACTIONS list (e.g. 'spawned 3 audit workers', 'asked gpu-seed-sweep-launch to start now', 'wrote the goal file', 'verified the 3 deliverables on disk'). Empty string if this thought led to no tool action.",
+            "The concrete thing(s) this update did, in plain words from the ACTIONS list (e.g. 'read the prior 160M + 50M logs', 'wrote and committed PREDICTION.md', 'spawned 3 workers'). Cluster several tools into one phrase. Empty string if this update took no tool action.",
+          ),
+        snag: z
+          .boolean()
+          .describe(
+            "true if this update is an obstacle/correction — it hit a problem, a wrong result, or something that didn't work and had to course-correct. These are the most informative updates; mark them so the reader sees the agent handling reality, not just cruising.",
           ),
       }),
     )
-    .describe("The agent's logic, in order — one step per distinct thought→action."),
+    .describe("The chain of substantive updates, in order — meaningful developments and the obstacles it corrected, NOT a bolt-by-bolt tool log."),
   reply: z
     .string()
     .describe(
@@ -176,11 +181,11 @@ const TIMELINE_SCHEMA = z.object({
     ),
 });
 
-const TIMELINE_SYSTEM = `You untangle ONE agent turn into a clean, thought-by-thought timeline for a technical lead who is REVIEWING how well the agent thinks. You get the agent's NARRATION (its prose — several thoughts run together with no breaks), optionally its raw REASONING, and the ORDERED list of ACTIONS (tools) it actually took.
+const TIMELINE_SYSTEM = `You turn ONE agent turn into a CHAIN OF SUBSTANTIVE UPDATES for a lead checking in on long-running work — someone who wants to see real, meaningful progress and trust that something is happening, NOT read a bolt-by-bolt tool log. You get the agent's NARRATION (its prose — several thoughts run together), optionally its raw REASONING, and the ORDERED list of ACTIONS (tools) it took.
 
-Produce an ordered \`steps\` list: each step is one cleaned but SUBSTANTIVE thought (1-2 sentences — what it observed, what it concluded, and why) paired with the concrete \`action\` it led to, named from the ACTIONS list in plain human words. The reader is judging reasoning QUALITY, so keep the real substance — the numbers, the tradeoffs, the doubts, the verification — and only drop rambling, filler, and false starts. Do NOT flatten a real chain of reasoning into terse labels, and do NOT invent thoughts or actions: clean, split, and align what you're given. If several actions share one thought, put them in one step's action ("spawned 3 workers"). A thought with no tool gets an empty action.
+Produce an ordered \`steps\` list of substantive updates. Each update is a meaningful development (1-2 sentences): either something it DID and what that turned up, or something it RAN INTO and how it corrected — and why that motivated the next move. MERGE routine mechanical steps into the development they served (five reads that grounded one decision = ONE update, not five). Mark an update \`snag: true\` when it's an obstacle or course-correction — those are the most reassuring, because they show the agent dealing with reality. Keep the real substance (numbers, tradeoffs, the obstacle, the fix); drop rambling and filler. Do NOT invent developments or actions — only clean, merge, and align what you're given. \`action\` = the concrete thing(s) that update did, clustered into one plain phrase (empty if none).
 
-\`reply\` = the turn's final user-facing conclusion, copied verbatim from the end of the narration (NOT rewritten); empty if there's no distinct conclusion. No markdown in thoughts/actions.`;
+\`reply\` = the turn's final user-facing conclusion, copied verbatim from the end of the narration (NOT rewritten); empty if there's no distinct conclusion. No markdown.`;
 
 export async function summarizeTimeline(
   narration: string,
@@ -223,6 +228,7 @@ export async function summarizeTimeline(
       .map((s) => ({
         thought: String(s.thought ?? "").trim().slice(0, 600),
         action: String(s.action ?? "").trim().slice(0, 160),
+        snag: !!s.snag,
       }))
       .filter((s) => s.thought || s.action);
     const reply = String(object.reply ?? "").trim();

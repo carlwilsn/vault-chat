@@ -547,11 +547,15 @@ export async function runWorkerTurn(
   // traces were invisible.
   let reasoningAcc = "";
   const tools: LiveTool[] = [];
-  // The live timeline: prose accumulates into the trailing step's thought; each
-  // tool call finalizes that step's action and opens a fresh one. The phone
-  // renders this growing list so you watch the worker/supervisor move step by
-  // step on the fly — the last entry is the in-flight thought (action pending).
-  const liveSteps: { thought: string; action: string }[] = [{ thought: "", action: "" }];
+  // The live timeline as a chain of SUBSTANTIVE UPDATES — not one bolt per tool.
+  // An update = a thing the agent narrated + the cluster of actions that prose
+  // led to. A new update opens when prose RESUMES after actions (the model
+  // finishing one move and starting the next thought); consecutive tools fold
+  // into the current update's action list. So "read a, read b, read c, wrote d"
+  // is ONE update ("…→ read a, read b, read c, wrote d"), not four bolts. The
+  // phone streams these so you see real, meaningful movement on the fly.
+  const liveSteps: { thought: string; actions: string[] }[] = [{ thought: "", actions: [] }];
+  let liveWasAction = false;
   let runErr: string | undefined;
   const controller = new AbortController();
   registerRun(conversationId, controller);
@@ -573,15 +577,20 @@ export async function runWorkerTurn(
       isTelegramSourced: false,
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
-        if (e.kind === "text") { acc += e.delta; liveSteps[liveSteps.length - 1]!.thought += e.delta; }
+        if (e.kind === "text") {
+          acc += e.delta;
+          // Prose resuming after actions = the start of a NEW substantive update.
+          if (liveWasAction && e.delta.trim()) { liveSteps.push({ thought: "", actions: [] }); liveWasAction = false; }
+          liveSteps[liveSteps.length - 1]!.thought += e.delta;
+        }
         else if (e.kind === "reasoning") reasoningAcc += e.delta;
         else if (e.kind === "tool_use") {
           tools.push({ id: e.id, name: e.name, input: e.input, startedAt: Date.now() });
-          // Finalize the current step with this tool's human action, then open a
-          // fresh step for the next thought. Consecutive tools with no prose
-          // between them each become their own action-only step (honest movement).
-          liveSteps[liveSteps.length - 1]!.action = humanizeToolAction(e.name, e.input);
-          liveSteps.push({ thought: "", action: "" });
+          // Fold this action into the CURRENT update's action cluster (don't open
+          // a new bolt) — the next prose will open the next update.
+          const act = humanizeToolAction(e.name, e.input);
+          if (act) liveSteps[liveSteps.length - 1]!.actions.push(act);
+          liveWasAction = true;
           void bumpHeartbeat(vault, conversationId, e.name);
         } else if (e.kind === "tool_result") {
           const t = tools.find((x) => x.id === e.id);
@@ -599,7 +608,11 @@ export async function runWorkerTurn(
           streamingReasoning: "",
           liveTools: tools.slice(),
           liveSteps: liveSteps
-            .map((s) => ({ thought: s.thought.trim().slice(0, 600), action: s.action }))
+            .map((s) => ({
+              thought: s.thought.trim().slice(0, 600),
+              // The cluster of things this update did, de-duped and capped.
+              action: [...new Set(s.actions)].join(", ").slice(0, 200),
+            }))
             .filter((s) => s.thought || s.action),
         });
       },

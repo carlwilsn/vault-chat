@@ -391,12 +391,18 @@
      user's own (right) and the supervisor's (left) turns. */
   .treport{align-self:center;max-width:92%;margin:2px 0 10px;padding:6px 11px;background:var(--raised);border:1px solid var(--line);border-radius:10px;font-size:11.5px;color:var(--dim);text-align:center;line-height:1.45;overflow-wrap:anywhere}
   .treport b{color:#bcbcbc;font-weight:600}
-  /* Thought-by-thought timeline: each step is a modular thought + the action it
-     led to. A faint rail down the left ties the steps into one line of logic. */
-  .ttl{margin:1px 0 0;border-left:1.5px solid var(--line);padding-left:13px}
-  .ttl-step{position:relative;margin:0 0 12px}
+  /* The chain of substantive updates: each entry is a meaningful development —
+     a thing it did, or a snag it hit and corrected — checked off as it lands. A
+     rail down the left ties them into one line of progress. */
+  .ttl{margin:1px 0 0;border-left:1.5px solid var(--line);padding-left:15px}
+  .ttl-step{position:relative;margin:0 0 13px}
   .ttl-step:last-child{margin-bottom:2px}
-  .ttl-step::before{content:"";position:absolute;left:-17px;top:5px;width:6px;height:6px;border-radius:50%;background:#5a5a62}
+  .ttl-step::before{content:"";position:absolute;left:-18px;top:4px;width:6px;height:6px;border-radius:50%;background:#5a5a62}
+  /* Done update → a green check on the rail (the "series of checks" feel). */
+  .ttl-step.done::before{content:"✓";left:-20px;top:2px;width:auto;height:auto;background:none;color:var(--ok);font-size:10px;font-weight:700;line-height:1}
+  /* Snag/correction update → an amber mark + tinted text; the most informative. */
+  .ttl-step.snag::before{content:"!";left:-19px;top:2px;width:auto;height:auto;background:none;color:var(--warn);font-size:11px;font-weight:700;line-height:1}
+  .ttl-step.snag .ttl-th{color:#e0c489}
   .ttl-th{font-size:13px;color:var(--text);line-height:1.5;overflow-wrap:anywhere}
   .ttl-act{font-size:12px;color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:3px;overflow-wrap:anywhere}
   .ttl-act::before{content:"→ ";color:#6f6f6f}
@@ -565,10 +571,10 @@
           { role: "assistant", content: "Criterion pinned. Fanning out a worker per seed plus an eval/writeup worker; I'll watch on 15-min wakes and verify before I call it.", tools: ["StartWorker", "StartWorker", "StartWorker", "Schedule"] },
           { role: "user", content: "Your worker \"seed-42\" (id 99284a75) just finished its turn. Last output: seed 42 trained, eval.loss 1.553 committed under results/.\n\nReview its thread and decide: verified done, steer it (AskWorker), respawn with learnings, or — only if you can't resolve it yourself — bring the user in." },
           { role: "assistant", content: "Read the worker threads. Seeds **42 & 44 landed in tolerance**, eval.loss committed. **Seed 3 diverged** at step 800 (+0.05 nat) — I held it and surfaced the call to you. Kicked the eval/writeup worker since 2 of 3 are in.", timeline: { steps: [
-            { thought: "Three seeds are running — read each worker's thread before trusting any 'done'", action: "read 3 worker threads" },
-            { thought: "Seeds 42 & 44 landed in tolerance with eval.loss committed; seed 3 diverged +0.05 nat at step 800", action: "" },
-            { thought: "Seed 3's gap is a real call I can't make myself — surface it to the user", action: "asked the user: real effect, or rerun at matched LR?" },
-            { thought: "Two of three are already in, so don't block — kick off the eval + writeup worker now", action: "spawned the eval+writeup worker" },
+            { thought: "Didn't trust any worker's 'done' on its word — pulled all three threads and checked each eval.loss against the 0.005 tolerance before counting it.", action: "read 3 worker threads, verified eval.loss" },
+            { thought: "Seed 3 came back diverged at step 800, +0.05 nat above seed 1 and still drifting — that breaks the within-tolerance criterion, so I couldn't mark it done.", action: "", snag: true },
+            { thought: "Whether that's a real seed effect or just an LR mismatch is a judgment call with real cost either way, so I held the worker and put the decision to you rather than guess.", action: "asked you: real effect, or rerun at matched LR?" },
+            { thought: "Two of three are already in tolerance, so there's no reason to block the writeup on seed 3 — kicked the eval/writeup worker in parallel.", action: "spawned the eval + writeup worker" },
           ], reply: "Seeds **42 & 44** landed in tolerance; **seed 3 diverged** at step 800 (+0.05 nat) — I held it and surfaced the call to you. Kicked the eval/writeup worker since 2 of 3 are in." } },
           { role: "user", content: "don't wait on it — spin up a worker to rerun seed 3 at seed 42's LR." },
           { role: "assistant", content: "On it — spawning a worker to rerun seed 3 at seed 42's LR.", tools: ["StartWorker"] },
@@ -618,10 +624,10 @@
         // the box broadcasts per run.
         pollTick += 1;
         const allSteps = [
-          { thought: "Need seed 1's config to match its learning rate", action: "read config.yaml" },
-          { thought: "LR is 3e-4 — relaunching seed 2 at that rate", action: "ran a command" },
-          { thought: "Stream warming up; watching the loss from step 0", action: "" },
-          { thought: "Step 420, tracking seed 1 within 0.01 nat", action: "" },
+          { thought: "Pulled seed 1's config and its committed eval.loss so I'm matching the exact LR, not eyeballing it.", action: "read config.yaml, read seed1 results" },
+          { thought: "Confirmed the rate is 3e-4 and relaunched seed 2 at it — first launch errored on a stale checkpoint path, so I cleared it and reran.", action: "ran the training command" },
+          { thought: "Stream is warming up; watching the loss from step 0 to catch early divergence.", action: "" },
+          { thought: "Step 420 and it's tracking seed 1 within 0.01 nat — on pace to land in tolerance.", action: "" },
         ];
         const k = 1 + (pollTick % allSteps.length);
         const steps = allSteps.slice(0, k);
@@ -1149,14 +1155,13 @@
   // Threads render as a transcript with sender labels and bubble-free agent
   // turns. A worker thread is Supervisor ⇄ Worker; a mission thread is You ⇄
   // Supervisor. You operate at the mission layer — never type at a worker.
-  // The agent's thought-by-thought timeline (Haiku-cleaned): modular thoughts,
-  // each with the concrete action it led to. This is what makes the supervisor's
-  // logic legible — observed → decided → did — instead of one run-on paragraph
-  // plus a collapsed "N steps" chip.
+  // The chain of substantive updates (Haiku-cleaned): each a meaningful
+  // development checked off, snags flagged. Legible progress — what it did and
+  // what it ran into — instead of a run-on paragraph + a collapsed "N steps" chip.
   function timelineHtml(tl) {
     if (!tl || !Array.isArray(tl.steps) || !tl.steps.length) return "";
     return '<div class="ttl">' + tl.steps.map((s) =>
-      '<div class="ttl-step">' +
+      '<div class="ttl-step ' + (s.snag ? "snag" : "done") + '">' +
         (s.thought ? '<div class="ttl-th">' + esc(s.thought) + "</div>" : "") +
         (s.action ? '<div class="ttl-act">' + esc(s.action) + "</div>" : "") +
       "</div>").join("") + "</div>";
@@ -1237,7 +1242,8 @@
         const live = i === steps.length - 1;
         const th = (s.thought || "").trim();
         const act = (s.action || "").trim();
-        return '<div class="ttl-step' + (live ? " ttl-live" : "") + '">' +
+        // Completed updates get a check; the in-flight one pulses.
+        return '<div class="ttl-step ' + (live ? "ttl-live" : "done") + '">' +
           (th ? '<div class="ttl-th">' + esc(th) + "</div>" : (live && !act ? '<div class="ttl-th dim">working…</div>' : "")) +
           (act ? '<div class="ttl-act">' + esc(act) + "</div>" : "") +
         "</div>";
