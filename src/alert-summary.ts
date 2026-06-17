@@ -159,7 +159,7 @@ const TIMELINE_SCHEMA = z.object({
         thought: z
           .string()
           .describe(
-            "ONE cleaned micro-thought — what the agent observed or decided at this point, ~6-20 words. Plain text.",
+            "The agent's ACTUAL reasoning at this point, cleaned but SUBSTANTIVE — 1-2 full sentences that preserve what it observed, what it concluded, and WHY, so a technical reader can judge the quality of the thinking. NOT a terse 6-word label. Keep the real content (numbers, tradeoffs, doubts); only drop rambling and false starts. Plain text.",
           ),
         action: z
           .string()
@@ -176,9 +176,9 @@ const TIMELINE_SCHEMA = z.object({
     ),
 });
 
-const TIMELINE_SYSTEM = `You untangle ONE agent turn into a clean, thought-by-thought timeline for a phone UI. You get the agent's NARRATION (its prose — several micro-thoughts run together with no breaks), optionally its raw REASONING, and the ORDERED list of ACTIONS (tools) it actually took.
+const TIMELINE_SYSTEM = `You untangle ONE agent turn into a clean, thought-by-thought timeline for a technical lead who is REVIEWING how well the agent thinks. You get the agent's NARRATION (its prose — several thoughts run together with no breaks), optionally its raw REASONING, and the ORDERED list of ACTIONS (tools) it actually took.
 
-Produce an ordered \`steps\` list: each step is ONE cleaned micro-thought (what it observed or decided) paired with the concrete \`action\` it led to, named from the ACTIONS list in plain human words. Keep the REAL sequence and the REAL actions — do NOT invent thoughts or actions, only clean, split, and align what you're given. If several actions share one thought, put them in one step's action ("spawned 3 workers"). A thought with no tool gets an empty action.
+Produce an ordered \`steps\` list: each step is one cleaned but SUBSTANTIVE thought (1-2 sentences — what it observed, what it concluded, and why) paired with the concrete \`action\` it led to, named from the ACTIONS list in plain human words. The reader is judging reasoning QUALITY, so keep the real substance — the numbers, the tradeoffs, the doubts, the verification — and only drop rambling, filler, and false starts. Do NOT flatten a real chain of reasoning into terse labels, and do NOT invent thoughts or actions: clean, split, and align what you're given. If several actions share one thought, put them in one step's action ("spawned 3 workers"). A thought with no tool gets an empty action.
 
 \`reply\` = the turn's final user-facing conclusion, copied verbatim from the end of the narration (NOT rewritten); empty if there's no distinct conclusion. No markdown in thoughts/actions.`;
 
@@ -221,7 +221,7 @@ export async function summarizeTimeline(
     });
     const steps = (object.steps ?? [])
       .map((s) => ({
-        thought: String(s.thought ?? "").trim().slice(0, 240),
+        thought: String(s.thought ?? "").trim().slice(0, 600),
         action: String(s.action ?? "").trim().slice(0, 160),
       }))
       .filter((s) => s.thought || s.action);

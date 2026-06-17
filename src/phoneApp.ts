@@ -298,11 +298,22 @@ function runDiff(): void {
 }
 
 async function onRunEnded(convId: string): Promise<void> {
-  // 1) Flush messages that queued up while the thread was busy.
+  // 1) Flush messages that queued up while the thread was busy. The user's OWN
+  // message must NEVER be blended into worker-wake plumbing — joining them made
+  // the user's bubble read "How's it going  Your worker … just finished…" (the
+  // bug the user hit). Flush the user's messages first as their own turn, then
+  // re-queue the worker wakes so the next onRunEnded batches them into one
+  // review turn — two clean, separate turns instead of one merged blob.
   const q = queued.get(convId);
   if (q && q.length > 0) {
-    queued.delete(convId);
-    const text = q.join("\n\n");
+    const isWake = (t: string) => /^Your worker "/.test(t);
+    const userMsgs = q.filter((t) => !isWake(t));
+    const wakes = q.filter(isWake);
+    const group = userMsgs.length ? userMsgs : wakes;
+    const leftover = userMsgs.length ? wakes : [];
+    if (leftover.length) queued.set(convId, leftover);
+    else queued.delete(convId);
+    const text = group.join("\n\n");
     const conv = useStore.getState().conversations.find((c) => c.id === convId);
     if (conv?.source === "mission") {
       // Same durable disk-lock path as a direct mission message (above).
@@ -316,7 +327,7 @@ async function onRunEnded(convId: string): Promise<void> {
         console.warn("[phone-app] queued send failed:", e),
       );
     }
-    return; // the follow-up run's completion will handle notification
+    return; // the follow-up run's completion flushes any leftover wakes
   }
   // 2) A finished worker reports UP, not out: its completion wakes its
   // MISSION thread, which reviews the result and decides — verify, steer,
@@ -328,13 +339,18 @@ async function onRunEnded(convId: string): Promise<void> {
   const c = s.conversations.find((x) => x.id === convId);
   if (!c) return;
   if (c.source === "worker") {
+    // Use the worker's last SUBSTANTIVE turn — its real deliverable — not an
+    // empty trailing turn, which produced the meaningless "Last output: finished."
+    // the user flagged (the wake reported "finished" as if that were the work).
+    const lastSubstantive = [...c.messages]
+      .reverse()
+      .find((m) => m.role === "assistant" && !m.hidden && (m.content ?? "").trim());
     const last = [...c.messages].reverse().find((m) => m.role === "assistant" && !m.hidden);
-    let body = (last?.content ?? "").trim().replace(/\s+/g, " ").slice(0, 180);
+    let body = (lastSubstantive?.content ?? "").trim().replace(/\s+/g, " ").slice(0, 180);
     if (!body) {
-      // Tool-only turn (no prose) — name what it actually ran instead of a
-      // contentless "finished."
+      // No prose anywhere — name what it last ran; never a bare "finished".
       const names = (last?.toolCalls ?? []).map((t) => t.name);
-      body = names.length ? `ran ${[...new Set(names)].slice(0, 5).join(", ")}` : "finished.";
+      body = names.length ? `ran ${[...new Set(names)].slice(0, 5).join(", ")}` : "completed its task";
     }
     // (a) Tell the user this worker is done — ONCE per worker. The user asked to
     // see each worker finish (3 workers → 3 "done" cards) plus a separate mission

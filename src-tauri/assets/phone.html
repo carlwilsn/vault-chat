@@ -414,6 +414,8 @@
   .ttl.ttl-on{margin-top:11px}
   .ttl.ttl-on .ttl-step.ttl-live::before{background:var(--ok);animation:pul 1.5s infinite}
   .ttl-th.dim{color:var(--dim);font-style:italic}
+  /* Idle supervisor isn't broken — say so, and that a message engages it. */
+  .idlehint{margin:12px 0 2px;padding:9px 12px;background:#141417;border:1px solid var(--line);border-radius:11px;font-size:12px;color:var(--dim);line-height:1.5;font-style:italic}
   .tmsg{display:flex;flex-direction:column;margin-bottom:10px}
   .tmsg.user{align-items:flex-end} .tmsg.asst{align-items:flex-start}
   .tmsg .sender{font-size:9.5px;letter-spacing:.3px;text-transform:uppercase;color:#7c7c7c;font-weight:700;margin:0 5px 3px}
@@ -1107,9 +1109,17 @@
     // the worker working / the supervisor supervising on the fly — not a frozen
     // snapshot. Runs alongside (not instead of) the active-chat handling below.
     if (sheetConvId && d.convId === sheetConvId) {
-      if (d.type === "runtime") { sheetLiveText = d.text || ""; sheetLiveSteps = Array.isArray(d.steps) ? d.steps : []; renderSheetLive(); }
-      else if (d.type === "status") { if (d.status !== "running") { sheetLiveText = ""; sheetLiveSteps = []; } if (sheetRepaint) void sheetRepaint(); }
-      else if (d.type === "message") { if (sheetRepaint) void sheetRepaint(); }
+      if (d.type === "runtime") {
+        sheetRunning = true; sheetOptimisticWorking = false;
+        sheetLiveText = d.text || ""; sheetLiveSteps = Array.isArray(d.steps) ? d.steps : [];
+        // Update the edge in place if it's there; if paint hadn't drawn it yet
+        // (first sign of life), repaint so it appears now.
+        if ($("liveEdge")) renderSheetLive(); else if (sheetRepaint) void sheetRepaint();
+      } else if (d.type === "status") {
+        sheetRunning = d.status === "running";
+        if (!sheetRunning) { sheetLiveText = ""; sheetLiveSteps = []; sheetOptimisticWorking = false; }
+        if (sheetRepaint) void sheetRepaint();
+      } else if (d.type === "message") { if (sheetRepaint) void sheetRepaint(); }
     }
     if (d.type === "runtime" && d.convId === convId) { running = true; streamText = d.text || ""; streamTool = d.tool || ""; renderStream(); setHeader(); }
     else if (d.type === "message" && d.convId === convId) {
@@ -1162,19 +1172,30 @@
     }
     return '<div class="amsg"><div class="md">' + md(m.content || "") + "</div>" + stepsStr(m.tools) + "</div>";
   }
+  // A worker-report wake → a compact NEUTRAL note (not a right-aligned "You"
+  // bubble that looks like the user said it), dropping the boilerplate "review
+  // its thread and decide…" steering instruction.
+  function wakeReportHtml(seg) {
+    const mm = seg.match(/Your worker\s+"?([^"(]+?)"?\s*(?:\([^)]*\))?\s*just finished[^:]*:\s*([\s\S]*?)(?:\n\nReview its thread|$)/i);
+    const who = (mm ? mm[1] : "a worker").trim();
+    const out = (mm ? mm[2] : seg).trim().replace(/\s+/g, " ").slice(0, 200);
+    return '<div class="treport">↳ <b>' + esc(who) + "</b> reported — " + esc(out) + "</div>";
+  }
   function threadHtml(msgs, labels) {
     labels = labels || { user: "You", assistant: "Assistant" };
     return '<div class="thread">' + (msgs || []).map((m) => {
       const content = m.content || "";
-      // Internal worker-report wakes are system-generated, not the user's own
-      // turn — render them as a compact NEUTRAL note (not a right-aligned "You"
-      // bubble that looks like the user said it) and drop the boilerplate
-      // "review its thread and decide…" steering instruction.
-      if (m.role === "user" && /^Your worker /i.test(content)) {
-        const mm = content.match(/^Your worker\s+"?([^"(]+?)"?\s*(?:\([^)]*\))?\s*just finished[^:]*:\s*([\s\S]*?)(?:\n\nReview its thread|$)/i);
-        const who = (mm ? mm[1] : "a worker").trim();
-        const out = (mm ? mm[2] : content).trim().replace(/\s+/g, " ").slice(0, 200);
-        return '<div class="treport">↳ <b>' + esc(who) + "</b> reported — " + esc(out) + "</div>";
+      if (m.role === "user") {
+        // A worker-report wake — pure, OR appended onto the user's own message
+        // (the old merge bug: "How's it going  Your worker … finished"). Split it
+        // so the user's text stays its own clean bubble and the wake is a note.
+        const wi = content.search(/Your worker\s+"/i);
+        if (wi === 0) return wakeReportHtml(content);
+        if (wi > 0) {
+          const lead = content.slice(0, wi).trim();
+          const leadHtml = lead ? '<div class="tmsg user"><span class="sender">' + esc(labels.user) + '</span><div class="m user">' + esc(lead) + "</div></div>" : "";
+          return leadHtml + wakeReportHtml(content.slice(wi));
+        }
       }
       const side = m.role === "user" ? "user" : "asst";
       let sender = m.role === "user" ? labels.user : labels.assistant;
@@ -1195,6 +1216,14 @@
   let sheetLiveText = "";
   let sheetLiveSteps = [];
   let sheetRepaint = null;
+  // Whether the open thread's conv is RUNNING — the gate for the live edge.
+  // NOT from /conversation: the on-disk status is written "idle" (setConversation
+  // Status is in-memory only), so /conversation can't tell us a run is live. The
+  // truth comes from the heartbeat-backed /status runs + the live status/runtime
+  // events. sheetOptimisticWorking shows "working…" the instant you hit send,
+  // before the box has even started the turn, so there's no dead gap.
+  let sheetRunning = false;
+  let sheetOptimisticWorking = false;
   // The live edge appended to a RUNNING thread: the agent's work as it happens,
   // rendered as a GROWING thought→action timeline (same look as the finished,
   // Haiku-cleaned timeline above it — but building step by step, the last step
@@ -1229,7 +1258,7 @@
   }
   function openSheet(opts) {
     clearInterval(missionPoll); missionPoll = 0;
-    sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null;
+    sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false;
     const sh = $("sheet");
     sh.style.height = ""; sh.style.maxHeight = ""; sh.style.transition = "";
     $("sheetIco").textContent = opts.ico || "•";
@@ -1246,7 +1275,7 @@
     typeset($("sheetBody"));
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
   }
-  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; }
+  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; }
   // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
   // chat composer), Enter sends, Shift+Enter is a newline. The pinned footer +
   // the visualViewport lift keep it above the keyboard.
@@ -1347,6 +1376,11 @@
       // one-and-done — send follow-ups without reopening.
       wire: readonly ? undefined : (body, foot) => wireReply(foot, async (v) => {
         optimistic.push(v);
+        // Show "working…" the INSTANT you send — before the box has even started
+        // the turn — so there's never a dead gap (the "no sign of life" the user
+        // hit). Real runtime/status events take over and a safety timer clears it.
+        sheetOptimisticWorking = true;
+        setTimeout(() => { if (sheetOptimisticWorking) { sheetOptimisticWorking = false; if (sheetRepaint) void sheetRepaint(); } }, 15000);
         lastSig = ""; // force the next paint to re-render with the new bubble
         paint();
         toast("Sent.");
@@ -1358,13 +1392,18 @@
       let brief = (mc.goal || "").trim();
       let rest = [];
       let threadErr = "";
-      let running = false;
+      // Reliable running signal: the heartbeat-backed /status runs (the on-disk
+      // conversation status is written idle, so /conversation can't tell us a run
+      // is live — that's why the live edge never showed). Live content from
+      // runtime events also counts, so a just-started turn (not in /status yet)
+      // still shows life.
+      let liveRun = false;
+      try { const st = await (await api("/status")).json(); liveRun = (st.runs || []).some((r) => r.convId === mc.id); } catch {}
       if (mc.id) {
         try {
           const d = await (await api("/conversation?id=" + encodeURIComponent(mc.id) + "&n=60")).json();
           if (d.error) throw new Error(d.error);
           const msgs = d.messages || [];
-          running = d.status === "running";
           // The real brief is the MISSION BRIEF turn (it carries the done-when
           // bullets) — not merely the first user message, which on a worker-wake
           // could be internal plumbing.
@@ -1382,7 +1421,12 @@
         }
       }
       const restPlus = rest.concat(optimistic.map((t) => ({ role: "user", content: t })));
-      const sig = JSON.stringify(restPlus.map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + running;
+      const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
+      if (!readonly) sheetRunning = liveRun || hasLive;
+      const showLive = !readonly && (sheetRunning || sheetOptimisticWorking);
+      // Live edge content updates in place via renderSheetLive between polls, so a
+      // steady showLive doesn't force a disruptive full repaint here.
+      const sig = JSON.stringify(restPlus.map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + showLive;
       if (sig === lastSig) return; // nothing changed — don't disrupt reading
       lastSig = sig;
       const comps = parseDoneWhen(brief);
@@ -1397,10 +1441,14 @@
         body += '<div class="md dim">No explicit criteria recorded for this mission.</div>';
       }
       body += '<div class="lbl">Thread</div>' + (restPlus.length
-        ? threadHtml(restPlus, { user: "You", assistant: "Supervisor" }) + (running ? liveEdgeHtml() : "")
+        ? threadHtml(restPlus, { user: "You", assistant: "Supervisor" }) + (showLive ? liveEdgeHtml() : "")
         : (threadErr
             ? '<div class="md dim">Thread unavailable: ' + esc(threadErr) + "</div>"
             : '<div class="md dim">No turns yet — it hasn’t run since being briefed.</div>'));
+      // A sign of life when it's NOT working: an idle supervisor isn't broken — it
+      // self-checks on its own schedule. Tell the user that and that a message
+      // engages it now (instead of a dead, blank-looking thread).
+      if (!showLive && !readonly && restPlus.length) body += '<div class="idlehint">Idle — it self-checks on its own schedule. Send a message to put it to work now.</div>';
       const be = $("sheetBody");
       const atBottom = be.scrollHeight - be.scrollTop - be.clientHeight < 80;
       be.innerHTML = body; typeset(be);
@@ -1442,15 +1490,22 @@
       bodyHtml: '<div class="lbl">Thread · supervisor ↔ worker</div><div class="alsum-load" id="wkLoad">loading…</div>',
     });
     sheetConvId = convId;
+    // Seed running from the live run passed in (a non-null run = it's working);
+    // confirmed/refreshed below from /status, since /conversation reads idle.
+    sheetRunning = !!run && !run.done;
     let lastSig = "";
     async function paint() {
-      let msgs = [], running = false, err = "";
+      let msgs = [], err = "", liveRun = false;
+      try { const st = await (await api("/status")).json(); liveRun = (st.runs || []).some((r) => r.convId === convId); } catch {}
       try {
         const d = await (await api("/conversation?id=" + encodeURIComponent(convId) + "&n=60")).json();
         if (d.error) throw new Error(d.error);
-        msgs = d.messages || []; running = d.status === "running";
+        msgs = d.messages || [];
       } catch (e) { err = String(e.message || e); }
-      const sig = JSON.stringify((msgs || []).map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + running;
+      const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
+      sheetRunning = liveRun || hasLive;
+      const showLive = sheetRunning;
+      const sig = JSON.stringify((msgs || []).map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + showLive;
       if (sig === lastSig) return; // unchanged — live edge updates itself; don't disrupt reading
       lastSig = sig;
       const be = $("sheetBody");
@@ -1458,7 +1513,7 @@
       be.innerHTML = '<div class="lbl">Thread · supervisor ↔ worker</div>' +
         (err
           ? '<div class="md dim">Couldn’t load: ' + esc(err) + "</div>"
-          : threadHtml(msgs, { user: "Supervisor", assistant: "Worker" }) + (running ? liveEdgeHtml() : "")) +
+          : threadHtml(msgs, { user: "Supervisor", assistant: "Worker" }) + (showLive ? liveEdgeHtml() : "")) +
         '<div class="readonly">This back-and-forth is the <b>supervisor</b> briefing and steering the <b>worker</b> — not you. Read-only: if it’s off track, steer the supervisor or re-scope the mission.</div>';
       typeset(be);
       if (atBottom) be.scrollTop = be.scrollHeight;

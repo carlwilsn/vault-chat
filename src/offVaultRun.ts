@@ -599,7 +599,7 @@ export async function runWorkerTurn(
           streamingReasoning: "",
           liveTools: tools.slice(),
           liveSteps: liveSteps
-            .map((s) => ({ thought: s.thought.trim().slice(0, 400), action: s.action }))
+            .map((s) => ({ thought: s.thought.trim().slice(0, 600), action: s.action }))
             .filter((s) => s.thought || s.action),
         });
       },
