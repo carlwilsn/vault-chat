@@ -7,6 +7,7 @@ import {
 } from "./schedules";
 import { sendMessage } from "./chat-controller";
 import { readConversations } from "./conversations";
+import { tickRunWatcher } from "./runWatcher";
 import { vlog } from "./debugLog";
 
 // Resume sweep runs at most once per vault per app session.
@@ -191,6 +192,12 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
     // lastFiredAt and pushed it, the firing machine would read it as
     // "already fired" and skip — silently disabling the schedule.
     if (!fireSchedulesOnThisMachine()) return;
+    // Poll any long external jobs (training runs etc.) handed to the run-watcher.
+    // Deterministic recheck in code — independent of whether the agent
+    // remembered to self-schedule a wake. Same firing-machine gate as schedules.
+    void tickRunWatcher(vault).catch((e) =>
+      console.warn("[run-watcher] tick failed:", e),
+    );
     const list = (schedulesByVault.get(vault) ?? []).slice();
     let changed = false;
     for (const s of list) {

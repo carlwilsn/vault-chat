@@ -1404,6 +1404,127 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         }`;
       },
     }),
+    WatchRun: tool({
+      description:
+        "Hand a LONG-RUNNING EXTERNAL job (a training run on rented GPU, a batch eval, an overnight sweep — anything that outlives this turn) to the run-watcher so it's polled deterministically, even after your turn ends and across app restarts. YOU launch the job first, detached (e.g. `ssh box 'cd run && nohup python train.py >train.log 2>&1 &'`), THEN call this with a `check_command` the watcher runs on a timer to learn the job's state. The watcher pings the user and wakes THIS thread the moment the job finishes, fails, or stalls — so no one has to remember to check back, and a dead run never sits silent. Don't use this for a quick command you can just run now; it's for jobs measured in hours/days.",
+      inputSchema: z.object({
+        title: z
+          .string()
+          .describe("Short human label for the run, e.g. 'BitNet 160M seed 3'. Heads the alert card."),
+        check_command: z
+          .string()
+          .describe(
+            "Shell command the watcher runs on a timer to learn the job's state. It MUST print a status token as its FIRST word — RUNNING, DONE, or FAILED — optionally followed by a one-line progress note (e.g. `RUNNING step 12000 loss 2.31`). Typically an ssh into the rented box that inspects the process / tails the log / checks a sentinel file. If the command itself can't run (host unreachable) several times running, the watcher flags the run STALLED on its own.",
+          ),
+        pull_command: z
+          .string()
+          .optional()
+          .describe(
+            "Optional shell command run EVERY cycle to copy artifacts off the remote box (e.g. `rsync -az box:run/ ./runs/seed3/`). Protects results against spot reclaim — at most one cadence of progress is ever at risk. Also run once more on completion.",
+          ),
+        cadence_minutes: z
+          .number()
+          .int()
+          .optional()
+          .describe("How often to check, in minutes. Default 10."),
+        stall_minutes: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            "If the progress note doesn't change for this long while still RUNNING, flag the run STALLED (catches a hung/wedged job). Default 45.",
+          ),
+        cwd: z
+          .string()
+          .optional()
+          .describe("Working directory for the check/pull commands. Defaults to the vault root."),
+        host: z.string().optional().describe("Informational label for which rented box this run is on."),
+      }),
+      execute: async ({ title, check_command, pull_command, cadence_minutes, stall_minutes, cwd, host }) => {
+        const { registerJob } = await import("./runWatcher");
+        // Best-effort: tag the job with the mission it belongs to, for the alert.
+        let mission: string | undefined;
+        try {
+          const { readConversations } = await import("./conversations");
+          const conv = (await readConversations(vault)).find((c) => c.id === conversationId);
+          mission = (conv?.mission ?? (conv?.source === "mission" ? conv.title : undefined)) || undefined;
+        } catch {
+          // no grouping — fine
+        }
+        const job = await registerJob(vault, {
+          title,
+          ownerConvId: conversationId ?? "",
+          checkCmd: check_command,
+          pullCmd: pull_command,
+          cwd: cwd || undefined,
+          host: host || undefined,
+          mission,
+          cadenceMs: Math.max(1, cadence_minutes ?? 10) * 60_000,
+          stallMs: Math.max(1, stall_minutes ?? 45) * 60_000,
+        });
+        const everyM = Math.round(job.cadenceMs / 60_000);
+        return (
+          `Watching run "${title}" (id ${job.id}) — checking every ${everyM}m via your check_command. ` +
+          `I'll ping the user and wake this thread the moment it finishes, fails, or stalls` +
+          `${job.pullCmd ? "; artifacts sync off the box each cycle" : ""}. ` +
+          `Nothing else to do here — end your turn and keep working; the watcher carries it.`
+        );
+      },
+    }),
+    ListRuns: tool({
+      description:
+        "List the long external jobs the run-watcher is tracking (training runs, batch evals) with their LIVE status — running / done / failed / stalled — last progress note, and when each was last checked. Use to answer the user's 'what's still running', 'did any runs die overnight', 'how far along is seed 3'. Read-only; this is how you report on background runs without the user opening anything.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const { readJobs } = await import("./runWatcher");
+        const list = await readJobs(vault);
+        if (list.length === 0) return "(no watched runs)";
+        const ago = (ts?: number) =>
+          ts ? `${Math.max(0, Math.round((Date.now() - ts) / 60_000))}m ago` : "not yet";
+        return list
+          .sort((a, b) => b.startedAt - a.startedAt)
+          .map((j) =>
+            JSON.stringify({
+              id: j.id,
+              title: j.title,
+              status: j.status,
+              mission: j.mission,
+              host: j.host,
+              lastProgress: j.lastProgress,
+              reason: j.status === "failed" || j.status === "stalled" ? j.terminalReason : undefined,
+              lastChecked: ago(j.lastCheckedAt),
+              started: ago(j.startedAt),
+            }),
+          )
+          .join("\n");
+      },
+    }),
+    CancelRun: tool({
+      description:
+        "Stop watching a run, and optionally KILL it. Use when a run is finished-and-handled, was a mistake, or you're tearing down the rented box to stop billing. Pass kill_command to actually stop the remote process (e.g. `ssh box 'pkill -f train.py'`); omit it to just stop watching. Find the id with ListRuns.",
+      inputSchema: z.object({
+        id: z.string().describe("The run id from ListRuns."),
+        kill_command: z
+          .string()
+          .optional()
+          .describe("Optional shell command to stop the remote job before un-watching it."),
+      }),
+      execute: async ({ id, kill_command }) => {
+        const { readJobs, removeJob } = await import("./runWatcher");
+        const job = (await readJobs(vault)).find((j) => j.id === id);
+        if (!job) return `No watched run with id ${id} (see ListRuns).`;
+        if (kill_command) {
+          await invoke("bash_exec", {
+            command: kill_command,
+            cwd: job.cwd || vault,
+            timeoutMs: 60_000,
+            cancelId: `runkill_${id}_${Date.now().toString(36)}`,
+          }).catch(() => {});
+        }
+        await removeJob(vault, id);
+        return `Stopped watching run "${job.title}" (id ${id})${kill_command ? " and ran the kill command" : ""}.`;
+      },
+    }),
   };
 
   // Enforce the layers in the toolset itself — prompt discipline is a
@@ -1428,10 +1549,15 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   const drop = (names: string[]) => {
     for (const n of names) delete (full as Record<string, unknown>)[n];
   };
+  // Run-watcher tools: a mission (supervisor) gets all three — it launches,
+  // monitors, and tears down long jobs. A worker can launch+watch and cancel its
+  // own run, but doesn't survey the fleet (ListRuns). The assistant only READS
+  // the fleet (ListRuns) so it can answer "what's running / did anything die"
+  // for the user; it doesn't launch or kill runs itself.
   if (tier === "mission") drop(["ProposeMission", "StopMission"]);
   else if (tier === "worker")
-    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission", "MarkDoneWhen", "StopMission"]);
-  else drop(["StartWorker", "CompleteMission", "MarkDoneWhen"]);
+    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission", "MarkDoneWhen", "StopMission", "ListRuns"]);
+  else drop(["StartWorker", "CompleteMission", "MarkDoneWhen", "WatchRun", "CancelRun"]);
   return full;
 }
 
