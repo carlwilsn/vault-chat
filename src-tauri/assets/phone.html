@@ -398,30 +398,21 @@
   .ttl-step{position:relative;margin:0 0 13px}
   .ttl-step:last-child{margin-bottom:2px}
   .ttl-step::before{content:"";position:absolute;left:-18px;top:4px;width:6px;height:6px;border-radius:50%;background:#5a5a62}
-  /* Done update → a green check on the rail (the "series of checks" feel). */
-  .ttl-step.done::before{content:"✓";left:-20px;top:2px;width:auto;height:auto;background:none;color:var(--ok);font-size:10px;font-weight:700;line-height:1}
-  /* Snag/correction update → an amber mark + tinted text; the most informative. */
-  .ttl-step.snag::before{content:"!";left:-19px;top:2px;width:auto;height:auto;background:none;color:var(--warn);font-size:11px;font-weight:700;line-height:1}
-  .ttl-step.snag .ttl-th{color:#e0c489}
-  .ttl-th{font-size:13px;color:var(--text);line-height:1.5;overflow-wrap:anywhere}
-  .ttl-act{font-size:12px;color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:3px;overflow-wrap:anywhere}
-  .ttl-act::before{content:"→ ";color:#6f6f6f}
-  .tl-reply{margin-top:11px;padding-top:11px;border-top:1px solid var(--line)}
-  .working{font-size:12px;color:var(--dim);margin-top:6px;font-style:italic;opacity:.85}
-  /* Live edge: an in-flight worker/supervisor turn streaming its own words as it
-     works — the agent thinking out loud — pulsing at the bottom of the thread.
-     No tool names (the user finds them noise); just the prose, or "working…"
-     when it's mid-tool with nothing to say yet. Updated in place between polls. */
-  .liveedge{display:flex;align-items:flex-start;gap:9px;margin:11px 0 2px;padding:9px 12px;background:#141417;border:1px solid #26262c;border-radius:12px}
-  .liveedge .lpulse{width:8px;height:8px;margin-top:4px;flex:none;border-radius:50%;background:var(--ok);animation:pul 1.5s infinite}
-  .liveedge .ltext{font-size:12.5px;color:#a2a2a2;line-height:1.55;font-style:italic;overflow-wrap:anywhere;white-space:pre-wrap;min-width:0}
-  /* The live timeline reuses the .ttl look; its last (in-flight) step pulses green
-     on the rail so you can see where the agent is right now. */
-  .ttl.ttl-on{margin-top:11px}
-  .ttl.ttl-on .ttl-step.ttl-live::before{background:var(--ok);animation:pul 1.5s infinite}
+  /* Near-monochrome by design: a NEUTRAL grey check marks a done thought; colour
+     is reserved for the one thing that matters — a snag (amber mark only, the
+     text stays normal). */
+  .ttl-step.done::before{content:"✓";left:-20px;top:2px;width:auto;height:auto;background:none;color:#6f6f6f;font-size:10px;font-weight:700;line-height:1}
+  .ttl-step.snag::before{content:"!";left:-19px;top:2px;width:auto;height:auto;background:none;color:#a8824a;font-size:11px;font-weight:700;line-height:1}
+  .ttl-th{font-size:13px;color:#e2e2e2;line-height:1.6;overflow-wrap:anywhere}
   .ttl-th.dim{color:var(--dim);font-style:italic}
-  /* Idle supervisor isn't broken — say so, and that a message engages it. */
-  .idlehint{margin:12px 0 2px;padding:9px 12px;background:#141417;border:1px solid var(--line);border-radius:11px;font-size:12px;color:var(--dim);line-height:1.5;font-style:italic}
+  .tl-reply{margin-top:11px;padding-top:11px;border-top:1px solid var(--line)}
+  /* The in-flight beat: a quiet "working…" with a hollow grey marker. NO token
+     stream, NO pulse — the user wants the reasoning, not a thread of raw text. */
+  #liveEdge{margin-top:12px}
+  .ttl-step.ttl-cur::before{content:"";background:none;border:1.5px solid #4a4a52;box-sizing:border-box;width:9px;height:9px;left:-19px;top:4px;border-radius:50%}
+  /* Idle supervisor isn't asleep — it's READY for you (waiting on its workers,
+     free to take a question). Neutral, not a warning. */
+  .idlehint{margin:12px 0 2px;padding:9px 12px;background:#141417;border:1px solid var(--line);border-radius:11px;font-size:12px;color:var(--dim);line-height:1.5}
   .tmsg{display:flex;flex-direction:column;margin-bottom:10px}
   .tmsg.user{align-items:flex-end} .tmsg.asst{align-items:flex-start}
   .tmsg .sender{font-size:9.5px;letter-spacing:.3px;text-transform:uppercase;color:#7c7c7c;font-weight:700;margin:0 5px 3px}
@@ -623,16 +614,15 @@
         // real in mock mode — the same "runtime" events (text + growing steps)
         // the box broadcasts per run.
         pollTick += 1;
-        const allSteps = [
-          { thought: "Pulled seed 1's config and its committed eval.loss so I'm matching the exact LR, not eyeballing it.", action: "read config.yaml, read seed1 results" },
-          { thought: "Confirmed the rate is 3e-4 and relaunched seed 2 at it — first launch errored on a stale checkpoint path, so I cleared it and reran.", action: "ran the training command" },
-          { thought: "Stream is warming up; watching the loss from step 0 to catch early divergence.", action: "" },
-          { thought: "Step 420 and it's tracking seed 1 within 0.01 nat — on pace to land in tolerance.", action: "" },
+        // A worker's finished thoughts revealed over time, plus a trailing in-flight
+        // placeholder — the live edge shows the done ones + a quiet "working…".
+        const completed = [
+          { thought: "Seed 1's committed eval.loss is my ground truth, so I read it and the config before touching anything — I'm matching its exact learning rate, not eyeballing it." },
+          { thought: "The first relaunch errored on a stale checkpoint path left from the previous run, so I cleared the checkpoint dir and reran; it's training cleanly now." },
         ];
-        const k = 1 + (pollTick % allSteps.length);
-        const steps = allSteps.slice(0, k);
-        const frag = (steps[steps.length - 1] || {}).thought || "working";
-        const evs = DB.runs.filter((r) => r.source === "worker").map((r) => ({ type: "runtime", convId: r.convId, text: frag, tool: "", steps }));
+        const nDone = Math.min(completed.length, 1 + Math.floor(pollTick / 4));
+        const steps = completed.slice(0, nDone).concat([{ thought: "" }]);
+        const evs = DB.runs.filter((r) => r.source === "worker").map((r) => ({ type: "runtime", convId: r.convId, text: "", tool: "", steps }));
         if (!pollWaited) { pollWaited = true; return reply({ events: evs, next: String(pollTick) }); }
         await new Promise((r) => setTimeout(r, 2500));
         return reply({ events: evs, next: String(pollTick) });
@@ -1160,11 +1150,13 @@
   // what it ran into — instead of a run-on paragraph + a collapsed "N steps" chip.
   function timelineHtml(tl) {
     if (!tl || !Array.isArray(tl.steps) || !tl.steps.length) return "";
-    return '<div class="ttl">' + tl.steps.map((s) =>
-      '<div class="ttl-step ' + (s.snag ? "snag" : "done") + '">' +
-        (s.thought ? '<div class="ttl-th">' + esc(s.thought) + "</div>" : "") +
-        (s.action ? '<div class="ttl-act">' + esc(s.action) + "</div>" : "") +
-      "</div>").join("") + "</div>";
+    // Each step is one COMPLETE logical thought (the work woven into the prose) —
+    // no separate mechanical "→ ran X" line. Checked off; snags flagged amber.
+    return '<div class="ttl">' + tl.steps.map((s) => {
+      const th = (s.thought || "").trim();
+      if (!th) return "";
+      return '<div class="ttl-step ' + (s.snag ? "snag" : "done") + '"><div class="ttl-th">' + esc(th) + "</div></div>";
+    }).join("") + "</div>";
   }
   // An assistant turn renders as its timeline (+ the turn's final reply) when one
   // was computed; otherwise the raw content + a collapsed tool chip (older turns,
@@ -1235,23 +1227,23 @@
   // pulsing). Actions are humanized on the box ("read worker-a.md"), never raw
   // tool names. Before the first step lands it falls back to the streaming prose
   // tail so there's always a sign of life.
+  // The live edge while a worker turn is in flight: the thoughts it has finished
+  // so far (each bounded by an action, so they read whole), plus a quiet
+  // "working…" beat for the one it's mid-way through. NO raw token stream — the
+  // user wants the reasoning, not a thread of text. When the turn lands, Haiku
+  // cleans the lot into crisp complete thoughts.
   function liveEdgeHtml() {
     const steps = sheetLiveSteps || [];
-    if (steps.length) {
-      const inner = steps.map((s, i) => {
-        const live = i === steps.length - 1;
-        const th = (s.thought || "").trim();
-        const act = (s.action || "").trim();
-        // Completed updates get a check; the in-flight one pulses.
-        return '<div class="ttl-step ' + (live ? "ttl-live" : "done") + '">' +
-          (th ? '<div class="ttl-th">' + esc(th) + "</div>" : (live && !act ? '<div class="ttl-th dim">working…</div>' : "")) +
-          (act ? '<div class="ttl-act">' + esc(act) + "</div>" : "") +
-        "</div>";
-      }).join("");
-      return '<div class="ttl ttl-on" id="liveEdge">' + inner + "</div>";
+    // All but the last are finished thoughts; the last is still forming → hidden
+    // behind "working…" rather than shown as raw growing prose.
+    const done = steps.slice(0, Math.max(0, steps.length - 1));
+    let chain = "";
+    for (const s of done) {
+      const th = (s.thought || "").trim();
+      if (th) chain += '<div class="ttl-step ' + (s.snag ? "snag" : "done") + '"><div class="ttl-th">' + esc(th) + "</div></div>";
     }
-    const t = (sheetLiveText || "").trim();
-    return '<div class="liveedge" id="liveEdge"><span class="lpulse"></span><span class="ltext">' + esc(t ? "…" + t.slice(-260) : "working…") + "</span></div>";
+    chain += '<div class="ttl-step ttl-cur"><div class="ttl-th dim">working…</div></div>';
+    return '<div class="ttl" id="liveEdge">' + chain + "</div>";
   }
   function renderSheetLive() {
     const edge = $("liveEdge");
@@ -1454,7 +1446,9 @@
       // A sign of life when it's NOT working: an idle supervisor isn't broken — it
       // self-checks on its own schedule. Tell the user that and that a message
       // engages it now (instead of a dead, blank-looking thread).
-      if (!showLive && !readonly && restPlus.length) body += '<div class="idlehint">Idle — it self-checks on its own schedule. Send a message to put it to work now.</div>';
+      // A supervisor is ALWAYS ON but rarely working — its job is to be ready for
+      // you. Idle ≠ asleep: it's waiting on its workers and free for a question.
+      if (!showLive && !readonly && restPlus.length) body += '<div class="idlehint">Ready for you — it’s waiting on its workers and self-checks on its own schedule. Ask it anything below.</div>';
       const be = $("sheetBody");
       const atBottom = be.scrollHeight - be.scrollTop - be.clientHeight < 80;
       be.innerHTML = body; typeset(be);

@@ -678,6 +678,9 @@ export async function runWorkerTurn(
       const activity = (acc.trim() || "(tool-only turn, no prose)") + toolNote;
       const apiKeys = useStore.getState().apiKeys;
       const { summarizeWorkerState, summarizeTimeline } = await import("./alert-summary");
+      // A mission thread is the SUPERVISOR (manages workers + mission); anything
+      // else here is a worker (executes its task). Drives the cleaning's register.
+      const role = c.source === "mission" ? "supervisor" : "worker";
       // Recent assistant turns still needing a clean (this turn always qualifies —
       // it has no timeline yet).
       const toClean = c.messages
@@ -688,7 +691,7 @@ export async function runWorkerTurn(
         toClean.map((m) => {
           const isThisTurn = m.content === acc; // only this turn has captured reasoning
           const actions = (m.toolCalls || []).map((t) => ({ name: t.name, input: t.input }));
-          return summarizeTimeline(m.content || "", isThisTurn ? reasoningAcc : "", actions, apiKeys)
+          return summarizeTimeline(m.content || "", isThisTurn ? reasoningAcc : "", actions, apiKeys, role)
             .then((tl) => ({ content: m.content || "", tl }))
             .catch(() => ({ content: m.content || "", tl: null }));
         }),

@@ -149,7 +149,7 @@ export async function summarizeThinking(
 // ("observed X → decided Y → did Z"); this just untangles the concatenated prose
 // and aligns each thought to the real tool call it triggered. NOT a summary —
 // every step is preserved; only cleaned and ordered.
-export type TimelineStep = { thought: string; action: string; snag?: boolean };
+export type TimelineStep = { thought: string; action?: string; snag?: boolean };
 export type Timeline = { steps: TimelineStep[]; reply: string };
 
 const TIMELINE_SCHEMA = z.object({
@@ -159,12 +159,7 @@ const TIMELINE_SCHEMA = z.object({
         thought: z
           .string()
           .describe(
-            "ONE substantive update — a meaningful development, in 1-2 full sentences: either (a) something it DID and what that turned up, or (b) something it RAN INTO and how it corrected, and why that motivated the next move. Keep the real substance (numbers, tradeoffs, the obstacle, the fix) so a technical lead can see real progress and judge the thinking. NOT a terse label, and NOT one entry per tool call — merge routine mechanical steps into the development they served. Plain text.",
-          ),
-        action: z
-          .string()
-          .describe(
-            "The concrete thing(s) this update did, in plain words from the ACTIONS list (e.g. 'read the prior 160M + 50M logs', 'wrote and committed PREDICTION.md', 'spawned 3 workers'). Cluster several tools into one phrase. Empty string if this update took no tool action.",
+            "ONE COMPLETE logical thought — the full arc of one meaningful piece of the agent's reasoning, in 2-3 natural sentences: what it saw or did, what that means, and what it therefore concluded or decided. SELF-CONTAINED: weave what it actually did into the prose itself (e.g. 'so I read all three threads and re-checked the eval.loss'), don't drop it to a separate field. Let the thought run until the logic is genuinely complete — never cut it short, never pad it, and never force a 'so… so…' template (vary how each one opens). Keep the substance that matters — numbers, the obstacle, the call — and drop the rest. Plain text.",
           ),
         snag: z
           .boolean()
@@ -173,7 +168,7 @@ const TIMELINE_SCHEMA = z.object({
           ),
       }),
     )
-    .describe("The chain of substantive updates, in order — meaningful developments and the obstacles it corrected, NOT a bolt-by-bolt tool log."),
+    .describe("The chain of complete logical thoughts, in order — only the developments that matter (quality over quantity), each a finished thought, NOT a bolt-by-bolt tool log."),
   reply: z
     .string()
     .describe(
@@ -181,9 +176,14 @@ const TIMELINE_SCHEMA = z.object({
     ),
 });
 
-const TIMELINE_SYSTEM = `You turn ONE agent turn into a CHAIN OF SUBSTANTIVE UPDATES for a lead checking in on long-running work — someone who wants to see real, meaningful progress and trust that something is happening, NOT read a bolt-by-bolt tool log. You get the agent's NARRATION (its prose — several thoughts run together), optionally its raw REASONING, and the ORDERED list of ACTIONS (tools) it took.
+const TIMELINE_SYSTEM = `You turn ONE agent turn into a chain of COMPLETE LOGICAL THOUGHTS for a lead checking in on long-running work — someone who wants the reasoning that matters and to trust real progress is happening, NOT a bolt-by-bolt tool log. You get the agent's NARRATION (its prose), optionally its raw REASONING, and the ORDERED list of ACTIONS (tools) it took.
 
-Produce an ordered \`steps\` list of substantive updates. Each update is a meaningful development (1-2 sentences): either something it DID and what that turned up, or something it RAN INTO and how it corrected — and why that motivated the next move. MERGE routine mechanical steps into the development they served (five reads that grounded one decision = ONE update, not five). Mark an update \`snag: true\` when it's an obstacle or course-correction — those are the most reassuring, because they show the agent dealing with reality. Keep the real substance (numbers, tradeoffs, the obstacle, the fix); drop rambling and filler. Do NOT invent developments or actions — only clean, merge, and align what you're given. \`action\` = the concrete thing(s) that update did, clustered into one plain phrase (empty if none).
+Produce an ordered \`steps\` list. Each step is ONE complete logical thought — the full arc of one meaningful piece of reasoning, 2-3 natural sentences: what it saw or did, what that means, and what it therefore concluded or decided. Each thought is SELF-CONTAINED: weave what it actually did into the prose, don't strip it to a label. Rules that matter:
+- Quality over quantity. Only the developments that actually matter — merge routine mechanical steps into the thought they served (five reads that grounded one decision = ONE thought). A big turn might be 2-4 thoughts, not ten.
+- Let each thought FINISH. Carry the logic all the way to its conclusion; never cut it short, never pad it.
+- Don't force a template. Vary how thoughts open; only use "so"/"because" where the reasoning genuinely turns on it.
+- Mark \`snag: true\` when a thought is an obstacle or course-correction (a wrong result, something that didn't work) — those are the most reassuring, they show it dealing with reality.
+- Keep the substance (numbers, the obstacle, the call); drop rambling. Do NOT invent reasoning — only clean and merge what you're given.
 
 \`reply\` = the turn's final user-facing conclusion, copied verbatim from the end of the narration (NOT rewritten); empty if there's no distinct conclusion. No markdown.`;
 
@@ -192,6 +192,7 @@ export async function summarizeTimeline(
   reasoning: string,
   actions: { name: string; input?: unknown }[],
   apiKeys: Partial<Record<ProviderId, string>>,
+  role: "supervisor" | "worker" = "worker",
 ): Promise<Timeline | null> {
   const text = (narration ?? "").trim();
   // Nothing to lay out: no prose AND no actions → no timeline.
@@ -209,7 +210,16 @@ export async function summarizeTimeline(
       return `${i + 1}. ${a.name}${detail ? " " + detail.slice(0, 200) : ""}`;
     })
     .join("\n");
+  // Role register: a SUPERVISOR reasons about managing its workers and the
+  // mission (what it observed in a worker, what it told it, what it spawned, and
+  // — usually — what it's now waiting on); a WORKER reasons about executing its
+  // own task. The thoughts should read in the right voice.
+  const roleNote =
+    role === "supervisor"
+      ? `These are a SUPERVISOR's thoughts: it manages workers and the overall mission, it does not do the task work itself. Frame each thought as orchestration — what it saw in a worker, how it steered or spawned one, a mission-level call. A supervisor mostly WAITS on its workers, so if the narration ends by handing work off, the final thought should state what it's now waiting on.`
+      : `These are a WORKER's thoughts: it executes ONE given task. Frame each thought as task work — what it read/ran/wrote, what it found, what it concluded.`;
   const prompt = [
+    roleNote,
     `NARRATION:\n${text.slice(0, 7000) || "(no prose)"}`,
     reasoning?.trim() && `REASONING:\n${reasoning.trim().slice(0, 5000)}`,
     `ACTIONS (in order):\n${actionList || "(none)"}`,
@@ -226,11 +236,10 @@ export async function summarizeTimeline(
     });
     const steps = (object.steps ?? [])
       .map((s) => ({
-        thought: String(s.thought ?? "").trim().slice(0, 600),
-        action: String(s.action ?? "").trim().slice(0, 160),
+        thought: String(s.thought ?? "").trim().slice(0, 700),
         snag: !!s.snag,
       }))
-      .filter((s) => s.thought || s.action);
+      .filter((s) => s.thought);
     const reply = String(object.reply ?? "").trim();
     if (!steps.length && !reply) return null;
     return { steps, reply };
