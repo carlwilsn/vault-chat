@@ -9,6 +9,7 @@ import { sendMessage } from "./chat-controller";
 import { readConversations } from "./conversations";
 import { tickRunWatcher } from "./runWatcher";
 import { vlog } from "./debugLog";
+import { invoke } from "@tauri-apps/api/core";
 
 // Resume sweep runs at most once per vault per app session.
 const resumedVaults = new Set<string>();
@@ -125,6 +126,109 @@ export function setFireSchedulesOnThisMachine(on: boolean): void {
   }
 }
 
+// ---- Firer heartbeat -------------------------------------------------------
+// The single-firer gate means exactly ONE machine runs schedules + the
+// run-watcher. If that machine goes dark (laptop shut, box powered off) and no
+// other machine has firing on, EVERYTHING silently stops — no wakes, no daily
+// coach, no run-watching — with nothing to tell you. That's how the summer
+// vault's firing died unnoticed for ~4 days. So the firer stamps a heartbeat
+// each tick, and any machine that ISN'T firing watches it: if it goes stale,
+// alarm the user ONCE instead of failing in silence.
+const FIRER_STALE_MS = 12 * 60_000; // no firer tick for this long → it's dark
+const FIRER_GRACE_MS = 6 * 60_000; // let a just-opened app wait this long before alarming
+const MACHINE_ID_KEY = "vault_chat_machine_id";
+
+function machineId(): string {
+  try {
+    let id = localStorage.getItem(MACHINE_ID_KEY);
+    if (!id) {
+      id = "m_" + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem(MACHINE_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return "m_unknown";
+  }
+}
+
+function heartbeatPath(vault: string): string {
+  const v = vault.replace(/\\/g, "/").replace(/\/+$/, "");
+  return `${v}/.vault-chat/firer-heartbeat.json`;
+}
+
+// Throttle the stamp to ~every 2 min (not every 30s tick): the file syncs via
+// git, so a per-tick write would churn the repo. 2 min still leaves 6 stamps of
+// margin under the 12-min stale threshold.
+const lastStamp = new Map<string, number>();
+async function stampFirerHeartbeat(vault: string): Promise<void> {
+  const now = Date.now();
+  if (now - (lastStamp.get(vault) ?? 0) < 110_000) return;
+  try {
+    await invoke("write_text_file", {
+      path: heartbeatPath(vault),
+      contents: JSON.stringify({ machineId: machineId(), at: now }),
+    });
+    lastStamp.set(vault, now); // only on success, so a failed write retries next tick
+  } catch {
+    // best-effort; a missed stamp just risks a (debounced) false "dark" alarm
+  }
+}
+
+async function readFirerHeartbeat(vault: string): Promise<{ machineId: string; at: number } | null> {
+  try {
+    const text = await invoke<string>("read_text_file", { path: heartbeatPath(vault) });
+    const o = JSON.parse(text);
+    return typeof o?.at === "number" ? o : null;
+  } catch {
+    return null;
+  }
+}
+
+// When this (non-firing) machine first started watching each vault — so a
+// freshly-opened app doesn't alarm before the real firer has had a chance to
+// stamp. And a debounce so we alarm at most once per outage.
+const firerWatchStart = new Map<string, number>();
+const firerAlarmed = new Set<string>();
+
+async function checkFirerHeartbeat(vault: string): Promise<void> {
+  // The firer never alarms — it IS the heartbeat. (Reset the debounce so it can
+  // warn again if this machine later stops firing and the next firer dies.)
+  if (fireSchedulesOnThisMachine()) {
+    firerAlarmed.delete(vault);
+    return;
+  }
+  const now = Date.now();
+  if (!firerWatchStart.has(vault)) firerWatchStart.set(vault, now);
+  const hb = await readFirerHeartbeat(vault);
+  if (hb && now - hb.at < FIRER_STALE_MS) {
+    firerAlarmed.delete(vault); // a firer is alive elsewhere — all good
+    return;
+  }
+  if (now - (firerWatchStart.get(vault) ?? now) < FIRER_GRACE_MS) return; // give a real firer time
+  if (firerAlarmed.has(vault)) return; // already warned this outage
+  firerAlarmed.add(vault);
+  const darkMin = hb ? Math.round((now - hb.at) / 60_000) : null;
+  vlog("firer.dark", { vault: vault.slice(-12), darkMin });
+  try {
+    const { notify } = await import("./phoneApp");
+    const how = darkMin ? `${darkMin} min` : "a while";
+    await notify(
+      "info",
+      "Scheduled firing is dark",
+      `No machine has run a scheduled tick for ${how}. Your wakes, the daily coach, and the run-watcher are all paused. Turn on "fire schedules on this machine" in Settings, or bring your always-on box back up.`,
+      "",
+      {
+        intention: "Reliability · scheduler",
+        summary: `Firing dark ${how} — nothing is firing wakes or watching runs.`,
+        icon: "⚠️",
+        cls: "r",
+      },
+    );
+  } catch (e) {
+    console.warn("[firer-heartbeat] alarm failed:", e);
+  }
+}
+
 export function getTrackedVaults(): string[] {
   try {
     const raw = localStorage.getItem(TRACKED_VAULTS_KEY);
@@ -185,6 +289,10 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
       schedulesByVault.set(vault, fromDisk);
       emit();
     }
+    // Watch the firer's heartbeat from EVERY machine (before the gate below): if
+    // the machine that's supposed to fire has gone dark and we're not it, alarm —
+    // don't let firing die in silence the way it did for ~4 days.
+    void checkFirerHeartbeat(vault).catch(() => {});
     // Single-firer gate. We still refresh the in-memory list above (so the
     // SchedulesPanel stays current on every machine), but a machine opted
     // out of firing returns here without touching `lastFiredAt`. Skipping
@@ -192,6 +300,9 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
     // lastFiredAt and pushed it, the firing machine would read it as
     // "already fired" and skip — silently disabling the schedule.
     if (!fireSchedulesOnThisMachine()) return;
+    // We ARE the firer this tick — stamp the heartbeat so other machines can see
+    // firing is alive (and don't alarm).
+    void stampFirerHeartbeat(vault).catch(() => {});
     // Poll any long external jobs (training runs etc.) handed to the run-watcher.
     // Deterministic recheck in code — independent of whether the agent
     // remembered to self-schedule a wake. Same firing-machine gate as schedules.
