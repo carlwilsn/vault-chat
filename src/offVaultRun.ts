@@ -754,6 +754,25 @@ export async function startWorker(
   modelId?: string,
   mission?: string,
 ): Promise<{ id: string; title: string }> {
+  // Idempotency: a worker with the SAME task already spawned for this mission in
+  // the last few minutes is a re-issue — a supervisor that lost track and called
+  // StartWorker again — so return it instead of spawning a duplicate that would
+  // re-launch a box / redo the GPU work (the structural backstop under agent
+  // honesty). Bounded to a short window so a deliberate later re-run still spawns.
+  {
+    const m = mission?.trim();
+    const RECENT_MS = 5 * 60_000;
+    const now0 = Date.now();
+    const existing = await readConversations(vault).catch(() => [] as Conversation[]);
+    const dup = existing.find(
+      (c) =>
+        c.source === "worker" &&
+        now0 - (c.createdAt ?? 0) < RECENT_MS &&
+        (!m || (c.mission ?? "").trim() === m) &&
+        (c.messages.find((x) => x.role === "user" && !x.hidden)?.content ?? "").trim() === task.trim(),
+    );
+    if (dup) return { id: dup.id, title: dup.title };
+  }
   const id = newConversationId();
   const t = title?.trim() || deriveConversationTitle([{ role: "user", content: task }]);
   // Tagged "worker" so every surface (ChatsPanel, the phone app's list) can

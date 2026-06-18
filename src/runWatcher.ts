@@ -175,6 +175,20 @@ export type RegisterJobInput = {
 export async function registerJob(vault: string, input: RegisterJobInput): Promise<RunJob> {
   return withJobsLock(vault, async () => {
     const list = await readJobs(vault);
+    // Idempotency: re-registering the SAME run (same owner thread + same check
+    // command) returns the existing job instead of minting a duplicate. This is
+    // the structural backstop under agent honesty — a supervisor that loses track
+    // and calls WatchRun twice (the smoke-test double-register) can't watch, or
+    // bill, one run twice. Identity is (ownerConvId, checkCmd): the check command
+    // names the run, and we only dedup live ones so a genuinely new run with a
+    // reused command after the first ended still registers.
+    const dup = list.find(
+      (x) => x.status === "running" && x.ownerConvId === input.ownerConvId && x.checkCmd === input.checkCmd,
+    );
+    if (dup) {
+      vlog("runwatch.register.dedup", { id: dup.id, title: dup.title });
+      return dup;
+    }
     const now = Date.now();
     const job = normalizeJob({
       id: newJobId(),

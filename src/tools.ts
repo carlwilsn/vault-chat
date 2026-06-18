@@ -1386,6 +1386,20 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         const { useStore } = await import("./store");
         const store = useStore.getState();
         const list = await readSchedules(vault);
+        // Idempotency: an identical enabled wake already on the books (same thread,
+        // prompt, cadence, time) returns it instead of stacking a duplicate — so a
+        // supervisor that re-issues the same self-check doesn't end up firing twice.
+        const dupSched = list.find(
+          (s) =>
+            s.enabled &&
+            s.target.kind === "existing" &&
+            s.target.conversationId === conversationId &&
+            s.prompt === prompt &&
+            s.time === time &&
+            (s.date || "") === (date || "") &&
+            JSON.stringify(s.recurrence) === JSON.stringify(recurrence),
+        );
+        if (dupSched) return `Already scheduled (${fireDescription}) in this conversation — not duplicating it.`;
         const fresh = {
           ...emptySchedule(store.modelId),
           name: description ?? prompt.split(/\s+/).slice(0, 6).join(" "),
