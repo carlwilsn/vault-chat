@@ -264,6 +264,13 @@
   #kb{flex:0 0 auto;background:#0e0e10;padding:7px 4px calc(env(safe-area-inset-bottom) + 6px);display:none;touch-action:manipulation;user-select:none;-webkit-user-select:none}
   body.kbopen.page-chat #kb{display:block}
   body.kbopen .composer{padding-bottom:8px}
+  /* System keyboard up: the keyboard covers the home-indicator strip, so the
+     safe-area inset would be dead space between the textbox and the keyboard.
+     Drop it to a flush 8px. (--kb>0 => `kbup`, set by the visualViewport handler.) */
+  body.kbup .composer{padding-bottom:8px}
+  /* Same gap, same fix for the supervisor/mission reply footer (the bottom sheet
+     is lifted flush onto the keyboard, so its safe-area inset is dead space too). */
+  body.kbup .sheet-foot{padding-bottom:8px}
   .kblayer{display:none}.kblayer.active{display:block}
   .kbrow{display:flex;gap:5px;margin:0 0 8px;justify-content:center}
   .kbrow:last-child{margin-bottom:0}
@@ -391,6 +398,8 @@
      user's own (right) and the supervisor's (left) turns. */
   .treport{align-self:center;max-width:92%;margin:2px 0 10px;padding:6px 11px;background:var(--raised);border:1px solid var(--line);border-radius:10px;font-size:11.5px;color:var(--dim);text-align:center;line-height:1.45;overflow-wrap:anywhere}
   .treport b{color:#bcbcbc;font-weight:600}
+  .treport.warn{border-color:#5a4a32}
+  .treport.warn b{color:#c69a5b}
   /* The chain of substantive updates: each entry is a meaningful development —
      a thing it did, or a snag it hit and corrected — checked off as it lands. A
      rail down the left ties them into one line of progress. */
@@ -1178,11 +1187,29 @@
     const out = (mm ? mm[2] : seg).trim().replace(/\s+/g, " ").slice(0, 200);
     return '<div class="treport">↳ <b>' + esc(who) + "</b> reported — " + esc(out) + "</div>";
   }
+  // A run-watcher wake ("Watched run "X" FINISHED/FAILED/STALLED …") → the same
+  // neutral note, NOT a right-aligned "You" bubble full of watcher boilerplate.
+  function wakeRunHtml(seg) {
+    const mm = seg.match(/Watched run\s+"?([^"]+?)"?\s+(FINISHED|FAILED|STALLED)\b[^A-Za-z0-9]*([\s\S]*?)(?:\n\nReview|\nReview|\nDecide|\n\n|$)/i);
+    const who = (mm ? mm[1] : "a run").trim();
+    const state = (mm ? mm[2] : "").toUpperCase();
+    const verb = state === "FINISHED" ? "finished" : state === "FAILED" ? "failed" : state === "STALLED" ? "stalled" : "updated";
+    const detail = (mm ? mm[3] : "").trim().replace(/^Last status:\s*/i, "").replace(/\s+/g, " ").slice(0, 160);
+    const warn = state === "FAILED" || state === "STALLED";
+    return '<div class="treport' + (warn ? " warn" : "") + '">↳ run <b>' + esc(who) + "</b> " + esc(verb) + (detail ? " — " + esc(detail) : "") + "</div>";
+  }
+  // A turn is "yours to answer" (plain prose) vs background reasoning (thought-
+  // chain) by what TRIGGERED it. A wake — a watcher run or a worker report — is
+  // plumbing, never something you typed.
+  function isWakeMsg(c) { return /Watched run\s+"|Your worker\s+"/i.test(c || ""); }
   function threadHtml(msgs, labels) {
     labels = labels || { user: "You", assistant: "Assistant" };
     return '<div class="thread">' + (msgs || []).map((m) => {
       const content = m.content || "";
       if (m.role === "user") {
+        // A run-watcher wake is a SYSTEM event, not something you said — render it
+        // as a neutral note, not a "You" bubble of watcher boilerplate.
+        if (/^\s*Watched run\s+"/i.test(content)) return wakeRunHtml(content);
         // A worker-report wake — pure, OR appended onto the user's own message
         // (the old merge bug: "How's it going  Your worker … finished"). Split it
         // so the user's text stays its own clean bubble and the wake is a note.
@@ -1382,6 +1409,9 @@
     // Set when YOU act (send a reply) so that paint re-pins to the bottom to show
     // it — distinct from a background poll, which must hold your scroll position.
     let pinBottom = false;
+    // Arm the start-up "working…" exactly once, so a freshly-briefed mission shows
+    // life off the jump instead of a blank/idle thread (see paint()).
+    let armedStartWorking = false;
     openSheet({
       intent: readonly ? "Mission · complete" : "Mission",
       title: mc.title, ico: readonly ? "✓" : "◎", cls: readonly ? "g" : "",
@@ -1444,7 +1474,27 @@
       const restPlus = rest.concat(optimistic.map((t) => ({ role: "user", content: t })));
       const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
       if (!readonly) sheetRunning = liveRun || hasLive;
+      // Working off the jump: a freshly-briefed mission with no supervisor turn yet
+      // is spinning up from zero context. Show "working…" immediately — bounded by a
+      // safety timer that clears it if no real run shows — so the start is never a
+      // dead, blank-looking thread ("there should never be just nothing going on").
+      const noAssistantYet = !restPlus.some((m) => m.role === "assistant");
+      if (!readonly && noAssistantYet && !sheetRunning && !sheetOptimisticWorking && !armedStartWorking) {
+        armedStartWorking = true;
+        sheetOptimisticWorking = true;
+        setTimeout(() => { if (sheetOptimisticWorking) { sheetOptimisticWorking = false; if (sheetRepaint) void sheetRepaint(); } }, 15000);
+      }
       const showLive = !readonly && (sheetRunning || sheetOptimisticWorking);
+      // Direct-reply vs thought-chain is a property of WHAT triggered this turn, not
+      // a sticky flag: a turn answering something you TYPED renders as plain prose; a
+      // turn woken by a watcher / worker / self-check renders as the thought-chain.
+      // Derive it from the last message each paint so the two never cross — the live
+      // edge used to flip mid-turn when a wake landed while the flag was still set
+      // from your reply.
+      if (!readonly) {
+        const lastMsg = restPlus[restPlus.length - 1];
+        sheetDirectReply = !!(lastMsg && lastMsg.role === "user" && !isWakeMsg(lastMsg.content || "") && !/^\s*MISSION BRIEF/i.test(lastMsg.content || ""));
+      }
       // Live edge content updates in place via renderSheetLive between polls, so a
       // steady showLive doesn't force a disruptive full repaint here.
       const sig = JSON.stringify(restPlus.map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + showLive;
@@ -1463,9 +1513,11 @@
       }
       body += '<div class="lbl">Thread</div>' + (restPlus.length
         ? threadHtml(restPlus, { user: "You", assistant: "Supervisor" }) + (showLive ? liveEdgeHtml() : "")
-        : (threadErr
-            ? '<div class="md dim">Thread unavailable: ' + esc(threadErr) + "</div>"
-            : '<div class="md dim">No turns yet — it hasn’t run since being briefed.</div>'));
+        : (showLive
+            ? liveEdgeHtml()
+            : (threadErr
+                ? '<div class="md dim">Thread unavailable: ' + esc(threadErr) + "</div>"
+                : '<div class="md dim">No turns yet — it hasn’t run since being briefed.</div>')));
       // A sign of life when it's NOT working: an idle supervisor isn't broken — it
       // self-checks on its own schedule. Tell the user that and that a message
       // engages it now (instead of a dead, blank-looking thread).
@@ -2038,6 +2090,9 @@
     const applyKb = () => {
       const kb = Math.max(0, document.documentElement.clientHeight - vv.height - vv.offsetTop);
       document.documentElement.style.setProperty("--kb", kb + "px");
+      // Keyboard up: collapse the composer's home-indicator inset so the textbox
+      // sits flush on the keyboard (the keyboard already covers that strip).
+      document.body.classList.toggle("kbup", kb > 60);
       // While editing a reply, cap the sheet to the space above the keyboard so
       // the whole sheet stays visible, not just the lifted foot.
       const sheet = $("sheet");
