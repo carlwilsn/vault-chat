@@ -418,7 +418,10 @@
   /* The in-flight beat: a quiet "working…" with a hollow grey marker. NO token
      stream, NO pulse — the user wants the reasoning, not a thread of raw text. */
   #liveEdge{margin-top:12px}
-  .ttl-step.ttl-cur::before{content:"";background:none;border:1.5px solid #4a4a52;box-sizing:border-box;width:9px;height:9px;left:-19px;top:4px;border-radius:50%}
+  /* The "working…" node is a hollow ring; fill it with the sheet bg so the rail
+     (the .ttl border-left) is masked behind it instead of bleeding through the
+     transparent centre. Same trick the solid dots use, just bg-coloured. */
+  .ttl-step.ttl-cur::before{content:"";background:#101012;border:1.5px solid #4a4a52;box-sizing:border-box;width:9px;height:9px;left:-19px;top:4px;border-radius:50%}
   /* Idle supervisor isn't asleep — it's READY for you (waiting on its workers,
      free to take a question). Neutral, not a warning. */
   .idlehint{margin:12px 0 2px;padding:9px 12px;background:#141417;border:1px solid var(--line);border-radius:11px;font-size:12px;color:var(--dim);line-height:1.5}
