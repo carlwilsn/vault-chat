@@ -860,8 +860,13 @@ export async function stopAndDeleteMission(vault: string, conversationId: string
     console.warn("[mission] schedule cleanup failed:", e);
   }
   // 3) Tombstone-delete the mission + its workers (durable, resurrection-proof).
+  // AWAIT the writes: the phone reloads its Activity list the instant /kill
+  // returns, and a fire-and-forget delete let that reload re-read the still-on-
+  // disk mission before its tombstone flushed — the "deleted mission comes back
+  // for a beat" bug. deleteConversation removes from memory synchronously (the
+  // desktop stays instant) and resolves once the write lands.
   const del = useStore.getState().deleteConversation;
-  for (const id of ids) del(id);
+  await Promise.all(ids.map((id) => del(id)));
 }
 
 // Mark a mission FINISHED: its supervisor decided the goal is met. Stamps

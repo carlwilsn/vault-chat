@@ -712,7 +712,13 @@ type State = {
   refreshConversationFromDisk: (vault: string, convId: string) => Promise<void>;
   newConversation: () => string;
   selectConversation: (id: string) => void;
-  deleteConversation: (id: string) => void;
+  // Resolves once the durable on-disk tombstone write has settled. The
+  // in-memory removal is always synchronous (desktop UI stays optimistic), so
+  // most callers can ignore the promise. AWAIT it only when a follow-up DISK
+  // read must not race the write — the phone reloads its Activity/Chats list
+  // straight after a delete and would otherwise re-read a not-yet-tombstoned
+  // thread and flicker it back.
+  deleteConversation: (id: string) => Promise<void>;
   setShowChatsPanel: (b: boolean) => void;
   setShowSchedulesPanel: (b: boolean) => void;
   // Ingest a user message from an external source (Telegram, scheduled
@@ -1819,16 +1825,20 @@ export const useStore = create<State>((set) => ({
         liveTools: rt?.liveTools ?? [],
       };
     }),
-  deleteConversation: (id) => {
-    // Tombstone on disk FIRST — removing it from the in-memory list alone no
-    // longer deletes anything (conversations_write_all never deletes by
-    // omission; see the multi-machine flapping bug it caused).
+  deleteConversation: (id): Promise<void> => {
+    // Tombstone on disk — removing it from the in-memory list alone no longer
+    // deletes anything (conversations_write_all never deletes by omission; see
+    // the multi-machine flapping bug it caused). We fire the write and KEEP its
+    // promise: the in-memory removal below is synchronous (so the desktop UI is
+    // optimistic), but callers that immediately re-read from DISK — the phone
+    // reloads Activity/Chats right after /kill — must await it, or that reload
+    // races the not-yet-flushed tombstone and the deleted thread flickers back.
     const vault = useStore.getState().vaultPath;
-    if (vault) {
-      void invoke("conversation_delete", { vault, id }).catch((e) =>
-        console.warn("[conversations] delete failed:", e),
-      );
-    }
+    const done = vault
+      ? invoke<void>("conversation_delete", { vault, id }).catch((e) => {
+          console.warn("[conversations] delete failed:", e);
+        })
+      : Promise.resolve();
     set((s) => {
       const next = s.conversations.filter((c) => c.id !== id);
       if (s.activeConversationId !== id) {
@@ -1871,6 +1881,7 @@ export const useStore = create<State>((set) => ({
         liveTools: [],
       };
     });
+    return done;
   },
   setShowChatsPanel: (b) =>
     set(b ? { showChatsPanel: true, showNotesPanel: false, showSchedulesPanel: false } : { showChatsPanel: false }),

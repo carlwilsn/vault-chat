@@ -843,7 +843,11 @@ export async function startPhoneAppHost(): Promise<void> {
           c.status !== "running" &&
           !(s.busy && s.activeConversationId === c.id),
       );
-      for (const v of victims) useStore.getState().deleteConversation(v.id);
+      // Await the tombstone writes before acking: the phone refreshes its chats
+      // list as soon as this responds, and a fire-and-forget delete let that
+      // refresh re-read the still-on-disk chats before their tombstones flushed.
+      const del = useStore.getState().deleteConversation;
+      await Promise.all(victims.map((v) => del(v.id)));
       respond(event.payload.reqId, { ok: true, cleared: victims.length });
     } catch (e) {
       respond(event.payload.reqId, { error: String(e) });
