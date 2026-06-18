@@ -23,6 +23,7 @@ import {
   scheduledDeliveryText,
 } from "./telegram";
 import { useStore, type ChatMessage, type LiveTool } from "./store";
+import type { Timeline } from "./alert-summary";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import { registerRun, unregisterRun, abortRun, isRunActive } from "./runRegistry";
 import { vlog } from "./debugLog";
@@ -292,6 +293,12 @@ export async function runScheduledHeadlessTurn(
   const bindFallback = telegramChatId != null && ownChatId === undefined;
 
   let acc = "";
+  // The text emitted AFTER the last tool call — i.e. the turn's actual closing
+  // message, with the inter-tool "let me check X / pulling evidence" narration
+  // stripped. This is the clean thing to DELIVER; `acc` (the whole blob) is kept
+  // only as the message record. Resets every time a new tool runs.
+  let finalSegment = "";
+  let reasoningAcc = "";
   const tools: LiveTool[] = [];
   const baseHistory = list[idx]!.messages
     .filter((m) => !m.system)
@@ -334,8 +341,14 @@ export async function runScheduledHeadlessTurn(
       isTelegramSourced: isTelegramSourced && opts.sendViaTelegram,
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
-        if (e.kind === "text") acc += e.delta;
+        if (e.kind === "text") {
+          acc += e.delta;
+          finalSegment += e.delta;
+        } else if (e.kind === "reasoning") reasoningAcc += e.delta;
         else if (e.kind === "tool_use") {
+          // A new tool call means anything narrated so far was lead-in, not the
+          // closing message — start the final segment over after it.
+          finalSegment = "";
           tools.push({
             id: e.id,
             name: e.name,
@@ -354,6 +367,7 @@ export async function runScheduledHeadlessTurn(
           if (t) t.result = e.result;
         } else if (e.kind === "error") {
           acc = (acc + `\n\n⚠️ ${e.message}`).trim();
+          finalSegment = (finalSegment + `\n\n⚠️ ${e.message}`).trim();
           notify(`⚠️ ${e.message}`);
         }
       },
@@ -384,6 +398,32 @@ export async function runScheduledHeadlessTurn(
     deliver: deliver == null ? "silent" : "sent",
   });
 
+  // Clean a DELIVERED scheduled turn into the same thought-by-thought timeline
+  // mission/worker turns get. Two payoffs: (1) the thread renders this turn as
+  // the cleaned chain instead of a raw narration blob — a scheduled run is never
+  // a direct reply, so it should always read as reasoning, not prose; (2) the
+  // timeline's verbatim `reply` is the turn's true closing message, which is what
+  // we DELIVER to Telegram + the Alerts feed instead of the whole "let me re-read
+  // the files… pulling evidence…" narration. A silent/pruned turn skips all this.
+  let timeline: Timeline | null = null;
+  let deliverText = deliver;
+  if (deliver !== null) {
+    const quiet = opts.quietUnlessAlert ?? false;
+    const { cleanReplyAndTimeline } = await import("./alert-summary");
+    const cleaned = await cleanReplyAndTimeline(
+      acc,
+      finalSegment,
+      reasoningAcc,
+      tools.map((t) => ({ name: t.name, input: t.input })),
+      store.apiKeys,
+      quiet ? "supervisor" : "worker",
+    );
+    timeline = cleaned.timeline;
+    // A quiet supervisor's `deliver` is already its extracted ALERT: line — leave
+    // it; a normal schedule delivers the cleaned closing message.
+    if (!quiet) deliverText = cleaned.deliver;
+  }
+
   let finalList = await readConversations(vault);
   let fi = finalList.findIndex((c) => c.id === conversationId);
   if (fi < 0) fi = 0;
@@ -404,6 +444,9 @@ export async function runScheduledHeadlessTurn(
       role: "assistant",
       content: acc,
       toolCalls: tools.length ? tools : undefined,
+      // Render as the cleaned chain (see above). `content` stays the full blob as
+      // the record; the thread view prefers the timeline when present.
+      timeline: timeline ?? undefined,
     };
     finalList[fi] = {
       ...finalList[fi]!,
@@ -427,8 +470,9 @@ export async function runScheduledHeadlessTurn(
   if (deliver != null && telegramChatId != null) {
     // Headless scheduled briefing → mirror to Telegram AND surface a summarized
     // Alert linked to this thread (the active-vault path does the same in
-    // chat-controller). Only scheduled runs reach this block.
-    await sendTelegramReplyWithImages(vault, telegramChatId, deliver, {
+    // chat-controller). Only scheduled runs reach this block. Deliver the CLEANED
+    // closing message (deliverText), never the raw narration blob.
+    await sendTelegramReplyWithImages(vault, telegramChatId, deliverText ?? deliver, {
       notify: true,
       convId: conversationId,
     }).catch((e) => console.warn("[scheduler] telegram send failed:", e));

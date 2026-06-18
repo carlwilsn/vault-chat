@@ -294,6 +294,11 @@ export async function sendMessage(
   // Reasoning accumulated locally too (not just pushed to the global
   // view) so a backgrounded run can mirror it into its replay buffer.
   let bgReasoning = "";
+  // Text emitted AFTER the last tool call — the turn's true closing message with
+  // the inter-tool narration stripped. Used to clean a scheduled briefing's
+  // delivery (the daily coach) so the phone gets the check-in, not the "let me
+  // re-read the files…" lead-in. Resets whenever a new tool runs.
+  let finalSegment = "";
   const tools: LiveTool[] = [];
 
   await runAgent({
@@ -324,6 +329,7 @@ export async function sendMessage(
       const live = isTargetActive();
       if (e.kind === "text") {
         acc += e.delta;
+        finalSegment += e.delta;
         if (live) store.appendStreamingText(e.delta);
       } else if (e.kind === "reasoning_start") {
         bgReasoning = "";
@@ -336,6 +342,9 @@ export async function sendMessage(
       } else if (e.kind === "tool_input_delta") {
         if (live) store.appendLiveToolInputDelta(e.id, e.delta);
       } else if (e.kind === "tool_use") {
+        // A new tool means anything narrated so far was lead-in, not the closing
+        // message — restart the final segment after it.
+        finalSegment = "";
         const t: LiveTool = { id: e.id, name: e.name, input: e.input, startedAt: Date.now() };
         tools.push(t);
         if (live) store.pushLiveTool(t);
@@ -458,10 +467,65 @@ export async function sendMessage(
               : "(no reply)";
           // Quiet supervisor: only deliver an explicit ALERT:, nothing else.
           const deliver = scheduledDeliveryText(reply, quietUnlessAlert ?? false);
-          if (deliver != null) {
-            // Only a SCHEDULED briefing (sendViaTelegram) earns a phone Alert —
-            // and it links to its own thread. A normal Telegram chat delivers to
-            // Telegram without pinging Alerts.
+          const quiet = quietUnlessAlert ?? false;
+          if (deliver != null && sendViaTelegram && !quiet) {
+            // SCHEDULED BRIEFING (the daily coach, a supervisor report). Clean it
+            // exactly like the headless path: deliver the turn's true closing
+            // message — not the "let me re-read the files… pulling evidence…"
+            // narration blob that used to leak into the phone notification — and
+            // patch the thought-chain onto the stored turn so the cockpit renders
+            // it as reasoning, not raw prose. Fire-and-forget so the turn still
+            // lands instantly; a fast-model failure degrades to finalSegment/raw.
+            const tConvId = targetConvId;
+            void (async () => {
+              const apiKeys = useStore.getState().apiKeys;
+              const role = targetConv?.role === "supervisor" ? "supervisor" : "worker";
+              const { cleanReplyAndTimeline } = await import("./alert-summary");
+              const { deliver: clean, timeline } = await cleanReplyAndTimeline(
+                acc,
+                finalSegment,
+                bgReasoning,
+                tools.map((t) => ({ name: t.name, input: t.input })),
+                apiKeys,
+                role,
+              ).catch(() => ({ deliver: "", timeline: null }));
+              await sendTelegramReplyWithImages(vault, telegramChatId, clean || deliver, {
+                notify: true,
+                convId: tConvId ?? undefined,
+              }).catch((err) => console.warn("[telegram] outbound reply failed:", err));
+              // Attach the timeline to this turn (match by content === acc). Benign
+              // on failure: a missed patch just renders the turn as it does today.
+              if (timeline && tConvId) {
+                try {
+                  const { withConvLock, readConversations, writeConversations } =
+                    await import("./conversations");
+                  await withConvLock(async () => {
+                    const fresh = await readConversations(vault);
+                    const i = fresh.findIndex((c) => c.id === tConvId);
+                    if (i < 0) return;
+                    const msgs = fresh[i]!.messages.slice();
+                    for (let k = msgs.length - 1; k >= 0; k--) {
+                      const mk = msgs[k]!;
+                      if (mk.role === "assistant" && (mk.content || "") === acc && !mk.timeline) {
+                        msgs[k] = { ...mk, timeline };
+                        break;
+                      }
+                    }
+                    fresh[i] = { ...fresh[i]!, messages: msgs };
+                    await writeConversations(vault, fresh);
+                  });
+                  await useStore
+                    .getState()
+                    .refreshConversationFromDisk(vault, tConvId)
+                    .catch(() => {});
+                } catch (err) {
+                  console.warn("[scheduler] timeline patch failed:", err);
+                }
+              }
+            })();
+          } else if (deliver != null) {
+            // Normal Telegram chat, or a quiet supervisor's extracted ALERT: — both
+            // already clean. Deliver as-is. Only a scheduled briefing pings Alerts.
             sendTelegramReplyWithImages(vault, telegramChatId, deliver, {
               notify: !!sendViaTelegram,
               convId: targetConvId ?? undefined,

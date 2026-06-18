@@ -247,3 +247,32 @@ export async function summarizeTimeline(
     return null;
   }
 }
+
+// Clean a scheduled/background turn for delivery. A scheduled run (the daily
+// coach, a supervisor watch) accumulates ALL its text — the "let me re-read the
+// files… pulling evidence…" narration between tool calls AND the final message —
+// into one blob. Delivering that blob is the bug behind the coach notification
+// reading as raw narration instead of the check-in. This returns:
+//   - `deliver`: the turn's true closing message. Prefers the timeline's verbatim
+//     `reply` (robust even when the model narrated+answered in one tool-less blob),
+//     then the post-last-tool segment, then the raw blob as a last resort.
+//   - `timeline`: the thought-chain to render the thread as reasoning, not prose.
+// One model call, shared by both the headless and active-vault scheduled paths.
+export async function cleanReplyAndTimeline(
+  rawReply: string,
+  finalSegment: string,
+  reasoning: string,
+  actions: { name: string; input?: unknown }[],
+  apiKeys: Partial<Record<ProviderId, string>>,
+  role: "supervisor" | "worker" = "worker",
+): Promise<{ deliver: string; timeline: Timeline | null }> {
+  const timeline = await summarizeTimeline(
+    rawReply,
+    reasoning,
+    actions,
+    apiKeys,
+    role,
+  ).catch(() => null);
+  const deliver = (timeline?.reply || "").trim() || finalSegment.trim() || rawReply;
+  return { deliver, timeline };
+}

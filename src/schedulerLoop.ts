@@ -473,6 +473,13 @@ export async function deleteSchedule(vault: string, id: string): Promise<void> {
   const next = list.filter((x) => x.id !== id);
   schedulesByVault.set(vault, next);
   emit();
+  // Tombstone FIRST, then write the row out. schedules.jsonl is merge=union, so
+  // an omission alone is resurrected the moment another machine that still holds
+  // the row syncs back (the "cancelled watchdog keeps firing" bug). The tombstone
+  // unions cleanly and every reader filters against it, so the delete is durable.
+  await invoke("schedule_tombstone_add", { vault, id }).catch((e) =>
+    console.warn("[scheduler] tombstone write failed:", e),
+  );
   await writeSchedules(vault, next);
 }
 

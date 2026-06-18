@@ -130,6 +130,14 @@ const CONVERSATIONS_FILE: &str = "conversations.jsonl";
 /// collide on the same file at all.
 pub(crate) const CONVERSATIONS_DIR: &str = "conversations";
 const SCHEDULES_FILE: &str = "schedules.jsonl";
+/// Deleted-schedule tombstones — the schedule analogue of
+/// `conversations-deleted.jsonl`. schedules.jsonl is `merge=union`, so a plain
+/// delete-by-omission gets RESURRECTED the moment another machine that still has
+/// the row syncs back (this is exactly how a "cancel my watchdog" came back to
+/// life and kept firing every 30 min after a laptop wake). An append-only
+/// `{id, ts}` tombstone unions cleanly across machines, and every reader filters
+/// against it, so a deletion is permanent.
+const SCHEDULES_DELETED_FILE: &str = "schedules-deleted.jsonl";
 
 #[derive(Serialize)]
 struct FileEntry {
@@ -1209,6 +1217,55 @@ async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<()
     .map_err(|e| e.to_string())?
 }
 
+/// The set of tombstoned schedule ids (deleted on some machine). Every reader
+/// drops these so a union-merge resurrection of the row is inert.
+pub(crate) fn schedule_tombstone_ids(vault: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let p = std::path::Path::new(vault)
+        .join(NOTES_DIR)
+        .join(SCHEDULES_DELETED_FILE);
+    if let Ok(raw) = std::fs::read_to_string(p) {
+        for line in raw.lines() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                    out.insert(id.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Explicitly delete one schedule: append a tombstone so the deletion survives
+/// the cross-machine `merge=union` sync. The row itself is also dropped from
+/// schedules.jsonl by the caller's write, but THIS is what makes it stick.
+#[tauri::command]
+async fn schedule_tombstone_add(vault: String, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let p = std::path::Path::new(&vault)
+            .join(NOTES_DIR)
+            .join(SCHEDULES_DELETED_FILE);
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        use std::io::Write as _;
+        let line = serde_json::json!({ "id": id, "ts": ts }).to_string();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&p)
+            .map_err(|e| format!("open {}: {}", p.display(), e))?;
+        writeln!(f, "{}", line).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn schedules_read(vault: String) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1219,9 +1276,20 @@ async fn schedules_read(vault: String) -> Result<Vec<String>, String> {
             return Ok(Vec::new());
         }
         let contents = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let tombstones = schedule_tombstone_ids(&vault);
         Ok(contents
             .lines()
             .filter(|l| !l.trim().is_empty())
+            // Drop any row whose id has been tombstoned — a resurrected (or
+            // duplicated-by-union) deleted schedule must never fire again.
+            .filter(|l| match serde_json::from_str::<serde_json::Value>(l) {
+                Ok(v) => v
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .map(|id| !tombstones.contains(id))
+                    .unwrap_or(true),
+                Err(_) => true,
+            })
             .map(String::from)
             .collect())
     })
@@ -6926,6 +6994,7 @@ pub fn run() {
             conversations_read,
             conversations_write_all,
             conversation_delete,
+            schedule_tombstone_add,
             schedules_read,
             schedules_write_all,
             open_terminal,

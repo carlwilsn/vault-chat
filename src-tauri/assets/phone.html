@@ -402,26 +402,37 @@
   .treport.warn b{color:#c69a5b}
   /* The chain of substantive updates: each entry is a meaningful development —
      a thing it did, or a snag it hit and corrected — checked off as it lands. A
-     rail down the left ties them into one line of progress. */
-  .ttl{margin:1px 0 0;border-left:1.5px solid var(--line);padding-left:15px}
-  .ttl-step{position:relative;margin:0 0 13px}
+     rail down the left ties them into one line of progress.
+
+     Marker geometry is the load-bearing detail here. EVERY marker (dot, check,
+     snag, the live ring) is centred on the same x — the rail — and is filled with
+     the SHEET BG so it punches a clean gap in the rail and the line never bleeds
+     through a glyph. They share that centre, so they line up exactly down the
+     column instead of each sitting at its own offset (the old ✓/!/dot each had a
+     different `left`, which is what read as "translucent marks that don't line
+     up"). Contrast is bumped a notch from the old near-invisible greys. */
+  .ttl{margin:2px 0 0;border-left:1.5px solid #34343c;padding-left:18px}
+  .ttl-step{position:relative;margin:0 0 14px}
   .ttl-step:last-child{margin-bottom:2px}
-  .ttl-step::before{content:"";position:absolute;left:-18px;top:4px;width:6px;height:6px;border-radius:50%;background:#5a5a62}
-  /* Near-monochrome by design: a NEUTRAL grey check marks a done thought; colour
-     is reserved for the one thing that matters — a snag (amber mark only, the
-     text stays normal). */
-  .ttl-step.done::before{content:"✓";left:-20px;top:2px;width:auto;height:auto;background:none;color:#6f6f6f;font-size:10px;font-weight:700;line-height:1}
-  .ttl-step.snag::before{content:"!";left:-19px;top:2px;width:auto;height:auto;background:none;color:#a8824a;font-size:11px;font-weight:700;line-height:1}
-  .ttl-th{font-size:13px;color:#e2e2e2;line-height:1.6;overflow-wrap:anywhere}
+  /* Base node: a small solid dot, centred on the rail (its own opaque fill masks
+     the line). Used for any step without a more specific state. */
+  .ttl-step::before{content:"";position:absolute;left:-21.5px;top:6px;width:7px;height:7px;border-radius:50%;background:#72727b}
+  /* Done / snag: the glyph sits in a sheet-filled disc at the SAME centre as the
+     dot, so the rail gaps cleanly around it and all markers align. Neutral grey
+     for a done thought; amber reserved for the one thing that matters — a snag. */
+  .ttl-step.done::before,
+  .ttl-step.snag::before{content:"✓";left:-25px;top:2px;width:14px;height:14px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;background:#101012;border-radius:50%;font:700 11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#a0a0a8}
+  .ttl-step.snag::before{content:"!";color:#d9a861}
+  .ttl-th{font-size:13px;color:#e8e8ea;line-height:1.6;overflow-wrap:anywhere}
   .ttl-th.dim{color:var(--dim);font-style:italic}
   .tl-reply{margin-top:11px;padding-top:11px;border-top:1px solid var(--line)}
   /* The in-flight beat: a quiet "working…" with a hollow grey marker. NO token
      stream, NO pulse — the user wants the reasoning, not a thread of raw text. */
   #liveEdge{margin-top:12px}
-  /* The "working…" node is a hollow ring; fill it with the sheet bg so the rail
-     (the .ttl border-left) is masked behind it instead of bleeding through the
-     transparent centre. Same trick the solid dots use, just bg-coloured. */
-  .ttl-step.ttl-cur::before{content:"";background:#101012;border:1.5px solid #4a4a52;box-sizing:border-box;width:9px;height:9px;left:-19px;top:4px;border-radius:50%}
+  /* The "working…" node is a hollow ring, sheet-filled so the rail is masked
+     behind it (not bleeding through the transparent centre) — same centre as
+     every other marker so the live edge lines up with the finished steps above. */
+  .ttl-step.ttl-cur::before{content:"";background:#101012;border:1.5px solid #5c5c66;box-sizing:border-box;width:11px;height:11px;left:-23.5px;top:4px;border-radius:50%}
   /* Idle supervisor isn't asleep — it's READY for you (waiting on its workers,
      free to take a question). Neutral, not a warning. */
   .idlehint{margin:12px 0 2px;padding:9px 12px;background:#141417;border:1px solid var(--line);border-radius:11px;font-size:12px;color:var(--dim);line-height:1.5}

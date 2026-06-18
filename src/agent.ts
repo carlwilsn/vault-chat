@@ -236,6 +236,30 @@ export async function runAgent(params: {
           ? "Host OS: macOS. The Bash tool runs commands via `bash -lc`."
           : "Host OS: Linux. The Bash tool runs commands via `bash -lc`.";
 
+    // Current-date anchor. Without this the agent has NO reliable "now" in
+    // context and infers the date from file contents / git history — which is how
+    // the daily coach, woken by a catch-up fire after a multi-day laptop outage,
+    // confidently dated its check-in five days stale. Stamp the real host clock so
+    // every run (especially scheduled ones) reasons about time correctly.
+    const nowNote = (() => {
+      try {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        const stamp = new Intl.DateTimeFormat("en-US", {
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZoneName: "short",
+          timeZone: tz,
+        }).format(new Date());
+        return `Current date and time: ${stamp}. Trust THIS as "now"/"today" — never infer the date from file contents, git history, or a stale schedule prompt.`;
+      } catch {
+        return "";
+      }
+    })();
+
     const voiceNote = voiceMode
       ? `\n## Voice mode\n\nThe user is speaking to you and listening to your replies via text-to-speech. Your output IS audio.\n\n- Keep replies short and conversational — like talking to a friend, not writing a doc. A few sentences usually beats paragraphs.\n- Plain prose only: no markdown formatting (no \`**bold**\`, \`*italic*\`, \`#\` headers, \`-\` bullets, code fences) for spoken content. They get pronounced literally and sound bad.\n- No emoji.\n- "Read this to me" / "what does this say" means: call Read (or PdfExtract for PDFs), then speak the content as natural prose. You CAN read content aloud — your text becomes audio. Don't say "I can't do audio."\n- If the user is following along with a document (the active-file context will be included on their turn), assume their question is about that document unless they say otherwise.\n- For things that genuinely need visual presentation (long code, big tables), say so briefly and write to a file with Write — don't dump the raw content into the voice channel.`
       : "";
@@ -273,6 +297,7 @@ export async function runAgent(params: {
     const system = [
       baseSystem,
       `\nVault root: ${vault}`,
+      nowNote ? `\n${nowNote}` : "",
       `\n${shellNote}`,
       northStarBlock ? `\n${northStarBlock}` : "",
       sessionContext ? `\n${sessionContext}` : "",
