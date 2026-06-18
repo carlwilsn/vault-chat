@@ -1113,7 +1113,7 @@
         if ($("liveEdge")) renderSheetLive(); else if (sheetRepaint) void sheetRepaint();
       } else if (d.type === "status") {
         sheetRunning = d.status === "running";
-        if (!sheetRunning) { sheetLiveText = ""; sheetLiveSteps = []; sheetOptimisticWorking = false; }
+        if (!sheetRunning) { sheetLiveText = ""; sheetLiveSteps = []; sheetOptimisticWorking = false; sheetDirectReply = false; }
         if (sheetRepaint) void sheetRepaint();
       } else if (d.type === "message") { if (sheetRepaint) void sheetRepaint(); }
     }
@@ -1221,6 +1221,12 @@
   // before the box has even started the turn, so there's no dead gap.
   let sheetRunning = false;
   let sheetOptimisticWorking = false;
+  // The in-flight turn is a DIRECT reply to a message the user typed — a normal
+  // conversation turn, so its live edge stays natural (streaming prose + a quiet
+  // pulse), NEVER the thought-chain. The thought-chain is for reasoning the user
+  // didn't ask to see (worker-wakes, scheduled self-checks). Set when the user
+  // sends from a supervisor thread; cleared when that run ends or the sheet closes.
+  let sheetDirectReply = false;
   // The live edge appended to a RUNNING thread: the agent's work as it happens,
   // rendered as a GROWING thought→action timeline (same look as the finished,
   // Haiku-cleaned timeline above it — but building step by step, the last step
@@ -1234,6 +1240,16 @@
   // cleans the lot into crisp complete thoughts.
   function liveEdgeHtml() {
     const steps = sheetLiveSteps || [];
+    // A DIRECT reply to the user is a normal conversation turn — render it like
+    // the main chat (streaming prose + a quiet pulse), never the thought-chain.
+    // No orphaned timeline node, no "logic thread" for an answer they asked for.
+    if (sheetDirectReply) {
+      const t = (sheetLiveText || "").trim();
+      return '<div id="liveEdge" class="liveplain">'
+        + (t ? '<div class="md">' + md(t) + "</div>" : "")
+        + '<div class="thinking"><span class="pulse"></span><span class="tlbl show">working…</span></div>'
+        + "</div>";
+    }
     // All but the last are finished thoughts; the last is still forming → hidden
     // behind "working…" rather than shown as raw growing prose.
     const done = steps.slice(0, Math.max(0, steps.length - 1));
@@ -1256,7 +1272,7 @@
   }
   function openSheet(opts) {
     clearInterval(missionPoll); missionPoll = 0;
-    sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false;
+    sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false;
     const sh = $("sheet");
     sh.style.height = ""; sh.style.maxHeight = ""; sh.style.transition = "";
     $("sheetIco").textContent = opts.ico || "•";
@@ -1273,7 +1289,7 @@
     typeset($("sheetBody"));
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
   }
-  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; }
+  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; }
   // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
   // chat composer), Enter sends, Shift+Enter is a newline. The pinned footer +
   // the visualViewport lift keep it above the keyboard.
@@ -1363,6 +1379,9 @@
     // thread folds them in — so a reply never blanks out while the box persists.
     const optimistic = [];
     let lastSig = "";
+    // Set when YOU act (send a reply) so that paint re-pins to the bottom to show
+    // it — distinct from a background poll, which must hold your scroll position.
+    let pinBottom = false;
     openSheet({
       intent: readonly ? "Mission · complete" : "Mission",
       title: mc.title, ico: readonly ? "✓" : "◎", cls: readonly ? "g" : "",
@@ -1378,6 +1397,10 @@
         // the turn — so there's never a dead gap (the "no sign of life" the user
         // hit). Real runtime/status events take over and a safety timer clears it.
         sheetOptimisticWorking = true;
+        // You typed this → the supervisor's reply is a direct, natural turn. Keep
+        // the live edge plain (no thought-chain) until this run ends.
+        sheetDirectReply = true;
+        pinBottom = true; // your own message → scroll to show it
         setTimeout(() => { if (sheetOptimisticWorking) { sheetOptimisticWorking = false; if (sheetRepaint) void sheetRepaint(); } }, 15000);
         lastSig = ""; // force the next paint to re-render with the new bubble
         paint();
@@ -1450,9 +1473,17 @@
       // you. Idle ≠ asleep: it's waiting on its workers and free for a question.
       if (!showLive && !readonly && restPlus.length) body += '<div class="idlehint">Ready for you — it’s waiting on its workers and self-checks on its own schedule. Ask it anything below.</div>';
       const be = $("sheetBody");
-      const atBottom = be.scrollHeight - be.scrollTop - be.clientHeight < 80;
+      // Setting innerHTML resets scrollTop to 0, which yanked the user to the TOP
+      // every time a poll folded in a turn while they were reading mid-thread. Land
+      // at the bottom on the FIRST paint (loading → content); after that, stay
+      // pinned to the bottom only if you were already there, else hold your exact
+      // place — never an auto-scroll that forces you back down.
+      const firstPaint = !!be.querySelector("#mLoad");
+      const prevTop = be.scrollTop;
+      const wasBottom = be.scrollHeight - be.scrollTop - be.clientHeight < 80;
       be.innerHTML = body; typeset(be);
-      if (atBottom) be.scrollTop = be.scrollHeight;
+      be.scrollTop = (firstPaint || wasBottom || pinBottom) ? be.scrollHeight : prevTop;
+      pinBottom = false;
     }
     // Stream this supervisor's in-flight words into the thread (runtime events)
     // and fold in its turns as they land — see it supervising on the fly.
@@ -1509,14 +1540,18 @@
       if (sig === lastSig) return; // unchanged — live edge updates itself; don't disrupt reading
       lastSig = sig;
       const be = $("sheetBody");
-      const atBottom = be.scrollHeight - be.scrollTop - be.clientHeight < 90;
+      // First paint lands at the bottom; later paints hold your place (never yank
+      // to the top on re-render) and only re-pin to the bottom if you were there.
+      const firstPaint = !!be.querySelector("#wkLoad");
+      const prevTop = be.scrollTop;
+      const wasBottom = be.scrollHeight - be.scrollTop - be.clientHeight < 90;
       be.innerHTML = '<div class="lbl">Thread · supervisor ↔ worker</div>' +
         (err
           ? '<div class="md dim">Couldn’t load: ' + esc(err) + "</div>"
           : threadHtml(msgs, { user: "Supervisor", assistant: "Worker" }) + (showLive ? liveEdgeHtml() : "")) +
         '<div class="readonly">This back-and-forth is the <b>supervisor</b> briefing and steering the <b>worker</b> — not you. Read-only: if it’s off track, steer the supervisor or re-scope the mission.</div>';
       typeset(be);
-      if (atBottom) be.scrollTop = be.scrollHeight;
+      be.scrollTop = (firstPaint || wasBottom) ? be.scrollHeight : prevTop;
     }
     sheetRepaint = paint;
     await paint();
