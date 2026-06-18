@@ -1739,9 +1739,15 @@
         .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
       if (archived.length) {
         const ah = el('<button class="arch-h"><span class="arch-cv">' + (archiveOpen ? "▾" : "▸") + "</span><span>Archive · " + archived.length + " completed</span></button>");
-        ah.onclick = () => { archiveOpen = !archiveOpen; loadActivity(); };
+        const cv = ah.querySelector(".arch-cv");
         box.appendChild(ah);
-        if (archiveOpen) for (const mc of archived) {
+        // Toggle the archive locally: flip a pre-built holder + the caret glyph. The
+        // old path re-ran loadActivity() on every tap (3 network round-trips + a full
+        // page rebuild) — the lag/scroll-jump. Mirrors the Alerts archive toggle below.
+        const archHolder = el("<div></div>"); archHolder.style.display = archiveOpen ? "" : "none";
+        box.appendChild(archHolder);
+        ah.onclick = () => { archiveOpen = !archiveOpen; archHolder.style.display = archiveOpen ? "" : "none"; cv.textContent = archiveOpen ? "▾" : "▸"; };
+        for (const mc of archived) {
           const key = (mc.mission || mc.title || "").trim() || mc.title;
           const workers = convs.filter((w) => w.source === "worker" && (w.mission || "").trim() === key);
           const row = el('<button class="arch-row"><span class="arch-t"></span><span class="arch-age"></span><span class="chev">›</span></button>');
@@ -1759,7 +1765,7 @@
             () => api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id }) }).then(() => toast("Mission deleted.")).catch(() => {}),
             loadActivity,
           );
-          box.appendChild(row);
+          archHolder.appendChild(row);
         }
       }
 
