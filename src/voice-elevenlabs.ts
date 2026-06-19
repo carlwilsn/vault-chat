@@ -1489,6 +1489,22 @@ export type VoicePromptContext = {
   skillsIndex: string;
 };
 
+// Provision the ElevenLabs agent at app launch (when a key exists) so voice is
+// ready on the first mic-tap. ensureAgent used to run only on mic-tap, so after
+// an app update — which bumps AGENT_CONFIG_VERSION and forces a re-provision —
+// voice could appear broken until you opened the mic, and previously wouldn't
+// pick up until a Settings visit. Idempotent: returns the cached agent unless
+// stale. No-op when no key is configured.
+export async function initVoiceAgentOnLaunch(): Promise<void> {
+  const key = useStore.getState().serviceKeys.elevenlabs;
+  if (!key) return;
+  try {
+    await ensureAgent(key);
+  } catch (e) {
+    console.warn("[voice-eleven] launch agent init failed:", e);
+  }
+}
+
 export async function loadVoicePromptContext(
   vault: string | null,
 ): Promise<VoicePromptContext> {

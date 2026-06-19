@@ -53,6 +53,7 @@ export default function App() {
   const loadConversations = useStore((s) => s.loadConversations);
   const conversationsLoaded = useStore((s) => s.conversationsLoaded);
   const newConversation = useStore((s) => s.newConversation);
+  const elevenKey = useStore((s) => s.serviceKeys.elevenlabs);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -251,6 +252,14 @@ export default function App() {
       loadConversations();
     }
   }, [vaultPath, conversationsLoaded, loadConversations]);
+
+  // Provision the ElevenLabs voice agent on launch once a key + vault are
+  // available, so voice works on the first mic-tap without first opening
+  // Settings — matters most right after an app update bumps the agent config.
+  useEffect(() => {
+    if (!vaultPath || !elevenKey) return;
+    void import("./voice-elevenlabs").then((m) => m.initVoiceAgentOnLaunch());
+  }, [vaultPath, elevenKey]);
 
   // Per-vault status refresh when the active vault changes (so the
   // settings UI reflects the right vault's poller state).
