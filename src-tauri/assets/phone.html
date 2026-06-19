@@ -497,7 +497,7 @@
       <div id="msgs"></div>
       <div class="composer">
         <div class="field">
-          <textarea id="input" rows="1" placeholder="Message…" enterkeyhint="send" autocomplete="off"></textarea>
+          <textarea id="input" rows="1" placeholder="Message…" enterkeyhint="enter" autocomplete="off"></textarea>
           <button class="send" id="sendBtn" aria-label="send">↑</button>
         </div>
       </div>
@@ -1354,6 +1354,7 @@
   function wireReply(foot, onSend) {
     if (!foot) return;
     const ta = foot.querySelector(".rinp"); if (!ta) return;
+    ta.setAttribute("enterkeyhint", enterSends() ? "send" : "enter");
     const autosize = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; };
     ta.addEventListener("input", autosize);
     // Focusing the reply expands the sheet to fill the space above the keyboard
@@ -1447,7 +1448,7 @@
       intent: readonly ? "Mission · complete" : "Mission",
       title: mc.title, ico: readonly ? "✓" : "◎", cls: readonly ? "g" : "",
       bodyHtml: '<div class="alsum-load" id="mLoad">loading…</div>',
-      footHtml: readonly ? "" : '<div class="reply"><textarea class="rinp" rows="1" placeholder="steer the supervisor, or tell it to spawn a worker…" autocomplete="off"></textarea><button class="rsend">↑</button></div>',
+      footHtml: readonly ? "" : '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="steer the supervisor, or tell it to spawn a worker…" autocomplete="off"></textarea><button class="rsend">↑</button></div>',
       action: readonly ? null : { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
       // A NORMAL conversation: sending keeps the sheet open, shows the message
       // right away, and the poll below folds in the supervisor's reply. Not a
@@ -2032,16 +2033,24 @@
   $("drawer").addEventListener("click", (e) => { if (e.target === $("drawer")) $("drawer").classList.remove("open"); });
   $("killAllBtn").onclick = async () => { const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null); const d = r ? await r.json().catch(() => ({})) : {}; toast(d.result || "Kill-all sent."); };
 
-  // Composer Enter-key behavior (per-device). Default: Enter sends; toggle off so
-  // Return inserts a line break and you send via the button — there's no
-  // Shift+Enter on a phone keyboard, so this is the only way to space a message.
-  function enterSends() { return localStorage.getItem("vc_phone_enter_sends") !== "false"; }
+  // Composer Enter-key behavior (per-device). Default OFF: the Return key inserts
+  // a line break and you send with the button — an iOS keyboard has no
+  // Shift+Enter, so that's the only way to write a multi-line message. Toggle on
+  // if you'd rather Return send. applyEnterKeyHint keeps the iOS keyboard's
+  // return/send key label in sync with the mode.
+  function enterSends() { return localStorage.getItem("vc_phone_enter_sends") === "true"; }
+  function applyEnterKeyHint() {
+    const hint = enterSends() ? "send" : "enter";
+    const main = $("input"); if (main) main.setAttribute("enterkeyhint", hint);
+    document.querySelectorAll(".rinp").forEach((r) => r.setAttribute("enterkeyhint", hint));
+  }
   (() => {
     const chk = $("enterSendsChk");
     if (!chk) return;
     chk.checked = enterSends();
-    chk.addEventListener("change", () => { localStorage.setItem("vc_phone_enter_sends", chk.checked ? "true" : "false"); });
+    chk.addEventListener("change", () => { localStorage.setItem("vc_phone_enter_sends", chk.checked ? "true" : "false"); applyEnterKeyHint(); });
   })();
+  applyEnterKeyHint();
 
   // ---------- push ----------
   const b64uToBytes = (s) => { const pad = "=".repeat((4 - (s.length % 4)) % 4); const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(raw, (c) => c.charCodeAt(0)); };
