@@ -105,6 +105,12 @@
   .nturn{display:flex;flex-direction:column;gap:3px}
   .nrole{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim)}
   .ntext{font-size:13px;line-height:1.45;white-space:pre-wrap;color:var(--text)}
+  /* new-note composer */
+  .ncompose{display:flex;gap:8px;align-items:flex-end;padding:10px 14px;border-bottom:1px solid var(--line)}
+  .ncompose textarea{flex:1;min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:9px 12px;color:var(--text);font-size:14px;outline:none;resize:none;line-height:1.4;max-height:120px;overflow-y:auto;font-family:inherit}
+  .ncompose textarea::placeholder{color:var(--dim)}
+  .nadd{flex:none;background:var(--primary);color:var(--primary-fg);border-radius:12px;padding:9px 14px;font-size:13px;font-weight:600}
+  .nadd:disabled{opacity:.5}
 
   /* chat */
   #msgs{flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding:8px 14px 6px;display:flex;flex-direction:column}
@@ -505,7 +511,7 @@
     </section>
     <section class="page" id="pAct"><div class="scroll" id="actScroll"></div></section>
     <section class="page" id="pAl"><div class="scroll" id="alScroll"></div></section>
-    <section class="page" id="pNotes"><div class="scroll" id="notesScroll"></div></section>
+    <section class="page" id="pNotes"><div class="ncompose"><textarea id="noteInput" rows="1" placeholder="Jot a note…" enterkeyhint="enter" autocomplete="off"></textarea><button class="nadd" id="noteAddBtn">Save</button></div><div class="scroll" id="notesScroll"></div></section>
   </div>
 
   <div id="drawer">
@@ -1881,7 +1887,7 @@
       if (d.error) throw new Error(d.error);
       const list = d.notes || [];
       box.innerHTML = "";
-      if (!list.length) { box.appendChild(el('<div class="empty">No notes yet. Notes you capture on the desktop — a highlight, a question, an answer — show up here.</div>')); return; }
+      if (!list.length) { box.appendChild(el('<div class="empty">No notes yet. Jot one above, or capture them on the desktop — they all show up here.</div>')); return; }
       const open = list.filter((n) => n.status !== "resolved");
       const resolved = list.filter((n) => n.status === "resolved");
       if (open.length) box.appendChild(el('<div class="sec">Open · ' + open.length + "</div>"));
@@ -1899,6 +1905,28 @@
       box.appendChild(el('<div style="height:18px"></div>'));
     } catch (e) { box.innerHTML = '<div class="empty">Notes unavailable: ' + esc(String(e.message || e)) + "</div>"; }
   }
+  // New-note composer (POST /notes → app buildNote/addNote). Save button submits;
+  // Return inserts a newline (matches the per-device Enter preference).
+  (() => {
+    const ta = $("noteInput"), btn = $("noteAddBtn");
+    if (!ta || !btn) return;
+    const autosize = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; };
+    ta.addEventListener("input", autosize);
+    btn.onclick = async () => {
+      const text = ta.value.trim();
+      if (!text) return;
+      btn.disabled = true;
+      try {
+        const r = await api("/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || d.error) throw new Error(d.error || r.status);
+        ta.value = ""; autosize();
+        toast("Note saved.");
+        void loadNotes();
+      } catch (e) { toast("Couldn't save: " + (e.message || e)); }
+      finally { btn.disabled = false; }
+    };
+  })();
 
   async function loadAlerts() {
     const box = $("alScroll");

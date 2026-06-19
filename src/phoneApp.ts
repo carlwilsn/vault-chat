@@ -768,6 +768,32 @@ export async function startPhoneAppHost(): Promise<void> {
     },
   );
 
+  // Capture a new note from the phone. Pure text capture (no anchors) — the same
+  // shape the desktop's quick-note and the voice CreateNote produce. addNote
+  // appends to notes.jsonl and updates the in-memory store, so it shows up on the
+  // desktop live and on the phone's next /notes fetch.
+  await listen<{ reqId: string; text?: string }>("phone:note", async (event) => {
+    const { reqId, text } = event.payload;
+    try {
+      const s = useStore.getState();
+      if (!s.vaultPath) {
+        respond(reqId, { error: "no vault open" });
+        return;
+      }
+      const t = (text ?? "").trim();
+      if (!t) {
+        respond(reqId, { error: "empty note" });
+        return;
+      }
+      const { buildNote } = await import("./notes");
+      const note = buildNote({ anchors: [], userDraft: t });
+      await s.addNote(note);
+      respond(reqId, { ok: true, id: note.id });
+    } catch (e) {
+      respond(reqId, { error: String(e) });
+    }
+  });
+
   // Vault-only resolver for routes that read disk directly (/conversations,
   // /file) — works even when no ElevenLabs key exists for the voice context.
   await listen<{ reqId: string }>("phone:vault", (event) => {

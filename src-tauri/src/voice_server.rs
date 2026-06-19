@@ -337,6 +337,19 @@ fn handle(mut req: Request, token: &str) {
             };
             let _ = req.respond(body);
         }
+        (Method::Post, "/notes") => {
+            // Capture a new note from the phone. Relay to the app so it goes
+            // through the same buildNote/addNote path the desktop uses (live
+            // store update + disk append), rather than hand-rolling the JSON here.
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            let body = match relay_request("phone:note", payload, Duration::from_secs(10)) {
+                Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
+                _ => resp_text(503, "application/json", "{\"error\":\"app not answering\"}".into()),
+            };
+            let _ = req.respond(body);
+        }
         (Method::Post, "/notifications/read") => {
             let mut raw = String::new();
             let _ = req.as_reader().read_to_string(&mut raw);
