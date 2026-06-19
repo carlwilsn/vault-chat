@@ -44,6 +44,7 @@ async function wireToolRelay(): Promise<void> {
   // state). Empty result → the box falls back to its cached push / 503s.
   await listen<{ reqId: string }>("voice:context", async (event) => {
     const { reqId } = event.payload;
+    const t0 = Date.now();
     let result = "";
     try {
       // Phone voice runs the brain on the box but has no thread of its own.
@@ -53,9 +54,14 @@ async function wireToolRelay(): Promise<void> {
       phoneVoiceConvId = ensureVoiceConversation();
       const ctx = await buildPhoneVoiceContext();
       if (ctx) result = JSON.stringify(ctx);
-    } catch {
-      /* answer empty — box falls back */
+      // Log the failure modes — this build used to swallow errors silently, which
+      // is why flaky voice starts had "no clear pattern". Now we can see which
+      // path failed and how long it took.
+      else vlog("voice.ctx.empty", { reqId, ms: Date.now() - t0, note: "no key/vault or agent provision failed" });
+    } catch (e) {
+      vlog("voice.ctx.error", { reqId, ms: Date.now() - t0, error: String(e) });
     }
+    if (result) vlog("voice.ctx.ok", { reqId, ms: Date.now() - t0 });
     await invoke("voice_tool_respond", { reqId, result }).catch(() => {});
   });
 

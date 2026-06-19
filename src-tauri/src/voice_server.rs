@@ -471,14 +471,26 @@ fn handle(mut req: Request, token: &str) {
             let ctx = request_fresh_context()
                 .or_else(|| ctx_slot().lock().unwrap_or_else(|e| e.into_inner()).clone());
             let body = match ctx {
-                Some(ctx) => match mint_session(&ctx) {
-                    Ok(j) => resp_text(200, "application/json", j),
-                    Err(e) => resp_text(
-                        502,
-                        "application/json",
-                        json!({ "error": e }).to_string(),
-                    ),
-                },
+                Some(ctx) => {
+                    // Retry a transient ElevenLabs failure (slow / 5xx get_signed_url)
+                    // before surfacing 502 — the phone only auto-retried once, so a
+                    // single hiccup here killed the start. Two extra shots, short backoff.
+                    let mut minted = mint_session(&ctx);
+                    let mut tries = 0;
+                    while minted.is_err() && tries < 2 {
+                        std::thread::sleep(Duration::from_millis(600));
+                        minted = mint_session(&ctx);
+                        tries += 1;
+                    }
+                    match minted {
+                        Ok(j) => resp_text(200, "application/json", j),
+                        Err(e) => resp_text(
+                            502,
+                            "application/json",
+                            json!({ "error": e }).to_string(),
+                        ),
+                    }
+                }
                 None => resp_text(
                     503,
                     "application/json",
@@ -728,7 +740,11 @@ fn request_fresh_context() -> Option<Ctx> {
         pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
         return None;
     }
-    let out = rx.recv_timeout(Duration::from_secs(8));
+    // 12s (not 8): building the voice context on the app side is an ElevenLabs
+    // agent check plus a fan-out of vault file reads, and a busy webview or a
+    // git-sync touching files can push it past a tighter budget — which showed
+    // up as flaky "voice host not ready". The phone's retry loop tolerates it.
+    let out = rx.recv_timeout(Duration::from_secs(12));
     pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     let s = out.ok()?;
     let v: Value = serde_json::from_str(&s).ok()?;

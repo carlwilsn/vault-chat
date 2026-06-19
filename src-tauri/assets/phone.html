@@ -2181,7 +2181,15 @@
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext)(); vMicCtx.resume().catch(() => {}); const src = vMicCtx.createMediaStreamSource(micStream); vMicAnalyser = vMicCtx.createAnalyser(); vMicAnalyser.fftSize = 64; vMicAnalyser.smoothingTimeConstant = 0.5; src.connect(vMicAnalyser); vMicBuf = new Uint8Array(vMicAnalyser.frequencyBinCount); } catch { vMicAnalyser = null; }
       let cfg = null;
-      for (let a = 0; a < 6; a++) { const r = await api("/session", { method: "POST" }); if (r.ok) { cfg = await r.json(); break; } if (r.status === 503 && a < 5) { await new Promise((res) => setTimeout(res, 2000)); continue; } throw new Error(`session ${r.status}: ${(await r.text()).slice(0, 200)}`); }
+      let sessErr = "";
+      for (let a = 0; a < 6; a++) {
+        try { const r = await api("/session", { method: "POST" }); if (r.ok) { cfg = await r.json(); break; } sessErr = `session ${r.status}: ${(await r.text()).slice(0, 200)}`; }
+        catch (e) { sessErr = String((e && e.message) || e); }
+        // Retry ANY failure (502 transient mint, network blip, 503 not-ready), not
+        // just 503 — a single stray error used to kill the whole start. Backoff.
+        if (a < 5) { await new Promise((res) => setTimeout(res, 700 * (a + 1))); continue; }
+        throw new Error(sessErr || "session not ready");
+      }
       if (!cfg) throw new Error("session not ready");
       const sdk = (await sdkPromise) || (await import("https://esm.sh/@elevenlabs/client@1.7.0")); const { Conversation } = sdk;
       let timedOut = false, watchdog = 0;
@@ -2200,7 +2208,7 @@
       clearTimeout(watchdog);
     } catch (e) {
       vConnecting = false; vTeardownAudio(); document.body.classList.remove("vconnecting");
-      if (!vAutoRetried) { vAutoRetried = true; setTimeout(() => vStart(), 800); return; }
+      if (!vAutoRetried) { vAutoRetried = true; setTimeout(() => { try { if (vMicCtx && vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {}); } catch {} vStart(); }, 800); return; }
       setVErr(String((e && e.message) || e));
     }
   }

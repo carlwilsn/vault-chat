@@ -1462,11 +1462,17 @@ export async function buildPhoneVoiceContext(): Promise<{
   const state = useStore.getState();
   const elKey = state.serviceKeys.elevenlabs;
   if (!elKey || !state.vaultPath) return null;
-  const agentId = await ensureAgent(elKey);
+  // Run the agent check and the prompt-context file reads CONCURRENTLY — this
+  // build sits on the phone /session critical path (a ~12s relay budget), so
+  // serializing a network call behind a fan-out of vault reads is what made
+  // voice start flaky when the box was busy.
+  const [agentId, customHeader, northStar, promptContext] = await Promise.all([
+    ensureAgent(elKey),
+    loadVaultVoicePrompt(state.vaultPath),
+    loadVaultNorthStar(state.vaultPath),
+    loadVoicePromptContext(state.vaultPath),
+  ]);
   if (!agentId) return null;
-  const customHeader = await loadVaultVoicePrompt(state.vaultPath);
-  const northStar = await loadVaultNorthStar(state.vaultPath);
-  const promptContext = await loadVoicePromptContext(state.vaultPath);
   return {
     elKey,
     agentId,
