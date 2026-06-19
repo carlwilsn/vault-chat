@@ -82,7 +82,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v17-bash";
+const AGENT_CONFIG_VERSION = "v18-mission";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -620,6 +620,27 @@ const CLIENT_TOOL_DEFINITIONS = [
         },
       },
       required: ["prompt"],
+    },
+  },
+  {
+    name: "ProposeMission",
+    description:
+      "Propose a mission to the user as an Approve card. Use when they want you to actually DO / build / run / research something substantial — not a quick answer. Give a clear `title` (the goal) and `tasks` (the done-when sub-results). The card appears in THIS conversation; the user can open this thread from their conversations list (even after backgrounding the voice page) and tap Approve to start it. Nothing runs until they approve — never start the work yourself, and offer it rather than firing it silently.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        title: {
+          type: "string",
+          description: "The mission goal, briefly stated.",
+        },
+        tasks: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "The done-when sub-components — each a concrete sub-result that defines the mission complete.",
+        },
+      },
+      required: ["title", "tasks"],
     },
   },
 ];
@@ -1557,6 +1578,9 @@ function buildSystemPrompt(
     "- CreateNote saves a quick reminder when the user says 'remember', 'jot that down'. Keep notes brief.",
     "- ListNotes shows flagged items — only when the user asks for them; never to open a session. ResolveNote closes one when it's been addressed.",
     "",
+    "Missions (bigger jobs):",
+    "- ProposeMission when the user wants you to actually DO / build / run / research something substantial — not a quick answer. Give a clear title (the goal) and tasks (the done-when sub-results). It renders as an Approve card in THIS conversation; the user can open this thread from their conversations list (even after backgrounding the voice page) and tap Approve to start it. Nothing runs until they approve — offer it ('want me to set this up as a mission?') rather than firing it silently, and never start the work yourself.",
+    "",
     "Web:",
     "- WebFetch when you have a URL — reads the page as text.",
     "- WebSearch for current info or to find a URL. Requires a Tavily key; if missing the tool returns an error you can relay to the user.",
@@ -2019,6 +2043,21 @@ function withTracking<A>(
     logToolCall(name, args, result);
     return result;
   };
+}
+
+// Build the canonical ```plan``` block from a ProposeMission call — the same
+// shape chat-controller's planBlockFromProposal produces, so segmentAssistant /
+// the phone's planParse render it as an Approve card. "" when there's nothing
+// to propose.
+function voicePlanBlock(title: string, tasks: string[]): string {
+  const lines = ["```plan"];
+  if (title.trim()) lines.push(`title: ${title.trim()}`);
+  for (const t of tasks) {
+    const s = String(t ?? "").trim();
+    if (s) lines.push(`- ${s}`);
+  }
+  lines.push("```");
+  return lines.length > 2 ? lines.join("\n") : "";
 }
 
 export function buildClientToolHandlers(): Record<
@@ -2587,18 +2626,36 @@ export function buildClientToolHandlers(): Record<
         return `Error: ${(e as any)?.message ?? String(e)}`;
       }
     }),
+    ProposeMission: async (args: { title: string; tasks: string[] }) => {
+      const title = typeof args.title === "string" ? args.title.trim() : "";
+      const tasks = Array.isArray(args.tasks) ? args.tasks : [];
+      const block = voicePlanBlock(title, tasks);
+      if (!block) {
+        return "Couldn't build the proposal — it needs a title and at least one done-when task.";
+      }
+      // Drop the plan card into the conversation as a real assistant message so
+      // it renders as an Approve card. The user can open this thread from their
+      // conversations list (the voice page can be in the background) and tap
+      // Approve to start the mission — the same flow as the text assistant.
+      useStore.getState().appendMessage({ role: "assistant", content: block });
+      const n = tasks.filter((t) => String(t ?? "").trim()).length;
+      return `Proposed mission "${title}" — ${n} done-when component${n === 1 ? "" : "s"}, shown as an Approve card in this conversation. Nothing has started; tell them it's ready to approve from their conversations list and stay conversational. Don't repeat the proposal or start the work yourself.`;
+    },
     CancelSchedule: withTracking(
       "CancelSchedule",
       async (args: { schedule_id: string }) => {
         const vault = useStore.getState().vaultPath;
         if (!vault) return "Error: no active vault";
         try {
-          const { readSchedules, writeSchedules } = await import("./schedules");
+          const { readSchedules } = await import("./schedules");
+          const { deleteSchedule } = await import("./schedulerLoop");
           const list = await readSchedules(vault);
           const target = list.find((s) => s.id === args.schedule_id);
           if (!target) return `No schedule with id ${args.schedule_id}.`;
-          const next = list.filter((s) => s.id !== args.schedule_id);
-          await writeSchedules(vault, next);
+          // deleteSchedule writes the schedules-deleted.jsonl tombstone before
+          // rewriting the row out — without it a merge=union sync resurrects the
+          // cancelled schedule (same bug fixed in the text CancelSchedule tool).
+          await deleteSchedule(vault, args.schedule_id);
           return `Cancelled: ${target.name || target.prompt.slice(0, 60)}`;
         } catch (e) {
           return `Error: ${(e as any)?.message ?? String(e)}`;
