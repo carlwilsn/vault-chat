@@ -521,11 +521,6 @@
       <button class="btn solid" id="pushBtn">Enable notifications</button>
       <button class="btn" id="pushTestBtn">Send test notification</button>
       <div class="note">Push needs this page added to your Home Screen (Share → Add to Home Screen) on iOS 16.4+. You won't get a notification for things you're already looking at in the app.</div>
-      <h3>Input</h3>
-      <label class="row" style="display:flex;align-items:center;gap:10px;cursor:pointer">
-        <input type="checkbox" id="enterSendsChk" style="width:18px;height:18px;flex:none" />
-        <span><b>Enter key sends</b><small>Off: Return adds a line break — tap the send button to send.</small></span>
-      </label>
       <div style="flex:1;min-height:18px"></div>
       <div class="note" id="boxVer"></div>
       <button class="btn warn" id="killAllBtn">Kill all runs</button>
@@ -1078,7 +1073,7 @@
     }
   }
   sendBtn.onclick = () => { if (running && convId) void killCurrent(); else void send(); };
-  input.addEventListener("keydown", (e) => { if (e.key !== "Enter" || e.isComposing) return; if (enterSends() ? !e.shiftKey : (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } });
+  // Enter inserts a newline on the phone; sending is via the send button (no Shift+Enter on an iOS keyboard).
   let autosizeRAF = 0;
   function scheduleAutosize() {
     if (autosizeRAF) return;
@@ -1360,7 +1355,7 @@
   function wireReply(foot, onSend) {
     if (!foot) return;
     const ta = foot.querySelector(".rinp"); if (!ta) return;
-    ta.setAttribute("enterkeyhint", enterSends() ? "send" : "enter");
+    ta.setAttribute("enterkeyhint", "enter");
     const autosize = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; };
     ta.addEventListener("input", autosize);
     // Focusing the reply expands the sheet to fill the space above the keyboard
@@ -1377,7 +1372,7 @@
     ta.addEventListener("blur", () => { const sh = $("sheet"); sh.classList.remove("editing"); sh.style.maxHeight = ""; });
     const go = () => { const v = ta.value.trim(); if (!v) return; ta.value = ""; autosize(); onSend(v); };
     foot.querySelector(".rsend").onclick = go;
-    ta.addEventListener("keydown", (e) => { if (e.key !== "Enter" || e.isComposing) return; if (enterSends() ? !e.shiftKey : (e.metaKey || e.ctrlKey)) { e.preventDefault(); go(); } });
+    // Enter inserts a newline; sending is via the send button.
     setTimeout(autosize, 0);
   }
   $("sheetScrim").onclick = closeSheet; $("sheetX").onclick = closeSheet;
@@ -2061,24 +2056,9 @@
   $("drawer").addEventListener("click", (e) => { if (e.target === $("drawer")) $("drawer").classList.remove("open"); });
   $("killAllBtn").onclick = async () => { const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null); const d = r ? await r.json().catch(() => ({})) : {}; toast(d.result || "Kill-all sent."); };
 
-  // Composer Enter-key behavior (per-device). Default OFF: the Return key inserts
-  // a line break and you send with the button — an iOS keyboard has no
-  // Shift+Enter, so that's the only way to write a multi-line message. Toggle on
-  // if you'd rather Return send. applyEnterKeyHint keeps the iOS keyboard's
-  // return/send key label in sync with the mode.
-  function enterSends() { return localStorage.getItem("vc_phone_enter_sends") === "true"; }
-  function applyEnterKeyHint() {
-    const hint = enterSends() ? "send" : "enter";
-    const main = $("input"); if (main) main.setAttribute("enterkeyhint", hint);
-    document.querySelectorAll(".rinp").forEach((r) => r.setAttribute("enterkeyhint", hint));
-  }
-  (() => {
-    const chk = $("enterSendsChk");
-    if (!chk) return;
-    chk.checked = enterSends();
-    chk.addEventListener("change", () => { localStorage.setItem("vc_phone_enter_sends", chk.checked ? "true" : "false"); applyEnterKeyHint(); });
-  })();
-  applyEnterKeyHint();
+  // (Composer Enter-key toggle removed — the phone Return key always inserts a
+  // newline; sending is via the send button. enterkeyhint="enter" is set in the
+  // static markup and on the sheet reply input.)
 
   // ---------- push ----------
   const b64uToBytes = (s) => { const pad = "=".repeat((4 - (s.length % 4)) % 4); const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(raw, (c) => c.charCodeAt(0)); };

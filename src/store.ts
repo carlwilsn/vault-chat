@@ -196,7 +196,6 @@ const VAULT_STORAGE = "vault_chat_last_vault";
 const CHAT_STORAGE = "vault_chat_history";
 const STRICT_VAULT_STORAGE = "vault_chat_strict_vault";
 const BASH_DISABLED_STORAGE = "vault_chat_bash_disabled";
-const ENTER_SENDS_STORAGE = "vault_chat_enter_sends";
 const REASONING_EFFORT_STORAGE = "vault_chat_reasoning_effort";
 const AUTO_COST_BIAS_STORAGE = "vault_chat_auto_cost_bias";
 // The active/open conversation is PER-DEVICE, not synced: your phone chat and
@@ -426,10 +425,6 @@ type State = {
   strictVaultMode: boolean;
   // Don't expose the Bash tool to the agent at all.
   bashDisabled: boolean;
-  // Chat composer Enter-key behavior. true → Enter sends, Shift+Enter inserts a
-  // newline (the default). false → Enter inserts a newline and Cmd/Ctrl+Enter
-  // sends — for users who want to compose multi-line/spaced messages freely.
-  enterSends: boolean;
   // How hard reasoning-capable models think before answering.
   reasoningEffort: ReasoningEffort;
   // Cost ⇄ quality dial for OpenRouter's auto router (0 = quality … 10 =
@@ -622,7 +617,6 @@ type State = {
   setStrictVaultMode: (b: boolean) => void;
   setAutoRouterCostBias: (n: number) => void;
   setBashDisabled: (b: boolean) => void;
-  setEnterSends: (b: boolean) => void;
   setReasoningEffort: (e: ReasoningEffort) => void;
   setSkills: (s: Skill[]) => void;
   setBusy: (b: boolean) => void;
@@ -775,7 +769,6 @@ export const useStore = create<State>((set) => ({
   theme: loadTheme(),
   strictVaultMode: loadBoolFlag(STRICT_VAULT_STORAGE, true),
   bashDisabled: loadBoolFlag(BASH_DISABLED_STORAGE, true),
-  enterSends: loadBoolFlag(ENTER_SENDS_STORAGE, true),
   reasoningEffort: loadReasoningEffort(),
   autoRouterCostBias: loadNumFlag(AUTO_COST_BIAS_STORAGE, 7),
   skills: [],
@@ -1316,10 +1309,6 @@ export const useStore = create<State>((set) => ({
   setBashDisabled: (b) => {
     localStorage.setItem(BASH_DISABLED_STORAGE, String(b));
     set({ bashDisabled: b });
-  },
-  setEnterSends: (b) => {
-    localStorage.setItem(ENTER_SENDS_STORAGE, String(b));
-    set({ enterSends: b });
   },
   setReasoningEffort: (e) => {
     localStorage.setItem(REASONING_EFFORT_STORAGE, e);
