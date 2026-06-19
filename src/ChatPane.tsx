@@ -322,11 +322,17 @@ export function ChatPane() {
   // conversation is still running. Suppressed on the active chat since
   // the user is already watching it.
   const offscreenChats = conversations.filter((c) => c.id !== activeConversationId);
-  const indicatorKind: "running" | null = offscreenChats.some(
+  // Aggregate state of the chats you can't see: "running" (something is still
+  // thinking) takes priority, else "unseen" (a background chat finished and you
+  // haven't looked). Mirrors the per-row dot so the collapsed Chats button
+  // distinguishes generating from done-but-unseen.
+  const indicatorKind: "running" | "unseen" | null = offscreenChats.some(
     (c) => c.status === "running",
   )
     ? "running"
-    : null;
+    : offscreenChats.some((c) => c.unread)
+      ? "unseen"
+      : null;
   const toggleChatsPanel = () => setShowChatsPanel(!showChatsPanel);
   const [pendingImages, setPendingImages] = useState<
     Array<{
@@ -1030,10 +1036,20 @@ export function ChatPane() {
                   {indicatorKind && (
                     <span
                       className="relative inline-flex h-1.5 w-1.5 ml-0.5"
-                      title="A background chat is running"
+                      title={
+                        indicatorKind === "running"
+                          ? "A background chat is thinking"
+                          : "A background chat finished — unseen"
+                      }
                     >
-                      <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
-                      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+                      {indicatorKind === "running" ? (
+                        <>
+                          <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
+                          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+                        </>
+                      ) : (
+                        <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                      )}
                     </span>
                   )}
                 </button>
