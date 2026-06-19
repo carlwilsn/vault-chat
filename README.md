@@ -2,6 +2,8 @@
 
 A desktop app for your markdown notes with Claude (or GPT, or Gemini, or any OpenRouter model) wired into the editor, the PDF viewer, and the chat. Heavily inspired by Obsidian (any folder is a vault), Cursor (inline edit on selections), and Claude Code (a real local-file agent with Read / Write / Bash). Drag a box on any PDF and ask about the region — it sends the pixels, not just text, so math / handwriting / diagrams actually work.
 
+The same agent also runs work in the background — kick off a long task, schedule a recurring brief, or drive the whole thing from your phone — so the desktop isn't the only surface. See [Background work](#background-work-missions-schedules--the-cockpit) below.
+
 ![vault-chat demo](assets/demo.gif)
 
 ## Try it (Windows)
@@ -61,36 +63,50 @@ That's it — Read / Write / Edit / Bash / PDF marquee / inline edit all work on
 
 - **Ctrl+K inline edit** on any paragraph or code selection. `Ctrl+L` for an ask mode that answers in the same popover without touching the file.
 - **PDF marquee** — drag a rectangle over any region of a PDF. Selected text + the pixel screenshot go to the model together. Works on math, tables, scanned pages, handwriting.
-- **Voice mode** (`Ctrl+D`) — a hands-free conversation with the agent that still drives the file tools (`Read` / `Edit` / `Glob` / `Grep` / `NotebookEdit` / `PdfExtract` / `ListNotes` / `ResolveNote`). Interrupt mid-sentence and the agent stops talking, acknowledges, and reroutes — useful when you're studying and need to derail the explanation a few times before it clicks. Powered by ElevenLabs; needs a separate key (free tier is 15 min/month).
-- **Model-agnostic**. Anthropic, OpenAI, Google, or OpenRouter (one key, hundreds of models). Swap mid-session via the settings dropdown.
+- **A real local-file agent**. The chat agent has the full Claude-Code-style toolset — `Read` / `Write` / `Edit` / `Delete` / `Glob` / `Grep` / `Bash` / `ListDir` / `NotebookEdit`, plus `PdfExtract` / `PdfPageSnapshot` for documents, `WebSearch` / `WebFetch` for the web, and `GitLog` for history. It edits files, runs commands, and works across your whole vault.
+- **Voice mode** (`Ctrl+D`) — a hands-free conversation with the agent that still drives the file tools. Interrupt mid-sentence and the agent stops talking, acknowledges, and reroutes — useful when you're studying and need to derail the explanation a few times before it clicks. Powered by ElevenLabs; needs a separate key (free tier is 15 min/month).
+- **Model-agnostic, per role**. Anthropic, OpenAI, Google, or OpenRouter (one key, hundreds of models). Swap mid-session via the settings dropdown, or pick **Auto** for smart routing that saves credits. You can also set a different model per role — chat, the phone assistant, mission supervisors, background workers, and voice — so cheap models do the grunt work and a strong model handles the chat.
 - **Git-backed**. Every agent turn that touches files auto-commits. `Ctrl+H` opens a history modal with per-file timeline + one-click restore to any earlier commit. Vault never loses state.
+- **Per-vault memory**. The agent keeps a file-based memory scoped to each vault at `.vault-chat/memory/` — one fact per markdown file with an index it loads each session. Tell it "remember that I prefer X" and it persists; it travels with the vault in git. No special tools — it uses Read / Write / Edit, the way Claude Code keeps memory for itself.
 - **Notes scratchpad** (`Ctrl+N`). Capture a thought anchored to whatever you're looking at — file + line, PDF page + region, conversation turn. Stored as JSONL at `<vault>/.vault-chat/notes.jsonl`. The agent can list, create, resolve, and reopen them via `ListNotes` / `CreateNote` / `ResolveNote` / `ReopenNote` tools — ask "what did I flag?" or "remember this for later" and it does the right thing.
 - **File hiding**. Right-click any file or folder → Hide. Hidden entries drop out of the file tree but stay on disk; the list lives in `.vaultchatignore` at the vault root (gitignore-style syntax). This is purely a tree-view declutter for build artifacts and noise — *the agent still sees hidden files via Glob/Grep/Read.* Not a security boundary.
 - **Chat popout**. The external-link icon in the titlebar pops the chat into its own window so you can keep reading on the main one while a long agent run streams in the background. State stays in sync — same conversation, same tool calls, same scrollback. Close the popout to dock the chat back.
-- **Phone chat app** — the box serves a home-screen PWA over your Tailscale mesh (Settings → Phone). Full agent from your phone with streaming replies and real markdown, live run status with a deterministic kill button, tap-to-open vault files, and Web Push notifications for coach check-ins / ALERTs / run-done pings. Design notes in [docs/phone.md](docs/phone.md).
-- **Telegram bot** — connect a Telegram bot to any vault (Settings → Telegram) and talk to the agent from your phone. The bot has full access to the same tools and file system as the desktop chat. Each vault gets its own independent bot, so multiple vaults run simultaneously without colliding. Scheduled prompts that fire for a Telegram-sourced conversation are sent directly to your phone — set a daily reminder or a recurring brief once, and it lands in your chat without opening the app. Slash commands: `/new` starts a fresh conversation, `/reset` lets you reattach to a previous one.
-- **`Ctrl+J`** opens your system terminal in the active vault (Windows Terminal / Terminal.app / your default Linux emulator).
-- **`Alt+L`** flips the whole UI between light and dark.
-- **Editable everywhere** — explained below. The agent can write its own skills and tools right inside the meta vault.
+- **`Ctrl+T`** starts a fresh chat. **`Ctrl+J`** opens your system terminal in the active vault (Windows Terminal / Terminal.app / your default Linux emulator). **`Ctrl+Shift+F`** drops the chat into borderless fullscreen. **`Alt+L`** flips the whole UI between light and dark.
 
-## The editable surfaces
+## Background work: missions, schedules & the cockpit
 
-vault-chat treats every folder as a vault. Two are worth knowing about:
+The agent isn't only a chat box you watch. It can take on a goal, fan out into background work, and report back — on your desktop or your phone.
 
-| Surface | Where | What's there | Switch from |
-|---|---|---|---|
-| **User vault** | any folder you pick | your notes | titlebar → folder icon |
-| **Meta vault** | `%APPDATA%/com.vault-chat.app/meta/` (Windows) — same pattern Mac/Linux | `system.md`, `skills/`, `tools/` | settings → "Open meta vault" |
+- **Missions.** Ask for something big ("rewrite my lecture notes into a study guide, then quiz me on the weak spots") and the agent proposes a **mission** — a goal plus an explicit list of *done-when* criteria — as a plan card. You approve it (one tap), and a supervisor runs it: it spins up **workers** for the pieces, steers them, checks off each criterion as it lands, and retires the mission when everything's done. You watch progress accrue instead of babysitting a single long turn. Workers can run on a cheaper model than the supervisor (see per-role models above).
+- **Schedules.** Tell the agent "every weekday at 7am, brief me on what's due" or "remind me in an hour" and it sets up a schedule. Recurring or one-off, it fires whether or not the vault is in focus, and the result is summarized and delivered (push notification / alert feed). A morning **coach** check-in is just a daily schedule pointed at a coaching prompt. `Ctrl+Shift+S` opens the schedules panel.
+- **The cockpit.** A home-screen PWA that serves the *whole* agent to your phone over your [Tailscale](https://tailscale.com/) mesh (Settings → Phone gives you the link). Four surfaces: **Chat** (streaming replies, real markdown), **Voice**, **Activity** (live missions and workers with a thought→action timeline and a deterministic kill button), and **Alerts** (a two-class feed — informational pings and "needs you" decision cards you can answer in your own words). Vault files open in a tap; Web Push delivers coach check-ins, alerts, and run-done notifications even when the app is closed. Design notes in [docs/phone.md](docs/phone.md).
+- **Always-on mode.** Background-mode (Settings) keeps vault-chat running in the system tray and starting at login, so schedules and missions keep firing while the window is closed — turn it on for the one machine you want to be "always there." Vaults sync across your machines over git (auto-commit + pull), and a single-firer guard makes sure only one machine runs the scheduled work even when several have the vault open.
 
-Each is git-versioned with auto-commit. The titlebar shows a chip when you're in the meta vault so you never forget where you are.
+> These features lean on an always-on machine and a Tailscale tailnet — they're built for "set it running and check from your phone," not required for day-to-day desktop use. If you just want the editor + chat + PDF tools, ignore this section entirely.
+
+## Per-vault config — the `.vault-chat/` folder
+
+vault-chat treats **every folder as a vault**, and everything the agent needs travels *inside* the vault, in a `.vault-chat/` directory at its root. There's no separate global/meta vault — open a new folder and it's seeded from the app's bundled defaults on first use, then it's yours to edit. Because it lives in the vault, it syncs across your machines via git like any other file.
+
+| Path | What's there |
+|---|---|
+| `.vault-chat/agent/system.md` | the agent's system prompt for this vault |
+| `.vault-chat/agent/voice.md`, `assistant.md`, `supervisor.md` | role prompts (voice mode, phone assistant, mission supervisor) |
+| `.vault-chat/agent/north-star.md` | a short brief declaring what this vault is *for* — prepended to every turn so the agent enters pre-briefed (tutor vs. co-engineer vs. from-scratch). Edit it from the titlebar modal or just ask the agent to update it. |
+| `.vault-chat/skills/` | your custom skills (`/slash-command`s) |
+| `.vault-chat/tools/` | your custom tools |
+| `.vault-chat/memory/` | the agent's per-vault memory |
+| `.vault-chat/notes.jsonl`, `schedules.jsonl` | your `Ctrl+N` notes and your schedules |
+
+The vault is git-versioned with auto-commit, so all of the above is undoable and syncable. Stale default prompts auto-upgrade to the current bundle on open *unless you've edited them* — so an improved default reaches your existing vaults without ever clobbering your customizations.
 
 ### Creating new skills
 
-Ask the agent: *"Make me a skill for reviewing math HW."* It writes `<meta>/skills/review-hw/SKILL.md` with YAML front-matter. Next turn the skill is invokable as `/review-hw` in chat.
+Ask the agent: *"Make me a skill for reviewing math HW."* It writes `.vault-chat/skills/review-hw/SKILL.md` with YAML front-matter. Next turn the skill is invokable as `/review-hw` in chat.
 
 ### Creating new tools
 
-Ask: *"Build me a tool that fetches the Champions League standings."* The agent writes `<meta>/tools/champions-league/TOOL.md` (JSON Schema input spec) + `run.py` (reads stdin JSON, prints stdout JSON). Available on the next turn.
+Ask: *"Build me a tool that fetches the Champions League standings."* The agent writes `.vault-chat/tools/champions-league/TOOL.md` (JSON Schema input spec) + `run.py` (reads stdin JSON, prints stdout JSON). Available on the next turn, in that vault.
 
 ## Security
 
@@ -100,9 +116,9 @@ The agent cannot modify files inside any `.git/` directory — the file-op tools
 
 ### Sandboxing the agent
 
-By default the agent is restricted to the active vault and the meta vault. Two toggles in **Settings → Security** control this:
+By default the agent is restricted to the active vault. Two toggles in **Settings → Security** control this:
 
-- **Strict vault mode** (on by default): `Read`, `Write`, `Edit`, `Delete`, `Glob`, `Grep`, `ListDir`, `NotebookEdit`, and `PdfExtract` refuse any path outside the active vault or meta vault. Paths containing `..` are rejected. Turning this off lets the agent reach anywhere your OS user can.
+- **Strict vault mode** (on by default): `Read`, `Write`, `Edit`, `Delete`, `Glob`, `Grep`, `ListDir`, `NotebookEdit`, and `PdfExtract` refuse any path outside the active vault. Paths containing `..` are rejected. Turning this off lets the agent reach anywhere your OS user can.
 - **Disable Bash** (on by default; auto-enabled with strict mode): removes the `Bash` tool from the agent's toolset entirely. Bash is *not* covered by strict mode — true shell containment needs OS-level sandboxing (job objects on Windows, seccomp/landlock on Linux, sandbox-exec on macOS) which vault-chat doesn't have. So if you want strict mode to mean anything, you also want Bash off, or the agent can shell out around the guard.
 
 Known limitations of strict mode: symlinks inside the vault that point outside aren't resolved, so a symlink could be followed through. The guard is a string-prefix check, not a kernel-level sandbox — it's a guard rail for an LLM that occasionally goes off-script, not a defense against a determined attacker. If you turn Bash on with strict mode, the agent can run any command your shell can.
