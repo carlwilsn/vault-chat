@@ -273,6 +273,21 @@ export async function cleanReplyAndTimeline(
     apiKeys,
     role,
   ).catch(() => null);
-  const deliver = (timeline?.reply || "").trim() || finalSegment.trim() || rawReply;
+  const deliver =
+    (timeline?.reply || "").trim() || finalSegment.trim() || tailMessage(rawReply);
   return { deliver, timeline };
+}
+
+// Last-resort extraction when no fast model is available to clean the turn (the
+// box with a degraded keyring is the real trigger). A scheduled run narrates
+// before it concludes — "let me re-read the files… pulling evidence…" up top,
+// the actual upshot at the END. Take the final paragraph, never the opening
+// narration, so the headline/notification never leaks the chain-of-thought. The
+// full blob is always one tap away in the thread, so this can be lossy.
+function tailMessage(blob: string): string {
+  const paras = (blob || "")
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return paras.length ? paras[paras.length - 1]! : (blob || "").trim();
 }

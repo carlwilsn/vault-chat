@@ -469,7 +469,11 @@ export async function saveSchedule(
 }
 
 export async function deleteSchedule(vault: string, id: string): Promise<void> {
-  const list = schedulesByVault.get(vault) ?? [];
+  // Seed from disk when the in-memory map is cold (e.g. the CancelSchedule tool
+  // deletes before the scheduler loop populated this vault). An empty map would
+  // otherwise write an empty schedules.jsonl and drop every row.
+  const list =
+    schedulesByVault.get(vault) ?? (await readSchedules(vault).catch(() => []));
   const next = list.filter((x) => x.id !== id);
   schedulesByVault.set(vault, next);
   emit();

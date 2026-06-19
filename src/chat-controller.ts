@@ -489,7 +489,12 @@ export async function sendMessage(
                 apiKeys,
                 role,
               ).catch(() => ({ deliver: "", timeline: null }));
-              await sendTelegramReplyWithImages(vault, telegramChatId, clean || deliver, {
+              // Never deliver the raw `acc` narration blob — that's the CoT leak.
+              // cleanReplyAndTimeline already prefers timeline.reply → finalSegment
+              // → tail; the only raw-blob path left is this catch, so fall back to
+              // the closing segment, not the whole "let me re-read the files…" blob.
+              const safe = (clean || "").trim() || finalSegment.trim() || deliver;
+              await sendTelegramReplyWithImages(vault, telegramChatId, safe, {
                 notify: true,
                 convId: tConvId ?? undefined,
               }).catch((err) => console.warn("[telegram] outbound reply failed:", err));

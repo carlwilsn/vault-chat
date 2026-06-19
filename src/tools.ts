@@ -1274,12 +1274,18 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         schedule_id: z.string().describe("The schedule id, from ListSchedules."),
       }),
       execute: async ({ schedule_id }) => {
-        const { readSchedules, writeSchedules } = await import("./schedules");
+        const { readSchedules } = await import("./schedules");
+        const { deleteSchedule } = await import("./schedulerLoop");
         const list = await readSchedules(vault);
         const target = list.find((s) => s.id === schedule_id);
         if (!target) return `No schedule with id ${schedule_id}.`;
-        const next = list.filter((s) => s.id !== schedule_id);
-        await writeSchedules(vault, next);
+        // Route through deleteSchedule so the deletion tombstone
+        // (schedules-deleted.jsonl) is written BEFORE the row is rewritten out.
+        // schedules.jsonl is merge=union, so omitting the row without a tombstone
+        // resurrects the schedule on the next multi-machine sync (the "cancelled
+        // watchdog keeps firing after a wake" bug). It also keeps the live
+        // scheduler loop's in-memory list and the Schedules panel in sync.
+        await deleteSchedule(vault, schedule_id);
         return `Cancelled: ${target.name || target.prompt.slice(0, 60)}`;
       },
     }),
