@@ -8,7 +8,7 @@ import { flushEditCommit } from "./commit-controller";
 import { safetyCommit } from "./autosave";
 import { sendTelegramReplyWithImages, scheduledDeliveryText } from "./telegram";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
-import { registerRun, unregisterRun } from "./runRegistry";
+import { registerRun, unregisterRun, abortRun } from "./runRegistry";
 import {
   useStore,
   MODEL_CONTEXT_LIMIT,
@@ -16,8 +16,6 @@ import {
   type FileEntry,
   type LiveTool,
 } from "./store";
-
-let abortRef: AbortController | null = null;
 
 const COMPACT_THRESHOLD = 0.85;
 const KEEP_RECENT = 4;
@@ -63,33 +61,20 @@ export async function sendMessage(
   quietUnlessAlert?: boolean,
 ) {
   const s = useStore.getState();
-  // Concurrency model: only the FOREGROUND (active) conversation owns the
-  // global `busy` flag and the singleton abortRef. Background "off-target"
-  // runs — Telegram, scheduled, anything with a targetConvIdOverride that
-  // isn't the active conversation — don't touch those, so they run IN
-  // PARALLEL with the foreground agent. Guard accordingly:
-  //   • foreground run → refuse if the foreground is already busy
-  //     (prevents a double-submit on the active chat).
-  //   • background run → refuse only if THAT conversation is already
-  //     running (never start two concurrent runs on the same thread);
-  //     never gate on the global busy flag, or it'd serialize again.
+  // Concurrency model: every run marks its target conversation `status:
+  // "running"`, and conversations run in PARALLEL — foreground (the one you're
+  // looking at), background off-target (Telegram, scheduled, worker), any
+  // number at once. The global `busy` flag tracks ONLY the active conversation
+  // (recomputed from its status on every switch), so it drives the
+  // timer/Stop/composer for whatever you're currently viewing. The single
+  // guard we need is per-conversation: never start a second run on a thread
+  // that's already running.
   {
     const guardTargetId = targetConvIdOverride ?? s.activeConversationId;
-    const guardOffTarget =
-      !!targetConvIdOverride && targetConvIdOverride !== s.activeConversationId;
-    // Never start a second run on a conversation that's already running —
-    // whether it's running in the background (per-conv `status`) or in the
-    // foreground (global `busy`, which is set when the active conversation
-    // runs but doesn't update per-conv status). This also catches the case
-    // where a background run is in flight on conv X and the user then
-    // switches to X and submits.
     const tConv = guardTargetId
       ? s.conversations.find((c) => c.id === guardTargetId)
       : null;
     if (tConv?.status === "running") return;
-    // Foreground submit while the foreground is already busy → ignore.
-    // Background runs deliberately skip this so they parallelize.
-    if (!guardOffTarget && s.busy) return;
   }
   const trimmed = text.trim();
   const preamble = contextPreamble?.trim() ?? "";
@@ -204,13 +189,16 @@ export async function sendMessage(
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
     });
   }
+  // Every run — foreground or background — marks its target conversation
+  // "running". This is what lets conversations run in PARALLEL: per-conv
+  // `status` is authoritative (it drives the Chats-panel pulse and the
+  // double-submit guard), while the global `busy` flag tracks only the
+  // conversation you're currently looking at — it's recomputed from the
+  // active conv's status on every switch (see the select action in store.ts).
+  if (targetConvId) cur.setConversationStatus(targetConvId, "running");
   if (isOffTarget && targetConvId) {
-    // Off-target: don't flip the global busy flag — the user's
-    // current chat shouldn't show timer / heartbeat / stop button
-    // for a background run that doesn't belong to it. The target
-    // conversation gets its own per-conv "running" status which
-    // surfaces as the pulse in the Chats panel.
-    cur.setConversationStatus(targetConvId, "running");
+    // Off-target background run: leave the global busy / streaming view alone —
+    // those belong to whichever conversation the user is currently watching.
   } else {
     // A typed turn into a voice thread means voice is no longer the whole
     // conversation — drop the "voice" tag so the next mic-on starts fresh
@@ -281,12 +269,11 @@ export async function sendMessage(
     }
   }
 
-  // For off-target runs use a local AbortController — don't clobber
-  // the singleton abortRef that the active conversation's Stop button
-  // controls. Means there's no way to abort a background run from
-  // the UI, but Stop button doesn't render in that case anyway.
+  // Each run owns its own AbortController, registered in the run registry
+  // keyed by conversation id. The Stop button aborts whichever conversation is
+  // active via abortRun(activeConversationId) — so several conversations can
+  // run at once and Stop only ends the one you're looking at.
   const controller = new AbortController();
-  if (!isOffTarget) abortRef = controller;
   if (targetConvId) registerRun(targetConvId, controller);
   const signal = controller.signal;
 
@@ -432,6 +419,7 @@ export async function sendMessage(
           store.resetStreaming();
           store.setBusy(false);
           store.setBusyStartedAt(null);
+          if (targetConvId) store.setConversationStatus(targetConvId, "idle");
         } else {
           // User navigated away mid-run. Write the final message
           // straight to the target conversation's stored messages so
@@ -631,6 +619,7 @@ export async function sendMessage(
           store.resetStreaming();
           store.setBusy(false);
           store.setBusyStartedAt(null);
+          if (targetConvId) store.setConversationStatus(targetConvId, "idle");
         } else if (targetConvId) {
           store.appendMessageToConversation(targetConvId, errMsg);
           store.setConversationStatus(targetConvId, "idle");
@@ -669,6 +658,7 @@ export function stopAgent() {
   // partial reply and its context for the next turn (matches Claude Code).
   // The abort surfaces as an `error` event, which onEvent swallows while
   // signal.aborted, so this is the one place the partial is finalized.
+  const activeId = store.activeConversationId;
   if (store.busy) {
     const partialText = store.streamingText.trim();
     const partialTools = store.liveTools;
@@ -681,11 +671,13 @@ export function stopAgent() {
     };
     store.appendMessage(stopped);
   }
-  abortRef?.abort();
-  abortRef = null;
+  // Abort only the conversation being viewed — others may be running in
+  // parallel and must keep going.
+  if (activeId) abortRun(activeId);
   store.resetStreaming();
   store.setBusy(false);
   store.setBusyStartedAt(null);
+  if (activeId) store.setConversationStatus(activeId, "idle");
   // An aborted turn never reaches the end-of-turn commit, so anything the
   // agent wrote before being stopped would sit uncommitted. Commit it now
   // — this is the crack that lost post.html. Tagged agent: the agent wrote
@@ -718,10 +710,12 @@ export async function interruptAndSend(
       toolCalls: partialTools.length > 0 ? partialTools : undefined,
     };
     s.appendMessage(interrupted);
-    abortRef?.abort();
-    abortRef = null;
+    // Abort the active conversation's in-flight run (interrupt targets the
+    // thread you're looking at; parallel background runs keep going).
+    if (s.activeConversationId) abortRun(s.activeConversationId);
     s.resetStreaming();
     s.setBusy(false);
+    if (s.activeConversationId) s.setConversationStatus(s.activeConversationId, "idle");
     // Commit any files the interrupted turn wrote before the fresh turn
     // starts, so a write can't be stranded between two turns.
     safetyCommit("agent-interrupted", { agent: true }).catch(() => {});
