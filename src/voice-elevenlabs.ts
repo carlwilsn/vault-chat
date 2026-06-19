@@ -82,7 +82,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v18-mission";
+const AGENT_CONFIG_VERSION = "v19-mission";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
@@ -634,10 +634,9 @@ const CLIENT_TOOL_DEFINITIONS = [
           description: "The mission goal, briefly stated.",
         },
         tasks: {
-          type: "array",
-          items: { type: "string" },
+          type: "string",
           description:
-            "The done-when sub-components — each a concrete sub-result that defines the mission complete.",
+            "The done-when sub-components, ONE PER LINE — each line a concrete sub-result that defines the mission complete.",
         },
       },
       required: ["title", "tasks"],
@@ -1514,10 +1513,17 @@ export async function loadVoicePromptContext(
     loadVaultMemoryIndex(vault).catch(() => ""),
     loadSkills(vault).catch(() => []),
   ]);
+  // Bound each block: the chat agent sends these to Anthropic uncapped, but the
+  // voice prompt is an ElevenLabs session-start override with a tighter ceiling,
+  // and loadSessionContext can pull in large goal ledgers. Keep voice readable
+  // and the override well under any platform limit; the full files are still one
+  // Read away if the agent needs them.
+  const cap = (s: string, n: number) =>
+    s.length > n ? s.slice(0, n) + "\n…[truncated for voice]" : s;
   return {
-    sessionContext,
-    memoryBlock: vaultMemoryPromptBlock(memoryIndex),
-    skillsIndex: skills.length ? skillPromptIndex(skills) : "",
+    sessionContext: cap(sessionContext, 6000),
+    memoryBlock: cap(vaultMemoryPromptBlock(memoryIndex), 3000),
+    skillsIndex: cap(skills.length ? skillPromptIndex(skills) : "", 2000),
   };
 }
 
@@ -2642,9 +2648,18 @@ export function buildClientToolHandlers(): Record<
         return `Error: ${(e as any)?.message ?? String(e)}`;
       }
     }),
-    ProposeMission: async (args: { title: string; tasks: string[] }) => {
+    ProposeMission: async (args: { title: string; tasks: string | string[] }) => {
       const title = typeof args.title === "string" ? args.title.trim() : "";
-      const tasks = Array.isArray(args.tasks) ? args.tasks : [];
+      // tasks is a newline-delimited string (the schema is a plain string —
+      // ElevenLabs' tool validator rejects array params, which broke voice
+      // provisioning). Tolerate an array too in case the model sends one, and
+      // strip any leading list markers the model adds.
+      const tasks = (Array.isArray(args.tasks)
+        ? args.tasks.map((t) => String(t ?? ""))
+        : String(args.tasks ?? "").split("\n")
+      )
+        .map((t) => t.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, "").trim())
+        .filter(Boolean);
       const block = voicePlanBlock(title, tasks);
       if (!block) {
         return "Couldn't build the proposal — it needs a title and at least one done-when task.";
