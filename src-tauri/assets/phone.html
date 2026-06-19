@@ -504,6 +504,11 @@
       <button class="btn solid" id="pushBtn">Enable notifications</button>
       <button class="btn" id="pushTestBtn">Send test notification</button>
       <div class="note">Push needs this page added to your Home Screen (Share → Add to Home Screen) on iOS 16.4+. You won't get a notification for things you're already looking at in the app.</div>
+      <h3>Input</h3>
+      <label class="row" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+        <input type="checkbox" id="enterSendsChk" style="width:18px;height:18px;flex:none" />
+        <span><b>Enter key sends</b><small>Off: Return adds a line break — tap the send button to send.</small></span>
+      </label>
       <div style="flex:1;min-height:18px"></div>
       <div class="note" id="boxVer"></div>
       <button class="btn warn" id="killAllBtn">Kill all runs</button>
@@ -1055,7 +1060,7 @@
     }
   }
   sendBtn.onclick = () => { if (running && convId) void killCurrent(); else void send(); };
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+  input.addEventListener("keydown", (e) => { if (e.key !== "Enter" || e.isComposing) return; if (enterSends() ? !e.shiftKey : (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } });
   let autosizeRAF = 0;
   function scheduleAutosize() {
     if (autosizeRAF) return;
@@ -1353,7 +1358,7 @@
     ta.addEventListener("blur", () => { const sh = $("sheet"); sh.classList.remove("editing"); sh.style.maxHeight = ""; });
     const go = () => { const v = ta.value.trim(); if (!v) return; ta.value = ""; autosize(); onSend(v); };
     foot.querySelector(".rsend").onclick = go;
-    ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); go(); } });
+    ta.addEventListener("keydown", (e) => { if (e.key !== "Enter" || e.isComposing) return; if (enterSends() ? !e.shiftKey : (e.metaKey || e.ctrlKey)) { e.preventDefault(); go(); } });
     setTimeout(autosize, 0);
   }
   $("sheetScrim").onclick = closeSheet; $("sheetX").onclick = closeSheet;
@@ -1938,6 +1943,17 @@
   }
   $("drawer").addEventListener("click", (e) => { if (e.target === $("drawer")) $("drawer").classList.remove("open"); });
   $("killAllBtn").onclick = async () => { const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null); const d = r ? await r.json().catch(() => ({})) : {}; toast(d.result || "Kill-all sent."); };
+
+  // Composer Enter-key behavior (per-device). Default: Enter sends; toggle off so
+  // Return inserts a line break and you send via the button — there's no
+  // Shift+Enter on a phone keyboard, so this is the only way to space a message.
+  function enterSends() { return localStorage.getItem("vc_phone_enter_sends") !== "false"; }
+  (() => {
+    const chk = $("enterSendsChk");
+    if (!chk) return;
+    chk.checked = enterSends();
+    chk.addEventListener("change", () => { localStorage.setItem("vc_phone_enter_sends", chk.checked ? "true" : "false"); });
+  })();
 
   // ---------- push ----------
   const b64uToBytes = (s) => { const pad = "=".repeat((4 - (s.length % 4)) % 4); const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(raw, (c) => c.charCodeAt(0)); };

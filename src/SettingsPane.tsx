@@ -86,9 +86,11 @@ export function SettingsPane() {
     setTheme,
     strictVaultMode,
     bashDisabled,
+    enterSends,
     reasoningEffort,
     setStrictVaultMode,
     setBashDisabled,
+    setEnterSends,
     setReasoningEffort,
     setShowSettings,
     catalog,
@@ -536,6 +538,33 @@ export function SettingsPane() {
               <option value="high">High</option>
             </select>
           </div>
+        </section>
+
+        <div className="h-px bg-border" />
+
+        <section className="space-y-3">
+          <div>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Composer
+            </h3>
+            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
+              How the chat input behaves while you type.
+            </p>
+          </div>
+          <label className="flex items-start gap-2.5 cursor-pointer">
+            <input
+              type="checkbox"
+              className="vc-checkbox mt-0.5"
+              checked={enterSends}
+              onChange={(e) => setEnterSends(e.target.checked)}
+            />
+            <div className="flex-1">
+              <div className="text-[12px]">Enter key sends the message</div>
+              <p className="text-[11px] text-muted-foreground/80">
+                On: Enter sends, Shift+Enter inserts a line break. Off: Enter inserts a line break — so you can freely space out a message — and ⌘/Ctrl+Enter sends. Applies to this device.
+              </p>
+            </div>
+          </label>
         </section>
 
         <div className="h-px bg-border" />

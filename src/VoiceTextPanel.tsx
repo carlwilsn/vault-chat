@@ -33,6 +33,7 @@ const TEXTAREA_MAX_H = 184;
 export function VoiceTextPanel() {
   const open = useStore((s) => s.voiceTextPanelOpen);
   const setOpen = useStore((s) => s.setVoiceTextPanelOpen);
+  const enterSends = useStore((s) => s.enterSends);
   const voiceMode = useStore((s) => s.voiceMode);
   const currentFile = useStore((s) => s.currentFile);
   const voiceLastCapture = useStore((s) => s.voiceLastCapture);
@@ -228,7 +229,10 @@ export function VoiceTextPanel() {
   };
 
   const onTextareaKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key !== "Enter") return;
+    if ((e.nativeEvent as { isComposing?: boolean }).isComposing) return;
+    const shouldSend = enterSends ? !e.shiftKey : e.metaKey || e.ctrlKey;
+    if (shouldSend) {
       e.preventDefault();
       void send();
     }

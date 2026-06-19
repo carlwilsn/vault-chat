@@ -293,6 +293,7 @@ export function ChatPane() {
   const modelId = useStore((s) => s.modelId);
   const skills = useStore((s) => s.skills);
   const busy = useStore((s) => s.busy);
+  const enterSends = useStore((s) => s.enterSends);
   const showSettings = useStore((s) => s.showSettings);
   const lastContext = useStore((s) => s.lastContext);
   const compacting = useStore((s) => s.compacting);
@@ -631,10 +632,19 @@ export function ChatPane() {
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (!busy) send();
-      return;
+    if (e.key === "Enter") {
+      // Never fire mid-IME-composition (e.g. CJK candidate selection) — the
+      // Enter that commits a composition must not send the message.
+      if ((e.nativeEvent as { isComposing?: boolean }).isComposing) return;
+      // enterSends: Enter sends, Shift+Enter makes a newline. Otherwise (the
+      // "Enter-key spacing" preference): plain Enter inserts a newline and
+      // Cmd/Ctrl+Enter sends, so multi-line messages compose freely.
+      const shouldSend = enterSends ? !e.shiftKey : e.metaKey || e.ctrlKey;
+      if (shouldSend) {
+        e.preventDefault();
+        if (!busy) send();
+      }
+      // Not sending → fall through; the textarea inserts the newline itself.
     }
   };
 
