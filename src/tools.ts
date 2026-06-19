@@ -1493,11 +1493,16 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     }),
     ListRuns: tool({
       description:
-        "List the long external jobs the run-watcher is tracking (training runs, batch evals) with their LIVE status — running / done / failed / stalled — last progress note, and when each was last checked. Use to answer the user's 'what's still running', 'did any runs die overnight', 'how far along is seed 3'. Read-only; this is how you report on background runs without the user opening anything.",
+        "List the long external jobs the run-watcher is tracking (training runs, batch evals) with their LIVE status — running / done / failed / stalled — last progress note, and when each was last checked. Use to answer the user's 'what's still running', 'did any runs die overnight', 'how far along is seed 3'. Read-only; this is how you report on background runs without the user opening anything. As a worker you see only the runs YOU started — use it to find the id of a watcher you registered so you can CancelRun a bad one and re-register a corrected watcher (self-healing).",
       inputSchema: z.object({}),
       execute: async () => {
         const { readJobs } = await import("./runWatcher");
-        const list = await readJobs(vault);
+        const all = await readJobs(vault);
+        // A worker sees only the runs IT registered (its own thread), so it can
+        // find the id of a watcher it set up and CancelRun it — self-healing a
+        // bad watcher — without surveying other threads' runs.
+        const list =
+          tier === "worker" ? all.filter((j) => j.ownerConvId === conversationId) : all;
         if (list.length === 0) return "(no watched runs)";
         const ago = (ts?: number) =>
           ts ? `${Math.max(0, Math.round((Date.now() - ts) / 60_000))}m ago` : "not yet";
@@ -1569,14 +1574,16 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   const drop = (names: string[]) => {
     for (const n of names) delete (full as Record<string, unknown>)[n];
   };
-  // Run-watcher tools: a mission (supervisor) gets all three — it launches,
-  // monitors, and tears down long jobs. A worker can launch+watch and cancel its
-  // own run, but doesn't survey the fleet (ListRuns). The assistant only READS
+  // Run-watcher tools: a mission (supervisor) gets all three over the whole
+  // fleet — it launches, monitors, and tears down long jobs. A worker can
+  // launch+watch, list ITS OWN runs, and cancel them — enough to self-heal a
+  // watcher it registered (find the id, CancelRun the bad one, re-register a
+  // fixed one) without surveying other threads' runs. The assistant only READS
   // the fleet (ListRuns) so it can answer "what's running / did anything die"
   // for the user; it doesn't launch or kill runs itself.
   if (tier === "mission") drop(["ProposeMission", "StopMission"]);
   else if (tier === "worker")
-    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission", "MarkDoneWhen", "StopMission", "ListRuns"]);
+    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission", "MarkDoneWhen", "StopMission"]);
   else drop(["StartWorker", "CompleteMission", "MarkDoneWhen", "WatchRun", "CancelRun"]);
   return full;
 }
