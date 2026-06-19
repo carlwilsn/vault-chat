@@ -3,8 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./store";
 import { buildNote } from "./notes";
 import { gitCommitAll } from "./git";
-import { loadVaultVoicePrompt, loadVaultNorthStar, northStarPromptBlock } from "./meta";
+import { loadVaultVoicePrompt, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock } from "./meta";
 import { applyNotebookEdit, extractPdfText, stripNotebook, assertCanWrite } from "./tools";
+import { loadSessionContext } from "./context";
+import { loadSkills, skillPromptIndex } from "./skills";
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
 // platform owns the audio loop (STT + LLM + TTS) and we provide the
@@ -737,7 +739,8 @@ export async function startElevenLabsSession(): Promise<void> {
   // buildSystemPrompt falls back to the built-in default header.
   const customHeader = await loadVaultVoicePrompt(voiceState.vaultPath);
   const northStar = await loadVaultNorthStar(voiceState.vaultPath);
-  const systemPrompt = buildSystemPrompt(voiceState, customHeader, northStar);
+  const promptContext = await loadVoicePromptContext(voiceState.vaultPath);
+  const systemPrompt = buildSystemPrompt(voiceState, customHeader, northStar, promptContext);
   const dynamicVariables = buildDynamicVariables(voiceState);
 
   try {
@@ -1442,21 +1445,72 @@ export async function buildPhoneVoiceContext(): Promise<{
   if (!agentId) return null;
   const customHeader = await loadVaultVoicePrompt(state.vaultPath);
   const northStar = await loadVaultNorthStar(state.vaultPath);
+  const promptContext = await loadVoicePromptContext(state.vaultPath);
   return {
     elKey,
     agentId,
     voiceId: localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
-    systemPrompt: buildSystemPrompt(state, customHeader, northStar),
+    systemPrompt: buildSystemPrompt(state, customHeader, northStar, promptContext),
     dynamicVariables: buildDynamicVariables(state),
     toolNames: Object.keys(buildClientToolHandlers()),
     vault: state.vaultPath,
   };
 }
 
+// Voice prompt parity with the chat assistant: the same operating rules
+// (LEARNING_RULES / AGENTS / CLAUDE / goal files), the same long-term memory
+// index, and the same skills index. Loaded once per session start and threaded
+// into the system-prompt override — voice was previously the only surface that
+// reasoned without these. Each loader degrades to empty on failure.
+export type VoicePromptContext = {
+  sessionContext: string;
+  memoryBlock: string;
+  skillsIndex: string;
+};
+
+export async function loadVoicePromptContext(
+  vault: string | null,
+): Promise<VoicePromptContext> {
+  if (!vault) return { sessionContext: "", memoryBlock: "", skillsIndex: "" };
+  const [sessionContext, memoryIndex, skills] = await Promise.all([
+    loadSessionContext(vault).catch(() => ""),
+    loadVaultMemoryIndex(vault).catch(() => ""),
+    loadSkills(vault).catch(() => []),
+  ]);
+  return {
+    sessionContext,
+    memoryBlock: vaultMemoryPromptBlock(memoryIndex),
+    skillsIndex: skills.length ? skillPromptIndex(skills) : "",
+  };
+}
+
+// Current-date anchor — same rationale as the chat agent's nowNote. Without it
+// the voice agent has no reliable "now" and infers the date from file contents
+// or git history.
+function voiceNowNote(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    const stamp = new Intl.DateTimeFormat("en-US", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZoneName: "short",
+      timeZone: tz,
+    }).format(new Date());
+    return `Current date and time: ${stamp}. Trust THIS as "now"/"today" — never infer the date from file contents or git history.`;
+  } catch {
+    return "";
+  }
+}
+
 function buildSystemPrompt(
   state: ReturnType<typeof useStore.getState>,
   customHeader: string,
   northStar: string,
+  extra?: VoicePromptContext,
 ): string {
   const vault = state.vaultPath ?? "(no vault)";
   const recentHistory = formatRecentHistory(state.messages, 32);
@@ -1478,8 +1532,12 @@ function buildSystemPrompt(
     header,
     "",
     `Vault root (absolute): ${vault}`,
+    voiceNowNote(),
     "",
     northStarBlock ? `${northStarBlock}\n` : "",
+    extra?.sessionContext ? `${extra.sessionContext}\n` : "",
+    extra?.memoryBlock ? `${extra.memoryBlock}\n` : "",
+    extra?.skillsIndex ? `${extra.skillsIndex}\n` : "",
     "Session start: do NOT open by greeting with an inventory. Never list, summarize, or read out the user's notes, files, or vault contents at the start of a session. Stay quiet until the user speaks; if you do open, keep it to one short line. Only call ListNotes when the user explicitly asks what they've flagged.",
     "",
     "Tools available to you:",
