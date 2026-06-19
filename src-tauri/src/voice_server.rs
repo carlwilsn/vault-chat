@@ -330,6 +330,13 @@ fn handle(mut req: Request, token: &str) {
             };
             let _ = req.respond(body);
         }
+        (Method::Get, "/notes") => {
+            let body = match current_vault() {
+                Some(vault) => resp_text(200, "application/json", notes_json(&vault)),
+                None => resp_text(503, "application/json", "{\"error\":\"no vault open on the box\"}".into()),
+            };
+            let _ = req.respond(body);
+        }
         (Method::Post, "/notifications/read") => {
             let mut raw = String::new();
             let _ = req.as_reader().read_to_string(&mut raw);
@@ -988,6 +995,95 @@ fn query_param(url: &str, key: &str) -> Option<String> {
 
 fn notifications_path(vault: &str) -> PathBuf {
     Path::new(vault).join(crate::NOTES_DIR).join("notifications.jsonl")
+}
+
+fn notes_path(vault: &str) -> PathBuf {
+    Path::new(vault).join(crate::NOTES_DIR).join("notes.jsonl")
+}
+
+/// Notes for the phone Notes page: newest first (reverse-chron like the desktop
+/// NotesPanel), deduped by id across union-merge sync (newer last_updated wins),
+/// and slimmed — base64 anchor images are stripped (they bloat the payload; the
+/// phone shows text) and turn bodies are capped. Read-only: editing/resolving a
+/// note still happens on the desktop.
+fn notes_json(vault: &str) -> String {
+    let raw = std::fs::read_to_string(notes_path(vault)).unwrap_or_default();
+    let mut by_id: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    for line in raw.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Some(id) = v.get("id").and_then(|x| x.as_str()) else { continue };
+        let id = id.to_string();
+        let newer = v.get("last_updated").and_then(|x| x.as_str()).unwrap_or("");
+        let keep = match by_id.get(&id) {
+            Some(prev) => newer >= prev.get("last_updated").and_then(|x| x.as_str()).unwrap_or(""),
+            None => true,
+        };
+        if keep {
+            by_id.insert(id, v);
+        }
+    }
+    let mut list: Vec<Value> = by_id.into_values().map(|v| slim_note(&v)).collect();
+    // Reverse-chronological by last_updated; ISO-8601 strings sort lexically.
+    list.sort_by(|a, b| {
+        let ka = a.get("last_updated").and_then(|x| x.as_str()).unwrap_or("");
+        let kb = b.get("last_updated").and_then(|x| x.as_str()).unwrap_or("");
+        kb.cmp(ka)
+    });
+    list.truncate(200);
+    let open = list
+        .iter()
+        .filter(|v| v.get("status").and_then(|x| x.as_str()) != Some("resolved"))
+        .count();
+    json!({ "open": open, "notes": list }).to_string()
+}
+
+/// Project a stored note down to the fields the phone renders, dropping the
+/// heavy base64 image blobs in anchors and capping turn bodies.
+fn slim_note(v: &Value) -> Value {
+    let anchors: Vec<Value> = v
+        .get("anchors")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|a| {
+                    json!({
+                        "source_path": a.get("source_path").cloned().unwrap_or(Value::Null),
+                        "source_kind": a.get("source_kind").cloned().unwrap_or(Value::Null),
+                        "source_anchor": a.get("source_anchor").cloned().unwrap_or(Value::Null),
+                        "source_selection": a.get("source_selection").cloned().unwrap_or(Value::Null),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let turns: Vec<Value> = v
+        .get("turns")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|t| {
+                    let content: String = t
+                        .get("content")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("")
+                        .chars()
+                        .take(4000)
+                        .collect();
+                    json!({ "role": t.get("role").cloned().unwrap_or(Value::Null), "content": content })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({
+        "id": v.get("id").cloned().unwrap_or(Value::Null),
+        "timestamp": v.get("timestamp").cloned().unwrap_or(Value::Null),
+        "last_updated": v.get("last_updated").cloned().unwrap_or(Value::Null),
+        "status": v.get("status").and_then(|x| x.as_str()).unwrap_or("open"),
+        "user_draft": v.get("user_draft").cloned().unwrap_or(Value::Null),
+        "formatted": v.get("formatted").cloned().unwrap_or(Value::Null),
+        "anchors": anchors,
+        "turns": turns,
+    })
 }
 
 fn now_ms() -> i64 {

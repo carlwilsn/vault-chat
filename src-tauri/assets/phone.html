@@ -95,7 +95,16 @@
   body.page-chat #pChat{display:flex}
   body.page-activity #pAct{display:flex}
   body.page-alerts #pAl{display:flex}
+  body.page-notes #pNotes{display:flex}
   .scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+  /* notes detail (expanded card) */
+  .ndetail{margin-top:9px;border-top:1px solid var(--line);padding-top:9px;display:flex;flex-direction:column;gap:9px}
+  .nanchor{font-size:12px;color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}
+  .nquote{font-size:12.5px;color:var(--text);border-left:2px solid var(--line);padding-left:9px;white-space:pre-wrap}
+  .ndraft{font-size:13px;color:var(--text);white-space:pre-wrap}
+  .nturn{display:flex;flex-direction:column;gap:3px}
+  .nrole{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim)}
+  .ntext{font-size:13px;line-height:1.45;white-space:pre-wrap;color:var(--text)}
 
   /* chat */
   #msgs{flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding:8px 14px 6px;display:flex;flex-direction:column}
@@ -471,6 +480,7 @@
     <button class="mrow" data-page="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="nm">Chat</span></button>
     <button class="mrow" data-page="activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg><span class="nm">Activity</span><span class="ct zero" id="mAct">0</span></button>
     <button class="mrow" data-page="alerts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg><span class="nm">Alerts</span><span class="ct warn zero" id="mAl">0</span></button>
+    <button class="mrow" data-page="notes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg><span class="nm">Notes</span></button>
     <button class="mrow" id="voiceRow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 19v3"/></svg><span class="nm">Voice</span></button>
     <button class="mrow" id="settingsRow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="nm">Box &amp; settings</span><span class="connpip" id="connpip"></span></button>
   </div>
@@ -495,6 +505,7 @@
     </section>
     <section class="page" id="pAct"><div class="scroll" id="actScroll"></div></section>
     <section class="page" id="pAl"><div class="scroll" id="alScroll"></div></section>
+    <section class="page" id="pNotes"><div class="scroll" id="notesScroll"></div></section>
   </div>
 
   <div id="drawer">
@@ -842,12 +853,13 @@
   // ---------- pages ----------
   function setPage(name) {
     page = name;
-    document.body.classList.remove("page-chat", "page-activity", "page-alerts");
+    document.body.classList.remove("page-chat", "page-activity", "page-alerts", "page-notes");
     document.body.classList.add("page-" + name);
     document.querySelectorAll(".mrow[data-page]").forEach((r) => r.classList.toggle("cur", r.dataset.page === name));
     if (name !== "chat") hideKb();
     if (name === "activity") void loadActivity();
     if (name === "alerts") void loadAlerts();
+    if (name === "notes") void loadNotes();
     setHeader();
   }
   document.querySelectorAll(".mrow[data-page]").forEach((r) => (r.onclick = () => { closeMenu(); setPage(r.dataset.page); }));
@@ -858,7 +870,7 @@
     if (page === "chat") {
       if (convId && convTitle && convTitle !== "New chat") { tx.textContent = convTitle; sub.textContent = ""; }
       else { tx.textContent = ""; sub.textContent = ""; }
-    } else { tx.textContent = page === "activity" ? "Activity" : "Alerts"; sub.textContent = ""; }
+    } else { tx.textContent = page === "activity" ? "Activity" : page === "notes" ? "Notes" : "Alerts"; sub.textContent = ""; }
     const mAct = $("mAct"); mAct.textContent = runCount; mAct.classList.toggle("zero", runCount === 0);
     const mAl = $("mAl"); mAl.textContent = unreadN; mAl.classList.toggle("zero", unreadN === 0);
     $("menudot").classList.toggle("on", unreadN > 0 && page !== "alerts");
@@ -1811,6 +1823,82 @@
   // explicit acknowledge gesture: swipe a card right-to-left and it's read.
   // Archived items live behind the Archive toggle at the bottom.
   let alertArchiveOpen = false;
+  // ---------- notes ----------
+  // Read-only view of the desktop's captured notes (highlights, asks, answers).
+  // Served by GET /notes; editing/resolving still happens on the desktop.
+  let notesResolvedOpen = false;
+  const noteFirstLine = (s) => String(s || "").split("\n").map((x) => x.trim()).find(Boolean) || "";
+  function noteTitle(n) {
+    if (n.formatted) return noteFirstLine(n.formatted);
+    if (n.user_draft) return noteFirstLine(n.user_draft);
+    if (n.turns && n.turns.length) return noteFirstLine(n.turns[0].content);
+    if (n.anchors && n.anchors.length && n.anchors[0].source_path) return String(n.anchors[0].source_path).split("/").pop();
+    return "Note";
+  }
+  function noteWhen(n) { const t = Date.parse(n.last_updated || n.timestamp || ""); return isFinite(t) ? age(t) : ""; }
+  function buildNoteDetail(box, n) {
+    if (n.anchors && n.anchors.length) {
+      for (const a of n.anchors) {
+        const name = a.source_path ? String(a.source_path).split("/").pop() : "source";
+        const anchor = a.source_anchor ? " · " + a.source_anchor : "";
+        const chip = el('<div class="nanchor"></div>'); chip.textContent = "↳ " + name + anchor; box.appendChild(chip);
+        if (a.source_selection) { const q = el('<div class="nquote"></div>'); q.textContent = a.source_selection; box.appendChild(q); }
+      }
+    }
+    if (n.user_draft) { const d = el('<div class="ndraft"></div>'); d.textContent = n.user_draft; box.appendChild(d); }
+    if (n.turns && n.turns.length) {
+      for (const t of n.turns) {
+        const turn = el('<div class="nturn"><span class="nrole"></span><div class="ntext"></div></div>');
+        turn.querySelector(".nrole").textContent = t.role === "user" ? "you" : "assistant";
+        turn.querySelector(".ntext").textContent = t.content;
+        box.appendChild(turn);
+      }
+    } else if (n.formatted) {
+      const f = el('<div class="ntext"></div>'); f.textContent = n.formatted; box.appendChild(f);
+    }
+  }
+  function noteCard(n) {
+    const card = el('<div class="card"><div class="crow"><div class="ico">✦</div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><p class="cs"></p></div></div><div class="ndetail" style="display:none"></div></div>');
+    card.querySelector("b").textContent = noteTitle(n);
+    card.querySelector(".t").textContent = noteWhen(n);
+    const cs = card.querySelector(".cs");
+    cs.textContent = n.formatted || n.user_draft || (n.turns && n.turns.length ? n.turns[n.turns.length - 1].content : "") || "";
+    const detail = card.querySelector(".ndetail");
+    let built = false;
+    card.addEventListener("click", () => {
+      const showing = detail.style.display !== "none";
+      if (showing) { detail.style.display = "none"; cs.style.display = ""; return; }
+      if (!built) { buildNoteDetail(detail, n); built = true; }
+      detail.style.display = ""; cs.style.display = "none";
+    });
+    return card;
+  }
+  async function loadNotes() {
+    const box = $("notesScroll");
+    try {
+      const d = await (await api("/notes")).json();
+      if (d.error) throw new Error(d.error);
+      const list = d.notes || [];
+      box.innerHTML = "";
+      if (!list.length) { box.appendChild(el('<div class="empty">No notes yet. Notes you capture on the desktop — a highlight, a question, an answer — show up here.</div>')); return; }
+      const open = list.filter((n) => n.status !== "resolved");
+      const resolved = list.filter((n) => n.status === "resolved");
+      if (open.length) box.appendChild(el('<div class="sec">Open · ' + open.length + "</div>"));
+      for (const n of open) box.appendChild(noteCard(n));
+      if (!open.length) box.appendChild(el('<div class="empty">Nothing open — every note is resolved.</div>'));
+      if (resolved.length) {
+        const holder = el('<div style="margin-top:8px"></div>'); holder.style.display = notesResolvedOpen ? "" : "none";
+        for (const n of resolved) holder.appendChild(noteCard(n));
+        const t = el('<button class="earlier"></button>');
+        const label = () => { t.textContent = (notesResolvedOpen ? "Hide resolved · " : "Resolved · ") + resolved.length; };
+        label();
+        t.onclick = () => { notesResolvedOpen = !notesResolvedOpen; holder.style.display = notesResolvedOpen ? "" : "none"; label(); };
+        box.appendChild(t); box.appendChild(holder);
+      }
+      box.appendChild(el('<div style="height:18px"></div>'));
+    } catch (e) { box.innerHTML = '<div class="empty">Notes unavailable: ' + esc(String(e.message || e)) + "</div>"; }
+  }
+
   async function loadAlerts() {
     const box = $("alScroll");
     try {
