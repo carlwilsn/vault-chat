@@ -15,6 +15,8 @@ const SYSTEM = `You turn an agent's finished work into a phone notification. You
 - A blank line.
 - Then 1-3 plain-text sentences: the essential summary of what was done or found and why it matters.
 
+Write for a team lead skimming outcomes, not an operator watching keystrokes: report WHAT was accomplished or found and why it matters, never the mechanics (no tool names, file paths, commands, or error codes); a tooling problem is a high-level note ("hit a snag pulling the data, worked around it"), never the specific failure.
+
 Rules: no markdown, no bullets, no preamble, no meta ("the agent…", "this briefing…"). Write it as the finished result itself, skimmable on a phone. Output ONLY the notification text — never address me, never describe your own task, never ask for input. If the input is empty or has no real result to report, output exactly the single word NONE and nothing else.`;
 
 // The summarizer occasionally answers ABOUT its task instead of producing a
@@ -72,7 +74,7 @@ const STATE_SYSTEM = `You write the status line for a background worker shown on
 TASK: a plain restatement of what it was asked to do, max ~10 words.
 STATUS: what it's doing or just finished, max ~12 words — the upshot, not narration.
 
-Rules: no markdown, no preamble, no meta ("the worker…"). Keep each line a tight phrase, skimmable at a glance. If activity shows it finished or hit an error, say so in STATUS.`;
+Write at a team lead's altitude: no tool names, file paths, or commands — say what it's accomplishing, not the keystrokes. Rules: no markdown, no preamble, no meta ("the worker…"). Keep each line a tight phrase, skimmable at a glance. If activity shows it finished or hit an error, say so in STATUS.`;
 
 export async function summarizeWorkerState(
   task: string,
@@ -112,7 +114,7 @@ export async function summarizeWorkerState(
 // wants the cleaned thought, NOT the raw rambling chain. Uses the reasoning text
 // when the model emits it, else falls back to the actions + conclusion. Returns
 // null when there's nothing to digest or no fast model is configured.
-const THINKING_SYSTEM = `You distill an agent's work into a short "what it was thinking" digest for a phone. You'll get some of: its raw REASONING, the ACTIONS it took (tools), and its CONCLUSION (final reply). Produce 1-3 plain-prose sentences capturing what it reasoned through and why it decided what it did. Drop false starts, rambling, and tool-by-tool narration — keep the line of thought. No markdown, no preamble, no meta ("the agent…"). If there's nothing substantive, give a single short line on what it did.`;
+const THINKING_SYSTEM = `You distill an agent's work into a short "what it was thinking" digest for a phone. You'll get some of: its raw REASONING, the ACTIONS it took (tools), and its CONCLUSION (final reply). Produce 1-3 plain-prose sentences capturing what it reasoned through and why it decided what it did, at a team lead's altitude — never tool names, file paths, or commands; say what was being accomplished, not the keystrokes. Drop false starts, rambling, and tool-by-tool narration — keep the line of thought. No markdown, no preamble, no meta ("the agent…"). If there's nothing substantive, give a single short line on what it did.`;
 
 export async function summarizeThinking(
   reasoning: string,
@@ -159,12 +161,12 @@ const TIMELINE_SCHEMA = z.object({
         thought: z
           .string()
           .describe(
-            "ONE COMPLETE logical thought — the full arc of one meaningful piece of the agent's reasoning, in 2-3 natural sentences: what it saw or did, what that means, and what it therefore concluded or decided. SELF-CONTAINED: weave what it actually did into the prose itself (e.g. 'so I read all three threads and re-checked the eval.loss'), don't drop it to a separate field. Let the thought run until the logic is genuinely complete — never cut it short, never pad it, and never force a 'so… so…' template (vary how each one opens). Keep the substance that matters — numbers, the obstacle, the call — and drop the rest. Plain text.",
+            "ONE COMPLETE logical thought — the full arc of one meaningful piece of the agent's reasoning, in 2-3 natural sentences: what it saw or did, what that means, and what it therefore concluded or decided. ABSTRACT, written for a team lead one level above the implementation: say what was accomplished, not the keystrokes — never tool names (GitLog/Read/Bash), file paths, commands, or error strings (e.g. 'confirmed the run had actually progressed', not 'read three thread files and ran GitLog'). An obstacle is a high-level story plus the workaround, never a stack trace. Let the thought run until the logic is genuinely complete — never cut it short, never pad it, and never force a 'so… so…' template (vary how each one opens). Keep the substance that matters — numbers, the obstacle, the call — and drop the rest. Plain text.",
           ),
         snag: z
           .boolean()
           .describe(
-            "true if this update is an obstacle/correction — it hit a problem, a wrong result, or something that didn't work and had to course-correct. These are the most informative updates; mark them so the reader sees the agent handling reality, not just cruising.",
+            "true if this update is an obstacle/correction — it hit a problem, a wrong result, or something that didn't work and had to course-correct. These are the most informative updates; mark them so the lead sees the worker handling reality. Frame the obstacle high-level — what got in the way and the workaround — never the specific tool, command, or error string.",
           ),
       }),
     )
@@ -179,6 +181,7 @@ const TIMELINE_SCHEMA = z.object({
 const TIMELINE_SYSTEM = `You turn ONE agent turn into a chain of COMPLETE LOGICAL THOUGHTS for a lead checking in on long-running work — someone who wants the reasoning that matters and to trust real progress is happening, NOT a bolt-by-bolt tool log. You get the agent's NARRATION (its prose), optionally its raw REASONING, and the ORDERED list of ACTIONS (tools) it took.
 
 Produce an ordered \`steps\` list. Each step is ONE complete logical thought — the full arc of one meaningful piece of reasoning, 2-3 natural sentences: what it saw or did, what that means, and what it therefore concluded or decided. Each thought is SELF-CONTAINED: weave what it actually did into the prose, don't strip it to a label. Rules that matter:
+- WRITE AT THE LEAD'S ALTITUDE. They're technical but live one level above the keystrokes. Abstract away the mechanics — never name tools (no GitLog/Read/Bash/Grep), file paths, commands, or error strings; say what was being accomplished, not how ("confirmed the run had actually progressed", not "ran GitLog on the repo"). An obstacle is a high-level story plus the fix, never a stack trace: "the tooling choked on the output, so I worked around it by ...", not the specific tool or error code.
 - Quality over quantity. Only the developments that actually matter — merge routine mechanical steps into the thought they served (five reads that grounded one decision = ONE thought). A big turn might be 2-4 thoughts, not ten.
 - Let each thought FINISH. Carry the logic all the way to its conclusion; never cut it short, never pad it.
 - Don't force a template. Vary how thoughts open; only use "so"/"because" where the reasoning genuinely turns on it.
@@ -217,7 +220,7 @@ export async function summarizeTimeline(
   const roleNote =
     role === "supervisor"
       ? `These are a SUPERVISOR's thoughts: it manages workers and the overall mission, it does not do the task work itself. Frame each thought as orchestration — what it saw in a worker, how it steered or spawned one, a mission-level call. A supervisor mostly WAITS on its workers, so if the narration ends by handing work off, the final thought should state what it's now waiting on.`
-      : `These are a WORKER's thoughts: it executes ONE given task. Frame each thought as task work — what it read/ran/wrote, what it found, what it concluded.`;
+      : `These are a WORKER's thoughts: it executes ONE given task. Frame each thought as task work at the lead's altitude — what it worked through, what it found, what it concluded — not the tools it used.`;
   const prompt = [
     roleNote,
     `NARRATION:\n${text.slice(0, 7000) || "(no prose)"}`,
