@@ -652,7 +652,7 @@ const CLIENT_TOOL_DEFINITIONS = [
 // it "voice". A typed turn later flips it back to "manual" (see
 // chat-controller), so "source === voice" means "voice from start to end
 // so far", which is exactly the resume condition the user wants.
-function ensureVoiceConversation(): void {
+export function ensureVoiceConversation(): string {
   const s = useStore.getState();
   const active = s.activeConversationId
     ? s.conversations.find((c) => c.id === s.activeConversationId)
@@ -669,7 +669,7 @@ function ensureVoiceConversation(): void {
         ),
       });
     }
-    return;
+    return active!.id;
   }
   const id = useStore.getState().newConversation();
   useStore.setState((st) => ({
@@ -677,6 +677,7 @@ function ensureVoiceConversation(): void {
       c.id === id ? { ...c, source: "voice" } : c,
     ),
   }));
+  return id;
 }
 
 export async function startElevenLabsSession(): Promise<void> {

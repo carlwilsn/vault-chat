@@ -307,6 +307,7 @@
             agentActiveUntil = Date.now() + 280;
           } catch {}
         },
+        onMessage: ({ message, role }) => { const text = (message || "").trim(); if (!text) return; api("/voice-transcript", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role: role === "user" ? "user" : "assistant", text }) }).catch(() => {}); },
         // onModeChange left out on purpose — speaking is audio-driven (above).
       });
       sessionPromise.then((c) => {

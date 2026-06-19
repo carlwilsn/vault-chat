@@ -2193,6 +2193,7 @@
         onDisconnect: () => { if (!timedOut) vTeardown(); },
         onError: (m) => setVErr(typeof m === "string" ? m : (m && m.message) || "voice error"),
         onAudio: (b64) => { try { const lvl = pcmLevel(b64); vAgentLevel = Math.max(lvl, vAgentLevel * 0.6); vAgentActiveUntil = Date.now() + 280; } catch {} },
+        onMessage: ({ message, role }) => { const text = (message || "").trim(); if (!text) return; api("/voice-transcript", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role: role === "user" ? "user" : "assistant", text }) }).catch(() => {}); },
       });
       sessionPromise.then((c) => { clearTimeout(watchdog); if (timedOut && c) { try { c.endSession(); } catch {} } }).catch(() => clearTimeout(watchdog));
       vConv = await Promise.race([sessionPromise, new Promise((_, rej) => { watchdog = setTimeout(() => { timedOut = true; rej(new Error("connect timed out after 15s")); }, 15000); })]);

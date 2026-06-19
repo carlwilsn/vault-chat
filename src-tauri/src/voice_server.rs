@@ -487,6 +487,21 @@ fn handle(mut req: Request, token: &str) {
             };
             let _ = req.respond(body);
         }
+        (Method::Post, "/voice-transcript") => {
+            // Phone voice talks to ElevenLabs directly; relay each completed turn
+            // to the app so it persists into the session's voice thread.
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+            let role = v.get("role").and_then(|x| x.as_str()).unwrap_or("assistant");
+            let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
+            if !text.trim().is_empty() {
+                if let Some(app) = app_slot().lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                    let _ = app.emit("voice:transcript", json!({ "role": role, "text": text }));
+                }
+            }
+            let _ = req.respond(resp_text(200, "application/json", "{\"ok\":true}".into()));
+        }
         (Method::Post, "/tool") => {
             let mut raw = String::new();
             let _ = req.as_reader().read_to_string(&mut raw);

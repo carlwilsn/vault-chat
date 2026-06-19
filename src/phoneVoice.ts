@@ -8,7 +8,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { buildPhoneVoiceContext, buildClientToolHandlers } from "./voice-elevenlabs";
+import { buildPhoneVoiceContext, buildClientToolHandlers, ensureVoiceConversation } from "./voice-elevenlabs";
 import { useStore } from "./store";
 import { vlog } from "./debugLog";
 
@@ -16,6 +16,9 @@ import { vlog } from "./debugLog";
 // desktop voice agent uses (full parity — file ops, git, schedules, etc.) and
 // hand the result back by request id.
 let toolRelayWired = false;
+// The conversation the current phone voice session writes into (transcripts +
+// tool side-effects). Set at session start (voice:context).
+let phoneVoiceConvId: string | null = null;
 async function wireToolRelay(): Promise<void> {
   if (toolRelayWired) return;
   toolRelayWired = true;
@@ -43,12 +46,31 @@ async function wireToolRelay(): Promise<void> {
     const { reqId } = event.payload;
     let result = "";
     try {
+      // Phone voice runs the brain on the box but has no thread of its own.
+      // Open/seed a labeled voice conversation at session start so the spoken
+      // turns (relayed via voice:transcript below) and any mission the agent
+      // proposes land in one findable thread, surfaced in the conversation list.
+      phoneVoiceConvId = ensureVoiceConversation();
       const ctx = await buildPhoneVoiceContext();
       if (ctx) result = JSON.stringify(ctx);
     } catch {
       /* answer empty — box falls back */
     }
     await invoke("voice_tool_respond", { reqId, result }).catch(() => {});
+  });
+
+  // Phone-voice transcript relay: the phone talks to ElevenLabs directly, so
+  // each completed turn is POSTed to the box (/voice-transcript) and emitted
+  // here. Append it to the session's voice conversation so the thread reads as
+  // the real spoken exchange, not just tool markers.
+  await listen<{ role?: string; text?: string }>("voice:transcript", (event) => {
+    const t = (event.payload.text ?? "").trim();
+    if (!t) return;
+    const convId = phoneVoiceConvId ?? (phoneVoiceConvId = ensureVoiceConversation());
+    useStore.getState().appendMessageToConversation(convId, {
+      role: event.payload.role === "user" ? "user" : "assistant",
+      content: t,
+    });
   });
 }
 
