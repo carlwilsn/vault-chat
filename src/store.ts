@@ -1809,7 +1809,10 @@ export const useStore = create<State>((set) => ({
       const target = s.conversations.find((c) => c.id === id);
       if (!target) return {};
       const synced = syncActiveMessages(s).map((c) =>
-        c.id === id ? { ...c, unread: false } : c,
+        // Bump lastActivityAt on open so a thread you OPEN — even a worker you
+        // never message — pins to the top of the recent-conversations list
+        // instead of sinking out of view until it gets a message.
+        c.id === id ? { ...c, unread: false, lastActivityAt: Date.now() } : c,
       );
       // Snapshot the leaving run's live view, then rehydrate the global
       // streaming view from the target's buffer if it has one in flight.
