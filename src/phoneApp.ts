@@ -794,6 +794,35 @@ export async function startPhoneAppHost(): Promise<void> {
     }
   });
 
+  // The phone opened a thread — promote it into the recent/Chats list. Mission
+  // and worker threads live on Activity and stay out of recent by default; the
+  // moment the user views one it flips `surfaced` and joins recent so they can
+  // get back to it. Setting it on the conversations list triggers the store's
+  // debounced autosave, which persists + syncs it (so a worker surfaced on the
+  // phone also shows in the desktop's list). No-op for already-surfaced threads
+  // and for normal chats (manual/voice/phone), which are in recent regardless.
+  await listen<{ reqId: string; convId?: string }>("phone:surface", async (event) => {
+    const { reqId, convId } = event.payload;
+    try {
+      const s = useStore.getState();
+      const conv = convId ? s.conversations.find((c) => c.id === convId) : undefined;
+      const needsSurface =
+        !!conv &&
+        !conv.surfaced &&
+        (conv.source === "worker" || conv.source === "mission");
+      if (needsSurface) {
+        useStore.setState((st) => ({
+          conversations: st.conversations.map((c) =>
+            c.id === convId ? { ...c, surfaced: true } : c,
+          ),
+        }));
+      }
+      respond(reqId, { ok: true });
+    } catch (e) {
+      respond(reqId, { error: String(e) });
+    }
+  });
+
   // Vault-only resolver for routes that read disk directly (/conversations,
   // /file) — works even when no ElevenLabs key exists for the voice context.
   await listen<{ reqId: string }>("phone:vault", (event) => {

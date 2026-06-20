@@ -1800,8 +1800,10 @@ export const useStore = create<State>((set) => ({
       const synced = syncActiveMessages(s).map((c) =>
         // Bump lastActivityAt on open so a thread you OPEN — even a worker you
         // never message — pins to the top of the recent-conversations list
-        // instead of sinking out of view until it gets a message.
-        c.id === id ? { ...c, unread: false, lastActivityAt: Date.now() } : c,
+        // instead of sinking out of view until it gets a message. `surfaced`
+        // marks it as viewed, so a mission/worker thread (hidden from the
+        // phone's recent list by default) joins recent once you look at it.
+        c.id === id ? { ...c, unread: false, lastActivityAt: Date.now(), surfaced: true } : c,
       );
       // Snapshot the leaving run's live view, then rehydrate the global
       // streaming view from the target's buffer if it has one in flight.

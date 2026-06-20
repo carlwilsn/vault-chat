@@ -911,11 +911,14 @@
       const runIds = new Set();
       if (sr && sr.ok) { const sd = await sr.json().catch(() => ({})); for (const x of sd.runs || []) runIds.add(x.convId); }
       const convs = d.conversations || [];
-      // The drawer is YOUR conversations with the assistant, nothing else —
-      // workers and missions live on Activity. The cosmetic hidden set (cleared
-      // "from this view") is filtered out, except the chat you're currently in.
+      // The drawer is YOUR conversations with the assistant — workers and
+      // missions live on Activity and stay out by default. But once you've
+      // VIEWED a worker/mission thread it flips `surfaced` and joins recent, so
+      // you can get back to it here without hunting through Activity. The
+      // cosmetic hidden set (cleared "from this view") is filtered out, except
+      // the chat you're currently in.
       const hidden = hiddenChats();
-      const chats = convs.filter((c) => c.source !== "worker" && c.source !== "mission" && (!hidden.has(c.id) || c.id === convId));
+      const chats = convs.filter((c) => ((c.source !== "worker" && c.source !== "mission") || c.surfaced) && (!hidden.has(c.id) || c.id === convId));
       // The chat you're in may not be on disk yet (the box persists ~500ms
       // after the first message). Show it anyway so a just-made chat never
       // looks missing.

@@ -289,6 +289,21 @@ fn handle(mut req: Request, token: &str) {
             let n = query_param(req.url(), "n")
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(60);
+            // Viewing a thread surfaces it: a mission/worker that's normally
+            // Activity-only joins the recent/Chats list the moment you open it.
+            // Fire-and-forget on its own thread so the surface round-trip never
+            // delays serving the thread (the app no-ops if it's already surfaced
+            // or isn't a worker/mission).
+            if !id.is_empty() {
+                let id_for_relay = id.clone();
+                std::thread::spawn(move || {
+                    let _ = relay_request(
+                        "phone:surface",
+                        json!({ "convId": id_for_relay }),
+                        Duration::from_secs(4),
+                    );
+                });
+            }
             let body = match current_vault() {
                 Some(vault) => match conversation_json(&vault, &id, n) {
                     Some(j) => resp_text(200, "application/json", j),
@@ -1273,6 +1288,10 @@ fn conversations_summary_json(vault: &str) -> String {
                 // never learns a mission is done, so it lingered on Activity — the
                 // "mission never cleared" bug.
                 "completedAt": c.get("completedAt").and_then(|x| x.as_i64()),
+                // The user has opened this thread, so a mission/worker (normally
+                // Activity-only) earns a spot in the recent/Chats list. Set when
+                // the phone fetches /conversation for it.
+                "surfaced": c.get("surfaced").and_then(|x| x.as_bool()).unwrap_or(false),
             })
         })
         .collect();

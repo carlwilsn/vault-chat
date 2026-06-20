@@ -75,6 +75,13 @@ export type Conversation = {
   // phone, scheduled — gets a correct clock for free. Carried through
   // readConversations (below) like the other load-bearing fields.
   runStartedAt?: number;
+  // The user has OPENED this thread at least once, so it earns a spot in the
+  // recent-conversations list even when it'd normally be hidden there. Mission
+  // and worker threads live on the Activity surface and stay OUT of the phone's
+  // recent/Chats list by default; the moment you view one it flips surfaced and
+  // joins recent so you can get back to it. Set on open from either surface and
+  // synced, so viewing a worker on the phone also surfaces it on the desktop.
+  surfaced?: boolean;
 };
 
 // Attach a Telegram chat_id to one conversation, detaching it from any
@@ -188,6 +195,8 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         // cold load, so a stale value here is harmless — the clock only renders
         // while the in-memory run is live.
         runStartedAt: parsed.runStartedAt,
+        // Whether the user has viewed this thread (promotes it into recent).
+        surfaced: parsed.surfaced,
       });
     } catch {
       // skip
