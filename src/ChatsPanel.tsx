@@ -279,15 +279,17 @@ function Row({
         <span
           className="relative inline-flex h-1.5 w-1.5 mt-[7px] shrink-0"
           title={
-            isRunning ? "Running" : isUnread ? "Unread" : undefined
+            isRunning ? "Generating…" : isUnread ? "Done — unseen" : undefined
           }
         >
           {isRunning ? (
+            // White, pulsing = still thinking.
             <>
-              <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+              <span className="absolute inset-0 rounded-full bg-foreground opacity-60 animate-ping" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-foreground" />
             </>
           ) : isUnread ? (
+            // Solid accent = finished, waiting for you to look.
             <span className="h-1.5 w-1.5 rounded-full bg-primary" />
           ) : active ? (
             <span className="h-1.5 w-1.5 rounded-full bg-foreground/40" />

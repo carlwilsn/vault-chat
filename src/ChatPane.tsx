@@ -1035,11 +1035,13 @@ export function ChatPane() {
                       }
                     >
                       {indicatorKind === "running" ? (
+                        // White, pulsing = a background chat is still thinking.
                         <>
-                          <span className="absolute inset-0 rounded-full bg-primary opacity-60 animate-ping" />
-                          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+                          <span className="absolute inset-0 rounded-full bg-foreground opacity-60 animate-ping" />
+                          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-foreground" />
                         </>
                       ) : (
+                        // Solid accent = a background chat finished, unseen.
                         <span className="h-1.5 w-1.5 rounded-full bg-primary" />
                       )}
                     </span>
