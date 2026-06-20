@@ -3255,6 +3255,13 @@ fn run_git_timeout(
     // headless server that would hang the whole sync loop forever. Fail fast
     // and let the caller surface the auth error instead.
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+    // Don't take the optional index lock. Read-only commands (status, diff,
+    // rev-list) otherwise grab `.git/index.lock` to opportunistically refresh
+    // the index — which collides with an in-flight autosave commit and is a
+    // prime cause of the sync wedge (status piling up, blocked on a lock a
+    // commit holds, until both time out at 90s). With this set, reads never
+    // contend for the lock; genuine writers (add/commit) still lock normally.
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
@@ -3354,12 +3361,29 @@ fn ensure_vault_gitattributes(vault: &str) -> bool {
 const VAULT_GITIGNORE: &str = "\
 # Managed by vault-chat. Ephemeral machine-local state — never synced.
 .vault-chat/run-heartbeat.json
+.vault-chat/firer-heartbeat.json
 .vault-chat/app-log.txt
 .vault-chat/*.bak
 .vault-chat/*.tmp
 __pycache__/
 *.pyc
 ";
+
+// Every machine-local ignore rule the managed block must carry. A vault seeded
+// before a rule existed (e.g. firer-heartbeat.json, rewritten every ~10s and
+// otherwise tracked — it kept the tree perpetually dirty, driving nonstop
+// autosave commits and index-lock churn) carries the marker but is missing the
+// newer line, so the upgrade path checks these one by one rather than bailing
+// on the marker alone.
+const VAULT_GITIGNORE_REQUIRED: &[&str] = &[
+    ".vault-chat/run-heartbeat.json",
+    ".vault-chat/firer-heartbeat.json",
+    ".vault-chat/app-log.txt",
+    ".vault-chat/*.bak",
+    ".vault-chat/*.tmp",
+    "__pycache__/",
+    "*.pyc",
+];
 
 /// Ensure `<vault>/.gitignore` exists and carries our managed block.
 /// Returns true if it wrote the file (i.e. it was missing or stale).
@@ -3369,14 +3393,36 @@ __pycache__/
 fn ensure_vault_gitignore(vault: &str) -> bool {
     let path = PathBuf::from(vault).join(".gitignore");
     let current = std::fs::read_to_string(&path).unwrap_or_default();
-    if current.contains("Managed by vault-chat") {
+    let has_marker = current.contains("Managed by vault-chat");
+    // Append-only upgrade: a vault that already has the managed block but is
+    // missing a newer rule (added after it was seeded) still gets that rule,
+    // instead of bailing on the marker and shipping a stale ignore set.
+    let missing: Vec<&str> = VAULT_GITIGNORE_REQUIRED
+        .iter()
+        .copied()
+        .filter(|line| !current.lines().any(|l| l.trim() == *line))
+        .collect();
+    if has_marker && missing.is_empty() {
         return false;
     }
-    // Preserve any pre-existing user rules by prepending our block.
-    let contents = if current.trim().is_empty() {
-        VAULT_GITIGNORE.to_string()
+    let contents = if !has_marker {
+        // Fresh seed — prepend our block to preserve any pre-existing user rules.
+        if current.trim().is_empty() {
+            VAULT_GITIGNORE.to_string()
+        } else {
+            format!("{}\n{}", VAULT_GITIGNORE, current)
+        }
     } else {
-        format!("{}\n{}", VAULT_GITIGNORE, current)
+        // Marker present, just missing newer rules — append only those.
+        let mut s = current.clone();
+        if !s.ends_with('\n') {
+            s.push('\n');
+        }
+        for line in &missing {
+            s.push_str(line);
+            s.push('\n');
+        }
+        s
     };
     std::fs::write(&path, contents).is_ok()
 }
@@ -3521,6 +3567,7 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
                         "--ignore-unmatch",
                         "--",
                         ".vault-chat/run-heartbeat.json",
+                        ".vault-chat/firer-heartbeat.json",
                         ".vault-chat/app-log.txt",
                     ],
                 );
@@ -3573,7 +3620,14 @@ async fn git_commit_all(
         // every commit silently no-ops. Clear that first so this commit
         // actually lands instead of vanishing.
         abort_stuck_merge_or_rebase(&vault);
-        let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
+        // `--ignore-submodules=dirty`: don't recurse into submodule working
+        // trees to detect dirtiness (on a vault with big submodules — e.g.
+        // torchtitan — that scan is what pushed `status` past the 90s timeout).
+        // A submodule's own content is committed by the nested-repo pass first,
+        // which moves its HEAD; the resulting gitlink/pointer change IS still
+        // reported here, so the superproject's pointer-bump commit still fires.
+        let (status_out, _, _) =
+            run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])?;
         if status_out.trim().is_empty() {
             return Ok(None);
         }
@@ -4241,7 +4295,14 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
         } else {
             None
         };
-        let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
+        // `--ignore-submodules=dirty`: don't recurse into submodule working
+        // trees to detect dirtiness (on a vault with big submodules — e.g.
+        // torchtitan — that scan is what pushed `status` past the 90s timeout).
+        // A submodule's own content is committed by the nested-repo pass first,
+        // which moves its HEAD; the resulting gitlink/pointer change IS still
+        // reported here, so the superproject's pointer-bump commit still fires.
+        let (status_out, _, _) =
+            run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])?;
         let has_changes = !status_out.trim().is_empty();
         // Count local commits not yet on the upstream. Errors (no upstream,
         // detached HEAD) are treated as "nothing ahead".
@@ -4409,7 +4470,14 @@ async fn vault_commit_local(vault: String) -> Result<SyncOpResult, String> {
         with_repo_lock(&vault, || {
             abort_stuck_merge_or_rebase(&vault);
             let nested = commit_nested_repos_local(&vault, false);
-            let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
+            // `--ignore-submodules=dirty`: don't recurse into submodule working
+        // trees to detect dirtiness (on a vault with big submodules — e.g.
+        // torchtitan — that scan is what pushed `status` past the 90s timeout).
+        // A submodule's own content is committed by the nested-repo pass first,
+        // which moves its HEAD; the resulting gitlink/pointer change IS still
+        // reported here, so the superproject's pointer-bump commit still fires.
+        let (status_out, _, _) =
+            run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])?;
             let mut root_committed = false;
             if !status_out.trim().is_empty() {
                 let (hn, he) = human_identity(&vault);
@@ -4461,7 +4529,14 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         // their working trees (clearing the per-repo dots) and advances owned
         // HEADs so the parent's gitlink bumps get staged and committed below.
         sync_nested_repos(&vault, false);
-        let (status_out, _, _) = run_git(&vault, &["status", "--porcelain"])?;
+        // `--ignore-submodules=dirty`: don't recurse into submodule working
+        // trees to detect dirtiness (on a vault with big submodules — e.g.
+        // torchtitan — that scan is what pushed `status` past the 90s timeout).
+        // A submodule's own content is committed by the nested-repo pass first,
+        // which moves its HEAD; the resulting gitlink/pointer change IS still
+        // reported here, so the superproject's pointer-bump commit still fires.
+        let (status_out, _, _) =
+            run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])?;
         if status_out.trim().is_empty() {
             return Ok(SyncOpResult {
                 ok: true,
