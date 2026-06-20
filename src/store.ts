@@ -1978,9 +1978,21 @@ export const useStore = create<State>((set) => ({
     })),
   setConversationStatus: (id, status) =>
     set((s) => ({
-      conversations: s.conversations.map((c) =>
-        c.id === id ? { ...c, status } : c,
-      ),
+      conversations: s.conversations.map((c) => {
+        if (c.id !== id) return c;
+        if (status === "running") {
+          // Stamp the run start once, on the idle→running edge, so the elapsed
+          // clock counts from when the prompt was sent and stays continuous
+          // across open/close, reload, and phone↔desktop. A re-entrant "running"
+          // (a multi-turn agent loop that never went idle) keeps its original
+          // start instead of resetting to now.
+          const runStartedAt =
+            c.status === "running" && c.runStartedAt ? c.runStartedAt : Date.now();
+          return { ...c, status, runStartedAt };
+        }
+        // Run ended — drop the start so a later open doesn't show a phantom clock.
+        return { ...c, status, runStartedAt: undefined };
+      }),
     })),
 }));
 

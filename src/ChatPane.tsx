@@ -1449,18 +1449,24 @@ function ReasoningStream({ text }: { text: string }) {
 }
 
 function ElapsedTimer() {
-  // Count from the run's real start (store) so leaving and returning to a
-  // running thread shows continuous elapsed time, not a restart from 0.
-  // Falls back to mount time if the start wasn't recorded.
-  const busyStartedAt = useStore((s) => s.busyStartedAt);
+  // Count from the run's real start so leaving and returning to a running
+  // thread shows continuous elapsed time, not a restart from 0. The start lives
+  // on the conversation itself (`runStartedAt`, stamped when the prompt was
+  // sent), so it's correct for EVERY source — manual, voice, mission, worker,
+  // phone — and survives open/close and reload. Falls back to the global
+  // busyStartedAt, then to mount time, if a start somehow wasn't recorded.
+  const startedAt = useStore((s) => {
+    const active = s.conversations.find((c) => c.id === s.activeConversationId);
+    return active?.runStartedAt ?? s.busyStartedAt;
+  });
   const [seconds, setSeconds] = useState(0);
   useEffect(() => {
-    const start = busyStartedAt ?? Date.now();
+    const start = startedAt ?? Date.now();
     const tick = () => setSeconds(Math.max(0, Math.floor((Date.now() - start) / 1000)));
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [busyStartedAt]);
+  }, [startedAt]);
   const mm = Math.floor(seconds / 60);
   const ss = seconds % 60;
   const label = mm > 0 ? `${mm}:${ss.toString().padStart(2, "0")}` : `${ss}s`;

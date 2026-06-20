@@ -66,6 +66,15 @@ export type Conversation = {
   // the brief's bullets). Drives per-criterion checkoff in the mission spec, so
   // the user watches progress accrue one bullet at a time — set via MarkDoneWhen.
   doneWhenDone?: string[];
+  // When the CURRENT run for this thread began (epoch ms), stamped on the
+  // idle→running edge and cleared when the run ends. This is the single source
+  // of truth for the "thinking" elapsed clock: it counts from when the prompt
+  // was sent and stays continuous across leave/return, reload, and phone↔desktop
+  // — NOT from when the thread was last opened. Lives on the Conversation (not a
+  // transient view buffer) so EVERY source — manual, voice, mission, worker,
+  // phone, scheduled — gets a correct clock for free. Carried through
+  // readConversations (below) like the other load-bearing fields.
+  runStartedAt?: number;
 };
 
 // Attach a Telegram chat_id to one conversation, detaching it from any
@@ -173,6 +182,12 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         thinkingDigest: parsed.thinkingDigest,
         completedAt: parsed.completedAt,
         doneWhenDone: parsed.doneWhenDone,
+        // Carry the run-start through read-modify-write so a thread that's
+        // running on the active box still surfaces a correct elapsed clock on
+        // another surface (phone / second machine). Status is forced idle on a
+        // cold load, so a stale value here is harmless — the clock only renders
+        // while the in-memory run is live.
+        runStartedAt: parsed.runStartedAt,
       });
     } catch {
       // skip
