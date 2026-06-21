@@ -1488,6 +1488,85 @@ async fn append_debug_log(vault_path: String, text: String) -> Result<(), String
     .map_err(|e| e.to_string())?
 }
 
+/// The machine's hostname, for stamping cross-machine diagnostic logs so a
+/// sync failure can be attributed to a specific box ("the server" vs "the
+/// laptop") when hunting for patterns. Cached for the process. Resolution
+/// order: COMPUTERNAME (Windows) → HOSTNAME (Linux login shells) →
+/// `/etc/hostname` (the headless box, where neither env var is exported) →
+/// "unknown".
+fn machine_host_name() -> String {
+    static HOST: OnceLock<String> = OnceLock::new();
+    HOST.get_or_init(|| {
+        for var in ["COMPUTERNAME", "HOSTNAME"] {
+            if let Ok(h) = std::env::var(var) {
+                let h = h.trim();
+                if !h.is_empty() {
+                    return h.to_string();
+                }
+            }
+        }
+        if let Ok(h) = std::fs::read_to_string("/etc/hostname") {
+            let h = h.trim();
+            if !h.is_empty() {
+                return h.to_string();
+            }
+        }
+        "unknown".to_string()
+    })
+    .clone()
+}
+
+#[tauri::command]
+fn machine_host() -> String {
+    machine_host_name()
+}
+
+/// Append one JSONL event line to `<vault>/.vault-chat/sync-log.jsonl` — the
+/// durable, machine-local record of vault-sync failures, recoveries, and
+/// divergence-merges used to spot patterns over time. The red sync-status
+/// banner is transient (overwritten each tick); this is the history behind it.
+///
+/// Like `append_debug_log`, it emits NO file-changed event — the log must never
+/// feed back into the very sync loop that writes it — and is best-effort. The
+/// file is gitignored (machine-local, never synced), so writing to it can't
+/// perturb the sync it's measuring. Size-capped: once it grows past CAP_BYTES it
+/// is trimmed to the last KEEP_LINES before appending, so a long-running box
+/// can't let it balloon. Trimming is purely local and never touches history.
+#[tauri::command]
+async fn append_sync_log(vault_path: String, line: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        const CAP_BYTES: u64 = 512 * 1024;
+        const KEEP_LINES: usize = 1500;
+        let dir = std::path::Path::new(&vault_path).join(".vault-chat");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("sync-log.jsonl");
+        // Trim when oversized so the local log can't grow without bound.
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.len() > CAP_BYTES {
+                if let Ok(existing) = std::fs::read_to_string(&path) {
+                    let mut kept: Vec<&str> =
+                        existing.lines().rev().take(KEEP_LINES).collect();
+                    kept.reverse();
+                    let _ = std::fs::write(&path, kept.join("\n") + "\n");
+                }
+            }
+        }
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        let mut s = line;
+        if !s.ends_with('\n') {
+            s.push('\n');
+        }
+        f.write_all(s.as_bytes()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Prune the `<vault>/.vault-chat/captures/` folder of files whose
 /// mtime is older than `older_than_hours`. Called on vault open so
 /// chat captures don't accumulate forever — the user's mental model is
@@ -3363,6 +3442,7 @@ const VAULT_GITIGNORE: &str = "\
 .vault-chat/run-heartbeat.json
 .vault-chat/firer-heartbeat.json
 .vault-chat/app-log.txt
+.vault-chat/sync-log.jsonl
 .vault-chat/*.bak
 .vault-chat/*.tmp
 __pycache__/
@@ -3379,6 +3459,7 @@ const VAULT_GITIGNORE_REQUIRED: &[&str] = &[
     ".vault-chat/run-heartbeat.json",
     ".vault-chat/firer-heartbeat.json",
     ".vault-chat/app-log.txt",
+    ".vault-chat/sync-log.jsonl",
     ".vault-chat/*.bak",
     ".vault-chat/*.tmp",
     "__pycache__/",
@@ -7034,6 +7115,8 @@ pub fn run() {
             read_binary_file,
             write_text_file,
             append_debug_log,
+            append_sync_log,
+            machine_host,
             write_binary_file_unique,
             cleanup_old_captures,
             copy_into_vault,
