@@ -51,7 +51,7 @@ async function wireToolRelay(): Promise<void> {
       // Open/seed a labeled voice conversation at session start so the spoken
       // turns (relayed via voice:transcript below) and any mission the agent
       // proposes land in one findable thread, surfaced in the conversation list.
-      phoneVoiceConvId = ensureVoiceConversation();
+      phoneVoiceConvId = ensureVoiceConversation({ stealFocus: false });
       const ctx = await buildPhoneVoiceContext();
       if (ctx) result = JSON.stringify(ctx);
       // Log the failure modes — this build used to swallow errors silently, which
@@ -72,7 +72,7 @@ async function wireToolRelay(): Promise<void> {
   await listen<{ role?: string; text?: string }>("voice:transcript", (event) => {
     const t = (event.payload.text ?? "").trim();
     if (!t) return;
-    const convId = phoneVoiceConvId ?? (phoneVoiceConvId = ensureVoiceConversation());
+    const convId = phoneVoiceConvId ?? (phoneVoiceConvId = ensureVoiceConversation({ stealFocus: false }));
     useStore.getState().appendMessageToConversation(convId, {
       role: event.payload.role === "user" ? "user" : "assistant",
       content: t,

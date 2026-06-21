@@ -3,7 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore, type ChatMessage, type Viewport, type FileEntry } from "./store";
 import { buildNote } from "./notes";
 import { gitCommitAll } from "./git";
-import { loadVaultVoicePrompt, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock } from "./meta";
+import { loadVaultVoicePrompt, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock, loadVaultVoiceTools, type VaultVoiceTool } from "./meta";
+// `Conversation` (the value) is the ElevenLabs SDK class imported above; alias
+// our thread type so the names don't collide.
+import { emptyConversation, type Conversation as ConvThread } from "./conversations";
 import { applyNotebookEdit, extractPdfText, stripNotebook, assertCanWrite } from "./tools";
 import { loadSessionContext } from "./context";
 import { loadSkills, skillPromptIndex } from "./skills";
@@ -84,6 +87,47 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // on next session, so updates roll out without manual intervention.
 const AGENT_CONFIG_VERSION = "v19-mission";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
+// Signature of the per-vault custom tools baked into the cached agent. Custom
+// tools are part of the agent's tool schema (provisioned at create time), so a
+// tool added/removed/edited in the vault must force a re-provision the same way
+// an LLM or config-version change does — otherwise voice keeps offering the old
+// set. Mismatch with the live signature triggers a rebuild on next ensureAgent.
+const AGENT_TOOLS_SIG_STORAGE = "vault_chat_elevenlabs_agent_tools_sig";
+
+// Custom voice tools for the active vault, refreshed on every ensureAgent (the
+// provisioning authority). buildClientToolHandlers / buildSystemPrompt read this
+// synchronously — ensureAgent always runs first on every voice path (desktop
+// session start, phone /session context build, launch + heartbeat), so it's warm
+// by the time tools are called. Empty until the first load.
+let voiceToolCache: { vault: string | null; tools: VaultVoiceTool[] } = {
+  vault: null,
+  tools: [],
+};
+
+// A stable fingerprint of the custom tool set — names + parameter shapes — so a
+// changed vault re-provisions the agent. Order-independent: sort by name.
+function voiceToolsSignature(tools: VaultVoiceTool[]): string {
+  return tools
+    .map((t) => `${t.name}:${JSON.stringify(t.parameters)}`)
+    .sort()
+    .join("|");
+}
+
+// Load the active vault's custom tools and refresh the module cache. Returns the
+// list so callers can build the agent's tool schema from the same snapshot the
+// handlers will use. Degrades to [] (built-ins only) on any failure.
+async function refreshVoiceTools(): Promise<VaultVoiceTool[]> {
+  const vault = useStore.getState().vaultPath;
+  try {
+    const tools = await loadVaultVoiceTools(vault);
+    voiceToolCache = { vault, tools };
+    return tools;
+  } catch (e) {
+    console.warn("[voice-eleven] custom tool load failed:", e);
+    voiceToolCache = { vault, tools: [] };
+    return [];
+  }
+}
 const VOICE_ID_STORAGE = "vault_chat_elevenlabs_voice";
 const DEFAULT_VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Brian — Jarvis-adjacent baseline.
 const SCROLL_DEBOUNCE_MS = 600;
@@ -652,8 +696,28 @@ const CLIENT_TOOL_DEFINITIONS = [
 // it "voice". A typed turn later flips it back to "manual" (see
 // chat-controller), so "source === voice" means "voice from start to end
 // so far", which is exactly the resume condition the user wants.
-export function ensureVoiceConversation(): string {
+export function ensureVoiceConversation(opts?: { stealFocus?: boolean }): string {
+  // Desktop voice (the user is sitting at THIS app) wants the voice thread to
+  // become the active pane — that's the whole point of toggling the mic. Phone
+  // voice does NOT: it runs the brain on the box (see phoneVoice.ts), but the
+  // box is itself a desktop client someone may be looking at, so claiming its
+  // active pane yanks that user onto a thread they didn't open. Default true to
+  // preserve the desktop behavior; the phone passes false.
+  const stealFocus = opts?.stealFocus !== false;
   const s = useStore.getState();
+
+  if (!stealFocus) {
+    // Build a labeled voice thread inline and prepend it — never
+    // newConversation(), which sets AND persists activeConversationId and would
+    // steal whatever pane the box's desktop user has open. Same focus-preserving
+    // pattern as the phone-chat and Telegram inbound handlers (see phoneApp.ts).
+    // Each phone voice session gets its own thread; transcripts for the session
+    // reuse it via phoneVoice.ts's module-level phoneVoiceConvId.
+    const fresh: ConvThread = { ...emptyConversation(), source: "voice" };
+    useStore.setState({ conversations: [fresh, ...s.conversations] });
+    return fresh.id;
+  }
+
   const active = s.activeConversationId
     ? s.conversations.find((c) => c.id === s.activeConversationId)
     : null;
@@ -1578,6 +1642,15 @@ function buildSystemPrompt(
   const pdfReadingLine = gemini
     ? "- PDFs: you can see them directly — the full document is in your multimodal context. Don't try to Read .pdf files as text; just look at the pages."
     : "- PdfExtract is how you read PDFs (Read won't work on .pdf). `pages` arg accepts '1', '1-5', '3,5,7'.";
+  // The user's per-vault custom tools — same set the text agent loads. List them
+  // by name + description so voice discovers them the way the text agent does;
+  // their full schemas reach the model via the agent provisioning in ensureAgent.
+  const customToolsBlock = voiceToolCache.tools.length
+    ? [
+        "Custom tools for THIS vault (added by the user — call them exactly like the built-ins above):",
+        ...voiceToolCache.tools.map((t) => `- ${t.name}: ${t.description}`),
+      ].join("\n")
+    : "";
   return [
     header,
     "",
@@ -1614,6 +1687,7 @@ function buildSystemPrompt(
     "- WebFetch when you have a URL — reads the page as text.",
     "- WebSearch for current info or to find a URL. Requires a Tavily key; if missing the tool returns an error you can relay to the user.",
     "",
+    customToolsBlock ? `${customToolsBlock}\n` : "",
     "Shell:",
     "- Bash runs commands with the vault as cwd. Default timeout 20s; hard ceiling ~25s because the platform cuts off tool responses at 30s. For long-running things (cloning big repos, training runs, long installs), background with `nohup <cmd> > /tmp/run.log 2>&1 &` and poll the log file in later Bash calls.",
     "- Bash may be disabled in settings — if it returns an error to that effect, relay it to the user instead of trying to work around it.",
@@ -1737,18 +1811,25 @@ export function getLastAgentCreateError(): { status: number; body: string } | nu
 }
 
 async function ensureAgent(apiKey: string): Promise<string | null> {
+  // Refresh the custom-tool snapshot first — this also warms the cache that
+  // buildClientToolHandlers / buildSystemPrompt read synchronously, and the
+  // signature joins the staleness check so adding a vault tool re-provisions.
+  const customTools = await refreshVoiceTools();
+  const toolsSig = voiceToolsSignature(customTools);
   const cached = localStorage.getItem(AGENT_ID_STORAGE);
   const provisionedWith = localStorage.getItem(AGENT_LLM_AT_PROVISION);
   const provisionedVersion = localStorage.getItem(AGENT_VERSION_STORAGE);
+  const provisionedTools = localStorage.getItem(AGENT_TOOLS_SIG_STORAGE);
   const wantedLlm = getCurrentLlm();
-  // Re-provision if either the LLM choice or the agent-config schema
-  // has changed since this agent was created. (The orchestrator
-  // caches both at agent level, so changes don't take effect on the
+  // Re-provision if the LLM choice, the agent-config schema, or the vault's
+  // custom tool set has changed since this agent was created. (The orchestrator
+  // caches all of these at agent level, so changes don't take effect on the
   // existing agent — we make a fresh one.)
   const stale =
     cached &&
     (provisionedWith !== wantedLlm ||
-      provisionedVersion !== AGENT_CONFIG_VERSION);
+      provisionedVersion !== AGENT_CONFIG_VERSION ||
+      provisionedTools !== toolsSig);
   if (cached && !stale) return cached;
   if (stale) {
     localStorage.removeItem(AGENT_ID_STORAGE);
@@ -1778,6 +1859,9 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
                     (t) =>
                       !(isGeminiLlm(wantedLlm) && t.name === "PdfExtract"),
                   )
+                  // A custom vault tool with the same name as a built-in wins
+                  // (matches the text agent's { ...builtin, ...custom } merge).
+                  .filter((t) => !customTools.some((c) => c.name === t.name))
                   .map((t) => ({
                   type: "client" as const,
                   name: t.name,
@@ -1789,6 +1873,18 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
                   // appears empty to the model. With this true the
                   // agent actually receives and reasons over the
                   // result string.
+                  expects_response: true,
+                  response_timeout_secs: 30,
+                })),
+                // Custom per-vault tools — the SAME ones the text agent loads
+                // (loadVaultTools), so a tool you add to the vault works whether
+                // you type or talk. Same client-tool contract: the box runs the
+                // handler (buildClientToolHandlers) and hands the result back.
+                ...customTools.map((t) => ({
+                  type: "client" as const,
+                  name: t.name,
+                  description: t.description,
+                  parameters: t.parameters,
                   expects_response: true,
                   response_timeout_secs: 30,
                 })),
@@ -1883,6 +1979,7 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
     localStorage.setItem(AGENT_ID_STORAGE, json.agent_id);
     localStorage.setItem(AGENT_LLM_AT_PROVISION, wantedLlm);
     localStorage.setItem(AGENT_VERSION_STORAGE, AGENT_CONFIG_VERSION);
+    localStorage.setItem(AGENT_TOOLS_SIG_STORAGE, toolsSig);
     return json.agent_id;
   } catch (e) {
     console.error("[voice-eleven] agent create exception:", e);
@@ -2093,7 +2190,7 @@ export function buildClientToolHandlers(): Record<
   string,
   (parameters: any) => Promise<string>
 > {
-  return {
+  const handlers: Record<string, (parameters: any) => Promise<string>> = {
     Read: withTracking("Read", async (args: { path: string }) => {
       try {
         const raw = await invoke<string>("read_text_file", { path: args.path });
@@ -2794,4 +2891,15 @@ export function buildClientToolHandlers(): Record<
       },
     ),
   };
+
+  // Custom per-vault tools, from the snapshot ensureAgent loaded (which always
+  // runs first on every voice path). Same execute the text agent uses, wrapped
+  // in withTracking so they show in the cockpit pill and chat log like built-ins.
+  // A custom tool sharing a built-in's name overrides it — matching both the
+  // text agent's merge order and the agent schema filter in ensureAgent.
+  for (const t of voiceToolCache.tools) {
+    handlers[t.name] = withTracking(t.name, (args: unknown) => t.execute(args));
+  }
+
+  return handlers;
 }

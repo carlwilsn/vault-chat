@@ -425,23 +425,24 @@ async function findRunFile(toolDir: string): Promise<string | null> {
 // ai-sdk tool objects. Shared by both the global meta-tool loader and
 // the per-vault loader below — the only difference between them is the
 // root directory.
-async function loadToolsFromRoot(toolsRoot: string): Promise<Record<string, unknown>> {
-  const out: Record<string, unknown> = {};
+// Scan a `<root>/<name>/TOOL.md` + run.* layout into parsed specs. Shared by
+// every consumer below — the text-agent AI-SDK loader AND the voice loader —
+// so the on-disk tool format has exactly one parser. Whatever the text agent
+// can run, voice can too, because they read the same folders the same way.
+async function scanToolSpecs(
+  toolsRoot: string,
+): Promise<{ spec: ToolSpec; runPath: string; toolDir: string }[]> {
+  const found: { spec: ToolSpec; runPath: string; toolDir: string }[] = [];
   const diag: string[] = [];
   let entries: { path: string; name: string; is_dir: boolean }[] = [];
   try {
     entries = await invoke("list_dir", { path: toolsRoot });
   } catch {
-    // A missing root is normal — a vault with no local tools, or a meta
-    // vault that has no tools dir yet. Quietly register nothing.
-    return out;
+    // A missing root is normal — a vault with no local tools yet. Register nothing.
+    return found;
   }
-
   for (const entry of entries) {
-    if (!entry.is_dir) {
-      diag.push(`skip ${entry.name}: not a dir`);
-      continue;
-    }
+    if (!entry.is_dir) continue;
     const toolDir = entry.path;
     let spec: ToolSpec;
     try {
@@ -475,52 +476,67 @@ async function loadToolsFromRoot(toolsRoot: string): Promise<Record<string, unkn
       diag.push(`skip ${entry.name}: no run.{py,js,mjs,ts,sh,bash}`);
       continue;
     }
+    found.push({ spec, runPath, toolDir });
+  }
+  if (diag.length) console.log("[tools]", toolsRoot, "skips →", diag.join(" | "));
+  return found;
+}
 
+// Run a scanned tool's script with the args object and return its stdout (or a
+// readable error string). Shared by both the text and voice executors so a tool
+// behaves identically whether the user typed or spoke.
+async function runToolScript(
+  spec: ToolSpec,
+  runPath: string,
+  toolDir: string,
+  args: unknown,
+): Promise<string> {
+  try {
+    // Pull any user-key values the tool declared it needs and pass them as
+    // environment variables. The values don't flow through the agent's
+    // context — the script reads them via os.environ (or equivalent).
+    const requiredKeys = spec.requires_keys ?? [];
+    const env =
+      requiredKeys.length > 0 ? await getUserKeysAsEnv(requiredKeys) : undefined;
+    const result = await invoke<{
+      stdout: string;
+      stderr: string;
+      code: number;
+      timed_out: boolean;
+    }>("run_script", {
+      scriptPath: runPath,
+      stdinJson: JSON.stringify(args),
+      cwd: toolDir,
+      timeoutMs: spec.timeout_ms ?? 60_000,
+      env,
+    });
+    if (result.timed_out) return `(timed out)\n${result.stderr}`;
+    if (result.code !== 0) {
+      return `exit ${result.code}\nstderr:\n${result.stderr}\nstdout:\n${result.stdout}`;
+    }
+    return result.stdout.trim() || "(no output)";
+  } catch (e) {
+    return `run_script failed: ${(e as Error).message}`;
+  }
+}
+
+async function loadToolsFromRoot(toolsRoot: string): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  const loaded: string[] = [];
+  for (const { spec, runPath, toolDir } of await scanToolSpecs(toolsRoot)) {
     try {
       const inputSchema = zodFromSchema(spec.input_schema);
       out[spec.name] = tool({
         description: spec.description,
         inputSchema: inputSchema as any,
-        execute: async (args: unknown) => {
-        try {
-          // Pull any user-key values the tool declared it needs and
-          // pass them as environment variables. The values don't flow
-          // through the agent's context — script reads them via
-          // os.environ (or equivalent).
-          const requiredKeys = spec.requires_keys ?? [];
-          const env =
-            requiredKeys.length > 0
-              ? await getUserKeysAsEnv(requiredKeys)
-              : undefined;
-          const result = await invoke<{
-            stdout: string;
-            stderr: string;
-            code: number;
-            timed_out: boolean;
-          }>("run_script", {
-            scriptPath: runPath,
-            stdinJson: JSON.stringify(args),
-            cwd: toolDir,
-            timeoutMs: spec.timeout_ms ?? 60_000,
-            env,
-          });
-          if (result.timed_out) return `(timed out)\n${result.stderr}`;
-          if (result.code !== 0) {
-            return `exit ${result.code}\nstderr:\n${result.stderr}\nstdout:\n${result.stdout}`;
-          }
-          return result.stdout.trim() || "(no output)";
-        } catch (e) {
-          return `run_script failed: ${(e as Error).message}`;
-        }
-      },
+        execute: (args: unknown) => runToolScript(spec, runPath, toolDir, args),
       });
-      diag.push(`loaded ${spec.name}`);
+      loaded.push(spec.name);
     } catch (e) {
-      diag.push(`skip ${entry.name}: schema build failed: ${(e as Error).message}`);
+      console.log("[tools]", `skip ${spec.name}: schema build failed: ${(e as Error).message}`);
     }
   }
-
-  console.log("[tools]", toolsRoot, "→", diag.join(" | "), "→ registered:", Object.keys(out));
+  console.log("[tools]", toolsRoot, "→ registered:", loaded);
   return out;
 }
 
@@ -530,4 +546,84 @@ async function loadToolsFromRoot(toolsRoot: string): Promise<Record<string, unkn
 export async function loadVaultTools(vault: string | null): Promise<Record<string, unknown>> {
   if (!vault) return {};
   return loadToolsFromRoot(`${vault}/.vault-chat/tools`);
+}
+
+// A vault tool shaped for the ElevenLabs voice agent's client-tool protocol.
+// ElevenLabs needs a JSON-schema `parameters` block (every property described)
+// at agent-provision time, plus an `execute` the box runs when the agent calls
+// the tool. Same `execute` path as the text agent — only the schema shape
+// differs (JSON schema here vs. zod for the AI SDK).
+export type VaultVoiceTool = {
+  name: string;
+  description: string;
+  parameters: {
+    type: "object";
+    properties: Record<string, { type: string; description: string }>;
+    required: string[];
+  };
+  execute: (args: unknown) => Promise<string>;
+};
+
+/**
+ * Voice/text tool parity: load the SAME per-vault tools the text agent loads
+ * (loadVaultTools), shaped for ElevenLabs. A tool added to a vault is then
+ * usable whether the user types or talks — no second place to register it.
+ */
+export async function loadVaultVoiceTools(
+  vault: string | null,
+): Promise<VaultVoiceTool[]> {
+  if (!vault) return [];
+  const out: VaultVoiceTool[] = [];
+  for (const { spec, runPath, toolDir } of await scanToolSpecs(
+    `${vault}/.vault-chat/tools`,
+  )) {
+    out.push({
+      name: spec.name,
+      description: spec.description,
+      parameters: inputSchemaToVoiceParameters(spec.input_schema),
+      execute: (args: unknown) => runToolScript(spec, runPath, toolDir, args),
+    });
+  }
+  return out;
+}
+
+// Convert a TOOL.md input_schema — either the flat `{ field: {type,…} }` form or
+// the JSON-Schema `{ type:"object", properties, required }` form — into the
+// JSON-Schema `parameters` ElevenLabs requires. ElevenLabs 422s on any property
+// missing a description and rejects non-scalar types, so we coerce every leaf to
+// a scalar (mirroring zodFromSchema's normalizeType) and fill a description
+// (falling back to the property name) for every one.
+function inputSchemaToVoiceParameters(
+  schema: unknown,
+): VaultVoiceTool["parameters"] {
+  const properties: Record<string, { type: string; description: string }> = {};
+  const required: string[] = [];
+  const add = (key: string, p: Record<string, unknown>, isRequired: boolean) => {
+    properties[key] = {
+      type: normalizeType(p.type) ?? "string",
+      description:
+        typeof p.description === "string" && p.description ? p.description : key,
+    };
+    if (isRequired) required.push(key);
+  };
+  if (schema && typeof schema === "object") {
+    const obj = schema as Record<string, unknown>;
+    if (obj.type === "object" && obj.properties && typeof obj.properties === "object") {
+      const req = new Set(
+        Array.isArray(obj.required) ? (obj.required as string[]) : [],
+      );
+      for (const [key, prop] of Object.entries(
+        obj.properties as Record<string, unknown>,
+      )) {
+        if (prop && typeof prop === "object")
+          add(key, prop as Record<string, unknown>, req.has(key));
+      }
+    } else {
+      for (const [key, val] of Object.entries(obj)) {
+        if (val && typeof val === "object" && !Array.isArray(val))
+          add(key, val as Record<string, unknown>, (val as any).required === true);
+      }
+    }
+  }
+  return { type: "object", properties, required };
 }
