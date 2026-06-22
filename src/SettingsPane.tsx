@@ -1016,7 +1016,7 @@ function VaultSyncSection() {
     if (next) {
       await startVaultSyncLoop(vaultPath);
     } else {
-      stopVaultSyncLoop();
+      stopVaultSyncLoop(vaultPath);
     }
   };
 

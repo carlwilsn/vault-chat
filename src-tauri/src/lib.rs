@@ -3303,14 +3303,17 @@ fn github_credential_args() -> Vec<String> {
         gh
     );
     if found.is_some() {
-        // gh is real → make it AUTHORITATIVE for github.com: first reset that
-        // host's inherited helper chain (an empty helper value clears the list),
-        // then set only our gh shim. This is the fix for the Windows wedge where
-        // Git Credential Manager — tried first in the inherited chain — goes
-        // interactive (a GUI prompt that GIT_TERMINAL_PROMPT can't suppress) and
-        // hangs forever, leaking an orphaned git-credential-manager process that
-        // holds the network/credential state and jams every later sync. gh is all
-        // we ever need for GitHub, which is the only host the app syncs.
+        // gh is real → prefer it for github.com. We reset the *host-specific*
+        // helper chain (an empty value clears the list) and then add only our gh
+        // shim, so any host-specific Git-Credential-Manager binding (e.g. one left
+        // by `gh auth setup-git`) is dropped. We deliberately do NOT clear the
+        // *generic* `credential.helper`, so non-GitHub HTTPS remotes keep their
+        // helper — but that means GCM may still be consulted for github via the
+        // generic chain. The hard anti-hang guarantee is therefore the
+        // GCM_INTERACTIVE=never + credential.interactive=false set on every
+        // invocation (see run_git_timeout): GCM returns a cached cred or nothing,
+        // never a blocking GUI prompt, so git falls through to this gh shim
+        // instead of leaking an orphaned, wedged git-credential-manager.
         vec![
             "-c".into(),
             "credential.https://github.com.helper=".into(),
@@ -3511,6 +3514,7 @@ const VAULT_GITIGNORE: &str = "\
 # Managed by vault-chat. Ephemeral machine-local state — never synced.
 .vault-chat/run-heartbeat.json
 .vault-chat/firer-heartbeat.json
+.vault-chat/*heartbeat*.conflict
 .vault-chat/app-log.txt
 .vault-chat/sync-log.jsonl
 .vault-chat/*.bak
@@ -3528,6 +3532,10 @@ __pycache__/
 const VAULT_GITIGNORE_REQUIRED: &[&str] = &[
     ".vault-chat/run-heartbeat.json",
     ".vault-chat/firer-heartbeat.json",
+    // The merge-conflict sidecar resolve_merge_conflicts used to write for a
+    // (then-tracked) heartbeat is pure noise — ignore it so the untrack sweep
+    // sheds any that were committed before heartbeats were untracked.
+    ".vault-chat/*heartbeat*.conflict",
     ".vault-chat/app-log.txt",
     ".vault-chat/sync-log.jsonl",
     ".vault-chat/*.bak",
@@ -3576,6 +3584,52 @@ fn ensure_vault_gitignore(vault: &str) -> bool {
         s
     };
     std::fs::write(&path, contents).is_ok()
+}
+
+/// Untrack any file that is currently tracked but matches a gitignore rule —
+/// the general fix for the churn engine where an ephemeral file (the per-machine
+/// heartbeats, logs, a merge-conflict sidecar) got committed before its ignore
+/// rule existed, after which `.gitignore` is moot and the file re-commits on
+/// every write, keeping the tree perpetually dirty and forking history across
+/// machines. Lists tracked-but-ignored paths in one index-only pass
+/// (`ls-files -i -c`) and drops them from the index; the working copy is left in
+/// place. Returns how many paths it untracked — the caller's normal autosave
+/// commit then captures the removal. Best-effort. Cheap in steady state (finds
+/// nothing once a vault is clean).
+fn untrack_ignored_files(vault: &str) -> u32 {
+    let listed = match run_git(vault, &["ls-files", "-i", "-c", "--exclude-standard"]) {
+        Ok((out, _, 0)) => out,
+        _ => return 0,
+    };
+    let paths: Vec<String> = listed
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if paths.is_empty() {
+        return 0;
+    }
+    // Drop them in bounded chunks so a pathological case (e.g. a whole
+    // node_modules committed by hand) can't overflow the OS command-line limit.
+    for chunk in paths.chunks(64) {
+        let mut args: Vec<&str> = vec!["rm", "--cached", "--quiet", "--ignore-unmatch", "--"];
+        args.extend(chunk.iter().map(|s| s.as_str()));
+        let _ = run_git_mut(vault, &args);
+    }
+    paths.len() as u32
+}
+
+/// Idempotent per-cycle repo hygiene, run at the top of every local/sync commit
+/// so EVERY vault self-heals — not just on first init (the old behavior, which
+/// left a vault seeded before a rule existed permanently stale, e.g. school's
+/// `.gitignore` missing the heartbeat rule while its heartbeat churned history).
+/// Ensures the managed `.gitattributes`/`.gitignore` are current, then sheds any
+/// tracked-but-ignored ephemeral files. All three steps are cheap no-ops once a
+/// vault is already in good shape (marker-gated writes + an index-only scan).
+fn prepare_vault_repo(vault: &str) {
+    ensure_vault_gitattributes(vault);
+    ensure_vault_gitignore(vault);
+    untrack_ignored_files(vault);
 }
 
 /// Read recent commits from a git repo at a vault-relative subdirectory
@@ -4620,6 +4674,9 @@ async fn vault_commit_local(vault: String) -> Result<SyncOpResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         with_repo_lock(&vault, || {
             abort_stuck_merge_or_rebase(&vault);
+            // Self-heal the ignore set + shed tracked ephemerals every cycle, so
+            // a vault never gets stuck churning history on a machine-local file.
+            prepare_vault_repo(&vault);
             let nested = commit_nested_repos_local(&vault, false);
             // `--ignore-submodules=dirty`: don't recurse into submodule working
         // trees to detect dirtiness (on a vault with big submodules — e.g.
@@ -4675,6 +4732,9 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         // Self-heal a wedged repo: a crashed prior pull can leave an
         // in-progress rebase under which every commit silently no-ops.
         abort_stuck_merge_or_rebase(&vault);
+        // Self-heal the ignore set + shed tracked ephemerals every cycle, so a
+        // vault never gets stuck churning history on a machine-local file.
+        prepare_vault_repo(&vault);
         // Sync every nested repo first — each by its own remote and the user's
         // relationship to it (own / shared / foreign / internal). This commits
         // their working trees (clearing the per-repo dots) and advances owned
@@ -4811,7 +4871,15 @@ fn resolve_merge_conflicts(vault: &str) -> bool {
             let _ = run_git_mut(vault, &["checkout", "--ours", "--", path]);
         }
         let _ = run_git_mut(vault, &["add", "--", path]);
-        if took_theirs {
+        // Only preserve a sidecar for a real, synced file. An ephemeral file
+        // that's gitignored (a heartbeat tracked before its ignore rule landed)
+        // produces only noise sidecars that themselves churn + sync across
+        // machines — take theirs and move on.
+        let ignored = matches!(
+            run_git(vault, &["check-ignore", "-q", "--", path]),
+            Ok((_, _, 0))
+        );
+        if took_theirs && !ignored {
             if let Some(content) = ours_content {
                 let sidecar = format!("{}.conflict", path);
                 if std::fs::write(format!("{}/{}", vault, sidecar), content).is_ok() {

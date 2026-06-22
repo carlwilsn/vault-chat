@@ -241,8 +241,15 @@ type Loop = {
   cancel: () => void;
 };
 
-let activeLoop: Loop | null = null;
-let snapshot: SyncSnapshot = {
+// One loop PER vault, like the scheduler — so a sync-enabled vault keeps
+// pushing/pulling in the background even when you've switched to a different
+// vault. (Previously a single global loop meant only the foreground vault ever
+// synced; opening another vault silently stranded the first.) The Rust side
+// serializes git per repo with its own lock, and each loop has its own
+// single-flight guard, so distinct vaults' loops never collide.
+const loops = new Map<string, Loop>();
+
+const EMPTY_SNAPSHOT: SyncSnapshot = {
   lastSyncedAt: null,
   lastMessage: "",
   lastError: null,
@@ -252,39 +259,80 @@ let snapshot: SyncSnapshot = {
   ahead: 0,
   nestedRepos: [],
 };
+
+// Per-vault status. The UI only ever shows the *open* vault's snapshot, but we
+// keep one per vault so switching back to a synced vault shows its real state
+// immediately instead of a blank until its next tick.
+const snapshots = new Map<string, SyncSnapshot>();
 const listeners = new Set<SyncListener>();
 
-function emit() {
-  for (const l of listeners) l(snapshot);
+function openVault(): string | null {
+  return useStore.getState().vaultPath;
+}
+
+function snapOf(vault: string): SyncSnapshot {
+  return snapshots.get(vault) ?? { ...EMPTY_SNAPSHOT };
+}
+
+function emitOpen() {
+  const v = openVault();
+  const s = v ? snapOf(v) : { ...EMPTY_SNAPSHOT };
+  for (const l of listeners) l(s);
 }
 
 export function subscribeSyncStatus(fn: SyncListener): () => void {
   listeners.add(fn);
-  fn(snapshot);
+  const v = openVault();
+  fn(v ? snapOf(v) : { ...EMPTY_SNAPSHOT });
   return () => listeners.delete(fn);
 }
 
 export function getSyncSnapshot(): SyncSnapshot {
-  return snapshot;
+  const v = openVault();
+  return v ? snapOf(v) : { ...EMPTY_SNAPSHOT };
 }
 
-function resetSnapshot() {
-  snapshot = {
-    lastSyncedAt: null,
-    lastMessage: "",
-    lastError: null,
-    running: false,
-    remote: null,
-    hasChanges: false,
-    ahead: 0,
-    nestedRepos: [],
-  };
-  emit();
+// Re-broadcast the (now-)open vault's snapshot. Call when the open vault
+// changes so the status row reflects the vault you just switched to.
+export function focusVaultSync(): void {
+  emitOpen();
 }
 
-export async function startVaultSyncLoop(vault: string): Promise<void> {
-  stopVaultSyncLoop();
-  resetSnapshot();
+// Per-vault start serialization. Without it, two concurrent starts for the same
+// vault (e.g. the launch effect and the open-vault effect both firing on mount)
+// could each pass the `loops.has` check during the `await readVaultSyncConfig`
+// gap and leave TWO live loops for one vault — the resource race the old
+// single-loop design existed to prevent. Every start/ensure for a vault runs to
+// completion before the next begins (mirrors git.ts's commit chain).
+const startChains = new Map<string, Promise<void>>();
+
+function serializeStart(vault: string, fn: () => Promise<void>): Promise<void> {
+  const prev = startChains.get(vault) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  startChains.set(
+    vault,
+    next.catch(() => {}),
+  );
+  return next;
+}
+
+// Idempotent: start a loop for `vault` only if one isn't already running.
+// Used on launch (every tracked sync-enabled vault) and on vault open.
+export function ensureVaultSyncLoop(vault: string): Promise<void> {
+  return serializeStart(vault, async () => {
+    if (loops.has(vault)) return;
+    await doStartVaultSyncLoop(vault);
+  });
+}
+
+// Start (or restart) the loop for `vault`. Restart semantics so a config change
+// (enable/disable, remote, intervals) takes effect immediately.
+export function startVaultSyncLoop(vault: string): Promise<void> {
+  return serializeStart(vault, () => doStartVaultSyncLoop(vault));
+}
+
+async function doStartVaultSyncLoop(vault: string): Promise<void> {
+  stopVaultSyncLoop(vault);
   const config = await readVaultSyncConfig(vault);
 
   let cancelled = false;
@@ -294,8 +342,8 @@ export async function startVaultSyncLoop(vault: string): Promise<void> {
   let lastChangeSig = "";
 
   const setStatus = (patch: Partial<SyncSnapshot>) => {
-    snapshot = { ...snapshot, ...patch };
-    emit();
+    snapshots.set(vault, { ...snapOf(vault), ...patch });
+    if (openVault() === vault) emitOpen();
   };
 
   // Failure-dedup for the durable log: a persistent error (network down, a
@@ -310,7 +358,7 @@ export async function startVaultSyncLoop(vault: string): Promise<void> {
       const sig = `${op}|${r.message}`;
       if (sig !== lastFailSig) {
         lastFailSig = sig;
-        appendSyncLog(vault, "error", op, r.message, { ahead: snapshot.ahead });
+        appendSyncLog(vault, "error", op, r.message, { ahead: snapOf(vault).ahead });
       }
       return;
     }
@@ -396,13 +444,13 @@ export async function startVaultSyncLoop(vault: string): Promise<void> {
       void commitPass();
     }, 12000) as unknown as number;
     void commitPass(); // initial pass on open
-    activeLoop = {
+    loops.set(vault, {
       vault,
       cancel: () => {
         cancelled = true;
         window.clearInterval(commitInterval);
       },
-    };
+    });
     return;
   }
 
@@ -439,7 +487,15 @@ export async function startVaultSyncLoop(vault: string): Promise<void> {
       // leaves a clean tree that nothing re-pushes, so it strands silently
       // while the status still reads "synced". Pulling first, then pushing
       // any remaining `ahead`, closes that gap each cycle.
-      if (st && st.ahead > 0 && !cancelled) {
+      //
+      // Critically, attempt the flush when `ahead > 0` OR when status is
+      // UNKNOWN (st === null, e.g. a slow `git status`): the old `st && ...`
+      // guard meant a single failed status silently skipped the flush, so a
+      // stranded commit waited indefinitely for a clean status that a wedged
+      // repo never produced. vault_sync_push is a cheap no-op ("Everything
+      // up-to-date") when there's actually nothing ahead, so over-attempting
+      // is safe; under-attempting is what strands work.
+      if ((st === null || st.ahead > 0) && !cancelled) {
         const flush = await vaultPush(vault).catch(() => null);
         if (flush) recordResult("push-flush", flush);
         if (flush?.ok) {
@@ -537,7 +593,7 @@ export async function startVaultSyncLoop(vault: string): Promise<void> {
     await tickPull();
   })();
 
-  activeLoop = {
+  loops.set(vault, {
     vault,
     cancel: () => {
       cancelled = true;
@@ -545,28 +601,34 @@ export async function startVaultSyncLoop(vault: string): Promise<void> {
       if (pushTimer !== null) window.clearTimeout(pushTimer);
       window.clearInterval(watchInterval);
     },
-  };
+  });
 
   // Silence the unused warning — lastChangeAt is set above and could
   // be used by future "idle since" UI.
   void lastChangeAt;
 }
 
-export function stopVaultSyncLoop(): void {
-  if (activeLoop) {
-    activeLoop.cancel();
-    activeLoop = null;
+// Stop one vault's loop, or ALL of them when called with no argument (app
+// unmount). Stopping a vault clears its snapshot; if it was the open vault, the
+// UI status row clears too.
+export function stopVaultSyncLoop(vault?: string): void {
+  if (vault === undefined) {
+    for (const l of loops.values()) l.cancel();
+    loops.clear();
+    snapshots.clear();
+    emitOpen();
+    return;
   }
-  resetSnapshot();
+  const l = loops.get(vault);
+  if (l) {
+    l.cancel();
+    loops.delete(vault);
+  }
+  snapshots.delete(vault);
+  if (openVault() === vault) emitOpen();
 }
 
-export function activeSyncVault(): string | null {
-  return activeLoop?.vault ?? null;
-}
-
-// Restart the loop after the config changed for the active vault.
-export async function restartVaultSyncIfActive(vault: string): Promise<void> {
-  if (activeLoop?.vault === vault || activeLoop === null) {
-    await startVaultSyncLoop(vault);
-  }
+// Vaults with a live sync loop right now.
+export function activeSyncVaults(): string[] {
+  return [...loops.keys()];
 }

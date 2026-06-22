@@ -20,7 +20,12 @@ import { useStore } from "./store";
 import { gitInitIfNeeded } from "./git";
 import { useGlobalAnchorClickHandler } from "./linkNav";
 import { applyHljsTheme } from "./main";
-import { startVaultSyncLoop, stopVaultSyncLoop } from "./vaultSync";
+import {
+  ensureVaultSyncLoop,
+  stopVaultSyncLoop,
+  focusVaultSync,
+  readVaultSyncConfig,
+} from "./vaultSync";
 import { startSchedulerLoop, stopSchedulerLoop } from "./schedulerLoop";
 import {
   startTelegramService,
@@ -509,16 +514,36 @@ export default function App() {
     };
   }, []);
 
-  // Vault auto-sync — start a per-vault loop when a vault is active.
-  // The loop reads its own opt-in config from <vault>/.vault-chat/
-  // config.json; if disabled, this is a fast no-op. Tear down on
-  // unmount or vault switch so two loops never run at once.
+  // Vault auto-sync — multi-vault, like the scheduler below. A sync-enabled
+  // vault syncs in the BACKGROUND for the whole session, so switching to a
+  // different vault never strands the one you left (the old single-loop design
+  // silently stopped syncing everything but the foreground vault). On launch,
+  // start a loop for every tracked vault that has sync enabled. Loops are
+  // torn down only on app unmount.
+  useEffect(() => {
+    void (async () => {
+      const { getTrackedVaults } = await import("./schedulerLoop");
+      for (const v of getTrackedVaults()) {
+        try {
+          const cfg = await readVaultSyncConfig(v);
+          if (cfg.enabled) await ensureVaultSyncLoop(v);
+        } catch {
+          /* a vault we can't read config for just doesn't auto-start */
+        }
+      }
+    })();
+    return () => {
+      stopVaultSyncLoop(); // stop ALL loops on app unmount
+    };
+  }, []);
+
+  // Whenever a vault is opened, make sure its loop is running (a disabled vault
+  // gets the cheap local-commit-only loop; an enabled one the full sync loop)
+  // and point the status row at it.
   useEffect(() => {
     if (!vaultPath) return;
-    void startVaultSyncLoop(vaultPath);
-    return () => {
-      stopVaultSyncLoop();
-    };
+    void ensureVaultSyncLoop(vaultPath);
+    focusVaultSync();
   }, [vaultPath]);
 
   // Scheduled agent runs — multi-vault. On app launch, start a
