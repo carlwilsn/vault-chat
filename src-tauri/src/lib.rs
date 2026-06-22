@@ -368,7 +368,7 @@ fn list_markdown_files_sync(vault: String) -> Result<Vec<FileEntry>, String> {
                 Some((b, _, 0)) if !b.trim().is_empty() => b.trim().to_string(),
                 _ => "detached".to_string(),
             };
-            let dirty = run_git(&path_str, &["status", "--porcelain"])
+            let dirty = run_git(&path_str, &["status", "--porcelain", "--ignore-submodules=dirty"])
                 .ok()
                 .map(|(out, _, code)| {
                     if code == 0 {
@@ -2990,7 +2990,7 @@ fn sync_one_repo(
     // repo an agent commit is co-signed by the user, so a teammate reading the
     // history sees a real human standing behind it.
     let (cn, ce) = commit_identity(sub, agent);
-    if let Ok((st, _, _)) = run_git(sub, &["status", "--porcelain"]) {
+    if let Ok((st, _, _)) = run_git(sub, &["status", "--porcelain", "--ignore-submodules=dirty"]) {
         if !st.trim().is_empty() {
             let _ = run_git_as(sub, &cn, &ce, &["add", "-A"]);
             let mut msg = String::new();
@@ -3289,18 +3289,71 @@ fn find_gh() -> Option<PathBuf> {
 /// only falls through to gh when it has nothing. If gh isn't installed/authed the
 /// helper just yields no credential and git behaves exactly as before — no
 /// regression.
-fn gh_credential_helper_arg() -> String {
+fn github_credential_args() -> Vec<String> {
     // Absolute path when we can find it (the shell git runs the helper through
     // may not inherit PATH); bare `gh` otherwise. Forward slashes + double quotes
     // survive spaces ("C:/Program Files/GitHub CLI/gh.exe").
-    let gh = match find_gh() {
+    let found = find_gh();
+    let gh = match &found {
         Some(p) => p.to_string_lossy().replace('\\', "/"),
         None => "gh".to_string(),
     };
-    format!(
+    let helper = format!(
         "credential.https://github.com.helper=!f() {{ test \"$1\" = get && {{ echo username=x-access-token; echo \"password=$(\\\"{}\\\" auth token)\"; }}; }}; f",
         gh
-    )
+    );
+    if found.is_some() {
+        // gh is real → make it AUTHORITATIVE for github.com: first reset that
+        // host's inherited helper chain (an empty helper value clears the list),
+        // then set only our gh shim. This is the fix for the Windows wedge where
+        // Git Credential Manager — tried first in the inherited chain — goes
+        // interactive (a GUI prompt that GIT_TERMINAL_PROMPT can't suppress) and
+        // hangs forever, leaking an orphaned git-credential-manager process that
+        // holds the network/credential state and jams every later sync. gh is all
+        // we ever need for GitHub, which is the only host the app syncs.
+        vec![
+            "-c".into(),
+            "credential.https://github.com.helper=".into(),
+            "-c".into(),
+            helper,
+        ]
+    } else {
+        // gh not found at a known path → APPEND a bare PATH-lookup gh helper
+        // without resetting, so a machine that depends on another working helper
+        // (e.g. Windows Credential Manager) keeps using it first — no regression.
+        vec!["-c".into(), helper]
+    }
+}
+
+/// Kill a spawned process AND every descendant. git launches helper processes
+/// (git-remote-https, git-credential-manager, ssh) that outlive a kill of the
+/// direct child; on a timeout those orphans keep holding the network/credential
+/// state and accumulate until they contend for resources and wedge every later
+/// sync — observed as `git status` itself timing out at 90s. Best-effort.
+fn kill_process_tree(child: &mut std::process::Child) {
+    let pid = child.id();
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // /T = terminate the whole tree rooted at PID, /F = force.
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .output();
+    }
+    #[cfg(unix)]
+    {
+        // We spawned the child as a process-group leader (pgid == pid), so a
+        // signal to the negative pgid reaches the whole tree. Shell out to the
+        // `kill` binary to avoid pulling in a libc dependency just for this.
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg(format!("-{}", pid))
+            .output();
+    }
+    // Reap the direct child regardless of the tree-kill outcome.
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Like `run_git` but with a caller-chosen timeout. Used for operations that
@@ -3326,14 +3379,22 @@ fn run_git_timeout(
     // subcommand (a `-c` config override) and ahead of any `-c user.*` the
     // caller passed in `args`. Harmless for local/offline git — git only ever
     // consults a credential helper when a remote actually demands auth.
-    let cred = gh_credential_helper_arg();
-    cmd.arg("-c");
-    cmd.arg(&cred);
+    for a in github_credential_args() {
+        cmd.arg(a);
+    }
+    // Belt-and-suspenders: even if some helper is still consulted, forbid it
+    // from prompting. A helper that can't satisfy the request non-interactively
+    // must return nothing (so git fails fast) rather than block on a UI.
+    cmd.arg("-c").arg("credential.interactive=false");
     cmd.args(args);
     // Never block on an interactive credential/passphrase prompt — on the
     // headless server that would hang the whole sync loop forever. Fail fast
     // and let the caller surface the auth error instead.
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+    // Same for Git Credential Manager specifically: never let it pop a GUI
+    // window (which GIT_TERMINAL_PROMPT does not cover and which hangs headless
+    // and leaks an orphaned git-credential-manager process).
+    cmd.env("GCM_INTERACTIVE", "never");
     // Don't take the optional index lock. Read-only commands (status, diff,
     // rev-list) otherwise grab `.git/index.lock` to opportunistically refresh
     // the index — which collides with an in-flight autosave commit and is a
@@ -3344,6 +3405,16 @@ fn run_git_timeout(
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    // Put the child in its own process group (Unix) so a timeout can signal the
+    // WHOLE tree. git launches helper processes (git-remote-https, the
+    // credential helper, ssh) that survive a kill of the direct child — on a
+    // timeout those orphans keep holding the network/credential state and pile
+    // up until they wedge every later sync. (Windows uses taskkill /T instead.)
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     // Drain both pipes on their own threads so a large stdout can't deadlock
     // against a full stderr pipe (or vice-versa) while we wait.
@@ -3370,8 +3441,7 @@ fn run_git_timeout(
             Ok(Some(status)) => break status.code().unwrap_or(-1),
             Ok(None) => {
                 if start.elapsed() >= Duration::from_secs(timeout_secs) {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    kill_process_tree(&mut child);
                     return Err(format!(
                         "git timed out after {}s: git {}",
                         timeout_secs,
@@ -4520,7 +4590,7 @@ fn commit_nested_repos_local(vault: &str, agent: bool) -> u32 {
         if !on_branch {
             continue;
         }
-        let dirty = run_git(&sub, &["status", "--porcelain"])
+        let dirty = run_git(&sub, &["status", "--porcelain", "--ignore-submodules=dirty"])
             .map(|(s, _, _)| !s.trim().is_empty())
             .unwrap_or(false);
         if !dirty {
@@ -4756,6 +4826,63 @@ fn resolve_merge_conflicts(vault: &str) -> bool {
     )
 }
 
+/// Reconcile the local branch with an already-fetched `origin/<branch>`: a
+/// fast-forward when possible, otherwise a real merge with deterministic
+/// conflict resolution (union for append-only logs, descendant/theirs for
+/// submodule pointers, a `.conflict` sidecar for a genuine divergent edit).
+/// Returns the human-readable outcome on success, or an error `SyncOpResult` the
+/// caller surfaces verbatim. The caller MUST already hold the repo lock and have
+/// run `git fetch origin <branch>` first.
+///
+/// Shared by pull and by push-on-rejection so a diverged follower reconciles
+/// identically no matter which path first notices the divergence.
+fn reconcile_with_upstream(
+    vault: &str,
+    branch: &str,
+) -> Result<Result<&'static str, SyncOpResult>, String> {
+    let upstream = format!("origin/{}", branch);
+    // Fast-forward first — clean, no merge commit, the common case.
+    let (_, _, ff_code) = run_git_mut(vault, &["merge", "--ff-only", &upstream])?;
+    if ff_code == 0 {
+        return Ok(Ok("pulled"));
+    }
+    // Diverged — both machines committed. We MERGE (never rebase): a merge
+    // reconciles the two tips, and the append-only `*.jsonl` logs auto-union via
+    // `.gitattributes`. Rebase would replay every local commit and wedge on the
+    // first conflict; with an always-on box + an intermittent laptop that
+    // divergence is the normal case, so sync must reconcile it, never
+    // abort-and-loop. Whatever the union can't handle (submodule pointers, a
+    // genuinely divergent file edit) is auto-resolved so sync always makes
+    // progress and never drops data.
+    let (mn, me) = human_identity(vault);
+    let (_, mstderr, merge_code) =
+        run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
+    if merge_code == 0 {
+        return Ok(Ok("merged origin"));
+    }
+    if resolve_merge_conflicts(vault) {
+        let (_, cstderr, ccode) = run_git_as(vault, &mn, &me, &["commit", "--no-edit"])?;
+        if ccode != 0 {
+            let _ = run_git_mut(vault, &["merge", "--abort"]);
+            return Ok(Err(SyncOpResult {
+                ok: false,
+                message: format!("merge commit failed: {}", first_line(&cstderr).trim()),
+                error: true,
+            }));
+        }
+        return Ok(Ok("merged origin (auto-resolved)"));
+    }
+    // Should be unreachable — every conflict class has a resolution. If
+    // something slips through, abort cleanly so the tree is intact and the next
+    // tick retries rather than leaving a half-merge.
+    let _ = run_git_mut(vault, &["merge", "--abort"]);
+    Ok(Err(SyncOpResult {
+        ok: false,
+        message: format!("unresolved conflict: {}", first_line(&mstderr).trim()),
+        error: true,
+    }))
+}
+
 #[tauri::command]
 async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -4799,47 +4926,12 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
                 error: true,
             });
         }
-        // Try a fast-forward first — clean, no merge commit, the common case.
-        let upstream = format!("origin/{}", branch);
-        let (_, _, ff_code) = run_git_mut(&vault, &["merge", "--ff-only", &upstream])?;
-        let pulled_msg = if ff_code == 0 {
-            "pulled"
-        } else {
-            // Diverged — both machines committed. We MERGE (not rebase): a merge
-            // reconciles the two tips, and the append-only `*.jsonl` logs
-            // auto-union via `.gitattributes`. Rebase would replay every local
-            // commit and wedge on the first conflict; with an always-on box +
-            // an intermittent laptop, that divergence is the normal case, so the
-            // sync must reconcile it, never abort-and-loop. Whatever the union
-            // can't handle (submodule pointers, a genuinely divergent file edit)
-            // is auto-resolved so sync always makes progress and never drops data.
-            let (mn, me) = human_identity(&vault);
-            let (_, mstderr, merge_code) =
-                run_git_as(&vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
-            if merge_code == 0 {
-                "merged origin"
-            } else if resolve_merge_conflicts(&vault) {
-                let (_, cstderr, ccode) = run_git_as(&vault, &mn, &me, &["commit", "--no-edit"])?;
-                if ccode != 0 {
-                    let _ = run_git_mut(&vault, &["merge", "--abort"]);
-                    return Ok(SyncOpResult {
-                        ok: false,
-                        message: format!("merge commit failed: {}", first_line(&cstderr).trim()),
-                        error: true,
-                    });
-                }
-                "merged origin (auto-resolved)"
-            } else {
-                // Should be unreachable — every conflict class has a resolution.
-                // If something slips through, abort cleanly so the tree is intact
-                // and the next tick retries, rather than leaving a half-merge.
-                let _ = run_git_mut(&vault, &["merge", "--abort"]);
-                return Ok(SyncOpResult {
-                    ok: false,
-                    message: format!("unresolved conflict: {}", first_line(&mstderr).trim()),
-                    error: true,
-                });
-            }
+        // Reconcile with the freshly-fetched upstream: fast-forward when we can,
+        // otherwise a real merge. Shared with push-on-rejection so both paths
+        // resolve a divergence identically.
+        let pulled_msg = match reconcile_with_upstream(&vault, branch)? {
+            Ok(msg) => msg,
+            Err(e) => return Ok(e),
         };
         // Pull succeeded — bring any registered submodules to the commits the
         // vault now points at (clones them on a fresh machine). Best-effort.
@@ -4880,11 +4972,46 @@ async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
         let (_, stderr, push_code) =
             run_git(&vault, &["push", "-u", "origin", &branch])?;
         if push_code != 0 {
-            return Ok(SyncOpResult {
-                ok: false,
-                message: format!("push failed: {}", first_line(&stderr).trim()),
-                error: true,
-            });
+            // The push was rejected — almost always because the remote advanced
+            // under us (the always-on box committed while this follower was
+            // mid-cycle). Reconcile inline and retry ONCE so a diverged follower
+            // self-heals on this same push, instead of looping commit→push-fail
+            // until a separate pull tick happens to win the single-flight race —
+            // which a busy box can starve indefinitely (the wedge that froze
+            // cross-machine sync). If the rejection isn't a divergence
+            // (auth/network), the fetch or the retry fails and we surface the
+            // original error.
+            let (_, _, fcode) = run_git(&vault, &["fetch", "origin", &branch])?;
+            if fcode != 0 {
+                return Ok(SyncOpResult {
+                    ok: false,
+                    message: format!("push failed: {}", first_line(&stderr).trim()),
+                    error: true,
+                });
+            }
+            match reconcile_with_upstream(&vault, &branch)? {
+                Ok(_) => {
+                    maybe_update_submodules(&vault);
+                    let (_, stderr2, push_code2) =
+                        run_git(&vault, &["push", "-u", "origin", &branch])?;
+                    if push_code2 != 0 {
+                        return Ok(SyncOpResult {
+                            ok: false,
+                            message: format!(
+                                "push failed after merge: {}",
+                                first_line(&stderr2).trim()
+                            ),
+                            error: true,
+                        });
+                    }
+                    return Ok(SyncOpResult {
+                        ok: true,
+                        message: "merged + pushed".into(),
+                        error: false,
+                    });
+                }
+                Err(e) => return Ok(e),
+            }
         }
         Ok(SyncOpResult {
             ok: true,
