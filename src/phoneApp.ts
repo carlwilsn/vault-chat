@@ -58,6 +58,36 @@ function isThreadBusy(conv: Conversation): boolean {
   );
 }
 
+// Idempotency for phone sends. The phone tags each send with a clientMsgId; a
+// flaky network or the PWA service worker can deliver the same POST twice, and
+// for a NEW chat each delivery would otherwise mint a fresh conversation and
+// re-run the message (the "my message got sent twice" bug). Collapse duplicate
+// ids to a single execution: a concurrent or slightly-later duplicate awaits and
+// returns the FIRST call's result (same convId), so the user gets exactly one
+// turn. Successful results linger briefly so a late retry still dedupes; an
+// error result is evicted at once so a genuine retry can re-attempt.
+const inflightSends = new Map<string, Promise<Record<string, unknown>>>();
+function dedupedPhoneMessage(
+  clientMsgId: string | undefined,
+  convId: string | null,
+  text: string,
+  supervisor: boolean,
+): Promise<Record<string, unknown>> {
+  if (!clientMsgId) return handlePhoneMessage(convId, text, supervisor);
+  const existing = inflightSends.get(clientMsgId);
+  if (existing) return existing;
+  const p = handlePhoneMessage(convId, text, supervisor);
+  inflightSends.set(clientMsgId, p);
+  p.then(
+    (res) => {
+      if (res && (res as { error?: unknown }).error) inflightSends.delete(clientMsgId);
+      else setTimeout(() => inflightSends.delete(clientMsgId), 60_000);
+    },
+    () => inflightSends.delete(clientMsgId),
+  );
+  return p;
+}
+
 async function handlePhoneMessage(
   convId: string | null,
   text: string,
@@ -275,6 +305,10 @@ function runDiff(): void {
   // Keyed on text AND current tool — a worker grinding through tool calls
   // with no prose yet must still show signs of life on the phone (the old
   // text-only gate left its thread a silent "running…" for minutes).
+  // Per-conversation run-start, so the phone can render an elapsed clock that
+  // counts from when the prompt was sent — the same start the desktop uses,
+  // continuous across leave/return.
+  const startedAtById = new Map(s.conversations.map((c) => [c.id, c.runStartedAt]));
   for (const [id, rt] of Object.entries(s.convRuntime)) {
     const text = (rt.streamingText ?? "").slice(-STREAM_TAIL);
     const tool = rt.liveTools?.length ? rt.liveTools[rt.liveTools.length - 1]!.name : "";
@@ -285,7 +319,7 @@ function runDiff(): void {
     const sig = [tool, text, steps.length, lastAction].join("|");
     if ((text || tool || steps.length) && lastStreamSent.get(id) !== sig) {
       lastStreamSent.set(id, sig);
-      broadcast({ type: "runtime", convId: id, text, tool, steps });
+      broadcast({ type: "runtime", convId: id, text, tool, steps, startedAt: startedAtById.get(id) ?? rt.startedAt });
     }
   }
   if (s.busy && s.activeConversationId && (s.streamingText || s.liveTools.length)) {
@@ -295,7 +329,7 @@ function runDiff(): void {
     const sig = tool + "\u0000" + text;
     if (lastStreamSent.get(id) !== sig) {
       lastStreamSent.set(id, sig);
-      broadcast({ type: "runtime", convId: id, text, tool });
+      broadcast({ type: "runtime", convId: id, text, tool, startedAt: startedAtById.get(id) ?? s.busyStartedAt ?? undefined });
     }
   }
 }
@@ -678,9 +712,71 @@ export async function mirrorPushNotify(text: string, convId?: string): Promise<v
 
 let started = false;
 
+// ---- note titles (box-side, disk-based) ----
+// Generate Note.title (a short scannable headline distinct from the body) for
+// notes that lack one, on the box where the API keys live. DISK-based on
+// purpose: the box's in-memory notes can be empty/unloaded, and a store-based
+// writeAllNotes would then blank the file — so we read the jsonl fresh, patch,
+// and re-read right before writing to avoid clobbering a concurrent change. A
+// single file read when everything is already titled, so it's safe to poll; and
+// because it titles per-line it self-heals an untitled duplicate that a
+// cross-machine union-merge adds back.
+let titlingInFlight = false;
+async function ensureNoteTitles(vault: string): Promise<void> {
+  if (!vault || titlingInFlight) return;
+  titlingInFlight = true;
+  try {
+    const { readNotes, writeAllNotes, titleableText } = await import("./notes");
+    const disk = await readNotes(vault);
+    const todo = disk
+      .filter((n) => (n.title == null || n.title === "") && titleableText(n))
+      .slice(0, 12);
+    if (!todo.length) return;
+    const { pickFastModel } = await import("./eta-estimator");
+    const fast = pickFastModel(useStore.getState().apiKeys);
+    if (!fast) return;
+    const { titleForNote } = await import("./notes-format");
+    const titles = new Map<string, string>();
+    for (const n of todo) {
+      try {
+        const t = await titleForNote(n, fast.spec, fast.apiKey);
+        if (t) titles.set(n.id, t);
+      } catch (e) {
+        console.warn("[phone-app] note title gen failed:", e);
+      }
+    }
+    if (!titles.size) return;
+    // Re-read so a note created/edited while we were generating isn't lost.
+    const fresh = await readNotes(vault);
+    let changed = false;
+    const updated = fresh.map((n) => {
+      if ((n.title == null || n.title === "") && titles.has(n.id)) {
+        changed = true;
+        return { ...n, title: titles.get(n.id)! };
+      }
+      return n;
+    });
+    if (changed) await writeAllNotes(vault, updated);
+  } catch (e) {
+    console.warn("[phone-app] ensureNoteTitles failed:", e);
+  } finally {
+    titlingInFlight = false;
+  }
+}
+
 export async function startPhoneAppHost(): Promise<void> {
   if (started) return;
   started = true;
+
+  // Backfill note headlines shortly after launch, then poll — cheap (one file
+  // read) when everything is titled, and it catches notes synced in from other
+  // machines as well as ones jotted on the phone.
+  setTimeout(() => {
+    void ensureNoteTitles(useStore.getState().vaultPath ?? "");
+  }, 8_000);
+  setInterval(() => {
+    void ensureNoteTitles(useStore.getState().vaultPath ?? "");
+  }, 5 * 60_000);
 
   // Hand the server our VAPID public key so the page can subscribe.
   void ensureVapid()
@@ -693,15 +789,19 @@ export async function startPhoneAppHost(): Promise<void> {
     text?: string;
     supervisor?: boolean;
     mission?: { title?: string; goal?: string };
+    clientMsgId?: string;
   }>("phone:msg", async (event) => {
-    const { reqId, convId, text, supervisor, mission } = event.payload;
+    const { reqId, convId, text, supervisor, mission, clientMsgId } = event.payload;
     try {
       // Structured approval payload → mint the mission deterministically.
       if (mission && (mission.goal || mission.title)) {
         respond(reqId, await handlePhoneStartMission(mission));
         return;
       }
-      respond(reqId, await handlePhoneMessage(convId ?? null, String(text ?? ""), !!supervisor));
+      respond(
+        reqId,
+        await dedupedPhoneMessage(clientMsgId, convId ?? null, String(text ?? ""), !!supervisor),
+      );
     } catch (e) {
       respond(reqId, { error: String(e) });
     }
@@ -789,10 +889,60 @@ export async function startPhoneAppHost(): Promise<void> {
       const note = buildNote({ anchors: [], userDraft: t });
       await s.addNote(note);
       respond(reqId, { ok: true, id: note.id });
+      // Give the new note a scannable headline (best-effort, off the response path).
+      void ensureNoteTitles(s.vaultPath);
     } catch (e) {
       respond(reqId, { error: String(e) });
     }
   });
+
+  // Resolve / reopen a note from the phone (swipe-to-resolve). Apply the change
+  // against the FRESHEST on-disk notes — never the box's in-memory store, which
+  // can be empty or stale (a store-based rewrite would then blank the file). We
+  // bump last_updated so the cross-machine union merge keeps this status change
+  // as the winner over an older copy on another machine.
+  await listen<{ reqId: string; id?: string; status?: string }>(
+    "phone:note-status",
+    async (event) => {
+      const { reqId, id, status } = event.payload;
+      try {
+        const s = useStore.getState();
+        if (!s.vaultPath) {
+          respond(reqId, { error: "no vault open" });
+          return;
+        }
+        const noteId = (id ?? "").trim();
+        if (!noteId) {
+          respond(reqId, { error: "missing note id" });
+          return;
+        }
+        const next: "open" | "resolved" = status === "open" ? "open" : "resolved";
+        const { readNotes, writeAllNotes } = await import("./notes");
+        const disk = await readNotes(s.vaultPath);
+        const now = new Date().toISOString();
+        let found = false;
+        const updated = disk.map((n) =>
+          n.id === noteId ? ((found = true), { ...n, status: next, last_updated: now }) : n,
+        );
+        if (!found) {
+          respond(reqId, { error: "note not found" });
+          return;
+        }
+        await writeAllNotes(s.vaultPath, updated);
+        // Keep the box's in-memory store coherent if notes are loaded there.
+        if (s.notesLoaded) {
+          useStore.setState((st) => ({
+            notes: st.notes.map((n) =>
+              n.id === noteId ? { ...n, status: next, last_updated: now } : n,
+            ),
+          }));
+        }
+        respond(reqId, { ok: true, id: noteId, status: next });
+      } catch (e) {
+        respond(reqId, { error: String(e) });
+      }
+    },
+  );
 
   // The phone opened a thread — promote it into the recent/Chats list. Mission
   // and worker threads live on Activity and stay out of recent by default; the

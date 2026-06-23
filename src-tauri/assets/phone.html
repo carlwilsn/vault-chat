@@ -37,6 +37,10 @@
   body:not(.page-chat) #convBtn{visibility:hidden}
   .reddot{position:absolute;top:7px;right:7px;width:8px;height:8px;border-radius:50%;background:var(--warn);display:none}
   .reddot.on{display:block}
+  /* The conversations icon mirrors the row dots: pulsing white if any thread is
+     generating, steady white if one finished while you weren't looking. */
+  .reddot.think{background:var(--primary);animation:pul 1.4s ease-in-out infinite}
+  .reddot.solid{background:var(--primary)}
   .title{flex:1;min-width:0;display:flex;align-items:center;gap:8px;justify-content:center;text-align:center}
   /* Solid connection dot — green = connected, red = offline. No pulsing:
      it's a status light, not an activity meter. */
@@ -85,6 +89,9 @@
   .crow2:active{background:var(--surface)}
   .crow2 .t{display:flex;align-items:center;gap:8px}
   .crow2 .rd{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none}
+  /* generating = white pulsing "thinking" dot; done-but-unseen = steady solid. */
+  .crow2 .rd.think{background:var(--primary);animation:pul 1.4s ease-in-out infinite}
+  .crow2 .rd.unseen{background:var(--primary)}
   .crow2 .nm{flex:1;min-width:0;font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .crow2 .ag{color:#7c7c7c;font-size:11.5px;flex:none}
   .crow2 .p{color:var(--dim);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;padding-left:0}
@@ -134,6 +141,7 @@
   .thinking{display:flex;align-items:center;gap:11px;padding:11px 0 6px;color:var(--dim);font-size:12px}
   .thinking .tlbl{color:var(--dim);font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;opacity:0;transition:opacity .3s ease;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
   .thinking .tlbl.show{opacity:.7}
+  .thinking .elapsed{color:var(--dim);font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;opacity:.55;margin-left:auto;flex:none}
   .pulse{display:inline-block;position:relative;width:8px;height:8px;margin-left:2px;flex:none}
   .pulse:before{content:"";position:absolute;inset:0;border-radius:50%;background:var(--primary);animation:pul 1.5s infinite}
   .pulse:after{content:"";position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--primary);animation:ping 1.8s infinite}
@@ -474,7 +482,7 @@
 <body class="page-chat">
 
   <div class="hdr">
-    <button class="icbtn" id="convBtn" aria-label="conversations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+    <button class="icbtn" id="convBtn" aria-label="conversations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="reddot" id="convdot"></span></button>
     <button class="title" id="titleBtn"><span class="tx" id="titleTx">connecting…</span><span class="sub" id="titleSub"></span></button>
     <button class="vpill" id="vpill"><span class="d"></span> voice</button>
     <button class="icbtn" id="menuBtn" aria-label="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span class="reddot" id="menudot"></span></button>
@@ -832,7 +840,45 @@
   // ---------- state ----------
   let page = "chat";
   let convId = null, convTitle = "New chat";
-  let running = false, stopping = false, streamText = "", streamTool = "";
+  let running = false, stopping = false, streamText = "", streamTool = "", streamStartedAt = null;
+  // Live in-flight state per conversation, NOT just the open one. Every runtime/
+  // status event lands here keyed by convId, so leaving a generating thread and
+  // coming back replays its streamed text, current tool, and elapsed clock
+  // instead of a blank "thinking" (the open thread used to be the ONLY thing
+  // tracked, and switching wiped it). Entries: {running, text, tool, startedAt}.
+  const liveByConv = new Map();
+  // Per-conversation activity, for the drawer rows AND the conversations icon:
+  //  • convRunning — convIds generating right now → a white pulsing "thinking" dot.
+  //  • convUnseen  — convIds that FINISHED a run since you last looked → a solid dot.
+  // The icon aggregates both (pulsing if anything runs, else solid if anything's
+  // unseen). Opening a thread clears its unseen state.
+  const convRunning = new Set();
+  const convUnseen = new Set();
+  // Persistent "last looked at" watermark per conversation, so a thread that
+  // finished while the app was closed still reads as done-unseen next time you
+  // open the drawer.
+  const SEEN_KEY = "vc_phone_seen";
+  function seenMap() { try { return JSON.parse(localStorage.getItem(SEEN_KEY) || "{}"); } catch { return {}; } }
+  function markSeen(id) { if (!id) return; try { const m = seenMap(); m[id] = Date.now(); localStorage.setItem(SEEN_KEY, JSON.stringify(m)); } catch {} convUnseen.delete(id); updateConvDot(); }
+  function watermarkUnseen(c) { if (!c || convRunning.has(c.id)) return false; const m = seenMap(); return (c.lastActivityAt || 0) > (m[c.id] || 0); }
+  function updateConvDot() {
+    const dot = $("convdot"); if (!dot) return;
+    const running = convRunning.size > 0;
+    const unseen = !running && convUnseen.size > 0;
+    dot.classList.toggle("on", running || unseen);
+    dot.classList.toggle("think", running);
+    dot.classList.toggle("solid", unseen);
+  }
+  // Reconcile the running set against the heartbeat-backed /status truth. A conv
+  // that WAS running and no longer is — and that you weren't looking at — becomes
+  // done-unseen. Catches finishes even if the live status event was missed.
+  function applyRunningSet(ids) {
+    const next = new Set(ids || []);
+    for (const id of convRunning) { if (!next.has(id) && id !== convId) convUnseen.add(id); }
+    convRunning.clear();
+    for (const id of next) { convRunning.add(id); convUnseen.delete(id); }
+    updateConvDot();
+  }
   let vaultName = "", boxModel = "";
   let runCount = 0, unreadN = 0, offlineStreak = 0;
   const msgsEl = $("msgs"), input = $("input"), sendBtn = $("sendBtn");
@@ -926,6 +972,12 @@
         chats.unshift({ id: convId, title: convTitle || "New chat", lastActivityAt: Date.now(), source: "phone", msgCount: 0, preview: "" });
       }
       lastChatList = chats.slice();
+      // Reconcile the activity sets with /status + the persisted watermark, so
+      // the row dots and the conversations icon are right on open, before any
+      // live event arrives.
+      applyRunningSet([...runIds]);
+      for (const c of chats) { if (watermarkUnseen(c)) convUnseen.add(c.id); }
+      updateConvDot();
       box.innerHTML = "";
       if (chats.length) {
         const h = document.createElement("div"); h.className = "csec"; h.textContent = "Chats"; box.appendChild(h);
@@ -942,7 +994,10 @@
   function convRow(c, isRunning) {
     const b = document.createElement("button");
     b.className = "crow2";
-    b.innerHTML = '<div class="t">' + (isRunning ? '<span class="rd"></span>' : "") + '<span class="nm"></span><span class="ag"></span></div><div class="p"></div>';
+    const running = isRunning || convRunning.has(c.id);
+    const unseen = !running && (convUnseen.has(c.id) || watermarkUnseen(c));
+    const dot = running ? '<span class="rd think"></span>' : unseen ? '<span class="rd unseen"></span>' : "";
+    b.innerHTML = '<div class="t">' + dot + '<span class="nm"></span><span class="ag"></span></div><div class="p"></div>';
     b.querySelector(".nm").textContent = c.title;
     b.querySelector(".ag").textContent = age(c.lastActivityAt);
     b.querySelector(".p").textContent = c.preview || c.msgCount + " messages";
@@ -988,15 +1043,34 @@
     sendBtn.textContent = stop ? "■" : "↑";
     sendBtn.setAttribute("aria-label", stop ? "stop" : "send");
   }
+  function fmtElapsed(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    if (s < 60) return s + "s";
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + "m " + (s % 60) + "s";
+    const h = Math.floor(m / 60);
+    return h + "h " + (m % 60) + "m";
+  }
+  // Elapsed-since-prompt clock on the thinking line — counts from the same start
+  // the desktop uses (runStartedAt), continuous across leaving and reopening the
+  // thread. A single shared ticker keeps it live without re-rendering the line.
+  function updateElapsed() {
+    if (!runlineEl) return;
+    const e = runlineEl.querySelector(".elapsed");
+    if (!e) return;
+    e.textContent = running && streamStartedAt ? fmtElapsed(Date.now() - streamStartedAt) : "";
+  }
+  setInterval(updateElapsed, 1000);
   function renderRunline() {
     syncSendBtn();
     if (!running) { if (runlineEl) { runlineEl.remove(); runlineEl = null; } _shownTool = null; return; }
     if (!runlineEl) {
       runlineEl = document.createElement("div"); runlineEl.className = "thinking";
-      runlineEl.innerHTML = '<span class="pulse"></span><span class="tlbl"></span>';
+      runlineEl.innerHTML = '<span class="pulse"></span><span class="tlbl"></span><span class="elapsed"></span>';
       msgsEl.appendChild(runlineEl); _shownTool = null;
     }
     msgsEl.appendChild(runlineEl);
+    updateElapsed();
     // The pulse is the "working" sign; beside it, the current tool's name
     // cross-fades in/out — like the desktop app: a tool starts, its name fades
     // in; the next swaps it. No "running" bar. Honest "stopping…" still shows.
@@ -1023,17 +1097,24 @@
   function rememberConv() { try { if (convId) localStorage.setItem(LAST_CONV_KEY, JSON.stringify({ id: convId, title: convTitle })); else localStorage.removeItem(LAST_CONV_KEY); } catch {} }
   function newChat() { convId = null; convTitle = "New chat"; rememberConv(); clearThreadUi(); showHint(); setPage("chat"); setHeader(); }
   async function openThread(id, title) {
-    convId = id; convTitle = title || "New chat"; clearThreadUi();
+    convId = id; convTitle = title || "New chat"; clearThreadUi(); markSeen(id);
     setPage("chat"); setHeader();
     try {
       const r = await api("/conversation?id=" + encodeURIComponent(id) + "&n=120");
       if (!r.ok) throw new Error((await r.json()).error || r.status);
       const d = await r.json();
-      convTitle = d.title; running = d.status === "running";
-      clearThreadUi(); running = d.status === "running";
+      convTitle = d.title;
+      clearThreadUi();
+      // /conversation reads the on-disk (idle) status, so trust the live signals
+      // too: the activity sets seeded from /status, plus any per-conv live state
+      // we've buffered. Replaying that shows the thread already working on reopen
+      // instead of a blank "thinking".
+      const live = liveByConv.get(id);
+      running = d.status === "running" || convRunning.has(id) || !!(live && live.running);
       if (!d.messages || !d.messages.length) showHint();
       else for (const m of d.messages) msgsEl.appendChild(bubble(m.role, m.content, m.tools, { system: m.system }));
-      renderRunline(); setHeader(); scrollDown(true); rememberConv();
+      if (running && live) { streamText = live.text || ""; streamTool = live.tool || ""; streamStartedAt = live.startedAt ?? null; }
+      renderStream(); renderRunline(); setHeader(); scrollDown(true); rememberConv();
     } catch (e) {
       if (/not found/i.test(String(e.message || e))) { newChat(); return; }
       toast("Load failed: " + (e.message || e));
@@ -1041,29 +1122,42 @@
   }
 
   let lastSentText = null;
+  // One send in flight at a time. The optimistic bubble + cleared input already
+  // stop a same-text re-tap, but a NEW chat is the dangerous case: until the
+  // POST returns the minted convId, a second submit still carries convId=null
+  // and the box would spin up a SECOND conversation. This flag closes that
+  // window; the clientMsgId below closes the network/service-worker-retry one.
+  let sending = false;
   async function send() {
+    if (sending) return;
     const text = input.value.trim(); if (!text) return;
+    sending = true;
     input.value = ""; input.style.height = "auto"; lastSentText = text;
+    // Idempotency key: a flaky network or the PWA service worker can deliver the
+    // same POST twice. The box collapses duplicate ids to a single turn (one
+    // conversation, one run) — the "my message got sent twice" bug.
+    const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
     if (msgsEl.querySelector(".hint")) msgsEl.innerHTML = "";
     msgsEl.appendChild(bubble("user", text, null)); scrollDown(true);
     const mine = msgsEl.lastChild;
     try {
-      const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, text, supervisor: convId ? undefined : true }) });
+      const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, text, clientMsgId, supervisor: convId ? undefined : true }) });
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || r.status);
       if (!convId && d.convId) { convId = d.convId; convTitle = text.split("\n")[0].slice(0, 60); rememberConv(); }
       if (d.queued) { mine.classList.add("queued"); toast("Mid-run — queued, sends when it finishes."); }
-      else { running = true; stopping = false; renderRunline(); }
+      else { running = true; stopping = false; streamStartedAt = Date.now(); renderRunline(); }
       setHeader();
     } catch (e) {
       const msg = String(e.message || e);
       // The thread is gone on the box (deleted, or a stale pointer the server's
       // disk refresh couldn't resolve). Don't dead-end — drop to a fresh chat and
-      // resend as a new conversation, the same recovery openThread uses.
+      // resend as a new conversation, the same recovery openThread uses. Reuse
+      // the clientMsgId so this recovery stays idempotent under retry too.
       if (/not found/i.test(msg) && convId) {
         convId = null; rememberConv();
         try {
-          const r2 = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, supervisor: true }) });
+          const r2 = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, clientMsgId, supervisor: true }) });
           const d2 = await r2.json();
           if (r2.ok && !d2.error) {
             if (d2.convId) { convId = d2.convId; convTitle = text.split("\n")[0].slice(0, 60); rememberConv(); }
@@ -1073,6 +1167,8 @@
         } catch {}
       }
       mine.classList.add("queued"); toast("Send failed: " + msg);
+    } finally {
+      sending = false;
     }
   }
   sendBtn.onclick = () => { if (running && convId) void killCurrent(); else void send(); };
@@ -1161,12 +1257,34 @@
         if (sheetRepaint) void sheetRepaint();
       } else if (d.type === "message") { if (sheetRepaint) void sheetRepaint(); }
     }
-    if (d.type === "runtime" && d.convId === convId) { running = true; streamText = d.text || ""; streamTool = d.tool || ""; renderStream(); setHeader(); }
+    // Per-conversation activity bookkeeping — for EVERY conv, not just the open
+    // one — so the drawer dots and the conversations icon track background
+    // threads, and a reopened thread can replay its live state instead of a
+    // blank "thinking".
+    if (d.type === "runtime" && d.convId) {
+      convRunning.add(d.convId); convUnseen.delete(d.convId);
+      const prev = liveByConv.get(d.convId);
+      liveByConv.set(d.convId, { running: true, text: d.text || "", tool: d.tool || "", startedAt: d.startedAt ?? (prev && prev.startedAt) ?? null });
+      updateConvDot();
+    } else if (d.type === "status" && d.convId) {
+      if (d.status === "running") {
+        convRunning.add(d.convId); convUnseen.delete(d.convId);
+        const prev = liveByConv.get(d.convId) || {};
+        liveByConv.set(d.convId, { ...prev, running: true });
+      } else {
+        convRunning.delete(d.convId); liveByConv.delete(d.convId);
+        if (d.convId === convId) markSeen(convId); else convUnseen.add(d.convId);
+      }
+      updateConvDot();
+    }
+
+    if (d.type === "runtime" && d.convId === convId) { running = true; streamText = d.text || ""; streamTool = d.tool || ""; streamStartedAt = d.startedAt ?? streamStartedAt; renderStream(); setHeader(); }
     else if (d.type === "message" && d.convId === convId) {
+      markSeen(convId);
       if (d.role === "user" && lastSentText !== null && d.content === lastSentText) { lastSentText = null; return; }
       streamText = ""; streamTool = ""; renderStream(); msgsEl.appendChild(bubble(d.role, d.content, d.tools)); scrollDown(false);
     } else if (d.type === "status") {
-      if (d.convId === convId) { running = d.status === "running"; stopping = false; if (!running) { streamText = ""; streamTool = ""; renderStream(); } renderRunline(); }
+      if (d.convId === convId) { running = d.status === "running"; stopping = false; if (!running) { streamText = ""; streamTool = ""; streamStartedAt = null; renderStream(); } renderRunline(); }
       void refreshState(); if (page === "activity") void loadActivity();
       if (cdraw.classList.contains("on")) void loadConvs();
     } else if (d.type === "title" && d.convId === convId) { convTitle = d.title; setHeader(); }
@@ -1179,7 +1297,7 @@
   // burger badge read "1 activity" during an ordinary conversation and never
   // clear once it idled. Filter to mission/worker so the badge tracks real work.
   function activityRunCount(runs) { return (runs || []).filter((r) => r.source === "mission" || r.source === "worker").length; }
-  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; runCount = activityRunCount(d.runs); setHeader(); return d; } catch { return null; } }
+  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; runCount = activityRunCount(d.runs); applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); return d; } catch { return null; } }
   async function refreshBadge() { try { const d = await (await api("/notifications")).json(); if (typeof d.unread === "number") { unreadN = d.unread; setHeader(); } } catch {} }
 
   // ---------- activity ----------
@@ -1834,6 +1952,11 @@
   let notesResolvedOpen = false;
   const noteFirstLine = (s) => String(s || "").split("\n").map((x) => x.trim()).find(Boolean) || "";
   function noteTitle(n) {
+    // Prefer the AI headline (Note.title) — a short topic line distinct from the
+    // body, so the list is scannable instead of every row repeating its first
+    // line. Falls back to the first line of the content until the box has titled
+    // the note.
+    if (n.title) return noteFirstLine(n.title);
     if (n.formatted) return noteFirstLine(n.formatted);
     if (n.user_draft) return noteFirstLine(n.user_draft);
     if (n.turns && n.turns.length) return noteFirstLine(n.turns[0].content);
@@ -1871,11 +1994,26 @@
     const detail = card.querySelector(".ndetail");
     let built = false;
     card.addEventListener("click", () => {
+      // A swipe fires a trailing click on mouseup — swallow that one so the
+      // resolve gesture doesn't also toggle the detail open.
+      if (card.dataset.swiped === "1") { card.dataset.swiped = ""; return; }
       const showing = detail.style.display !== "none";
       if (showing) { detail.style.display = "none"; cs.style.display = ""; return; }
       if (!built) { buildNoteDetail(detail, n); built = true; }
       detail.style.display = ""; cs.style.display = "none";
     });
+    // Swipe left to resolve an open note (or reopen a resolved one) — the same
+    // acknowledge gesture as alerts. This now writes through to notes.jsonl on
+    // the box, so resolving from the phone sticks across devices.
+    const resolved = n.status === "resolved";
+    attachSwipeArchive(
+      card,
+      () =>
+        api("/notes/status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: n.id, status: resolved ? "open" : "resolved" }) })
+          .then((r) => { if (!r.ok) throw new Error(); toast(resolved ? "Reopened" : "Resolved"); })
+          .catch(() => toast("Couldn't update note — try again")),
+      loadNotes,
+    );
     return card;
   }
   async function loadNotes() {

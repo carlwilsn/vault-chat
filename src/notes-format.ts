@@ -1,6 +1,41 @@
 import { generateText, type ModelMessage } from "ai";
 import { buildModel, supportsVision, type ModelSpec } from "./providers";
-import { anchorImages, type Note } from "./notes";
+import { anchorImages, titleableText, type Note } from "./notes";
+
+// A short, scannable headline for the note — DISTINCT from its body, so a list
+// of notes doesn't just repeat each note's first line as its own title (the
+// "title vs content is poor" complaint). Kept to a handful of plain words.
+const TITLE_SYSTEM = `You write the headline for a saved note. Given the note's content, output ONE short title: at most 8 words, plain words, no trailing punctuation, no quotes, no markdown, no label like "Title:". It must read as a distinct headline that names the topic or the ask — NOT a verbatim restatement of the first sentence — so the user can tell this note apart from others at a glance.`;
+
+/** Generate a short headline for a note. Returns "" when there's nothing
+ *  meaningful to title. Best paired with a fast/cheap model. */
+export async function titleForNote(
+  note: Note,
+  spec: ModelSpec,
+  apiKey: string,
+): Promise<string> {
+  const body = titleableText(note);
+  if (!body) return "";
+  const model = buildModel(spec, apiKey);
+  const { text } = await generateText({
+    model,
+    system: TITLE_SYSTEM,
+    messages: [{ role: "user", content: body.slice(0, 4000) }],
+  });
+  // Defensive cleanup — models sometimes wrap in quotes, prepend "Title:", or
+  // tack on a period despite the instruction.
+  let t = (text || "")
+    .split("\n")
+    .map((x) => x.trim())
+    .find(Boolean) ?? "";
+  t = t
+    .replace(/^(title|headline)\s*[:\-]\s*/i, "")
+    .replace(/^["'`*#\s]+/, "")
+    .replace(/["'`*\s]+$/, "")
+    .replace(/[.…]+$/, "")
+    .trim();
+  return t.slice(0, 80);
+}
 
 // Build a one-paragraph orienter that reminds the user later what
 // they were stuck on, what they were looking at, and (if the note

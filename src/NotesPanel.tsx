@@ -376,8 +376,20 @@ function NoteCard({
                 </>
               )}
             </div>
+            {note.title && (
+              <div className="text-[12.5px] font-medium text-foreground truncate">
+                {note.title}
+              </div>
+            )}
             {!expanded && (
-              <div className="text-[12.5px] text-foreground/90 whitespace-pre-wrap break-words line-clamp-2">
+              <div
+                className={cn(
+                  "whitespace-pre-wrap break-words line-clamp-2",
+                  note.title
+                    ? "text-[11.5px] text-muted-foreground"
+                    : "text-[12.5px] text-foreground/90",
+                )}
+              >
                 {bodyPreview}
               </div>
             )}

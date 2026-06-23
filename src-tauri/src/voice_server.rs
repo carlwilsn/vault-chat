@@ -365,6 +365,20 @@ fn handle(mut req: Request, token: &str) {
             };
             let _ = req.respond(body);
         }
+        (Method::Post, "/notes/status") => {
+            // Resolve / reopen a note from the phone (swipe-to-resolve). Relay to
+            // the app so the change is applied against the freshest on-disk notes
+            // and persisted the same way the desktop does — never hand-edit the
+            // jsonl here (a stale view could blank a note's content).
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            let body = match relay_request("phone:note-status", payload, Duration::from_secs(10)) {
+                Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
+                _ => resp_text(503, "application/json", "{\"error\":\"app not answering\"}".into()),
+            };
+            let _ = req.respond(body);
+        }
         (Method::Post, "/notifications/read") => {
             let mut raw = String::new();
             let _ = req.as_reader().read_to_string(&mut raw);
@@ -1140,6 +1154,7 @@ fn slim_note(v: &Value) -> Value {
         "status": v.get("status").and_then(|x| x.as_str()).unwrap_or("open"),
         "user_draft": v.get("user_draft").cloned().unwrap_or(Value::Null),
         "formatted": v.get("formatted").cloned().unwrap_or(Value::Null),
+        "title": v.get("title").cloned().unwrap_or(Value::Null),
         "anchors": anchors,
         "turns": turns,
     })
@@ -1343,6 +1358,11 @@ fn conversation_json(vault: &str, id: &str, n: usize) -> Option<String> {
             "title": c.get("title").and_then(|x| x.as_str()).unwrap_or("New chat"),
             "source": c.get("source").and_then(|x| x.as_str()).unwrap_or("manual"),
             "status": c.get("status").and_then(|x| x.as_str()).unwrap_or("idle"),
+            // When the current run began — lets the phone render an elapsed clock
+            // from prompt-sent even on a cold reopen, before the next runtime
+            // event arrives. (On-disk status is written idle, so "is it running"
+            // still comes from /status; this is only the clock's start.)
+            "runStartedAt": c.get("runStartedAt").and_then(|x| x.as_i64()),
             "messages": visible,
         })
         .to_string(),

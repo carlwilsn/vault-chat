@@ -41,7 +41,21 @@ export type Note = {
   /** Cached AI-written summary of the note — generated lazily on first
    *  expand in the panel and persisted so we don't re-spend tokens. */
   formatted?: string | null;
+  /** Cached short AI headline (≤8 words) that's distinct from the body, so a
+   *  list of notes is scannable instead of every row repeating its first line.
+   *  Generated lazily on the box and persisted. */
+  title?: string | null;
 };
+
+/** The text we'd hand a model to write a title from — empty when there's
+ *  nothing meaningful to headline (a bare image/anchor capture). */
+export function titleableText(n: Note): string {
+  const parts: string[] = [];
+  if (n.user_draft && n.user_draft.trim()) parts.push(n.user_draft.trim());
+  if (n.turns.length > 0) parts.push(n.turns.map((t) => t.content).join("\n"));
+  if (!parts.length && n.formatted && n.formatted.trim()) parts.push(n.formatted.trim());
+  return parts.join("\n\n").trim();
+}
 
 function newId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
