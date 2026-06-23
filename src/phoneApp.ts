@@ -698,11 +698,24 @@ export async function mirrorPushNotify(text: string, convId?: string): Promise<v
   const apiKeys = useStore.getState().apiKeys;
   const { summarizeForAlert } = await import("./alert-summary");
   const sum = await summarizeForAlert(raw, apiKeys).catch(() => null);
-  const title = (sum?.title || raw.split("\n")[0]?.trim() || "New briefing").slice(0, 90);
-  const body = sum?.body || raw.slice(0, 1800).trim();
+  // Clean-boundary excerpt for the no-model fallback (no fast model on the box,
+  // or the summarizer errored): end at the last sentence boundary in the window,
+  // else the last word — never a mid-word chop, the "just the tip N characters"
+  // complaint. When the model summary exists it's used as-is.
+  const clip = (s: string, n: number): string => {
+    const t = (s ?? "").trim();
+    if (t.length <= n) return t;
+    const cut = t.slice(0, n);
+    const stop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
+    if (stop >= n * 0.5) return cut.slice(0, stop + 1).trim();
+    const sp = cut.lastIndexOf(" ");
+    return (sp > 0 ? cut.slice(0, sp) : cut).trim() + "…";
+  };
+  const title = sum?.title || clip(raw.split("\n")[0]?.trim() || "New briefing", 90);
+  const body = sum?.body || clip(raw, 1800);
   await notify("info", title, body, convId, {
     intention: "Scheduled briefing",
-    summary: (sum?.body ?? body).slice(0, 200),
+    summary: sum?.body ? sum.body.slice(0, 200) : clip(raw, 200),
     icon: "✦",
     cls: "g",
   });
