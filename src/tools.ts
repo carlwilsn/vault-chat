@@ -1434,7 +1434,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         check_command: z
           .string()
           .describe(
-            "Shell command the watcher runs on a timer to learn the job's state. It MUST print a status token as its FIRST word — RUNNING, DONE, or FAILED — optionally followed by a one-line progress note (e.g. `RUNNING step 12000 loss 2.31`). Typically an ssh into the rented box that inspects the process / tails the log / checks a sentinel file. If the command itself can't run (host unreachable) several times running, the watcher flags the run STALLED on its own.",
+            "Shell command the watcher runs on a timer to learn the job's state. It MUST print a status token as its FIRST word — RUNNING, DONE, or FAILED — followed while RUNNING by a CHANGING progress metric (e.g. `RUNNING step 12000 loss 2.31`, pulling the LATEST step/loss each check). The token is liveness; the metric after it is progress — and stall detection watches the metric, so a check that prints a bare constant `RUNNING` with no changing number gets flagged STALLED even while the job is advancing fine. Typically an ssh into the rented box that tails the log for the latest step / inspects the process / checks a sentinel file. If the command itself can't run (host unreachable) several times running, the watcher flags the run STALLED on its own.",
           ),
         pull_command: z
           .string()

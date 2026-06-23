@@ -306,13 +306,24 @@ async function checkOneJob(vault: string, job: RunJob): Promise<void> {
     } else {
       // RUNNING or anything unrecognized — still alive; track for stall.
       status = "running";
-      const note = out || job.lastProgress || "";
-      progressChanged = note !== (job.lastProgress ?? "");
-      progress = note;
+      // PROGRESS is the note AFTER the status token, not the whole line. The
+      // token ("RUNNING") is a LIVENESS ping, not progress — measuring the whole
+      // line made a check that prints a constant "RUNNING" look stalled while the
+      // job was advancing fine (the false-STALL the user hit). Liveness signal !=
+      // progress signal: only a CHANGING metric (step/loss/%) counts as progress.
+      const note = rest;
+      progressChanged = note !== "" && note !== ((job.lastProgress ?? "").trim());
+      // Keep the last real progress note when this tick reported only a bare
+      // token, so the display/lastProgress doesn't blank out between metrics.
+      progress = note || job.lastProgress || "";
       const lastChange = progressChanged ? now : job.lastProgressAt;
-      if (!progressChanged && now - lastChange >= job.stallMs) {
+      if (now - lastChange >= job.stallMs) {
         status = "stalled";
-        terminalReason = `no progress for ${Math.round((now - lastChange) / 60_000)}m (last: ${(job.lastProgress || "—").slice(0, 80)})`;
+        const mins = Math.round((now - lastChange) / 60_000);
+        const reported = (job.lastProgress || note || "").trim();
+        terminalReason = reported
+          ? `no progress for ${mins}m (last: ${reported.slice(0, 80)})`
+          : `no progress reported for ${mins}m — the check_command is printing only a liveness token (no changing metric like a step number), so this is likely a reporting gap, not a hung job. Re-register the watcher with a check that prints actual progress (e.g. the latest step/loss), or confirm the run is genuinely stuck and kill it.`;
       }
     }
   }
