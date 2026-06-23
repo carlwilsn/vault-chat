@@ -408,6 +408,7 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
       conversationId,
       s.sendViaTelegram,
       s.quietUnlessAlert,
+      true, // scheduledBriefing — surface an Alert even when not sent to Telegram
     ).catch((e) =>
       console.warn("[scheduler] active-vault sendMessage failed:", e),
     );

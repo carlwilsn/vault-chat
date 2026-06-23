@@ -467,15 +467,26 @@ export async function runScheduledHeadlessTurn(
     .refreshConversationFromDisk(vault, conversationId)
     .catch(() => {});
 
-  if (deliver != null && telegramChatId != null) {
-    // Headless scheduled briefing → mirror to Telegram AND surface a summarized
-    // Alert linked to this thread (the active-vault path does the same in
-    // chat-controller). Only scheduled runs reach this block. Deliver the CLEANED
-    // closing message (deliverText), never the raw narration blob.
-    await sendTelegramReplyWithImages(vault, telegramChatId, deliverText ?? deliver, {
-      notify: true,
-      convId: conversationId,
-    }).catch((e) => console.warn("[scheduler] telegram send failed:", e));
+  if (deliver != null) {
+    // Only scheduled runs reach here, and the text is the CLEANED closing message
+    // (deliverText), never the raw narration blob.
+    const safe = deliverText ?? deliver;
+    if (telegramChatId != null) {
+      // Mirror to Telegram AND surface a summarized Alert linked to this thread
+      // (sendTelegramReplyWithImages → mirrorPushNotify writes the feed record).
+      await sendTelegramReplyWithImages(vault, telegramChatId, safe, {
+        notify: true,
+        convId: conversationId,
+      }).catch((e) => console.warn("[scheduler] telegram send failed:", e));
+    } else {
+      // A cockpit-only schedule (sendViaTelegram:false) still belongs in the
+      // Alerts feed — visible + inspectable — instead of running with no record
+      // (the d5208727 gap). Same CoT-stripped summary, just no Telegram push.
+      const { mirrorPushNotify } = await import("./phoneApp");
+      await mirrorPushNotify(safe, conversationId).catch((e) =>
+        console.warn("[scheduler] alert notify failed:", e),
+      );
+    }
   }
 }
 

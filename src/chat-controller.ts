@@ -59,6 +59,11 @@ export async function sendMessage(
   // only when it explicitly contains an `ALERT:` marker (a supervisor that
   // polls and stays silent otherwise).
   quietUnlessAlert?: boolean,
+  // Schedule-only: this run is a scheduled briefing. Even when it ISN'T mirrored
+  // to Telegram (a cockpit-only schedule, or DM resolution failed), it still
+  // surfaces a CoT-stripped record in the Alerts feed — so a briefing is never
+  // run with no trace (the d5208727 gap). A normal chat leaves this unset.
+  scheduledBriefing?: boolean,
 ) {
   const s = useStore.getState();
   // Concurrency model: every run marks its target conversation `status:
@@ -538,6 +543,62 @@ export async function sendMessage(
                 ),
               });
             });
+          }
+        } else if (scheduledBriefing) {
+          // A scheduled briefing that ISN'T mirrored to Telegram (a cockpit-only
+          // schedule, or DM resolution failed) still surfaces in the Alerts feed
+          // — visible + inspectable — instead of running with no record
+          // (d5208727). Same CoT-stripped summary + timeline patch the Telegram
+          // briefing path does, just delivered to the feed instead of Telegram.
+          const reply = acc.trim() ? acc : tools.length > 0 ? "(done)" : "(no reply)";
+          const deliver = scheduledDeliveryText(reply, quietUnlessAlert ?? false);
+          if (deliver != null && !(quietUnlessAlert ?? false)) {
+            const tConvId = targetConvId;
+            void (async () => {
+              const apiKeys = useStore.getState().apiKeys;
+              const role = targetConv?.role === "supervisor" ? "supervisor" : "worker";
+              const { cleanReplyAndTimeline } = await import("./alert-summary");
+              const { deliver: clean, timeline } = await cleanReplyAndTimeline(
+                acc,
+                finalSegment,
+                bgReasoning,
+                tools.map((t) => ({ name: t.name, input: t.input })),
+                apiKeys,
+                role,
+              ).catch(() => ({ deliver: "", timeline: null }));
+              const safe = (clean || "").trim() || finalSegment.trim() || deliver;
+              const { mirrorPushNotify } = await import("./phoneApp");
+              await mirrorPushNotify(safe, tConvId ?? undefined).catch((err) =>
+                console.warn("[scheduler] alert notify failed:", err),
+              );
+              if (timeline && tConvId) {
+                try {
+                  const { withConvLock, readConversations, writeConversations } =
+                    await import("./conversations");
+                  await withConvLock(async () => {
+                    const fresh = await readConversations(vault);
+                    const i = fresh.findIndex((c) => c.id === tConvId);
+                    if (i < 0) return;
+                    const msgs = fresh[i]!.messages.slice();
+                    for (let k = msgs.length - 1; k >= 0; k--) {
+                      const mk = msgs[k]!;
+                      if (mk.role === "assistant" && (mk.content || "") === acc && !mk.timeline) {
+                        msgs[k] = { ...mk, timeline };
+                        break;
+                      }
+                    }
+                    fresh[i] = { ...fresh[i]!, messages: msgs };
+                    await writeConversations(vault, fresh);
+                  });
+                  await useStore
+                    .getState()
+                    .refreshConversationFromDisk(vault, tConvId)
+                    .catch(() => {});
+                } catch (err) {
+                  console.warn("[scheduler] timeline patch failed:", err);
+                }
+              }
+            })();
           }
         }
 
