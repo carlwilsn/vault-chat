@@ -1566,16 +1566,35 @@
     // Arm the start-up "working…" exactly once, so a freshly-briefed mission shows
     // life off the jump instead of a blank/idle thread (see paint()).
     let armedStartWorking = false;
+    // The mission's workers, as tappable rows in the sheet. For an ARCHIVED
+    // mission this is the ONLY way back to its finished worker threads (the
+    // Activity board only lists live ones) — note c0d532eb. Active workers get a
+    // live dot; both open their read-only supervisor↔worker thread on tap.
+    const wkItems = [
+      ...((g && g.active) || []).map((x) => ({
+        run: x.run, c: x.c,
+        title: (x.run && x.run.title) || (x.c && x.c.title) || "worker",
+        live: true,
+      })),
+      ...((g && g.done) || []).map((c) => ({
+        run: { convId: c.id, title: c.title, mission: c.mission, done: true }, c,
+        title: c.title || "worker",
+        live: false,
+      })),
+    ];
     openSheet({
       intent: readonly ? "Mission · complete" : "Mission",
       title: mc.title, ico: readonly ? "✓" : "◎", cls: readonly ? "g" : "",
       bodyHtml: '<div class="alsum-load" id="mLoad">loading…</div>',
-      footHtml: readonly ? "" : '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="steer the supervisor, or tell it to spawn a worker…" autocomplete="off"></textarea><button class="rsend">↑</button></div>',
+      // The reply composer stays even for a COMPLETED mission: the supervisor is
+      // always on, so the user can still discuss the finished work or its workers
+      // (note c0d532eb). Only "Stop" is gated — there's nothing to stop once done.
+      footHtml: '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + (readonly ? "ask the supervisor about this finished mission…" : "steer the supervisor, or tell it to spawn a worker…") + '" autocomplete="off"></textarea><button class="rsend">↑</button></div>',
       action: readonly ? null : { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
       // A NORMAL conversation: sending keeps the sheet open, shows the message
       // right away, and the poll below folds in the supervisor's reply. Not a
       // one-and-done — send follow-ups without reopening.
-      wire: readonly ? undefined : (body, foot) => wireReply(foot, async (v) => {
+      wire: (body, foot) => wireReply(foot, async (v) => {
         optimistic.push(v);
         // Show "working…" the INSTANT you send — before the box has even started
         // the turn — so there's never a dead gap (the "no sign of life" the user
@@ -1627,7 +1646,9 @@
       }
       const restPlus = rest.concat(optimistic.map((t) => ({ role: "user", content: t })));
       const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
-      if (!readonly) sheetRunning = liveRun || hasLive;
+      // Live whenever a run is actually in flight — even for a completed mission
+      // the user re-engaged to discuss (a reply wakes the supervisor again).
+      sheetRunning = liveRun || hasLive;
       // Working off the jump: a freshly-briefed mission with no supervisor turn yet
       // is spinning up from zero context. Show "working…" immediately — bounded by a
       // safety timer that clears it if no real run shows — so the start is never a
@@ -1638,14 +1659,14 @@
         sheetOptimisticWorking = true;
         setTimeout(() => { if (sheetOptimisticWorking) { sheetOptimisticWorking = false; if (sheetRepaint) void sheetRepaint(); } }, 15000);
       }
-      const showLive = !readonly && (sheetRunning || sheetOptimisticWorking);
+      const showLive = sheetRunning || sheetOptimisticWorking;
       // Direct-reply vs thought-chain is a property of WHAT triggered this turn, not
       // a sticky flag: a turn answering something you TYPED renders as plain prose; a
       // turn woken by a watcher / worker / self-check renders as the thought-chain.
       // Derive it from the last message each paint so the two never cross — the live
       // edge used to flip mid-turn when a wake landed while the flag was still set
       // from your reply.
-      if (!readonly) {
+      {
         const lastMsg = restPlus[restPlus.length - 1];
         sheetDirectReply = !!(lastMsg && lastMsg.role === "user" && !isWakeMsg(lastMsg.content || "") && !/^\s*MISSION BRIEF/i.test(lastMsg.content || ""));
       }
@@ -1678,6 +1699,10 @@
       // A supervisor is ALWAYS ON but rarely working — its job is to be ready for
       // you. Idle ≠ asleep: it's waiting on its workers and free for a question.
       if (!showLive && !readonly && restPlus.length) body += '<div class="idlehint">Ready for you — it’s waiting on its workers and self-checks on its own schedule. Ask it anything below.</div>';
+      if (wkItems.length) {
+        body += '<div class="lbl">Workers · ' + wkItems.length + "</div>";
+        body += wkItems.map((w, i) => '<button class="arch-row wk-row" data-wk="' + i + '"><span class="arch-t">' + (w.live ? "● " : "○ ") + esc(w.title) + '</span><span class="chev">›</span></button>').join("");
+      }
       const be = $("sheetBody");
       // Setting innerHTML resets scrollTop to 0, which yanked the user to the TOP
       // every time a poll folded in a turn while they were reading mid-thread. Land
@@ -1688,17 +1713,27 @@
       const prevTop = be.scrollTop;
       const wasBottom = be.scrollHeight - be.scrollTop - be.clientHeight < 80;
       be.innerHTML = body; typeset(be);
+      // Re-attach worker-row taps each paint (innerHTML wipes handlers). Opening a
+      // worker swaps the sheet to its read-only thread; a fresh openMission tap
+      // brings you back.
+      be.querySelectorAll(".wk-row").forEach((el) => {
+        const w = wkItems[+el.dataset.wk];
+        if (w) el.onclick = () => openWorkerArtifact(w.run, w.c);
+      });
       be.scrollTop = (firstPaint || wasBottom || pinBottom) ? be.scrollHeight : prevTop;
       pinBottom = false;
     }
     // Stream this supervisor's in-flight words into the thread (runtime events)
     // and fold in its turns as they land — see it supervising on the fly.
-    if (!readonly) { sheetConvId = mc.id; sheetRepaint = paint; }
+    // Stream runtime events + repaint for ANY open mission sheet, including a
+    // completed one being discussed — so a reply to a finished mission streams
+    // and folds in just like a live one.
+    sheetConvId = mc.id; sheetRepaint = paint;
     await paint();
-    // Poll while the sheet stays open (a live mission only) so the supervisor's
-    // turns — its reply to what you sent AND its in-flight self-checks — appear
-    // without reopening. openSheet/closeSheet clear this.
-    if (!readonly) missionPoll = setInterval(() => {
+    // Poll while the sheet stays open so the supervisor's turns — its reply to
+    // what you sent AND its in-flight self-checks — appear without reopening.
+    // openSheet/closeSheet clear this.
+    missionPoll = setInterval(() => {
       if (!$("sheet").classList.contains("on")) { clearInterval(missionPoll); missionPoll = 0; return; }
       void paint();
     }, 3000);

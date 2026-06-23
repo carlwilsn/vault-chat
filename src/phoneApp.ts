@@ -956,14 +956,19 @@ export async function startPhoneAppHost(): Promise<void> {
     try {
       const s = useStore.getState();
       const conv = convId ? s.conversations.find((c) => c.id === convId) : undefined;
-      const needsSurface =
-        !!conv &&
-        !conv.surfaced &&
-        (conv.source === "worker" || conv.source === "mission");
-      if (needsSurface) {
+      // Worker/mission threads live on Activity and stay out of recent by
+      // default. Opening one both surfaces it AND bumps lastActivityAt so it
+      // pins to the TOP of recent — matching the desktop's selectConversation,
+      // and the note's ask ("pin that chat to top … instead it disappears").
+      // Bump on every open (not just first surface) so re-opening re-pins.
+      const isWorkerOrMission =
+        !!conv && (conv.source === "worker" || conv.source === "mission");
+      if (isWorkerOrMission) {
         useStore.setState((st) => ({
           conversations: st.conversations.map((c) =>
-            c.id === convId ? { ...c, surfaced: true } : c,
+            c.id === convId
+              ? { ...c, surfaced: true, lastActivityAt: Date.now() }
+              : c,
           ),
         }));
       }

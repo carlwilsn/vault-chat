@@ -721,19 +721,27 @@ export function ensureVoiceConversation(opts?: { stealFocus?: boolean }): string
   const active = s.activeConversationId
     ? s.conversations.find((c) => c.id === s.activeConversationId)
     : null;
-  const reusable =
-    !!active &&
-    (active.source === "voice" ||
-      (active.messages.length === 0 && s.messages.length === 0));
-  if (reusable) {
-    if (active!.source !== "voice") {
+  // Toggling voice CONTINUES the conversation you're already in — "turn this
+  // conversation into voice / pick up where I left off" (note a582595d). The
+  // spoken turns land in the same thread and the agent already has its context
+  // (the system prompt seeds recent history from it). To start a NEW voice
+  // conversation instead, open a fresh chat first, then talk — an empty active
+  // thread is adopted as the voice scratch below. Only relabel a FRESH thread to
+  // source "voice"; a thread with real history keeps its origin so it stays the
+  // same conversation, now continued by voice.
+  if (active) {
+    const isFreshScratch =
+      active.source !== "voice" &&
+      active.messages.length === 0 &&
+      s.messages.length === 0;
+    if (isFreshScratch) {
       useStore.setState({
         conversations: s.conversations.map((c) =>
-          c.id === active!.id ? { ...c, source: "voice" } : c,
+          c.id === active.id ? { ...c, source: "voice" } : c,
         ),
       });
     }
-    return active!.id;
+    return active.id;
   }
   const id = useStore.getState().newConversation();
   useStore.setState((st) => ({

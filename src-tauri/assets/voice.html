@@ -62,6 +62,19 @@
   body.live .toggle{background:transparent;color:var(--text);border:1px solid var(--line);box-shadow:none;font-weight:600}
   .toggle[disabled]{opacity:.6}
 
+  /* Mute: only shown while live, pinned bottom-left so it never overlaps the
+     centred Stop. Muting stops ANY mic audio reaching the agent — for when you
+     stop talking but stay connected (e.g. on a train) and don't want ambient
+     noise read as speech. Filled when active. */
+  .muteb{position:fixed;left:max(20px,env(safe-area-inset-left));
+    bottom:max(26px,env(safe-area-inset-bottom));display:none;
+    background:transparent;color:var(--text);border:1px solid var(--line);
+    border-radius:999px;padding:14px 24px;font-size:15px;font-weight:600;
+    cursor:pointer;transition:transform .12s ease}
+  .muteb:active{transform:scale(.97)}
+  body.live .muteb{display:block}
+  body.muted .muteb{background:var(--bar);color:#1a1a1a;border-color:var(--bar)}
+
   /* Minimal UI: "vault-chat · voice" title up top, the waves dead-centre, and
      the Start/Stop button pinned to the bottom. The status line + subtitle are
      hidden (elements kept so the JS that writes to them stays a no-op); errors
@@ -87,6 +100,7 @@
       <div id="err" class="err"></div>
     </div>
     <button id="toggle" class="toggle">Start</button>
+    <button id="mute" class="muteb" aria-label="mute microphone">Mute</button>
   </div>
 
 <script type="module">
@@ -100,8 +114,9 @@
   const subEl = document.getElementById("sub");
   const errEl = document.getElementById("err");
   const toggleBtn = document.getElementById("toggle");
+  const muteBtn = document.getElementById("mute");
   const viz = document.getElementById("viz");
-  let conv = null, connecting = false, rafId = 0, live = false;
+  let conv = null, connecting = false, rafId = 0, live = false, muted = false;
   const smoothed = new Array(NUM_BARS).fill(0);
 
   // Build the 12 bars once.
@@ -200,6 +215,9 @@
         raw = bin(conv && conv.getInputByteFrequencyData && conv.getInputByteFrequencyData(), NUM_BARS);
       }
     } catch { raw = new Array(NUM_BARS).fill(0); }
+    // Muted + not the agent's turn → flat bars, a visible "you're not being
+    // heard" signal (the mic audio is also actually cut at the SDK).
+    if (muted && !speaking) raw = new Array(NUM_BARS).fill(0);
     for (let i = 0; i < NUM_BARS; i++) {
       const decayed = smoothed[i] * DECAY;
       smoothed[i] = raw[i] > decayed ? raw[i] : decayed;
@@ -289,6 +307,7 @@
         onConnect: () => {
           if (timedOut) return;
           connecting = false; autoRetried = false; live = true;
+          muted = false; document.body.classList.remove("muted"); muteBtn.textContent = "Mute";
           document.body.classList.remove("connecting");
           document.body.classList.add("live");
           toggleBtn.textContent = "Stop"; toggleBtn.disabled = false;
@@ -340,8 +359,20 @@
     }
   }
 
+  // Mute/unmute the mic mid-session. setMicMuted stops outgoing audio at the SDK,
+  // so the agent literally can't hear you (no ambient noise read as speech) until
+  // you unmute. Reflected in the button + flat bars (the status line is hidden).
+  function setMuted(m) {
+    muted = m;
+    try { if (conv && conv.setMicMuted) conv.setMicMuted(m); } catch {}
+    document.body.classList.toggle("muted", m);
+    muteBtn.textContent = m ? "Unmute" : "Mute";
+    setStatus(m ? "Muted" : "Listening", m ? "Mic off — tap Unmute to talk." : "I'm listening…");
+  }
+  muteBtn.addEventListener("click", () => { if (live) setMuted(!muted); });
+
   function teardown() {
-    live = false;
+    live = false; muted = false; document.body.classList.remove("muted");
     cancelAnimationFrame(rafId); rafId = 0;
     teardownAudio();
     autoRetried = false;
