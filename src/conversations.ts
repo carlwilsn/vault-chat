@@ -3,7 +3,6 @@ import type { ChatMessage } from "./store";
 
 export type ConversationSource =
   | "manual"
-  | "telegram"
   | "scheduled"
   | "voice"
   | "phone"
@@ -24,12 +23,6 @@ export type Conversation = {
   lastActivityAt: number;
   source: ConversationSource;
   unread: boolean;
-  // The Telegram chat_id this conversation is bound to, if any. Outbound
-  // assistant replies route back to this thread, and inbound phone
-  // messages route into it. Usually set on telegram-sourced convs, but a
-  // schedule with "send via Telegram" also binds it onto a non-telegram
-  // thread (e.g. a coach thread) so the phone becomes a window into it.
-  telegramChatId?: number;
   // Special roles. "supervisor" threads get the vault's supervisor.md
   // orchestrator prompt on every turn (the phone app's Supervisor button
   // binds to the one conversation carrying this).
@@ -84,27 +77,6 @@ export type Conversation = {
   surfaced?: boolean;
 };
 
-// Attach a Telegram chat_id to one conversation, detaching it from any
-// other conversation that currently holds it. A chat_id maps to exactly
-// one conversation — inbound routing picks the first match — so a stale
-// duplicate would make phone replies land in the wrong thread. Source is
-// left untouched: a schedule binding its (rich, non-Telegram) coach
-// thread to the phone keeps running in rich mode; only the routing moves.
-export function bindTelegramChatId(
-  list: Conversation[],
-  convId: string,
-  chatId: number,
-): Conversation[] {
-  return list.map((c) => {
-    if (c.id !== convId && c.telegramChatId === chatId) {
-      return { ...c, telegramChatId: undefined };
-    }
-    if (c.id === convId) {
-      return { ...c, telegramChatId: chatId };
-    }
-    return c;
-  });
-}
 
 export function newConversationId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -171,7 +143,6 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         lastActivityAt: parsed.lastActivityAt ?? parsed.createdAt ?? Date.now(),
         source: parsed.source ?? "manual",
         unread: parsed.unread ?? false,
-        telegramChatId: parsed.telegramChatId,
         role: parsed.role,
         // The North Star tag MUST survive read-modify-write. Dropping it here
         // was a load-bearing bug: every message a worker/mission appended ran

@@ -721,18 +721,6 @@ type State = {
   deleteConversation: (id: string) => Promise<void>;
   setShowChatsPanel: (b: boolean) => void;
   setShowSchedulesPanel: (b: boolean) => void;
-  // Ingest a user message from an external source (Telegram, scheduled
-  // run) into an existing conversation or a new one. Activates the
-  // chat only if `activate` is set; otherwise just appends + marks
-  // unread so the user can notice it in the Chats panel.
-  ingestExternalMessage: (payload: {
-    text: string;
-    source: "telegram" | "scheduled";
-    telegramChatId?: number;
-    matchByTelegramChatId?: number;
-    titleHint?: string;
-    activate?: boolean;
-  }) => { conversationId: string; isNew: boolean };
   // Off-screen-safe message append: writes directly to a specific
   // conversation's stored messages array, regardless of which one is
   // currently active. Used by chat-controller when a run finishes
@@ -1687,23 +1675,18 @@ export const useStore = create<State>((set) => ({
         });
         return;
       }
-      // Sort by most-recent first; pick the most recent NON-telegram
-      // entry as the active one. Telegram chats live on the phone by
-      // default — they shouldn't grab the chat-pane on app open just
-      // because they were last touched. User can still click into one
-      // explicitly from the Chats panel.
+      // Sort by most-recent first.
       const sorted = list
         .slice()
         .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
       // Per-device active conversation: restore THIS device's last-open thread
       // (persisted per vault) rather than auto-jumping to whatever was most-
       // recently touched — that's what let a phone chat steal the desktop's open
-      // pane. Fall back to most-recent non-telegram only when there's no saved
-      // pick or it was deleted elsewhere.
+      // pane. Fall back to the most-recent thread when there's no saved pick or
+      // it was deleted elsewhere.
       const savedId = savedActiveConvId(vault);
       const active =
         (savedId ? sorted.find((c) => c.id === savedId) : undefined) ??
-        sorted.find((c) => c.source !== "telegram") ??
         sorted[0];
       persistActiveConvId(vault, active.id);
       useStore.setState({
@@ -1869,10 +1852,8 @@ export const useStore = create<State>((set) => ({
       const sorted = next
         .slice()
         .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-      // Same rule as initial load — prefer a non-telegram conv as
-      // the new active one after a delete; telegram chats stay tucked
-      // away unless explicitly opened.
-      const target = sorted.find((c) => c.source !== "telegram") ?? sorted[0];
+      // Pick the most-recent thread as the new active one after a delete.
+      const target = sorted[0];
       return {
         conversations: next,
         activeConversationId: target.id,
@@ -1892,79 +1873,6 @@ export const useStore = create<State>((set) => ({
     set(b ? { showChatsPanel: true, showNotesPanel: false, showSchedulesPanel: false } : { showChatsPanel: false }),
   setShowSchedulesPanel: (b) =>
     set(b ? { showSchedulesPanel: true, showNotesPanel: false, showChatsPanel: false } : { showSchedulesPanel: false }),
-  ingestExternalMessage: (payload) => {
-    let assigned = { conversationId: "", isNew: false };
-    set((s) => {
-      const now = Date.now();
-      const newUserMsg: ChatMessage = {
-        role: "user",
-        content: payload.text,
-      };
-      // Find an existing conversation to append to.
-      let targetIdx = -1;
-      if (payload.matchByTelegramChatId != null) {
-        targetIdx = s.conversations.findIndex(
-          (c) => c.telegramChatId === payload.matchByTelegramChatId,
-        );
-      }
-      if (targetIdx >= 0) {
-        const target = s.conversations[targetIdx]!;
-        const isActive = s.activeConversationId === target.id;
-        const updatedTarget: Conversation = {
-          ...target,
-          messages: [...target.messages, newUserMsg],
-          lastActivityAt: now,
-          unread: !isActive,
-          title:
-            target.title === "New chat"
-              ? deriveConversationTitle([...target.messages, newUserMsg])
-              : target.title,
-        };
-        const conversations = s.conversations.map((c, i) =>
-          i === targetIdx ? updatedTarget : c,
-        );
-        assigned = { conversationId: target.id, isNew: false };
-        if (isActive) {
-          return {
-            conversations,
-            messages: updatedTarget.messages,
-          };
-        }
-        return { conversations };
-      }
-      // Make a new conversation. Snapshot the prior active one's
-      // messages first so we don't lose them when switching.
-      const fresh: Conversation = {
-        ...emptyConversation(),
-        source: payload.source,
-        telegramChatId: payload.telegramChatId,
-        unread: !payload.activate,
-        messages: [newUserMsg],
-        title: payload.titleHint ?? deriveConversationTitle([newUserMsg]),
-        lastActivityAt: now,
-      };
-      const synced = payload.activate ? syncActiveMessages(s) : s.conversations;
-      assigned = { conversationId: fresh.id, isNew: true };
-      if (payload.activate) {
-        return {
-          conversations: [fresh, ...synced],
-          activeConversationId: fresh.id,
-          messages: fresh.messages,
-          compactionSummary: null,
-          lastContext: 0,
-          tokenUsage: { prompt: 0, completion: 0, total: 0 },
-          agentTodos: [],
-          streamingText: "",
-          streamingReasoning: "",
-          liveTools: [],
-        };
-      }
-      return {
-        conversations: [fresh, ...synced],
-      };
-    });
-    return assigned;
-  },
   appendMessageToConversation: (id, m) =>
     set((s) => ({
       conversations: s.conversations.map((c) =>

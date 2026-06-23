@@ -406,9 +406,8 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
       undefined,
       undefined,
       conversationId,
-      s.sendViaTelegram,
       s.quietUnlessAlert,
-      true, // scheduledBriefing — surface an Alert even when not sent to Telegram
+      true, // scheduledBriefing — surface the result in the Alerts feed
     ).catch((e) =>
       console.warn("[scheduler] active-vault sendMessage failed:", e),
     );
@@ -426,7 +425,6 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
   // of silently dropping to the cheap Telegram brain.
   const { runScheduledHeadlessTurn } = await import("./offVaultRun");
   await runScheduledHeadlessTurn(vault, conversationId, s.prompt, {
-    sendViaTelegram: s.sendViaTelegram,
     modelId: s.modelId,
     quietUnlessAlert: s.quietUnlessAlert,
   });

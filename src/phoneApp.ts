@@ -235,7 +235,6 @@ async function statusSnapshot(): Promise<Record<string, unknown>> {
       name: String(sc.name ?? sc.prompt ?? "schedule").slice(0, 60),
       detail:
         (sc.enabled === false ? "disabled" : "enabled") +
-        (sc.sendViaTelegram ? " · → phone" : "") +
         (sc.quietUnlessAlert ? " · quiet-unless-ALERT" : ""),
     }));
   } catch {
@@ -686,12 +685,12 @@ export async function sendPush(title: string, body: string, url = "/phone"): Pro
 }
 
 /** Surface a finished SCHEDULED briefing in the notification feed + push.
- * Called (dynamically) from sendTelegramReplyWithImages ONLY when the caller
- * passes a convId — i.e. a scheduled briefing, never a normal chat or a
- * worker/mission reply. The reply is run through the general alert summarizer
- * so the feed shows a clean headline + a few sentences (not raw narration);
- * the full text stays one tap away via "Open thread" (convId). Falls back to
- * the raw reply if no summary can be produced. */
+ * Called from the scheduler paths (chat-controller / offVaultRun) for a
+ * scheduled briefing — never a normal chat or a worker/mission reply. The reply
+ * is run through the general alert summarizer so the feed shows a clean headline
+ * + a few sentences (not raw narration); the full text stays one tap away via
+ * "Open thread" (convId). Falls back to the raw reply if no summary can be
+ * produced. */
 export async function mirrorPushNotify(text: string, convId?: string): Promise<void> {
   const raw = text.trim();
   if (!raw) return;
@@ -839,7 +838,6 @@ export async function startPhoneAppHost(): Promise<void> {
           label: `${recurrenceLabel(sc.recurrence)} · ${shortTimeLabel(sc)}`,
           enabled: sc.enabled,
           lastFiredAt: sc.lastFiredAt,
-          sendViaTelegram: sc.sendViaTelegram,
           quietUnlessAlert: !!sc.quietUnlessAlert,
           // One-offs are the agent's own self-scheduled wakes (it sets a one-time
           // Schedule for its next check, which self-destructs after firing).

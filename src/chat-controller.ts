@@ -6,7 +6,7 @@ import { estimateBashEta } from "./eta-estimator";
 import { gitCommitAll } from "./git";
 import { flushEditCommit } from "./commit-controller";
 import { safetyCommit } from "./autosave";
-import { sendTelegramReplyWithImages, scheduledDeliveryText } from "./telegram";
+import { scheduledDeliveryText } from "./scheduleDelivery";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import { registerRun, unregisterRun, abortRun } from "./runRegistry";
 import {
@@ -44,25 +44,19 @@ export async function sendMessage(
   contextPreamble?: string,
   attachments?: import("./store").ChatAttachment[],
   // Optional override. When set, the run targets this conversation
-  // instead of whichever is currently active — used by the Telegram
-  // inbound handler so phone messages don't yank the user's focus.
-  // The user keeps looking at whatever they were on; the agent runs
-  // in the background and the off-screen path in the mid-run-switch
-  // logic routes events to the right place.
+  // instead of whichever is currently active — used by the phone/scheduler
+  // background runs so they don't yank the user's focus. The user keeps
+  // looking at whatever they were on; the agent runs in the background and
+  // the off-screen path in the mid-run-switch logic routes events to the
+  // right place.
   targetConvIdOverride?: string,
-  // Schedule-only: when true, mirror the final reply to Telegram even if
-  // the target conversation isn't Telegram-sourced — falling back to the
-  // owner's DM. Lets a coach schedule keep long-form context in a normal
-  // chat thread while still pinging the phone.
-  sendViaTelegram?: boolean,
-  // Schedule-only: "quiet unless alert". The reply is delivered to Telegram
-  // only when it explicitly contains an `ALERT:` marker (a supervisor that
+  // Schedule-only: "quiet unless alert". The reply is surfaced in the Alerts
+  // feed only when it explicitly contains an `ALERT:` marker (a supervisor that
   // polls and stays silent otherwise).
   quietUnlessAlert?: boolean,
-  // Schedule-only: this run is a scheduled briefing. Even when it ISN'T mirrored
-  // to Telegram (a cockpit-only schedule, or DM resolution failed), it still
-  // surfaces a CoT-stripped record in the Alerts feed — so a briefing is never
-  // run with no trace (the d5208727 gap). A normal chat leaves this unset.
+  // Schedule-only: this run is a scheduled briefing — its result is surfaced as
+  // a CoT-stripped record in the Alerts feed (+ Web Push), so a briefing is
+  // never run with no trace. A normal chat leaves this unset.
   scheduledBriefing?: boolean,
 ) {
   const s = useStore.getState();
@@ -84,21 +78,16 @@ export async function sendMessage(
   const trimmed = text.trim();
   const preamble = contextPreamble?.trim() ?? "";
   if (!trimmed && !preamble) return;
-  // Telegram-sourced runs use a cheaper default model — see
-  // getTelegramModelId. User can override in Settings → Telegram.
   const targetForModelLookup = targetConvIdOverride
     ? s.conversations.find((c) => c.id === targetConvIdOverride)
     : s.conversations.find((c) => c.id === s.activeConversationId);
   // Route the model by the conversation's role/source: missions run on the
-  // supervisor model, phone (cockpit) chats on the assistant model, telegram on
-  // its own model, and the desktop chat pane on the default modelId. Each falls
-  // back to the chat model if its slot is empty.
+  // supervisor model, phone (cockpit) chats on the assistant model, and the
+  // desktop chat pane on the default modelId. Each falls back to the chat model
+  // if its slot is empty.
   const convSource = targetForModelLookup?.source;
   let modelId = s.modelId;
-  if (convSource === "telegram") {
-    const { getTelegramModelId } = await import("./telegram");
-    modelId = getTelegramModelId();
-  } else if (convSource === "mission") {
+  if (convSource === "mission") {
     modelId = s.supervisorModelId || modelId;
   } else if (convSource === "phone") {
     modelId = s.assistantModelId || modelId;
@@ -248,32 +237,12 @@ export async function sendMessage(
     : baseHistory;
 
   const vault = cur.vaultPath!;
-  // modelId was already resolved above (Telegram-sourced convs swap
-  // to the cheaper default). Don't re-read from store here — that
-  // would undo the override.
+  // modelId was already resolved above (mission/phone convs swap to their
+  // model). Don't re-read from store here — that would undo the override.
   const currentFile = cur.currentFile;
   const openPaneIds = cur.panes.map((p) => p.id);
   const isTargetActive = () =>
     useStore.getState().activeConversationId === targetConvId;
-  // Mirror the assistant's final reply to Telegram if the target
-  // conversation is telegram-sourced — regardless of which conv the
-  // user is currently watching.
-  // A conversation with a bound telegramChatId talks to the phone,
-  // regardless of source — so a coach thread a schedule has bound to the
-  // DM mirrors its replies too, not just telegram-sourced chats. When a
-  // schedule wants delivery but the thread isn't bound yet, fall back to
-  // the owner's DM and remember to bind it after this run.
-  let telegramChatId = targetConv?.telegramChatId;
-  let bindFallback = false;
-  if (telegramChatId === undefined && sendViaTelegram) {
-    const { resolveScheduleTelegramTarget } = await import("./telegram");
-    const resolved = await resolveScheduleTelegramTarget(vault, undefined);
-    if (resolved != null) {
-      telegramChatId = resolved;
-      bindFallback = true;
-    }
-  }
-
   // Each run owns its own AbortController, registered in the run registry
   // keyed by conversation id. The Stop button aborts whichever conversation is
   // active via abortRun(activeConversationId) — so several conversations can
@@ -305,16 +274,14 @@ export async function sendMessage(
     strictVault,
     bashDisabled,
     voiceMode: cur.voiceMode,
-    telegramMode: targetConv?.source === "telegram",
     supervisorMode: targetConv?.role === "supervisor",
     // The interactive assistant persona — the chat the user talks to directly,
     // on the phone (source "phone") OR the desktop ChatPane (source "manual").
     // Both get the light assistant.md prompt (casual + propose-missions), NOT
-    // the heavy orchestrator supervisor.md (which stays for mission threads +
-    // telegram). Same agent, different surface — no second-class phone brain.
+    // the heavy orchestrator supervisor.md (which stays for mission threads).
+    // Same agent, different surface — no second-class phone brain.
     assistantMode: targetConv?.source === "phone" || targetConv?.source === "manual",
     conversationId: targetConvId ?? undefined,
-    isTelegramSourced: targetConv?.source === "telegram",
     reasoningEffort: cur.reasoningEffort,
     onEvent: (e) => {
       const store = useStore.getState();
@@ -442,117 +409,18 @@ export async function sendMessage(
         if (targetConvId) void endHeartbeat(vault, targetConvId);
         if (targetConvId) unregisterRun(targetConvId, controller);
 
-        if (telegramChatId !== undefined) {
-          // Markdown image refs in the reply get pulled out and sent
-          // as photos via sendPhoto; the remaining text goes as a
-          // regular message. Telegram doesn't render markdown for
-          // sendMessage, so without this the agent's `![alt](path)`
-          // arrives as literal text on the phone.
-          // If acc is empty (model did a tool-only turn with no
-          // prose), fall back to a short "(done)" so the user gets
-          // some signal on the phone instead of silence. We
-          // deliberately don't list the tool names here — the phone
-          // just wants to know the turn finished, not the mechanics.
-          const reply = acc.trim()
-            ? acc
-            : tools.length > 0
-              ? "(done)"
-              : "(no reply)";
-          // Quiet supervisor: only deliver an explicit ALERT:, nothing else.
-          const deliver = scheduledDeliveryText(reply, quietUnlessAlert ?? false);
-          const quiet = quietUnlessAlert ?? false;
-          if (deliver != null && sendViaTelegram && !quiet) {
-            // SCHEDULED BRIEFING (the daily coach, a supervisor report). Clean it
-            // exactly like the headless path: deliver the turn's true closing
-            // message — not the "let me re-read the files… pulling evidence…"
-            // narration blob that used to leak into the phone notification — and
-            // patch the thought-chain onto the stored turn so the cockpit renders
-            // it as reasoning, not raw prose. Fire-and-forget so the turn still
-            // lands instantly; a fast-model failure degrades to finalSegment/raw.
-            const tConvId = targetConvId;
-            void (async () => {
-              const apiKeys = useStore.getState().apiKeys;
-              const role = targetConv?.role === "supervisor" ? "supervisor" : "worker";
-              const { cleanReplyAndTimeline } = await import("./alert-summary");
-              const { deliver: clean, timeline } = await cleanReplyAndTimeline(
-                acc,
-                finalSegment,
-                bgReasoning,
-                tools.map((t) => ({ name: t.name, input: t.input })),
-                apiKeys,
-                role,
-              ).catch(() => ({ deliver: "", timeline: null }));
-              // Never deliver the raw `acc` narration blob — that's the CoT leak.
-              // cleanReplyAndTimeline already prefers timeline.reply → finalSegment
-              // → tail; the only raw-blob path left is this catch, so fall back to
-              // the closing segment, not the whole "let me re-read the files…" blob.
-              const safe = (clean || "").trim() || finalSegment.trim() || deliver;
-              await sendTelegramReplyWithImages(vault, telegramChatId, safe, {
-                notify: true,
-                convId: tConvId ?? undefined,
-              }).catch((err) => console.warn("[telegram] outbound reply failed:", err));
-              // Attach the timeline to this turn (match by content === acc). Benign
-              // on failure: a missed patch just renders the turn as it does today.
-              if (timeline && tConvId) {
-                try {
-                  const { withConvLock, readConversations, writeConversations } =
-                    await import("./conversations");
-                  await withConvLock(async () => {
-                    const fresh = await readConversations(vault);
-                    const i = fresh.findIndex((c) => c.id === tConvId);
-                    if (i < 0) return;
-                    const msgs = fresh[i]!.messages.slice();
-                    for (let k = msgs.length - 1; k >= 0; k--) {
-                      const mk = msgs[k]!;
-                      if (mk.role === "assistant" && (mk.content || "") === acc && !mk.timeline) {
-                        msgs[k] = { ...mk, timeline };
-                        break;
-                      }
-                    }
-                    fresh[i] = { ...fresh[i]!, messages: msgs };
-                    await writeConversations(vault, fresh);
-                  });
-                  await useStore
-                    .getState()
-                    .refreshConversationFromDisk(vault, tConvId)
-                    .catch(() => {});
-                } catch (err) {
-                  console.warn("[scheduler] timeline patch failed:", err);
-                }
-              }
-            })();
-          } else if (deliver != null) {
-            // Normal Telegram chat, or a quiet supervisor's extracted ALERT: — both
-            // already clean. Deliver as-is. Only a scheduled briefing pings Alerts.
-            sendTelegramReplyWithImages(vault, telegramChatId, deliver, {
-              notify: !!sendViaTelegram,
-              convId: targetConvId ?? undefined,
-            }).catch((err) => console.warn("[telegram] outbound reply failed:", err));
-          }
-          // Bind the DM to this thread so phone replies continue it — but not
-          // for a quiet supervisor that had nothing to say (no delivery).
-          // Keep source as-is — the thread stays in rich mode, only routing
-          // moves. The store subscription persists this to disk.
-          if (deliver != null && bindFallback && targetConvId) {
-            import("./conversations").then(({ bindTelegramChatId }) => {
-              useStore.setState({
-                conversations: bindTelegramChatId(
-                  useStore.getState().conversations,
-                  targetConvId,
-                  telegramChatId!,
-                ),
-              });
-            });
-          }
-        } else if (scheduledBriefing) {
-          // A scheduled briefing that ISN'T mirrored to Telegram (a cockpit-only
-          // schedule, or DM resolution failed) still surfaces in the Alerts feed
-          // — visible + inspectable — instead of running with no record
-          // (d5208727). Same CoT-stripped summary + timeline patch the Telegram
-          // briefing path does, just delivered to the feed instead of Telegram.
+        if (scheduledBriefing) {
+          // A scheduled briefing (the daily coach, a supervisor report) surfaces
+          // in the Alerts feed (+ Web Push) — visible and inspectable. Clean it
+          // first: deliver the turn's true closing message, not the "let me
+          // re-read the files…" narration blob (the CoT leak), and patch the
+          // thought-chain onto the stored turn so the cockpit renders it as
+          // reasoning. Fire-and-forget so the turn lands instantly; a fast-model
+          // failure degrades to finalSegment/raw. A quiet supervisor delivers
+          // only an explicit ALERT:.
           const reply = acc.trim() ? acc : tools.length > 0 ? "(done)" : "(no reply)";
           const deliver = scheduledDeliveryText(reply, quietUnlessAlert ?? false);
-          if (deliver != null && !(quietUnlessAlert ?? false)) {
+          if (deliver != null) {
             const tConvId = targetConvId;
             void (async () => {
               const apiKeys = useStore.getState().apiKeys;

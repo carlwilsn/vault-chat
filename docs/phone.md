@@ -19,9 +19,10 @@ The bar, taken from real usage pain (June 2026 transcript audit):
   markers, and run-done pings — through Apple's push service, so they land
   even when the tailnet VPN is idle.
 
-Telegram stays wired up until this surface has earned the 7am coach for a
-full week without a missed ping. Then the Telegram subsystem (poller,
-markdown stripper, chunker, per-vault bot config) can be deleted.
+Telegram has been removed entirely — the phone cockpit (PWA + Web Push) is the
+sole remote surface. The old Telegram subsystem (poller, markdown stripper,
+chunker, per-vault bot config, outbound send) is gone; scheduled briefings now
+surface only in the Alerts feed + push.
 
 ## Architecture
 
@@ -121,18 +122,17 @@ Key decisions:
   schedules now auto-disable — at fire time, plus a startup sweep that
   cleans rows fired by older builds.
 
-## What stays on Telegram until parity
+## Removed with Telegram
 
-- The 7am daily coach (`sendViaTelegram` schedules) — mirrored to push,
-  delivered to both during the trial week.
-- Off-vault inbound (texting a vault that isn't open in the UI). The
-  phone page talks to the currently-open vault only in v1.
+- Off-vault inbound (texting a vault that isn't open in the UI) is gone —
+  the phone talks to the currently-open vault only.
+- The 7am daily coach now surfaces in the Alerts feed + push (no Telegram
+  mirror); `sendViaTelegram` schedules no longer exist.
 
 ## v1 limitations (known, deliberate)
 
 - One vault: whatever the box has open.
-- No image *upload* from the phone yet (Telegram photo→vision flow stays
-  for that); files flow box→phone only.
+- No image *upload* from the phone yet; files flow box→phone only.
 - No math rendering in chat (KaTeX is heavy; markdown only).
 - Push on iOS requires: page added to home screen, notifications enabled
   from the in-page button (user gesture), and iOS 16.4+. Subscriptions

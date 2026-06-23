@@ -263,10 +263,8 @@ export type BuildToolsOptions = {
   bashDisabled?: boolean;
   // Current conversation context. Lets the Schedule tool bind new
   // schedules to this conversation, so when the schedule fires the
-  // reply lands in (and routes from) the right chat — including
-  // back to Telegram if the conversation is telegram-sourced.
+  // reply lands in (and routes from) the right chat.
   conversationId?: string;
-  isTelegramSourced?: boolean;
   // Which layer this conversation sits in — assistant → missions → workers.
   // The layers are enforced HERE, not by prompt discipline: assistants mint
   // missions but cannot spawn workers; only a mission thread holds
@@ -387,7 +385,6 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     strictVault = false,
     bashDisabled = false,
     conversationId,
-    isTelegramSourced = false,
     tier = "assistant",
     abortSignal,
   } = options;
@@ -1261,7 +1258,6 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
                   ? `chat:${s.target.conversationId}`
                   : "new chat",
               enabled: s.enabled,
-              sendViaTelegram: s.sendViaTelegram,
             });
           })
           .join("\n");
@@ -1291,7 +1287,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     }),
     Schedule: tool({
       description:
-        "Schedule a prompt to fire at a future time, either once or recurring. The prompt runs as a new turn in the *current* conversation when it fires; if the conversation is Telegram-sourced, the reply is also sent to the user's phone. Use for reminders ('remind me at 9pm'), recurring briefs ('daily news at 8am'), or polling tasks ('check X every hour'). Exactly one of `when_iso`, `daily_at`, `weekdays_at`, or `every_minutes` must be set — that choice picks the recurrence. The schedule fires while vault-chat is running with this vault available; if the app is closed at fire time, the schedule fires on the next launch when the vault is loaded.",
+        "Schedule a prompt to fire at a future time, either once or recurring. The prompt runs as a new turn in the *current* conversation when it fires, and its result is surfaced in the user's Alerts feed (with a push notification). Use for reminders ('remind me at 9pm'), recurring briefs ('daily news at 8am'), or polling tasks ('check X every hour'). Exactly one of `when_iso`, `daily_at`, `weekdays_at`, or `every_minutes` must be set — that choice picks the recurrence. The schedule fires while vault-chat is running with this vault available; if the app is closed at fire time, the schedule fires on the next launch when the vault is loaded.",
       inputSchema: z.object({
         prompt: z
           .string()
@@ -1416,12 +1412,9 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           target: { kind: "existing" as const, conversationId },
           enabled: true,
           markUnreadOnFinish: true,
-          sendViaTelegram: isTelegramSourced,
         };
         await writeSchedules(vault, [...list, fresh]);
-        return `Scheduled ${fireDescription}. Will fire as a turn in this conversation${
-          isTelegramSourced ? " and send to Telegram." : "."
-        }`;
+        return `Scheduled ${fireDescription}. Will fire as a turn in this conversation; its result lands in the Alerts feed.`;
       },
     }),
     WatchRun: tool({

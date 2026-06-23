@@ -6,7 +6,7 @@ import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./provi
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
-import { loadVaultSystemPrompt, loadVaultTools, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock, loadVaultTelegramPrompt, loadVaultSupervisorPrompt, loadVaultAssistantPrompt } from "./meta";
+import { loadVaultSystemPrompt, loadVaultTools, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock, loadVaultSupervisorPrompt, loadVaultAssistantPrompt } from "./meta";
 
 export type TokenUsage = {
   prompt: number;
@@ -34,11 +34,6 @@ export type ChatTurn = { role: "user" | "assistant"; content: string };
 const FALLBACK_SYSTEM = `You are the runtime for a personal knowledge vault. Tools: Read, Write, Edit, Delete, Glob, Grep, Bash, ListDir, NotebookEdit, PdfExtract, PdfPageSnapshot, TodoWrite, WebFetch, WebSearch, ListNotes, ResolveNote, ReopenNote, CreateNote. Use absolute paths. Render math with $$...$$.
 
 The user keeps a scratchpad of notes at <vault>/.vault-chat/notes.jsonl — quick thoughts they flagged while working. Call ListNotes when they ask about their notes, what they've flagged, what's open, etc. When a conversation actually addresses an open note, call ResolveNote to close it. When you notice something the user will want to revisit, offer to CreateNote it for them.`;
-
-// Compiled-in fallback for Telegram mode, used when a vault hasn't seeded
-// (or the user emptied) `.vault-chat/agent/telegram.md`. The seeded file is
-// the editable source of truth — kept in sync with defaults/telegram.md.
-const FALLBACK_TELEGRAM = `Your reply will be sent to the user's phone via Telegram. Keep it short (1-3 sentences), plain text only — no markdown, headers, bullets, or code fences (they render as literal characters on Telegram). For images the user asks for, create the file with your tools and reference it as \`![caption](relative/path.png)\` — vault-chat uploads that as a real photo. Tool calls are fine; only your final reply text goes to Telegram. Delete any throwaway scratch files before replying.`;
 
 // Compiled-in fallback for the phone cockpit, used when a vault hasn't seeded
 // (or the user emptied) `.vault-chat/agent/assistant.md`. The seeded file is the
@@ -168,10 +163,8 @@ export async function runAgent(params: {
   strictVault?: boolean;
   bashDisabled?: boolean;
   voiceMode?: boolean;
-  telegramMode?: boolean;
-  // Supervisor role WITHOUT the Telegram brevity contract — the always-on
-  // orchestrator prompt used by mission threads (and the classic Telegram
-  // channel). telegramMode implies it.
+  // Supervisor role: the always-on orchestrator prompt (persistent mind, goal
+  // loop, worker steering) used by mission threads.
   supervisorMode?: boolean;
   // The interactive assistant persona — the chat the user talks to directly,
   // on the phone OR the desktop ChatPane. A light, conversational role that
@@ -182,10 +175,9 @@ export async function runAgent(params: {
   // supervisorMode is also set there).
   assistantMode?: boolean;
   conversationId?: string;
-  isTelegramSourced?: boolean;
   reasoningEffort?: import("./store").ReasoningEffort;
 }) {
-  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, telegramMode, supervisorMode, assistantMode, conversationId, isTelegramSourced } = params;
+  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, supervisorMode, assistantMode, conversationId } = params;
   const reasoningEffort = params.reasoningEffort ?? "medium";
 
   try {
@@ -193,7 +185,7 @@ export async function runAgent(params: {
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey);
 
-    const [sessionContext, skills, vaultSystem, vaultTools, northStar, memoryIndex, shellKind, vaultTelegram, vaultSupervisor, vaultAssistant] = await Promise.all([
+    const [sessionContext, skills, vaultSystem, vaultTools, northStar, memoryIndex, shellKind, vaultSupervisor, vaultAssistant] = await Promise.all([
       loadSessionContext(vault),
       loadSkills(vault),
       loadVaultSystemPrompt(vault),
@@ -201,14 +193,11 @@ export async function runAgent(params: {
       loadVaultNorthStar(vault),
       loadVaultMemoryIndex(vault),
       getShellKind(),
-      // Editable per-vault Telegram-mode prompt; only used when telegramMode
-      // is on, but loaded here so the prompt assembly stays a single pass.
-      telegramMode ? loadVaultTelegramPrompt(vault) : Promise.resolve(""),
       // The supervisor role layers an always-on orchestrator (persistent mind,
-      // goal loop, worker steering) onto the agent. Loaded for telegramMode
-      // (the classic phone channel) and mission threads (supervisorMode) — but
-      // NOT the interactive assistant, which gets the lighter assistant prompt.
-      (telegramMode || supervisorMode) && !assistantMode
+      // goal loop, worker steering) onto the agent. Loaded for mission threads
+      // (supervisorMode) — but NOT the interactive assistant, which gets the
+      // lighter assistant prompt.
+      supervisorMode && !assistantMode
         ? loadVaultSupervisorPrompt(vault)
         : Promise.resolve(""),
       // The light assistant prompt for the interactive chat (phone + desktop).
@@ -267,21 +256,12 @@ export async function runAgent(params: {
     const northStarBlock = northStarPromptBlock(northStar);
     const memoryBlock = vaultMemoryPromptBlock(memoryIndex);
 
-    // Telegram-mode instructions come from the per-vault editable file
-    // `.vault-chat/agent/telegram.md` (surfaced as the "Telegram" tab in the
-    // agent-config modal, synced cross-machine via git), falling back to the
-    // compiled-in baseline when the vault hasn't seeded it.
-    const telegramNote = telegramMode
-      ? `\n## Telegram mode\n\n${vaultTelegram.trim() || FALLBACK_TELEGRAM}`
-      : "";
-
-    // Supervisor role: an always-on orchestrator layered onto the Telegram /
-    // mission agent. Applied for telegram + mission threads, but NOT the
-    // interactive assistant (it gets the lighter assistant prompt below). A
-    // vault that doesn't want a supervisor leaves the file empty and stays a
+    // Supervisor role: an always-on orchestrator applied to mission threads, but
+    // NOT the interactive assistant (it gets the lighter assistant prompt below).
+    // A vault that doesn't want a supervisor leaves the file empty and stays a
     // plain agent.
     const supervisorNote =
-      (telegramMode || supervisorMode) && !assistantMode && vaultSupervisor.trim()
+      supervisorMode && !assistantMode && vaultSupervisor.trim()
         ? `\n${vaultSupervisor.trim()}`
         : "";
 
@@ -310,7 +290,6 @@ export async function runAgent(params: {
         : "",
 
       voiceNote,
-      telegramNote,
       supervisorNote,
       assistantNote,
     ]
@@ -458,7 +437,6 @@ export async function runAgent(params: {
       strictVault: strictVault ?? false,
       bashDisabled: bashDisabled ?? false,
       conversationId,
-      isTelegramSourced: isTelegramSourced ?? false,
       tier,
       abortSignal,
     });

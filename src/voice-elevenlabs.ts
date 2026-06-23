@@ -2752,7 +2752,6 @@ export function buildClientToolHandlers(): Record<
                   ? `chat:${s.target.conversationId}`
                   : "new chat",
               enabled: s.enabled,
-              sendViaTelegram: s.sendViaTelegram,
             });
           })
           .join("\n");
@@ -2889,7 +2888,6 @@ export function buildClientToolHandlers(): Record<
             target: { kind: "existing" as const, conversationId },
             enabled: true,
             markUnreadOnFinish: true,
-            sendViaTelegram: false,
           };
           await writeSchedules(vault, [...list, fresh]);
           return `Scheduled ${fireDescription}. Will fire as a turn in this conversation.`;

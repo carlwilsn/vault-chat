@@ -22,7 +22,6 @@ import {
   deleteSchedule,
   toggleSchedule,
 } from "./schedulerLoop";
-import { readTelegramEnabled } from "./telegram";
 import { PROVIDER_LABEL, AUTO_MODEL_ID, MODELS, type ProviderId } from "./providers";
 
 type Props = {
@@ -294,12 +293,10 @@ function FormView({
   onSave: (s: Schedule) => void | Promise<void>;
   onDelete: (id: string) => void | Promise<void>;
 }) {
-  const vaultPath = useStore((s) => s.vaultPath);
   const catalog = useStore((s) => s.catalog);
   const apiKeys = useStore((s) => s.apiKeys);
   const [draft, setDraft] = useState<Schedule>(schedule);
   const isNew = !schedule.lastFiredAt && !schedule.name && !schedule.prompt;
-  const telegramAvailable = readTelegramEnabled(vaultPath);
   const next = nextFireAt(draft);
 
   // Model dropdown: prefer models whose provider has a key configured;
@@ -579,23 +576,6 @@ function FormView({
               }
             />
             Mark unread in Chats
-          </label>
-          <label className="flex items-center gap-2 text-[12px] text-foreground">
-            <input
-              type="checkbox"
-              className="vc-checkbox"
-              checked={draft.sendViaTelegram}
-              onChange={(e) =>
-                setDraft({ ...draft, sendViaTelegram: e.target.checked })
-              }
-              disabled={!telegramAvailable}
-            />
-            Send via Telegram bot
-            {!telegramAvailable && (
-              <span className="text-[10.5px] text-muted-foreground">
-                (configure Telegram in Settings)
-              </span>
-            )}
           </label>
         </Field>
       </div>

@@ -7,7 +7,6 @@ import {
   userKeyName,
   mergeUserKeyNames,
 } from "./keychain";
-import { vaultTokenKey } from "./telegram";
 
 // Cross-machine key sync via an encrypted keystore.
 //
@@ -20,13 +19,8 @@ import { vaultTokenKey } from "./telegram";
 // machine's keychain. The passphrase lives only in each machine's own
 // keychain (never in git), so the committed blob is useless without it.
 //
-// What travels: machine-global keys (provider/API keys, service keys, the
-// Telegram user id, user-registered custom keys) plus the vault's Telegram
-// bot token. The bot token's keychain name is path-derived (differs across
-// machines), so it rides under a path-independent field and is re-keyed to
-// the local slug on import. Having the token everywhere is safe — the
-// per-machine "enabled" flag (not token presence) decides which machine
-// actually polls, so you switch the active box with the on/off toggle.
+// What travels: machine-global keys (provider/API keys, service keys,
+// user-registered custom keys).
 
 const PASSPHRASE_KEY = "keystore.passphrase"; // machine-local, in keychain
 // keys.enc is intentionally NOT gitignored — it must sync via git for the
@@ -49,7 +43,6 @@ function globalKeyNames(): string[] {
     KEY.openrouter,
     KEY.tavily,
     KEY.elevenlabs,
-    KEY.telegram_user_id,
     ...listUserKeys().map(userKeyName),
   ];
 }
@@ -82,17 +75,12 @@ export async function exportKeys(vault: string): Promise<KeystoreResult> {
     if (v !== null && v !== "") keys[n] = v;
   }
   const count = Object.keys(keys).length;
-  // The per-vault Telegram bot token's keychain name is derived from the
-  // vault's local *path* (which differs across machines), so carry its value
-  // under a path-independent field and re-key it to the local slug on import.
-  const telegramBotToken = (await keychainGet(vaultTokenKey(vault))) ?? undefined;
-  if (count === 0 && !telegramBotToken) {
+  if (count === 0) {
     return { ok: false, message: "no keys to push" };
   }
   const payload = JSON.stringify({
     keys,
     userKeys: listUserKeys(),
-    telegramBotToken,
   });
   let blob: string;
   try {
@@ -133,7 +121,6 @@ export async function importKeys(vault: string): Promise<KeystoreResult> {
   let parsed: {
     keys?: Record<string, string>;
     userKeys?: string[];
-    telegramBotToken?: string;
   };
   try {
     parsed = JSON.parse(payload);
@@ -148,13 +135,7 @@ export async function importKeys(vault: string): Promise<KeystoreResult> {
   if (parsed.userKeys && parsed.userKeys.length) {
     mergeUserKeyNames(parsed.userKeys);
   }
-  // Re-key the Telegram bot token to this machine's local vault slug.
-  let extra = 0;
-  if (parsed.telegramBotToken) {
-    await keychainSet(vaultTokenKey(vault), parsed.telegramBotToken);
-    extra = 1;
-  }
-  return { ok: true, message: `imported ${entries.length + extra} keys` };
+  return { ok: true, message: `imported ${entries.length} keys` };
 }
 
 // On vault open: if a passphrase is set and a keystore exists, pull keys

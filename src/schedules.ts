@@ -33,8 +33,7 @@ export type Schedule = {
   modelId: string;
   enabled: boolean;
   markUnreadOnFinish: boolean;
-  sendViaTelegram: boolean;
-  // "Quiet unless alert": deliver to Telegram ONLY when the run's reply
+  // "Quiet unless alert": surface in the Alerts feed ONLY when the run's reply
   // contains an `ALERT:` marker (a supervisor that polls and stays silent
   // until something needs attention). Default false = deliver normally.
   quietUnlessAlert?: boolean;
@@ -64,7 +63,6 @@ export function emptySchedule(defaultModelId: string): Schedule {
     modelId: defaultModelId,
     enabled: true,
     markUnreadOnFinish: true,
-    sendViaTelegram: false,
     createdAt: now,
   };
 }
@@ -136,7 +134,6 @@ function normalizeSchedule(s: Partial<Schedule>): Schedule {
     modelId: s.modelId ?? "",
     enabled: s.enabled ?? true,
     markUnreadOnFinish: s.markUnreadOnFinish ?? true,
-    sendViaTelegram: s.sendViaTelegram ?? false,
     quietUnlessAlert: s.quietUnlessAlert ?? false,
     lastFiredAt: s.lastFiredAt,
     createdAt: s.createdAt ?? Date.now(),

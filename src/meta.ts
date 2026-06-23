@@ -157,31 +157,10 @@ export async function saveVaultVoicePrompt(vault: string, contents: string): Pro
   });
 }
 
-/** Per-vault Telegram-mode prompt at `.vault-chat/agent/telegram.md`. Steers
- *  how the agent replies to messages arriving via the vault's Telegram bot
- *  (short, plain-text, phone-friendly). "" when absent — the agent then uses
- *  the compiled-in fallback. */
-export async function loadVaultTelegramPrompt(vault: string | null): Promise<string> {
-  if (!vault) return "";
-  return readAgentConfig(vault, "telegram.md");
-}
-
-export async function ensureVaultTelegramPrompt(vault: string | null): Promise<void> {
-  if (!vault) return;
-  await ensureAgentConfig(vault, "telegram.md", "default_telegram_prompt");
-}
-
-export async function saveVaultTelegramPrompt(vault: string, contents: string): Promise<void> {
-  await invoke("write_text_file", {
-    path: `${vault}/${AGENT_DIR}/telegram.md`,
-    contents,
-  });
-}
-
 /** Per-vault supervisor role prompt at `.vault-chat/agent/supervisor.md`. Layers
  *  the always-on orchestrator role (persistent mind, goal loop, worker steering)
- *  onto the Telegram agent. "" when absent — the agent stays a plain Telegram
- *  responder with no supervisor section. */
+ *  onto the agent. "" when absent — the agent stays a plain responder with no
+ *  supervisor section. */
 export async function loadVaultSupervisorPrompt(vault: string | null): Promise<string> {
   if (!vault) return "";
   return readAgentConfig(vault, "supervisor.md");

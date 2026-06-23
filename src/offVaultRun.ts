@@ -12,239 +12,32 @@ import {
   emptyConversation,
   deriveConversationTitle,
   newConversationId,
-  bindTelegramChatId,
   withConvLock,
   type Conversation,
 } from "./conversations";
-import {
-  sendTelegramMessage,
-  sendTelegramReplyWithImages,
-  resolveScheduleTelegramTarget,
-  scheduledDeliveryText,
-} from "./telegram";
+import { scheduledDeliveryText } from "./scheduleDelivery";
 import { useStore, type ChatMessage, type LiveTool } from "./store";
 import type { Timeline } from "./alert-summary";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
-import { registerRun, unregisterRun, abortRun, isRunActive } from "./runRegistry";
+import { registerRun, unregisterRun, abortRun } from "./runRegistry";
 import { vlog } from "./debugLog";
 
-// Minimum gap between Telegram progress pings during a long headless run,
-// so the phone gets "still working" signal without being spammed.
-const PROGRESS_MIN_GAP_MS = 25_000;
 
 // withConvLock (shared read→modify→write serializer for the conversations
 // store) now lives in ./conversations so the store's autosave can share it.
 
-// Off-vault inbound handler. Runs the full Telegram round-trip for
-// a vault that is NOT currently open in the UI: load that vault's
-// conversations from disk, route the user message into the right
-// conversation, run the agent fully headless, persist the reply,
-// and send it back to Telegram via that vault's bot token.
-//
-// The UI is never touched — the active vault's store stays
-// completely untouched. The user only sees off-vault activity by
-// switching to that vault later, where they'll find the new
-// messages already persisted.
-
-export async function handleOffVaultInbound(
-  vault: string,
-  chatId: number,
-  userText: string,
-  fromUsername: string | null,
-  photoFileIds: string[] = [],
-): Promise<void> {
-  const trimmed = userText.trim();
-  // Slash commands work for any vault — pure state mutation +
-  // Telegram reply, no agent needed.
-  if (await handleOffVaultSlashCommand(vault, chatId, trimmed, fromUsername)) return;
-
-  const store = useStore.getState();
-  // Telegram inbound is by definition telegram-sourced — use the
-  // cheaper default model. User overrides in Settings → Telegram.
-  const { getTelegramModelId } = await import("./telegram");
-  const modelId = getTelegramModelId();
-  const spec = findModel(modelId);
-  const apiKey = spec ? store.apiKeys[spec.provider] : undefined;
-  if (!spec || !apiKey) {
-    await sendTelegramMessage(
-      vault,
-      chatId,
-      "(error: no model / API key configured in vault-chat)",
-    ).catch(() => {});
-    return;
-  }
-
-  // First write: persist the user message so it isn't lost if the
-  // agent run blows up partway through.
-  // Download phone-sent photos before persisting the user turn.
-  const attachments: import("./store").ChatAttachment[] = [];
-  if (photoFileIds.length > 0) {
-    const { downloadTelegramPhoto, readImageAsAttachment } = await import(
-      "./telegram"
-    );
-    for (const fid of photoFileIds) {
-      try {
-        const path = await downloadTelegramPhoto(vault, fid);
-        const att = await readImageAsAttachment(path);
-        attachments.push(att);
-      } catch (e) {
-        console.warn("[off-vault] photo download failed:", e);
-      }
-    }
-  }
-
-  const list = await readConversations(vault);
-  let idx = list.findIndex((c) => c.telegramChatId === chatId);
-  if (idx < 0) {
-    const fresh: Conversation = {
-      ...emptyConversation(),
-      source: "telegram",
-      telegramChatId: chatId,
-      title: fromUsername
-        ? `Telegram · @${fromUsername}`
-        : deriveConversationTitle([{ role: "user", content: userText }]),
-    };
-    list.unshift(fresh);
-    idx = 0;
-  }
-  const userMsg: ChatMessage = {
-    role: "user",
-    content: userText || (attachments.length > 0 ? "(image)" : ""),
-    attachments: attachments.length > 0 ? attachments : undefined,
-  };
-  list[idx] = {
-    ...list[idx]!,
-    messages: [...list[idx]!.messages, userMsg],
-    lastActivityAt: Date.now(),
-  };
-  await writeConversations(vault, list);
-
-  // Run the agent. No store updates — onEvent only accumulates the
-  // final assistant text and any tool calls into local buffers.
-  let acc = "";
-  const tools: LiveTool[] = [];
-  const baseHistory = list[idx]!.messages
-    .filter((m) => !m.system)
-    .map((m) => ({ role: m.role, content: m.content }));
-
-  // Live progress to the phone so a slow run doesn't strand the user.
-  let lastProgressAt = 0;
-  const notify = (text: string) => {
-    void sendTelegramMessage(vault, chatId, text).catch(() => {});
-  };
-
-  // Register an abort handle so a supervisor can interject this run by id.
-  const inboundConvId = list[idx]!.id;
-  const controller = new AbortController();
-  registerRun(inboundConvId, controller);
-
-  try {
-    await runAgent({
-      modelId,
-      apiKey,
-      vault,
-      history: baseHistory,
-      userMessage: trimmed,
-      userAttachments: attachments.length > 0 ? attachments : undefined,
-      abortSignal: controller.signal,
-      tavilyKey: store.serviceKeys.tavily,
-      strictVault: store.strictVaultMode,
-      bashDisabled: store.bashDisabled,
-      voiceMode: false,
-      telegramMode: true,
-      conversationId: list[idx]?.id,
-      isTelegramSourced: true,
-      reasoningEffort: store.reasoningEffort,
-      onEvent: (e) => {
-        if (e.kind === "text") {
-          acc += e.delta;
-        } else if (e.kind === "tool_use") {
-          tools.push({
-            id: e.id,
-            name: e.name,
-            input: e.input,
-            startedAt: Date.now(),
-          });
-          const now = Date.now();
-          if (now - lastProgressAt > PROGRESS_MIN_GAP_MS) {
-            lastProgressAt = now;
-            notify(`🔧 ${e.name}…`);
-          }
-          if (list[idx]) void bumpHeartbeat(vault, list[idx]!.id, e.name);
-        } else if (e.kind === "tool_result") {
-          const t = tools.find((x) => x.id === e.id);
-          if (t) t.result = e.result;
-        } else if (e.kind === "error") {
-          acc = (acc + `\n\n⚠️ ${e.message}`).trim();
-          notify(`⚠️ ${e.message}`);
-        }
-      },
-    });
-  } catch (e) {
-    acc = (acc + `\n\n⚠️ off-vault run failed: ${String(e)}`).trim();
-    notify(`⚠️ off-vault run failed: ${String(e)}`);
-  } finally {
-    await endHeartbeat(vault, inboundConvId).catch(() => {});
-    unregisterRun(inboundConvId, controller);
-  }
-
-  // Second write: persist the assistant reply. Re-read to avoid
-  // clobbering any other writer (different vault). Match by chat_id
-  // again in case the conversation got rotated between writes.
-  const finalList = await readConversations(vault);
-  let fi = finalList.findIndex((c) => c.telegramChatId === chatId);
-  if (fi < 0) fi = 0;
-  if (finalList[fi]) {
-    const assistantMsg: ChatMessage = {
-      role: "assistant",
-      content: acc,
-      toolCalls: tools.length ? tools : undefined,
-    };
-    finalList[fi] = {
-      ...finalList[fi]!,
-      messages: [...finalList[fi]!.messages, assistantMsg],
-      lastActivityAt: Date.now(),
-      unread: true,
-    };
-    await writeConversations(vault, finalList);
-  }
-
-  // Surface the reply (and its tool calls) live if the user is on this vault.
-  if (finalList[fi]) {
-    await useStore
-      .getState()
-      .refreshConversationFromDisk(vault, finalList[fi]!.id)
-      .catch(() => {});
-  }
-
-  if (acc.trim()) {
-    await sendTelegramReplyWithImages(vault, chatId, acc).catch((e) =>
-      console.warn("[off-vault] telegram send failed:", e),
-    );
-  }
-}
-
-// Scheduler fire for a non-active vault. Same disk-only contract as
-// handleOffVaultInbound but the trigger is a schedule, not a Telegram
-// message. If the target conversation is telegram-sourced and the
-// schedule has sendViaTelegram on, the reply also goes to the phone.
 export async function runScheduledHeadlessTurn(
   vault: string,
   conversationId: string,
   prompt: string,
-  opts: { sendViaTelegram: boolean; modelId?: string; quietUnlessAlert?: boolean },
+  opts: { modelId?: string; quietUnlessAlert?: boolean },
 ): Promise<void> {
   const store = useStore.getState();
-  // Model precedence: the schedule's pinned model wins (it was chosen for
-  // a reason — e.g. Opus for a heavy weekly sweep). Only fall back to the
-  // cheaper Telegram brain when the schedule didn't pin one AND the reply
-  // is Telegram-bound. Resolve the "auto" sentinel to a concrete model so
-  // the headless run doesn't silently no-op on a missing model.
+  // Model precedence: the schedule's pinned model wins (it was chosen for a
+  // reason — e.g. Opus for a heavy weekly sweep), else the default. Resolve the
+  // "auto" sentinel to a concrete model so the headless run doesn't silently
+  // no-op on a missing model.
   let modelId = opts.modelId || store.modelId;
-  if (!opts.modelId && opts.sendViaTelegram) {
-    const { getTelegramModelId } = await import("./telegram");
-    modelId = getTelegramModelId();
-  }
   if (modelId === AUTO_MODEL_ID) {
     modelId = resolveAutoModel(prompt, store.apiKeys, getLiveCatalog())?.id ?? modelId;
   }
@@ -277,21 +70,6 @@ export async function runScheduledHeadlessTurn(
   };
   await writeConversations(vault, list);
 
-  const isTelegramSourced = list[idx]!.source === "telegram";
-  // Where Telegram output should go. Prefer the conversation's own bound
-  // chat; if this schedule fires into a non-Telegram conversation (e.g. a
-  // coach thread that keeps long-form context), fall back to the owner's
-  // DM so "send via Telegram" still delivers. null when delivery is off
-  // or no chat can be resolved.
-  const ownChatId = list[idx]!.telegramChatId;
-  const telegramChatId = opts.sendViaTelegram
-    ? await resolveScheduleTelegramTarget(vault, ownChatId)
-    : null;
-  // When we deliver via the owner's DM fallback (the thread wasn't itself
-  // bound), bind that DM to this thread so replies from the phone
-  // continue the coach with full context instead of a stray thread.
-  const bindFallback = telegramChatId != null && ownChatId === undefined;
-
   let acc = "";
   // The text emitted AFTER the last tool call — i.e. the turn's actual closing
   // message, with the inter-tool "let me check X / pulling evidence" narration
@@ -303,14 +81,6 @@ export async function runScheduledHeadlessTurn(
   const baseHistory = list[idx]!.messages
     .filter((m) => !m.system)
     .map((m) => ({ role: m.role, content: m.content }));
-
-  // Live progress to the phone so a slow run doesn't strand the user.
-  // Only when the run is Telegram-bound and the conversation has a chat.
-  let lastProgressAt = 0;
-  const notify = (text: string) => {
-    if (telegramChatId == null) return;
-    void sendTelegramMessage(vault, telegramChatId, text).catch(() => {});
-  };
 
   // Register an abort handle so another agent (a supervisor) can interject
   // this run by id (AskWorker / auto-nudge).
@@ -336,9 +106,7 @@ export async function runScheduledHeadlessTurn(
       strictVault: store.strictVaultMode,
       bashDisabled: store.bashDisabled,
       voiceMode: false,
-      telegramMode: isTelegramSourced && opts.sendViaTelegram,
       conversationId,
-      isTelegramSourced: isTelegramSourced && opts.sendViaTelegram,
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
         if (e.kind === "text") {
@@ -355,12 +123,8 @@ export async function runScheduledHeadlessTurn(
             input: e.input,
             startedAt: Date.now(),
           });
-          const now = Date.now();
-          // A quiet supervisor stays silent while polling — no progress pings.
-          if (!opts.quietUnlessAlert && now - lastProgressAt > PROGRESS_MIN_GAP_MS) {
-            lastProgressAt = now;
-            notify(`🔧 ${e.name}…`);
-          }
+          // Progress reaches the phone via the heartbeat-backed /status, not a
+          // push — the cockpit polls it.
           void bumpHeartbeat(vault, conversationId, e.name);
         } else if (e.kind === "tool_result") {
           const t = tools.find((x) => x.id === e.id);
@@ -368,14 +132,12 @@ export async function runScheduledHeadlessTurn(
         } else if (e.kind === "error") {
           acc = (acc + `\n\n⚠️ ${e.message}`).trim();
           finalSegment = (finalSegment + `\n\n⚠️ ${e.message}`).trim();
-          notify(`⚠️ ${e.message}`);
         }
       },
     });
   } catch (e) {
     runErr = String(e);
     acc = (acc + `\n\n⚠️ scheduled run failed: ${String(e)}`).trim();
-    notify(`⚠️ scheduled run failed: ${String(e)}`);
   } finally {
     await endHeartbeat(vault, conversationId).catch(() => {});
     unregisterRun(conversationId, controller);
@@ -454,9 +216,6 @@ export async function runScheduledHeadlessTurn(
       lastActivityAt: Date.now(),
       unread: true,
     };
-    if (bindFallback) {
-      finalList = bindTelegramChatId(finalList, conversationId, telegramChatId);
-    }
     await writeConversations(vault, finalList);
   }
 
@@ -469,24 +228,13 @@ export async function runScheduledHeadlessTurn(
 
   if (deliver != null) {
     // Only scheduled runs reach here, and the text is the CLEANED closing message
-    // (deliverText), never the raw narration blob.
+    // (deliverText), never the raw narration blob. Surface the briefing in the
+    // Alerts feed (+ Web Push) — visible and inspectable.
     const safe = deliverText ?? deliver;
-    if (telegramChatId != null) {
-      // Mirror to Telegram AND surface a summarized Alert linked to this thread
-      // (sendTelegramReplyWithImages → mirrorPushNotify writes the feed record).
-      await sendTelegramReplyWithImages(vault, telegramChatId, safe, {
-        notify: true,
-        convId: conversationId,
-      }).catch((e) => console.warn("[scheduler] telegram send failed:", e));
-    } else {
-      // A cockpit-only schedule (sendViaTelegram:false) still belongs in the
-      // Alerts feed — visible + inspectable — instead of running with no record
-      // (the d5208727 gap). Same CoT-stripped summary, just no Telegram push.
-      const { mirrorPushNotify } = await import("./phoneApp");
-      await mirrorPushNotify(safe, conversationId).catch((e) =>
-        console.warn("[scheduler] alert notify failed:", e),
-      );
-    }
+    const { mirrorPushNotify } = await import("./phoneApp");
+    await mirrorPushNotify(safe, conversationId).catch((e) =>
+      console.warn("[scheduler] alert notify failed:", e),
+    );
   }
 }
 
@@ -626,10 +374,8 @@ export async function runWorkerTurn(
       strictVault: store.strictVaultMode,
       bashDisabled: store.bashDisabled,
       voiceMode: false,
-      telegramMode: false,
       supervisorMode,
       conversationId,
-      isTelegramSourced: false,
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
         if (e.kind === "text") {
@@ -1076,145 +822,4 @@ export async function createScheduledConversationOnDisk(
   list.unshift(fresh);
   await writeConversations(vault, list);
   return fresh.id;
-}
-
-// Slash command handler for off-vault chats. Mirrors the active-
-// vault logic in App.tsx, but operates directly on the on-disk
-// conversations list. Returns true if the command was handled.
-async function handleOffVaultSlashCommand(
-  vault: string,
-  chatId: number,
-  trimmedText: string,
-  fromUsername: string | null,
-): Promise<boolean> {
-  const isCommand =
-    /^\/(new|start|reset|help|kill)\b/i.test(trimmedText);
-  if (!isCommand) return false;
-
-  if (/^\/help\b/i.test(trimmedText)) {
-    await sendTelegramMessage(
-      vault,
-      chatId,
-      "Commands:\n/new (or /start) — start a fresh conversation; the old one stays in vault-chat\n/reset — list recent conversations and switch back to one (/reset N)\n/kill — hard-stop every running worker in this vault right now\n/help — this message\n\nNote: clearing chat history on your phone is invisible to the bot — use /new to actually reset on the vault-chat side.",
-    ).catch(() => {});
-    return true;
-  }
-
-  // Deterministic kill switch — aborts every in-flight run in the vault by
-  // walking the run registry directly, NOT by asking the agent. So it works
-  // even if the supervisor itself is mid-thought or wedged. We abort every
-  // conversation that has a live run registered, except this telegram chat's
-  // own (it's the one delivering the /kill, not a worker to stop).
-  if (/^\/kill\b/i.test(trimmedText)) {
-    const list = await readConversations(vault);
-    const self = list.find((c) => c.telegramChatId === chatId);
-    let killed = 0;
-    const killedTitles: string[] = [];
-    for (const c of list) {
-      if (c.id === self?.id) continue;
-      if (isRunActive(c.id) && abortRun(c.id)) {
-        killed++;
-        killedTitles.push(c.title || "New chat");
-      }
-    }
-    const msg =
-      killed === 0
-        ? "Nothing running — no workers to kill."
-        : `Killed ${killed} running worker${killed === 1 ? "" : "s"}:\n${killedTitles
-            .map((t) => `• ${t}`)
-            .join("\n")}`;
-    await sendTelegramMessage(vault, chatId, msg).catch(() => {});
-    return true;
-  }
-
-  if (/^\/(new|start)\b/i.test(trimmedText)) {
-    const list = await readConversations(vault);
-    // Detach existing chat_id binding, if any.
-    for (let i = 0; i < list.length; i++) {
-      if (list[i]!.telegramChatId === chatId) {
-        list[i] = { ...list[i]!, telegramChatId: undefined };
-      }
-    }
-    const fresh: Conversation = {
-      ...emptyConversation(),
-      source: "telegram",
-      telegramChatId: chatId,
-      title: fromUsername ? `Telegram · @${fromUsername}` : "New chat",
-    };
-    list.unshift(fresh);
-    await writeConversations(vault, list);
-    await sendTelegramMessage(
-      vault,
-      chatId,
-      "Started a new chat — fresh context. The old conversation is still in vault-chat under Recent.",
-    ).catch(() => {});
-    return true;
-  }
-
-  if (/^\/reset\b/i.test(trimmedText)) {
-    const argMatch = trimmedText.match(/^\/reset\s+(\d+)\s*$/i);
-    const list = await readConversations(vault);
-    const sorted = list
-      .slice()
-      .sort((a, b) => b.lastActivityAt - a.lastActivityAt)
-      .slice(0, 10);
-    if (argMatch) {
-      const idx = parseInt(argMatch[1]!, 10) - 1;
-      const target = sorted[idx];
-      if (!target) {
-        await sendTelegramMessage(
-          vault,
-          chatId,
-          `No conversation #${idx + 1}. Send /reset alone to see the list.`,
-        ).catch(() => {});
-        return true;
-      }
-      const updated = list.map((c) => {
-        if (c.telegramChatId === chatId && c.id !== target.id) {
-          return { ...c, telegramChatId: undefined };
-        }
-        if (c.id === target.id) {
-          return {
-            ...c,
-            source: "telegram" as const,
-            telegramChatId: chatId,
-          };
-        }
-        return c;
-      });
-      await writeConversations(vault, updated);
-      await sendTelegramMessage(
-        vault,
-        chatId,
-        `Reattached to: ${target.title || "New chat"}\nNext messages from your phone land in that conversation.`,
-      ).catch(() => {});
-      return true;
-    }
-    if (sorted.length === 0) {
-      await sendTelegramMessage(vault, chatId, "No conversations yet.").catch(() => {});
-      return true;
-    }
-    const fmtAge = (ts: number) => {
-      const diff = Date.now() - ts;
-      const min = Math.floor(diff / 60_000);
-      if (min < 60) return `${Math.max(1, min)}m`;
-      const hr = Math.floor(min / 60);
-      if (hr < 24) return `${hr}h`;
-      return `${Math.floor(hr / 24)}d`;
-    };
-    const lines = sorted.map(
-      (c, i) =>
-        `${i + 1}. ${c.title || "New chat"} · ${fmtAge(c.lastActivityAt)}${
-          c.telegramChatId === chatId ? " (current)" : ""
-        }`,
-    );
-    await sendTelegramMessage(
-      vault,
-      chatId,
-      `Recent conversations:\n${lines.join("\n")}\n\nReply /reset <N> to switch to one.`,
-    ).catch(() => {});
-    return true;
-  }
-
-  return false;
 }
