@@ -497,7 +497,11 @@ fn handle(mut req: Request, token: &str) {
             // Fresh-first: pull the context from the app right now (no push-
             // timing window, current document state). Cached push is the
             // fallback so a momentarily-busy frontend doesn't break connect.
-            let ctx = request_fresh_context()
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            let conv_id = payload.get("convId").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let ctx = request_fresh_context(conv_id)
                 .or_else(|| ctx_slot().lock().unwrap_or_else(|e| e.into_inner()).clone());
             let body = match ctx {
                 Some(ctx) => {
@@ -760,12 +764,12 @@ fn relay_request(event: &str, mut payload: Value, timeout: Duration) -> Option<S
 /// and it means the phone connects with the *current* context (open document,
 /// live dynamic vars), not an up-to-20s-stale snapshot. Caches the result so
 /// the pushed-context path stays a warm fallback.
-fn request_fresh_context() -> Option<Ctx> {
+fn request_fresh_context(conv_id: Option<String>) -> Option<Ctx> {
     let app = app_slot().lock().unwrap_or_else(|e| e.into_inner()).clone()?;
     let id = REQ.fetch_add(1, Ordering::Relaxed).to_string();
     let (tx, rx) = mpsc::channel::<String>();
     pending().lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), tx);
-    if app.emit("voice:context", json!({ "reqId": id })).is_err() {
+    if app.emit("voice:context", json!({ "reqId": id, "convId": conv_id })).is_err() {
         pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
         return None;
     }

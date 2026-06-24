@@ -42,8 +42,8 @@ async function wireToolRelay(): Promise<void> {
   // On-demand context: the box asks for FRESH context at /session time (kills
   // the 503 push-timing window; the phone connects with the current document
   // state). Empty result → the box falls back to its cached push / 503s.
-  await listen<{ reqId: string }>("voice:context", async (event) => {
-    const { reqId } = event.payload;
+  await listen<{ reqId: string; convId?: string }>("voice:context", async (event) => {
+    const { reqId, convId } = event.payload;
     const t0 = Date.now();
     let result = "";
     try {
@@ -51,7 +51,7 @@ async function wireToolRelay(): Promise<void> {
       // Open/seed a labeled voice conversation at session start so the spoken
       // turns (relayed via voice:transcript below) and any mission the agent
       // proposes land in one findable thread, surfaced in the conversation list.
-      phoneVoiceConvId = ensureVoiceConversation({ stealFocus: false });
+      phoneVoiceConvId = ensureVoiceConversation({ stealFocus: false, convId });
       const ctx = await buildPhoneVoiceContext();
       if (ctx) result = JSON.stringify(ctx);
       // Log the failure modes — this build used to swallow errors silently, which

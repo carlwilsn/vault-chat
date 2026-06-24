@@ -941,8 +941,9 @@
   $("clearChatsBtn").onclick = () => {
     if (!confirm("Clear these chats from this view? Nothing is deleted — they stay on the box and in git; this only hides them on this device.")) return;
     const set = hiddenChats();
-    for (const c of lastChatList) set.add(c.id);
+    for (const c of lastChatList) { set.add(c.id); convUnseen.delete(c.id); }
     saveHiddenChats(set);
+    updateConvDot();
     toast("Cleared from this view — nothing deleted."); closeConvs(); newChat();
   };
   $("titleBtn").onclick = () => { if (page === "chat") openDrawer(); else setPage("chat"); };
@@ -2359,7 +2360,7 @@
       let cfg = null;
       let sessErr = "";
       for (let a = 0; a < 6; a++) {
-        try { const r = await api("/session", { method: "POST" }); if (r.ok) { cfg = await r.json(); break; } sessErr = `session ${r.status}: ${(await r.text()).slice(0, 200)}`; }
+        try { const r = await api("/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: convId || null }) }); if (r.ok) { cfg = await r.json(); break; } sessErr = `session ${r.status}: ${(await r.text()).slice(0, 200)}`; }
         catch (e) { sessErr = String((e && e.message) || e); }
         // Retry ANY failure (502 transient mint, network blip, 503 not-ready), not
         // just 503 — a single stray error used to kill the whole start. Backoff.

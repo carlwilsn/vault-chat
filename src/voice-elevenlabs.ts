@@ -696,7 +696,7 @@ const CLIENT_TOOL_DEFINITIONS = [
 // it "voice". A typed turn later flips it back to "manual" (see
 // chat-controller), so "source === voice" means "voice from start to end
 // so far", which is exactly the resume condition the user wants.
-export function ensureVoiceConversation(opts?: { stealFocus?: boolean }): string {
+export function ensureVoiceConversation(opts?: { stealFocus?: boolean; convId?: string }): string {
   // Desktop voice (the user is sitting at THIS app) wants the voice thread to
   // become the active pane — that's the whole point of toggling the mic. Phone
   // voice does NOT: it runs the brain on the box (see phoneVoice.ts), but the
@@ -707,12 +707,13 @@ export function ensureVoiceConversation(opts?: { stealFocus?: boolean }): string
   const s = useStore.getState();
 
   if (!stealFocus) {
-    // Build a labeled voice thread inline and prepend it — never
-    // newConversation(), which sets AND persists activeConversationId and would
-    // steal whatever pane the box's desktop user has open. Same focus-preserving
-    // pattern as the phone-chat and Telegram inbound handlers (see phoneApp.ts).
-    // Each phone voice session gets its own thread; transcripts for the session
-    // reuse it via phoneVoice.ts's module-level phoneVoiceConvId.
+    // If the phone passed the current convId, reuse that thread so voice
+    // transcripts land where the user left off, not in a fresh orphan.
+    if (opts?.convId) {
+      const existing = s.conversations.find((c) => c.id === opts.convId);
+      if (existing) return existing.id;
+    }
+    // No convId or not found — prepend a fresh labeled voice thread.
     const fresh: ConvThread = { ...emptyConversation(), source: "voice" };
     useStore.setState({ conversations: [fresh, ...s.conversations] });
     return fresh.id;
