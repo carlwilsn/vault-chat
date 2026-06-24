@@ -3290,17 +3290,21 @@ fn find_gh() -> Option<PathBuf> {
 /// helper just yields no credential and git behaves exactly as before — no
 /// regression.
 fn github_credential_args() -> Vec<String> {
-    // Absolute path when we can find it (the shell git runs the helper through
-    // may not inherit PATH); bare `gh` otherwise. Forward slashes + double quotes
-    // survive spaces ("C:/Program Files/GitHub CLI/gh.exe").
+    // The gh path is passed via GIT_VAULT_GH env var (set in run_git_timeout)
+    // and referenced as "$GIT_VAULT_GH" inside the subshell. The old approach
+    // of embedding the literal path with \"...\" escaping broke on some POSIX sh
+    // implementations: inside $(...), \"...\" is ambiguous — some sh treat the
+    // backslash-quote as a literal character pair rather than a string delimiter,
+    // so the shell tried to execute a command literally named `"C:/Program` (with
+    // the opening double-quote as part of the name). "$GIT_VAULT_GH" inside $()
+    // is unambiguous: the double-quotes start a fresh quoting context inside the
+    // command substitution, correctly handling paths with spaces on all sh impls.
+    // When gh is not found we fall through to a bare PATH-lookup `gh`.
     let found = find_gh();
-    let gh = match &found {
-        Some(p) => p.to_string_lossy().replace('\\', "/"),
-        None => "gh".to_string(),
-    };
+    let gh_ref = if found.is_some() { "\"$GIT_VAULT_GH\"" } else { "gh" };
     let helper = format!(
-        "credential.https://github.com.helper=!f() {{ test \"$1\" = get && {{ echo username=x-access-token; echo \"password=$(\\\"{}\\\" auth token)\"; }}; }}; f",
-        gh
+        "credential.https://github.com.helper=!f() {{ test \"$1\" = get && {{ echo username=x-access-token; echo \"password=$({} auth token)\"; }}; }}; f",
+        gh_ref
     );
     if found.is_some() {
         // gh is real → prefer it for github.com. We reset the *host-specific*
@@ -3398,6 +3402,12 @@ fn run_git_timeout(
     // window (which GIT_TERMINAL_PROMPT does not cover and which hangs headless
     // and leaks an orphaned git-credential-manager process).
     cmd.env("GCM_INTERACTIVE", "never");
+    // Set the gh path so the credential helper shell script can reference it as
+    // "$GIT_VAULT_GH" without embedding a literal quoted path (which some sh
+    // impls mis-parse inside command substitution — see github_credential_args).
+    if let Some(gh_path) = find_gh() {
+        cmd.env("GIT_VAULT_GH", gh_path);
+    }
     // Don't take the optional index lock. Read-only commands (status, diff,
     // rev-list) otherwise grab `.git/index.lock` to opportunistically refresh
     // the index — which collides with an in-flight autosave commit and is a
