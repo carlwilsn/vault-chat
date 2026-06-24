@@ -3405,8 +3405,11 @@ fn run_git_timeout(
     // Set the gh path so the credential helper shell script can reference it as
     // "$GIT_VAULT_GH" without embedding a literal quoted path (which some sh
     // impls mis-parse inside command substitution — see github_credential_args).
+    // Forward slashes: MSYS2 bash (the sh git uses on Windows) handles Windows
+    // paths with forward slashes reliably; backslashes in env vars can be
+    // silently mangled by the sh string parser (e.g. \G in "GitHub" becomes G).
     if let Some(gh_path) = find_gh() {
-        cmd.env("GIT_VAULT_GH", gh_path);
+        cmd.env("GIT_VAULT_GH", gh_path.to_string_lossy().replace('\\', "/"));
     }
     // Don't take the optional index lock. Read-only commands (status, diff,
     // rev-list) otherwise grab `.git/index.lock` to opportunistically refresh
