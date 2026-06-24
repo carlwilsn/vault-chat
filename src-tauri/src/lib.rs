@@ -3182,11 +3182,27 @@ pub(crate) fn run_git(
     run_git_timeout(cwd, args, GIT_TIMEOUT_SECS)
 }
 
-// Absolute path to the `gh` CLI, resolved once. The GitHub HTTPS credential
-// helper below shells out to gh, and the shell git runs that helper through may
-// not inherit our PATH — so we hand git an absolute path when we can find one,
-// falling back to a bare `gh` (PATH lookup) otherwise.
+// Absolute path to the `gh` CLI, resolved once.
 static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+// GitHub token from `gh auth token`, cached for the app's lifetime.
+// Token lifetime is ~8h for gh OAuth; within a single app session this is fine.
+static GH_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+
+/// Call `gh auth token` directly in Rust (no shell, no quoting), cache result.
+fn get_gh_token() -> Option<String> {
+    GH_TOKEN
+        .get_or_init(|| {
+            let gh = find_gh()?;
+            let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if token.is_empty() { None } else { Some(token) }
+        })
+        .clone()
+}
 
 fn find_gh() -> Option<PathBuf> {
     GH_PATH
@@ -3289,47 +3305,33 @@ fn find_gh() -> Option<PathBuf> {
 /// only falls through to gh when it has nothing. If gh isn't installed/authed the
 /// helper just yields no credential and git behaves exactly as before — no
 /// regression.
+/// Build the git `-c` args that authenticate GitHub HTTPS remotes.
+///
+/// Strategy: call `gh auth token` directly in Rust (no shell subprocess, no
+/// quoting) and inject the token as an HTTP Authorization header via
+/// `http.extraHeader`. This completely sidesteps the credential-helper system
+/// and all the shell-quoting fragility that has plagued the `!f()` approach
+/// (paths with spaces on Windows, sh implementation differences, GCM fallthrough
+/// with stale passwords, etc.).
+///
+/// If gh is unavailable or not authenticated, return empty — git falls back to
+/// whatever credential helpers are configured (GCM, netrc, etc.), which still
+/// can't prompt interactively because GCM_INTERACTIVE=never is set.
 fn github_credential_args() -> Vec<String> {
-    // The gh path is passed via GIT_VAULT_GH env var (set in run_git_timeout)
-    // and referenced as "$GIT_VAULT_GH" inside the subshell. The old approach
-    // of embedding the literal path with \"...\" escaping broke on some POSIX sh
-    // implementations: inside $(...), \"...\" is ambiguous — some sh treat the
-    // backslash-quote as a literal character pair rather than a string delimiter,
-    // so the shell tried to execute a command literally named `"C:/Program` (with
-    // the opening double-quote as part of the name). "$GIT_VAULT_GH" inside $()
-    // is unambiguous: the double-quotes start a fresh quoting context inside the
-    // command substitution, correctly handling paths with spaces on all sh impls.
-    // When gh is not found we fall through to a bare PATH-lookup `gh`.
-    let found = find_gh();
-    let gh_ref = if found.is_some() { "\"$GIT_VAULT_GH\"" } else { "gh" };
-    let helper = format!(
-        "credential.https://github.com.helper=!f() {{ test \"$1\" = get && {{ echo username=x-access-token; echo \"password=$({} auth token)\"; }}; }}; f",
-        gh_ref
-    );
-    if found.is_some() {
-        // gh is real → prefer it for github.com. We reset the *host-specific*
-        // helper chain (an empty value clears the list) and then add only our gh
-        // shim, so any host-specific Git-Credential-Manager binding (e.g. one left
-        // by `gh auth setup-git`) is dropped. We deliberately do NOT clear the
-        // *generic* `credential.helper`, so non-GitHub HTTPS remotes keep their
-        // helper — but that means GCM may still be consulted for github via the
-        // generic chain. The hard anti-hang guarantee is therefore the
-        // GCM_INTERACTIVE=never + credential.interactive=false set on every
-        // invocation (see run_git_timeout): GCM returns a cached cred or nothing,
-        // never a blocking GUI prompt, so git falls through to this gh shim
-        // instead of leaking an orphaned, wedged git-credential-manager.
-        vec![
-            "-c".into(),
-            "credential.https://github.com.helper=".into(),
-            "-c".into(),
-            helper,
-        ]
-    } else {
-        // gh not found at a known path → APPEND a bare PATH-lookup gh helper
-        // without resetting, so a machine that depends on another working helper
-        // (e.g. Windows Credential Manager) keeps using it first — no regression.
-        vec!["-c".into(), helper]
-    }
+    let Some(token) = get_gh_token() else {
+        return vec![];
+    };
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD
+        .encode(format!("x-access-token:{}", token));
+    vec![
+        // Clear the host-specific credential-helper chain so GCM/netrc can't
+        // race against our header or provide a conflicting Authorization value.
+        "-c".into(),
+        "credential.https://github.com.helper=".into(),
+        "-c".into(),
+        format!("http.https://github.com.extraHeader=Authorization: Basic {}", b64),
+    ]
 }
 
 /// Kill a spawned process AND every descendant. git launches helper processes
@@ -3402,15 +3404,6 @@ fn run_git_timeout(
     // window (which GIT_TERMINAL_PROMPT does not cover and which hangs headless
     // and leaks an orphaned git-credential-manager process).
     cmd.env("GCM_INTERACTIVE", "never");
-    // Set the gh path so the credential helper shell script can reference it as
-    // "$GIT_VAULT_GH" without embedding a literal quoted path (which some sh
-    // impls mis-parse inside command substitution — see github_credential_args).
-    // Forward slashes: MSYS2 bash (the sh git uses on Windows) handles Windows
-    // paths with forward slashes reliably; backslashes in env vars can be
-    // silently mangled by the sh string parser (e.g. \G in "GitHub" becomes G).
-    if let Some(gh_path) = find_gh() {
-        cmd.env("GIT_VAULT_GH", gh_path.to_string_lossy().replace('\\', "/"));
-    }
     // Don't take the optional index lock. Read-only commands (status, diff,
     // rev-list) otherwise grab `.git/index.lock` to opportunistically refresh
     // the index — which collides with an in-flight autosave commit and is a
