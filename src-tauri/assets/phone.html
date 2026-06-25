@@ -398,6 +398,8 @@
   .sheet-intent{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#8a8a8a;font-weight:600}
   .sheet-title{font-size:16px;font-weight:600;line-height:1.3;margin-top:2px;overflow-wrap:anywhere}
   .sheet-x{color:var(--dim);font-size:16px;width:32px;height:32px;border-radius:8px;flex:none;display:flex;align-items:center;justify-content:center;align-self:center}
+  .sheet-back{color:var(--dim);width:30px;height:30px;border-radius:8px;flex:none;display:flex;align-items:center;justify-content:center;align-self:center;background:var(--raised)}
+  .sheet-back svg{width:18px;height:18px}
   .sheet-action{font-size:12px;border:1px solid var(--line);border-radius:8px;padding:5px 11px;color:var(--dim);flex:none;align-self:center;min-height:30px;white-space:nowrap}
   .sheet-action:active{background:var(--raised)}
   .sheet-action.danger{color:var(--err);border-color:#5a302e}
@@ -542,7 +544,7 @@
   <div class="sheet-scrim" id="sheetScrim"></div>
   <div class="sheet" id="sheet">
     <div class="sheet-grabwrap" id="sheetGrab"><div class="sheet-grab"></div></div>
-    <div class="sheet-head" id="sheetHead"><div class="sheet-ico" id="sheetIco"></div><div class="sh-meta"><div class="sheet-intent" id="sheetIntent"></div><div class="sheet-title" id="sheetTitle"></div></div><button class="sheet-action" id="sheetAction" style="display:none"></button><button class="sheet-x" id="sheetX">✕</button></div>
+    <div class="sheet-head" id="sheetHead"><button class="sheet-back" id="sheetBack" aria-label="back" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button><div class="sheet-ico" id="sheetIco"></div><div class="sh-meta"><div class="sheet-intent" id="sheetIntent"></div><div class="sheet-title" id="sheetTitle"></div></div><button class="sheet-action" id="sheetAction" style="display:none"></button><button class="sheet-x" id="sheetX">✕</button></div>
     <div class="sheet-body" id="sheetBody"></div>
     <div class="sheet-foot" id="sheetFoot" style="display:none"></div>
   </div>
@@ -1475,6 +1477,11 @@
     const act = $("sheetAction");
     if (opts.action) { act.style.display = ""; act.textContent = opts.action.label; act.className = "sheet-action" + (opts.action.danger ? " danger" : ""); act.onclick = opts.action.onClick; }
     else { act.style.display = "none"; act.className = "sheet-action"; act.onclick = null; }
+    // Back affordance: when this sheet was reached FROM another (a worker thread
+    // opened from its mission), show a ‹ that returns there instead of forcing a
+    // full close + re-tap to get back to the supervisor/mission level.
+    const back = $("sheetBack");
+    if (opts.back) { back.style.display = ""; back.onclick = opts.back; } else { back.style.display = "none"; back.onclick = null; }
     if (opts.wire) opts.wire($("sheetBody"), foot);
     typeset($("sheetBody"));
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
@@ -1733,7 +1740,9 @@
       // brings you back.
       be.querySelectorAll(".wk-row").forEach((el) => {
         const w = wkItems[+el.dataset.wk];
-        if (w) el.onclick = () => openWorkerArtifact(w.run, w.c);
+        // Pass a "back" that re-opens THIS mission so the worker view gets a ‹ to
+        // return to the supervisor/mission level (not just a full close).
+        if (w) el.onclick = () => openWorkerArtifact(w.run, w.c, () => openMission(mc, g, opts));
       });
       be.scrollTop = (firstPaint || wasBottom || pinBottom) ? be.scrollHeight : prevTop;
       pinBottom = false;
@@ -1771,11 +1780,12 @@
   // not the worker. Polls like the mission view so a worker opened mid-run shows
   // it WORKING — its in-flight words stream into the live edge, and finished
   // turns (with their cleaned timelines) fold in — instead of a frozen snapshot.
-  async function openWorkerArtifact(run, c) {
+  async function openWorkerArtifact(run, c, back) {
     const convId = run.convId;
     openSheet({
       intent: "Worker · " + ((run.mission || c.mission || "mission")) + " · read-only", title: run.title || c.title || "worker", ico: "●", cls: "",
       bodyHtml: '<div class="lbl">Thread · supervisor ↔ worker</div><div class="alsum-load" id="wkLoad">loading…</div>',
+      back: back || null,
     });
     sheetConvId = convId;
     updateConvDot(); // now viewing this worker thread → drop it from the background dot
