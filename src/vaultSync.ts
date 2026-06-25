@@ -478,7 +478,10 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       } else if (result.error) {
         setStatus({ lastError: result.message, running: false });
       } else {
-        setStatus({ lastMessage: result.message, running: false });
+        // ok:false, error:false = intentionally not syncing (no remote, etc.)
+        // Clear any stale error so the UI doesn't show a previous failure alongside
+        // an informational "no remote configured" message.
+        setStatus({ lastMessage: result.message, lastError: null, running: false });
       }
       const st = await rawStatus();
       // Flush commits that were made but never pushed. The dirty-tree push
@@ -544,7 +547,7 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       } else if (push.error) {
         setStatus({ lastError: push.message, running: false });
       } else {
-        setStatus({ lastMessage: push.message, running: false });
+        setStatus({ lastMessage: push.message, lastError: null, running: false });
       }
       await rawStatus();
     } finally {

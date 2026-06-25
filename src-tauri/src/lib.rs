@@ -3185,23 +3185,73 @@ pub(crate) fn run_git(
 // Absolute path to the `gh` CLI, resolved once.
 static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-// GitHub token from `gh auth token`, cached for the app's lifetime.
-// Token lifetime is ~8h for gh OAuth; within a single app session this is fine.
-static GH_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+// GitHub token from `gh auth token`, with TTL-based refresh.
+//
+// gh OAuth tokens expire in ~8h; the always-on server could run for days, so
+// caching for the process lifetime would cause silent auth failures twice a day.
+// We refresh every 6h (headroom below the expiry) and also invalidate on any
+// auth failure so the next sync tick re-fetches rather than retrying a known-bad
+// token indefinitely.
+struct GhTokenEntry {
+    token: Option<String>,
+    fetched_at: Option<Instant>,
+}
 
-/// Call `gh auth token` directly in Rust (no shell, no quoting), cache result.
+static GH_TOKEN_CACHE: OnceLock<Mutex<GhTokenEntry>> = OnceLock::new();
+const GH_TOKEN_TTL_SECS: u64 = 6 * 3600; // 6 hours
+
+fn gh_token_cache() -> &'static Mutex<GhTokenEntry> {
+    GH_TOKEN_CACHE.get_or_init(|| Mutex::new(GhTokenEntry { token: None, fetched_at: None }))
+}
+
+/// Return the cached gh token if still fresh, otherwise re-fetch via `gh auth token`.
+/// `gh auth token` is fast (reads gh's own stored credential, refreshing via OAuth
+/// refresh token if needed) so spawning it every 6h is negligible overhead.
 fn get_gh_token() -> Option<String> {
-    GH_TOKEN
-        .get_or_init(|| {
-            let gh = find_gh()?;
-            let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if token.is_empty() { None } else { Some(token) }
-        })
-        .clone()
+    {
+        let g = gh_token_cache().lock().unwrap_or_else(|e| e.into_inner());
+        if g.fetched_at
+            .map(|t| t.elapsed() < Duration::from_secs(GH_TOKEN_TTL_SECS))
+            .unwrap_or(false)
+        {
+            return g.token.clone();
+        }
+    }
+    let result = (|| {
+        let gh = find_gh()?;
+        let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if token.is_empty() { None } else { Some(token) }
+    })();
+    let mut g = gh_token_cache().lock().unwrap_or_else(|e| e.into_inner());
+    g.token = result.clone();
+    g.fetched_at = Some(Instant::now());
+    result
+}
+
+/// Force the next `get_gh_token()` call to re-fetch from `gh auth token`,
+/// bypassing the TTL. Call this when a push/fetch returns an auth error so the
+/// next sync tick gets a fresh (possibly refreshed) token instead of retrying
+/// one that's already known bad.
+fn invalidate_gh_token() {
+    let mut g = gh_token_cache().lock().unwrap_or_else(|e| e.into_inner());
+    g.fetched_at = None;
+}
+
+/// True when git stderr signals an authentication failure — wrong/expired
+/// credentials, HTTP 401/403, or a suppressed interactive credential prompt.
+fn is_auth_error(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("authentication failed")
+        || s.contains("could not read username")
+        || s.contains("invalid username or password")
+        || s.contains("authorization failed")
+        || s.contains("wrong http status")
+        || s.contains("http 401")
+        || s.contains("http 403")
 }
 
 fn find_gh() -> Option<PathBuf> {
@@ -3277,34 +3327,6 @@ fn find_gh() -> Option<PathBuf> {
         .clone()
 }
 
-/// The `-c credential.https://github.com.helper=…` arg that makes git
-/// authenticate GitHub HTTPS remotes through the (already-authenticated) `gh`
-/// CLI, injected per-command.
-///
-/// Why per-command instead of stored config: the headless Linux server never
-/// ran `gh auth setup-git`, so over an `https://github.com/...` origin git had
-/// no credential helper and — with `GIT_TERMINAL_PROMPT=0` — died with
-/// "fatal: could not read Username for 'https://...'" instead of authenticating.
-/// Injecting it on every invocation also means it survives the global git config
-/// being wiped or NUL-corrupted, and is inherited by submodule sub-processes
-/// (via GIT_CONFIG_PARAMETERS) so nested-repo forks authenticate too.
-///
-/// Why `gh auth token` and not `gh auth git-credential`: gh's own credential
-/// helper REFUSES to emit an HTTPS password when the box's gh is configured for
-/// the **ssh** git protocol (`gh config get git_protocol` == ssh) — it stays
-/// silent, git falls through, and you get "could not read Username" even though
-/// `gh auth status` says you're logged in. The headless box is exactly that case
-/// (laptop = https, box = ssh). `gh auth token` prints the token regardless of
-/// protocol, so a tiny `!`-shell helper turns it into a git credential that works
-/// on both boxes. (`echo` per line — not `printf '...\n...'` — because MSYS
-/// mangles the `\n` on Windows git-bash.)
-///
-/// We *append* gh as a helper rather than resetting: git tries helpers in order
-/// and stops at the first that returns a credential, so a box that already has a
-/// working helper (e.g. Windows Credential Manager) keeps using it first and
-/// only falls through to gh when it has nothing. If gh isn't installed/authed the
-/// helper just yields no credential and git behaves exactly as before — no
-/// regression.
 /// Build the git `-c` args that authenticate GitHub HTTPS remotes.
 ///
 /// Strategy: call `gh auth token` directly in Rust (no shell subprocess, no
@@ -4994,6 +5016,9 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         }
         let (_, stderr, fetch_code) = run_git(&vault, &["fetch", "origin", branch])?;
         if fetch_code != 0 {
+            if is_auth_error(&stderr) {
+                invalidate_gh_token();
+            }
             return Ok(SyncOpResult {
                 ok: false,
                 message: format!("fetch failed: {}", stderr.trim()),
@@ -5055,6 +5080,14 @@ async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
             // cross-machine sync). If the rejection isn't a divergence
             // (auth/network), the fetch or the retry fails and we surface the
             // original error.
+            if is_auth_error(&stderr) {
+                invalidate_gh_token();
+                return Ok(SyncOpResult {
+                    ok: false,
+                    message: format!("push failed: {}", first_line(&stderr).trim()),
+                    error: true,
+                });
+            }
             let (_, _, fcode) = run_git(&vault, &["fetch", "origin", &branch])?;
             if fcode != 0 {
                 return Ok(SyncOpResult {
@@ -5069,6 +5102,9 @@ async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
                     let (_, stderr2, push_code2) =
                         run_git(&vault, &["push", "-u", "origin", &branch])?;
                     if push_code2 != 0 {
+                        if is_auth_error(&stderr2) {
+                            invalidate_gh_token();
+                        }
                         return Ok(SyncOpResult {
                             ok: false,
                             message: format!(
