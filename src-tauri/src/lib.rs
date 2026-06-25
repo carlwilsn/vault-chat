@@ -4800,6 +4800,88 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
     .map_err(|e| e.to_string())?
 }
 
+/// After any successful merge (fast-forward or diverged), scan every submodule
+/// gitlink in HEAD and advance any that regressed — i.e., the merge resolved the
+/// pointer to a commit that is a strict ancestor of the sub-repo's
+/// `origin/<branch>` tip. This catches the silent auto-resolution case where git
+/// sees "remote changed the gitlink, local didn't → take theirs" and picks a
+/// stale box-pushed pointer without ever creating a conflict marker. Returns the
+/// relative paths of submodules that were advanced and staged; callers must
+/// create a follow-up commit if the list is non-empty.
+fn fix_regressed_gitlinks(vault: &str) -> Vec<String> {
+    let (out, _, c) = match run_git(
+        vault,
+        &["config", "-f", ".gitmodules", "--get-regexp", "submodule\\..*\\.path"],
+    ) {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+    if c != 0 {
+        return vec![];
+    }
+    let mut fixed: Vec<String> = Vec::new();
+    for line in out.lines() {
+        let mut it = line.splitn(2, char::is_whitespace);
+        let key = it.next().unwrap_or("");
+        let rel = it.next().unwrap_or("").trim();
+        if rel.is_empty() {
+            continue;
+        }
+        // submodule.<name>.path → name
+        let name = key
+            .strip_prefix("submodule.")
+            .and_then(|s| s.strip_suffix(".path"))
+            .unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        let branch_key = format!("submodule.{}.branch", name);
+        let branch = match run_git(vault, &["config", "-f", ".gitmodules", "--get", &branch_key]) {
+            Ok((b, _, 0)) if !b.trim().is_empty() => b.trim().to_string(),
+            _ => continue,
+        };
+        let sub = format!("{}/{}", vault, rel);
+        // Current gitlink in HEAD
+        let current = match run_git(vault, &["rev-parse", &format!("HEAD:{}", rel)]) {
+            Ok((s, _, 0)) if !s.trim().is_empty() => s.trim().to_string(),
+            _ => continue,
+        };
+        // Sub-repo's remote branch tip
+        let remote_ref = format!("origin/{}", branch);
+        let tip = match run_git(&sub, &["rev-parse", &remote_ref]) {
+            Ok((s, _, 0)) if !s.trim().is_empty() => s.trim().to_string(),
+            _ => continue,
+        };
+        if current == tip {
+            continue;
+        }
+        // Regression: current is a strict ancestor of tip (tip is newer).
+        let regressed = matches!(
+            run_git(&sub, &["merge-base", "--is-ancestor", &current, &tip]),
+            Ok((_, _, 0))
+        );
+        if !regressed {
+            continue;
+        }
+        eprintln!(
+            "[sync] gitlink regression in '{}': {} → {} (branch {}); advancing",
+            rel,
+            &current[..8.min(current.len())],
+            &tip[..8.min(tip.len())],
+            branch
+        );
+        if matches!(
+            run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &tip, rel]),
+            Ok((_, _, 0))
+        ) {
+            // Move the sub-repo's working tree to the tip so it matches the new gitlink.
+            let _ = run_git_mut(&sub, &["checkout", "--detach", &tip]);
+            fixed.push(rel.to_string());
+        }
+    }
+    fixed
+}
+
 /// Pick which commit a conflicted submodule gitlink should land on when two
 /// machines advanced it independently: the descendant if one side's commit
 /// contains the other (so no sub-repo work is dropped from the pointer), else
@@ -4913,12 +4995,26 @@ fn resolve_merge_conflicts(vault: &str) -> bool {
 fn reconcile_with_upstream(
     vault: &str,
     branch: &str,
-) -> Result<Result<&'static str, SyncOpResult>, String> {
+) -> Result<Result<String, SyncOpResult>, String> {
     let upstream = format!("origin/{}", branch);
+    // Need identity for any regression-fix commits we may add below.
+    let (mn, me) = human_identity(vault);
     // Fast-forward first — clean, no merge commit, the common case.
     let (_, _, ff_code) = run_git_mut(vault, &["merge", "--ff-only", &upstream])?;
     if ff_code == 0 {
-        return Ok(Ok("pulled"));
+        // Even on a clean FF the remote may have pushed a stale gitlink
+        // (box with a corrupted sub-repo config committing a regressed
+        // pointer). Scan and correct before returning so the caller
+        // never pushes a step-back.
+        let fixed = fix_regressed_gitlinks(vault);
+        if !fixed.is_empty() {
+            let fix_msg = format!(
+                "vault-chat: restore submodule pointers [regression fix: {}]",
+                fixed.join(", ")
+            );
+            let _ = run_git_as(vault, &mn, &me, &["commit", "-m", &fix_msg]);
+        }
+        return Ok(Ok("pulled".into()));
     }
     // Diverged — both machines committed. We MERGE (never rebase): a merge
     // reconciles the two tips, and the append-only `*.jsonl` logs auto-union via
@@ -4928,11 +5024,19 @@ fn reconcile_with_upstream(
     // abort-and-loop. Whatever the union can't handle (submodule pointers, a
     // genuinely divergent file edit) is auto-resolved so sync always makes
     // progress and never drops data.
-    let (mn, me) = human_identity(vault);
     let (_, mstderr, merge_code) =
         run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
     if merge_code == 0 {
-        return Ok(Ok("merged origin"));
+        let fixed = fix_regressed_gitlinks(vault);
+        if !fixed.is_empty() {
+            let fix_msg = format!(
+                "vault-chat: restore submodule pointers [regression fix: {}]",
+                fixed.join(", ")
+            );
+            let _ = run_git_as(vault, &mn, &me, &["commit", "-m", &fix_msg]);
+            return Ok(Ok(format!("merged origin (regression fixed: {})", fixed.join(", "))));
+        }
+        return Ok(Ok("merged origin".into()));
     }
     if resolve_merge_conflicts(vault) {
         let (_, cstderr, ccode) = run_git_as(vault, &mn, &me, &["commit", "--no-edit"])?;
@@ -4944,7 +5048,19 @@ fn reconcile_with_upstream(
                 error: true,
             }));
         }
-        return Ok(Ok("merged origin (auto-resolved)"));
+        let fixed = fix_regressed_gitlinks(vault);
+        if !fixed.is_empty() {
+            let fix_msg = format!(
+                "vault-chat: restore submodule pointers [regression fix: {}]",
+                fixed.join(", ")
+            );
+            let _ = run_git_as(vault, &mn, &me, &["commit", "-m", &fix_msg]);
+            return Ok(Ok(format!(
+                "merged origin (auto-resolved, regression fixed: {})",
+                fixed.join(", ")
+            )));
+        }
+        return Ok(Ok("merged origin (auto-resolved)".into()));
     }
     // Should be unreachable — every conflict class has a resolution. If
     // something slips through, abort cleanly so the tree is intact and the next
