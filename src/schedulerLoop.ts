@@ -1,6 +1,7 @@
 import { useStore } from "./store";
 import {
   type Schedule,
+  type Recurrence,
   nextFireAt,
   readSchedules,
   writeSchedules,
@@ -126,62 +127,69 @@ export function setFireSchedulesOnThisMachine(on: boolean): void {
   }
 }
 
-// ---- Firer heartbeat -------------------------------------------------------
+// ---- Firing-dark detection -------------------------------------------------
 // The single-firer gate means exactly ONE machine runs schedules + the
 // run-watcher. If that machine goes dark (laptop shut, box powered off) and no
 // other machine has firing on, EVERYTHING silently stops — no wakes, no daily
 // coach, no run-watching — with nothing to tell you. That's how the summer
-// vault's firing died unnoticed for ~4 days. So the firer stamps a heartbeat
-// each tick, and any machine that ISN'T firing watches it: if it goes stale,
-// alarm the user ONCE instead of failing in silence.
-const FIRER_STALE_MS = 12 * 60_000; // no firer tick for this long → it's dark
+// vault's firing died unnoticed for ~4 days.
+//
+// We detect this WITHOUT a heartbeat file. An earlier design had the firer
+// stamp `firer-heartbeat.json` each tick and non-firers watch it — but that
+// file is gitignored (it churned git history), so it never syncs between
+// machines. A non-firer reads only its OWN stale local copy and false-alarms
+// "dark" forever, even while the real firer fires fine on another box. (That
+// false alarm is exactly what this replaces.)
+//
+// Instead, derive liveness from data that DOES sync: each schedule's
+// `lastFiredAt` lives in schedules.jsonl and merges carrying the MAX across
+// machines. If the firer is alive, every recurring schedule fires on its
+// cadence and stays fresh; a recurring schedule overdue past its own interval +
+// grace means firing is genuinely dark. The tightest-cadence schedule drives
+// detection speed, and the check no longer cares which machine is firing.
 const FIRER_GRACE_MS = 6 * 60_000; // let a just-opened app wait this long before alarming
-const MACHINE_ID_KEY = "vault_chat_machine_id";
 
-function machineId(): string {
-  try {
-    let id = localStorage.getItem(MACHINE_ID_KEY);
-    if (!id) {
-      id = "m_" + Math.random().toString(36).slice(2, 10);
-      localStorage.setItem(MACHINE_ID_KEY, id);
-    }
-    return id;
-  } catch {
-    return "m_unknown";
+// Expected interval between fires for a recurring schedule, or null if the
+// recurrence has no ongoing cadence we can check (once) or can't compute
+// generically (cron). weekdays/weekly use generous windows so a legitimate
+// weekend/week gap never reads as dark.
+function recurringIntervalMs(r: Recurrence): number | null {
+  const D = 24 * 3_600_000;
+  switch (r.kind) {
+    case "every":
+      return Math.max(1, r.minutes) * 60_000;
+    case "daily":
+      return D;
+    case "weekdays":
+      return Math.round(3.4 * D); // covers a Fri→Mon gap
+    case "weekly":
+      return Math.round(7.5 * D);
+    case "once":
+    case "cron":
+      return null;
+    default:
+      return null;
   }
 }
 
-function heartbeatPath(vault: string): string {
-  const v = vault.replace(/\\/g, "/").replace(/\/+$/, "");
-  return `${v}/.vault-chat/firer-heartbeat.json`;
-}
-
-// Throttle the stamp to ~every 2 min (not every 30s tick): the file syncs via
-// git, so a per-tick write would churn the repo. 2 min still leaves 6 stamps of
-// margin under the 12-min stale threshold.
-const lastStamp = new Map<string, number>();
-async function stampFirerHeartbeat(vault: string): Promise<void> {
-  const now = Date.now();
-  if (now - (lastStamp.get(vault) ?? 0) < 110_000) return;
-  try {
-    await invoke("write_text_file", {
-      path: heartbeatPath(vault),
-      contents: JSON.stringify({ machineId: machineId(), at: now }),
-    });
-    lastStamp.set(vault, now); // only on success, so a failed write retries next tick
-  } catch {
-    // best-effort; a missed stamp just risks a (debounced) false "dark" alarm
+// Firing is "dark" if any enabled, recurring schedule is overdue past its own
+// interval + grace, measured against the synced lastFiredAt (or createdAt if it
+// has never fired). Returns the worst overdue age in minutes, or 0 if healthy
+// (or if there's nothing checkable to judge by).
+function firingDarkMinutes(schedules: Schedule[], now: number): number {
+  let worst = 0;
+  for (const s of schedules) {
+    if (!s.enabled) continue;
+    const interval = recurringIntervalMs(s.recurrence);
+    if (interval == null) continue;
+    // Grace scales with cadence but is bounded: snappy for frequent schedules,
+    // tolerant of sync lag for a daily/weekly. 5 min floor, 90 min ceiling.
+    const grace = Math.min(90 * 60_000, Math.max(5 * 60_000, interval * 0.5));
+    const base = s.lastFiredAt ?? s.createdAt ?? now;
+    const age = now - base;
+    if (age > interval + grace) worst = Math.max(worst, Math.round(age / 60_000));
   }
-}
-
-async function readFirerHeartbeat(vault: string): Promise<{ machineId: string; at: number } | null> {
-  try {
-    const text = await invoke<string>("read_text_file", { path: heartbeatPath(vault) });
-    const o = JSON.parse(text);
-    return typeof o?.at === "number" ? o : null;
-  } catch {
-    return null;
-  }
+  return worst;
 }
 
 // When this (non-firing) machine first started watching each vault — so a
@@ -198,23 +206,22 @@ const firerWatchStart = new Map<string, number>();
 let firingDarkAlarmed = false;
 
 async function checkFirerHeartbeat(vault: string): Promise<void> {
-  // The firer never alarms — it IS the heartbeat. (Reset the debounce so it can
-  // warn again if this machine later stops firing and the next firer dies.)
+  // The firer never alarms about itself. (Reset the debounce so it can warn
+  // again if this machine later stops firing and the next firer dies.)
   if (fireSchedulesOnThisMachine()) {
     firingDarkAlarmed = false;
     return;
   }
   const now = Date.now();
   if (!firerWatchStart.has(vault)) firerWatchStart.set(vault, now);
-  const hb = await readFirerHeartbeat(vault);
-  if (hb && now - hb.at < FIRER_STALE_MS) {
+  if (now - (firerWatchStart.get(vault) ?? now) < FIRER_GRACE_MS) return; // give a real firer time
+  const darkMin = firingDarkMinutes(schedulesByVault.get(vault) ?? [], now);
+  if (darkMin === 0) {
     firingDarkAlarmed = false; // a firer is alive elsewhere — all good
     return;
   }
-  if (now - (firerWatchStart.get(vault) ?? now) < FIRER_GRACE_MS) return; // give a real firer time
   if (firingDarkAlarmed) return; // already warned this outage (across all vaults)
   firingDarkAlarmed = true;
-  const darkMin = hb ? Math.round((now - hb.at) / 60_000) : null;
   vlog("firer.dark", { vault: vault.slice(-12), darkMin });
   try {
     const { notify } = await import("./phoneApp");
@@ -296,9 +303,10 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
       schedulesByVault.set(vault, fromDisk);
       emit();
     }
-    // Watch the firer's heartbeat from EVERY machine (before the gate below): if
-    // the machine that's supposed to fire has gone dark and we're not it, alarm —
-    // don't let firing die in silence the way it did for ~4 days.
+    // Watch for dark firing from EVERY machine (before the gate below): if the
+    // machine that's supposed to fire has gone dark and we're not it, alarm —
+    // don't let firing die in silence the way it did for ~4 days. Judged off the
+    // synced schedule lastFiredAt, so a non-firer sees the real firer's activity.
     void checkFirerHeartbeat(vault).catch(() => {});
     // Single-firer gate. We still refresh the in-memory list above (so the
     // SchedulesPanel stays current on every machine), but a machine opted
@@ -307,9 +315,6 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
     // lastFiredAt and pushed it, the firing machine would read it as
     // "already fired" and skip — silently disabling the schedule.
     if (!fireSchedulesOnThisMachine()) return;
-    // We ARE the firer this tick — stamp the heartbeat so other machines can see
-    // firing is alive (and don't alarm).
-    void stampFirerHeartbeat(vault).catch(() => {});
     // Poll any long external jobs (training runs etc.) handed to the run-watcher.
     // Deterministic recheck in code — independent of whether the agent
     // remembered to self-schedule a wake. Same firing-machine gate as schedules.
