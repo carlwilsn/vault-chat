@@ -186,27 +186,34 @@ async function readFirerHeartbeat(vault: string): Promise<{ machineId: string; a
 
 // When this (non-firing) machine first started watching each vault — so a
 // freshly-opened app doesn't alarm before the real firer has had a chance to
-// stamp. And a debounce so we alarm at most once per outage.
+// stamp.
 const firerWatchStart = new Map<string, number>();
-const firerAlarmed = new Set<string>();
+// "Firing is dark" is a MACHINE-global condition, NOT per-vault: one always-on
+// box fires every tracked vault, so when it goes down all vaults detect dark in
+// the same tick and each used to emit its own identical "Scheduled firing is
+// dark" card (the duplicate spam in the Alerts feed). Debounce GLOBALLY so a
+// single outage produces ONE alarm regardless of how many vaults are tracked;
+// re-armed only once a live firer is seen again. (All vaults move dark→live
+// together under the single-box model, so this never thrashes in practice.)
+let firingDarkAlarmed = false;
 
 async function checkFirerHeartbeat(vault: string): Promise<void> {
   // The firer never alarms — it IS the heartbeat. (Reset the debounce so it can
   // warn again if this machine later stops firing and the next firer dies.)
   if (fireSchedulesOnThisMachine()) {
-    firerAlarmed.delete(vault);
+    firingDarkAlarmed = false;
     return;
   }
   const now = Date.now();
   if (!firerWatchStart.has(vault)) firerWatchStart.set(vault, now);
   const hb = await readFirerHeartbeat(vault);
   if (hb && now - hb.at < FIRER_STALE_MS) {
-    firerAlarmed.delete(vault); // a firer is alive elsewhere — all good
+    firingDarkAlarmed = false; // a firer is alive elsewhere — all good
     return;
   }
   if (now - (firerWatchStart.get(vault) ?? now) < FIRER_GRACE_MS) return; // give a real firer time
-  if (firerAlarmed.has(vault)) return; // already warned this outage
-  firerAlarmed.add(vault);
+  if (firingDarkAlarmed) return; // already warned this outage (across all vaults)
+  firingDarkAlarmed = true;
   const darkMin = hb ? Math.round((now - hb.at) / 60_000) : null;
   vlog("firer.dark", { vault: vault.slice(-12), darkMin });
   try {

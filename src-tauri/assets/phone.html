@@ -865,8 +865,15 @@
   function watermarkUnseen(c) { if (!c || convRunning.has(c.id)) return false; const m = seenMap(); return (c.lastActivityAt || 0) > (m[c.id] || 0); }
   function updateConvDot() {
     const dot = $("convdot"); if (!dot) return;
-    const running = convRunning.size > 0;
-    const unseen = !running && convUnseen.size > 0;
+    // The icon is about BACKGROUND threads — the ones you can't see right now.
+    // A conversation you're currently viewing (the open main chat, or a thread
+    // open in the sheet) must NOT light the dot: you can already watch it work.
+    // Its whole purpose is "is one of my OTHER conversations still running /
+    // finished while I wasn't looking" (note 85c11485).
+    const viewing = (id) => id === convId || (!!sheetConvId && id === sheetConvId);
+    let running = false; for (const id of convRunning) { if (!viewing(id)) { running = true; break; } }
+    let anyUnseen = false; for (const id of convUnseen) { if (!viewing(id)) { anyUnseen = true; break; } }
+    const unseen = !running && anyUnseen;
     dot.classList.toggle("on", running || unseen);
     dot.classList.toggle("think", running);
     dot.classList.toggle("solid", unseen);
@@ -1472,7 +1479,7 @@
     typeset($("sheetBody"));
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
   }
-  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; }
+  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; updateConvDot(); /* no longer viewing the sheet thread → a still-running one re-lights the dot */ }
   // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
   // chat composer), Enter sends, Shift+Enter is a newline. The pinned footer +
   // the visualViewport lift keep it above the keyboard.
@@ -1611,7 +1618,12 @@
         lastSig = ""; // force the next paint to re-render with the new bubble
         paint();
         toast("Sent.");
-        await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v }) }).catch(() => {});
+        // Idempotency key, same as the main composer (line ~1142): a flaky network
+        // or the PWA service worker can deliver this POST twice, and the box only
+        // dedupes sends that carry a clientMsgId — without one this reply path was
+        // the unprotected "my message got sent twice" case on supervisor threads.
+        const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
+        await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v, clientMsgId }) }).catch(() => {});
         setTimeout(paint, 900); // pick up the durably-persisted turn quickly
       }),
     });
@@ -1732,6 +1744,7 @@
     // completed one being discussed — so a reply to a finished mission streams
     // and folds in just like a live one.
     sheetConvId = mc.id; sheetRepaint = paint;
+    updateConvDot(); // now viewing this thread → drop it from the background dot
     await paint();
     // Poll while the sheet stays open so the supervisor's turns — its reply to
     // what you sent AND its in-flight self-checks — appear without reopening.
@@ -1765,6 +1778,7 @@
       bodyHtml: '<div class="lbl">Thread · supervisor ↔ worker</div><div class="alsum-load" id="wkLoad">loading…</div>',
     });
     sheetConvId = convId;
+    updateConvDot(); // now viewing this worker thread → drop it from the background dot
     // Seed running from the live run passed in (a non-null run = it's working);
     // confirmed/refreshed below from /status, since /conversation reads idle.
     sheetRunning = !!run && !run.done;
@@ -1989,15 +2003,30 @@
   // Served by GET /notes; editing/resolving still happens on the desktop.
   let notesResolvedOpen = false;
   const noteFirstLine = (s) => String(s || "").split("\n").map((x) => x.trim()).find(Boolean) || "";
+  // A short, scannable header. The AI headline (Note.title) is already short, but
+  // the FALLBACKS — raw draft/turn text shown until the box has titled the note —
+  // are often one long paragraph with no early newline, so noteFirstLine returned
+  // the WHOLE paragraph and it rendered as a giant header (the "summary header is
+  // way too long" complaint, note 8da0e8bc; the lag before the AI title lands is
+  // note 7e432831). Clip the fallback to its first sentence / ~64 chars so even
+  // the pre-title state reads as a header, not a wall of text.
+  function clipHeadline(s) {
+    const t = noteFirstLine(s);
+    if (t.length <= 64) return t;
+    const cut = t.slice(0, 64);
+    const sentEnd = cut.search(/[.!?](\s|$)/);
+    if (sentEnd >= 24) return cut.slice(0, sentEnd + 1);
+    const sp = cut.lastIndexOf(" ");
+    return (sp >= 24 ? cut.slice(0, sp) : cut) + "…";
+  }
   function noteTitle(n) {
     // Prefer the AI headline (Note.title) — a short topic line distinct from the
     // body, so the list is scannable instead of every row repeating its first
-    // line. Falls back to the first line of the content until the box has titled
-    // the note.
+    // line. Falls back to a CLIPPED first line of the content until titled.
     if (n.title) return noteFirstLine(n.title);
-    if (n.formatted) return noteFirstLine(n.formatted);
-    if (n.user_draft) return noteFirstLine(n.user_draft);
-    if (n.turns && n.turns.length) return noteFirstLine(n.turns[0].content);
+    if (n.formatted) return clipHeadline(n.formatted);
+    if (n.user_draft) return clipHeadline(n.user_draft);
+    if (n.turns && n.turns.length) return clipHeadline(n.turns[0].content);
     if (n.anchors && n.anchors.length && n.anchors[0].source_path) return String(n.anchors[0].source_path).split("/").pop();
     return "Note";
   }
@@ -2097,6 +2126,11 @@
         ta.value = ""; autosize();
         toast("Note saved.");
         void loadNotes();
+        // The box generates the AI headline right after the note lands (a quick
+        // model call), so refetch once more a few seconds later to swap the
+        // clipped fallback header for the real short title — without making the
+        // user leave and come back to see it (note 7e432831).
+        setTimeout(() => { if (page === "notes") void loadNotes(); }, 3500);
       } catch (e) { toast("Couldn't save: " + (e.message || e)); }
       finally { btn.disabled = false; }
     };
