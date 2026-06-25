@@ -3185,23 +3185,34 @@ pub(crate) fn run_git(
 // Absolute path to the `gh` CLI, resolved once.
 static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-// GitHub token from `gh auth token`, cached for the app's lifetime.
-// Token lifetime is ~8h for gh OAuth; within a single app session this is fine.
-static GH_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+// GitHub token from `gh auth token`. Only a successful token is cached; a
+// missing/unauthenticated result is NOT stored, so the next call retries. This
+// lets a user who authenticates gh AFTER starting vault-chat start syncing
+// without restarting the app — the prior `OnceLock<Option<String>>` approach
+// permanently cached `None` and stranded the session.
+static GH_TOKEN: OnceLock<String> = OnceLock::new();
 
-/// Call `gh auth token` directly in Rust (no shell, no quoting), cache result.
+/// Call `gh auth token` directly in Rust (no shell, no quoting). Caches the
+/// token on first success; returns `None` without caching on failure so the
+/// next sync tick can retry (e.g. after the user runs `gh auth login`).
 fn get_gh_token() -> Option<String> {
-    GH_TOKEN
-        .get_or_init(|| {
-            let gh = find_gh()?;
-            let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if token.is_empty() { None } else { Some(token) }
-        })
-        .clone()
+    // Fast path: already cached.
+    if let Some(t) = GH_TOKEN.get() {
+        return Some(t.clone());
+    }
+    // Slow path: try to fetch.
+    let gh = find_gh()?;
+    let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if token.is_empty() {
+        return None;
+    }
+    // Race-safe: if another thread set it first, use the winner's value.
+    let _ = GH_TOKEN.set(token.clone());
+    Some(GH_TOKEN.get().unwrap_or(&token).clone())
 }
 
 fn find_gh() -> Option<PathBuf> {
