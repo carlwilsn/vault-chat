@@ -338,6 +338,8 @@
   .vend{display:flex;flex-direction:column;align-items:center;gap:10px;margin-bottom:calc(env(safe-area-inset-bottom) + 36px)}
   .vx{width:66px;height:66px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--text);display:flex;align-items:center;justify-content:center}
   .vx svg{width:24px;height:24px}
+  .vbtns{display:flex;gap:20px;align-items:center}
+  body.vmicmuted #vMuteBtn{background:rgba(229,62,62,.15);border-color:rgba(229,62,62,.55);color:#e53e3e}
   .vhint{font-size:11.5px;color:#6f6f6f}
   .vhint .chev{display:inline-block;width:12px;height:12px;vertical-align:-1px}
 
@@ -548,7 +550,7 @@
   <div id="voice">
     <div class="vtop"><button class="icbtn" id="vMinBtn" aria-label="keep talking while you read"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button></div>
     <div class="vmid"><div class="viz" id="viz"></div><div class="vconn">Connecting…</div><div class="verr" id="verr"></div></div>
-    <div class="vend"><button class="vx" id="vEndBtn" aria-label="end voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button><span class="vhint">tap to end</span></div>
+    <div class="vend"><div class="vbtns"><button class="vx" id="vMuteBtn" aria-label="mute mic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="21" x2="12" y2="17"/><line x1="9" y1="21" x2="15" y2="21"/></svg></button><button class="vx" id="vEndBtn" aria-label="end voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><span class="vhint">tap to end</span></div>
   </div>
 
 <script>
@@ -2334,7 +2336,7 @@
   const NUM_BARS = 12, DECAY = 0.85;
   const vizEl = $("viz"), verrEl = $("verr"); const vBars = [];
   for (let i = 0; i < NUM_BARS; i++) { const b = document.createElement("div"); b.className = "vbar"; vizEl.appendChild(b); vBars.push(b); }
-  let vConv = null, vConnecting = false, vRafId = 0, vLive = false, vAutoRetried = false;
+  let vConv = null, vConnecting = false, vRafId = 0, vLive = false, vAutoRetried = false, vMuted = false;
   const vSmoothed = new Array(NUM_BARS).fill(0);
   let vMicCtx = null, vMicAnalyser = null, vMicBuf = null, vAgentLevel = 0, vAgentActiveUntil = 0;
   const setVErr = (e) => { verrEl.textContent = e || ""; };
@@ -2389,7 +2391,7 @@
       setVErr(String((e && e.message) || e));
     }
   }
-  function vTeardown() { vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting"); vConv = null; vConnecting = false; }
+  function vTeardown() { vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; vConv = null; vConnecting = false; }
   async function vStop() { try { if (vConv) await vConv.endSession(); } catch {} vTeardown(); }
   $("voiceRow").onclick = () => {
     closeMenu();
@@ -2397,6 +2399,8 @@
     try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext)(); if (vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {}); const b = vMicCtx.createBuffer(1, 1, 22050); const s = vMicCtx.createBufferSource(); s.buffer = b; s.connect(vMicCtx.destination); s.start(0); } catch {}
     hideKb(); document.body.classList.add("voice"); document.body.classList.remove("voicemin"); vStart();
   };
+  function vSetMute(m) { vMuted = m; document.body.classList.toggle("vmicmuted", m); if (vConv) try { vConv.setMicMuted(m); } catch {} }
+  $("vMuteBtn").onclick = () => vSetMute(!vMuted);
   $("vEndBtn").onclick = vStop;
   $("vMinBtn").onclick = () => { if (vLive || vConnecting) { document.body.classList.add("voicemin"); document.body.classList.remove("voice"); } else vStop(); };
   $("vpill").onclick = () => { document.body.classList.add("voice"); document.body.classList.remove("voicemin"); };
