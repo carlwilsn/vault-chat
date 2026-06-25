@@ -2408,7 +2408,6 @@
   // ---------- lifecycle ----------
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") { void pollLoop(); void refreshState(); void refreshBadge(); if (page === "activity") void loadActivity(); if (page === "alerts") void loadAlerts(); }
-    else ++pollGen;
   });
   if (window.visualViewport) {
     const vv = window.visualViewport;
