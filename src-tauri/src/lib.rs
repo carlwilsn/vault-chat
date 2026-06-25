@@ -5126,6 +5126,18 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         // Pull succeeded — bring any registered submodules to the commits the
         // vault now points at (clones them on a fresh machine). Best-effort.
         maybe_update_submodules(&vault);
+        // Re-attach any sub-repos that `submodule update` left detached, and
+        // advance them to their configured branch tip. This runs on every
+        // pull cycle (~30s) so self-healing no longer requires a local edit.
+        sync_nested_repos(&vault, false);
+        // Commit any gitlink pointer bumps that sync_nested_repos produced.
+        let (st, _, _) = run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])
+            .unwrap_or_default();
+        if !st.trim().is_empty() {
+            let (hn, he) = human_identity(&vault);
+            let _ = run_git_as(&vault, &hn, &he, &["add", "-A"]);
+            let _ = run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: auto-sync submodule pointers"]);
+        }
         Ok(SyncOpResult {
             ok: true,
             message: pulled_msg.into(),
