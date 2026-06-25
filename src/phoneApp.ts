@@ -685,13 +685,20 @@ export async function sendPush(title: string, body: string, url = "/phone"): Pro
 }
 
 /** Surface a finished SCHEDULED briefing in the notification feed + push.
- * Called from the scheduler paths (chat-controller / offVaultRun) for a
- * scheduled briefing — never a normal chat or a worker/mission reply. The reply
- * is run through the general alert summarizer so the feed shows a clean headline
- * + a few sentences (not raw narration); the full text stays one tap away via
- * "Open thread" (convId). Falls back to the raw reply if no summary can be
- * produced. */
-export async function mirrorPushNotify(text: string, convId?: string): Promise<void> {
+ * Called from the scheduler paths (chat-controller / offVaultRun) for ANY
+ * scheduled run that delivers — coach, supervisor report, any recurring job;
+ * NOT a normal chat or a worker/mission reply. The caller passes the already-
+ * CLEANED deliverable (the turn's closing message, never the raw "let me re-read
+ * the files…" narration), which this runs through the general alert summarizer
+ * for a clean headline + a few sentences. The full text stays one tap away via
+ * "Open thread" (convId).
+ *
+ * `fallbackTitle` is the schedule's own name (the scheduled conversation's
+ * title, e.g. "Daily coach"): when no fast model is available to summarize — the
+ * box with a degraded keyring is the real trigger — this is a far better, clean
+ * headline than a raw truncation of the deliverable's first line (which read as
+ * a wall of text / leaked narration). The deliverable still fills the body. */
+export async function mirrorPushNotify(text: string, convId?: string, fallbackTitle?: string): Promise<void> {
   const raw = text.trim();
   if (!raw) return;
   const apiKeys = useStore.getState().apiKeys;
@@ -710,7 +717,10 @@ export async function mirrorPushNotify(text: string, convId?: string): Promise<v
     const sp = cut.lastIndexOf(" ");
     return (sp > 0 ? cut.slice(0, sp) : cut).trim() + "…";
   };
-  const title = sum?.title || clip(raw.split("\n")[0]?.trim() || "New briefing", 90);
+  // Title precedence: model headline → the schedule's own name → a clipped first
+  // line as a last resort. The schedule name keeps the headline clean and short
+  // even on a box that can't run the summarizer.
+  const title = sum?.title || fallbackTitle?.trim() || clip(raw.split("\n")[0]?.trim() || "New briefing", 90);
   const body = sum?.body || clip(raw, 1800);
   await notify("info", title, body, convId, {
     intention: "Scheduled briefing",

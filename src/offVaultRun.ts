@@ -232,7 +232,9 @@ export async function runScheduledHeadlessTurn(
     // Alerts feed (+ Web Push) — visible and inspectable.
     const safe = deliverText ?? deliver;
     const { mirrorPushNotify } = await import("./phoneApp");
-    await mirrorPushNotify(safe, conversationId).catch((e) =>
+    // The scheduled conversation's title is the schedule's name — a clean
+    // model-free headline fallback (this box may have no fast model to summarize).
+    await mirrorPushNotify(safe, conversationId, finalList[fi]?.title).catch((e) =>
       console.warn("[scheduler] alert notify failed:", e),
     );
   }

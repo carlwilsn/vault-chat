@@ -436,7 +436,9 @@ export async function sendMessage(
               ).catch(() => ({ deliver: "", timeline: null }));
               const safe = (clean || "").trim() || finalSegment.trim() || deliver;
               const { mirrorPushNotify } = await import("./phoneApp");
-              await mirrorPushNotify(safe, tConvId ?? undefined).catch((err) =>
+              // Pass the scheduled conversation's title (the schedule's name) as a
+              // clean model-free headline fallback when no summarizer is available.
+              await mirrorPushNotify(safe, tConvId ?? undefined, targetConv?.title).catch((err) =>
                 console.warn("[scheduler] alert notify failed:", err),
               );
               if (timeline && tConvId) {
