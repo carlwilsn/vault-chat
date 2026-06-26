@@ -3017,22 +3017,39 @@ fn sync_one_repo(
             Err(e) => eprintln!("[sync] shared repo '{}' push error: {}", rel, e),
             _ => {}
         },
-        // Mine → push the tracking branch when it's ahead. Needs an upstream.
+        // Mine → push the tracking branch when it's ahead. Use `push -u origin
+        // <branch>` so the upstream is set on the first push too — the previous
+        // `git push` without args silently skipped repos whose local branch had
+        // no tracking upstream yet (e.g. freshly adopted/forked sub-repos),
+        // causing commits to accumulate locally and never reach the remote.
         (None, RepoClass::Mine) => {
-            let has_upstream = matches!(
-                run_git(sub, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
+            let branch = match run_git(sub, &["symbolic-ref", "--short", "HEAD"]) {
+                Ok((b, _, 0)) if !b.trim().is_empty() => b.trim().to_string(),
+                _ => return,
+            };
+            // Count commits ahead of origin/<branch> directly — not via @{upstream}
+            // — so we push correctly even when the local branch has no tracking
+            // upstream configured yet (e.g. after fork adoption before first push).
+            let remote_ref = format!("origin/{}", branch);
+            let remote_exists = matches!(
+                run_git(sub, &["rev-parse", "--verify", "--quiet", &remote_ref]),
                 Ok((_, _, 0))
             );
-            let ahead = if has_upstream {
-                match run_git(sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
-                    Ok((c, _, 0)) => c.trim().parse::<u64>().unwrap_or(0),
+            let ahead: u64 = if remote_exists {
+                match run_git(sub, &["rev-list", "--count", &format!("{}..HEAD", remote_ref)]) {
+                    Ok((c, _, 0)) => c.trim().parse().unwrap_or(0),
                     _ => 0,
                 }
             } else {
-                0
+                // Branch doesn't exist on the remote yet — push if we have any
+                // commits (first push creates the branch).
+                match run_git(sub, &["rev-list", "--count", "HEAD"]) {
+                    Ok((c, _, 0)) => c.trim().parse().unwrap_or(0),
+                    _ => 0,
+                }
             };
             if ahead > 0 {
-                match run_git_timeout(sub, &["push"], 300) {
+                match run_git_timeout(sub, &["push", "-u", "origin", &branch], 300) {
                     Ok((_, perr, pc)) if pc != 0 => {
                         eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
                     }
@@ -3185,23 +3202,37 @@ pub(crate) fn run_git(
 // Absolute path to the `gh` CLI, resolved once.
 static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-// GitHub token from `gh auth token`, cached for the app's lifetime.
-// Token lifetime is ~8h for gh OAuth; within a single app session this is fine.
-static GH_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+// GitHub token from `gh auth token`, cached with a 6h TTL. Token lifetime is
+// ~8h for gh OAuth; refreshing at 6h keeps an always-on box authenticated
+// through the expiry boundary without requiring a restart.
+static GH_TOKEN: OnceLock<Mutex<Option<(String, Instant)>>> = OnceLock::new();
 
-/// Call `gh auth token` directly in Rust (no shell, no quoting), cache result.
+const GH_TOKEN_TTL_SECS: u64 = 6 * 3600;
+
+/// Call `gh auth token` directly in Rust (no shell, no quoting). Cached with
+/// a 6-hour TTL so an always-on server never uses a stale OAuth token — the
+/// original OnceLock cache never refreshed, causing all GitHub auth to fail
+/// silently after ~8h on a machine running vault-chat continuously.
 fn get_gh_token() -> Option<String> {
-    GH_TOKEN
-        .get_or_init(|| {
+    let cache = GH_TOKEN.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let stale = match &*guard {
+        None => true,
+        Some((_, fetched)) => fetched.elapsed().as_secs() >= GH_TOKEN_TTL_SECS,
+    };
+    if stale {
+        let token: Option<String> = (|| {
             let gh = find_gh()?;
             let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
             if !out.status.success() {
                 return None;
             }
-            let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if token.is_empty() { None } else { Some(token) }
-        })
-        .clone()
+            let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        })();
+        *guard = token.map(|t| (t, Instant::now()));
+    }
+    guard.as_ref().map(|(t, _)| t.clone())
 }
 
 fn find_gh() -> Option<PathBuf> {
@@ -3457,7 +3488,10 @@ fn run_git_timeout(
                         args.join(" ")
                     ));
                 }
-                std::thread::sleep(Duration::from_millis(15));
+                // 50ms poll: git ops are fast and adding ~50ms detection
+                // latency is imperceptible, while 15ms burned 3× the CPU
+                // on the always-on box where dozens of git calls run per minute.
+                std::thread::sleep(Duration::from_millis(50));
             }
             Err(e) => return Err(e.to_string()),
         }
