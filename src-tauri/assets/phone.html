@@ -398,8 +398,11 @@
   .sheet-intent{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#8a8a8a;font-weight:600}
   .sheet-title{font-size:16px;font-weight:600;line-height:1.3;margin-top:2px;overflow-wrap:anywhere}
   .sheet-x{color:var(--dim);font-size:16px;width:32px;height:32px;border-radius:8px;flex:none;display:flex;align-items:center;justify-content:center;align-self:center}
-  .sheet-back{color:var(--dim);width:30px;height:30px;border-radius:8px;flex:none;display:flex;align-items:center;justify-content:center;align-self:center;background:var(--raised)}
-  .sheet-back svg{width:18px;height:18px}
+  /* Just the arrow — no boxed background (note 7a420a05). It's the sheet's
+     primary back affordance, so render it in full text colour, not dim. */
+  .sheet-back{color:var(--text);width:30px;height:34px;margin-left:-5px;flex:none;display:flex;align-items:center;justify-content:center;align-self:center}
+  .sheet-back:active{opacity:.5}
+  .sheet-back svg{width:21px;height:21px}
   .sheet-action{font-size:12px;border:1px solid var(--line);border-radius:8px;padding:5px 11px;color:var(--dim);flex:none;align-self:center;min-height:30px;white-space:nowrap}
   .sheet-action:active{background:var(--raised)}
   .sheet-action.danger{color:var(--err);border-color:#5a302e}
@@ -683,6 +686,7 @@
       if (u === "/kill") { if (body.convId) { DB.runs = DB.runs.filter((r) => r.convId !== body.convId); const m = DB.convs.find((c) => c.id === body.convId); if (m && m.source === "mission") { const key = (m.mission || m.title || "").trim(); DB.convs = DB.convs.filter((c) => c.id !== body.convId && !(c.source === "worker" && (c.mission || "").trim() === key)); } } return reply({ ok: true, result: "Kill sent." }); }
       if (u === "/chats/clear") return reply({ ok: true, cleared: 0 });
       if (u === "/schedule") { if (body.action === "toggle") { const s = DB.schedules.find((x) => x.id === body.id); if (s) s.enabled = body.enabled; } else if (body.action === "delete") { DB.schedules = DB.schedules.filter((x) => x.id !== body.id); } return reply({ ok: true }); }
+      if (u === "/surface") return reply({ ok: true });
       if (u === "/push/vapid") return reply({ key: "" });
       if (u === "/push/subscribe" || u === "/push/test") return reply({ ok: true });
       if (u === "/file") return new Response("(mock file)", { status: 200 });
@@ -692,6 +696,20 @@
 
   const api = (path, opts = {}) => fetch(path, { ...opts, headers: { "X-Vault-Token": TOKEN, ...(opts.headers || {}) } });
   const fileUrl = (p) => "/file?path=" + encodeURIComponent(p) + "&token=" + encodeURIComponent(TOKEN);
+  // Pull a worker thread into the recent/Chats list so you can find it again
+  // ("view history"). ONLY the thread-open entry points call this — opening a
+  // thread from the recent list, and the 3s sheet polls, deliberately do NOT —
+  // so a worker no longer re-pins to the top or re-marks itself unread when it's
+  // reopened from the pane (note ec78cbf8). Fetching a conversation is now
+  // side-effect-free; this is the explicit "surface it" signal.
+  const surfaceThread = (id) => {
+    if (!id) return;
+    api("/surface?id=" + encodeURIComponent(id)).catch(() => {});
+    // The pin bumps lastActivityAt to "now" on the box. YOU opened it, so it
+    // must not then read as unread on this device: re-stamp the seen watermark
+    // just after the bump lands so the pin can't out-run it.
+    setTimeout(() => markSeen(id), 1500);
+  };
 
   // ---------- markdown ----------
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -1466,9 +1484,19 @@
     clearInterval(missionPoll); missionPoll = 0;
     sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false;
     const sh = $("sheet");
-    sh.style.height = ""; sh.style.maxHeight = ""; sh.style.transition = "";
+    sh.style.transition = "";
+    // Cards open FULL-SCREEN by default (note 7a420a05) — not the old ~64% peek.
+    // A sheet→sheet transition (the back ‹, or opening a worker from its mission)
+    // instead PRESERVES the current height, so back never "forces me back up"
+    // after I've dragged the sheet down.
+    sh.style.maxHeight = "none";
+    sh.style.height = (sh.classList.contains("on") ? sh.offsetHeight : Math.round(0.96 * window.innerHeight)) + "px";
     $("sheetIco").textContent = opts.ico || "•";
     $("sheetIco").className = "sheet-ico" + (opts.cls ? " " + opts.cls : "");
+    // A worker thread doesn't need an icon chip — the "Worker · …" intent label
+    // already says what it is, and the ● sitting next to the back ‹ just looked
+    // cluttered (note 7a420a05). Hide it for those views.
+    $("sheetIco").style.display = opts.noIco ? "none" : "";
     $("sheetIntent").textContent = opts.intent || "";
     $("sheetTitle").textContent = opts.title || "";
     $("sheetBody").innerHTML = opts.bodyHtml || "";
@@ -1486,7 +1514,7 @@
     typeset($("sheetBody"));
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
   }
-  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; updateConvDot(); /* no longer viewing the sheet thread → a still-running one re-lights the dot */ }
+  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; markSeen(sheetConvId); /* leaving at close-time stamps it seen, after any open-time pin bump → never falsely unread (note ec78cbf8) */ sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; updateConvDot(); /* no longer viewing the sheet thread → a still-running one re-lights the dot */ }
   // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
   // chat composer), Enter sends, Shift+Enter is a newline. The pinned footer +
   // the visualViewport lift keep it above the keyboard.
@@ -1572,6 +1600,10 @@
   // hop. Read-only (no reply / Stop) for a completed mission opened from history.
   async function openMission(mc, g, opts) {
     opts = opts || {};
+    // Opened from Activity (or the Archive) → surface it into recent so you can
+    // get back to it from the drawer (note c0d532eb). NOT on the back ‹ from a
+    // worker (opts.fromBack), so returning to a mission doesn't re-pin it.
+    if (!opts.fromBack) surfaceThread(mc.id);
     const readonly = !!opts.readonly || !!mc.completedAt;
     // Messages sent this session, shown immediately and kept until the on-disk
     // thread folds them in — so a reply never blanks out while the box persists.
@@ -1742,7 +1774,7 @@
         const w = wkItems[+el.dataset.wk];
         // Pass a "back" that re-opens THIS mission so the worker view gets a ‹ to
         // return to the supervisor/mission level (not just a full close).
-        if (w) el.onclick = () => openWorkerArtifact(w.run, w.c, () => openMission(mc, g, opts));
+        if (w) el.onclick = () => openWorkerArtifact(w.run, w.c, () => openMission(mc, g, { ...opts, fromBack: true }));
       });
       be.scrollTop = (firstPaint || wasBottom || pinBottom) ? be.scrollHeight : prevTop;
       pinBottom = false;
@@ -1782,8 +1814,11 @@
   // turns (with their cleaned timelines) fold in — instead of a frozen snapshot.
   async function openWorkerArtifact(run, c, back) {
     const convId = run.convId;
+    // Opened from a mission thread or the Activity board (never from the recent
+    // pane) → surface it into recent so it's findable later (note ec78cbf8).
+    surfaceThread(convId);
     openSheet({
-      intent: "Worker · " + ((run.mission || c.mission || "mission")) + " · read-only", title: run.title || c.title || "worker", ico: "●", cls: "",
+      intent: "Worker · " + ((run.mission || c.mission || "mission")) + " · read-only", title: run.title || c.title || "worker", noIco: true,
       bodyHtml: '<div class="lbl">Thread · supervisor ↔ worker</div><div class="alsum-load" id="wkLoad">loading…</div>',
       back: back || null,
     });
@@ -2210,7 +2245,7 @@
       // "Open thread" (upper-right, both types) — read the full context before
       // deciding. For a decision, the centered "Reply" CTA below is the prominent
       // path; both land in the asking chat.
-      action: n.convId ? { label: "Open thread", onClick: () => { markRead(n.id); closeSheet(); openThread(n.convId, n.title); } } : null,
+      action: n.convId ? { label: "Open thread", onClick: () => { markRead(n.id); closeSheet(); surfaceThread(n.convId); openThread(n.convId, n.title); } } : null,
       // Show the agent's POLISHED summary (the Notify body) — not the raw thread.
       bodyHtml: '<div class="md">' + md(n.body || "*(no summary)*") + "</div>",
       // A decision (ask) gets ONE centered "Reply" CTA where the text box used to
@@ -2220,7 +2255,7 @@
       footHtml: (isAction && n.convId) ? '<button class="reply-cta">Reply</button>' : "",
       wire: (body, foot) => {
         const btn = foot && foot.querySelector(".reply-cta");
-        if (btn) btn.onclick = () => { markRead(n.id); closeSheet(); openThread(n.convId, n.title); };
+        if (btn) btn.onclick = () => { markRead(n.id); closeSheet(); surfaceThread(n.convId); openThread(n.convId, n.title); };
       },
     });
   }

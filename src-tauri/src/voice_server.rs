@@ -284,16 +284,15 @@ fn handle(mut req: Request, token: &str) {
             };
             let _ = req.respond(body);
         }
-        (Method::Get, "/conversation") => {
+        (Method::Get, "/surface") => {
+            // Explicit "pull this thread into recent/history" signal. Only the
+            // phone's thread-open entry points (a worker opened from a mission or
+            // the Activity board, or an alert's Open-thread) call this — so
+            // fetching a conversation, polling it, or reopening it from the recent
+            // pane no longer re-pins it to the top or re-marks it unread
+            // (note ec78cbf8). Fire-and-forget; the app no-ops if it's already
+            // surfaced or isn't a worker/mission.
             let id = query_param(req.url(), "id").unwrap_or_default();
-            let n = query_param(req.url(), "n")
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(60);
-            // Viewing a thread surfaces it: a mission/worker that's normally
-            // Activity-only joins the recent/Chats list the moment you open it.
-            // Fire-and-forget on its own thread so the surface round-trip never
-            // delays serving the thread (the app no-ops if it's already surfaced
-            // or isn't a worker/mission).
             if !id.is_empty() {
                 let id_for_relay = id.clone();
                 std::thread::spawn(move || {
@@ -304,6 +303,15 @@ fn handle(mut req: Request, token: &str) {
                     );
                 });
             }
+            let _ = req.respond(resp_text(200, "application/json", "{\"ok\":true}".into()));
+        }
+        (Method::Get, "/conversation") => {
+            let id = query_param(req.url(), "id").unwrap_or_default();
+            let n = query_param(req.url(), "n")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(60);
+            // Fetching a conversation is side-effect-free — surfacing is now an
+            // explicit /surface call from the thread-open paths (note ec78cbf8).
             let body = match current_vault() {
                 Some(vault) => match conversation_json(&vault, &id, n) {
                     Some(j) => resp_text(200, "application/json", j),
