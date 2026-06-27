@@ -158,7 +158,15 @@ class TableWidget extends WidgetType {
       tbody.appendChild(tr);
     }
     table.appendChild(tbody);
-    return table;
+    // Wrap so the block's vertical spacing is PADDING on the wrapper, not margin
+    // on the table. CodeMirror measures a block widget by its border-box height,
+    // which excludes margin — a margin here makes the height map under-count the
+    // table, so every click below it lands too low. Padding is inside the border
+    // box, so it's measured and clicks map true. (note 2c611cee)
+    const wrap = document.createElement("div");
+    wrap.className = "cm-table-wrap";
+    wrap.appendChild(table);
+    return wrap;
   }
   ignoreEvent() {
     return false;
@@ -837,10 +845,14 @@ const liveTheme = EditorView.theme({
   },
   // Table styling mirrors `.prose-md table` in App.css so the rendered
   // view and the in-editor widget look identical when toggling modes.
+  // Spacing lives on the wrapper as PADDING (measured by CM), not as margin on
+  // the table (excluded from the block-widget height → clicks below land low).
+  // See TableWidget.toDOM. (note 2c611cee)
+  ".cm-table-wrap": { display: "block", padding: "0.6em 0" },
   ".cm-table": {
     borderCollapse: "collapse",
     display: "table",
-    margin: "0.75em 0",
+    margin: "0",
     fontSize: "13px",
   },
   ".cm-table th, .cm-table td": {
