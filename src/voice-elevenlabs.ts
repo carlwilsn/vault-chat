@@ -85,7 +85,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v19-mission";
+const AGENT_CONFIG_VERSION = "v20-scribe2-turnv3";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 // Signature of the per-vault custom tools baked into the cached agent. Custom
 // tools are part of the agent's tool schema (provisioned at create time), so a
@@ -1942,6 +1942,22 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
           // when it IS re-engaged.
           turn: {
             turn_timeout: 30,
+            // Turn v3 — ElevenLabs' default turn-detection model since the June
+            // 2026 Original-ASR retirement. Better turn accuracy + lower turn
+            // latency than v2, which is exactly the axis voice has fought on (the
+            // "you still there?" check-ins, skip_turn). Pinned so it's legible
+            // what we're on, not left to a shifting platform default.
+            turn_model: "turn_v3",
+          },
+          // Scribe v2.2 Realtime. ElevenLabs retired the "Original ASR" (provider
+          // "elevenlabs", now deprecated) and made scribe_realtime the default —
+          // more accurate across every language they tested, which should also
+          // curb the STT "hears words I didn't say" hallucinations (note
+          // dd77dc56). Pinned explicitly + AGENT_CONFIG_VERSION bumped so the
+          // cached agent re-provisions onto it now rather than waiting on the
+          // server-side migration window. Revisit when a newer Scribe ships.
+          asr: {
+            provider: "scribe_realtime",
           },
           // Required for sendMultimodalMessage / file uploads to reach
           // the agent's LLM. Without `enabled: true` ElevenLabs accepts
