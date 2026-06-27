@@ -527,6 +527,9 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
         setStatus({ lastError: commit.message, running: false });
         return;
       }
+      if (commit.ok && commit.message !== "no local changes") {
+        void forceRefreshFileTree(vault);
+      }
       const push = await vaultPush(vault).catch((e) => ({
         ok: false,
         message: String(e),

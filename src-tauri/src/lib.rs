@@ -3185,23 +3185,44 @@ pub(crate) fn run_git(
 // Absolute path to the `gh` CLI, resolved once.
 static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-// GitHub token from `gh auth token`, cached for the app's lifetime.
-// Token lifetime is ~8h for gh OAuth; within a single app session this is fine.
-static GH_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+// GitHub token from `gh auth token`, cached with a 7-hour TTL.
+// OAuth tokens expire in ~8h; an always-on server would serve stale auth
+// forever with a plain OnceLock, breaking every push/fetch after expiry.
+// We refresh proactively before the window closes and never cache a failure
+// so the next call retries immediately after a transient gh error.
+static GH_TOKEN_CACHE: OnceLock<Mutex<Option<(String, Instant)>>> = OnceLock::new();
 
-/// Call `gh auth token` directly in Rust (no shell, no quoting), cache result.
+fn gh_token_cache() -> &'static Mutex<Option<(String, Instant)>> {
+    GH_TOKEN_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// Call `gh auth token` directly in Rust (no shell, no quoting).
+/// Returns a cached value if it was fetched within the last 7 hours;
+/// otherwise refetches. Failures are not cached so the next call retries.
 fn get_gh_token() -> Option<String> {
-    GH_TOKEN
-        .get_or_init(|| {
-            let gh = find_gh()?;
-            let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if token.is_empty() { None } else { Some(token) }
-        })
-        .clone()
+    const TTL: Duration = Duration::from_secs(7 * 3600);
+    let mut guard = gh_token_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    // Return the cached token if it's still fresh.
+    if let Some((ref token, fetched_at)) = *guard {
+        if fetched_at.elapsed() < TTL {
+            return Some(token.clone());
+        }
+    }
+    // Cache miss or expired — fetch a fresh token.
+    let token = (|| {
+        let gh = find_gh()?;
+        let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if t.is_empty() { None } else { Some(t) }
+    })();
+    // Store successes; don't cache failures so transient errors self-heal.
+    *guard = token.as_ref().map(|t| (t.clone(), Instant::now()));
+    token
 }
 
 fn find_gh() -> Option<PathBuf> {
