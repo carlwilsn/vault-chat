@@ -3635,7 +3635,31 @@ fn untrack_ignored_files(vault: &str) -> u32 {
 fn prepare_vault_repo(vault: &str) {
     ensure_vault_gitattributes(vault);
     ensure_vault_gitignore(vault);
+    ensure_no_submodule_recurse(vault);
     untrack_ignored_files(vault);
+}
+
+/// Disable submodule fetch/checkout recursion on a managed vault. A follower's
+/// `git fetch`/`pull` otherwise defaults to on-demand submodule recursion: when
+/// an incoming superproject commit references a sub-repo commit that was never
+/// pushed to that sub-repo's remote (a "lost" gitlink), the recurse-fetch asks
+/// the remote for a commit it doesn't have (`upload-pack: not our ref`) and a
+/// strict follower ABORTS the whole pull — so it never receives the superproject
+/// commits (conversations, notes, schedules) that ride alongside. All synced data
+/// lives in the superproject; real submodules are updated deliberately and
+/// tolerantly by `sync_nested_repos`, so on-demand recursion buys us nothing here.
+/// Idempotent + cheap: reads the current value and only writes when not already
+/// `false`.
+fn ensure_no_submodule_recurse(vault: &str) {
+    for key in ["fetch.recurseSubmodules", "submodule.recurse"] {
+        let already_false = matches!(
+            run_git(vault, &["config", "--get", key]),
+            Ok((ref v, _, 0)) if v.trim() == "false"
+        );
+        if !already_false {
+            let _ = run_git_mut(vault, &["config", key, "false"]);
+        }
+    }
 }
 
 /// Read recent commits from a git repo at a vault-relative subdirectory
@@ -4777,6 +4801,25 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
                 error: true,
             });
         }
+        // Don't publish a superproject gitlink that points at a sub-repo commit
+        // the sub-repo hasn't pushed yet — that's exactly what strands followers
+        // on a lost ref. Hold any such pointer at its last-pushed value; the
+        // sub-repo keeps its local commit and the pointer advances on a later
+        // cycle once its own push lands.
+        let held = hold_unpushed_submodule_gitlinks(&vault);
+        if held > 0
+            && matches!(
+                run_git(&vault, &["diff", "--cached", "--quiet"]),
+                Ok((_, _, 0))
+            )
+        {
+            // Holding those pointers left nothing staged this cycle.
+            return Ok(SyncOpResult {
+                ok: true,
+                message: "no changes (held unpushed submodule pointers)".into(),
+                error: false,
+            });
+        }
         let (_, stderr, code) =
             run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: auto-sync"])?;
         if code != 0 {
@@ -4880,6 +4923,108 @@ fn fix_regressed_gitlinks(vault: &str) -> Vec<String> {
         }
     }
     fixed
+}
+
+/// Before the superproject commits its gitlink bumps, hold back any submodule
+/// pointer whose newly-staged commit has NOT yet reached the sub-repo's remote.
+/// Publishing a superproject gitlink that points at an un-pushed sub-commit is
+/// what strands followers: their recurse-fetch asks the sub-repo's remote for a
+/// commit it never received (`upload-pack: not our ref`) and a strict follower
+/// aborts the entire pull. We keep the parent pointer at its last-committed
+/// (already-pushed) value; the sub-repo keeps its local commit and the pointer
+/// advances on a later cycle once its own push lands. Conservative: only rewrites
+/// the staged INDEX gitlink, never the sub-repo's working tree.
+///
+/// "On the remote" is tested against the sub-repo's `origin/<branch>` ref
+/// (branch from `.gitmodules`), NOT `@{upstream}` — submodules are normally
+/// checked out DETACHED and so have no upstream, which would skip the very repos
+/// this guards. A submodule with no tracking branch or no `origin/<branch>` ref
+/// is left alone (we can't prove a remote either way). Returns how many pointers
+/// were held.
+fn hold_unpushed_submodule_gitlinks(vault: &str) -> usize {
+    let (out, _, c) = match run_git(
+        vault,
+        &["config", "-f", ".gitmodules", "--get-regexp", "submodule\\..*\\.path"],
+    ) {
+        Ok(r) => r,
+        Err(_) => return 0,
+    };
+    if c != 0 {
+        return 0;
+    }
+    let mut held = 0usize;
+    for line in out.lines() {
+        let mut it = line.splitn(2, char::is_whitespace);
+        let key = it.next().unwrap_or("");
+        let rel = it.next().unwrap_or("").trim();
+        if rel.is_empty() {
+            continue;
+        }
+        // submodule.<name>.path → the configured tracking branch, which is how we
+        // resolve the sub-repo's remote tip (same source as fix_regressed_gitlinks).
+        let name = match key.strip_prefix("submodule.").and_then(|s| s.strip_suffix(".path")) {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        let branch = match run_git(
+            vault,
+            &["config", "-f", ".gitmodules", "--get", &format!("submodule.{}.branch", name)],
+        ) {
+            Ok((b, _, 0)) if !b.trim().is_empty() => b.trim().to_string(),
+            _ => continue, // no tracking branch → can't resolve a remote ref
+        };
+        let sub = format!("{}/{}", vault, rel);
+        if !PathBuf::from(&sub).join(".git").exists() {
+            continue; // not materialized on this machine
+        }
+        // What `add -A` just staged for this gitlink (the sub's working HEAD).
+        let staged = match run_git(vault, &["rev-parse", &format!(":{}", rel)]) {
+            Ok((s, _, 0)) if !s.trim().is_empty() => s.trim().to_string(),
+            _ => continue,
+        };
+        // The pointer already in the superproject HEAD (last known-good = pushed).
+        let committed = match run_git(vault, &["rev-parse", &format!("HEAD:{}", rel)]) {
+            Ok((s, _, 0)) if !s.trim().is_empty() => s.trim().to_string(),
+            _ => continue,
+        };
+        if staged == committed {
+            continue; // pointer didn't move this cycle
+        }
+        // Is the staged sub-commit on the sub-repo's remote yet? Containment in
+        // `origin/<branch>` — the remote-tracking ref, advanced only by a
+        // successful fetch/push — is the honest "did this reach the remote" test.
+        // Missing ref (never fetched) → can't prove it, leave the bump alone.
+        let remote_ref = format!("origin/{}", branch);
+        let have_ref = matches!(
+            run_git(&sub, &["rev-parse", "--verify", "--quiet", &remote_ref]),
+            Ok((_, _, 0))
+        );
+        if !have_ref {
+            continue;
+        }
+        let pushed = matches!(
+            run_git(&sub, &["merge-base", "--is-ancestor", &staged, &remote_ref]),
+            Ok((_, _, 0))
+        );
+        if pushed {
+            continue;
+        }
+        // Hold the parent pointer at the last-pushed commit.
+        if matches!(
+            run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &committed, rel]),
+            Ok((_, _, 0))
+        ) {
+            held += 1;
+            eprintln!(
+                "[sync] holding gitlink for '{}' at pushed {} (working {} not yet on {})",
+                rel,
+                &committed[..8.min(committed.len())],
+                &staged[..8.min(staged.len())],
+                remote_ref
+            );
+        }
+    }
+    held
 }
 
 /// Pick which commit a conflicted submodule gitlink should land on when two
