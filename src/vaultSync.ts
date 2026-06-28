@@ -475,6 +475,10 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
         });
         // Surface any files the pull brought in from another machine.
         void refreshFileTreeIfChanged(vault);
+        // Same for conversations: a chat updated on another machine (e.g. a
+        // reply written on the phone) should appear here without an app
+        // restart. Non-destructive — never clobbers a locally-running chat.
+        void useStore.getState().refreshConversationsFromDisk(vault);
       } else if (result.error) {
         setStatus({ lastError: result.message, running: false });
       } else {

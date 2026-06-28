@@ -710,6 +710,7 @@ type State = {
   clearMessages: () => void;
   loadConversations: () => Promise<void>;
   refreshConversationFromDisk: (vault: string, convId: string) => Promise<void>;
+  refreshConversationsFromDisk: (vault: string) => Promise<void>;
   newConversation: () => string;
   selectConversation: (id: string) => void;
   // Resolves once the durable on-disk tombstone write has settled. The
@@ -1734,6 +1735,68 @@ export const useStore = create<State>((set) => ({
       console.warn("[conversations] refresh-from-disk failed:", e);
     }
   },
+  refreshConversationsFromDisk: async (vault) => {
+    // After a sync pull brings conversation changes in from another machine
+    // (e.g. a reply you wrote on your phone), merge the on-disk state into the
+    // in-memory list so it appears WITHOUT an app restart — the list-level
+    // sibling of refreshConversationFromDisk. Non-destructive: a conversation
+    // running locally keeps its live in-memory copy (clobbering it is the
+    // multi-machine chat-flapping failure mode), brand-new local conversations
+    // not yet on disk are never dropped by omission, and the open thread's
+    // messages refresh only when nothing is mid-run.
+    if (useStore.getState().vaultPath !== vault) return;
+    if (!useStore.getState().conversationsLoaded) return; // initial load owns the first read
+    try {
+      const list = await readConversations(vault);
+      if (list.length === 0) return;
+      // Cheap change-detection so an unchanged pull doesn't rebuild the list.
+      const sig =
+        vault +
+        "|" +
+        list
+          .map((c) => `${c.id}:${c.lastActivityAt}:${c.messages.length}:${c.unread ? 1 : 0}`)
+          .sort()
+          .join("\n");
+      if (sig === lastConvRefreshSig) return;
+      lastConvRefreshSig = sig;
+      set((s) => {
+        const byId = new Map(list.map((c) => [c.id, c]));
+        const seen = new Set<string>();
+        const merged: Conversation[] = [];
+        for (const cur of s.conversations) {
+          seen.add(cur.id);
+          const disk = byId.get(cur.id);
+          // Keep the in-memory copy when there's no disk version yet (a brand-new
+          // local conversation not committed) or it's running locally (its live
+          // messages/stream are newer than disk). Otherwise take disk.
+          if (!disk || cur.status === "running") {
+            merged.push(cur);
+          } else {
+            merged.push(disk);
+          }
+        }
+        // Conversations that exist on disk but not in memory were created on
+        // another machine / the phone — surface them.
+        for (const d of list) {
+          if (!seen.has(d.id)) merged.push(d);
+        }
+        merged.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+        // Refresh the visible message pane only when the open thread isn't
+        // mid-run, so a phone reply to the thread you're reading shows up live
+        // without interrupting a local stream.
+        const activeId = s.activeConversationId;
+        const activeDisk = activeId ? byId.get(activeId) : undefined;
+        const activeRunning =
+          s.conversations.find((c) => c.id === activeId)?.status === "running";
+        if (activeDisk && !s.busy && !activeRunning) {
+          return { conversations: merged, messages: activeDisk.messages };
+        }
+        return { conversations: merged };
+      });
+    } catch (e) {
+      console.warn("[conversations] list refresh-from-disk failed:", e);
+    }
+  },
   newConversation: () => {
     const fresh = emptyConversation();
     set((s) => {
@@ -2029,6 +2092,10 @@ function scheduleConversationsPersist(vault: string) {
 let conversationsLastMessagesRef: ChatMessage[] | null = null;
 let conversationsLastBusy = false;
 let conversationsLastListRef: Conversation[] | null = null;
+// Signature of the conversation set last merged in from disk by a sync pull, so
+// an unchanged pull doesn't rebuild the list (mirrors vaultSync's file-tree
+// signature). Vault-prefixed so a vault switch never wrongly skips.
+let lastConvRefreshSig = "";
 useStore.subscribe((state) => {
   if (!state.conversationsLoaded) return;
   const activeId = state.activeConversationId;
