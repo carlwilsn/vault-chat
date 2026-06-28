@@ -1739,63 +1739,95 @@ export const useStore = create<State>((set) => ({
     // After a sync pull brings conversation changes in from another machine
     // (e.g. a reply you wrote on your phone), merge the on-disk state into the
     // in-memory list so it appears WITHOUT an app restart — the list-level
-    // sibling of refreshConversationFromDisk. Non-destructive: a conversation
-    // running locally keeps its live in-memory copy (clobbering it is the
-    // multi-machine chat-flapping failure mode), brand-new local conversations
-    // not yet on disk are never dropped by omission, and the open thread's
-    // messages refresh only when nothing is mid-run.
+    // sibling of refreshConversationFromDisk.
+    //
+    // SELF-CORRECTING by design: the update decision is recomputed from the
+    // CURRENT store + disk on every pull, never gated by a one-shot signature.
+    // An earlier signature-dedup version stranded the open thread — if the pull
+    // that carried the change happened to land while the thread was momentarily
+    // busy, the message pane was skipped AND the dedup then blocked every later
+    // pull from retrying, so it took an app restart. Now a skipped pane simply
+    // refreshes on the next pull once it's safe.
+    //
+    // Non-destructive: a conversation running locally keeps its live in-memory
+    // copy; disk only wins when it's genuinely newer (more messages, or changed
+    // metadata at equal length), so a not-yet-flushed local edit is never
+    // clobbered (mirrors the persist merge); brand-new local conversations are
+    // never dropped by omission; the open thread's messages refresh only when
+    // nothing is mid-run.
     if (useStore.getState().vaultPath !== vault) return;
     if (!useStore.getState().conversationsLoaded) return; // initial load owns the first read
+    let list: Conversation[];
     try {
-      const list = await readConversations(vault);
-      if (list.length === 0) return;
-      // Cheap change-detection so an unchanged pull doesn't rebuild the list.
-      const sig =
-        vault +
-        "|" +
-        list
-          .map((c) => `${c.id}:${c.lastActivityAt}:${c.messages.length}:${c.unread ? 1 : 0}`)
-          .sort()
-          .join("\n");
-      if (sig === lastConvRefreshSig) return;
-      lastConvRefreshSig = sig;
-      set((s) => {
-        const byId = new Map(list.map((c) => [c.id, c]));
-        const seen = new Set<string>();
-        const merged: Conversation[] = [];
-        for (const cur of s.conversations) {
-          seen.add(cur.id);
-          const disk = byId.get(cur.id);
-          // Keep the in-memory copy when there's no disk version yet (a brand-new
-          // local conversation not committed) or it's running locally (its live
-          // messages/stream are newer than disk). Otherwise take disk.
-          if (!disk || cur.status === "running") {
-            merged.push(cur);
-          } else {
-            merged.push(disk);
-          }
-        }
-        // Conversations that exist on disk but not in memory were created on
-        // another machine / the phone — surface them.
-        for (const d of list) {
-          if (!seen.has(d.id)) merged.push(d);
-        }
-        merged.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-        // Refresh the visible message pane only when the open thread isn't
-        // mid-run, so a phone reply to the thread you're reading shows up live
-        // without interrupting a local stream.
-        const activeId = s.activeConversationId;
-        const activeDisk = activeId ? byId.get(activeId) : undefined;
-        const activeRunning =
-          s.conversations.find((c) => c.id === activeId)?.status === "running";
-        if (activeDisk && !s.busy && !activeRunning) {
-          return { conversations: merged, messages: activeDisk.messages };
-        }
-        return { conversations: merged };
-      });
+      list = await readConversations(vault);
     } catch (e) {
       console.warn("[conversations] list refresh-from-disk failed:", e);
+      return;
     }
+    if (list.length === 0) return;
+    if (useStore.getState().vaultPath !== vault) return; // vault switched during the read
+    set((s) => {
+      const byId = new Map(list.map((c) => [c.id, c]));
+      const seen = new Set<string>();
+      const merged: Conversation[] = [];
+      let listChanged = false;
+      for (const cur of s.conversations) {
+        seen.add(cur.id);
+        const disk = byId.get(cur.id);
+        // Keep the in-memory copy when there's no disk version yet (a brand-new
+        // local conversation not committed) or it's running locally (its live
+        // stream is newer than disk).
+        if (!disk || cur.status === "running") {
+          merged.push(cur);
+          continue;
+        }
+        // Disk wins only when it's genuinely newer — more messages (an append
+        // from another machine) or changed metadata at equal length. A disk copy
+        // that's BEHIND memory (a local edit not yet flushed) is ignored.
+        const diskNewer =
+          disk.messages.length > cur.messages.length ||
+          (disk.messages.length === cur.messages.length &&
+            (disk.lastActivityAt !== cur.lastActivityAt ||
+              disk.title !== cur.title ||
+              disk.unread !== cur.unread));
+        if (diskNewer) {
+          merged.push(disk);
+          listChanged = true;
+        } else {
+          merged.push(cur);
+        }
+      }
+      // Conversations on disk but not in memory were created on another machine.
+      for (const d of list) {
+        if (!seen.has(d.id)) {
+          merged.push(d);
+          listChanged = true;
+        }
+      }
+      // Refresh the visible message pane only when the open thread isn't mid-run
+      // and disk genuinely has MORE messages (a remote append) — so a phone reply
+      // to the thread you're reading appears live without interrupting a local
+      // stream or clobbering a local message not yet flushed to disk.
+      const activeId = s.activeConversationId;
+      const activeDisk = activeId ? byId.get(activeId) : undefined;
+      const activeRunning =
+        s.conversations.find((c) => c.id === activeId)?.status === "running";
+      const messagesStale =
+        !!activeDisk &&
+        !s.busy &&
+        !activeRunning &&
+        activeDisk.messages.length > s.messages.length;
+
+      if (!listChanged && !messagesStale) return {}; // nothing to apply → no re-render
+
+      const patch: Partial<State> = {};
+      if (listChanged) {
+        merged.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+        patch.conversations = merged;
+      }
+      if (messagesStale) patch.messages = activeDisk!.messages;
+      return patch;
+    });
   },
   newConversation: () => {
     const fresh = emptyConversation();
@@ -2092,10 +2124,6 @@ function scheduleConversationsPersist(vault: string) {
 let conversationsLastMessagesRef: ChatMessage[] | null = null;
 let conversationsLastBusy = false;
 let conversationsLastListRef: Conversation[] | null = null;
-// Signature of the conversation set last merged in from disk by a sync pull, so
-// an unchanged pull doesn't rebuild the list (mirrors vaultSync's file-tree
-// signature). Vault-prefixed so a vault switch never wrongly skips.
-let lastConvRefreshSig = "";
 useStore.subscribe((state) => {
   if (!state.conversationsLoaded) return;
   const activeId = state.activeConversationId;
