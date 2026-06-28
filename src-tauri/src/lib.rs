@@ -4526,7 +4526,12 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
                 0
             }
         };
-        let nested_repos = find_nested_repos(&root);
+        // Use find_all_nested_repos (same walker that sync_nested_repos uses)
+        // so the status reflects every nested repo being synced, not just
+        // top-level ones. find_nested_repos walked only one level deep and
+        // returned bare names ("torchtitan"), missing repos like "cs231n/proj"
+        // that the sync loop actually handles.
+        let nested_repos = find_all_nested_repos(&root);
         Ok(SyncStatus {
             has_repo,
             remote,

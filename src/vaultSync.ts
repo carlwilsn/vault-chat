@@ -473,8 +473,10 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
           lastError: null,
           running: false,
         });
-        // Surface any files the pull brought in from another machine.
-        void refreshFileTreeIfChanged(vault);
+        // Force a tree refresh after every successful pull: sync_nested_repos
+        // may have committed sub-repos and cleared their git_dirty_count, which
+        // refreshFileTreeIfChanged would miss (it only checks path/is_dir/hidden).
+        void forceRefreshFileTree(vault);
       } else if (result.error) {
         setStatus({ lastError: result.message, running: false });
       } else {
@@ -526,6 +528,12 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       if (!commit.ok && commit.error) {
         setStatus({ lastError: commit.message, running: false });
         return;
+      }
+      if (commit.ok && commit.message !== "no local changes") {
+        // Something committed — clear now-stale dirty dots in the file tree.
+        // forceRefreshFileTree is needed here (not refreshFileTreeIfChanged)
+        // because git_dirty_count changes don't affect the file-path signature.
+        await forceRefreshFileTree(vault);
       }
       const push = await vaultPush(vault).catch((e) => ({
         ok: false,
