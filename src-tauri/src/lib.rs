@@ -4985,7 +4985,35 @@ fn hold_unpushed_submodule_gitlinks(vault: &str) -> usize {
         // The pointer already in the superproject HEAD (last known-good = pushed).
         let committed = match run_git(vault, &["rev-parse", &format!("HEAD:{}", rel)]) {
             Ok((s, _, 0)) if !s.trim().is_empty() => s.trim().to_string(),
-            _ => continue,
+            _ => {
+                // New submodule — no committed version in HEAD yet. If the
+                // staged commit hasn't reached the sub-repo's remote, remove
+                // the gitlink from staging so we don't publish a lost-ref on
+                // the first addition. The pointer is picked up once the
+                // sub-repo's own push lands and the next commit cycle runs.
+                let remote_ref = format!("origin/{}", branch);
+                let have_ref = matches!(
+                    run_git(&sub, &["rev-parse", "--verify", "--quiet", &remote_ref]),
+                    Ok((_, _, 0))
+                );
+                if have_ref {
+                    let pushed = matches!(
+                        run_git(&sub, &["merge-base", "--is-ancestor", &staged, &remote_ref]),
+                        Ok((_, _, 0))
+                    );
+                    if !pushed {
+                        let _ = run_git_mut(vault, &["update-index", "--remove", rel]);
+                        held += 1;
+                        eprintln!(
+                            "[sync] deferring new gitlink for '{}' — staged {} not yet on {}",
+                            rel,
+                            &staged[..8.min(staged.len())],
+                            remote_ref
+                        );
+                    }
+                }
+                continue;
+            }
         };
         if staged == committed {
             continue; // pointer didn't move this cycle
@@ -5226,6 +5254,12 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         // start a new one — otherwise `rebase` errors with "rebase in
         // progress" and the vault stays wedged.
         abort_stuck_merge_or_rebase(&vault);
+        // Apply housekeeping (gitattributes, gitignore, submodule recursion
+        // disabled) before the fetch so the pull itself is safe from the
+        // lost-ref abort — the commit path calls this too, but a fresh
+        // machine may pull before any commit has run. Idempotent no-op once
+        // already in good shape.
+        prepare_vault_repo(&vault);
         // Detect the local branch — most repos default to main, but a
         // pre-existing vault may be on master or something else.
         let (branch_out, _, branch_code) =
