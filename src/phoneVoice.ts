@@ -8,7 +8,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { buildPhoneVoiceContext, buildClientToolHandlers, ensureVoiceConversation } from "./voice-elevenlabs";
+import { buildPhoneVoiceContext, buildClientToolHandlers, ensureVoiceConversation, resetAgentCreateBreaker } from "./voice-elevenlabs";
 import { useStore } from "./store";
 import { vlog } from "./debugLog";
 
@@ -51,13 +51,22 @@ async function wireToolRelay(): Promise<void> {
       // Open/seed a labeled voice conversation at session start so the spoken
       // turns (relayed via voice:transcript below) and any mission the agent
       // proposes land in one findable thread, surfaced in the conversation list.
-      phoneVoiceConvId = ensureVoiceConversation({ stealFocus: false, convId });
+      // Provision FIRST. Minting the voice thread before provisioning succeeds
+      // left an empty husk on every failed /session (the zero-message voice
+      // husks). A genuine phone /session is user intent, so clear a tripped
+      // breaker for one fresh attempt; only seed the thread once we have a live
+      // agent (a real spoken turn still lazily mints a thread below).
+      resetAgentCreateBreaker();
       const ctx = await buildPhoneVoiceContext();
-      if (ctx) result = JSON.stringify(ctx);
-      // Log the failure modes — this build used to swallow errors silently, which
-      // is why flaky voice starts had "no clear pattern". Now we can see which
-      // path failed and how long it took.
-      else vlog("voice.ctx.empty", { reqId, ms: Date.now() - t0, note: "no key/vault or agent provision failed" });
+      if (ctx) {
+        phoneVoiceConvId = ensureVoiceConversation({ stealFocus: false, convId });
+        result = JSON.stringify(ctx);
+      } else {
+        // Log the failure modes — this build used to swallow errors silently,
+        // which is why flaky voice starts had "no clear pattern". Now we can see
+        // which path failed and how long it took.
+        vlog("voice.ctx.empty", { reqId, ms: Date.now() - t0, note: "no key/vault or agent provision failed" });
+      }
     } catch (e) {
       vlog("voice.ctx.error", { reqId, ms: Date.now() - t0, error: String(e) });
     }

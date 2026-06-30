@@ -782,6 +782,9 @@ export async function startElevenLabsSession(): Promise<void> {
     return;
   }
 
+  // A desktop mic-tap is user intent — always clear a tripped breaker so the
+  // user can retry after fixing the config, even if the box heartbeat left it open.
+  resetAgentCreateBreaker();
   const agentId = await ensureAgent(apiKey);
   if (!agentId) {
     useStore.getState().setVoiceConnecting(false);
@@ -1819,6 +1822,25 @@ export function getLastAgentCreateError(): { status: number; body: string } | nu
   return lastAgentCreateError;
 }
 
+// Circuit breaker for non-transient agent-create failures. A 422 (bad payload —
+// e.g. a voice/LLM/tool-schema the platform rejects) will fail identically
+// forever; the phone host's 20s heartbeat would otherwise re-POST it ~3/min
+// indefinitely (the observed 965 calls / 5h with no user signal). After
+// AGENT_CREATE_MAX_4XX consecutive non-transient 4xx failures we trip the
+// breaker: ensureAgent returns null without hitting the network until a
+// user-initiated path calls resetAgentCreateBreaker(). 408/429 are transient
+// (timeout / rate-limit) and DON'T count — they may clear on their own.
+const AGENT_CREATE_MAX_4XX = 3;
+let agentCreate4xxStreak = 0;
+let agentCreateBreakerTripped = false;
+export function resetAgentCreateBreaker(): void {
+  agentCreate4xxStreak = 0;
+  agentCreateBreakerTripped = false;
+}
+function isTransientStatus(status: number): boolean {
+  return status === 408 || status === 429;
+}
+
 async function ensureAgent(apiKey: string): Promise<string | null> {
   // Refresh the custom-tool snapshot first — this also warms the cache that
   // buildClientToolHandlers / buildSystemPrompt read synchronously, and the
@@ -1840,6 +1862,10 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
       provisionedVersion !== AGENT_CONFIG_VERSION ||
       provisionedTools !== toolsSig);
   if (cached && !stale) return cached;
+  // Breaker is open: a recent payload kept failing non-transiently. Don't
+  // re-POST the same body. lastAgentCreateError is preserved so a user-facing
+  // path can describe it.
+  if (agentCreateBreakerTripped) return null;
   if (stale) {
     localStorage.removeItem(AGENT_ID_STORAGE);
   }
@@ -1992,6 +2018,20 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
       const body = await res.text().catch(() => "");
       console.error("[voice-eleven] agent create failed:", res.status, body);
       lastAgentCreateError = { status: res.status, body };
+      // Count only non-transient 4xx (bad payload). 408/429 are transient and
+      // left alone so a flaky window self-heals; 5xx is a server problem we let
+      // the heartbeat keep probing — it's not a permanently-bad request.
+      if (res.status >= 400 && res.status < 500 && !isTransientStatus(res.status)) {
+        agentCreate4xxStreak += 1;
+        if (agentCreate4xxStreak >= AGENT_CREATE_MAX_4XX) {
+          agentCreateBreakerTripped = true;
+          console.warn(
+            "[voice-eleven] agent-create breaker tripped after",
+            agentCreate4xxStreak,
+            "non-transient 4xx",
+          );
+        }
+      }
       return null;
     }
     const json = (await res.json()) as { agent_id?: string };
@@ -2001,6 +2041,8 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
       return null;
     }
     lastAgentCreateError = null;
+    agentCreate4xxStreak = 0;
+    agentCreateBreakerTripped = false;
     localStorage.setItem(AGENT_ID_STORAGE, json.agent_id);
     localStorage.setItem(AGENT_LLM_AT_PROVISION, wantedLlm);
     localStorage.setItem(AGENT_VERSION_STORAGE, AGENT_CONFIG_VERSION);
