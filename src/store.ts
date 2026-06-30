@@ -766,9 +766,9 @@ export const useStore = create<State>((set) => ({
   catalog: loadCatalogFromLocalStorage() ?? [],
   catalogRefreshing: false,
   catalogErrors: {},
-  // New installs default to the app's default model (Sonnet 4.6 — the latest
-  // Sonnet; there is no "Sonnet 5"). Anyone who has already picked a model in the
-  // dropdown keeps it — switch via the model picker to apply on an existing client.
+  // New installs default to the app's default model (Claude Sonnet 5). Anyone who
+  // has already picked a model in the dropdown keeps it — switch via the model
+  // picker to apply Sonnet 5 on an existing client.
   modelId: localStorage.getItem(MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
   // The phone assistant (cockpit) is the hardest agentic surface — it has to
   // hold a multi-step orchestration prompt, drive tools, and emit structured
