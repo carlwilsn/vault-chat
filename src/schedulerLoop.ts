@@ -373,8 +373,23 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
       // Cross-loop claim on this exact slot (see firedSlots above). If another
       // loop for this same vault already took it this slot, don't fire it again.
       const slotKey = `${canonicalVault(vault)}|${s.id}|${fireAt}`;
-      if (firedSlots.has(slotKey)) continue;
+      // Day-level claim for once-a-day-or-rarer recurrences: a same-machine
+      // double-fire (two loops, path-variant vault keys, or a slot-time drift
+      // of a few minutes) computes a DIFFERENT slotKey but the SAME calendar
+      // day — that's how the 7am coach shipped two contradictory briefings 20ms
+      // apart. Interval ("every") schedules are meant to fire many times a day,
+      // so they keep only the exact-slot guard.
+      const oncePerDay =
+        s.recurrence.kind === "daily" ||
+        s.recurrence.kind === "weekdays" ||
+        s.recurrence.kind === "weekly" ||
+        s.recurrence.kind === "cron";
+      const dayKey = oncePerDay
+        ? `${canonicalVault(vault)}|${s.id}|day:${new Date(fireAt).toLocaleDateString("en-CA")}`
+        : null;
+      if (firedSlots.has(slotKey) || (dayKey && firedSlots.has(dayKey))) continue;
       firedSlots.add(slotKey);
+      if (dayKey) firedSlots.add(dayKey);
       if (firedSlots.size > 2000) firedSlots.clear(); // bound; daily slots are tiny
       // Optimistic mark so a slow agent run doesn't double-fire. A one-off
       // that's firing right now is spent — it self-destructs in the same

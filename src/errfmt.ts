@@ -51,3 +51,16 @@ export function errToString(e: unknown, depth = 0): string {
 function usable(s: string): boolean {
   return !!s && s !== "[object Object]" && s !== "unknown error";
 }
+
+// A crash BUBBLE is the assistant content left behind when a turn errored: the
+// raw "[object Object]" of a stringified error object, or any text prefixed with
+// the ⚠️ warning glyph (the crash lines written in offVaultRun's onEvent error
+// handler + catch). Such content is NOT a verified deliverable, so the
+// worker-done gate must treat it as a failure even when the persisted `failed`
+// flag is missing (historical rows, or an error that arrived as a text event
+// rather than an `error` event). Mirrors the inline predicate in context.ts so
+// both read the same definition of "crashed".
+export function isCrashBubble(content: string | undefined | null): boolean {
+  const c = (content ?? "").trim();
+  return c === "[object Object]" || c.startsWith("⚠️");
+}

@@ -23,6 +23,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useStore, type ChatMessage } from "./store";
 import { abortRun, activeRuns } from "./runRegistry";
 import { emptyConversation, deriveConversationTitle, type Conversation } from "./conversations";
+import { isCrashBubble } from "./errfmt";
 
 const STREAM_TAIL = 6_000;
 const MSG_CAP = 20_000;
@@ -49,6 +50,26 @@ const queued = new Map<string, string[]>();
 // exactly once. In-memory is enough: after a box restart a finished worker has
 // no live run to end, so it can't re-fire.
 const notifiedWorkers = new Set<string>();
+
+// Coalesce identical (title, body) notifications fired within this window. The
+// dark-alarm triple-fires the same record within one second (two scheduler
+// loops + path-variant vault keys), and parallel worker-done events arrive as
+// separate pings; both collapse to one feed entry here. In-memory is enough —
+// the box is the sole active writer, so this Map sees every real notify().
+const NOTIF_COALESCE_MS = 60_000;
+const recentNotifs = new Map<string, number>(); // dedup-key -> last ts
+function isDuplicateNotif(key: string, now: number): boolean {
+  const prev = recentNotifs.get(key);
+  if (prev !== undefined && now - prev < NOTIF_COALESCE_MS) return true;
+  recentNotifs.set(key, now);
+  // Cheap bounded sweep: evict stale keys so the map stays small.
+  if (recentNotifs.size > 64) {
+    for (const [k, t] of recentNotifs) {
+      if (now - t >= NOTIF_COALESCE_MS) recentNotifs.delete(k);
+    }
+  }
+  return false;
+}
 
 function isThreadBusy(conv: Conversation): boolean {
   const s = useStore.getState();
@@ -389,8 +410,14 @@ async function onRunEnded(convId: string): Promise<void> {
     // A turn flagged `failed` errored mid-run — it has NO verified deliverable, so
     // it must never be announced as "done … completed its task" (the false "worker
     // done" with no file on disk the user flagged). Report it honestly instead.
-    const failed = !!last?.failed;
-    let body = (lastSubstantive?.content ?? "").trim().replace(/\s+/g, " ").slice(0, 180);
+    // FAILED if the persisted flag is set OR the final reply (or the substantive
+    // turn we'd otherwise show) is a crash bubble ("[object Object]" / a ⚠️ line)
+    // — historical rows and text-event errors lack the flag but are still crashes.
+    const failed = !!last?.failed || isCrashBubble(last?.content);
+    const subContent = lastSubstantive?.content ?? "";
+    // Blank a crash-bubble body so the `if (!body)` fallback below names the tools
+    // instead — a success card can never read the literal "[object Object]".
+    let body = (isCrashBubble(subContent) ? "" : subContent).trim().replace(/\s+/g, " ").slice(0, 180);
     if (!body) {
       // No prose anywhere — name what it last ran; never a bare "finished".
       const names = (last?.toolCalls ?? []).map((t) => t.name);
@@ -494,6 +521,19 @@ export async function notify(
   if (extra?.summary) rec.summary = String(extra.summary).slice(0, 200);
   if (extra?.icon) rec.icon = String(extra.icon).slice(0, 4);
   if (extra?.cls) rec.cls = String(extra.cls).slice(0, 4);
+  // Quality floor: a stringified error object must never reach the feed/push as
+  // the literal "[object Object]" (it was even mislabeled as success). Blank it
+  // so the title carries the signal instead of junk.
+  if (rec.body === "[object Object]") rec.body = "";
+  if (rec.summary === "[object Object]") rec.summary = "";
+  // Coalesce a byte-identical re-fire inside the 60s window (dark-alarm
+  // triple-fire, parallel worker pings) before it hits feed + push. Key on
+  // kind+convId+title+body — NOT title+body alone: two different threads asking
+  // the SAME stock AskUser question must each surface their own card, or the
+  // second asker (which already ended its turn awaiting a reply routed to its
+  // convId) would deadlock on a card that never appeared.
+  const dupKey = `${kind} ${convId ?? ""} ${rec.title as string} ${rec.body as string}`;
+  if (isDuplicateNotif(dupKey, rec.ts as number)) return;
   await invoke("notification_add", { vault, json: JSON.stringify(rec) }).catch(() => {});
   broadcast({ type: "notif" });
   // The push itself stays one notification-sized line; the full body lives in
@@ -702,6 +742,23 @@ export async function sendPush(title: string, body: string, url = "/phone"): Pro
   return sent;
 }
 
+// A briefing title is only acceptable if it reads like a headline — not raw
+// chain-of-thought ("Re-reading the operating files…"), a content-less
+// placeholder ("(done)", "no"), or a one-word echo. When the model headline OR
+// the first-line fallback fails this test, we drop to the schedule's own name
+// rather than ship monologue (the CoT/one-word coach titles the user flagged).
+function looksLikeBadTitle(s: string): boolean {
+  const t = (s ?? "").trim();
+  if (!t) return true;
+  const low = t.toLowerCase();
+  if (t.split(/\s+/).length < 2 || t.length < 6) return true;
+  if (/^(\[object object\]|\(done\)|\(no reply\)|finished\.?)(?:\b|$)/.test(low)) return true;
+  // Genuine narration openers only — NOT "first/checking/reading/looking at"
+  // (those head valid headlines like "Checking in: week 2", "First milestone").
+  if (!/[.!?]$/.test(t) && /^(re-?reading|let me|okay|now i|i'?ll|i am|going to|let's|alright)\b/.test(low)) return true;
+  return false;
+}
+
 /** Surface a finished SCHEDULED briefing in the notification feed + push.
  * Called from the scheduler paths (chat-controller / offVaultRun) for ANY
  * scheduled run that delivers — coach, supervisor report, any recurring job;
@@ -738,7 +795,13 @@ export async function mirrorPushNotify(text: string, convId?: string, fallbackTi
   // Title precedence: model headline → the schedule's own name → a clipped first
   // line as a last resort. The schedule name keeps the headline clean and short
   // even on a box that can't run the summarizer.
-  const title = sum?.title || fallbackTitle?.trim() || clip(raw.split("\n")[0]?.trim() || "New briefing", 90);
+  const modelTitle = sum?.title && !looksLikeBadTitle(sum.title) ? sum.title : "";
+  const firstLine = clip(raw.split("\n")[0]?.trim() || "", 90);
+  const title =
+    modelTitle ||
+    fallbackTitle?.trim() ||
+    (looksLikeBadTitle(firstLine) ? "" : firstLine) ||
+    "New briefing";
   const body = sum?.body || clip(raw, 1800);
   await notify("info", title, body, convId, {
     intention: "Scheduled briefing",
