@@ -67,6 +67,23 @@ const active = new Map<string, ActiveLoop>();
 const schedulesByVault = new Map<string, Schedule[]>();
 const listeners = new Set<(s: Schedule[]) => void>();
 
+// Process-global guard against firing the same schedule SLOT twice. The
+// optimistic `lastFiredAt` mark dedups within a single loop, but the same
+// physical vault can be driven by MORE THAN ONE loop in this process — it gets
+// tracked under path-variant keys (slash direction / case / trailing slash) and
+// every map here is keyed on the raw string, so each variant spins its own loop
+// with its own in-memory schedule state. Both then fire the same slot a few ms
+// apart (the duplicate 7am coach: two `scheduled` threads 20ms apart, one box,
+// the laptop's firing off). A claim on canonical(vault)|scheduleId|fireAt, taken
+// SYNCHRONOUSLY at the fire decision, lets only the first loop win — JS is
+// single-threaded, so the second loop's tick callback always sees the claim.
+// (In-process only: this does not coordinate across machines — that's the
+// accepted, far-rarer git-sync race.)
+const firedSlots = new Set<string>();
+function canonicalVault(v: string): string {
+  return v.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
 function emit() {
   // Subscribers see only the currently-active vault's schedules —
   // the SchedulesPanel UI is per-vault.
@@ -353,6 +370,12 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
       const fireAt = nextFireAt(s, s.lastFiredAt ?? s.createdAt ?? 0);
       if (fireAt === null) continue;
       if (fireAt > now) continue;
+      // Cross-loop claim on this exact slot (see firedSlots above). If another
+      // loop for this same vault already took it this slot, don't fire it again.
+      const slotKey = `${canonicalVault(vault)}|${s.id}|${fireAt}`;
+      if (firedSlots.has(slotKey)) continue;
+      firedSlots.add(slotKey);
+      if (firedSlots.size > 2000) firedSlots.clear(); // bound; daily slots are tiny
       // Optimistic mark so a slow agent run doesn't double-fire. A one-off
       // that's firing right now is spent — it self-destructs in the same
       // write (fireOnce already holds its own copy of the schedule).

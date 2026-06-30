@@ -761,6 +761,26 @@ let started = false;
 // single file read when everything is already titled, so it's safe to poll; and
 // because it titles per-line it self-heals an untitled duplicate that a
 // cross-machine union-merge adds back.
+// Collapse the duplicate physical lines that merge=union accumulates in
+// notes.jsonl (a status flip rewrites the row; two machines editing concurrently
+// each leave one). readNotes already dedupes on read so the count is always
+// correct, but the file would grow unbounded — this rewrites it to the deduped
+// set. Idempotent: a no-op write-skip when already compact, so it's safe on the
+// same launch+poll cadence as the title backfill. Box-only on purpose: the box
+// is the sole active writer (see sync architecture), so a follower rewriting
+// here would just churn history.
+async function compactNotesOnBox(): Promise<void> {
+  const vault = useStore.getState().vaultPath ?? "";
+  if (!vault) return;
+  try {
+    const { compactNotes } = await import("./notes");
+    const collapsed = await compactNotes(vault);
+    if (collapsed > 0) console.log(`[phone-app] compacted notes.jsonl: −${collapsed} duplicate line(s)`);
+  } catch (e) {
+    console.warn("[phone-app] compactNotes failed:", e);
+  }
+}
+
 let titlingInFlight = false;
 async function ensureNoteTitles(vault: string): Promise<void> {
   if (!vault || titlingInFlight) return;
@@ -812,9 +832,11 @@ export async function startPhoneAppHost(): Promise<void> {
   // read) when everything is titled, and it catches notes synced in from other
   // machines as well as ones jotted on the phone.
   setTimeout(() => {
+    void compactNotesOnBox();
     void ensureNoteTitles(useStore.getState().vaultPath ?? "");
   }, 8_000);
   setInterval(() => {
+    void compactNotesOnBox();
     void ensureNoteTitles(useStore.getState().vaultPath ?? "");
   }, 5 * 60_000);
 

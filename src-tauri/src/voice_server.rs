@@ -1086,11 +1086,27 @@ fn notes_path(vault: &str) -> PathBuf {
     Path::new(vault).join(crate::NOTES_DIR).join("notes.jsonl")
 }
 
+/// Whether note row `a` should win over the already-kept row `b` for the same
+/// id. A resolved status is authoritative — once resolved on any machine it must
+/// not be displaced by a stale open twin — so resolved beats open; among rows of
+/// equal resolved-ness the later last_updated wins. Mirrors preferredNote in
+/// src/notes.ts so the phone's open count matches the desktop's.
+fn note_prefers(a: &Value, b: &Value) -> bool {
+    let ar = a.get("status").and_then(|x| x.as_str()) == Some("resolved");
+    let br = b.get("status").and_then(|x| x.as_str()) == Some("resolved");
+    if ar != br {
+        return ar;
+    }
+    let as_ = a.get("last_updated").and_then(|x| x.as_str()).unwrap_or("");
+    let bs = b.get("last_updated").and_then(|x| x.as_str()).unwrap_or("");
+    as_ >= bs
+}
+
 /// Notes for the phone Notes page: newest first (reverse-chron like the desktop
-/// NotesPanel), deduped by id across union-merge sync (newer last_updated wins),
-/// and slimmed — base64 anchor images are stripped (they bloat the payload; the
-/// phone shows text) and turn bodies are capped. Read-only: editing/resolving a
-/// note still happens on the desktop.
+/// NotesPanel), deduped by id across union-merge sync (resolved-wins, then newer
+/// last_updated — see note_prefers), and slimmed — base64 anchor images are
+/// stripped (they bloat the payload; the phone shows text) and turn bodies are
+/// capped. Read-only: editing/resolving a note still happens on the desktop.
 fn notes_json(vault: &str) -> String {
     let raw = std::fs::read_to_string(notes_path(vault)).unwrap_or_default();
     let mut by_id: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
@@ -1098,9 +1114,8 @@ fn notes_json(vault: &str) -> String {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         let Some(id) = v.get("id").and_then(|x| x.as_str()) else { continue };
         let id = id.to_string();
-        let newer = v.get("last_updated").and_then(|x| x.as_str()).unwrap_or("");
         let keep = match by_id.get(&id) {
-            Some(prev) => newer >= prev.get("last_updated").and_then(|x| x.as_str()).unwrap_or(""),
+            Some(prev) => note_prefers(&v, prev),
             None => true,
         };
         if keep {
