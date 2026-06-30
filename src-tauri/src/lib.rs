@@ -1023,9 +1023,18 @@ pub(crate) fn reconstruct_conversation(contents: &str) -> Option<String> {
                 meta = Some(v);
             }
         } else if v.get("role").is_some() {
-            // Every message line is kept — never dropped for being content-equal
-            // to another, or we'd delete legitimately repeated messages.
-            messages.push(v);
+            // Collapse a message line byte-identical to the immediately-preceding
+            // SAME-ROLE line: that is the union-merge / double-append artifact
+            // (the 223 duplicate lines on disk), never a legitimate repeat — real
+            // repeats ("?", "...", "Thank you.") are always assistant-separated,
+            // so adjacent same-role twins are only ever an accident.
+            let is_twin = messages.last().map_or(false, |prev| {
+                prev.get("role") == v.get("role")
+                    && serde_json::to_string(prev).ok() == serde_json::to_string(&v).ok()
+            });
+            if !is_twin {
+                messages.push(v);
+            }
         }
     }
     let mut meta = meta?;
@@ -1107,6 +1116,49 @@ async fn conversations_read(vault: String) -> Result<Vec<String>, String> {
     .map_err(|e| e.to_string())?
 }
 
+// Count the lines a conversation body occupies AFTER collapsing adjacent
+// same-role byte-identical message twins — the same rule the read (reconstruct)
+// and write paths apply. The never-shrink guard compares this on BOTH sides so a
+// twins-only collapse (which legitimately shrinks the file) is permitted, while
+// a genuine truncation (real turns dropped) still reads new < existing and is
+// rejected. A meta line or an unparseable line always counts and resets the
+// twin tracker.
+fn deduped_line_count(contents: &str) -> usize {
+    let mut count = 0usize;
+    let mut prev_line: Option<String> = None;
+    let mut prev_role: Option<serde_json::Value> = None;
+    for line in contents.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(t) {
+            Ok(v) => v,
+            Err(_) => {
+                count += 1;
+                prev_line = None;
+                prev_role = None;
+                continue;
+            }
+        };
+        if v.get("id").is_some() {
+            count += 1;
+            prev_line = None;
+            prev_role = None;
+            continue;
+        }
+        let role = v.get("role").cloned();
+        let canon = serde_json::to_string(&v).unwrap_or_default();
+        if prev_line.as_deref() == Some(canon.as_str()) && prev_role == role {
+            continue; // adjacent same-role twin — collapsed, not counted
+        }
+        count += 1;
+        prev_line = Some(canon);
+        prev_role = role;
+    }
+    count
+}
+
 #[tauri::command]
 async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1158,9 +1210,21 @@ async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<()
             body.push_str(&serde_json::to_string(&meta).unwrap_or_default());
             body.push('\n');
             if let serde_json::Value::Array(msgs) = messages {
+                let mut prev_line: Option<String> = None;
+                let mut prev_role: Option<serde_json::Value> = None;
                 for m in msgs {
-                    body.push_str(&serde_json::to_string(&m).unwrap_or_default());
+                    let line = serde_json::to_string(&m).unwrap_or_default();
+                    let role = m.get("role").cloned();
+                    // Drop an adjacent same-role byte-identical twin so the dup
+                    // actually LEAVES disk (and stops re-propagating via union-
+                    // merge), instead of being rewritten every persist cycle.
+                    if prev_line.as_deref() == Some(line.as_str()) && prev_role == role {
+                        continue;
+                    }
+                    body.push_str(&line);
                     body.push('\n');
+                    prev_line = Some(line);
+                    prev_role = role;
                 }
             }
 
@@ -1181,7 +1245,10 @@ async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<()
                 // (the brief seed, a worker/supervisor turn) or another machine's
                 // synced-in appends. Honoring it dropped real turns — e.g. a
                 // mission's brief + first turn. Keep the longer on-disk version.
-                if body.lines().count() < existing.lines().count() {
+                // Compare DEDUPED line counts: a twins-only collapse yields equal
+                // counts (write permitted, so the dup finally leaves disk), while
+                // a genuine truncation still reads new < existing (rejected).
+                if deduped_line_count(&body) < deduped_line_count(&existing) {
                     continue;
                 }
             }
@@ -5930,6 +5997,47 @@ mod conversation_jsonl_tests {
     fn empty_or_metaless_body_is_none() {
         assert!(reconstruct_conversation("").is_none());
         assert!(reconstruct_conversation("{\"role\":\"user\",\"content\":\"orphan\"}\n").is_none());
+    }
+
+    #[test]
+    fn adjacent_same_role_twins_collapse_nonadjacent_survive() {
+        // Two ADJACENT identical user lines = a union/double-append artifact ->
+        // collapse to one. A later identical "dup" separated by an assistant turn
+        // is a legitimate repeat -> kept.
+        let body = "{\"id\":\"z\",\"lastActivityAt\":1}\n\
+                    {\"role\":\"user\",\"content\":\"dup\"}\n\
+                    {\"role\":\"user\",\"content\":\"dup\"}\n\
+                    {\"role\":\"assistant\",\"content\":\"ok\"}\n\
+                    {\"role\":\"user\",\"content\":\"dup\"}\n";
+        let out = reconstruct_conversation(body).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v.get("messages").unwrap().as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn deduped_count_permits_twins_shrink_rejects_truncation() {
+        use super::deduped_line_count;
+        // Only difference from disk is removed adjacent twins -> deduped counts
+        // equal -> the never-shrink guard must NOT block the write.
+        let disk_with_twins = "{\"id\":\"a\"}\n\
+                               {\"role\":\"user\",\"content\":\"A\"}\n\
+                               {\"role\":\"user\",\"content\":\"A\"}\n";
+        let deduped_body = "{\"id\":\"a\"}\n{\"role\":\"user\",\"content\":\"A\"}\n";
+        assert_eq!(deduped_line_count(disk_with_twins), 2);
+        assert_eq!(deduped_line_count(deduped_body), 2);
+        assert!(!(deduped_line_count(deduped_body) < deduped_line_count(disk_with_twins)));
+        // A genuine truncation (a real distinct turn dropped) still reads
+        // new < existing -> the guard rejects it.
+        let disk_full = "{\"id\":\"a\"}\n\
+                         {\"role\":\"user\",\"content\":\"A\"}\n\
+                         {\"role\":\"assistant\",\"content\":\"B\"}\n\
+                         {\"role\":\"user\",\"content\":\"C\"}\n";
+        let truncated = "{\"id\":\"a\"}\n\
+                         {\"role\":\"user\",\"content\":\"A\"}\n\
+                         {\"role\":\"assistant\",\"content\":\"B\"}\n";
+        assert_eq!(deduped_line_count(disk_full), 4);
+        assert_eq!(deduped_line_count(truncated), 3);
+        assert!(deduped_line_count(truncated) < deduped_line_count(disk_full));
     }
 }
 
