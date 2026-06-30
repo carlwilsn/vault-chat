@@ -5281,7 +5281,20 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         if !st.trim().is_empty() {
             let (hn, he) = human_identity(&vault);
             let _ = run_git_as(&vault, &hn, &he, &["add", "-A"]);
-            let _ = run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: auto-sync submodule pointers"]);
+            // Don't publish a gitlink pointing at a sub-commit that hasn't reached
+            // the sub-repo's remote yet — a follower's fetch would then fail with
+            // "upload-pack: not our ref" and abort the entire pull. Hold any such
+            // pointer at its last-pushed value; it advances on the next cycle once
+            // the sub-repo's own push lands. Mirrors the same guard in
+            // vault_sync_commit_local that the pull path previously omitted.
+            hold_unpushed_submodule_gitlinks(&vault);
+            let nothing_staged = matches!(
+                run_git(&vault, &["diff", "--cached", "--quiet"]),
+                Ok((_, _, 0))
+            );
+            if !nothing_staged {
+                let _ = run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: auto-sync submodule pointers"]);
+            }
         }
         Ok(SyncOpResult {
             ok: true,
