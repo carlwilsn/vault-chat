@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import type { ModelSpec, ProviderId } from "./providers";
-import { AUTO_MODEL_ID, DEFAULT_WORKER_MODEL_ID, setLiveCatalog, setAutoRouterCostBias } from "./providers";
+import { DEFAULT_MODEL_ID, DEFAULT_WORKER_MODEL_ID, setLiveCatalog, setAutoRouterCostBias } from "./providers";
 import type { Skill } from "./skills";
 import type { Note } from "./notes";
 import { readNotes, appendNote, writeAllNotes } from "./notes";
@@ -766,9 +766,10 @@ export const useStore = create<State>((set) => ({
   catalog: loadCatalogFromLocalStorage() ?? [],
   catalogRefreshing: false,
   catalogErrors: {},
-  // New installs start on Auto (cost-aware routing) rather than the most
-  // expensive model. Anyone who has already picked a model keeps it.
-  modelId: localStorage.getItem(MODEL_STORAGE) ?? AUTO_MODEL_ID,
+  // New installs default to the app's default model (Sonnet 4.6 — the latest
+  // Sonnet; there is no "Sonnet 5"). Anyone who has already picked a model in the
+  // dropdown keeps it — switch via the model picker to apply on an existing client.
+  modelId: localStorage.getItem(MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
   // The phone assistant (cockpit) is the hardest agentic surface — it has to
   // hold a multi-step orchestration prompt, drive tools, and emit structured
   // plan cards. Auto's cost router was picking models too weak for that

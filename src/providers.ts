@@ -44,7 +44,7 @@ export const MODELS: ModelSpec[] = [
   { provider: "openrouter", id: "google/gemini-3.5-flash", label: "Gemini 3.5 Flash" },
 ];
 
-export const DEFAULT_MODEL_ID = "claude-opus-4-8";
+export const DEFAULT_MODEL_ID = "claude-sonnet-4-6";
 
 // Workers spawned by the supervisor are heavy, long-horizon jobs — not the
 // daily chat-pane default. Decoupled from DEFAULT_MODEL_ID on purpose — a
