@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Plus, X as XIcon, Trash2, Mic } from "lucide-react";
+import { MessageSquare, Plus, X as XIcon, Trash2, Mic, CheckCheck } from "lucide-react";
 import { useStore } from "./store";
 import { conversationPreview, type Conversation } from "./conversations";
 
@@ -15,6 +15,11 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
   const newConversation = useStore((s) => s.newConversation);
   const selectConversation = useStore((s) => s.selectConversation);
   const deleteConversation = useStore((s) => s.deleteConversation);
+  const markAllRead = useStore((s) => s.markAllRead);
+  const unreadCount = useMemo(
+    () => conversations.filter((c) => c.unread).length,
+    [conversations],
+  );
   const [query, setQuery] = useState("");
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -84,6 +89,16 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
             </span>
           </div>
           <div className="flex items-center gap-1">
+            {unreadCount > 0 && (
+              <button
+                onClick={() => markAllRead()}
+                className="h-7 px-2 flex items-center gap-1 rounded hover:bg-accent/60 text-[11.5px] text-muted-foreground hover:text-foreground/90"
+                title="Mark all chats read"
+              >
+                <CheckCheck className="h-3 w-3" />
+                <span>Mark all read</span>
+              </button>
+            )}
             <button
               onClick={handleNew}
               className="h-7 px-2 flex items-center gap-1 rounded hover:bg-accent/60 text-[11.5px] text-foreground/90"

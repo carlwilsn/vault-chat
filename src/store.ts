@@ -732,6 +732,11 @@ type State = {
   // after the user navigated away.
   appendMessageToConversation: (id: string, m: ChatMessage) => void;
   setConversationStatus: (id: string, status: "idle" | "running") => void;
+  // Bulk-clear the unread badge on every conversation. unread is a synced
+  // boolean; setting all false is harmless + idempotent. Persisted via the
+  // standard subscribe-driven, conv-lock-guarded merge (never shrinks history,
+  // never resurrects tombstones).
+  markAllRead: () => void;
 };
 
 export const useStore = create<State>((set) => ({
@@ -1694,8 +1699,37 @@ export const useStore = create<State>((set) => ({
         (savedId ? sorted.find((c) => c.id === savedId) : undefined) ??
         sorted[0];
       persistActiveConvId(vault, active.id);
+      // Husk-prune: drop 0-message "New chat" shells that are neither the active
+      // thread nor freshly created (failed voice opens minted ~21 in one 20-min
+      // spree; a crashed worker/mission spawn leaves an empty shell too). The
+      // >2min createdAt guard spares a just-opened empty chat the user is about
+      // to type in; messages.length===0 means a thread with real messages is
+      // never touched; tombstoning (not omission) keeps a husk synced from
+      // another machine from resurrecting.
+      const HUSK_MAX_AGE_MS = 2 * 60 * 1000;
+      const nowTs = Date.now();
+      // Only interactive-chat husks (failed voice opens, abandoned "New chat").
+      // NEVER prune a worker/mission/scheduled shell: those are written empty
+      // then populated async (possibly by another machine), so tombstoning one
+      // here could race-delete a thread the box is about to fill.
+      const huskSources = new Set(["manual", "voice", "phone"]);
+      const husks = sorted.filter(
+        (c) =>
+          c.messages.length === 0 &&
+          c.id !== active.id &&
+          huskSources.has(c.source) &&
+          nowTs - (c.createdAt ?? nowTs) > HUSK_MAX_AGE_MS,
+      );
+      const survivors = husks.length
+        ? sorted.filter((c) => !husks.some((h) => h.id === c.id))
+        : sorted;
+      for (const h of husks) {
+        invoke<void>("conversation_delete", { vault, id: h.id }).catch((e) =>
+          console.warn("[conversations] husk-prune delete failed:", e),
+        );
+      }
       useStore.setState({
-        conversations: sorted,
+        conversations: survivors,
         activeConversationId: active.id,
         conversationsLoaded: true,
         messages: active.messages,
@@ -1972,6 +2006,15 @@ export const useStore = create<State>((set) => ({
     set(b ? { showChatsPanel: true, showNotesPanel: false, showSchedulesPanel: false } : { showChatsPanel: false }),
   setShowSchedulesPanel: (b) =>
     set(b ? { showSchedulesPanel: true, showNotesPanel: false, showChatsPanel: false } : { showSchedulesPanel: false }),
+  markAllRead: () =>
+    set((s) => {
+      if (!s.conversations.some((c) => c.unread)) return {}; // no-op → no re-render / no write
+      return {
+        conversations: s.conversations.map((c) =>
+          c.unread ? { ...c, unread: false } : c,
+        ),
+      };
+    }),
   appendMessageToConversation: (id, m) =>
     set((s) => ({
       conversations: s.conversations.map((c) =>
