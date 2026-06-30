@@ -20,6 +20,20 @@ import {
 const COMPACT_THRESHOLD = 0.85;
 const KEEP_RECENT = 4;
 
+// Conversation ids with a send in flight RIGHT NOW. The per-conversation
+// `status: "running"` guard is not enough on its own: status is only set AFTER
+// the optimistic user message is appended, and there are awaits before then
+// (compaction; the composer's @mention preamble resolution). In that window two
+// rapid submits — or a same-machine scheduler / background double-fire on the
+// off-target path — can both pass the status check and both append the SAME
+// user turn. That doubled array is the LONGER one, so the persist merge writes
+// it to disk and it survives reload (it is NOT a harmless in-memory glitch).
+// This Set is latched synchronously at sendMessage entry, before any await, and
+// released in a finally when the whole turn ends — making a concurrent second
+// send a true no-op. Keyed by conversation id so it works even before the
+// conversation exists in the store, and it never perturbs the run clock.
+const inFlightSends = new Set<string>();
+
 // Build the canonical ```plan``` block from a ProposeMission tool call. The
 // cockpit renders this block as an Approve card; generating it from the
 // validated tool args (not the model's free text) is what makes the proposal
@@ -123,6 +137,14 @@ export async function sendMessage(
   const targetMessages = isOffTarget
     ? (targetConv?.messages ?? [])
     : s.messages;
+
+  // Latch the in-flight guard before any await or optimistic append. Released
+  // in the finally at the end of this function once the whole turn has settled.
+  if (targetConvId) {
+    if (inFlightSends.has(targetConvId)) return;
+    inFlightSends.add(targetConvId);
+  }
+  try {
 
   // Skip compaction for off-target runs — compaction reaches into
   // the global s.messages view, which doesn't belong to the target.
@@ -580,6 +602,11 @@ export async function sendMessage(
       }
     },
   });
+  } finally {
+    // Run is fully settled (done / error / abort all resolve runAgent) — release
+    // the in-flight latch so the next genuine turn on this thread can start.
+    if (targetConvId) inFlightSends.delete(targetConvId);
+  }
 }
 
 export function stopAgent() {
