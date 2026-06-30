@@ -2512,7 +2512,18 @@
       const sheet = $("sheet");
       if (sheet.classList.contains("editing")) sheet.style.maxHeight = vv.height + "px";
     };
-    const fit = () => { document.body.style.height = vv.height + "px"; applyKb(); window.scrollTo(0, 0); scrollDown(false); };
+    const fit = () => {
+      // Only constrain the body to the visible area while the keyboard is UP. When
+      // it's down, CLEAR the explicit height so position:fixed;inset:0 fills the
+      // whole layout viewport again. Pinning body height to visualViewport.height
+      // unconditionally left a dead strip at the bottom on every screen — iOS
+      // reports vv.height a few px short of the layout viewport under
+      // viewport-fit=cover, so the fixed body ended shorter than the screen (the
+      // "buffer under the whole app"). kb>60 means the keyboard is genuinely up.
+      const kb = Math.max(0, document.documentElement.clientHeight - vv.height - vv.offsetTop);
+      document.body.style.height = kb > 60 ? vv.height + "px" : "";
+      applyKb(); window.scrollTo(0, 0); scrollDown(false);
+    };
     vv.addEventListener("resize", fit);
     vv.addEventListener("scroll", () => { window.scrollTo(0, 0); applyKb(); });
   }
