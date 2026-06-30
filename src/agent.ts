@@ -6,7 +6,7 @@ import { z } from "zod";
 import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./providers";
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
-import { loadSessionContext } from "./context";
+import { loadSessionContext, buildLiveStateBlock } from "./context";
 import { loadVaultSystemPrompt, loadVaultTools, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock, loadVaultSupervisorPrompt, loadVaultAssistantPrompt } from "./meta";
 
 export type TokenUsage = {
@@ -366,7 +366,32 @@ export async function runAgent(params: {
     // these are IMAGE parts not markdown — we gate by supportsVision.
     const finalUserText = scrub(expandedMessage);
     const attachableImages = vision ? userAttachments ?? [] : [];
-    const safeUserText = finalUserText.trim() ? finalUserText : "(no message text)";
+
+    // Live-state ground truth (read-path = write-path). Inject the actual
+    // current mission/run state — read from the SAME in-memory store the UI and
+    // the run/notification records are written from — so a status question
+    // ("how's it going?") is answered from reality instead of a reconstructed
+    // story. Goes on the UNCACHED user turn (never the cached system prefix) so
+    // the 1h system cache is untouched. Only for the chat/orchestration tiers;
+    // a bare worker doesn't field status questions. Empty for a quiet vault.
+    let liveStateBlock = "";
+    if (assistantMode || supervisorMode) {
+      try {
+        const { useStore } = await import("./store");
+        const { activeRuns } = await import("./runRegistry");
+        liveStateBlock = buildLiveStateBlock(
+          useStore.getState().conversations,
+          new Set(activeRuns()),
+          Date.now(),
+        );
+      } catch {
+        liveStateBlock = "";
+      }
+    }
+    const baseUserText = finalUserText.trim() ? finalUserText : "(no message text)";
+    const safeUserText = liveStateBlock
+      ? `${liveStateBlock}\n\n---\n\n${baseUserText}`
+      : baseUserText;
     const finalUserMessage: ModelMessage =
       attachableImages.length > 0
         ? {
