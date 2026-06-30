@@ -85,6 +85,20 @@ export function newConversationId(): string {
   return `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// Stable per-MESSAGE id, minted at creation. Foundation (release 1) of the
+// message-identity cure: once every new message carries a `mid`, a later release
+// can dedupe by id and replace the fragile "longer array wins" merge with an
+// id-aware, compaction-watermark-bounded merge — without which duplicates can't
+// be told apart from real repeats. INERT for now: nothing reads `mid` yet, it
+// just rides on disk (Rust reconstruct/write_all are JSON passthroughs, so it
+// survives), propagating to every machine before any merge logic depends on it.
+export function newMessageId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID().slice(0, 12);
+  }
+  return `m_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export function emptyConversation(): Conversation {
   const now = Date.now();
   return {

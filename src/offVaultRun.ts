@@ -12,6 +12,7 @@ import {
   emptyConversation,
   deriveConversationTitle,
   newConversationId,
+  newMessageId,
   withConvLock,
   type Conversation,
 } from "./conversations";
@@ -63,7 +64,7 @@ export async function runScheduledHeadlessTurn(
     list.unshift(fresh);
     idx = 0;
   }
-  const userMsg: ChatMessage = { role: "user", content: prompt };
+  const userMsg: ChatMessage = { role: "user", content: prompt, mid: newMessageId() };
   list[idx] = {
     ...list[idx]!,
     messages: [...list[idx]!.messages, userMsg],
@@ -212,6 +213,7 @@ export async function runScheduledHeadlessTurn(
       // Render as the cleaned chain (see above). `content` stays the full blob as
       // the record; the thread view prefers the timeline when present.
       timeline: timeline ?? undefined,
+      mid: newMessageId(),
     };
     finalList[fi] = {
       ...finalList[fi]!,
@@ -313,7 +315,7 @@ export async function runWorkerTurn(
     return { reply: "", error: "no model / API key configured" };
   }
 
-  const userMsg: ChatMessage = { role: "user", content: message };
+  const userMsg: ChatMessage = { role: "user", content: message, mid: newMessageId() };
   const seeded = await withConvLock(async () => {
     const list = await readConversations(vault);
     const idx = list.findIndex((c) => c.id === conversationId);
@@ -454,6 +456,7 @@ export async function runWorkerTurn(
         // Flagged so the completion path reports "FAILED", never "done" — a
         // crashed worker that wrote nothing must not look like a deliverable.
         failed: runErr ? true : undefined,
+        mid: newMessageId(),
       };
       finalList[fi] = {
         ...finalList[fi]!,

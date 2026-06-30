@@ -13,7 +13,15 @@ import {
   readConversations,
   writeConversations,
   withConvLock,
+  newMessageId,
 } from "./conversations";
+
+// Stamp a stable `mid` on a message at creation if it lacks one (release 1 of
+// the message-identity cure). Idempotent: a message that already has a mid is
+// returned unchanged, so re-appending a synced/replayed message never re-mints.
+function withMid(m: ChatMessage): ChatMessage {
+  return m.mid ? m : { ...m, mid: newMessageId() };
+}
 import { formatNote } from "./notes-format";
 import { findModel } from "./providers";
 import { keychainGet, keychainSet, keychainDelete, KEY } from "./keychain";
@@ -93,6 +101,11 @@ export type ChatMessage = {
   // exception), not a clean finish. The completion path reads this so a crashed
   // worker reports "FAILED" instead of a false "done — completed its task".
   failed?: boolean;
+  // Stable per-message id, minted at creation (release 1 of the message-identity
+  // cure). Optional — legacy messages on disk lack it; readers must tolerate its
+  // absence. INERT for now (no merge logic reads it yet); it just rides on disk
+  // so it has propagated everywhere before a later release dedupes/merges by id.
+  mid?: string;
 };
 
 // Shallow content-compare for the chat message list. The popout
@@ -1211,7 +1224,7 @@ export const useStore = create<State>((set) => ({
         currentContent: content,
       };
     }),
-  appendMessage: (m) => set((s) => ({ messages: [...s.messages, m] })),
+  appendMessage: (m) => set((s) => ({ messages: [...s.messages, withMid(m)] })),
   setApiKey: (p, k) => {
     set((s) => ({ apiKeys: { ...s.apiKeys, [p]: k } }));
     keychainSet(KEY[p], k).catch((e) =>
@@ -2021,7 +2034,7 @@ export const useStore = create<State>((set) => ({
         c.id === id
           ? {
               ...c,
-              messages: [...c.messages, m],
+              messages: [...c.messages, withMid(m)],
               lastActivityAt: Date.now(),
               unread: s.activeConversationId === id ? c.unread : true,
             }
