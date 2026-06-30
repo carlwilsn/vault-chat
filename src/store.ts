@@ -89,6 +89,10 @@ export type ChatMessage = {
   // NATURAL — they're a conversation, not reasoning — so the cleaner leaves them
   // as prose instead of chopping them into a thought-chain timeline.
   direct?: boolean;
+  // This assistant turn ended in an error (model/SDK failure or a thrown
+  // exception), not a clean finish. The completion path reads this so a crashed
+  // worker reports "FAILED" instead of a false "done — completed its task".
+  failed?: boolean;
 };
 
 // Shallow content-compare for the chat message list. The popout

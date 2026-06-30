@@ -1,4 +1,5 @@
-import { streamText, generateText, stepCountIs, tool, type ModelMessage } from "ai";
+import { streamText, generateText, stepCountIs, hasToolCall, tool, type ModelMessage } from "ai";
+import { errToString } from "./errfmt";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
@@ -507,7 +508,7 @@ Be terse. If the task is research, return findings as a structured list with fil
           }
           return final.trim() || "(sub-agent returned no output)";
         } catch (e: any) {
-          return `Sub-agent failed: ${e?.message ?? String(e)}`;
+          return `Sub-agent failed: ${errToString(e)}`;
         }
       },
     });
@@ -594,6 +595,9 @@ Be terse. If the task is research, return findings as a structured list with fil
       | { ok: true; usage: any; finishReason?: string; responseMessages?: ModelMessage[] }
       | { ok: false; error: any; gotOutput: boolean };
 
+    // Set true the instant the model calls AskUser, so the auto-continue loop
+    // below does NOT resume the turn after the user has been handed the decision.
+    let askedUser = false;
     const attempt = async (msgs: ModelMessage[]): Promise<AttemptResult> => {
       let gotOutput = false;
       try {
@@ -601,7 +605,12 @@ Be terse. If the task is research, return findings as a structured list with fil
           model,
           messages: msgs,
           tools,
-          stopWhen: stepCountIs(50),
+          // AskUser hands the decision to the user: the turn MUST end there so the
+          // agent is re-run with their reply as the next message — it must not keep
+          // grinding/hovering after asking (the "AskUser stalls the agent" pain).
+          // hasToolCall halts the SDK step-loop the instant AskUser is called; the
+          // `askedUser` flag below then blocks the outer auto-continue from resuming.
+          stopWhen: [stepCountIs(50), hasToolCall("AskUser")],
           abortSignal,
           // Mid-run compaction: before each step, if the running context
           // has grown past the threshold, summarize the older prefix and
@@ -676,6 +685,7 @@ Be terse. If the task is research, return findings as a structured list with fil
             }
             case "tool-call":
               gotOutput = true;
+              if (part.toolName === "AskUser") askedUser = true;
               onEvent({
                 kind: "tool_use",
                 id: part.toolCallId,
@@ -692,7 +702,7 @@ Be terse. If the task is research, return findings as a structured list with fil
             }
             case "tool-error": {
               const err = (part as any).error;
-              const msg = err?.message ?? String(err);
+              const msg = errToString(err);
               console.error(`[agent] tool-error id=${part.toolCallId}:`, err);
               onEvent({
                 kind: "tool_result",
@@ -728,7 +738,7 @@ Be terse. If the task is research, return findings as a structured list with fil
     if (!res.ok && !res.gotOutput && isTransient(res.error)) {
       console.warn(
         "[agent] initial stream failed, retrying once:",
-        res.error?.message ?? res.error,
+        errToString(res.error),
       );
       await new Promise((r) => setTimeout(r, 1200));
       res = await attempt(runMessages);
@@ -756,6 +766,7 @@ Be terse. If the task is research, return findings as a structured list with fil
     while (
       res.ok &&
       !abortSignal?.aborted &&
+      !askedUser &&
       (res.finishReason === "tool-calls" || res.finishReason === "length") &&
       autoContinues < MAX_AUTO_CONTINUE
     ) {
@@ -768,7 +779,7 @@ Be terse. If the task is research, return findings as a structured list with fil
     if (!res.ok) {
       onEvent({
         kind: "error",
-        message: res.error?.message ?? String(res.error),
+        message: errToString(res.error),
       });
       return;
     }
@@ -793,6 +804,6 @@ Be terse. If the task is research, return findings as a structured list with fil
       onEvent({ kind: "done" });
     }
   } catch (e: any) {
-    onEvent({ kind: "error", message: e?.message ?? String(e) });
+    onEvent({ kind: "error", message: errToString(e) });
   }
 }

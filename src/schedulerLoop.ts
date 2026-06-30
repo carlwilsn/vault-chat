@@ -221,6 +221,31 @@ async function checkFirerHeartbeat(vault: string): Promise<void> {
     return;
   }
   if (firingDarkAlarmed) return; // already warned this outage (across all vaults)
+  // Before alarming, cross-check a signal that ACTUALLY syncs across machines.
+  // `lastFiredAt` can read stale on a follower that's behind on its git pull —
+  // that's what fired a "dark for 3698 min" alarm at the user while the daily
+  // coach had in fact fired that very morning (two threads, even). Recent
+  // scheduled/mission activity is hard proof a firer is alive: if any such turn
+  // landed more recently than the overdue age we're about to report, the report
+  // is stale — suppress it rather than cry wolf.
+  try {
+    const convs = await readConversations(vault).catch(() => []);
+    const freshestAuto = convs
+      .filter((c) => c.source === "scheduled" || c.source === "mission")
+      .reduce((mx, c) => Math.max(mx, c.lastActivityAt ?? 0), 0);
+    if (freshestAuto && now - freshestAuto < darkMin * 60_000) {
+      firingDarkAlarmed = false; // something fired recently — not actually dark
+      vlog("firer.dark.suppressed", {
+        vault: vault.slice(-12),
+        darkMin,
+        lastAutoMinAgo: Math.round((now - freshestAuto) / 60_000),
+      });
+      return;
+    }
+  } catch {
+    // Can't read conversations — fall through and alarm (better a false warn
+    // than silent death, the failure mode this whole check exists to prevent).
+  }
   firingDarkAlarmed = true;
   vlog("firer.dark", { vault: vault.slice(-12), darkMin });
   try {

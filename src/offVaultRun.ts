@@ -21,6 +21,7 @@ import type { Timeline } from "./alert-summary";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import { registerRun, unregisterRun, abortRun } from "./runRegistry";
 import { vlog } from "./debugLog";
+import { errToString } from "./errfmt";
 
 
 // withConvLock (shared read→modify→write serializer for the conversations
@@ -130,14 +131,16 @@ export async function runScheduledHeadlessTurn(
           const t = tools.find((x) => x.id === e.id);
           if (t) t.result = e.result;
         } else if (e.kind === "error") {
-          acc = (acc + `\n\n⚠️ ${e.message}`).trim();
-          finalSegment = (finalSegment + `\n\n⚠️ ${e.message}`).trim();
+          const emsg = errToString(e.message);
+          runErr = emsg;
+          acc = (acc + `\n\n⚠️ ${emsg}`).trim();
+          finalSegment = (finalSegment + `\n\n⚠️ ${emsg}`).trim();
         }
       },
     });
   } catch (e) {
-    runErr = String(e);
-    acc = (acc + `\n\n⚠️ scheduled run failed: ${String(e)}`).trim();
+    runErr = errToString(e);
+    acc = (acc + `\n\n⚠️ scheduled run failed: ${runErr}`).trim();
   } finally {
     await endHeartbeat(vault, conversationId).catch(() => {});
     unregisterRun(conversationId, controller);
@@ -399,8 +402,8 @@ export async function runWorkerTurn(
           const t = tools.find((x) => x.id === e.id);
           if (t) t.result = e.result;
         } else if (e.kind === "error") {
-          runErr = e.message;
-          acc = (acc + `\n\n⚠️ ${e.message}`).trim();
+          runErr = errToString(e.message);
+          acc = (acc + `\n\n⚠️ ${runErr}`).trim();
         }
         // Mirror the worker's in-flight text + tools + step timeline into
         // convRuntime so the phone (phoneApp's runDiff) streams it live. Without
@@ -421,8 +424,8 @@ export async function runWorkerTurn(
       },
     });
   } catch (e) {
-    runErr = String(e);
-    acc = (acc + `\n\n⚠️ worker turn failed: ${String(e)}`).trim();
+    runErr = errToString(e);
+    acc = (acc + `\n\n⚠️ worker turn failed: ${runErr}`).trim();
   } finally {
     await endHeartbeat(vault, conversationId).catch(() => {});
     unregisterRun(conversationId, controller);
@@ -447,6 +450,10 @@ export async function runWorkerTurn(
         // A direct reply to something the user typed stays natural prose — the
         // cleaner skips it (see the timeline pass below).
         direct: opts.direct || undefined,
+        // The turn ended in an error (SDK/model failure or thrown exception).
+        // Flagged so the completion path reports "FAILED", never "done" — a
+        // crashed worker that wrote nothing must not look like a deliverable.
+        failed: runErr ? true : undefined,
       };
       finalList[fi] = {
         ...finalList[fi]!,

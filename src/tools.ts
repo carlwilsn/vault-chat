@@ -1064,7 +1064,25 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           await new Promise((r) => setTimeout(r, 600)); // let the abort unwind
         }
         const { runWorkerTurn } = await import("./offVaultRun");
-        const { reply, error } = await runWorkerTurn(vault, conversation_id, message, {});
+        // Don't let a long/stuck worker hold the caller hostage. The user watched
+        // a supervisor block on AskWorker for ~2 hours waiting on a worker that
+        // wasn't answering. Time-box the wait: on timeout we do NOT abort the
+        // worker (its turn keeps running in the background) — we stop waiting and
+        // report back so the caller's turn can END and it can check in later via
+        // the worker's finish-wake or ReadConversation.
+        const ASK_TIMEOUT_MS = 3 * 60_000;
+        const runP = runWorkerTurn(vault, conversation_id, message, {});
+        const outcome = await Promise.race([
+          runP.then((r) => ({ timedOut: false as const, ...r })),
+          new Promise<{ timedOut: true }>((res) =>
+            setTimeout(() => res({ timedOut: true }), ASK_TIMEOUT_MS),
+          ),
+        ]);
+        if (outcome.timedOut) {
+          runP.catch(() => {}); // keeps running in the background; swallow late rejection
+          return `Worker "${conv.title || conversation_id}" is still working after 3 min — it keeps running in the background. Don't block on it: end your turn now. You'll be woken when it finishes, or check it with ReadConversation (id ${conversation_id}).`;
+        }
+        const { reply, error } = outcome;
         if (error && !reply.trim()) return `Worker run failed: ${error}`;
         return `Worker "${conv.title || conversation_id}" replied:\n${reply}`;
       },

@@ -386,26 +386,42 @@ async function onRunEnded(convId: string): Promise<void> {
       .reverse()
       .find((m) => m.role === "assistant" && !m.hidden && (m.content ?? "").trim());
     const last = [...c.messages].reverse().find((m) => m.role === "assistant" && !m.hidden);
+    // A turn flagged `failed` errored mid-run — it has NO verified deliverable, so
+    // it must never be announced as "done … completed its task" (the false "worker
+    // done" with no file on disk the user flagged). Report it honestly instead.
+    const failed = !!last?.failed;
     let body = (lastSubstantive?.content ?? "").trim().replace(/\s+/g, " ").slice(0, 180);
     if (!body) {
       // No prose anywhere — name what it last ran; never a bare "finished".
       const names = (last?.toolCalls ?? []).map((t) => t.name);
       body = names.length ? `ran ${[...new Set(names)].slice(0, 5).join(", ")}` : "completed its task";
     }
-    // (a) Tell the user this worker is done — ONCE per worker. The user asked to
-    // see each worker finish (3 workers → 3 "done" cards) plus a separate mission
-    // complete; the old bug wasn't that workers notified, it was that each one
-    // notified several times (every turn-end / duplicate wake). Dedupe by convId.
+    // (a) Tell the user this worker finished — ONCE per worker (dedupe by convId;
+    // the old bug was each worker pinging several times per turn-end / wake).
+    // Frame it by OUTCOME: a clean finish is a "done" deliverable card; a crash is
+    // an honest "failed" card — never dress a crash up as a delivered result.
     if (!notifiedWorkers.has(convId)) {
       notifiedWorkers.add(convId);
-      const { summarizeForAlert } = await import("./alert-summary");
-      const sum = await summarizeForAlert(last?.content ?? body, useStore.getState().apiKeys).catch(() => null);
-      void notify("info", sum?.title || `Worker done — ${c.title}`, sum?.body || body, convId, {
-        intention: `Worker deliverable${c.mission ? " · " + c.mission : ""}`,
-        summary: (sum?.body || body).slice(0, 200),
-        icon: "✓",
-        cls: "g",
-      });
+      if (failed) {
+        const errLine = ((last?.content || "").match(/⚠️[^\n]*/)?.[0] || body || "the run errored")
+          .replace(/^⚠️\s*/, "")
+          .slice(0, 180);
+        void notify("info", `Worker failed — ${c.title}`, errLine, convId, {
+          intention: `Worker failed${c.mission ? " · " + c.mission : ""}`,
+          summary: errLine.slice(0, 200),
+          icon: "⚠️",
+          cls: "r",
+        });
+      } else {
+        const { summarizeForAlert } = await import("./alert-summary");
+        const sum = await summarizeForAlert(last?.content ?? body, useStore.getState().apiKeys).catch(() => null);
+        void notify("info", sum?.title || `Worker done — ${c.title}`, sum?.body || body, convId, {
+          intention: `Worker deliverable${c.mission ? " · " + c.mission : ""}`,
+          summary: (sum?.body || body).slice(0, 200),
+          icon: "✓",
+          cls: "g",
+        });
+      }
     }
     // (b) Report UP to the mission so its supervisor reviews + continues — UNLESS
     // the mission is already complete. A late worker-finish must not re-wake a
@@ -421,9 +437,11 @@ async function onRunEnded(convId: string): Promise<void> {
         )
       : undefined;
     if (missionConv && !missionConv.completedAt) {
-      const wake =
-        `Your worker "${c.title}" (id ${convId}) just finished its turn. Last output: ${body}\n\n` +
-        `Review its thread and decide: verified done, steer it (AskWorker), respawn with learnings, or — only if you can't resolve it yourself — bring the user in.`;
+      const wake = failed
+        ? `Your worker "${c.title}" (id ${convId}) FAILED its turn — it errored and produced no verified deliverable. Error: ${body}\n\n` +
+          `Do NOT treat this as done. Decide: respawn it with a fix, do the irreducible part yourself in this thread, or — only if you can't resolve it — bring the user in. Before trusting ANY claimed file, verify it exists on disk (ls/Read) — a crashed worker can report "completed" with nothing written.`
+        : `Your worker "${c.title}" (id ${convId}) just finished its turn. Last output: ${body}\n\n` +
+          `Review its thread and decide: verified done, steer it (AskWorker), respawn with learnings, or — only if you can't resolve it yourself — bring the user in. Before marking done, verify any claimed deliverable exists on disk.`;
       if (isThreadBusy(missionConv)) {
         // Mission is mid-turn (likely the very AskWorker that drove this
         // worker). Queue the wake — it flushes when the mission's run ends.
