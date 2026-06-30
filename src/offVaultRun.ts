@@ -722,7 +722,16 @@ export async function completeMission(vault: string, conversationId: string): Pr
     if (i < 0) return;
     mission = fresh[i];
     if (fresh[i]!.completedAt) return; // already complete — leave didComplete false
-    fresh[i] = { ...fresh[i]!, completedAt: Date.now() };
+    // Bump lastActivityAt in lockstep with completedAt. Every cross-machine and
+    // in-memory tie-break sorts on lastActivityAt — the Rust union meta-line
+    // pick (reconstruct_conversation), the diskNewer test, and the persist
+    // merge. Stamping completedAt WITHOUT moving lastActivityAt left the
+    // completed meta line tied with a follower's stale no-completedAt line, so a
+    // union merge could non-deterministically surface the stale one and a
+    // finished mission RESURRECTED onto Activity. One monotonic timestamp closes
+    // all three layers at once.
+    const t = Date.now();
+    fresh[i] = { ...fresh[i]!, completedAt: t, lastActivityAt: t };
     await writeConversations(vault, fresh);
     didComplete = true;
   });

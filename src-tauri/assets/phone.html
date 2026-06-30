@@ -1921,7 +1921,6 @@
       const missions = new Map(); // name -> { conv: mission thread | null, active: [{run, c}] }
       const missionOf = (run, c) => ((run && run.mission) || (c && c.mission) || "").trim();
       const bucket = (name) => { if (!missions.has(name)) missions.set(name, { conv: null, active: [], done: [] }); return missions.get(name); };
-      const twoDays = Date.now() - 48 * 3600000;
       // A finished mission (its supervisor called CompleteMission) leaves the
       // Activity surface entirely — and so do its workers, so a stray running
       // worker can't resurrect a virtual group for a done mission.
@@ -1934,7 +1933,13 @@
       for (const c of convs) {
         if (c.source !== "mission") continue;
         if (c.completedAt) continue; // finished — off the surface
-        if (c.lastActivityAt < twoDays && !runIds.has(c.id)) continue;
+        // An un-completed mission is by definition still in flight: it stays on
+        // Activity until its supervisor explicitly completes it (completedAt,
+        // above) or it is stopped (tombstone-deleted, already filtered out of
+        // /conversations). It must NOT silently vanish just for being quiet — a
+        // long-horizon / monitoring mission can sit idle for days between waves,
+        // and the old 48h age drop made it disappear, which read as "missions
+        // are vanishing". Quiet is not done.
         bucket((c.mission || c.title || "").trim() || c.title).conv = c;
       }
       for (const run of runs) {
