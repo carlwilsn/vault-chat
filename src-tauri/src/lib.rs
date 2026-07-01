@@ -2866,19 +2866,39 @@ enum RepoClass {
     Skip,
 }
 
-/// The GitHub login vault-chat is authenticated as (lowercased), resolved once
-/// per process — telling the user's own repos from other people's needs it, and
-/// it never changes within a run. None if `gh` is missing/unauthenticated.
+/// The GitHub login vault-chat is authenticated as (lowercased) — telling the
+/// user's own repos from other people's needs it. A successful lookup is
+/// cached for the process, since it never changes within a run once gh is
+/// authenticated. A failed lookup is retried with a short backoff rather than
+/// cached forever: a call that races `gh auth login` still completing (fresh
+/// install, headless box just provisioned) would otherwise permanently mark
+/// every nested repo `Skip` for the rest of the session — see the identical
+/// reasoning on `get_gh_token`.
 fn gh_login(cwd: &str) -> Option<String> {
-    static CACHE: OnceLock<Option<String>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            run_gh(cwd, &["api", "user", "-q", ".login"])
-                .ok()
-                .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_lowercase()) } else { None })
-                .filter(|s| !s.is_empty())
-        })
-        .clone()
+    static CACHE: OnceLock<Mutex<(Option<String>, Option<Instant>)>> = OnceLock::new();
+    let cell = CACHE.get_or_init(|| Mutex::new((None, None)));
+    {
+        let guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(v) = &guard.0 {
+            return Some(v.clone());
+        }
+        if let Some(last_fail) = guard.1 {
+            if last_fail.elapsed() < Duration::from_secs(GH_TOKEN_RETRY_SECS) {
+                return None;
+            }
+        }
+    }
+    let login = run_gh(cwd, &["api", "user", "-q", ".login"])
+        .ok()
+        .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_lowercase()) } else { None })
+        .filter(|s| !s.is_empty());
+    let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(v) = &login {
+        guard.0 = Some(v.clone());
+    } else {
+        guard.1 = Some(Instant::now());
+    }
+    login
 }
 
 /// "https://github.com/owner/Repo.git" → "Repo" (repo name, case preserved).
@@ -2898,14 +2918,25 @@ fn repo_name(url: &str) -> Option<String> {
 /// (commit to my own branch on the real repo) from "foreign" (fork it). Cached
 /// per `owner/repo` for the process — permissions don't flip mid-session, and
 /// it keeps a fast sync loop from hitting the API every cycle.
-fn can_push_to(cwd: &str, owner: &str, repo: &str) -> bool {
+///
+/// Returns `None` when the check itself couldn't be completed (network
+/// hiccup, API rate limit, `gh` spawn failure) — as opposed to a confirmed
+/// `Some(false)` from a successful API response. The distinction matters:
+/// `classify_repo` treats `Foreign` (confirmed no access) as license to fork
+/// the repo on GitHub and rewrite `.gitmodules` to point every machine at the
+/// fork — a hard-to-reverse, network-visible action. Previously a transient
+/// API failure collapsed into `false` exactly like a confirmed "no access",
+/// so a flaky connection could trigger an unwanted fork of someone else's
+/// repo. Only a *confirmed* answer is cached; a failed check is retried next
+/// cycle rather than locked in.
+fn can_push_to(cwd: &str, owner: &str, repo: &str) -> Option<bool> {
     static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
     let key = format!("{}/{}", owner.to_lowercase(), repo.to_lowercase());
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(v) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return *v;
+        return Some(*v);
     }
-    let allowed = run_gh(
+    let allowed = match run_gh(
         cwd,
         &[
             "api",
@@ -2915,12 +2946,16 @@ fn can_push_to(cwd: &str, owner: &str, repo: &str) -> bool {
         ],
     )
     .ok()
-    .map(|(o, _, c)| c == 0 && o.trim() == "true")
-    .unwrap_or(false);
-    cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(key, allowed);
+    {
+        Some((o, _, 0)) => Some(o.trim() == "true"),
+        _ => None, // couldn't confirm either way — don't guess
+    };
+    if let Some(v) = allowed {
+        cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, v);
+    }
     allowed
 }
 
@@ -2951,10 +2986,13 @@ fn classify_repo(sub: &str, me: Option<&str>) -> RepoClass {
     let Some(repo) = repo_name(&origin) else {
         return RepoClass::Skip;
     };
-    if can_push_to(sub, &owner, &repo) {
-        RepoClass::Shared
-    } else {
-        RepoClass::Foreign
+    match can_push_to(sub, &owner, &repo) {
+        Some(true) => RepoClass::Shared,
+        Some(false) => RepoClass::Foreign,
+        // Couldn't confirm push access (network/API failure) — do NOT default
+        // to Foreign, which would fork the repo on an unconfirmed guess. Skip
+        // and let the next sync cycle re-check once the network recovers.
+        None => RepoClass::Skip,
     }
 }
 
@@ -3252,23 +3290,54 @@ pub(crate) fn run_git(
 // Absolute path to the `gh` CLI, resolved once.
 static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-// GitHub token from `gh auth token`, cached for the app's lifetime.
-// Token lifetime is ~8h for gh OAuth; within a single app session this is fine.
-static GH_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+// GitHub token from `gh auth token`. A successful lookup is cached for the
+// app's lifetime (token lifetime is ~8h for gh OAuth; within a single app
+// session this is fine). A FAILED lookup is deliberately NOT cached forever —
+// only backed off for GH_TOKEN_RETRY_SECS — because every git invocation
+// against a GitHub remote calls this first. If the very first call races
+// `gh auth login` still completing (e.g. right after app launch, or the
+// headless box's gh session hasn't warmed up yet), permanently caching that
+// `None` would silently disable authenticated push/pull for the rest of the
+// process's life — every subsequent sync fails with "could not read
+// Username" even after the user finishes logging in. Retrying with a short
+// backoff instead lets the sync loop self-heal on its own within a tick or
+// two once auth becomes available, without hammering `gh auth token` on
+// every 2s status poll.
+static GH_TOKEN: OnceLock<Mutex<(Option<String>, Option<Instant>)>> = OnceLock::new();
+const GH_TOKEN_RETRY_SECS: u64 = 30;
 
-/// Call `gh auth token` directly in Rust (no shell, no quoting), cache result.
+/// Call `gh auth token` directly in Rust (no shell, no quoting). Caches a
+/// successful token; retries a failed lookup after a short backoff instead of
+/// caching it forever (see GH_TOKEN comment).
 fn get_gh_token() -> Option<String> {
-    GH_TOKEN
-        .get_or_init(|| {
-            let gh = find_gh()?;
-            let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
-            if !out.status.success() {
+    let cell = GH_TOKEN.get_or_init(|| Mutex::new((None, None)));
+    {
+        let guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(t) = &guard.0 {
+            return Some(t.clone());
+        }
+        if let Some(last_fail) = guard.1 {
+            if last_fail.elapsed() < Duration::from_secs(GH_TOKEN_RETRY_SECS) {
                 return None;
             }
-            let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if token.is_empty() { None } else { Some(token) }
-        })
-        .clone()
+        }
+    }
+    let token = find_gh().and_then(|gh| {
+        let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if token.is_empty() { None } else { Some(token) }
+    });
+    let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(t) = &token {
+        guard.0 = Some(t.clone());
+        guard.1 = None;
+    } else {
+        guard.1 = Some(Instant::now());
+    }
+    token
 }
 
 fn find_gh() -> Option<PathBuf> {
