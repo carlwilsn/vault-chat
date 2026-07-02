@@ -129,7 +129,7 @@ export function SchedulesPanel({ open, onClose }: Props) {
   );
 }
 
-function ListView({
+export function ListView({
   list,
   nextFiring,
   onClose,
@@ -137,6 +137,7 @@ function ListView({
   onEdit,
   onToggle,
   onDelete,
+  embedded,
 }: {
   list: Schedule[];
   nextFiring: number | null;
@@ -145,36 +146,47 @@ function ListView({
   onEdit: (s: Schedule) => void;
   onToggle: (id: string, enabled: boolean) => void;
   onDelete: (id: string) => void;
+  // When nested inside another shell (Mission Control's Schedules tab) that
+  // already provides its own header/tabs + New/Close actions, skip this
+  // view's own header so the two don't stack.
+  embedded?: boolean;
 }) {
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border/60 shrink-0">
-        <div className="flex items-center gap-2">
-          <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-          <span className="text-[13px] font-semibold">Schedules</span>
-          <span className="text-[11px] text-muted-foreground">
-            {list.length}
-            {nextFiring ? ` · next ${untilLabel(nextFiring)}` : ""}
-          </span>
+      {embedded ? (
+        <div className="px-4 py-2 border-b border-border/40 shrink-0 text-[11px] text-muted-foreground">
+          {list.length} schedule{list.length === 1 ? "" : "s"}
+          {nextFiring ? ` · next ${untilLabel(nextFiring)}` : ""}
         </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={onNew}
-            className="h-7 px-2 flex items-center gap-1 rounded hover:bg-accent/60 text-[11.5px] text-foreground/90"
-            title="New schedule"
-          >
-            <Plus className="h-3 w-3" />
-            <span>New</span>
-          </button>
-          <button
-            onClick={onClose}
-            className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
-            title="Close (Esc)"
-          >
-            <XIcon className="h-3.5 w-3.5" />
-          </button>
+      ) : (
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border/60 shrink-0">
+          <div className="flex items-center gap-2">
+            <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="text-[13px] font-semibold">Schedules</span>
+            <span className="text-[11px] text-muted-foreground">
+              {list.length}
+              {nextFiring ? ` · next ${untilLabel(nextFiring)}` : ""}
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={onNew}
+              className="h-7 px-2 flex items-center gap-1 rounded hover:bg-accent/60 text-[11.5px] text-foreground/90"
+              title="New schedule"
+            >
+              <Plus className="h-3 w-3" />
+              <span>New</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
+              title="Close (Esc)"
+            >
+              <XIcon className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
-      </div>
+      )}
       <div className="flex-1 overflow-auto">
         {list.length === 0 ? (
           <div className="px-4 py-6 text-center text-[11px] text-muted-foreground italic">
@@ -280,7 +292,7 @@ function Row({
   );
 }
 
-function FormView({
+export function FormView({
   schedule,
   conversations,
   onCancel,
@@ -651,7 +663,7 @@ function radioClasses(active: boolean): string {
     : "flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-border hover:bg-accent/40 cursor-pointer";
 }
 
-function recurrenceWhenLabel(s: Schedule): string {
+export function recurrenceWhenLabel(s: Schedule): string {
   const t = shortTimeLabel(s);
   switch (s.recurrence.kind) {
     case "daily":
@@ -669,7 +681,7 @@ function recurrenceWhenLabel(s: Schedule): string {
   }
 }
 
-function untilLabel(ts: number): string {
+export function untilLabel(ts: number): string {
   const diff = ts - Date.now();
   if (diff < 0) return "now";
   const sec = Math.floor(diff / 1000);
@@ -685,7 +697,7 @@ function untilLabel(ts: number): string {
   return `in ${day}d`;
 }
 
-function agoLabel(ts: number): string {
+export function agoLabel(ts: number): string {
   const diff = Date.now() - ts;
   if (diff < 0) return "now";
   const sec = Math.floor(diff / 1000);

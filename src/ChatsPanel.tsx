@@ -323,7 +323,7 @@ function groupConversations(list: Conversation[], query: string) {
   return { running, recent, earlier };
 }
 
-function relativeTime(ts: number): string {
+export function relativeTime(ts: number): string {
   const diff = Date.now() - ts;
   if (diff < 0) return "now";
   const sec = Math.floor(diff / 1000);

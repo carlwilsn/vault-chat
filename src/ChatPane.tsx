@@ -1216,7 +1216,7 @@ function PlanCard({ title, tasks, desc }: { title: string; tasks: string[]; desc
   );
 }
 
-const MessageBubble = memo(function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
 }: {
   message: ChatMessage;
@@ -1477,7 +1477,7 @@ function ElapsedTimer() {
   );
 }
 
-function ThinkingIndicator({
+export function ThinkingIndicator({
   liveChars,
 }: {
   activeTool?: string;
