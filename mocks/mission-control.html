@@ -1,0 +1,808 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mission control mock</title>
+<style>
+  /* Exact desktop tokens from src/App.css — no invented colors. */
+  :root {
+    --background: 0 0% 10%;
+    --foreground: 0 0% 92%;
+    --card: 0 0% 13%;
+    --popover: 0 0% 18%;
+    --muted: 0 0% 14%;
+    --muted-foreground: 0 0% 60%;
+    --primary: 0 0% 85%;
+    --primary-foreground: 0 0% 10%;
+    --secondary: 0 0% 16%;
+    --accent: 0 0% 20%;
+    --destructive: 0 72% 58%;
+    --border: 0 0% 22%;
+    --emerald: #059669; /* the app's only accent hue: bg-emerald-600 for done */
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%; margin: 0;
+    background: hsl(var(--background)); color: hsl(var(--foreground));
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 13px;
+  }
+  svg { display: block; }
+  button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 999px; }
+
+  /* ---------- titlebar ---------- */
+  .titlebar { height: 36px; display: flex; align-items: center; background: hsl(var(--card)); border-bottom: 1px solid hsl(var(--border)); padding: 0 8px; user-select: none; }
+  .tb-left, .tb-right { display: flex; align-items: center; gap: 4px; }
+  .tb-left { flex: 1; }
+  .tb-right { gap: 0; }
+  .icon-btn { height: 28px; width: 28px; display: flex; align-items: center; justify-content: center; border-radius: var(--radius, 6px); color: hsl(var(--muted-foreground)); background: none; border: none; cursor: pointer; position: relative; }
+  .icon-btn:hover { background: hsl(var(--accent) / 0.6); }
+  .icon-btn.active { background: hsl(var(--accent)); color: hsl(var(--foreground)); }
+  .win-btn { height: 36px; width: 44px; display: flex; align-items: center; justify-content: center; color: hsl(var(--muted-foreground)); background: none; border: none; cursor: pointer; }
+  .win-btn:hover { background: hsl(var(--accent) / 0.6); }
+  .win-btn.close:hover { background: hsl(var(--destructive)); color: #fff; }
+  .vault-btn { display: flex; align-items: center; gap: 6px; padding: 0 8px; height: 28px; border-radius: 6px; background: none; border: none; color: hsl(var(--foreground) / 0.9); cursor: pointer; font-size: 12px; }
+  .vault-btn:hover { background: hsl(var(--accent) / 0.6); }
+  .dot-badge { position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%; }
+
+  /* ---------- modal shell (matches HistoryModal) ---------- */
+  .stage { min-height: calc(100vh - 36px); background: rgba(0,0,0,0.5); backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; padding: 24px 0; }
+  .stage.hidden { display: none; }
+  .modal { width: 760px; max-width: 92vw; height: 82vh; max-height: 620px; display: flex; flex-direction: column; background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: 0.375rem; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); overflow: hidden; }
+  .view { flex: 1; min-height: 0; display: none; flex-direction: column; }
+  .view.on { display: flex; }
+
+  /* header + tabs (border-b-2 underline tabs, like HistoryModal) */
+  .mhead { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding: 16px 16px 0; flex-shrink: 0; }
+  .mhead-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .tabs { display: flex; }
+  .tab { padding: 6px 12px; font-size: 12px; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: hsl(var(--muted-foreground)); cursor: pointer; }
+  .tab:hover { color: hsl(var(--foreground)); }
+  .tab.active { border-bottom-color: hsl(var(--primary)); color: hsl(var(--foreground)); }
+  .head-actions { display: flex; align-items: center; gap: 2px; }
+  .txt-btn { height: 28px; padding: 0 8px; display: flex; align-items: center; gap: 5px; border-radius: 6px; background: none; border: none; color: hsl(var(--foreground) / 0.9); font-size: 11.5px; cursor: pointer; }
+  .txt-btn:hover { background: hsl(var(--accent) / 0.6); }
+  .hr { height: 1px; background: hsl(var(--border)); margin-top: 12px; flex-shrink: 0; }
+  .head-title { font-size: 13px; font-weight: 600; color: hsl(var(--foreground)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .head-sub { font-size: 11px; color: hsl(var(--muted-foreground)); margin-top: 1px; }
+  .stop-link { background: none; border: none; color: hsl(var(--destructive)); font-size: 11.5px; cursor: pointer; padding: 0 6px; }
+  .stop-link:hover { text-decoration: underline; }
+  .stop-link.confirm { text-decoration: underline; font-weight: 500; }
+
+  /* ---------- list rows (matches ChatsPanel Row) ---------- */
+  .scroll { flex: 1; overflow: auto; min-height: 0; }
+  .section-label { padding: 12px 16px 4px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: hsl(var(--muted-foreground) / 0.8); font-weight: 500; }
+  .count-line { padding: 8px 16px 2px; font-size: 11px; color: hsl(var(--muted-foreground)); }
+  .row { border-bottom: 1px solid hsl(var(--border) / 0.4); cursor: pointer; display: flex; align-items: flex-start; gap: 8px; }
+  .row:hover { background: hsl(var(--accent) / 0.4); }
+  .row-btn { flex: 1; text-align: left; padding: 10px 16px; display: flex; align-items: flex-start; gap: 8px; min-width: 0; background: none; border: none; cursor: pointer; color: inherit; }
+  .dot { position: relative; display: inline-flex; height: 6px; width: 6px; margin-top: 6px; flex-shrink: 0; border-radius: 50%; }
+  .dot.running { background: hsl(var(--foreground)); }
+  .dot.running::before { content: ""; position: absolute; inset: 0; border-radius: 50%; background: hsl(var(--foreground)); opacity: .6; animation: ping 1.6s cubic-bezier(0,0,.2,1) infinite; }
+  .dot.unseen { background: hsl(var(--primary)); }
+  .dot.idle { background: hsl(var(--muted-foreground) / 0.4); }
+  .dot.fail { background: hsl(var(--destructive)); }
+  @keyframes ping { 75%,100% { transform: scale(2.4); opacity: 0; } }
+  .col { min-width: 0; flex: 1; }
+  .title-line { display: flex; align-items: center; gap: 6px; }
+  .r-title { font-size: 12.5px; color: hsl(var(--foreground)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .r-title.dim { color: hsl(var(--muted-foreground)); }
+  .r-time { font-size: 10px; color: hsl(var(--muted-foreground)); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .r-prev { font-size: 10.5px; color: hsl(var(--muted-foreground)); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .r-prev.fail { color: hsl(var(--destructive) / 0.85); }
+  .sub-rows { padding-left: 22px; border-bottom: 1px solid hsl(var(--border) / 0.4); }
+  .sub-rows .row { border-bottom: 1px solid hsl(var(--border) / 0.25); }
+  .sub-rows .row:last-child { border-bottom: none; }
+  .arch-toggle { display: flex; align-items: center; gap: 6px; padding: 12px 16px; color: hsl(var(--muted-foreground)); cursor: pointer; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; background: none; border: none; }
+  .arch-toggle:hover { color: hsl(var(--foreground)); }
+  .arch-toggle svg { transition: transform .15s; }
+
+  /* recurrence pill (SchedulesPanel) */
+  .pill { font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; padding: 1px 5px; border-radius: 4px; background: hsl(var(--primary) / 0.15); color: hsl(var(--primary)); font-weight: 500; flex-shrink: 0; }
+  .soon { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: hsl(var(--primary)); flex-shrink: 0; }
+  .paused { font-size: 10px; color: hsl(var(--muted-foreground)); flex-shrink: 0; }
+  .sched-when { font-size: 11px; color: hsl(var(--muted-foreground)); margin-top: 3px; }
+  .sched-when b { color: hsl(var(--foreground) / 0.85); font-weight: 400; }
+  .sched-prompt { font-size: 10.5px; color: hsl(var(--muted-foreground) / 0.8); margin-top: 3px; font-family: ui-monospace, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sched-times { font-size: 10px; color: hsl(var(--muted-foreground) / 0.7); margin-top: 5px; display: flex; gap: 6px; font-variant-numeric: tabular-nums; }
+  .sched-right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; padding: 12px 16px 0 8px; }
+  .cbox { width: 15px; height: 15px; border-radius: 4px; border: 1.5px solid hsl(var(--border)); flex-shrink: 0; position: relative; cursor: pointer; }
+  .cbox.on { background: hsl(var(--primary)); border-color: hsl(var(--primary)); }
+  .cbox.on::after { content: ""; position: absolute; left: 4.5px; top: 1px; width: 3.5px; height: 7px; border: solid hsl(var(--primary-foreground)); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+  .trash { color: hsl(var(--muted-foreground)); opacity: 0; background: none; border: none; cursor: pointer; }
+  .row:hover .trash { opacity: 1; }
+  .trash:hover { color: hsl(var(--destructive)); }
+
+  /* alert cards — token-only */
+  .acard { margin: 0 16px 8px; background: hsl(var(--muted) / 0.4); border: 1px solid hsl(var(--border) / 0.5); border-radius: 8px; padding: 11px 12px; cursor: pointer; display: flex; gap: 11px; }
+  .acard:hover { background: hsl(var(--accent) / 0.4); }
+  .aico { width: 28px; height: 28px; border-radius: 7px; display: flex; align-items: center; justify-content: center; background: hsl(var(--accent)); color: hsl(var(--muted-foreground)); flex-shrink: 0; }
+  .aico.ask { color: hsl(var(--primary)); }
+  .aico.fail { color: hsl(var(--destructive)); }
+  .aico.ok { color: var(--emerald); }
+  .abody { min-width: 0; flex: 1; }
+  .atop { display: flex; align-items: baseline; gap: 8px; }
+  .atitle { font-size: 12.5px; color: hsl(var(--foreground)); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .aunread { width: 6px; height: 6px; border-radius: 50%; background: hsl(var(--primary)); flex-shrink: 0; align-self: center; }
+  .aage { font-size: 10px; color: hsl(var(--muted-foreground)); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .ameta { font-size: 9.5px; letter-spacing: .04em; text-transform: uppercase; color: hsl(var(--muted-foreground) / 0.8); margin-top: 3px; }
+  .asum { font-size: 11.5px; color: hsl(var(--muted-foreground)); margin-top: 4px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  /* Phone swipe-left → desktop hover-reveal action (matches ChatsPanel/SchedulesPanel trash-on-hover). */
+  .acard { position: relative; }
+  .acard-act { opacity: 0; transition: opacity .12s; background: none; border: none; color: hsl(var(--muted-foreground)); cursor: pointer; align-self: center; padding: 6px; border-radius: 6px; flex-shrink: 0; }
+  .acard:hover .acard-act { opacity: 1; }
+  .acard-act:hover { background: hsl(var(--accent)); color: hsl(var(--foreground)); }
+  .row-trash { opacity: 0; transition: opacity .12s; background: none; border: none; color: hsl(var(--muted-foreground)); cursor: pointer; padding: 10px 12px 0 4px; flex-shrink: 0; }
+  .row:hover .row-trash { opacity: 1; }
+  .row-trash:hover { color: hsl(var(--destructive)); }
+
+  /* ---------- detail bodies ---------- */
+  .detail-body { flex: 1; overflow: auto; min-height: 0; padding: 14px 16px; }
+  .lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: hsl(var(--muted-foreground) / 0.8); font-weight: 500; margin: 16px 0 8px; }
+  .lbl:first-child { margin-top: 0; }
+
+  /* done-when — rendered as the app's AgentTodoList "Plan" card */
+  .plan { border: 1px solid hsl(var(--border) / 0.6); background: hsl(var(--muted) / 0.3); border-radius: 0.375rem; padding: 10px; }
+  .plan-head { display: flex; justify-content: space-between; font-size: 10.5px; color: hsl(var(--muted-foreground)); margin-bottom: 6px; }
+  .plan-head .mono { font-family: ui-monospace, monospace; }
+  .plan-list { list-style: none; margin: 0; padding: 0; }
+  .plan-list li { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.5; padding: 1px 0; }
+  .pdot { margin-top: 5px; height: 8px; width: 8px; border-radius: 50%; flex-shrink: 0; }
+  .pdot.done { background: var(--emerald); }
+  .pdot.prog { background: hsl(var(--primary)); animation: pulse 1.6s ease-in-out infinite; }
+  .pdot.pend { background: hsl(var(--muted-foreground) / 0.4); }
+  @keyframes pulse { 50% { opacity: .4; } }
+  .plan-list li.done span:last-child { text-decoration: line-through; color: hsl(var(--muted-foreground)); }
+  .plan-list li.prog span:last-child { color: hsl(var(--foreground)); }
+  .plan-list li.pend span:last-child { color: hsl(var(--muted-foreground)); }
+
+  /* thread turns (matches MessageBubble) */
+  .turn { margin-bottom: 12px; }
+  .turn.user { display: flex; justify-content: flex-end; }
+  .bubble { max-width: 85%; border-radius: 16px 16px 4px 16px; background: hsl(var(--primary) / 0.9); color: hsl(var(--primary-foreground)); padding: 8px 14px; font-size: 13px; line-height: 1.55; }
+  .assistant-text { font-size: 13px; line-height: 1.6; color: hsl(var(--foreground) / 0.95); }
+  .assistant-text p { margin: 0 0 8px; } .assistant-text p:last-child { margin: 0; }
+  .assistant-text code { font-family: ui-monospace, monospace; font-size: 11.5px; background: hsl(var(--accent) / 0.5); padding: 1px 4px; border-radius: 3px; }
+  .assistant-text b { font-weight: 600; }
+
+  /* collapsible tool calls (matches MessageBubble <details>) */
+  .tools { margin-top: 8px; }
+  .tools summary { display: flex; align-items: center; gap: 6px; font-size: 11px; color: hsl(var(--muted-foreground)); cursor: pointer; list-style: none; user-select: none; }
+  .tools summary::-webkit-details-marker { display: none; }
+  .tools summary:hover { color: hsl(var(--foreground)); }
+  .tools summary .chev { transition: transform .15s; transform: rotate(-90deg); }
+  .tools[open] summary .chev { transform: none; }
+  .tool-list { margin-top: 8px; padding-left: 16px; border-left: 1px solid hsl(var(--border)); display: flex; flex-direction: column; gap: 8px; }
+  .tool-name { font-size: 11px; font-family: ui-monospace, monospace; color: hsl(var(--primary)); margin-bottom: 4px; }
+  .tool-pre { font-size: 10.5px; font-family: ui-monospace, monospace; background: hsl(var(--muted) / 0.6); border: 1px solid hsl(var(--border) / 0.4); border-radius: 4px; padding: 8px; overflow: auto; max-height: 140px; white-space: pre-wrap; word-break: break-all; color: hsl(var(--foreground) / 0.9); margin: 0; }
+  .tool-res { font-size: 10.5px; font-family: ui-monospace, monospace; background: hsl(var(--muted) / 0.3); border: 1px solid hsl(var(--border) / 0.4); border-radius: 4px; padding: 8px; overflow: auto; max-height: 160px; white-space: pre-wrap; word-break: break-all; color: hsl(var(--muted-foreground)); margin: 4px 0 0; }
+
+  /* live thinking indicator (matches ThinkingIndicator) */
+  .think { display: flex; align-items: center; gap: 8px; padding: 2px 0; color: hsl(var(--foreground) / 0.8); }
+  .think .core { position: relative; width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+  .think .core::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: currentColor; opacity: .5; animation: ping 1.5s cubic-bezier(0,0,.2,1) infinite; }
+  .think .tok { font-size: 10.5px; font-family: ui-monospace, monospace; color: hsl(var(--muted-foreground)); }
+
+  .hint { font-size: 11px; color: hsl(var(--muted-foreground)); line-height: 1.55; margin-top: 8px; padding: 8px 10px; background: hsl(var(--accent) / 0.25); border-radius: 6px; }
+  .ro-note { font-size: 11px; color: hsl(var(--muted-foreground)); line-height: 1.55; margin-top: 14px; padding: 9px 11px; background: hsl(var(--accent) / 0.25); border-radius: 6px; }
+  .wk-row { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; margin-bottom: 4px; border: 1px solid hsl(var(--border) / 0.6); border-radius: 6px; background: none; color: hsl(var(--foreground) / 0.9); font-size: 12px; cursor: pointer; }
+  .wk-row:hover { background: hsl(var(--accent) / 0.4); }
+  .wk-left { display: flex; align-items: center; gap: 8px; }
+  .wk-mark { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+
+  /* footer composer (matches ChatPane composer) */
+  .foot { padding: 10px 14px; flex-shrink: 0; }
+  .composer { display: flex; align-items: center; gap: 8px; border-radius: 16px; border: 1px solid hsl(var(--border)); background: hsl(var(--background)); padding: 6px 6px 6px 12px; }
+  .composer input { flex: 1; border: none; background: none; color: hsl(var(--foreground)); font-size: 13px; outline: none; }
+  .composer input::placeholder { color: hsl(var(--muted-foreground) / 0.6); }
+  .send { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); border: none; cursor: pointer; flex-shrink: 0; }
+  .stopsq { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: hsl(var(--secondary)); color: hsl(var(--foreground)); border: none; cursor: pointer; flex-shrink: 0; }
+
+  /* schedule form (matches FormView) */
+  .form-body { flex: 1; overflow: auto; min-height: 0; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  .field { display: flex; flex-direction: column; gap: 7px; }
+  .field > .flabel { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: hsl(var(--muted-foreground) / 0.8); font-weight: 500; }
+  .inp { height: 32px; padding: 0 10px; border-radius: 0.375rem; background: hsl(var(--background)); border: 1px solid hsl(var(--border)); color: hsl(var(--foreground)); font-size: 12.5px; outline: none; }
+  .inp:focus { border-color: hsl(0 0% 60% / 0.4); }
+  textarea.inp { height: auto; padding: 8px 10px; font-family: ui-monospace, monospace; line-height: 1.55; resize: none; }
+  select.inp { font-family: ui-monospace, monospace; }
+  .rec-btns { display: flex; flex-wrap: wrap; gap: 4px; }
+  .rec-btn { height: 28px; padding: 0 10px; border-radius: 0.375rem; font-size: 11.5px; border: 1px solid hsl(var(--border)); background: none; color: hsl(var(--foreground)); cursor: pointer; }
+  .rec-btn:hover { background: hsl(var(--accent) / 0.6); }
+  .rec-btn.active { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); border-color: hsl(var(--primary)); }
+  .rec-sub { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: hsl(var(--muted-foreground)); flex-wrap: wrap; }
+  .rec-next { font-size: 10.5px; color: hsl(var(--muted-foreground) / 0.8); }
+  .rec-next b { color: hsl(var(--foreground) / 0.8); font-weight: 400; }
+  .radio { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 0.375rem; border: 1px solid hsl(var(--border)); cursor: pointer; font-size: 12px; }
+  .radio.sel { border-color: hsl(var(--primary) / 0.6); background: hsl(var(--primary) / 0.1); }
+  .radio .rdot { width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid hsl(var(--muted-foreground)); flex-shrink: 0; position: relative; }
+  .radio.sel .rdot { border-color: hsl(var(--primary)); }
+  .radio.sel .rdot::after { content: ""; position: absolute; inset: 2.5px; border-radius: 50%; background: hsl(var(--primary)); }
+  .radio .rhint { margin-left: auto; font-size: 10.5px; color: hsl(var(--muted-foreground)); }
+  .chk { display: flex; align-items: center; gap: 8px; font-size: 12px; color: hsl(var(--foreground)); cursor: pointer; }
+  .fhint { font-size: 10.5px; color: hsl(var(--muted-foreground) / 0.8); line-height: 1.5; }
+  .form-foot { border-top: 1px solid hsl(var(--border) / 0.6); padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+  .del-link { background: none; border: none; color: hsl(var(--destructive)); font-size: 11.5px; cursor: pointer; }
+  .del-link:hover { text-decoration: underline; }
+  .btn { height: 32px; padding: 0 12px; border-radius: 0.375rem; font-size: 12px; cursor: pointer; border: none; }
+  .btn.ghost { background: none; color: hsl(var(--foreground)); }
+  .btn.ghost:hover { background: hsl(var(--accent) / 0.6); }
+  .btn.primary { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+  .btn.primary:hover { background: hsl(var(--primary) / 0.9); }
+
+  /* alert detail body */
+  .md { font-size: 13px; line-height: 1.6; color: hsl(var(--foreground) / 0.92); }
+  .md p { margin: 0 0 10px; }
+  .md ul { margin: 0 0 10px; padding-left: 18px; }
+  .md li { margin: 3px 0; }
+  .md code { font-family: ui-monospace, monospace; font-size: 11.5px; background: hsl(var(--accent) / 0.5); padding: 1px 4px; border-radius: 3px; }
+  .md b { font-weight: 600; }
+  .cta-row { padding: 12px 16px; border-top: 1px solid hsl(var(--border) / 0.6); flex-shrink: 0; display: flex; justify-content: flex-end; }
+</style>
+</head>
+<body>
+
+<!-- ============ TITLEBAR ============ -->
+<div class="titlebar">
+  <div class="tb-left">
+    <button class="icon-btn" title="File panel"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg></button>
+    <button class="vault-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity="0.8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span>summer</span></button>
+    <button class="icon-btn" title="Refresh file tree"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
+    <button class="icon-btn" title="Hidden files"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+    <button class="icon-btn" title="Notes (Ctrl+N to create)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5z"/><path d="M15 3v6h6"/></svg>
+      <span class="dot-badge" style="background:hsl(var(--primary))"></span>
+    </button>
+    <button class="icon-btn active" id="mc-toggle" title="Mission control">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>
+      <span class="dot-badge" id="mc-dot" style="background:hsl(var(--destructive))"></span>
+    </button>
+    <button class="icon-btn" title="Voice mode (off) — Ctrl+D to turn on"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4"/></svg></button>
+  </div>
+  <div class="tb-right">
+    <button class="icon-btn" style="margin-right:4px" title="Hide chat panel"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg></button>
+    <button class="icon-btn" style="margin-right:4px" title="Pop out chat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14 21 3"/></svg></button>
+    <button class="icon-btn" style="margin-right:4px" title="Open terminal (Ctrl+J)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></button>
+    <button class="icon-btn" style="margin-right:4px" title="North star"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg></button>
+    <button class="icon-btn" style="margin-right:4px" title="Settings"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+    <button class="win-btn" title="Minimize"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+    <button class="win-btn" title="Maximize"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="1"/></svg></button>
+    <button class="win-btn close" title="Close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+  </div>
+</div>
+
+<!-- ============ MODAL ============ -->
+<div class="stage" id="mc-stage">
+  <div class="modal">
+
+    <!-- ---------- LIST VIEW ---------- -->
+    <div class="view on" id="view-list">
+      <div class="mhead">
+        <div class="mhead-left">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="hsl(var(--muted-foreground))" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>
+          <div class="tabs">
+            <button class="tab active" data-tab="missions">Missions</button>
+            <button class="tab" data-tab="schedules">Schedules</button>
+            <button class="tab" data-tab="notifications">Notifications</button>
+          </div>
+        </div>
+        <div class="head-actions">
+          <button class="txt-btn" id="sched-new" style="display:none"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>New</button>
+          <button class="txt-btn" id="notif-read" style="display:none"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>Mark all read</button>
+          <button class="icon-btn" id="mc-close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        </div>
+      </div>
+      <div class="hr"></div>
+
+      <!-- MISSIONS pane -->
+      <div class="scroll" id="pane-missions">
+        <div class="section-label">Running</div>
+        <div class="row" data-mission="bitnet">
+          <button class="row-btn">
+            <span class="dot running"></span>
+            <span class="col">
+              <div class="title-line"><span class="r-title">BitNet 3-seed sweep</span><span class="r-time">41m</span></div>
+              <div class="r-prev">Re-registered watcher after false stall; seed 44 recovering.</div>
+            </span>
+          </button>
+        </div>
+        <div class="sub-rows">
+          <div class="row" data-worker="seed44">
+            <button class="row-btn">
+              <span class="dot running"></span>
+              <span class="col"><div class="title-line"><span class="r-title" style="font-size:11.5px;color:hsl(var(--foreground)/0.8)">seed-44</span><span class="r-time">2m</span></div><div class="r-prev">Training, step 18,200 / 40,000</div></span>
+            </button>
+          </div>
+          <div class="row" data-worker="seed12">
+            <button class="row-btn">
+              <span class="dot idle"></span>
+              <span class="col"><div class="title-line"><span class="r-title" style="font-size:11.5px;color:hsl(var(--foreground)/0.8)">seed-12</span><span class="r-time">1h</span></div><div class="r-prev">Done — eval.loss 1.51</div></span>
+            </button>
+          </div>
+        </div>
+
+        <div class="section-label">Needs attention</div>
+        <div class="row" data-mission="watchdog">
+          <button class="row-btn">
+            <span class="dot fail"></span>
+            <span class="col">
+              <div class="title-line"><span class="r-title">Nightly sync watchdog</span><span class="r-time">6h</span></div>
+              <div class="r-prev fail">Failed — stale lock on school vault blocked push.</div>
+            </span>
+          </button>
+        </div>
+
+        <button class="arch-toggle" id="mission-arch-toggle">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          <span>Archive · 12 completed</span>
+        </button>
+        <div id="mission-arch" style="display:none">
+          <div class="row" data-mission="coconut"><button class="row-btn"><span class="dot idle"></span><span class="col"><div class="title-line"><span class="r-title dim">Audit Coconut worker crashes</span><span class="r-time">2h</span></div></span></button></div>
+          <div class="row" data-mission="coconut"><button class="row-btn"><span class="dot idle"></span><span class="col"><div class="title-line"><span class="r-title dim">Swipe-to-resolve notes fix</span><span class="r-time">4d</span></div></span></button></div>
+        </div>
+      </div>
+
+      <!-- SCHEDULES pane -->
+      <div class="scroll" id="pane-schedules" style="display:none">
+        <div class="count-line">3 schedules · next in 3m</div>
+        <div class="row" data-sched="coach">
+          <button class="row-btn">
+            <span class="col">
+              <div class="title-line"><span class="r-title">Daily coach debrief</span><span class="pill">Daily</span></div>
+              <div class="sched-when">Every day at 9:00 PM · <b>new chat</b></div>
+              <div class="sched-prompt">"Pull today's GROUND_TRUTH deltas and write the coach debrief…"</div>
+              <div class="sched-times"><span>last fired 21h ago</span><span>·</span><span>next in 2h</span></div>
+            </span>
+          </button>
+          <div class="sched-right"><span class="cbox on" data-cbox></span><button class="trash"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div>
+        </div>
+        <div class="row" data-sched="brief">
+          <button class="row-btn">
+            <span class="col">
+              <div class="title-line"><span class="r-title">Morning briefing</span><span class="pill">Weekdays</span><span class="soon"><span class="dot running" style="position:relative"></span>soon</span></div>
+              <div class="sched-when">Weekdays at 7:30 AM · <b>new chat</b></div>
+              <div class="sched-prompt">"Summarize the three things to look at first today."</div>
+              <div class="sched-times"><span>next in 3m</span></div>
+            </span>
+          </button>
+          <div class="sched-right"><span class="cbox on" data-cbox></span><button class="trash"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div>
+        </div>
+        <div class="row" data-sched="sweep" style="opacity:0.6">
+          <button class="row-btn">
+            <span class="col">
+              <div class="title-line"><span class="r-title">Loss-curve watchdog</span><span class="pill">Every</span><span class="paused">paused</span></div>
+              <div class="sched-when">Every 30 min · <b>existing chat</b></div>
+              <div class="sched-prompt">"Check train/loss for all live seeds; flag divergence."</div>
+            </span>
+          </button>
+          <div class="sched-right"><span class="cbox" data-cbox></span><button class="trash"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div>
+        </div>
+      </div>
+
+      <!-- NOTIFICATIONS pane -->
+      <div class="scroll" id="pane-notifications" style="display:none">
+        <div class="section-label">Needs a reply</div>
+        <div class="acard" data-alert="ask1">
+          <div class="aico ask"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+          <div class="abody">
+            <div class="atop"><span class="atitle">Seed 44 diverged — respawn or drop LR?</span><span class="aunread"></span><span class="aage">2m</span></div>
+            <div class="ameta">Supervisor · decision needed</div>
+            <div class="asum">Loss plateaued high after step 14.3k. I can respawn from the last good checkpoint with a lower LR warmup, or hold for your call.</div>
+          </div>
+        </div>
+
+        <div class="section-label">Heads-up</div>
+        <div class="acard" data-alert="fail">
+          <div class="aico fail"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+          <div class="abody">
+            <div class="atop"><span class="atitle">Nightly sync watchdog failed</span><span class="aunread"></span><span class="aage">6h</span></div>
+            <div class="ameta">Watchdog · failure</div>
+            <div class="asum">Stale lock on the school vault blocked the push. No data lost; needs a manual unlock before the next run.</div>
+          </div>
+        </div>
+        <div class="acard" data-alert="coach">
+          <div class="aico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10"/><path d="M12 6v6l4 2"/></svg></div>
+          <div class="abody">
+            <div class="atop"><span class="atitle">Daily coach debrief ready</span><span class="aage">21h</span></div>
+            <div class="ameta">Coach · briefing</div>
+            <div class="asum">3 of 4 Saturday-block goals hit. DL track: BitNet repro seeds 12 & 27 landed; 44 in flight. Full debrief inside.</div>
+          </div>
+        </div>
+
+        <button class="arch-toggle" id="alert-arch-toggle">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          <span>Archive · 8</span>
+        </button>
+        <div id="alert-arch" style="display:none">
+          <div class="acard" data-alert="coach"><div class="aico ok"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div><div class="abody"><div class="atop"><span class="atitle">seed-12 finished</span><span class="aage">1h</span></div><div class="ameta">Worker · result</div><div class="asum">eval.loss 1.51 committed under results/.</div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- MISSION DETAIL ---------- -->
+    <div class="view" id="view-mission">
+      <div class="mhead">
+        <div class="mhead-left">
+          <button class="icon-btn" data-back><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></button>
+          <div style="min-width:0">
+            <div class="head-title" id="mission-title">BitNet 3-seed sweep</div>
+            <div class="head-sub" id="mission-sub">Mission · running</div>
+          </div>
+        </div>
+        <div class="head-actions">
+          <button class="stop-link" id="mission-stop">Stop mission</button>
+          <button class="icon-btn" data-close-detail><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        </div>
+      </div>
+      <div class="hr"></div>
+      <div class="detail-body" id="mission-detail-body"></div>
+      <div class="foot" id="mission-foot">
+        <div class="composer">
+          <input type="text" id="mission-composer-input" placeholder="Steer the supervisor, or tell it to spawn a worker…" />
+          <button class="stopsq" id="mission-turn-stop" title="Stop the agent"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg></button>
+          <button class="send" id="mission-send" title="Send" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- WORKER ARTIFACT (read-only) ---------- -->
+    <div class="view" id="view-worker">
+      <div class="mhead">
+        <div class="mhead-left">
+          <button class="icon-btn" data-back-worker><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></button>
+          <div style="min-width:0">
+            <div class="head-title" id="worker-title">seed-44</div>
+            <div class="head-sub">Worker · BitNet 3-seed sweep · read-only</div>
+          </div>
+        </div>
+        <button class="icon-btn" data-close-detail><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      </div>
+      <div class="hr"></div>
+      <div class="detail-body" id="worker-detail-body"></div>
+    </div>
+
+    <!-- ---------- ALERT DETAIL ---------- -->
+    <div class="view" id="view-alert">
+      <div class="mhead">
+        <div class="mhead-left">
+          <button class="icon-btn" data-back><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></button>
+          <div style="min-width:0">
+            <div class="head-title" id="alert-title">Alert</div>
+            <div class="head-sub" id="alert-sub"></div>
+          </div>
+        </div>
+        <div class="head-actions">
+          <button class="txt-btn" id="alert-open-thread"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14 21 3"/></svg>Open thread</button>
+          <button class="icon-btn" data-close-detail><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        </div>
+      </div>
+      <div class="hr"></div>
+      <div class="detail-body"><div class="md" id="alert-body"></div></div>
+      <div class="cta-row" id="alert-cta" style="display:none"><button class="btn primary">Reply to supervisor</button></div>
+    </div>
+
+    <!-- ---------- SCHEDULE FORM ---------- -->
+    <div class="view" id="view-schedule">
+      <div class="mhead">
+        <div class="mhead-left">
+          <button class="icon-btn" data-back><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></button>
+          <div class="head-title" id="sched-form-title">Edit schedule</div>
+        </div>
+        <button class="icon-btn" data-close-detail><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      </div>
+      <div class="hr"></div>
+      <div class="form-body">
+        <div class="field"><span class="flabel">Name</span><input class="inp" id="sf-name" placeholder="Auto from prompt if blank" value="Daily coach debrief"/></div>
+        <div class="field">
+          <span class="flabel">When</span>
+          <div class="rec-btns" id="sf-rec">
+            <button class="rec-btn active" data-rec="daily">Daily</button>
+            <button class="rec-btn" data-rec="weekdays">Weekdays</button>
+            <button class="rec-btn" data-rec="weekly">Weekly</button>
+            <button class="rec-btn" data-rec="every">Every…</button>
+            <button class="rec-btn" data-rec="once">Once</button>
+            <button class="rec-btn" data-rec="cron">Cron</button>
+          </div>
+          <div class="rec-sub" id="sf-rec-sub"></div>
+          <div class="rec-sub"><span>at</span><input class="inp" id="sf-time" type="time" value="21:00" style="width:auto"/><span>·</span><span>timezone:</span><span style="color:hsl(var(--foreground)/0.85);font-family:ui-monospace,monospace">America/Chicago</span></div>
+          <div class="rec-next">Next: <b id="sf-next">today at 9:00 PM</b></div>
+        </div>
+        <div class="field">
+          <span class="flabel">Fires into</span>
+          <div class="radio sel" data-target="new"><span class="rdot"></span><span>A new chat each run</span><span class="rhint">titled with the date</span></div>
+          <div class="radio" data-target="existing"><span class="rdot"></span><span>Existing chat</span><span class="rhint">pick a conversation</span></div>
+        </div>
+        <div class="field">
+          <span class="flabel">Prompt</span>
+          <textarea class="inp" id="sf-prompt" rows="5">Pull today's GROUND_TRUTH deltas and write the coach debrief for the DL track. Score each Saturday-block goal and flag anything at risk.</textarea>
+          <div class="fhint">@mention files like in chat. Vault context is whatever's open at fire time, plus the explicit @mentions.</div>
+        </div>
+        <div class="field">
+          <span class="flabel">Model</span>
+          <select class="inp" id="sf-model"><option>Auto — smart routing</option><option>Sonnet 4.6</option><option>Opus 4.8</option><option>Haiku 4.5</option></select>
+          <div class="fhint">Auto routes per-prompt by complexity. Otherwise this exact model runs the schedule.</div>
+        </div>
+        <div class="field">
+          <span class="flabel">On completion</span>
+          <label class="chk" id="sf-unread"><span class="cbox on"></span><span>Mark unread in Chats</span></label>
+        </div>
+      </div>
+      <div class="form-foot">
+        <button class="del-link">Delete</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn ghost" data-back>Cancel</button>
+          <button class="btn primary" data-close-list>Save</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  function showView(id) {
+    document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('on'); });
+    $(id).classList.add('on');
+  }
+  function backToList() { showView('view-list'); }
+
+  /* ---- tabs ---- */
+  var panes = { missions: 'pane-missions', schedules: 'pane-schedules', notifications: 'pane-notifications' };
+  document.querySelectorAll('.tab').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      document.querySelectorAll('.tab').forEach(function (t) { t.classList.remove('active'); });
+      tab.classList.add('active');
+      var name = tab.dataset.tab;
+      Object.keys(panes).forEach(function (k) { $(panes[k]).style.display = k === name ? 'block' : 'none'; });
+      $('sched-new').style.display = name === 'schedules' ? 'flex' : 'none';
+      $('notif-read').style.display = name === 'notifications' ? 'flex' : 'none';
+    });
+  });
+
+  /* ---- archives ---- */
+  function wireArch(btnId, holderId) {
+    $(btnId).addEventListener('click', function () {
+      var h = $(holderId), open = h.style.display !== 'none';
+      h.style.display = open ? 'none' : 'block';
+      this.querySelector('svg').style.transform = open ? '' : 'rotate(90deg)';
+    });
+  }
+  wireArch('mission-arch-toggle', 'mission-arch');
+  wireArch('alert-arch-toggle', 'alert-arch');
+
+  /* ---- data ---- */
+  var missions = {
+    bitnet: {
+      title: 'BitNet 3-seed sweep', sub: 'Mission · running', running: true,
+      doneWhen: [
+        { t: 'seed 12 trained to 40k steps, eval.loss logged', s: 'done' },
+        { t: 'seed 27 trained to 40k steps, eval.loss logged', s: 'done' },
+        { t: 'seed 44 trained to 40k steps, eval.loss logged', s: 'prog' },
+        { t: 'three-seed variance summary written to results/summary.md', s: 'pend' },
+      ],
+      turns: [
+        { who: 'assistant',
+          text: '<p>Caught seed 44 diverging and re-armed a corrected watcher. Restarted it from the last good checkpoint with a gentler warmup — seeds 12 and 27 already landed clean.</p>',
+          tools: [
+            { name: 'RegisterWatcher', input: '{\n  "metric": "train/loss",\n  "pattern": "diverge",\n  "convId": "seed-44"\n}', result: 'watcher wt_4471 registered' },
+            { name: 'AskWorker', input: '{\n  "worker": "seed-44",\n  "message": "restart from ckpt 12k, LR warmup 0.5x"\n}', result: 'delivered' },
+          ] },
+        { who: 'user', text: 'good. how\'s 44 looking now?' },
+      ],
+      live: { tokens: 118 },
+      workers: [
+        { id: 'seed44', name: 'seed-44', live: true },
+        { id: 'seed12', name: 'seed-12', live: false },
+        { id: 'seed27', name: 'seed-27', live: false },
+      ],
+    },
+    watchdog: {
+      title: 'Nightly sync watchdog', sub: 'Mission · failed', running: false, failed: true,
+      doneWhen: [
+        { t: 'all four vaults fetched, merged, and pushed', s: 'pend' },
+        { t: 'sync-log.jsonl updated with the run', s: 'done' },
+      ],
+      turns: [
+        { who: 'assistant',
+          text: '<p>Push to the school vault is blocked by a stale lock. I stopped rather than force it — needs a manual unlock before the next run so we don\'t clobber in-progress work.</p>',
+          tools: [{ name: 'GitPush', input: '{ "vault": "school" }', result: 'error: stale lock held by pid 4021' }] },
+      ],
+      live: null, workers: [],
+    },
+    coconut: {
+      title: 'Audit Coconut worker crashes', sub: 'Mission · complete', running: false, readonly: true,
+      doneWhen: [
+        { t: 'root cause of the 5 early worker deaths identified', s: 'done' },
+        { t: 'workaround or fix recommended', s: 'done' },
+      ],
+      turns: [
+        { who: 'assistant',
+          text: '<p>The crashes were a transient infra error, not worker logic. Supervisor worked around it by doing prep in-thread. Root cause is worth fixing before trusting delegation again.</p>',
+          tools: [{ name: 'GetTaskOutput', input: '{ "taskId": "coconut-prep-1" }', result: '"[object Object]"' }] },
+      ],
+      live: null, workers: [{ id: 'seed12', name: 'prep-worker', live: false }],
+    },
+  };
+
+  var workers = {
+    seed44: { title: 'seed-44', turns: [
+      { who: 'supervisor', text: '<p>Restart from checkpoint 12,000 with LR warmup at 0.5x. Log eval.loss every 2k steps and commit under results/.</p>' },
+      { who: 'worker', text: '<p>Resumed from ckpt-12k. Currently at step 18,200 / 40,000, eval.loss 1.71 and trending down. No divergence this run.</p>',
+        tools: [{ name: 'RunLambda', input: '{\n  "script": "train.py --seed 44 --resume ckpt-12k",\n  "gpu": "a100x1"\n}', result: 'launched · pid 8821' }] },
+    ] },
+    seed12: { title: 'seed-12', turns: [
+      { who: 'supervisor', text: '<p>Train seed 12 to 40k steps, log eval.loss, commit results.</p>' },
+      { who: 'worker', text: '<p>Done — 40,000 steps, eval.loss 1.51, committed under results/seed12/.</p>' },
+    ] },
+    seed27: { title: 'seed-27', turns: [
+      { who: 'supervisor', text: '<p>Train seed 27 to 40k steps, log eval.loss, commit results.</p>' },
+      { who: 'worker', text: '<p>Done — 40,000 steps, eval.loss 1.49, committed under results/seed27/.</p>' },
+    ] },
+  };
+
+  var alerts = {
+    ask1: { title: 'Seed 44 diverged — respawn or drop LR?', sub: 'Supervisor · decision needed', ask: true,
+      body: '<p>seed 44\'s <code>train/loss</code> plateaued high after step 14,300 — a diverged run, not noise.</p><p>Two options:</p><ul><li>Respawn from the last good checkpoint (step 12,000) with a <b>lower LR warmup</b> — my recommendation.</li><li>Hold seed 44 and ship the 2-seed variance summary now.</li></ul><p>Which do you want?</p>' },
+    fail: { title: 'Nightly sync watchdog failed', sub: 'Watchdog · failure', ask: false,
+      body: '<p>The push to the <b>school</b> vault was blocked by a stale lock (pid 4021), likely left by an interrupted sync.</p><p>No data was lost. The other three vaults synced cleanly. Next run needs a manual unlock first.</p>' },
+    coach: { title: 'Daily coach debrief', sub: 'Coach · briefing', ask: false,
+      body: '<p><b>Saturday block — 3 of 4 goals hit.</b></p><ul><li>DL track: BitNet repro seeds 12 & 27 landed (eval.loss 1.51 / 1.49); seed 44 restarted after divergence.</li><li>IM&P: reading done, notes committed.</li><li>Lyric: <b>not started</b> — carried to Sunday.</li></ul>' },
+  };
+
+  /* ---- renderers ---- */
+  function toolsHtml(tools) {
+    if (!tools || !tools.length) return '';
+    var n = tools.length;
+    return '<details class="tools"><summary>' +
+      '<svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>' +
+      '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>' +
+      '<span>' + n + ' tool call' + (n === 1 ? '' : 's') + '</span></summary><div class="tool-list">' +
+      tools.map(function (t) {
+        return '<div><div class="tool-name">' + t.name + '</div><pre class="tool-pre">' + esc(t.input) + '</pre>' +
+          (t.result ? '<pre class="tool-res">' + esc(t.result) + '</pre>' : '') + '</div>';
+      }).join('') + '</div></details>';
+  }
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function turnsHtml(turns, roles) {
+    return turns.map(function (t) {
+      if (t.who === 'user') return '<div class="turn user"><div class="bubble">' + esc(t.text) + '</div></div>';
+      return '<div class="turn"><div class="assistant-text">' + t.text + '</div>' + toolsHtml(t.tools) + '</div>';
+    }).join('');
+  }
+  function liveHtml(live) {
+    if (!live) return '';
+    return '<div class="think"><span class="core"></span><span class="tok">' + live.tokens + ' tokens</span></div>';
+  }
+
+  function openMission(key) {
+    var m = missions[key]; if (!m) return;
+    $('mission-title').textContent = m.title;
+    $('mission-sub').textContent = m.sub;
+    var done = m.doneWhen.filter(function (d) { return d.s === 'done'; }).length;
+    var html = '<div class="lbl">Done when</div><div class="plan"><div class="plan-head"><span>Done when</span><span class="mono">' + done + '/' + m.doneWhen.length + '</span></div><ul class="plan-list">' +
+      m.doneWhen.map(function (d) {
+        var cls = d.s === 'done' ? 'done' : d.s === 'prog' ? 'prog' : 'pend';
+        return '<li class="' + cls + '"><span class="pdot ' + cls + '"></span><span>' + d.t + '</span></li>';
+      }).join('') + '</ul></div>';
+    html += '<div class="lbl">Thread</div>' + turnsHtml(m.turns) + liveHtml(m.live);
+    if (!m.running && !m.readonly && !m.failed) html += '<div class="hint">Ready for you — it\'s waiting on its workers and self-checks on its own schedule. Ask it anything below.</div>';
+    if (m.workers.length) {
+      html += '<div class="lbl">Workers · ' + m.workers.length + '</div>';
+      html += m.workers.map(function (w) {
+        return '<button class="wk-row" data-open-worker="' + w.id + '"><span class="wk-left"><span class="wk-mark" style="background:' + (w.live ? 'hsl(var(--foreground))' : 'hsl(var(--muted-foreground)/0.5)') + '"></span>' + w.name + (w.live ? '' : ' · done') + '</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="hsl(var(--muted-foreground))" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></button>';
+      }).join('');
+    }
+    var b = $('mission-detail-body'); b.innerHTML = html; b.scrollTop = b.scrollHeight;
+    b.querySelectorAll('[data-open-worker]').forEach(function (el) { el.addEventListener('click', function () { openWorker(el.dataset.openWorker); }); });
+    // Composer trailing button: Stop-square while the supervisor is mid-turn (like ChatPane), else Send.
+    var running = !!m.running;
+    $('mission-turn-stop').style.display = running ? 'flex' : 'none';
+    $('mission-send').style.display = running ? 'none' : 'flex';
+    $('mission-composer-input').placeholder = m.readonly ? 'Ask the supervisor about this finished mission…' : 'Steer the supervisor, or tell it to spawn a worker…';
+    $('mission-stop').style.display = (m.running || m.failed) ? 'inline' : 'none';
+    showView('view-mission');
+  }
+
+  function openWorker(id) {
+    var w = workers[id]; if (!w) return;
+    $('worker-title').textContent = w.title;
+    $('worker-detail-body').innerHTML =
+      '<div class="lbl">Thread · supervisor ↔ worker</div>' + turnsHtml(w.turns) +
+      '<div class="ro-note">This back-and-forth is the <b>supervisor</b> briefing and steering the <b>worker</b> — not you. Read-only: if it\'s off track, steer the supervisor or re-scope the mission.</div>';
+    showView('view-worker');
+  }
+
+  function openAlert(id) {
+    var a = alerts[id]; if (!a) return;
+    $('alert-title').textContent = a.title;
+    $('alert-sub').textContent = a.sub;
+    $('alert-body').innerHTML = a.body;
+    $('alert-cta').style.display = a.ask ? 'flex' : 'none';
+    showView('view-alert');
+  }
+
+  /* ---- wire rows ---- */
+  document.querySelectorAll('[data-mission]').forEach(function (el) { el.addEventListener('click', function () { openMission(el.dataset.mission); }); });
+  document.querySelectorAll('[data-worker]').forEach(function (el) { el.addEventListener('click', function () { openWorker(el.dataset.worker); }); });
+  document.querySelectorAll('[data-alert]').forEach(function (el) { el.addEventListener('click', function () { openAlert(el.dataset.alert); }); });
+  document.querySelectorAll('[data-sched]').forEach(function (el) {
+    el.querySelector('.row-btn').addEventListener('click', function () { $('sched-form-title').textContent = 'Edit schedule'; showView('view-schedule'); });
+  });
+  document.querySelectorAll('[data-cbox]').forEach(function (el) { el.addEventListener('click', function (e) { e.stopPropagation(); el.classList.toggle('on'); }); });
+  document.querySelectorAll('.trash').forEach(function (el) { el.addEventListener('click', function (e) { e.stopPropagation(); }); });
+  $('sched-new').addEventListener('click', function () { $('sched-form-title').textContent = 'New schedule'; showView('view-schedule'); });
+
+  /* ---- schedule form recurrence sub-controls ---- */
+  var recSub = {
+    daily: '', weekdays: '',
+    weekly: '<span>on</span><select class="inp" style="width:auto"><option>Monday</option><option>Tuesday</option><option selected>Saturday</option></select>',
+    every: '<span>every</span><input class="inp" type="number" value="30" style="width:64px"/><span>minutes</span>',
+    once: '<span>on</span><input class="inp" type="date" value="2026-07-04" style="width:auto"/>',
+    cron: '<span>expr</span><input class="inp" style="flex:1;font-family:ui-monospace,monospace" value="0 * * * *"/>',
+  };
+  document.querySelectorAll('#sf-rec .rec-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('#sf-rec .rec-btn').forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      $('sf-rec-sub').innerHTML = recSub[btn.dataset.rec] || '';
+    });
+  });
+  document.querySelectorAll('#view-schedule [data-target]').forEach(function (el) {
+    el.addEventListener('click', function () {
+      document.querySelectorAll('#view-schedule [data-target]').forEach(function (r) { r.classList.remove('sel'); });
+      el.classList.add('sel');
+    });
+  });
+  $('sf-unread').addEventListener('click', function (e) { e.preventDefault(); this.querySelector('.cbox').classList.toggle('on'); });
+
+  /* ---- mission Stop (confirm pattern) ---- */
+  var stopBtn = $('mission-stop');
+  stopBtn.addEventListener('click', function () {
+    if (!stopBtn.classList.contains('confirm')) {
+      stopBtn.classList.add('confirm'); stopBtn.textContent = 'Confirm?';
+      setTimeout(function () { stopBtn.classList.remove('confirm'); stopBtn.textContent = 'Stop mission'; }, 2200);
+    } else { stopBtn.classList.remove('confirm'); stopBtn.textContent = 'Stop mission'; backToList(); }
+  });
+
+  /* ---- back / close ---- */
+  document.querySelectorAll('[data-back]').forEach(function (el) { el.addEventListener('click', backToList); });
+  document.querySelectorAll('[data-back-worker]').forEach(function (el) { el.addEventListener('click', function () { openMission('bitnet'); }); });
+  document.querySelectorAll('[data-close-detail]').forEach(function (el) { el.addEventListener('click', function () { $('mc-stage').classList.add('hidden'); backToList(); }); });
+  document.querySelectorAll('[data-close-list]').forEach(function (el) { el.addEventListener('click', backToList); });
+
+  $('mc-toggle').addEventListener('click', function () { $('mc-stage').classList.toggle('hidden'); });
+  $('mc-close').addEventListener('click', function () { $('mc-stage').classList.add('hidden'); });
+
+  /* ---- desktop equivalent of the phone's swipe gestures ----
+     Phone: swipe an alert left to archive it; swipe an archived mission left to
+     delete it. Desktop has no swipe, so each row reveals an action button on
+     hover — the same trash-on-hover convention ChatsPanel/SchedulesPanel use. */
+  function dismiss(node) {
+    node.style.transition = 'opacity .15s ease, transform .15s ease';
+    node.style.opacity = '0'; node.style.transform = 'translateX(14px)';
+    setTimeout(function () { node.style.display = 'none'; }, 150);
+  }
+  var archiveIco = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>';
+  var trashIco = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+  document.querySelectorAll('.acard').forEach(function (card) {
+    var b = document.createElement('button');
+    b.className = 'acard-act'; b.title = 'Archive'; b.innerHTML = archiveIco;
+    b.addEventListener('click', function (e) { e.stopPropagation(); dismiss(card); });
+    card.appendChild(b);
+  });
+  document.querySelectorAll('#mission-arch .row').forEach(function (row) {
+    var b = document.createElement('button');
+    b.className = 'row-trash'; b.title = 'Delete mission'; b.innerHTML = trashIco;
+    b.addEventListener('click', function (e) { e.stopPropagation(); dismiss(row); });
+    row.appendChild(b);
+  });
+})();
+</script>
+
+</body>
+</html>
