@@ -349,15 +349,20 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
   // Failure-dedup for the durable log: a persistent error (network down, a
   // wedged remote) would otherwise write an identical line every tick. We log a
   // failure once when it first appears and once when it clears, so the file
-  // reads as a timeline of distinct incidents — not per-tick noise. `null` =
-  // currently healthy; otherwise the `op|message` signature of the last failure.
-  let lastFailSig: string | null = null;
+  // reads as a timeline of distinct incidents — not per-tick noise. Keyed PER
+  // OP (pull / commit / push / push-flush), not shared across them: a single
+  // shared signature meant an unrelated op recovering (e.g. `pull` succeeding)
+  // logged a false "recovered" for a still-failing `push` and then reset the
+  // dedup state, so the next push failure logged as a brand-new incident
+  // instead of a continuation of the same one — exactly the pattern this log
+  // exists to show. Empty = no op currently failing.
+  const lastFailSigs = new Map<string, string>();
 
   const recordResult = (op: string, r: SyncOpResult) => {
     if (!r.ok && r.error) {
       const sig = `${op}|${r.message}`;
-      if (sig !== lastFailSig) {
-        lastFailSig = sig;
+      if (lastFailSigs.get(op) !== sig) {
+        lastFailSigs.set(op, sig);
         appendSyncLog(vault, "error", op, r.message, { ahead: snapOf(vault).ahead });
       }
       return;
@@ -369,9 +374,10 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       if (r.message.includes("merged")) {
         appendSyncLog(vault, "merge", op, r.message);
       }
-      if (lastFailSig !== null) {
-        appendSyncLog(vault, "recovered", op, r.message, { from: lastFailSig });
-        lastFailSig = null;
+      const prevSig = lastFailSigs.get(op);
+      if (prevSig !== undefined) {
+        appendSyncLog(vault, "recovered", op, r.message, { from: prevSig });
+        lastFailSigs.delete(op);
       }
     }
   };

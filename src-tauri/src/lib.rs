@@ -2371,7 +2371,15 @@ struct GitCommit {
 //     hung fetch/push on the headless server fails fast, not forever.
 
 const GIT_TIMEOUT_SECS: u64 = 90;
-const STALE_LOCK_SECS: u64 = 10;
+// A live index.lock seen here is always foreign (in-process writers are
+// already serialized by `with_repo_lock`) — either orphaned by a crashed git,
+// or genuinely held by the user's own `git` CLI / another tool running in the
+// same repo. 10s was too tight: a real manual operation (a big `git add -A`,
+// `git gc`, an interactive rebase) routinely outlives it, and deleting a lock
+// out from under a still-running foreign git risks an interleaved write to
+// the index. 30s comfortably covers ordinary manual git usage while still
+// self-healing a crashed lock well within a user's patience.
+const STALE_LOCK_SECS: u64 = 30;
 
 // Git identity model. Authorship follows *who actually did the work*:
 //   - the AGENT (an autonomous turn, or any `git commit` the agent runs via
@@ -2969,6 +2977,14 @@ fn ensure_on_branch(sub: &str, branch: &str) -> bool {
     if cur.as_deref() == Some(branch) {
         return true;
     }
+    // Fetch first so a branch another machine already pushed is visible here.
+    // Without this, two machines that first touch a shared repo around the
+    // same time each create their OWN local `vault-chat/<user>` branch from
+    // HEAD (no fetch ever populated `origin/<branch>` for either), and every
+    // later push is rejected as non-fast-forward forever — there's no
+    // reconciliation path for nested repos. Best-effort: offline still falls
+    // through to local branch creation below.
+    let _ = run_git_timeout(sub, &["fetch", "origin", branch], 120);
     let remote = format!("origin/{}", branch);
     let remote_exists = matches!(
         run_git(sub, &["rev-parse", "--verify", "--quiet", &remote]),
@@ -2990,7 +3006,11 @@ fn ensure_on_branch(sub: &str, branch: &str) -> bool {
 }
 
 /// Sync ONE nested repo per its class. Best-effort throughout — any step that
-/// fails is logged and skipped, never fatal to the vault's own sync.
+/// fails is logged and skipped, never fatal to the vault's own sync. Returns a
+/// human-readable problem description for each step that didn't succeed (empty
+/// = fully clean), so callers can surface nested-repo trouble instead of it
+/// vanishing into stderr — a stuck submodule push otherwise had NO signal
+/// anywhere in the UI or the durable sync log, forever.
 /// `cfg_branch` is the `.gitmodules`-declared tracking branch when this repo is
 /// a registered submodule (used for stale-pin recovery), else None.
 fn sync_one_repo(
@@ -3000,7 +3020,8 @@ fn sync_one_repo(
     agent: bool,
     me: Option<&str>,
     cfg_branch: Option<&str>,
-) {
+) -> Vec<String> {
+    let mut errors: Vec<String> = Vec::new();
     let mut class = classify_repo(sub, me);
 
     // Foreign → fork to the user's account and repoint origin at the fork, then
@@ -3011,11 +3032,16 @@ fn sync_one_repo(
                 eprintln!("[sync] foreign repo '{}' forked → {}", rel, fork);
                 class = RepoClass::Mine;
             }
-            None => return, // can't fork (no gh write) — leave it read-only
+            None => {
+                // can't fork (no gh write) — leave it read-only. Not logged as
+                // an error: this is a stable, expected state for a repo the
+                // user has no write access to, not a transient failure.
+                return errors;
+            }
         }
     }
     if class == RepoClass::Skip {
-        return;
+        return errors;
     }
 
     // Resolve the working branch.
@@ -3026,11 +3052,13 @@ fn sync_one_repo(
     //    submodule lands detached, so attach it to its branch tip (or recover
     //    onto its .gitmodules-declared branch), exactly as before.
     let shared_branch = if class == RepoClass::Shared {
-        let Some(m) = me else { return };
+        let Some(m) = me else { return errors };
         let b = format!("vault-chat/{}", m);
         if !ensure_on_branch(sub, &b) {
-            eprintln!("[sync] shared repo '{}' — couldn't switch to '{}'; skipping", rel, b);
-            return;
+            let m = format!("shared repo '{}' — couldn't switch to '{}'", rel, b);
+            eprintln!("[sync] {}; skipping", m);
+            errors.push(m);
+            return errors;
         }
         Some(b)
     } else {
@@ -3046,7 +3074,7 @@ fn sync_one_repo(
                         "[sync] repo '{}' recovered onto tracking branch '{}' (was detached at a stale pin)",
                         rel, b
                     ),
-                    None => return, // deliberate detached pin — respect it
+                    None => return errors, // deliberate detached pin — respect it
                 },
             }
         }
@@ -3079,9 +3107,15 @@ fn sync_one_repo(
         // remote and tracks. Never the team's default branch.
         (Some(branch), _) => match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
             Ok((_, perr, pc)) if pc != 0 => {
-                eprintln!("[sync] shared repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                let m = format!("shared repo '{}' push skipped: {}", rel, first_line(&perr).trim());
+                eprintln!("[sync] {}", m);
+                errors.push(m);
             }
-            Err(e) => eprintln!("[sync] shared repo '{}' push error: {}", rel, e),
+            Err(e) => {
+                let m = format!("shared repo '{}' push error: {}", rel, e);
+                eprintln!("[sync] {}", m);
+                errors.push(m);
+            }
             _ => {}
         },
         // Mine → push the tracking branch when it's ahead. Needs an upstream.
@@ -3101,9 +3135,15 @@ fn sync_one_repo(
             if ahead > 0 {
                 match run_git_timeout(sub, &["push"], 300) {
                     Ok((_, perr, pc)) if pc != 0 => {
-                        eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                        let m = format!("repo '{}' push skipped: {}", rel, first_line(&perr).trim());
+                        eprintln!("[sync] {}", m);
+                        errors.push(m);
                     }
-                    Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
+                    Err(e) => {
+                        let m = format!("repo '{}' push error: {}", rel, e);
+                        eprintln!("[sync] {}", m);
+                        errors.push(m);
+                    }
                     _ => {}
                 }
             }
@@ -3113,6 +3153,7 @@ fn sync_one_repo(
     }
 
     maybe_compact_git(sub);
+    errors
 }
 
 /// Walk the vault for every nested git repo (a dir containing `.git`) at any
@@ -3165,7 +3206,10 @@ fn find_all_nested_repos(root: &std::path::Path) -> Vec<String> {
 /// nested repo now syncs even when the vault root has no remote, and an embedded
 /// repo never registered as a submodule is handled too. This is what clears the
 /// per-repo "uncommitted changes" dots. Best-effort; never fatal to vault sync.
-fn sync_nested_repos(vault: &str, agent: bool) {
+/// Returns every nested repo's problem messages (empty = every repo synced
+/// clean) so the caller can fold them into the operation's `SyncOpResult`
+/// instead of them being visible only in stderr.
+fn sync_nested_repos(vault: &str, agent: bool) -> Vec<String> {
     // Build the work list: registered submodules (carry a .gitmodules tracking
     // branch we use for stale-pin recovery) ∪ embedded repos found on disk.
     let mut repos: Vec<(String, Option<String>)> = Vec::new();
@@ -3209,19 +3253,21 @@ fn sync_nested_repos(vault: &str, agent: bool) {
         }
     }
     if repos.is_empty() {
-        return;
+        return Vec::new();
     }
 
     // Resolve "who am I on GitHub" once (cached); drives mine/shared/foreign.
     let me = gh_login(vault);
 
+    let mut errors: Vec<String> = Vec::new();
     for (rel, cfg_branch) in repos {
         let sub = format!("{}/{}", vault, rel);
         if !PathBuf::from(&sub).join(".git").exists() {
             continue; // not materialized on this machine
         }
-        sync_one_repo(vault, &sub, &rel, agent, me.as_deref(), cfg_branch.as_deref());
+        errors.extend(sync_one_repo(vault, &sub, &rel, agent, me.as_deref(), cfg_branch.as_deref()));
     }
+    errors
 }
 
 /// Mutating git with retry: if it fails on a foreign `index.lock`, clear a
@@ -4617,7 +4663,11 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
                 0
             }
         };
-        let nested_repos = find_nested_repos(&root);
+        // Use the SAME recursive scan the sync engine (`sync_nested_repos`)
+        // actually walks — the old one-level-deep scan meant a repo more than
+        // one directory down (or a repo-inside-a-repo) was silently committed
+        // and pushed by the engine but never listed in the Settings UI.
+        let nested_repos = find_all_nested_repos(&root);
         Ok(SyncStatus {
             has_repo,
             remote,
@@ -4628,34 +4678,6 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-// Walk one level deep and identify directories that have their own
-// .git subdir. Used by the auto-sync loop to skip nested repos so they
-// don't get accidentally committed into the outer vault.
-fn find_nested_repos(root: &std::path::Path) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return found;
-    };
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if !p.is_dir() {
-            continue;
-        }
-        let name = match p.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n,
-            None => continue,
-        };
-        if name.starts_with('.') {
-            continue;
-        }
-        if p.join(".git").is_dir() {
-            found.push(name.to_string());
-        }
-    }
-    found.sort();
-    found
 }
 
 #[tauri::command]
@@ -4686,7 +4708,7 @@ async fn vault_sync_set_remote(vault: String, url: String) -> Result<(), String>
     .map_err(|e| e.to_string())?
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct SyncOpResult {
     ok: bool,
     /// Short summary suitable for the status row. e.g.
@@ -4836,7 +4858,21 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         // relationship to it (own / shared / foreign / internal). This commits
         // their working trees (clearing the per-repo dots) and advances owned
         // HEADs so the parent's gitlink bumps get staged and committed below.
-        sync_nested_repos(&vault, false);
+        // Their problem messages (if any) are folded into this op's result
+        // below so a stuck nested push is no longer invisible.
+        let nested_errors = sync_nested_repos(&vault, false);
+        // Fold any nested-repo trouble into an otherwise-successful result: keep
+        // the message informative but flip ok/error so the status banner and the
+        // durable sync-log actually record it, instead of it living only in
+        // stderr (which no one reads on a headless box).
+        let fold_nested = |mut r: SyncOpResult| -> SyncOpResult {
+            if !nested_errors.is_empty() {
+                r.message = format!("{} (nested repo issues: {})", r.message, nested_errors.join("; "));
+                r.ok = false;
+                r.error = true;
+            }
+            r
+        };
         // `--ignore-submodules=dirty`: don't recurse into submodule working
         // trees to detect dirtiness (on a vault with big submodules — e.g.
         // torchtitan — that scan is what pushed `status` past the 90s timeout).
@@ -4846,11 +4882,11 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         let (status_out, _, _) =
             run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])?;
         if status_out.trim().is_empty() {
-            return Ok(SyncOpResult {
+            return Ok(fold_nested(SyncOpResult {
                 ok: true,
                 message: "no local changes".into(),
                 error: false,
-            });
+            }));
         }
         // Stage everything outside nested repos. Git already refuses to
         // recurse into nested .git directories on `add -A` (a nested
@@ -4862,11 +4898,11 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         let (hn, he) = human_identity(&vault);
         let (_, stderr, code) = run_git_as(&vault, &hn, &he, &["add", "-A"])?;
         if code != 0 {
-            return Ok(SyncOpResult {
+            return Ok(fold_nested(SyncOpResult {
                 ok: false,
                 message: format!("add failed: {}", stderr.trim()),
                 error: true,
-            });
+            }));
         }
         // Don't publish a superproject gitlink that points at a sub-repo commit
         // the sub-repo hasn't pushed yet — that's exactly what strands followers
@@ -4881,29 +4917,29 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
             )
         {
             // Holding those pointers left nothing staged this cycle.
-            return Ok(SyncOpResult {
+            return Ok(fold_nested(SyncOpResult {
                 ok: true,
                 message: "no changes (held unpushed submodule pointers)".into(),
                 error: false,
-            });
+            }));
         }
         let (_, stderr, code) =
             run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: auto-sync"])?;
         if code != 0 {
-            return Ok(SyncOpResult {
+            return Ok(fold_nested(SyncOpResult {
                 ok: false,
                 message: format!("commit failed: {}", stderr.trim()),
                 error: true,
-            });
+            }));
         }
         // Repack if the append-only-log churn has piled up loose objects, so the
         // vault's .git doesn't balloon (362 MiB loose → ~tens packed observed).
         maybe_compact_git(&vault);
-        Ok(SyncOpResult {
+        Ok(fold_nested(SyncOpResult {
             ok: true,
             message: "committed local changes".into(),
             error: false,
-        })
+        }))
         })
     })
     .await
@@ -5341,7 +5377,9 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         // Re-attach any sub-repos that `submodule update` left detached, and
         // advance them to their configured branch tip. This runs on every
         // pull cycle (~30s) so self-healing no longer requires a local edit.
-        sync_nested_repos(&vault, false);
+        // Their problem messages (if any) are folded into this pull's result
+        // below so a stuck nested push/branch-switch is no longer invisible.
+        let nested_errors = sync_nested_repos(&vault, false);
         // Commit any gitlink pointer bumps that sync_nested_repos produced.
         let (st, _, _) = run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])
             .unwrap_or_default();
@@ -5349,6 +5387,13 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
             let (hn, he) = human_identity(&vault);
             let _ = run_git_as(&vault, &hn, &he, &["add", "-A"]);
             let _ = run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: auto-sync submodule pointers"]);
+        }
+        if !nested_errors.is_empty() {
+            return Ok(SyncOpResult {
+                ok: false,
+                message: format!("{} (nested repo issues: {})", pulled_msg, nested_errors.join("; ")),
+                error: true,
+            });
         }
         Ok(SyncOpResult {
             ok: true,
@@ -6038,6 +6083,153 @@ mod conversation_jsonl_tests {
         assert_eq!(deduped_line_count(disk_full), 4);
         assert_eq!(deduped_line_count(truncated), 3);
         assert!(deduped_line_count(truncated) < deduped_line_count(disk_full));
+    }
+}
+
+/// End-to-end reconciliation tests against REAL local git repos — a bare
+/// "origin" plus two independent clones standing in for two machines sharing
+/// one vault remote, the exact topology `vault_sync_pull`/`vault_sync_push`
+/// operate on. Exercises `reconcile_with_upstream` directly (the function
+/// shared by pull and push-on-rejection) so the fast-forward, clean-merge, and
+/// conflict-auto-resolution paths are checked against real git behavior
+/// instead of only by inspection.
+#[cfg(test)]
+mod sync_reconcile_tests {
+    use super::{reconcile_with_upstream, run_git, run_git_mut};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn unique_dir(name: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "vault-chat-synctest-{}-{}-{}",
+            std::process::id(),
+            n,
+            name
+        ))
+    }
+
+    fn write(dir: &Path, rel: &str, contents: &str) {
+        std::fs::write(dir.join(rel), contents).unwrap();
+    }
+
+    fn commit_all(dir: &Path, msg: &str) {
+        let d = dir.to_string_lossy().to_string();
+        assert!(matches!(run_git_mut(&d, &["add", "-A"]), Ok((_, _, 0))));
+        assert!(matches!(run_git_mut(&d, &["commit", "-q", "-m", msg]), Ok((_, _, 0))));
+    }
+
+    /// A bare "origin" plus two clones ("machine A" / "machine B"), each with a
+    /// distinct local identity, both already carrying one shared seed commit —
+    /// mirroring a vault two machines are both already synced on.
+    fn two_machine_setup() -> (PathBuf, PathBuf, PathBuf) {
+        let tmp = std::env::temp_dir().to_string_lossy().to_string();
+        let origin = unique_dir("origin.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        assert!(matches!(
+            run_git_mut(&origin.to_string_lossy(), &["init", "-q", "--bare", "-b", "main"]),
+            Ok((_, _, 0))
+        ));
+
+        let a = unique_dir("machine-a");
+        assert!(matches!(
+            run_git_mut(&tmp, &["clone", "-q", &origin.to_string_lossy(), &a.to_string_lossy()]),
+            Ok((_, _, 0))
+        ));
+        let ad = a.to_string_lossy().to_string();
+        run_git_mut(&ad, &["config", "user.name", "Machine A"]).unwrap();
+        run_git_mut(&ad, &["config", "user.email", "a@example.com"]).unwrap();
+        write(&a, "notes.md", "seed\n");
+        commit_all(&a, "seed");
+        assert!(matches!(run_git_mut(&ad, &["push", "-u", "origin", "main"]), Ok((_, _, 0))));
+
+        let b = unique_dir("machine-b");
+        assert!(matches!(
+            run_git_mut(&tmp, &["clone", "-q", &origin.to_string_lossy(), &b.to_string_lossy()]),
+            Ok((_, _, 0))
+        ));
+        let bd = b.to_string_lossy().to_string();
+        run_git_mut(&bd, &["config", "user.name", "Machine B"]).unwrap();
+        run_git_mut(&bd, &["config", "user.email", "b@example.com"]).unwrap();
+
+        (origin, a, b)
+    }
+
+    fn cleanup(dirs: &[&Path]) {
+        for d in dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn clean_fast_forward_pulls_the_other_machines_commit() {
+        let (origin, a, b) = two_machine_setup();
+        let ad = a.to_string_lossy().to_string();
+        write(&a, "notes.md", "seed\nmore from A\n");
+        commit_all(&a, "from A");
+        assert!(matches!(run_git_mut(&ad, &["push", "origin", "main"]), Ok((_, _, 0))));
+
+        let bd = b.to_string_lossy().to_string();
+        run_git(&bd, &["fetch", "origin", "main"]).unwrap();
+        let outcome = reconcile_with_upstream(&bd, "main").unwrap().unwrap();
+        assert_eq!(outcome, "pulled");
+        let content = std::fs::read_to_string(b.join("notes.md")).unwrap();
+        assert!(content.contains("more from A"));
+
+        cleanup(&[&origin, &a, &b]);
+    }
+
+    #[test]
+    fn divergent_edits_to_different_files_merge_cleanly() {
+        let (origin, a, b) = two_machine_setup();
+        let ad = a.to_string_lossy().to_string();
+        write(&a, "from-a.md", "a's note\n");
+        commit_all(&a, "from A");
+        assert!(matches!(run_git_mut(&ad, &["push", "origin", "main"]), Ok((_, _, 0))));
+
+        write(&b, "from-b.md", "b's note\n");
+        commit_all(&b, "from B");
+
+        let bd = b.to_string_lossy().to_string();
+        run_git(&bd, &["fetch", "origin", "main"]).unwrap();
+        let outcome = reconcile_with_upstream(&bd, "main").unwrap().unwrap();
+        assert!(outcome.contains("merged"), "unexpected outcome: {}", outcome);
+        assert!(b.join("from-a.md").exists());
+        assert!(b.join("from-b.md").exists());
+        let (unresolved, _, _) = run_git(&bd, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+        assert!(unresolved.trim().is_empty(), "left unresolved paths: {}", unresolved);
+
+        cleanup(&[&origin, &a, &b]);
+    }
+
+    #[test]
+    fn conflicting_edits_to_the_same_file_auto_resolve_and_preserve_ours_as_sidecar() {
+        let (origin, a, b) = two_machine_setup();
+        let ad = a.to_string_lossy().to_string();
+        write(&a, "notes.md", "seed\nA's version\n");
+        commit_all(&a, "from A");
+        assert!(matches!(run_git_mut(&ad, &["push", "origin", "main"]), Ok((_, _, 0))));
+
+        write(&b, "notes.md", "seed\nB's version\n");
+        commit_all(&b, "from B");
+
+        let bd = b.to_string_lossy().to_string();
+        run_git(&bd, &["fetch", "origin", "main"]).unwrap();
+        let outcome = reconcile_with_upstream(&bd, "main").unwrap().unwrap();
+        assert!(outcome.contains("auto-resolved"), "unexpected outcome: {}", outcome);
+
+        // Deterministic policy: take theirs (A's, the remote), preserve ours
+        // (B's) as a `.conflict` sidecar so a genuine divergent edit is never
+        // silently dropped.
+        let resolved = std::fs::read_to_string(b.join("notes.md")).unwrap();
+        assert!(resolved.contains("A's version"));
+        let sidecar = std::fs::read_to_string(b.join("notes.md.conflict")).unwrap();
+        assert!(sidecar.contains("B's version"));
+        let (unresolved, _, _) = run_git(&bd, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+        assert!(unresolved.trim().is_empty(), "left unresolved paths: {}", unresolved);
+
+        cleanup(&[&origin, &a, &b]);
     }
 }
 
