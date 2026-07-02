@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, History, RefreshCw, StickyNote, Mic, Compass, Keyboard, Clock } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, Mic, Compass, Keyboard, Rocket } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
@@ -14,6 +14,8 @@ import {
 import { VoiceCockpit } from "./VoiceCockpit";
 import { HistoryModal } from "./HistoryModal";
 import { NorthStarModal } from "./NorthStarModal";
+import { MissionControlModal } from "./MissionControlModal";
+import { useMissionControlAttention } from "./missionControl";
 
 export function Titlebar() {
   const {
@@ -37,8 +39,9 @@ export function Titlebar() {
   } = useStore();
   const voiceTextPanelOpen = useStore((s) => s.voiceTextPanelOpen);
   const setVoiceTextPanelOpen = useStore((s) => s.setVoiceTextPanelOpen);
-  const showSchedulesPanel = useStore((s) => s.showSchedulesPanel);
-  const setShowSchedulesPanel = useStore((s) => s.setShowSchedulesPanel);
+  const showMissionControl = useStore((s) => s.showMissionControl);
+  const setShowMissionControl = useStore((s) => s.setShowMissionControl);
+  const { hasFailure, hasUnreadAsk } = useMissionControlAttention();
   // The keyboard slide-out hugs the mic button, so right after the
   // user clicks the mic to enter voice mode their cursor is sitting
   // on top of the trigger — the button would slide out immediately,
@@ -235,13 +238,6 @@ export function Titlebar() {
               <Eye className="h-3.5 w-3.5" />
             </button>
             <button
-              onClick={() => setShowHistory(true)}
-              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
-              title="History (Ctrl+H)"
-            >
-              <History className="h-3.5 w-3.5" />
-            </button>
-            <button
               onClick={() => setShowNotesPanel(!showNotesPanel)}
               className={`h-7 w-7 flex items-center justify-center rounded relative ${
                 showNotesPanel
@@ -256,15 +252,22 @@ export function Titlebar() {
               )}
             </button>
             <button
-              onClick={() => setShowSchedulesPanel(!showSchedulesPanel)}
+              onClick={() => setShowMissionControl(!showMissionControl)}
               className={`h-7 w-7 flex items-center justify-center rounded relative ${
-                showSchedulesPanel
+                showMissionControl
                   ? "bg-accent text-foreground"
                   : "hover:bg-accent/60 text-muted-foreground"
               }`}
-              title="Schedules (Ctrl+Shift+S)"
+              title="Mission control"
             >
-              <Clock className="h-3.5 w-3.5" />
+              <Rocket className="h-3.5 w-3.5" />
+              {(hasFailure || hasUnreadAsk) && (
+                <span
+                  className={`absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full ${
+                    hasFailure ? "bg-destructive" : "bg-primary"
+                  }`}
+                />
+              )}
             </button>
             <div
               ref={micGroupRef}
@@ -467,6 +470,7 @@ export function Titlebar() {
       open={northStarOpen}
       onClose={() => setNorthStarOpen(false)}
     />
+    <MissionControlModal open={showMissionControl} onClose={() => setShowMissionControl(false)} />
     </>
   );
 }
