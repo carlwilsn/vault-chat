@@ -1470,8 +1470,27 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           .optional()
           .describe("Working directory for the check/pull commands. Defaults to the vault root."),
         host: z.string().optional().describe("Informational label for which rented box this run is on."),
+        terminate_command: z
+          .string()
+          .optional()
+          .describe(
+            "COST GUARD — arm this on EVERY watch of a billing resource (a rented GPU box). A shell command the watcher itself runs to KILL the resource (e.g. the lambda tool's terminate) when the check reports sustained idle billing. For this to work your check_command must speak the billing tokens: print `WORKING <metric>` while the resource is earning its keep, `IDLE <note>` when it is billing with no work, and `GONE` once no billing resource exists. The guard is pure code — it fires with no agent turn, survives app restarts and a sleeping laptop, retires itself with proof when the check reports GONE, and pings the user once when it pulls the trigger. This replaces scheduling yourself as a cost watchdog: don't arm a recurring Schedule to babysit a box, arm this.",
+          ),
+        idle_kill_minutes: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            "How long the check may report IDLE before terminate_command fires. Default 15. Set higher only if the run has legitimate long quiet phases that your check can't distinguish from idle.",
+          ),
+        env_keys: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Secret names (keychain user keys, e.g. [\"lambda_api_key\"]) injected into the check/pull/terminate commands' environment. Required when those commands call a metered API — the watcher passes no secrets by default.",
+          ),
       }),
-      execute: async ({ title, check_command, pull_command, cadence_minutes, stall_minutes, cwd, host }) => {
+      execute: async ({ title, check_command, pull_command, cadence_minutes, stall_minutes, cwd, host, terminate_command, idle_kill_minutes, env_keys }) => {
         const { registerJob } = await import("./runWatcher");
         // Best-effort: tag the job with the mission it belongs to, for the alert.
         let mission: string | undefined;
@@ -1492,12 +1511,16 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           mission,
           cadenceMs: Math.max(1, cadence_minutes ?? 10) * 60_000,
           stallMs: Math.max(1, stall_minutes ?? 45) * 60_000,
+          terminateCmd: terminate_command || undefined,
+          idleKillMs: idle_kill_minutes ? Math.max(1, idle_kill_minutes) * 60_000 : undefined,
+          envKeys: env_keys && env_keys.length ? env_keys : undefined,
         });
         const everyM = Math.round(job.cadenceMs / 60_000);
         return (
           `Watching run "${title}" (id ${job.id}) — checking every ${everyM}m via your check_command. ` +
           `I'll ping the user and wake this thread the moment it finishes, fails, or stalls` +
-          `${job.pullCmd ? "; artifacts sync off the box each cycle" : ""}. ` +
+          `${job.pullCmd ? "; artifacts sync off the box each cycle" : ""}` +
+          `${job.terminateCmd ? `; COST GUARD ARMED — sustained IDLE past ${Math.round((job.idleKillMs ?? 15 * 60_000) / 60_000)}m auto-terminates the box in code, no agent turn needed` : ""}. ` +
           `Nothing else to do here — end your turn and keep working; the watcher carries it.`
         );
       },

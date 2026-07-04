@@ -61,6 +61,26 @@ export type RunJob = {
   endedAt?: number;
   // Consecutive times the check command itself couldn't run (host unreachable).
   checkErrors: number;
+  // ---- [harness v2] deterministic cost-guard fields ------------------------
+  // Shell command the watcher itself runs to KILL the billing resource when the
+  // check reports sustained idle billing (token `IDLE`) — e.g. a lambda
+  // terminate. Runs in CODE on the firing machine: no LLM turn, no supervisor
+  // memory, no sleeping-laptop dependency (the box is the firer). This is the
+  // rail that replaces the prompt-armed 30-min LLM watchdog (which billed ~$100
+  // of idle GPU when its supervisor parked, and pinged "still training normally"
+  // ~50×/day while doing it).
+  terminateCmd?: string;
+  // Secret names to inject into check/terminate commands' env (via the keychain,
+  // e.g. ["lambda_api_key"]) — bash_exec passes no secrets by default.
+  envKeys?: string[];
+  // How long the check may report IDLE before terminateCmd fires. Default 15 min
+  // — long enough for a between-runs lull, far shorter than an overnight burn.
+  idleKillMs?: number;
+  // When the current IDLE streak started (unset while WORKING/RUNNING).
+  idleSinceAt?: number;
+  // When terminateCmd was last fired (dedupes the "auto-terminating" ping while
+  // the kill takes effect; the job only retires when a later check proves GONE).
+  terminateFiredAt?: number;
 };
 
 const DEFAULT_CADENCE_MS = 10 * 60_000;
@@ -106,6 +126,12 @@ function normalizeJob(j: Partial<RunJob>): RunJob {
     lastCheckedAt: j.lastCheckedAt,
     endedAt: j.endedAt,
     checkErrors: j.checkErrors ?? 0,
+    // [harness v2] cost-guard fields — carried through the jsonl round-trip.
+    terminateCmd: j.terminateCmd,
+    envKeys: j.envKeys,
+    idleKillMs: j.idleKillMs,
+    idleSinceAt: j.idleSinceAt,
+    terminateFiredAt: j.terminateFiredAt,
   };
 }
 
@@ -170,6 +196,10 @@ export type RegisterJobInput = {
   mission?: string;
   cadenceMs?: number;
   stallMs?: number;
+  // [harness v2] cost-guard: see RunJob.
+  terminateCmd?: string;
+  envKeys?: string[];
+  idleKillMs?: number;
 };
 
 export async function registerJob(vault: string, input: RegisterJobInput): Promise<RunJob> {
@@ -253,6 +283,7 @@ async function execCheck(
   command: string,
   cwd: string,
   tag: string,
+  env?: Record<string, string>,
 ): Promise<{ out: string; ok: boolean }> {
   try {
     const r = await invoke<{ stdout: string; stderr: string; code: number; timed_out: boolean }>(
@@ -262,6 +293,8 @@ async function execCheck(
         cwd,
         timeoutMs: 60_000,
         cancelId: `${tag}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        // [harness v2] secrets for cost-guard commands (undefined for plain runs).
+        env,
       },
     );
     if (r.timed_out) return { out: "", ok: false };
@@ -271,12 +304,33 @@ async function execCheck(
   }
 }
 
+// [harness v2] Resolve a job's envKeys into real secret values for its commands.
+// Empty (not undefined) map when a lookup fails, so a missing key surfaces as the
+// command's own auth error instead of a silent hang.
+async function jobEnv(job: RunJob): Promise<Record<string, string> | undefined> {
+  if (!job.envKeys || job.envKeys.length === 0) return undefined;
+  try {
+    const { getUserKeysAsEnv } = await import("./keychain");
+    return await getUserKeysAsEnv(job.envKeys);
+  } catch {
+    return {};
+  }
+}
+
+// Default dwell before an IDLE billing resource is auto-terminated: long enough
+// for a between-runs lull (checkpoint save, eval phase reported conservatively),
+// far shorter than the overnight burns this rail exists to prevent ($13 idle on
+// the BitNet 3-seed; ~$30 on the Coconut baseline's tail).
+const DEFAULT_IDLE_KILL_MS = 15 * 60_000;
+
 async function checkOneJob(vault: string, job: RunJob): Promise<void> {
   const now = Date.now();
   const cwd = job.cwd || vault;
+  // [harness v2] Secrets for this job's commands (cost-guards need the lambda key).
+  const env = await jobEnv(job);
 
   // 1) Run the check command (slow — outside the lock).
-  const { out, ok } = await execCheck(job.checkCmd, cwd, `runwatch_${job.id}`);
+  const { out, ok } = await execCheck(job.checkCmd, cwd, `runwatch_${job.id}`, env);
 
   // 2) Interpret into a new state.
   let status: RunJobStatus = "running";
@@ -284,6 +338,10 @@ async function checkOneJob(vault: string, job: RunJob): Promise<void> {
   let progressChanged = false;
   let terminalReason = job.terminalReason;
   let checkErrors = job.checkErrors;
+  // [harness v2] cost-guard dwell state for this tick.
+  let idleSinceAt = job.idleSinceAt;
+  let terminateFiredAt = job.terminateFiredAt;
+  let firedTerminateThisTick = false;
 
   if (!ok) {
     checkErrors = job.checkErrors + 1;
@@ -303,9 +361,51 @@ async function checkOneJob(vault: string, job: RunJob): Promise<void> {
       status = "failed";
       progress = rest || out || "failed";
       terminalReason = rest || "run reported failure";
-    } else {
-      // RUNNING or anything unrecognized — still alive; track for stall.
+    } else if (token === "GONE") {
+      // [harness v2] The billing resource no longer exists (terminated by the
+      // guard, self-terminated, or user-killed). The guard's job is over —
+      // retire cleanly ("gone → self-cancel").
+      status = "done";
+      progress = rest || "resource gone — billing stopped";
+      terminalReason = terminateFiredAt
+        ? `idle billing resource auto-terminated with proof (idle since ${new Date(idleSinceAt ?? terminateFiredAt).toLocaleTimeString()}; GONE confirmed by check)`
+        : rest || "billing resource gone";
+    } else if (token === "IDLE") {
+      // [harness v2] Billing with no work. This is the deterministic rail that
+      // replaces the LLM cost-watchdog: dwell, then KILL in code — no model turn,
+      // no supervisor memory, no sleeping laptop in the loop.
       status = "running";
+      progress = rest || "idle (billing)";
+      progressChanged = progress !== (job.lastProgress ?? "").trim();
+      if (!idleSinceAt) idleSinceAt = now;
+      const killAfter = job.idleKillMs && job.idleKillMs > 0 ? job.idleKillMs : DEFAULT_IDLE_KILL_MS;
+      const idleMins = Math.round((now - idleSinceAt) / 60_000);
+      if (now - idleSinceAt >= killAfter) {
+        if (job.terminateCmd) {
+          const kill = await execCheck(job.terminateCmd, cwd, `runkill_${job.id}`, env);
+          if (kill.ok) {
+            // Fired. Do NOT retire yet — the job only completes when a later
+            // check proves GONE (verify-before-declare). Terminate is idempotent
+            // on a terminating box, so re-firing next cadence self-heals a kill
+            // that didn't land. Ping the user once per fire streak.
+            firedTerminateThisTick = !terminateFiredAt;
+            terminateFiredAt = now;
+          } else {
+            status = "failed";
+            terminalReason = `idle billing ${idleMins}m and the terminate command FAILED to run — kill the resource manually NOW (it is still billing)`;
+          }
+        } else {
+          // No kill armed on this guard — escalate loudly instead of watching it burn.
+          status = "failed";
+          terminalReason = `idle billing ${idleMins}m with no terminate command armed — kill the resource manually NOW (it is still billing)`;
+        }
+      }
+    } else {
+      // RUNNING / WORKING or anything unrecognized — still alive; track for stall.
+      status = "running";
+      // [harness v2] Work resumed — reset the cost-guard's idle dwell.
+      idleSinceAt = undefined;
+      terminateFiredAt = undefined;
       // PROGRESS is the note AFTER the status token, not the whole line. The
       // token ("RUNNING") is a LIVENESS ping, not progress — measuring the whole
       // line made a check that prints a constant "RUNNING" look stalled while the
@@ -331,7 +431,7 @@ async function checkOneJob(vault: string, job: RunJob): Promise<void> {
   // 3) Best-effort artifact pull every cycle (and a final pull on terminal),
   //    so a spot reclaim never costs more than one interval of results.
   if (job.pullCmd) {
-    await execCheck(job.pullCmd, cwd, `runpull_${job.id}`);
+    await execCheck(job.pullCmd, cwd, `runpull_${job.id}`, env);
   }
 
   const isTerminal = status !== "running";
@@ -345,6 +445,8 @@ async function checkOneJob(vault: string, job: RunJob): Promise<void> {
     lastCheckedAt: now,
     nextCheckAt: now + job.cadenceMs,
     endedAt: isTerminal ? now : job.endedAt,
+    idleSinceAt,
+    terminateFiredAt,
   };
 
   // 4) Persist under the lock; re-read so we don't clobber a concurrent
@@ -364,6 +466,27 @@ async function checkOneJob(vault: string, job: RunJob): Promise<void> {
     await announceTerminal(vault, updated).catch((e) =>
       console.warn("[run-watcher] announce failed:", e),
     );
+  } else if (firedTerminateThisTick) {
+    // [harness v2] One ping when the guard pulls the trigger (not per-cadence
+    // while the kill takes effect; the retiring GONE check carries the proof).
+    vlog("runwatch.autokill", { id: job.id, title: job.title });
+    try {
+      const { notify } = await import("./phoneApp");
+      await notify(
+        "info",
+        `Auto-terminating idle box — ${job.title}`,
+        `Billing resource reported IDLE past the ${Math.round((job.idleKillMs && job.idleKillMs > 0 ? job.idleKillMs : DEFAULT_IDLE_KILL_MS) / 60_000)}m dwell — terminate fired. Retires with proof once the check reports GONE.`,
+        job.ownerConvId,
+        {
+          intention: `Cost guard${job.mission ? " · " + job.mission : ""}`,
+          summary: "Idle billing box auto-terminated by the deterministic cost guard.",
+          icon: "✂️",
+          cls: "r",
+        },
+      );
+    } catch (e) {
+      console.warn("[run-watcher] autokill notify failed:", e);
+    }
   }
 }
 
