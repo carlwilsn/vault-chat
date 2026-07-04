@@ -15,7 +15,6 @@ import { VoiceCockpit } from "./VoiceCockpit";
 import { HistoryModal } from "./HistoryModal";
 import { NorthStarModal } from "./NorthStarModal";
 import { MissionControlModal } from "./MissionControlModal";
-import { useMissionControlAttention } from "./missionControl";
 
 export function Titlebar() {
   const {
@@ -41,7 +40,6 @@ export function Titlebar() {
   const setVoiceTextPanelOpen = useStore((s) => s.setVoiceTextPanelOpen);
   const showMissionControl = useStore((s) => s.showMissionControl);
   const setShowMissionControl = useStore((s) => s.setShowMissionControl);
-  const { hasFailure, hasUnreadAsk } = useMissionControlAttention();
   // The keyboard slide-out hugs the mic button, so right after the
   // user clicks the mic to enter voice mode their cursor is sitting
   // on top of the trigger — the button would slide out immediately,
@@ -261,13 +259,6 @@ export function Titlebar() {
               title="Mission control"
             >
               <Rocket className="h-3.5 w-3.5" />
-              {(hasFailure || hasUnreadAsk) && (
-                <span
-                  className={`absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full ${
-                    hasFailure ? "bg-destructive" : "bg-primary"
-                  }`}
-                />
-              )}
             </button>
             <div
               ref={micGroupRef}

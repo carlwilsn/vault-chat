@@ -5,7 +5,6 @@
 // notifications.jsonl (there's no desktop notifications reader yet).
 
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
 import { useStore } from "./store";
 import type { Conversation } from "./conversations";
 
@@ -269,46 +268,3 @@ export function notificationMeta(n: Notification): { intention: string; icon: "a
   return { intention: "Update", icon: "info", cls: "" };
 }
 
-// ---- titlebar attention dot ----
-// Anything actionable: a failed/errored mission (reactive, from the store) OR
-// an unread ask-kind notification (file-based, so lightly polled while a
-// vault is open).
-export function useMissionControlAttention(): { hasFailure: boolean; hasUnreadAsk: boolean } {
-  const vaultPath = useStore((s) => s.vaultPath);
-  const conversations = useStore((s) => s.conversations);
-  const hasFailure = conversations.some(
-    (c) => c.source === "mission" && !c.completedAt && (isFailish(c.title) || isFailish(lastNonHidden(c))),
-  );
-  const [hasUnreadAsk, setHasUnreadAsk] = useState(false);
-  useEffect(() => {
-    if (!vaultPath) {
-      setHasUnreadAsk(false);
-      return;
-    }
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const list = await readNotifications(vaultPath);
-        if (!cancelled) setHasUnreadAsk(list.some((n) => n.kind === "ask" && !n.read));
-      } catch {
-        // ignore — no notifications file yet, or a transient read error
-      }
-    };
-    void poll();
-    const id = window.setInterval(poll, 8000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [vaultPath]);
-  return { hasFailure, hasUnreadAsk };
-}
-
-function lastNonHidden(c: Conversation): string {
-  for (let i = c.messages.length - 1; i >= 0; i--) {
-    const m = c.messages[i];
-    if (m.hidden) continue;
-    if (m.content?.trim()) return m.content;
-  }
-  return "";
-}
