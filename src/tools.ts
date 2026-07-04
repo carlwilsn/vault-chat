@@ -1157,16 +1157,28 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       }),
       execute: async ({ summary }) => {
         if (!conversationId) return "No mission context — can't complete.";
-        // completeMission atomically stamps completedAt and returns true only on
+        // completeMission atomically stamps completedAt and returns ok only on
         // the call that actually retired the mission — so the "Mission complete"
         // notification fires exactly once, even if this tool is called twice
-        // (parallel calls, or a follow-up turn re-confirming done).
+        // (parallel calls, or a follow-up turn re-confirming done). [harness v2]
+        // It also enforces the completion gate: every "Done when" bullet must be
+        // individually checked off (MarkDoneWhen, each evidence-verified) first.
         const { completeMission } = await import("./offVaultRun");
-        const didComplete = await completeMission(vault, conversationId).catch((e) => {
+        const res: { ok: boolean; already?: boolean; missing?: string[] } = await completeMission(
+          vault,
+          conversationId,
+        ).catch((e) => {
           console.warn("[mission] complete failed:", e);
-          return false;
+          return { ok: false, already: true };
         });
-        if (!didComplete) {
+        if (!res.ok) {
+          if (res.missing && res.missing.length) {
+            return (
+              `NOT completed — ${res.missing.length} "Done when" criteri${res.missing.length === 1 ? "on is" : "a are"} not verified yet:\n` +
+              res.missing.map((m) => `- ${m}`).join("\n") +
+              `\nVerify each and call MarkDoneWhen on it first. If a criterion is genuinely obsolete (the user rescoped), record that decision and MarkDoneWhen it with the rescope as evidence — or AskUser if the drop is their call.`
+            );
+          }
           return "This mission is already complete — nothing more to do. End your turn.";
         }
         const { notify } = await import("./phoneApp");
@@ -1190,10 +1202,45 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       execute: async ({ criterion }) => {
         if (!conversationId) return "No mission context — can't mark a criterion.";
         const { markDoneWhen } = await import("./offVaultRun");
-        const matched = await markDoneWhen(vault, conversationId, criterion).catch(() => null);
-        return matched
-          ? `Checked off "${matched}" — the user sees that criterion go green.`
+        const res = await markDoneWhen(vault, conversationId, criterion).catch(
+          () => ({ matched: null, verified: false, reason: "internal error" }) as const,
+        );
+        // [harness v2] The check-off is gated by an independent evidence audit —
+        // a rejected claim tells the supervisor exactly what's unsubstantiated
+        // instead of silently going green.
+        if (!res.verified) {
+          return (
+            `VERIFICATION FAILED — "${criterion}" was NOT checked off. Auditor: ${res.reason || "the recorded evidence doesn't substantiate this criterion"}. ` +
+            `Put the substance on the record first (update mind.md / the goal file with the concrete result — numbers, artifact paths, what test passed), then call MarkDoneWhen again. Never re-claim without new evidence.`
+          );
+        }
+        return res.matched
+          ? `Checked off "${res.matched}" — verified against the recorded evidence; the user sees that criterion go green.`
           : `Recorded "${criterion}". Couldn't match it to a listed criterion, but noted it.`;
+      },
+    }),
+    RecordJudgment: tool({
+      description:
+        "Put ONE significant judgment on the durable record — a decision you made, a conclusion you reached, or a soft read that should outlive this turn (\"user prefers stopping early over overspending\", \"seed 3's divergence is real — holding it\", \"bf16 is the top suspect because the latent loop is precision-sensitive\"). Your conversation history is NOT carried between wakes; anything load-bearing that isn't in mind.md, the goal file, or this log is LOST. Call it AT DECISION TIME, in the same turn you decide — not later. This appends to the vault's decision log (audit trail, not re-read automatically); ALSO reflect the current-state consequence in mind.md. For a reversible fork you resolved yourself, this is the required receipt: decide, record, move — don't AskUser.",
+      inputSchema: z.object({
+        claim: z.string().describe("The judgment itself, one plain sentence."),
+        why: z.string().describe("The reasoning/evidence behind it, 1-3 sentences."),
+        confidence: z.enum(["low", "medium", "high"]).describe("How sure you are."),
+        what_would_change_it: z
+          .string()
+          .optional()
+          .describe("What observation would overturn this judgment, if any."),
+      }),
+      execute: async ({ claim, why, confidence, what_would_change_it }) => {
+        if (!conversationId) return "No thread context — can't record a judgment.";
+        const { recordJudgment } = await import("./offVaultRun");
+        await recordJudgment(vault, conversationId, {
+          claim,
+          why,
+          confidence,
+          whatWouldChangeIt: what_would_change_it,
+        }).catch((e) => console.warn("[judgment] record failed:", e));
+        return "Recorded to the decision log. Reflect the consequence in mind.md before you end the turn if it changes your current picture.";
       },
     }),
     ProposeMission: tool({
@@ -1615,10 +1662,12 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   // fixed one) without surveying other threads' runs. The assistant only READS
   // the fleet (ListRuns) so it can answer "what's running / did anything die"
   // for the user; it doesn't launch or kill runs itself.
+  // RecordJudgment is for the working tiers (mission + worker) — the assistant
+  // chats with the user directly and has no between-wake state to protect.
   if (tier === "mission") drop(["ProposeMission", "StopMission"]);
   else if (tier === "worker")
     drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission", "MarkDoneWhen", "StopMission"]);
-  else drop(["StartWorker", "CompleteMission", "MarkDoneWhen", "WatchRun", "CancelRun"]);
+  else drop(["StartWorker", "CompleteMission", "MarkDoneWhen", "WatchRun", "CancelRun", "RecordJudgment"]);
   return full;
 }
 

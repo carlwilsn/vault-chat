@@ -940,19 +940,48 @@ async function enforceMissionLoopInvariant(
 // was already complete. The caller notifies the user only on a true, so the
 // "Mission complete" card fires exactly once even when CompleteMission is
 // invoked twice (parallel tool calls, or a follow-up turn re-confirming done).
-export async function completeMission(vault: string, conversationId: string): Promise<boolean> {
+export async function completeMission(
+  vault: string,
+  conversationId: string,
+): Promise<{ ok: boolean; already?: boolean; missing?: string[] }> {
+  // [harness v2] Deterministic completion gate: a mission may only complete when
+  // every "Done when" bullet in its brief has been individually checked off via
+  // MarkDoneWhen (each of which passed the independent evidence check). Pure
+  // code, zero tokens — the supervisor cannot declare victory over an unmet
+  // criterion; it must either verify the remaining items or take the miss to the
+  // user. Closes the "sweep is done but the mission isn't" / silent-done class.
+  if (harnessV2Enabled()) {
+    const pre = await readConversations(vault);
+    const m0 = pre.find((c) => c.id === conversationId && c.source === "mission");
+    if (m0 && !m0.completedAt) {
+      const briefMsg =
+        m0.messages.find((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || "")) ??
+        m0.messages.find((m) => m.role === "user");
+      const criteria = parseDoneWhenCriteria(briefMsg?.content ?? "");
+      const done = new Set((m0.doneWhenDone ?? []).map(normalizeCriterion));
+      const missing = criteria.filter((c) => !done.has(normalizeCriterion(c)));
+      if (missing.length > 0) {
+        vlog("mission.complete.rejected", { conv: conversationId.slice(0, 8), missing: missing.length });
+        return { ok: false, missing };
+      }
+    }
+  }
   // Atomic check-and-set of completedAt: the FIRST caller inside the lock wins;
   // a racing/repeat caller sees it already stamped and bails. This is what kills
   // the duplicate "Mission complete" notification (two CompleteMission tool
   // calls in one turn used to both read no-completedAt and both notify).
   let mission: Conversation | undefined;
   let didComplete = false;
+  let already = false;
   await withConvLock(async () => {
     const fresh = await readConversations(vault);
     const i = fresh.findIndex((c) => c.id === conversationId && c.source === "mission");
     if (i < 0) return;
     mission = fresh[i];
-    if (fresh[i]!.completedAt) return; // already complete — leave didComplete false
+    if (fresh[i]!.completedAt) {
+      already = true;
+      return; // already complete — leave didComplete false
+    }
     // Bump lastActivityAt in lockstep with completedAt. Every cross-machine and
     // in-memory tie-break sorts on lastActivityAt — the Rust union meta-line
     // pick (reconstruct_conversation), the diskNewer test, and the persist
@@ -966,7 +995,7 @@ export async function completeMission(vault: string, conversationId: string): Pr
     await writeConversations(vault, fresh);
     didComplete = true;
   });
-  if (!didComplete || !mission) return false;
+  if (!didComplete || !mission) return { ok: false, already };
   // Real completion: stop leftover workers + cancel self-scheduled wakes so it
   // can't re-wake itself back onto Activity.
   const key = (mission.mission ?? mission.title ?? "").trim();
@@ -989,7 +1018,7 @@ export async function completeMission(vault: string, conversationId: string): Pr
     console.warn("[mission] complete: schedule cleanup failed:", e);
   }
   await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
-  return true;
+  return { ok: true };
 }
 
 // "Done when" bullets parsed from a mission brief — same shape the phone's
@@ -1013,45 +1042,118 @@ export async function markDoneWhen(
   vault: string,
   conversationId: string,
   criterion: string,
-): Promise<string | null> {
-  let matched: string | null = null;
+): Promise<{ matched: string | null; verified: boolean; reason?: string }> {
+  // Fuzzy-match the claimed criterion to the brief's bullets (read-only pass —
+  // the write happens under the lock only after verification).
+  const list0 = await readConversations(vault);
+  const mission0 = list0.find((c) => c.id === conversationId && c.source === "mission");
+  if (!mission0) return { matched: null, verified: false, reason: "mission not found" };
+  const briefMsg =
+    mission0.messages.find((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || "")) ??
+    mission0.messages.find((m) => m.role === "user");
+  const criteria = parseDoneWhenCriteria(briefMsg?.content ?? "");
+  const cn = normalizeCriterion(criterion);
+  const cwords = new Set(cn.split(" ").filter((w) => w.length > 2));
+  let best: string | null = null;
+  let bestScore = 0;
+  for (const cand of criteria) {
+    const candn = normalizeCriterion(cand);
+    if (candn === cn || candn.includes(cn) || cn.includes(candn)) {
+      best = cand;
+      bestScore = 1;
+      break;
+    }
+    const candWords = new Set(candn.split(" ").filter((w) => w.length > 2));
+    let shared = 0;
+    for (const w of cwords) if (candWords.has(w)) shared++;
+    const score = shared / Math.max(1, Math.min(cwords.size, candWords.size));
+    if (score > bestScore) {
+      bestScore = score;
+      best = cand;
+    }
+  }
+  const matched = bestScore >= 0.5 ? best : criterion.trim();
+
+  // [harness v2] Independent verification BEFORE the check-off lands. The actor
+  // doesn't grade its own work: a fresh fast-model auditor judges whether the
+  // RECORDED state (mind.md + the thread's recent output) concretely
+  // substantiates the criterion. The BitNet-era lesson ("a worker reporting
+  // 'completed' is NOT evidence") becomes a rail instead of a prompt plea.
+  // Fails OPEN when no fast model is configured (verifier returns null).
+  if (harnessV2Enabled() && matched) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const mind: string = await invoke<string>("read_text_file", {
+        path: `${vault}/.vault-chat/supervisor/mind.md`,
+      }).catch(() => "");
+      const recent = mission0.messages
+        .filter((m) => m.role === "assistant")
+        .slice(-2)
+        .map((m) => m.content ?? "")
+        .join("\n\n");
+      const evidence =
+        `== supervisor mind.md (durable state) ==\n${(mind || "(none)").slice(0, 8000)}\n\n` +
+        `== mission thread, latest output ==\n${recent.slice(-4000)}`;
+      const { verifyCriterionEvidence } = await import("./alert-summary");
+      const verdict = await verifyCriterionEvidence(matched, evidence, useStore.getState().apiKeys);
+      if (verdict && !verdict.pass) {
+        vlog("mission.markdone.rejected", { conv: conversationId.slice(0, 8), reason: verdict.reason });
+        return { matched, verified: false, reason: verdict.reason };
+      }
+    } catch (e) {
+      console.warn("[mission] done-when verification errored (failing open):", e);
+    }
+  }
+
   await withConvLock(async () => {
     const list = await readConversations(vault);
     const i = list.findIndex((c) => c.id === conversationId && c.source === "mission");
     if (i < 0) return;
-    const mission = list[i]!;
-    const briefMsg =
-      mission.messages.find((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || "")) ??
-      mission.messages.find((m) => m.role === "user");
-    const criteria = parseDoneWhenCriteria(briefMsg?.content ?? "");
-    const cn = normalizeCriterion(criterion);
-    const cwords = new Set(cn.split(" ").filter((w) => w.length > 2));
-    let best: string | null = null;
-    let bestScore = 0;
-    for (const cand of criteria) {
-      const candn = normalizeCriterion(cand);
-      if (candn === cn || candn.includes(cn) || cn.includes(candn)) {
-        best = cand;
-        bestScore = 1;
-        break;
-      }
-      const candWords = new Set(candn.split(" ").filter((w) => w.length > 2));
-      let shared = 0;
-      for (const w of cwords) if (candWords.has(w)) shared++;
-      const score = shared / Math.max(1, Math.min(cwords.size, candWords.size));
-      if (score > bestScore) {
-        bestScore = score;
-        best = cand;
-      }
-    }
-    matched = bestScore >= 0.5 ? best : criterion.trim();
-    const done = new Set(mission.doneWhenDone ?? []);
+    const done = new Set(list[i]!.doneWhenDone ?? []);
     if (matched) done.add(matched);
-    list[i] = { ...mission, doneWhenDone: [...done] };
+    list[i] = { ...list[i]!, doneWhenDone: [...done], lastActivityAt: Date.now() };
     await writeConversations(vault, list);
   });
   await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
-  return matched;
+  return { matched, verified: true };
+}
+
+// [harness v2] The hard-note tool: append one structured judgment to the
+// per-vault decision log. Soft, head-only judgments ("the user sounded hesitant
+// about spend — lean conservative"; "seed 3's divergence is real, not noise")
+// were exactly what a fresh-context wake could lose if left un-written; this
+// gives them a durable, append-only home the model is contractually required to
+// use at decision time (see supervisor.md). decisions.jsonl is COLD storage —
+// audit/history, never auto-injected into context (mind.md stays the pruned hot
+// state), so it can grow without re-creating the dumb-zone problem in a file.
+export async function recordJudgment(
+  vault: string,
+  conversationId: string,
+  j: { claim: string; why: string; confidence: string; whatWouldChangeIt?: string },
+): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const path = `${vault}/.vault-chat/supervisor/decisions.jsonl`;
+  let missionTitle = "";
+  try {
+    const conv = (await readConversations(vault)).find((c) => c.id === conversationId);
+    missionTitle = conv?.mission ?? conv?.title ?? "";
+  } catch {
+    /* title is best-effort */
+  }
+  const rec = {
+    ts: Date.now(),
+    conv: conversationId,
+    mission: missionTitle,
+    claim: j.claim.slice(0, 600),
+    why: j.why.slice(0, 1000),
+    confidence: j.confidence,
+    whatWouldChangeIt: (j.whatWouldChangeIt ?? "").slice(0, 600) || undefined,
+  };
+  const prev = await invoke<string>("read_text_file", { path }).catch(() => "");
+  await invoke("write_text_file", {
+    path,
+    contents: (prev ? prev.replace(/\n?$/, "\n") : "") + JSON.stringify(rec) + "\n",
+  });
 }
 
 // Create a fresh conversation entry on disk for a vault that's not
