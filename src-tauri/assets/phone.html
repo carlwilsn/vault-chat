@@ -2507,25 +2507,25 @@
       // Keyboard up: collapse the composer's home-indicator inset so the textbox
       // sits flush on the keyboard (the keyboard already covers that strip).
       document.body.classList.toggle("kbup", kb > 60);
+      // Constrain the body to the visible area ONLY while the keyboard is genuinely
+      // UP (kb>60), so the composer rides above it. When it's down, CLEAR the
+      // explicit height so position:fixed;inset:0 fills the whole layout viewport
+      // again — an explicit height on a top:0/bottom:0 fixed element wins over
+      // `bottom`, so a stale short height leaves a dead strip under the whole app.
+      // This reconciliation lives in applyKb (not just the resize handler) because
+      // iOS frequently SETTLES a keyboard dismiss with a visualViewport *scroll*
+      // event, not a final resize — clearing only on resize left the keyboard-up
+      // height pinned after dismissal, i.e. the persistent buffer under every page.
+      document.body.style.height = kb > 60 ? vv.height + "px" : "";
       // While editing a reply, cap the sheet to the space above the keyboard so
       // the whole sheet stays visible, not just the lifted foot.
       const sheet = $("sheet");
       if (sheet.classList.contains("editing")) sheet.style.maxHeight = vv.height + "px";
     };
-    const fit = () => {
-      // Only constrain the body to the visible area while the keyboard is UP. When
-      // it's down, CLEAR the explicit height so position:fixed;inset:0 fills the
-      // whole layout viewport again. Pinning body height to visualViewport.height
-      // unconditionally left a dead strip at the bottom on every screen — iOS
-      // reports vv.height a few px short of the layout viewport under
-      // viewport-fit=cover, so the fixed body ended shorter than the screen (the
-      // "buffer under the whole app"). kb>60 means the keyboard is genuinely up.
-      const kb = Math.max(0, document.documentElement.clientHeight - vv.height - vv.offsetTop);
-      document.body.style.height = kb > 60 ? vv.height + "px" : "";
-      applyKb(); window.scrollTo(0, 0); scrollDown(false);
-    };
+    const fit = () => { applyKb(); window.scrollTo(0, 0); scrollDown(false); };
     vv.addEventListener("resize", fit);
     vv.addEventListener("scroll", () => { window.scrollTo(0, 0); applyKb(); });
+    fit(); // reconcile the initial geometry so a short launch viewport can't strand a strip
   }
 
   showHint();
