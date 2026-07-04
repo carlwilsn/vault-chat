@@ -23,6 +23,7 @@ import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import { registerRun, unregisterRun, abortRun } from "./runRegistry";
 import { vlog } from "./debugLog";
 import { errToString } from "./errfmt";
+import { harnessV2Enabled } from "./harness";
 
 
 // withConvLock (shared read→modify→write serializer for the conversations
@@ -108,6 +109,12 @@ export async function runScheduledHeadlessTurn(
       strictVault: store.strictVaultMode,
       bashDisabled: store.bashDisabled,
       voiceMode: false,
+      // [harness v2] A scheduled fire into a mission thread IS an autonomous
+      // supervisor wake — give it the supervisor prompt AND fresh context (drop
+      // history, re-hydrate from mind.md). Gated by the kill-switch, so legacy
+      // behavior (no supervisorMode here) is unchanged when it's off.
+      supervisorMode: harnessV2Enabled() && list[idx]?.role === "supervisor",
+      freshContext: harnessV2Enabled() && list[idx]?.role === "supervisor",
       conversationId,
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
@@ -382,6 +389,11 @@ export async function runWorkerTurn(
       bashDisabled: store.bashDisabled,
       voiceMode: false,
       supervisorMode,
+      // [harness v2] Autonomous supervisor wakes (self-checks, worker-finished
+      // relays, resumes) run FRESH-CONTEXT — drop the accumulated thread, re-hydrate
+      // from mind.md + the kept brief + live-state. A direct reply to something the
+      // user typed keeps full continuity. Gated by the kill-switch.
+      freshContext: supervisorMode && !opts.direct && harnessV2Enabled(),
       conversationId,
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {

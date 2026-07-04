@@ -103,6 +103,29 @@ async function tryGlob(pattern: string, cwd: string): Promise<string[]> {
   }
 }
 
+// [harness v2] The supervisor's durable working memory, re-hydrated fresh on each
+// autonomous wake so a mission thread never has to CARRY (and degrade under) its
+// full history. mind.md is the pruned current-state picture the supervisor writes
+// each turn; combined with the kept mission brief and the live-state block it
+// fully reconstructs working memory from authoritative files instead of a 200K-
+// token transcript. Injected on the UNCACHED user turn (like the live-state
+// block) since it changes every turn. Returns "" for a vault with no mind.md.
+export async function loadMissionMemory(vault: string): Promise<string> {
+  const mind = await tryRead(`${vault}/.vault-chat/supervisor/mind.md`);
+  if (!mind || !mind.trim()) return "";
+  // Safety valve only — mind.md is meant to be pruned state, not a journal. Keep
+  // the HEAD (the "## Right now" current picture lives at the top; archived
+  // history is below), so a bloated file degrades gracefully instead of blowing
+  // the turn. A file that hits this cap is a signal the pruning discipline slipped.
+  const CAP = 24000;
+  const trimmed = mind.trim();
+  const body =
+    trimmed.length > CAP
+      ? `${trimmed.slice(0, CAP)}\n\n[…mind.md truncated to first ${CAP} chars — prune it to current state.]`
+      : trimmed;
+  return `## Your working memory — mind.md (re-hydrated fresh this wake)\n\nThis IS your durable state. The conversation history before this turn is NOT carried into context — everything you need to continue is here, in the mission brief above, and in the live state below. Update mind.md before you end the turn, or it's lost.\n\n${body}`;
+}
+
 export async function loadSessionContext(vault: string): Promise<string> {
   const pieces: string[] = [];
 

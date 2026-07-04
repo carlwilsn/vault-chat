@@ -9,6 +9,7 @@ import { safetyCommit } from "./autosave";
 import { scheduledDeliveryText } from "./scheduleDelivery";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import { registerRun, unregisterRun, abortRun } from "./runRegistry";
+import { harnessV2Enabled } from "./harness";
 import {
   useStore,
   MODEL_CONTEXT_LIMIT,
@@ -303,6 +304,14 @@ export async function sendMessage(
     // the heavy orchestrator supervisor.md (which stays for mission threads).
     // Same agent, different surface — no second-class phone brain.
     assistantMode: targetConv?.source === "phone" || targetConv?.source === "manual",
+    // [harness v2] Fresh-context only for AUTONOMOUS supervisor wakes on the active
+    // vault — a scheduled self-check or an off-target relay (targetConvIdOverride /
+    // scheduledBriefing / quietUnlessAlert set). A user typing into the mission
+    // thread has none of these and keeps full continuity. Gated by the kill-switch.
+    freshContext:
+      harnessV2Enabled() &&
+      targetConv?.role === "supervisor" &&
+      (!!targetConvIdOverride || !!scheduledBriefing || !!quietUnlessAlert),
     conversationId: targetConvId ?? undefined,
     reasoningEffort: cur.reasoningEffort,
     onEvent: (e) => {

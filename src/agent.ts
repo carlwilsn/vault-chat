@@ -177,8 +177,13 @@ export async function runAgent(params: {
   assistantMode?: boolean;
   conversationId?: string;
   reasoningEffort?: import("./store").ReasoningEffort;
+  // [harness v2] Run this supervisor turn on FRESH CONTEXT: drop the accumulated
+  // thread history (keeping only the mission brief) and re-hydrate from mind.md +
+  // the live-state block. Set by the caller for autonomous supervisor wakes (NOT
+  // foreground user chat, which keeps continuity), gated by harnessV2Enabled().
+  freshContext?: boolean;
 }) {
-  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, supervisorMode, assistantMode, conversationId } = params;
+  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, supervisorMode, assistantMode, conversationId, freshContext } = params;
   const reasoningEffort = params.reasoningEffort ?? "medium";
 
   try {
@@ -341,7 +346,17 @@ export async function runAgent(params: {
     // empty assistant turn at the tail of history; an unconfigured
     // system prompt can also be "". Only stamp the cacheControl
     // breakpoint on a content block that actually has text.
-    const historyMessages: ModelMessage[] = history
+    // [harness v2] Fresh-context supervisor wake: drop the accumulated middle of
+    // the thread and keep ONLY the mission brief (history[0] = the first user turn
+    // = the success criteria). Everything else is re-hydrated from mind.md + the
+    // live-state block on the user turn below, so the supervisor reasons at a
+    // small, near-constant context instead of degrading in a 100–200K-token thread.
+    // Legacy path (and foreground user chat) keeps full history untouched.
+    const effectiveHistory =
+      freshContext && history.length > 0 && history[0]!.role === "user"
+        ? [history[0]!]
+        : history;
+    const historyMessages: ModelMessage[] = effectiveHistory
       .filter((h) => h.content.trim().length > 0)
       .map<ModelMessage>((h, i, arr) => {
         const isLast = i === arr.length - 1;
@@ -388,9 +403,22 @@ export async function runAgent(params: {
         liveStateBlock = "";
       }
     }
+    // [harness v2] On a fresh-context wake, re-hydrate the supervisor's working
+    // memory (mind.md) onto the user turn — so dropping history above loses
+    // nothing that isn't already in mind.md + the kept brief + live-state.
+    let missionMemoryBlock = "";
+    if (freshContext) {
+      try {
+        const { loadMissionMemory } = await import("./context");
+        missionMemoryBlock = await loadMissionMemory(vault);
+      } catch {
+        missionMemoryBlock = "";
+      }
+    }
     const baseUserText = finalUserText.trim() ? finalUserText : "(no message text)";
-    const safeUserText = liveStateBlock
-      ? `${liveStateBlock}\n\n---\n\n${baseUserText}`
+    const preBlocks = [missionMemoryBlock, liveStateBlock].filter(Boolean);
+    const safeUserText = preBlocks.length
+      ? `${preBlocks.join("\n\n---\n\n")}\n\n---\n\n${baseUserText}`
       : baseUserText;
     const finalUserMessage: ModelMessage =
       attachableImages.length > 0
