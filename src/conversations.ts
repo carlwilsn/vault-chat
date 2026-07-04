@@ -14,6 +14,19 @@ export type ConversationSource =
   | "mission";
 export type ConversationStatus = "idle" | "running";
 
+// [harness v2] Explicit mission lifecycle, replacing the old implicit
+// (derived-from-fields) state. Transitions are stamped in code at the choke
+// points: mint→RUNNING, AskUser(money/irreversible fork)→AWAITING_USER,
+// verify→VERIFYING, CompleteMission→DONE, StopMission→KILLED. Gated behind
+// harnessV2Enabled(); legacy readers ignore an unknown field harmlessly.
+export type MissionState =
+  | "PLANNING"
+  | "RUNNING"
+  | "AWAITING_USER"
+  | "VERIFYING"
+  | "DONE"
+  | "KILLED";
+
 export type Conversation = {
   id: string;
   title: string;
@@ -75,6 +88,15 @@ export type Conversation = {
   // joins recent so you can get back to it. Set on open from either surface and
   // synced, so viewing a worker on the phone also surfaces it on the desktop.
   surfaced?: boolean;
+  // [harness v2] Explicit mission lifecycle state (see MissionState). Only set on
+  // source "mission" threads. Like every other optional field on this type it
+  // MUST be carried through readConversations below or it's silently stripped on
+  // every append — the same load-bearing trap documented on `mission`.
+  missionState?: MissionState;
+  // [harness v2] True while this mission owns a live billing resource (a rented
+  // GPU box). The deterministic cost guard (runWatcher) reads this so a mission
+  // that has gone idle while still billing auto-terminates without an LLM turn.
+  billing?: boolean;
 };
 
 
@@ -182,6 +204,11 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         runStartedAt: parsed.runStartedAt,
         // Whether the user has viewed this thread (promotes it into recent).
         surfaced: parsed.surfaced,
+        // [harness v2] Carry the mission lifecycle state + billing flag through
+        // read-modify-write (same load-bearing trap as `mission` above — drop
+        // them and every appended turn resets a mission's state/billing on disk).
+        missionState: parsed.missionState,
+        billing: parsed.billing,
       });
     } catch {
       // skip
