@@ -5933,6 +5933,143 @@ mod repo_class_tests {
     }
 }
 
+/// Exercises the actual two-machine reconciliation path (fetch → ff-or-merge →
+/// deterministic conflict resolution) against real git repos standing in for a
+/// bare GitHub remote and two vault checkouts, instead of a real "summer" test
+/// box (not reachable from this environment). Each test cleans up its own temp
+/// dirs so repeated runs never collide.
+#[cfg(test)]
+mod cross_machine_sync_tests {
+    use super::{abort_stuck_merge_or_rebase, reconcile_with_upstream, run_git, run_git_as};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_dir(label: &str) -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("vc_synctest_{}_{}_{}", std::process::id(), n, label))
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let (_, stderr, code) = run_git(dir.to_str().unwrap(), args).expect("git spawn");
+        assert_eq!(code, 0, "git {:?} in {:?} failed: {}", args, dir, stderr);
+    }
+
+    fn commit_as(dir: &Path, who: &str, msg: &str) {
+        let (_, stderr, code) =
+            run_git_as(dir.to_str().unwrap(), who, &format!("{who}@test"), &["commit", "-q", "-m", msg])
+                .expect("git spawn");
+        assert_eq!(code, 0, "commit failed: {}", stderr);
+    }
+
+    struct Divergence {
+        remote: PathBuf,
+        a: PathBuf,
+        b: PathBuf,
+    }
+
+    /// Sets up a bare "remote" plus two clones that both edit the same line of
+    /// the same file while offline from each other, mirroring the always-on-box
+    /// + intermittent-laptop pattern the merge (never rebase) design exists for.
+    /// Leaves machine B fetched but not yet reconciled.
+    fn setup_diverged_edit() -> Divergence {
+        let tmp = std::env::temp_dir();
+        let remote = unique_dir("remote");
+        let a = unique_dir("machine_a");
+        let b = unique_dir("machine_b");
+        git(&tmp, &["init", "--bare", "-q", "-b", "main", remote.to_str().unwrap()]);
+        git(&tmp, &["clone", "-q", remote.to_str().unwrap(), a.to_str().unwrap()]);
+
+        std::fs::write(a.join("notes.md"), "seed\n").unwrap();
+        git(&a, &["add", "-A"]);
+        commit_as(&a, "A", "seed");
+        git(&a, &["push", "-q", "-u", "origin", "main"]);
+
+        // B clones after the seed, so it starts in sync before diverging.
+        git(&tmp, &["clone", "-q", remote.to_str().unwrap(), b.to_str().unwrap()]);
+
+        // A advances and pushes first.
+        std::fs::write(a.join("notes.md"), "seed\nA's addition\n").unwrap();
+        git(&a, &["add", "-A"]);
+        commit_as(&a, "A", "a edits");
+        git(&a, &["push", "-q", "origin", "main"]);
+
+        // B edits the same line offline, unaware of A's push.
+        std::fs::write(b.join("notes.md"), "seed\nB's addition\n").unwrap();
+        git(&b, &["add", "-A"]);
+        commit_as(&b, "B", "b edits");
+
+        git(&b, &["fetch", "-q", "origin", "main"]);
+        Divergence { remote, a, b }
+    }
+
+    impl Drop for Divergence {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.remote);
+            let _ = std::fs::remove_dir_all(&self.a);
+            let _ = std::fs::remove_dir_all(&self.b);
+        }
+    }
+
+    #[test]
+    fn diverged_edit_on_two_machines_merges_without_data_loss() {
+        let d = setup_diverged_edit();
+
+        let outcome = match reconcile_with_upstream(d.b.to_str().unwrap(), "main") {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => panic!(
+                "a same-file divergence must resolve, never surface as a hard failure: {}",
+                e.message
+            ),
+            Err(e) => panic!("reconcile should not error: {}", e),
+        };
+        assert!(outcome.contains("merged"), "expected a merge outcome, got: {}", outcome);
+
+        // Theirs (A's push) must win in the tracked file — the follower converges
+        // on what's already public — while ours (B's edit) is never silently
+        // dropped: it must survive in the .conflict sidecar for the user to see.
+        let merged = std::fs::read_to_string(d.b.join("notes.md")).unwrap();
+        assert!(merged.contains("A's addition"), "theirs should win in the tracked file: {merged:?}");
+        let sidecar = std::fs::read_to_string(d.b.join("notes.md.conflict"))
+            .expect("ours must be preserved in a .conflict sidecar, never dropped");
+        assert!(sidecar.contains("B's addition"), "sidecar should hold B's edit: {sidecar:?}");
+
+        // The merge commit must be pushable — a follower that reconciles can
+        // always publish the result, never get stuck re-diverged against itself.
+        git(&d.b, &["push", "-q", "origin", "main"]);
+    }
+
+    #[test]
+    fn crashed_merge_self_heals_instead_of_wedging_every_later_commit() {
+        let d = setup_diverged_edit();
+
+        // Simulate the app crashing mid-merge: a real merge attempt left
+        // MERGE_HEAD/MERGE_MSG and conflict markers in the tree, but nothing
+        // ever resolved or aborted it — the exact "wedged vault" state where
+        // every later commit silently no-ops.
+        let (_, _, merge_code) =
+            run_git(d.b.to_str().unwrap(), &["merge", "--no-edit", "origin/main"]).unwrap();
+        assert_ne!(merge_code, 0, "same-line edits on both sides must conflict for this test to be meaningful");
+        assert!(d.b.join(".git").join("MERGE_HEAD").exists(), "test setup should leave a real MERGE_HEAD");
+
+        abort_stuck_merge_or_rebase(d.b.to_str().unwrap());
+        assert!(
+            !d.b.join(".git").join("MERGE_HEAD").exists(),
+            "abort_stuck_merge_or_rebase must clear a leftover MERGE_HEAD so sync isn't wedged forever"
+        );
+
+        // Prove the repo isn't wedged: a fresh, unrelated commit must actually
+        // land (a wedged repo silently no-ops every later commit attempt).
+        std::fs::write(d.b.join("other.md"), "post-heal commit\n").unwrap();
+        git(&d.b, &["add", "-A"]);
+        commit_as(&d.b, "B", "post-heal commit");
+        let (log, _, code) = run_git(d.b.to_str().unwrap(), &["log", "-1", "--format=%s"]).unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(log.trim(), "post-heal commit", "the post-heal commit must actually take effect");
+    }
+}
+
 #[cfg(test)]
 mod conversation_storage_tests {
     use super::conversation_file_stem;
