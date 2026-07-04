@@ -297,7 +297,10 @@ export async function runWorkerTurn(
   vault: string,
   conversationId: string,
   message: string,
-  opts: { modelId?: string; resume?: boolean; direct?: boolean } = {},
+  // [harness v2] forkNudge marks the ONE deterministic re-entry the fork-forcing
+  // rule is allowed (see the end of this function) — a nudged turn that parks
+  // again escalates instead of recursing.
+  opts: { modelId?: string; resume?: boolean; direct?: boolean; forkNudge?: boolean } = {},
 ): Promise<{ reply: string; error?: string }> {
   const store = useStore.getState();
   // Workers default to the heavy long-horizon worker model (Fable), NOT the
@@ -374,6 +377,11 @@ export async function runWorkerTurn(
   const liveSteps: { thought: string; actions: string[] }[] = [{ thought: "", actions: [] }];
   let liveWasAction = false;
   let runErr: string | undefined;
+  // [harness v2] Whether this turn handed the user a decision (AskUser). The
+  // flag lives inside runAgent and isn't surfaced, so observe the tool stream —
+  // it drives the AWAITING_USER state stamp and exempts the turn from the
+  // fork-forcing rule.
+  let askedUserThisTurn = false;
   const controller = new AbortController();
   registerRun(conversationId, controller);
   try {
@@ -405,6 +413,7 @@ export async function runWorkerTurn(
         }
         else if (e.kind === "reasoning") reasoningAcc += e.delta;
         else if (e.kind === "tool_use") {
+          if (e.name === "AskUser") askedUserThisTurn = true;
           tools.push({ id: e.id, name: e.name, input: e.input, startedAt: Date.now() });
           // Fold this action into the CURRENT update's action cluster (don't open
           // a new bolt) — the next prose will open the next update.
@@ -470,10 +479,20 @@ export async function runWorkerTurn(
         failed: runErr ? true : undefined,
         mid: newMessageId(),
       };
+      // [harness v2] Stamp the mission's lifecycle state as this turn lands:
+      // AskUser → AWAITING_USER; otherwise back to RUNNING (never overwrite a
+      // terminal DONE/KILLED — CompleteMission/stop may have stamped it mid-turn).
+      const cur = finalList[fi]!;
+      const v2state: Conversation["missionState"] =
+        harnessV2Enabled() && supervisorMode && cur.source === "mission" &&
+        cur.missionState !== "DONE" && cur.missionState !== "KILLED"
+          ? (askedUserThisTurn ? "AWAITING_USER" : "RUNNING")
+          : cur.missionState;
       finalList[fi] = {
-        ...finalList[fi]!,
-        messages: [...finalList[fi]!.messages, assistantMsg],
+        ...cur,
+        messages: [...cur.messages, assistantMsg],
         lastActivityAt: Date.now(),
+        missionState: v2state,
       };
       await writeConversations(vault, finalList);
     }
@@ -482,6 +501,25 @@ export async function runWorkerTurn(
   // Now that the final turn is on disk and in the store, drop the live stream
   // so the phone swaps from the streaming bubble to the persisted message.
   useStore.getState().clearConvRuntime(conversationId);
+
+  // [harness v2] Fork-forcing: a mission turn may not END PARKED. The Coconut
+  // gap-closer reached its budget fork, wrote a diagnosis, and went idle with no
+  // AskUser and no next wake — invisible for a day while the box billed to ~$100.
+  // Enforced deterministically after every autonomous supervisor turn: there must
+  // be a NEXT TICK (work delegated, a wake scheduled, a watched run, a live
+  // worker) or a pending user decision — otherwise re-enter once with a nudge,
+  // and if the nudged turn parks again, escalate to the user. Fire-and-forget so
+  // callers (AskWorker, watcher wakes) are never blocked on it.
+  if (harnessV2Enabled() && supervisorMode && !opts.direct && !opts.resume && !runErr) {
+    void enforceMissionLoopInvariant(
+      vault,
+      conversationId,
+      tools.map((t) => t.name),
+      askedUserThisTurn,
+      !!opts.forkNudge,
+      acc,
+    ).catch((e) => console.warn("[mission] loop-invariant check failed:", e));
+  }
 
   // Cockpit transform, fired AFTER the turn is persisted so it never delays the
   // thread landing (a no-op if no fast model is configured).
@@ -648,12 +686,42 @@ export async function startMission(
     role: "supervisor", // its turns run with the vault's supervisor.md prompt
     title: t,
     mission: t, // its own group key — workers it spawns share this
+    missionState: harnessV2Enabled() ? "RUNNING" : undefined,
   };
-  await withConvLock(async () => {
+  // [harness v2] One objective, one card. Two live cards for the same gap (the
+  // Coconut duplication) meant every status check first had to disambiguate
+  // WHICH mission — and the $80 cap lived on one card while the work ran on the
+  // other. If a live (not completed/killed) mission with this title already
+  // exists, approval re-binds to it instead of minting a twin. Checked INSIDE
+  // the lock so two rapid approvals can't race past each other.
+  const existing = await withConvLock(async () => {
     const list = await readConversations(vault);
+    if (harnessV2Enabled()) {
+      const same = list.find(
+        (c) =>
+          c.source === "mission" &&
+          !c.completedAt &&
+          c.missionState !== "DONE" &&
+          c.missionState !== "KILLED" &&
+          normalizeCriterion(c.title) === normalizeCriterion(t),
+      );
+      if (same) return same;
+    }
     list.unshift(fresh);
     await writeConversations(vault, list);
+    return null;
   });
+  if (existing) {
+    // Wake the existing mission with the (possibly refined) goal instead of
+    // starting a parallel twin.
+    void runWorkerTurn(
+      vault,
+      existing.id,
+      `The user re-approved this mission's objective. Refreshed brief follows — reconcile it with your current state (goal file + mind.md) and continue; do NOT restart finished work.\n\n${goal.trim()}`,
+      { modelId: useStore.getState().supervisorModelId },
+    ).catch((e) => console.warn("[mission] re-approve wake failed:", e));
+    return { id: existing.id, title: existing.title };
+  }
   await useStore.getState().refreshConversationFromDisk(vault, id).catch(() => {});
   const brief =
     `MISSION BRIEF (user-approved, handed off by their assistant). You own this goal end-to-end.\n\n` +
@@ -703,7 +771,37 @@ export async function stopAndDeleteMission(vault: string, conversationId: string
   } catch (e) {
     console.warn("[mission] schedule cleanup failed:", e);
   }
-  // 3) Tombstone-delete the mission + its workers (durable, resurrection-proof).
+  // 3) [harness v2] KEEP the thread, stamp it KILLED — the visible Archive.
+  // Silent deletion is what produced "missions disappearing???" / "what happened
+  // to my coconut mission": a killed mission vanished without a trace and the
+  // user had to reconstruct what happened. Now it leaves the live board (via
+  // completedAt, same as a finished mission) but survives in the archive with
+  // its final state readable. Workers are kept too — they're the mission's
+  // history. Aborts + wake-cancellation above already guarantee it can't
+  // resurrect itself onto Activity. Explicit swipe-delete in the archive remains
+  // the way to actually remove it (tombstoned, resurrection-proof).
+  // A mission that's ALREADY terminal (archived DONE/KILLED) being killed again
+  // is the user clearing it out of the archive (swipe-delete) — fall through to
+  // the real tombstone-delete below. First kill archives; second kill removes.
+  const alreadyTerminal =
+    !!mission.completedAt || mission.missionState === "DONE" || mission.missionState === "KILLED";
+  if (harnessV2Enabled() && !alreadyTerminal) {
+    await withConvLock(async () => {
+      const fresh = await readConversations(vault);
+      const t = Date.now();
+      for (let i = 0; i < fresh.length; i++) {
+        if (fresh[i]!.id === mission.id) {
+          // lastActivityAt bumps in lockstep so a union tie-break can't surface
+          // a stale not-killed meta line (same rule as completeMission).
+          fresh[i] = { ...fresh[i]!, missionState: "KILLED" as const, billing: false, completedAt: t, lastActivityAt: t };
+        }
+      }
+      await writeConversations(vault, fresh);
+    });
+    await useStore.getState().refreshConversationFromDisk(vault, mission.id).catch(() => {});
+    return;
+  }
+  // Legacy (kill-switch off): tombstone-delete the mission + its workers.
   // AWAIT the writes: the phone reloads its Activity list the instant /kill
   // returns, and a fire-and-forget delete let that reload re-read the still-on-
   // disk mission before its tombstone flushed — the "deleted mission comes back
@@ -711,6 +809,124 @@ export async function stopAndDeleteMission(vault: string, conversationId: string
   // desktop stays instant) and resolves once the write lands.
   const del = useStore.getState().deleteConversation;
   await Promise.all(ids.map((id) => del(id)));
+}
+
+// [harness v2] The fork-forcing rule: after an autonomous supervisor turn, the
+// mission must have a next tick or a pending user decision — "idle at a fork" is
+// illegal. Exits that satisfy the invariant:
+//   (a) work delegated / advanced this turn (StartWorker, AskWorker, WatchRun,
+//       MarkDoneWhen, CompleteMission) or a wake scheduled (Schedule),
+//   (b) the user was asked (AskUser → AWAITING_USER; their reply is the wake),
+//   (c) an external wake source already exists: an enabled schedule targeting
+//       this thread, a live watched run it owns, or a live worker of its mission,
+//   (d) the mission is terminal (DONE / KILLED).
+// If NONE hold, the harness re-enters the thread once with a corrective nudge;
+// a nudged turn that parks again escalates to the user's Alerts feed and flips
+// the mission to AWAITING_USER so the board shows the truth ("parked, needs
+// you") instead of a healthy-looking idle card.
+const PROGRESS_TOOLS = new Set([
+  "StartWorker",
+  "AskWorker",
+  "WatchRun",
+  "MarkDoneWhen",
+  "CompleteMission",
+  "Schedule",
+]);
+
+async function enforceMissionLoopInvariant(
+  vault: string,
+  conversationId: string,
+  toolNames: string[],
+  askedUser: boolean,
+  wasNudge: boolean,
+  turnText: string,
+): Promise<void> {
+  // (a) + (b): satisfied by this turn's own actions.
+  if (askedUser) return;
+  if (toolNames.some((n) => PROGRESS_TOOLS.has(n))) return;
+
+  const list = await readConversations(vault);
+  const mission = list.find((c) => c.id === conversationId && c.source === "mission");
+  if (!mission) return;
+  // (d) terminal.
+  if (mission.completedAt || mission.missionState === "DONE" || mission.missionState === "KILLED") return;
+
+  // (c) external wake sources.
+  try {
+    const { readSchedules } = await import("./schedules");
+    for (const sc of await readSchedules(vault)) {
+      const t = sc.target as { kind?: string; conversationId?: string };
+      if (
+        sc.enabled &&
+        t?.kind === "existing" &&
+        t.conversationId === conversationId &&
+        (sc.recurrence?.kind !== "once" || !sc.lastFiredAt)
+      )
+        return; // a wake is coming
+    }
+  } catch {
+    // unreadable schedules — fall through to the nudge rather than assume safety
+  }
+  try {
+    const { readJobs } = await import("./runWatcher");
+    if ((await readJobs(vault)).some((j) => j.status === "running" && j.ownerConvId === conversationId))
+      return; // the run-watcher will wake it
+  } catch {
+    /* same */
+  }
+  try {
+    const { activeRuns } = await import("./runRegistry");
+    const live = new Set(activeRuns());
+    const key = (mission.mission ?? mission.title ?? "").trim();
+    if (
+      key &&
+      list.some((c) => c.source === "worker" && (c.mission ?? "").trim() === key && live.has(c.id))
+    )
+      return; // a live worker's finish will wake it
+  } catch {
+    /* same */
+  }
+
+  if (!wasNudge) {
+    // One deterministic re-entry: name the violation, name the legal exits.
+    vlog("mission.parked.nudge", { conv: conversationId.slice(0, 8) });
+    void runWorkerTurn(
+      vault,
+      conversationId,
+      `HARNESS CHECK — your last turn ended PARKED: no worker running, no watched run, no scheduled wake, no question to the user. A mission may never idle silently. Pick the right exit now: (1) if you're at a genuine money/irreversible fork the user must decide, call AskUser with one crisp question; (2) if the next step is yours to take, take it (StartWorker / WatchRun / act directly) — for a reversible judgment call, decide it yourself and record it; (3) if you're waiting on something external, Schedule your own next check; (4) if the goal is verified done, call CompleteMission. Do not reply with only prose.`,
+      { modelId: useStore.getState().supervisorModelId, forkNudge: true },
+    ).catch((e) => console.warn("[mission] fork nudge failed:", e));
+    return;
+  }
+
+  // Nudged and STILL parked — stop burning turns, surface the truth to the user.
+  vlog("mission.parked.escalate", { conv: conversationId.slice(0, 8) });
+  await withConvLock(async () => {
+    const fresh = await readConversations(vault);
+    const i = fresh.findIndex((c) => c.id === conversationId);
+    if (i < 0) return;
+    if (fresh[i]!.missionState === "DONE" || fresh[i]!.missionState === "KILLED") return;
+    fresh[i] = { ...fresh[i]!, missionState: "AWAITING_USER" as const, lastActivityAt: Date.now() };
+    await writeConversations(vault, fresh);
+  });
+  try {
+    const { notify } = await import("./phoneApp");
+    const tail = (turnText || "").trim().slice(-400);
+    await notify(
+      "ask",
+      `Mission parked — ${mission.title}`,
+      `This mission ended two turns in a row with no next step (no worker, no wake, no question). It is HOLDING, not progressing. Its last words:\n\n${tail || "(no prose)"}\n\nOpen the thread and tell it how to proceed.`,
+      conversationId,
+      {
+        intention: `Mission parked · ${mission.title}`,
+        summary: "Supervisor idled at a decision point twice — needs your direction.",
+        icon: "⏸️",
+        cls: "r",
+      },
+    );
+  } catch (e) {
+    console.warn("[mission] parked-escalation notify failed:", e);
+  }
 }
 
 // Mark a mission FINISHED: its supervisor decided the goal is met. Stamps
@@ -746,7 +962,7 @@ export async function completeMission(vault: string, conversationId: string): Pr
     // finished mission RESURRECTED onto Activity. One monotonic timestamp closes
     // all three layers at once.
     const t = Date.now();
-    fresh[i] = { ...fresh[i]!, completedAt: t, lastActivityAt: t };
+    fresh[i] = { ...fresh[i]!, completedAt: t, lastActivityAt: t, missionState: "DONE" as const, billing: false };
     await writeConversations(vault, fresh);
     didComplete = true;
   });
