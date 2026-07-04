@@ -5,6 +5,7 @@ import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useStore, type TodoItem } from "./store";
 import { buildNote } from "./notes";
+import { harnessV2Enabled } from "./harness";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -1068,9 +1069,13 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         // a supervisor block on AskWorker for ~2 hours waiting on a worker that
         // wasn't answering. Time-box the wait: on timeout we do NOT abort the
         // worker (its turn keeps running in the background) — we stop waiting and
-        // report back so the caller's turn can END and it can check in later via
-        // the worker's finish-wake or ReadConversation.
-        const ASK_TIMEOUT_MS = 3 * 60_000;
+        // report back so the caller's turn can END and it can check in later.
+        // [harness v2] For a mission caller the primitive is fully non-blocking:
+        // a short grace window catches quick answers inline, then the ask
+        // DETACHES and the worker's eventual reply is DELIVERED as a wake turn
+        // on the caller — fire-and-continue, never fire-and-hover.
+        const v2Async = harnessV2Enabled() && tier === "mission" && !!conversationId;
+        const ASK_TIMEOUT_MS = v2Async ? 45_000 : 3 * 60_000;
         const runP = runWorkerTurn(vault, conversation_id, message, {});
         const outcome = await Promise.race([
           runP.then((r) => ({ timedOut: false as const, ...r })),
@@ -1079,6 +1084,31 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           ),
         ]);
         if (outcome.timedOut) {
+          if (v2Async) {
+            const callerId = conversationId!;
+            const workerTitle = conv.title || conversation_id;
+            // Deliver the late reply as a fresh wake on the caller once BOTH
+            // turns are done — wait for the caller to go idle so the wake can't
+            // interleave with its still-running turn.
+            void runP
+              .then(async ({ reply, error }) => {
+                const { useStore } = await import("./store");
+                for (let i = 0; i < 40; i++) {
+                  const cur = useStore.getState().conversations.find((c) => c.id === callerId);
+                  if (!cur || cur.status !== "running") break;
+                  await new Promise((r) => setTimeout(r, 15_000));
+                }
+                const note = error && !(reply ?? "").trim() ? `The worker's turn ERRORED: ${error}` : (reply ?? "").slice(0, 6000);
+                await runWorkerTurn(
+                  vault,
+                  callerId,
+                  `Reply from worker "${workerTitle}" (answering your earlier AskWorker, delivered asynchronously):\n\n${note}`,
+                  { modelId: useStore.getState().supervisorModelId },
+                );
+              })
+              .catch((e) => console.warn("[askworker] async reply delivery failed:", e));
+            return `Worker "${workerTitle}" is still mid-turn after 45s — the ask is DETACHED. You'll be WOKEN with its reply when it lands; do not wait or poll. End your turn (after securing your next tick as usual).`;
+          }
           runP.catch(() => {}); // keeps running in the background; swallow late rejection
           return `Worker "${conv.title || conversation_id}" is still working after 3 min — it keeps running in the background. Don't block on it: end your turn now. You'll be woken when it finishes, or check it with ReadConversation (id ${conversation_id}).`;
         }
