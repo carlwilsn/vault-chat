@@ -1611,6 +1611,20 @@
       + (settled ? "" : '<div class="thinking"><span class="pulse"></span><span class="tlbl show">answering…</span></div>');
     if (be.scrollHeight - be.scrollTop - be.clientHeight < 160) be.scrollTop = be.scrollHeight;
   }
+  // Measure the top safe-area inset (Dynamic Island / notch) in px — 0 in a browser
+  // tab, ~47-59 in an iOS standalone PWA. A full-height sheet must stop BELOW it, or
+  // its top slides up under the Island and reads as "too far up" (note 86073ceb).
+  // Probed live (offsetHeight resolves env()), so rotation is handled.
+  function safeAreaTop() {
+    try {
+      const p = document.createElement("div");
+      p.style.cssText = "position:fixed;top:0;left:0;width:0;height:env(safe-area-inset-top,0px);visibility:hidden;pointer-events:none";
+      document.body.appendChild(p);
+      const h = p.offsetHeight || 0;
+      p.remove();
+      return h;
+    } catch { return 0; }
+  }
   function openSheet(opts) {
     clearInterval(missionPoll); missionPoll = 0;
     sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false; sheetChatActive = false; sheetChatSettling = false; sheetChatText = "";
@@ -1621,7 +1635,10 @@
     // instead PRESERVES the current height, so back never "forces me back up"
     // after I've dragged the sheet down.
     sh.style.maxHeight = "none";
-    sh.style.height = (sh.classList.contains("on") ? sh.offsetHeight : Math.round(0.96 * window.innerHeight)) + "px";
+    // Full-height open, but land the top edge BELOW the safe-area inset so it never
+    // slides up under the Dynamic Island (note 86073ceb — "goes too far up then needs
+    // to move barely down"). In a browser the inset is 0, so this is the old height.
+    sh.style.height = (sh.classList.contains("on") ? sh.offsetHeight : Math.round(0.96 * window.innerHeight) - safeAreaTop()) + "px";
     $("sheetIco").textContent = opts.ico || "•";
     $("sheetIco").className = "sheet-ico" + (opts.cls ? " " + opts.cls : "");
     // A worker thread doesn't need an icon chip — the "Worker · …" intent label
@@ -1687,7 +1704,7 @@
     const sheet = $("sheet"); let startY = 0, startH = 0, dragging = false, H = 0;
     const down = (y) => { dragging = true; startY = y; startH = sheet.offsetHeight; H = window.innerHeight; sheet.style.transition = "none"; sheet.style.maxHeight = "none"; };
     const move = (y) => { if (!dragging) return; const h = Math.max(80, Math.min(startH - (y - startY), Math.round(0.97 * H))); sheet.style.height = h + "px"; };
-    const up = () => { if (!dragging) return; dragging = false; sheet.style.transition = ""; const h = sheet.offsetHeight; if (h < 0.30 * H) { closeSheet(); return; } if (h > 0.55 * H) sheet.style.height = Math.round(0.96 * H) + "px"; else sheet.style.height = Math.min(sheet.scrollHeight, Math.round(0.62 * H)) + "px"; };
+    const up = () => { if (!dragging) return; dragging = false; sheet.style.transition = ""; const h = sheet.offsetHeight; if (h < 0.30 * H) { closeSheet(); return; } if (h > 0.55 * H) sheet.style.height = Math.round(0.96 * H) - safeAreaTop() + "px"; else sheet.style.height = Math.min(sheet.scrollHeight, Math.round(0.62 * H)) + "px"; };
     for (const elx of [$("sheetGrab"), $("sheetHead")]) {
       elx.addEventListener("touchstart", (e) => { if (e.target.closest(".sheet-x,.sheet-action")) return; down(e.touches[0].clientY); }, { passive: true });
       elx.addEventListener("mousedown", (e) => { if (e.target.closest(".sheet-x,.sheet-action")) return; e.preventDefault(); down(e.clientY); });
