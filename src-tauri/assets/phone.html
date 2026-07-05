@@ -24,7 +24,10 @@
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html{background:var(--bg)}
   html,body{margin:0;position:fixed;inset:0;overflow:hidden;overscroll-behavior:none}
-  body{display:flex;flex-direction:column;background:var(--bg);color:var(--text);
+  /* The shell box is ALWAYS the full screen (inset:0); the keyboard lift is a CSS
+     padding driven by --kb (set by the visualViewport handler), so JS never shrinks
+     the outer box and can't strand a dead strip under the app. --kb is 0 at rest. */
+  body{display:flex;flex-direction:column;background:var(--bg);color:var(--text);padding-bottom:var(--kb,0px);
     font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
   button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;padding:0}
   svg{display:block}
@@ -2512,24 +2515,23 @@
     // documentElement.clientHeight — the stable layout-viewport height that
     // matches the position:fixed containing block. window.innerHeight diverges
     // from it across iOS/Android, so the old innerHeight math under-computed the
-    // lift. Expose it as --kb; the .sheet transform consumes it. Re-applied on
-    // scroll too because iOS shifts the viewport as the keyboard animates.
+    // lift. Expose it as --kb; the composer's padding-bottom and the .sheet
+    // transform both consume it. Re-applied on scroll too because iOS shifts the
+    // viewport as the keyboard animates.
     const applyKb = () => {
       const kb = Math.max(0, document.documentElement.clientHeight - vv.height - vv.offsetTop);
       document.documentElement.style.setProperty("--kb", kb + "px");
       // Keyboard up: collapse the composer's home-indicator inset so the textbox
       // sits flush on the keyboard (the keyboard already covers that strip).
       document.body.classList.toggle("kbup", kb > 60);
-      // Constrain the body to the visible area ONLY while the keyboard is genuinely
-      // UP (kb>60), so the composer rides above it. When it's down, CLEAR the
-      // explicit height so position:fixed;inset:0 fills the whole layout viewport
-      // again — an explicit height on a top:0/bottom:0 fixed element wins over
-      // `bottom`, so a stale short height leaves a dead strip under the whole app.
-      // This reconciliation lives in applyKb (not just the resize handler) because
-      // iOS frequently SETTLES a keyboard dismiss with a visualViewport *scroll*
-      // event, not a final resize — clearing only on resize left the keyboard-up
-      // height pinned after dismissal, i.e. the persistent buffer under every page.
-      document.body.style.height = kb > 60 ? vv.height + "px" : "";
+      // The shell height is deliberately NOT set here. body stays position:fixed;
+      // inset:0 (full screen) and lifts the composer via `padding-bottom:var(--kb)`
+      // in CSS, so the outer box can never be shorter than the screen. The old
+      // `body.style.height = vv.height` pin was the dead strip: an explicit height
+      // on a top:0/bottom:0 fixed element beats `bottom`, and under viewport-fit=cover
+      // iOS reports vv.height a few px short, so the shell rendered shorter than the
+      // screen — a persistent buffer under every page. Two prior patches only tuned
+      // WHEN to pin/clear; the real fix is to never JS-control the shell height.
       // While editing a reply, cap the sheet to the space above the keyboard so
       // the whole sheet stays visible, not just the lifted foot.
       const sheet = $("sheet");
