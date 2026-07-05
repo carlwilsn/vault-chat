@@ -2559,8 +2559,9 @@
     const pLvh = mk("position:fixed;left:-9999px;top:0;width:1px;height:100lvh");
     const pSafe = mk("position:fixed;left:-9999px;top:0;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)");
     const box = document.createElement("pre");
-    // Pad the readout below the notch/Dynamic Island so it's legible in standalone.
-    box.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;margin:0;padding:calc(env(safe-area-inset-top) + 4px) 8px 6px;font:11px/1.4 ui-monospace,Menlo,monospace;color:#25ff9a;background:rgba(0,0,0,.9);white-space:pre-wrap;pointer-events:none";
+    // Dead-center the readout so neither the Dynamic Island nor the home indicator
+    // can cover it in standalone (the top-anchored version spilled under the notch).
+    box.style.cssText = "position:fixed;top:50%;left:10px;right:10px;transform:translateY(-50%);z-index:99999;margin:0;padding:12px;border-radius:10px;font:13px/1.7 ui-monospace,Menlo,monospace;color:#25ff9a;background:rgba(0,0,0,.94);white-space:pre-wrap;pointer-events:none";
     document.body.appendChild(box);
     const de = document.documentElement;
     const H = (el) => Math.round(el.getBoundingClientRect().height);
@@ -2570,15 +2571,14 @@
       const vv = window.visualViewport || {};
       const cs = getComputedStyle(pSafe);
       const b = document.body.getBoundingClientRect();
-      const comp = document.querySelector(".composer");
-      const cr = comp ? comp.getBoundingClientRect() : { top: 0, bottom: 0 };
       const standalone = (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone || false;
       box.textContent = [
-        "standalone=" + standalone + "  screen=" + screen.width + "x" + screen.height + "  dpr=" + window.devicePixelRatio,
-        "innerH=" + window.innerHeight + "  docClientH=" + de.clientHeight + "  vv.h=" + Math.round(vv.height || 0),
-        "100dvh=" + H(pDvh) + "  100svh=" + H(pSvh) + "  100lvh=" + H(pLvh),
-        "safeTop=" + cs.paddingTop + "  safeBot=" + cs.paddingBottom + "  --kb=" + (de.style.getPropertyValue("--kb") || "0"),
-        "body bot=" + Math.round(b.bottom) + "  bodyH=" + Math.round(b.height) + "  compTop=" + Math.round(cr.top) + " bot=" + Math.round(cr.bottom),
+        "standalone=" + standalone + "  dpr=" + window.devicePixelRatio,
+        "screen = " + screen.width + " x " + screen.height,
+        "viewport = " + window.innerWidth + " x " + window.innerHeight,
+        "100dvh=" + H(pDvh) + "  svh=" + H(pSvh) + "  lvh=" + H(pLvh),
+        "safeTop=" + cs.paddingTop + "  safeBot=" + cs.paddingBottom,
+        ">> screen-viewport = " + (screen.height - window.innerHeight) + "px",
         ">> GAP under body = " + (window.innerHeight - Math.round(b.bottom)) + "px",
       ].join("\n");
     };
