@@ -2428,10 +2428,11 @@
     const meta = alertMeta(n);
     openSheet({
       intent: n.intention || meta.intention, title: n.title, ico: n.icon || meta.icon, cls: n.cls || meta.cls,
-      // "Open thread" (upper-right, both types) — read the full context before
-      // deciding. For a decision, the centered "Reply" CTA below is the prominent
-      // path; both land in the asking chat.
-      action: n.convId ? { label: "Open thread", onClick: () => { markRead(n.id); closeSheet(); surfaceThread(n.convId); openThread(n.convId, n.title); } } : null,
+      // "Open thread" (upper-right) — INFO alerts only. An ask already has the
+      // centered "Reply" CTA below, which lands in the same chat, so a second
+      // top-right button that does the identical thing is just redundant (per the
+      // user). Info alerts have no Reply CTA, so they keep "Open thread".
+      action: (n.convId && !isAction) ? { label: "Open thread", onClick: () => { markRead(n.id); closeSheet(); surfaceThread(n.convId); openThread(n.convId, n.title); } } : null,
       // Show the agent's POLISHED summary (the Notify body) — not the raw thread.
       bodyHtml: '<div class="md">' + md(n.body || "*(no summary)*") + "</div>",
       // A decision (ask) gets ONE centered "Reply" CTA where the text box used to
