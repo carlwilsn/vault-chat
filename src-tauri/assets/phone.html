@@ -594,6 +594,10 @@
   if (MOCK) installMock();
   function installMock() {
     const now = Date.now();
+    // Auto-play the supervisor m1 working→idle→(stale trailing frame) lifecycle
+    // once on load, so the mock demonstrates a live supervisor edge and settling
+    // to "waiting". Re-arm any time from a test with `window.__m1seq = 1`.
+    if (typeof window.__m1seq === "undefined") window.__m1seq = 1;
     const DB = {
       vault: "summer", model: "claude-opus-4-8",
       convs: [
@@ -688,6 +692,30 @@
         const nDone = Math.min(completed.length, 1 + Math.floor(pollTick / 4));
         const steps = completed.slice(0, nDone).concat([{ thought: "" }]);
         const evs = DB.runs.filter((r) => r.source === "worker").map((r) => ({ type: "runtime", convId: r.convId, text: "", tool: "", steps }));
+        // Supervisor m1: script a working turn that ENDS with a stale trailing
+        // frame — status:idle then a lingering runtime in the SAME batch — to prove
+        // the sheet settles to "waiting" instead of sticking on "working…" (the
+        // close-and-reopen bug). Runs once, early, so verification is quick.
+        const m1steps = [
+          { thought: "Pulled seed-2's retry thread — at step 600 it's tracking seed 1 within 0.01 nat, so it's on course." },
+          { thought: "Holding the eval/writeup worker until seed 2's eval.loss actually commits rather than calling it early." },
+          { thought: "" },
+        ];
+        // Re-armable via window.__m1seq = 1 (set from a test) so the running →
+        // idle → stale-trailing-frame sequence can be fired at will while the m1
+        // sheet is open — the precise condition the reopen bug needs.
+        if (typeof window.__m1seq === "number" && window.__m1seq >= 1) {
+          const p = window.__m1seq;
+          if (p <= 2) {
+            if (!DB.runs.some((r) => r.convId === "m1")) DB.runs.push({ convId: "m1", title: "BitNet 160M MVP", mission: "BitNet 160M MVP", source: "mission", lastTool: "Read", lastProgressAt: Date.now() });
+            evs.push({ type: "runtime", convId: "m1", text: "", tool: "Read", steps: m1steps.slice(0, Math.min(m1steps.length, p + 1)) });
+          } else if (p === 3) {
+            DB.runs = DB.runs.filter((r) => r.convId !== "m1");
+            evs.push({ type: "status", convId: "m1", status: "idle" });
+            evs.push({ type: "runtime", convId: "m1", text: "", tool: "Read", steps: m1steps }); // the stale trailing frame
+          }
+          window.__m1seq = p >= 3 ? 0 : p + 1;
+        }
         if (!pollWaited) { pollWaited = true; return reply({ events: evs, next: String(pollTick) }); }
         await new Promise((r) => setTimeout(r, 2500));
         return reply({ events: evs, next: String(pollTick) });
@@ -1286,14 +1314,27 @@
     // snapshot. Runs alongside (not instead of) the active-chat handling below.
     if (sheetConvId && d.convId === sheetConvId) {
       if (d.type === "runtime") {
-        sheetRunning = true; sheetOptimisticWorking = false;
-        sheetLiveText = d.text || ""; sheetLiveSteps = Array.isArray(d.steps) ? d.steps : [];
-        // Update the edge in place if it's there; if paint hadn't drawn it yet
-        // (first sign of life), repaint so it appears now.
-        if ($("liveEdge")) renderSheetLive(); else if (sheetRepaint) void sheetRepaint();
+        // Ignore a live frame that arrives after the box already said this thread
+        // is idle — it's the stale trailing frame, not a real new turn. Without
+        // this guard it re-armed the edge and the sheet stuck on "working…".
+        if (!sheetEnded) {
+          sheetRunning = true; sheetOptimisticWorking = false;
+          sheetLiveText = d.text || ""; sheetLiveSteps = Array.isArray(d.steps) ? d.steps : [];
+          // Update the edge in place if it's there; if paint hadn't drawn it yet
+          // (first sign of life), repaint so it appears now.
+          if ($("liveEdge")) renderSheetLive(); else if (sheetRepaint) void sheetRepaint();
+        }
       } else if (d.type === "status") {
         sheetRunning = d.status === "running";
-        if (!sheetRunning) { sheetLiveText = ""; sheetLiveSteps = []; sheetOptimisticWorking = false; sheetDirectReply = false; }
+        if (sheetRunning) {
+          // A genuine new run — un-latch so its live frames render.
+          sheetEnded = false;
+        } else {
+          // The box says done: latch it and drop the live edge for good (until a
+          // real new run), so a trailing frame can't bring "working…" back.
+          sheetEnded = true;
+          sheetLiveText = ""; sheetLiveSteps = []; sheetOptimisticWorking = false; sheetDirectReply = false;
+        }
         if (sheetRepaint) void sheetRepaint();
       } else if (d.type === "message") { if (sheetRepaint) void sheetRepaint(); }
     }
@@ -1447,6 +1488,14 @@
   // didn't ask to see (worker-wakes, scheduled self-checks). Set when the user
   // sends from a supervisor thread; cleared when that run ends or the sheet closes.
   let sheetDirectReply = false;
+  // Latched true the moment the box reports THIS thread idle. It blocks a stale
+  // trailing `runtime` frame — the box broadcasts status BEFORE runtime in a diff
+  // pass and wipes the runtime dedup key on the idle flip, so a lingering live
+  // frame lands just after status:idle and used to re-arm the edge — from
+  // re-showing "working…" after the turn is done (the "stuck until I close and
+  // reopen the sheet" bug). Cleared only by a genuine new status:running (or a
+  // fresh open), so once the box says done, the edge stays down.
+  let sheetEnded = false;
   // The live edge appended to a RUNNING thread: the agent's work as it happens,
   // rendered as a GROWING thought→action timeline (same look as the finished,
   // Haiku-cleaned timeline above it — but building step by step, the last step
@@ -1492,7 +1541,7 @@
   }
   function openSheet(opts) {
     clearInterval(missionPoll); missionPoll = 0;
-    sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false;
+    sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false;
     const sh = $("sheet");
     sh.style.transition = "";
     // Cards open FULL-SCREEN by default (note 7a420a05) — not the old ~64% peek.
@@ -1524,7 +1573,7 @@
     typeset($("sheetBody"));
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
   }
-  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; markSeen(sheetConvId); /* leaving at close-time stamps it seen, after any open-time pin bump → never falsely unread (note ec78cbf8) */ sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; updateConvDot(); /* no longer viewing the sheet thread → a still-running one re-lights the dot */ }
+  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; markSeen(sheetConvId); /* leaving at close-time stamps it seen, after any open-time pin bump → never falsely unread (note ec78cbf8) */ sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; updateConvDot(); /* no longer viewing the sheet thread → a still-running one re-lights the dot */ }
   // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
   // chat composer), Enter sends, Shift+Enter is a newline. The pinned footer +
   // the visualViewport lift keep it above the keyboard.
@@ -1659,6 +1708,9 @@
         // the turn — so there's never a dead gap (the "no sign of life" the user
         // hit). Real runtime/status events take over and a safety timer clears it.
         sheetOptimisticWorking = true;
+        // A fresh send starts a new turn — clear any prior "ended" latch so this
+        // turn's live frames render.
+        sheetEnded = false;
         // You typed this → the supervisor's reply is a direct, natural turn. Keep
         // the live edge plain (no thought-chain) until this run ends.
         sheetDirectReply = true;
@@ -1710,9 +1762,12 @@
       }
       const restPlus = rest.concat(optimistic.map((t) => ({ role: "user", content: t })));
       const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
-      // Live whenever a run is actually in flight — even for a completed mission
-      // the user re-engaged to discuss (a reply wakes the supervisor again).
-      sheetRunning = liveRun || hasLive;
+      // The box's own liveRun is authoritative: if it reports a run, we're live
+      // (and any stale "ended" latch is wrong, so drop it). Leftover live content
+      // only counts while we HAVEN'T been told the turn ended — otherwise a
+      // trailing frame's steps would keep the edge alive forever (the reopen bug).
+      if (liveRun) sheetEnded = false;
+      sheetRunning = liveRun || (hasLive && !sheetEnded);
       // Working off the jump: a freshly-briefed mission with no supervisor turn yet
       // is spinning up from zero context. Show "working…" immediately — bounded by a
       // safety timer that clears it if no real run shows — so the start is never a
