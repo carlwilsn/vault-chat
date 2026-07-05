@@ -33,6 +33,26 @@ Then open the scratch vault in the app (the vault picker), OR set it as the acti
 - `vault_chat_fire_schedules_on_this_machine` — the scheduler only fires where this is true. Leave ON for the test instance so probes actually run. **Keep it OFF on any instance that also has `summer` open**, or you'll double-fire the real vault.
 - `vault_chat_harness_v2` — the harness-v2 kill-switch. Leave ON (that's what you're testing).
 
+## Headless launch (no click-through, no double-fire) — for autonomous runs
+
+Vault selection is **localStorage-only** (`vault_chat_last_vault`), the firing/tracked flags too, and there is **no env/CLI/URL vault override** — so an agent can't point the app at a scratch vault without clicking the OS file picker (fragile) unless you add a small dev-gated boot override. Two facts make this safe to automate:
+
+1. **Isolate the WebView2 store** so the dev instance can't see the installed app's real vaults (and can't double-fire them). On Windows, launch with a fresh data dir:
+   ```bash
+   WEBVIEW2_USER_DATA_FOLDER="$SCRATCH/.webview2" npm run tauri dev
+   ```
+   A fresh store = empty localStorage = no real vault, no tracked vaults, firing defaults ON → it fires **only** what you point it at.
+2. **Dev-gated vault + port override** (uncommitted local edits, or committed but `import.meta.env.DEV`-gated so prod is untouched):
+   - `src/store.ts` — `vaultPath: localStorage.getItem(VAULT_STORAGE) || (import.meta.env.DEV ? (import.meta.env.VITE_DEV_VAULT ?? null) : null)` — boots straight into the scratch vault, which `startSchedulerLoop` then `addTrackedVault`s and fires.
+   - `src/phoneVoice.ts` — the cockpit `PORT = 8848` is **hardcoded**. A second instance can't bind it while the installed app is running. Make it `Number(import.meta.env.VITE_COCKPIT_PORT) || 8848` and launch with `VITE_COCKPIT_PORT=8850` so the dev cockpit is on its own port (drive/monitor it via preview tools without touching the real one).
+
+   ```bash
+   VITE_DEV_VAULT="$SCRATCH" VITE_COCKPIT_PORT=8850 \
+     WEBVIEW2_USER_DATA_FOLDER="$SCRATCH/.webview2" npm run tauri dev
+   ```
+
+**Prerequisite check:** if `netstat -ano | grep :8848` shows a LISTENER, the installed app is already running (it holds 8848 and syncs its vault). The dev instance MUST use a different `VITE_COCKPIT_PORT`, and you must NOT repoint the running app. API keys come from the OS keychain (per-user), so the isolated store still has them — the agent can run.
+
 ## Mint + watch locally (no push)
 
 For a local, single-instance test, mint writes the files directly — skip the `push` subcommand (that's for synced/box vaults):
