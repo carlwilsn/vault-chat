@@ -111,13 +111,13 @@ export async function summarizeWorkerState(
 // [harness v2] Independent verifier for MarkDoneWhen — a FRESH-context check
 // with none of the actor's accumulated rationalization (the generator-verifier
 // split: the thread that did the work does not get to grade it). It judges one
-// question: does the RECORDED state (mind.md + the thread's own recent claims)
-// concretely substantiate that this criterion is MET — named artifacts, logged
-// results, verified outcomes — or is the claim unsupported? Prompted as a
-// skeptic: unverified assertions ("the worker said it's done") FAIL. Returns
-// null when no fast model is configured or the call errors — the gate then
-// fails OPEN (legacy behavior) so a keyless setup keeps working.
-const VERIFY_SYSTEM = `You are a skeptical auditor for an autonomous agent's claim that a mission success-criterion is now MET. You get the CRITERION and the recorded EVIDENCE (the agent's own state notes and recent output). Decide: does the evidence CONCRETELY substantiate the criterion being met — specific artifacts named, results with numbers logged, checks actually run? Assertions without substance ("done", "the worker finished it", future tense, plans) do NOT pass. A criterion explicitly waived/rescoped by the user, with that decision recorded, passes. Be strict but fair: you're guarding against premature check-offs, not demanding ceremony. Reply with your verdict and a one-sentence reason.`;
+// question: does the GROUND TRUTH (the criterion's named files read live from
+// disk + this mission's scoped goal file) substantiate that the criterion is MET
+// — or does the agent's narration merely claim it does? Ground truth wins over
+// self-report; a claim that contradicts the disk FAILS. Returns null when no fast
+// model is configured or the call errors — the gate then fails OPEN (legacy
+// behavior) so a keyless setup keeps working.
+const VERIFY_SYSTEM = `You are a skeptical auditor for an autonomous agent's claim that a mission success-criterion is now MET. You get the CRITERION and the EVIDENCE. The evidence has two kinds of content, and they are NOT equal: (1) GROUND TRUTH — file contents, line counts, and byte sizes read live from disk (and this mission's own goal file); (2) the agent's own NARRATION — a claim it wrote about its own work. GROUND TRUTH WINS. Judge the criterion against the actual files. If the agent's narration contradicts the disk — it claims 100 lines but the file shows 12, claims "no gaps" but the timestamps are out of order, claims a file exists that is marked "DOES NOT EXIST on disk" — the criterion FAILS, no matter how confident the narration sounds. A criterion that names a file requires that file to actually be present with the stated content. Assertions without substance ("done", "the worker finished it", future tense, plans) do NOT pass on their own. A criterion explicitly waived/rescoped by the user, with that decision recorded, passes. Be strict but fair: you guard against premature check-offs and self-report inflation, not demand ceremony. Reply with your verdict and a one-sentence reason.`;
 
 export async function verifyCriterionEvidence(
   criterion: string,

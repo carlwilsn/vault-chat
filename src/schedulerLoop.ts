@@ -470,6 +470,17 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
       const conv =
         useStore.getState().conversations.find((c) => c.id === conversationId) ??
         (await readConversations(vault)).find((c) => c.id === conversationId);
+      if (conv && conv.source === "mission" && conv.completedAt) {
+        // A completed mission must never be re-run. A stray schedule that outlived
+        // CompleteMission's cleanup (a double-fire slot, or a heartbeat armed in
+        // the very turn that completed) would start a fresh turn on a finished
+        // mission — wasting a run and, worse, re-stamping missionState:RUNNING with
+        // a newer lastActivityAt that RESURRECTS the mission onto the Activity
+        // board (the reconstruct freshness tie-break). Skip and sweep the dead row.
+        vlog("sched.skip.completed", { conv: conversationId.slice(0, 8), name: s.name });
+        await deleteSchedule(vault, s.id).catch(() => {});
+        return;
+      }
       if (conv && conv.source === "mission" && !conv.completedAt) {
         const msgs = conv.messages.filter((m) => !m.system);
         const last = msgs[msgs.length - 1];

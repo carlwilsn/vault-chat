@@ -1016,9 +1016,30 @@ pub(crate) fn reconstruct_conversation(contents: &str) -> Option<String> {
         // and (pre-tombstones) a restart would drop it from memory and the old
         // delete-by-omission sweep then erased the file itself.
         if v.get("id").is_some() {
-            // A meta line. Keep the freshest if a union left more than one.
+            // A meta line. If a union left more than one, pick a winner. Terminal
+            // state (a completed / killed mission) is MONOTONIC: once a mission is
+            // DONE/KILLED it must never be resurrected by a staler RUNNING line —
+            // even one with a NEWER lastActivityAt, because a stray post-completion
+            // wake (a double-fire, a not-yet-cancelled heartbeat) re-stamps RUNNING
+            // with a fresh timestamp and would otherwise win the freshness race and
+            // put a finished mission back on the Activity board. So a terminal meta
+            // always beats a non-terminal one; between two of the same kind the
+            // freshest lastActivityAt wins. This is the tombstone rule (see
+            // conversation/schedule tombstones) applied to mission completion.
             let act = v.get("lastActivityAt").and_then(|x| x.as_i64()).unwrap_or(0);
-            if meta.is_none() || act >= meta_activity {
+            let cand_terminal = is_terminal_meta(&v);
+            let take = match &meta {
+                None => true,
+                Some(cur) => {
+                    let cur_terminal = is_terminal_meta(cur);
+                    if cand_terminal != cur_terminal {
+                        cand_terminal // the terminal line wins regardless of freshness
+                    } else {
+                        act >= meta_activity
+                    }
+                }
+            };
+            if take {
                 meta_activity = act;
                 meta = Some(v);
             }
@@ -1042,6 +1063,18 @@ pub(crate) fn reconstruct_conversation(contents: &str) -> Option<String> {
         obj.insert("messages".to_string(), serde_json::Value::Array(messages));
     }
     serde_json::to_string(&meta).ok()
+}
+
+/// A conversation meta line is "terminal" once its mission has finished:
+/// `completedAt` stamped, or `missionState` DONE/KILLED. Terminal state is
+/// monotonic across a union merge — see the pick logic in
+/// `reconstruct_conversation` — so a completed mission never reappears.
+fn is_terminal_meta(v: &serde_json::Value) -> bool {
+    v.get("completedAt").map_or(false, |x| !x.is_null())
+        || matches!(
+            v.get("missionState").and_then(|x| x.as_str()),
+            Some("DONE") | Some("KILLED")
+        )
 }
 
 #[tauri::command]
@@ -6012,6 +6045,38 @@ mod conversation_jsonl_tests {
     fn empty_or_metaless_body_is_none() {
         assert!(reconstruct_conversation("").is_none());
         assert!(reconstruct_conversation("{\"role\":\"user\",\"content\":\"orphan\"}\n").is_none());
+    }
+
+    #[test]
+    fn completed_mission_survives_a_staler_running_line() {
+        // Regression: a finished mission (DONE + completedAt) reappeared on the
+        // Activity board because a stray post-completion RUNNING wake re-stamped a
+        // NEWER lastActivityAt and won the freshness race. Terminal state must win
+        // regardless of lastActivityAt — order-independent, both directions.
+        let running_first = "{\"id\":\"m\",\"missionState\":\"RUNNING\",\"lastActivityAt\":200}\n\
+                             {\"role\":\"user\",\"content\":\"go\"}\n\
+                             {\"id\":\"m\",\"missionState\":\"DONE\",\"completedAt\":150,\"lastActivityAt\":150}\n";
+        let done_first = "{\"id\":\"m\",\"missionState\":\"DONE\",\"completedAt\":150,\"lastActivityAt\":150}\n\
+                          {\"role\":\"user\",\"content\":\"go\"}\n\
+                          {\"id\":\"m\",\"missionState\":\"RUNNING\",\"lastActivityAt\":200}\n";
+        for body in [running_first, done_first] {
+            let out = reconstruct_conversation(body).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(v.get("missionState").and_then(|x| x.as_str()), Some("DONE"));
+            assert_eq!(v.get("completedAt").and_then(|x| x.as_i64()), Some(150));
+        }
+    }
+
+    #[test]
+    fn between_two_running_lines_freshest_wins() {
+        // Non-terminal vs non-terminal keeps the original freshest-lastActivityAt
+        // rule intact.
+        let body = "{\"id\":\"m\",\"missionState\":\"RUNNING\",\"lastActivityAt\":100}\n\
+                    {\"id\":\"m\",\"missionState\":\"RUNNING\",\"lastActivityAt\":300}\n\
+                    {\"id\":\"m\",\"missionState\":\"RUNNING\",\"lastActivityAt\":200}\n";
+        let out = reconstruct_conversation(body).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v.get("lastActivityAt").and_then(|x| x.as_i64()), Some(300));
     }
 
     #[test]

@@ -1839,6 +1839,14 @@ export const useStore = create<State>((set) => ({
           merged.push(cur);
           continue;
         }
+        // Terminal state is monotonic (defense-in-depth behind the Rust
+        // reconstruct guard): once a mission is completed in memory, a disk copy
+        // that isn't terminal must never revert it — that's the resurrection bug
+        // where a stray post-completion wake re-surfaced a finished mission.
+        if (cur.completedAt && !disk.completedAt) {
+          merged.push(cur);
+          continue;
+        }
         // Disk wins only when it's genuinely newer — more messages (an append
         // from another machine) or changed metadata at equal length. A disk copy
         // that's BEHIND memory (a local edit not yet flushed) is ignored.

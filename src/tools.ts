@@ -1497,6 +1497,16 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
             JSON.stringify(s.recurrence) === JSON.stringify(recurrence),
         );
         if (dupSched) return `Already scheduled (${fireDescription}) in this conversation — not duplicating it.`;
+        // [harness v2] A supervisor/mission self-scheduling a wake is SILENT by
+        // default: the wake fires a turn in the mission thread, but its result
+        // reaches the user's Alerts feed only if that turn's reply explicitly
+        // begins with `ALERT:` (see scheduleDelivery.ts). Without this, a routine
+        // "check again in N min" loop posts an Alert on EVERY fire — the
+        // heartbeat-ping firehose (a 60-min silent watch spammed ~21 alerts even
+        // though the agent never called a notify tool). A top-level assistant chat
+        // keeps the noisy default: the user asked for that reminder, so they want
+        // to see it land.
+        const missionQuiet = tier === "mission";
         const fresh = {
           ...emptySchedule(store.modelId),
           name: description ?? prompt.split(/\s+/).slice(0, 6).join(" "),
@@ -1506,10 +1516,13 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           date,
           target: { kind: "existing" as const, conversationId },
           enabled: true,
-          markUnreadOnFinish: true,
+          markUnreadOnFinish: !missionQuiet,
+          quietUnlessAlert: missionQuiet,
         };
         await writeSchedules(vault, [...list, fresh]);
-        return `Scheduled ${fireDescription}. Will fire as a turn in this conversation; its result lands in the Alerts feed.`;
+        return missionQuiet
+          ? `Scheduled ${fireDescription}. This wake is SILENT — it fires a turn in this mission thread but posts NOTHING to the user's Alerts feed unless that turn's reply begins with "ALERT:". So run your loop quietly; prefix a reply with ALERT: only when something genuinely needs the user's attention.`
+          : `Scheduled ${fireDescription}. Will fire as a turn in this conversation; its result lands in the Alerts feed.`;
       },
     }),
     WatchRun: tool({

@@ -874,8 +874,10 @@ export async function stopAndDeleteMission(vault: string, conversationId: string
       for (let i = 0; i < fresh.length; i++) {
         if (fresh[i]!.id === mission.id) {
           // lastActivityAt bumps in lockstep so a union tie-break can't surface
-          // a stale not-killed meta line (same rule as completeMission).
-          fresh[i] = { ...fresh[i]!, missionState: "KILLED" as const, billing: false, completedAt: t, lastActivityAt: t };
+          // a stale not-killed meta line (same rule as completeMission), and the
+          // reconstruct terminal-wins guard makes KILLED durable regardless.
+          // unread:false so an archived mission never nags from the chat list.
+          fresh[i] = { ...fresh[i]!, missionState: "KILLED" as const, billing: false, completedAt: t, lastActivityAt: t, unread: false };
         }
       }
       await writeConversations(vault, fresh);
@@ -1074,7 +1076,19 @@ export async function completeMission(
     // finished mission RESURRECTED onto Activity. One monotonic timestamp closes
     // all three layers at once.
     const t = Date.now();
-    fresh[i] = { ...fresh[i]!, completedAt: t, lastActivityAt: t, missionState: "DONE" as const, billing: false };
+    // Clear unread on completion: the source-gated badging paths only PRESERVE a
+    // mission's unread (they never force it false), so a badge picked up mid-run
+    // would otherwise cling to the finished thread — "why is this completed
+    // mission unread?" A terminal mission is, by definition, nothing to catch up
+    // on. unread:false here is the one place that guarantees it.
+    fresh[i] = {
+      ...fresh[i]!,
+      completedAt: t,
+      lastActivityAt: t,
+      missionState: "DONE" as const,
+      billing: false,
+      unread: false,
+    };
     await writeConversations(vault, fresh);
     didComplete = true;
   });
@@ -1116,6 +1130,42 @@ function parseDoneWhenCriteria(brief: string): string[] {
 }
 const normalizeCriterion = (s: string) =>
   s.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+
+// Pull the vault-relative file paths a criterion / brief names and read each one
+// live from disk (capped, bounded count), so the evidence auditor judges a "the
+// file exists / has N lines / contains X" claim against the REAL bytes, not the
+// agent's paraphrase. Reports non-existence explicitly — a criterion that
+// requires a file the disk doesn't have is not met, whatever the agent wrote.
+async function readNamedFiles(
+  vault: string,
+  text: string,
+  invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>,
+): Promise<string> {
+  const seen = new Set<string>();
+  const rels: string[] = [];
+  const re = /`?([\w][\w./\-]*\.[A-Za-z0-9]{1,6})`?/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const rel = m[1]!.replace(/^\.\//, "");
+    if (!rel.includes("/")) continue; // a bare filename is too ambiguous to resolve
+    if (rel.includes("..")) continue; // never traverse out of the vault
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    rels.push(rel);
+    if (rels.length >= 6) break; // bound the reads
+  }
+  const parts: string[] = [];
+  for (const rel of rels) {
+    const body = await invoke<string>("read_text_file", { path: `${vault}/${rel}` }).catch(() => null);
+    if (body == null) {
+      parts.push(`-- ${rel}: DOES NOT EXIST on disk --`);
+    } else {
+      const lineCount = body.split(/\r?\n/).length;
+      parts.push(`-- ${rel} (${lineCount} lines, ${body.length} bytes) --\n${body.slice(0, 2500)}`);
+    }
+  }
+  return parts.join("\n\n");
+}
 
 // Mark ONE of a mission's "Done when" criteria verified-complete. The supervisor
 // passes the criterion (a paraphrase is fine); we fuzzy-match it to the brief's
@@ -1166,17 +1216,34 @@ export async function markDoneWhen(
   if (harnessV2Enabled() && matched) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const mind: string = await invoke<string>("read_text_file", {
-        path: `${vault}/.vault-chat/supervisor/mind.md`,
-      }).catch(() => "");
+      // Evidence is GROUND TRUTH, not the agent's own prose. Two battery failures
+      // drove this: (1) reading the SHARED supervisor/mind.md let ANOTHER mission's
+      // state (a still-parked AskUser) contaminate this audit and cause phantom
+      // rejections — so read only THIS mission's goal file; (2) the auditor
+      // rubber-stamped "no missed wakes / no gaps" off the agent's self-authored
+      // summary while the log on disk had out-of-order timestamps — so read the
+      // files NAMED IN THE CRITERION straight from disk and give the auditor the
+      // real bytes to check the claim against. The agent's narration is now a
+      // CLAIM to corroborate, not the evidence itself.
+      const briefText = briefMsg?.content ?? "";
+      const goalPath = (briefText.match(/\.vault-chat\/supervisor\/goals\/[\w.\-]+\.md/) ?? [])[0];
+      const goalDoc = goalPath
+        ? await invoke<string>("read_text_file", { path: `${vault}/${goalPath}` }).catch(() => "")
+        : "";
+      const groundTruth = await readNamedFiles(vault, `${matched}\n${criterion}\n${briefText}`, invoke);
       const recent = mission0.messages
         .filter((m) => m.role === "assistant")
         .slice(-2)
         .map((m) => m.content ?? "")
         .join("\n\n");
       const evidence =
-        `== supervisor mind.md (durable state) ==\n${(mind || "(none)").slice(0, 8000)}\n\n` +
-        `== mission thread, latest output ==\n${recent.slice(-4000)}`;
+        (goalDoc
+          ? `== this mission's goal file (scoped — no other mission's state) ==\n${goalDoc.slice(0, 6000)}\n\n`
+          : "") +
+        (groundTruth
+          ? `== GROUND TRUTH: files named in the criterion, read from disk just now ==\n${groundTruth}\n\n`
+          : "") +
+        `== the agent's own recent narration (a CLAIM — corroborate it against the ground truth above; do NOT trust it on its own) ==\n${recent.slice(-3000)}`;
       const { verifyCriterionEvidence } = await import("./alert-summary");
       const verdict = await verifyCriterionEvidence(matched, evidence, useStore.getState().apiKeys);
       if (verdict && !verdict.pass) {
