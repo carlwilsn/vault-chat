@@ -68,6 +68,9 @@ Tooling already exists and is committed under `scripts/selftest/` — **reuse it
 | `probes/evidence-durable.md` | verifier rejects an absent file, accepts a real one, mission completes and **stays** completed + un-badged (F1/F2/F4) |
 | `probes/cost-guard.md` | an IDLE fake box is auto-terminated **in code**, no agent turn (C1) |
 | `probes/worker-wake.md` | a spawned worker's report **wakes** the supervisor to verify + complete (C3) |
+| `probes/scale-endurance.md` | the supervisor stays coherent across **15 fresh-context wakes** (monotonic counter, bounded mind.md) — the multi-day "dumb zone" (G1) |
+| `probes/budget-fork.md` | a spend fork fires **exactly one** AskUser, parks clean (AWAITING_USER, nothing pending), resumes on the injected reply, no duplicate/stale ask (G2) |
+| `probes/worker-recover.md` | a worker fails and writes a **failure doc**, the supervisor reads it and **reseeds a fresh worker** to completion (G3) |
 
 **Every bug you fix becomes a permanent probe.** The corpus only grows — that is what turns a one-time fix into a regression that can never silently return (the dotfile-path bug was caught exactly this way).
 
