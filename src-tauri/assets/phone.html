@@ -932,18 +932,23 @@
   const liveByConv = new Map();
   // Per-conversation activity, for the drawer rows AND the conversations icon:
   //  • convRunning — convIds generating right now → a white pulsing "thinking" dot.
-  //  • convUnseen  — convIds that FINISHED a run since you last looked → a solid dot.
-  // The icon aggregates both (pulsing if anything runs, else solid if anything's
-  // unseen). Opening a thread clears its unseen state.
+  //  • convUnseen  — convIds whose run FINISHED while you were looking at another
+  //    conversation (or elsewhere in the app) this session → a solid dot.
+  // That "a parallel conversation finished a reply while I was looking elsewhere"
+  // case is the ONLY thing that earns an unread dot (note 9693499e). convUnseen is
+  // populated purely from live/status finishes (see applyRunningSet + the status
+  // handler) — NEVER derived from a conversation's age or a persisted watermark.
+  // So old chats never badge (you didn't miss a reply on them this sitting), and a
+  // reload / app-update starts clean instead of resurrecting stale "unread"s.
+  // Opening a thread clears its unseen state.
   const convRunning = new Set();
   const convUnseen = new Set();
-  // Persistent "last looked at" watermark per conversation, so a thread that
-  // finished while the app was closed still reads as done-unseen next time you
-  // open the drawer.
-  const SEEN_KEY = "vc_phone_seen";
-  function seenMap() { try { return JSON.parse(localStorage.getItem(SEEN_KEY) || "{}"); } catch { return {}; } }
-  function markSeen(id) { if (!id) return; try { const m = seenMap(); m[id] = Date.now(); localStorage.setItem(SEEN_KEY, JSON.stringify(m)); } catch {} convUnseen.delete(id); updateConvDot(); }
-  function watermarkUnseen(c) { if (!c || convRunning.has(c.id)) return false; const m = seenMap(); return (c.lastActivityAt || 0) > (m[c.id] || 0); }
+  // One-time purge of the old per-conversation "seen" watermark. It used to drive
+  // unread off conversation age, which spuriously badged old chats and resurfaced
+  // "cleared" ones after an app update (note 9693499e). Nothing reads it now;
+  // drop it so a stale copy on-device can never be misread by a future change.
+  try { localStorage.removeItem("vc_phone_seen"); } catch {}
+  function markSeen(id) { if (!id) return; convUnseen.delete(id); updateConvDot(); }
   function updateConvDot() {
     const dot = $("convdot"); if (!dot) return;
     // The icon is about BACKGROUND threads — the ones you can't see right now.
@@ -1063,11 +1068,11 @@
         chats.unshift({ id: convId, title: convTitle || "New chat", lastActivityAt: Date.now(), source: "phone", msgCount: 0, preview: "" });
       }
       lastChatList = chats.slice();
-      // Reconcile the activity sets with /status + the persisted watermark, so
-      // the row dots and the conversations icon are right on open, before any
-      // live event arrives.
+      // Reconcile the running set with /status so the row dots and the
+      // conversations icon are right on open. Unseen state is NOT seeded here —
+      // it only comes from a run finishing while you were looking elsewhere, so
+      // opening the drawer never conjures unread dots on chats you didn't miss.
       applyRunningSet([...runIds]);
-      for (const c of chats) { if (watermarkUnseen(c)) convUnseen.add(c.id); }
       updateConvDot();
       box.innerHTML = "";
       if (chats.length) {
@@ -1086,7 +1091,7 @@
     const b = document.createElement("button");
     b.className = "crow2";
     const running = isRunning || convRunning.has(c.id);
-    const unseen = !running && (convUnseen.has(c.id) || watermarkUnseen(c));
+    const unseen = !running && convUnseen.has(c.id);
     const dot = running ? '<span class="rd think"></span>' : unseen ? '<span class="rd unseen"></span>' : "";
     b.innerHTML = '<div class="t">' + dot + '<span class="nm"></span><span class="ag"></span></div><div class="p"></div>';
     b.querySelector(".nm").textContent = c.title;
