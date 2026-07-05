@@ -226,7 +226,14 @@ export async function runScheduledHeadlessTurn(
       ...finalList[fi]!,
       messages: [...finalList[fi]!.messages, assistantMsg],
       lastActivityAt: Date.now(),
-      unread: true,
+      // [unread hygiene] Only user-facing threads earn an unread badge. A mission
+      // self-check fires through this scheduled path too, and missions/workers live
+      // on the Activity surface, not the chat list — badging them was the "why is
+      // everything unread" noise. Leave their unread untouched.
+      unread:
+        finalList[fi]!.source === "worker" || finalList[fi]!.source === "mission"
+          ? finalList[fi]!.unread
+          : true,
     };
     await writeConversations(vault, finalList);
   }
