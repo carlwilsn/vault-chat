@@ -2043,7 +2043,14 @@ export const useStore = create<State>((set) => ({
               ...c,
               messages: [...c.messages, withMid(m)],
               lastActivityAt: Date.now(),
-              unread: s.activeConversationId === id ? c.unread : true,
+              // [unread hygiene] Never badge worker/mission threads — they live on
+              // the Activity surface, not the chat list, so a background turn
+              // appending to one must not mark it unread (the "everything's unread"
+              // noise). Only user-facing chats the user isn't looking at go unread.
+              unread:
+                s.activeConversationId === id || c.source === "worker" || c.source === "mission"
+                  ? c.unread
+                  : true,
             }
           : c,
       ),

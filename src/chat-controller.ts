@@ -206,6 +206,23 @@ export async function sendMessage(
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
     });
   }
+  // [harness v2] A genuine user message into a mission that's AWAITING_USER is
+  // the answer it was holding for — flip the board back to RUNNING immediately.
+  // Scheduled fires never reach an awaiting mission (the scheduler skips them),
+  // and are excluded here anyway via scheduledBriefing.
+  if (
+    harnessV2Enabled() &&
+    !scheduledBriefing &&
+    targetConv?.source === "mission" &&
+    targetConv?.missionState === "AWAITING_USER" &&
+    targetConvId
+  ) {
+    useStore.setState((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === targetConvId ? { ...c, missionState: "RUNNING" as const } : c,
+      ),
+    }));
+  }
   // Every run — foreground or background — marks its target conversation
   // "running". This is what lets conversations run in PARALLEL: per-conv
   // `status` is authoritative (it drives the Chats-panel pulse and the
