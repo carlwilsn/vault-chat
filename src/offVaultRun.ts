@@ -412,10 +412,42 @@ export async function runWorkerTurn(
   let askedUserThisTurn = false;
   const controller = new AbortController();
   registerRun(conversationId, controller);
+  // [harness v2] Quota-class failures get ONE retry on a different model. The
+  // existing fallback only triggers on a MISSING provider key — a key that's
+  // present but broken (an exhausted upstream behind openrouter/auto, an unpaid
+  // account) sailed straight through it, and every respawned worker marched into
+  // the same dead upstream (5× in the first battery). Provider quota is not a
+  // task failure; don't let it read as one.
+  const QUOTA_ERR_RE = /quota|billing|insufficient[_ ]?credit|credit balance|payment required|exceeded your current/i;
+  const resolveQuotaFallback = (failedId: string): { id: string; key: string } | null => {
+    const s = useStore.getState();
+    for (const cand of [s.supervisorModelId, DEFAULT_WORKER_MODEL_ID, s.modelId]) {
+      if (!cand || cand === failedId || cand === AUTO_MODEL_ID) continue;
+      const cSpec = findModel(cand);
+      const cKey = cSpec ? s.apiKeys[cSpec.provider] : undefined;
+      if (cSpec && cKey) return { id: cand, key: cKey };
+    }
+    return null;
+  };
+  let attemptModelId = modelId;
+  let attemptKey = apiKey;
   try {
-    await runAgent({
-      modelId,
-      apiKey,
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) {
+        // Fresh accumulators — the failed attempt's crash text must not leak
+        // into the retried turn's record.
+        acc = "";
+        reasoningAcc = "";
+        tools.length = 0;
+        liveSteps.splice(0, liveSteps.length, { thought: "", actions: [] });
+        liveWasAction = false;
+        runErr = undefined;
+        askedUserThisTurn = false;
+      }
+      try {
+        await runAgent({
+          modelId: attemptModelId,
+          apiKey: attemptKey,
       vault,
       history: baseHistory,
       userMessage: message,
@@ -474,9 +506,23 @@ export async function runWorkerTurn(
         });
       },
     });
-  } catch (e) {
-    runErr = errToString(e);
-    acc = (acc + `\n\n⚠️ worker turn failed: ${runErr}`).trim();
+      } catch (e) {
+        runErr = errToString(e);
+        acc = (acc + `\n\n⚠️ worker turn failed: ${runErr}`).trim();
+      }
+      // Retry decision: only a first-attempt quota-class failure earns the one
+      // fallback run; anything else (real task errors, aborts) lands as-is.
+      if (!runErr || attempt > 0 || !QUOTA_ERR_RE.test(runErr) || !harnessV2Enabled()) break;
+      const fb = resolveQuotaFallback(attemptModelId);
+      if (!fb) break;
+      vlog("worker.quota.fallback", {
+        conv: conversationId.slice(0, 8),
+        from: attemptModelId,
+        to: fb.id,
+      });
+      attemptModelId = fb.id;
+      attemptKey = fb.key;
+    }
   } finally {
     await endHeartbeat(vault, conversationId).catch(() => {});
     unregisterRun(conversationId, controller);
