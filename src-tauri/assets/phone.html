@@ -724,15 +724,20 @@
           if (!DB.runs.some((r) => r.convId === "m1")) DB.runs.push({ convId: "m1", title: "BitNet 160M MVP", mission: "BitNet 160M MVP", source: "mission", lastTool: "Bash", lastProgressAt: Date.now() });
           evs.push({ type: "runtime", convId: "m1", text: "", tool: "Bash", steps: [{ thought: "executor still grinding — tick " + p + " (should stay frozen while answering)" }, { thought: "" }] });
           const rep = "Seed 2's retry is at step 600, tracking seed 1 within 0.01 nat — on course. Holding the eval/writeup worker until its loss commits.";
-          if (p === 1) evs.push({ type: "chat", convId: "m1", phase: "start" });
+          if (p === 1) { DB.threads.m1.messages.push({ role: "user", content: "how's seed 2 doing?" }); evs.push({ type: "chat", convId: "m1", phase: "start" }); }
           else if (p === 2) evs.push({ type: "chat", convId: "m1", phase: "stream", text: rep.slice(0, 40) });
           else if (p === 3) evs.push({ type: "chat", convId: "m1", phase: "stream", text: rep });
           else if (p === 4) {
-            DB.threads.m1.messages.push({ role: "user", content: "how's seed 2 doing?" });
-            DB.threads.m1.messages.push({ role: "assistant", content: rep, direct: true });
+            // Lane ends, but the persisted reply has NOT landed in the thread yet —
+            // this reproduces the ~½s gap where the old code blinked the reply out.
             evs.push({ type: "chat", convId: "m1", phase: "end" });
           }
-          window.__chatSeq = p >= 4 ? 0 : p + 1;
+          else if (p === 5) {
+            // Persisted reply lands a beat later; the settled edge should hand off
+            // to it seamlessly (no frame where the reply is absent).
+            DB.threads.m1.messages.push({ role: "assistant", content: rep, direct: true });
+          }
+          window.__chatSeq = p >= 5 ? 0 : p + 1;
         }
         if (!pollWaited) { pollWaited = true; return reply({ events: evs, next: String(pollTick) }); }
         await new Promise((r) => setTimeout(r, 2500));
@@ -1346,12 +1351,16 @@
         }
       } else if (d.type === "chat") {
         // The conversational-front lane on this mission thread.
-        if (d.phase === "start") { sheetChatActive = true; renderChatEdge(""); }
-        else if (d.phase === "stream") { renderChatEdge(d.text || ""); }
+        if (d.phase === "start") { sheetChatActive = true; sheetChatSettling = false; sheetChatText = ""; renderChatEdge(""); }
+        else if (d.phase === "stream") { sheetChatText = d.text || sheetChatText; renderChatEdge(sheetChatText); }
         else if (d.phase === "end") {
+          // Don't yank the edge — hold the reply on screen (settled, no pulse) and
+          // let paint drop it ONLY once the persisted bubble is present, so there's
+          // no gap where the message vanishes then reappears (the flash).
           sheetChatActive = false;
-          const ce = $("chatEdge"); if (ce) ce.remove();
-          if (sheetRepaint) void sheetRepaint(); // fold in the persisted reply, unfreeze the executor edge
+          sheetChatSettling = true;
+          renderChatEdge(sheetChatText, true);
+          if (sheetRepaint) void sheetRepaint();
         }
       } else if (d.type === "status") {
         sheetRunning = d.status === "running";
@@ -1532,6 +1541,12 @@
   // we unfreeze and fold the persisted reply in. One thread, two agents, no fight
   // for the view.
   let sheetChatActive = false;
+  // The conversational front's reply while it SETTLES: after the lane ends we keep
+  // the reply text here and hold its edge on screen until the persisted bubble is
+  // actually in the fetched thread — closing the ~½s gap where the reply belonged
+  // to neither the live edge nor the thread and blinked out (the flash).
+  let sheetChatText = "";
+  let sheetChatSettling = false;
   // The live edge appended to a RUNNING thread: the agent's work as it happens,
   // rendered as a GROWING thought→action timeline (same look as the finished,
   // Haiku-cleaned timeline above it — but building step by step, the last step
@@ -1579,18 +1594,21 @@
   // the sheet, streamed while it answers. Kept separate from the executor's edge
   // (which is frozen meanwhile) so the two lanes never race in the view. Removed
   // on chat-end, when paint folds the persisted reply into the thread.
-  function renderChatEdge(text) {
+  function renderChatEdge(text, settled) {
     const be = $("sheetBody"); if (!be) return;
     let ce = $("chatEdge");
     if (!ce) { ce = document.createElement("div"); ce.id = "chatEdge"; ce.className = "liveplain chatedge"; be.appendChild(ce); }
     const t = (text || "").trim();
+    // While streaming, a pulse + "answering…"; once settled (lane ended, waiting
+    // for the persisted bubble to land) just the reply, no pulse — so the handoff
+    // to the folded-in message is invisible.
     ce.innerHTML = (t ? '<div class="md">' + md(t) + "</div>" : "")
-      + '<div class="thinking"><span class="pulse"></span><span class="tlbl show">answering…</span></div>';
+      + (settled ? "" : '<div class="thinking"><span class="pulse"></span><span class="tlbl show">answering…</span></div>');
     if (be.scrollHeight - be.scrollTop - be.clientHeight < 160) be.scrollTop = be.scrollHeight;
   }
   function openSheet(opts) {
     clearInterval(missionPoll); missionPoll = 0;
-    sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false; sheetChatActive = false;
+    sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false; sheetChatActive = false; sheetChatSettling = false; sheetChatText = "";
     const sh = $("sheet");
     sh.style.transition = "";
     // Cards open FULL-SCREEN by default (note 7a420a05) — not the old ~64% peek.
@@ -1622,7 +1640,7 @@
     typeset($("sheetBody"));
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
   }
-  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; markSeen(sheetConvId); /* leaving at close-time stamps it seen, after any open-time pin bump → never falsely unread (note ec78cbf8) */ sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false; sheetChatActive = false; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; updateConvDot(); /* no longer viewing the sheet thread → a still-running one re-lights the dot */ }
+  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; markSeen(sheetConvId); /* leaving at close-time stamps it seen, after any open-time pin bump → never falsely unread (note ec78cbf8) */ sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false; sheetChatActive = false; sheetChatSettling = false; sheetChatText = ""; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; updateConvDot(); /* no longer viewing the sheet thread → a still-running one re-lights the dot */ }
   // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
   // chat composer), Enter sends, Shift+Enter is a newline. The pinned footer +
   // the visualViewport lift keep it above the keyboard.
@@ -1885,6 +1903,16 @@
       const prevTop = be.scrollTop;
       const wasBottom = be.scrollHeight - be.scrollTop - be.clientHeight < 80;
       be.innerHTML = body; typeset(be);
+      // Two-lane fold-in with NO gap: if a chat reply is settling, keep it on
+      // screen until its persisted bubble is actually in the fetched thread; the
+      // moment it is, drop the transient edge (the bubble now carries the text).
+      // Setting innerHTML above wiped the settled edge, so re-append it until then.
+      if (sheetChatSettling && sheetChatText) {
+        const key = sheetChatText.replace(/\s+/g, " ").trim().slice(0, 30);
+        const landed = key && restPlus.some((m) => m.role === "assistant" && (m.content || "").replace(/\s+/g, " ").indexOf(key) >= 0);
+        if (landed) { sheetChatSettling = false; sheetChatText = ""; }
+        else renderChatEdge(sheetChatText, true);
+      }
       // Re-attach worker-row taps each paint (innerHTML wipes handlers). Opening a
       // worker swaps the sheet to its read-only thread; a fresh openMission tap
       // brings you back.
