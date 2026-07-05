@@ -22,13 +22,17 @@
     --err:#e5655f; --ok:#eaeaea; --warn:#e0a35a;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html{background:var(--bg)}
-  html,body{margin:0;position:fixed;inset:0;overflow:hidden;overscroll-behavior:none}
-  /* The shell box is ALWAYS the full screen (inset:0); the keyboard lift is a CSS
-     padding driven by --kb (set by the visualViewport handler), so JS never shrinks
-     the outer box and can't strand a dead strip under the app. --kb is 0 at rest. */
-  body{display:flex;flex-direction:column;background:var(--bg);color:var(--text);padding-bottom:var(--kb,0px);
+  html{background:var(--bg);height:100%}
+  html,body{margin:0;overflow:hidden;overscroll-behavior:none}
+  /* Full-screen shell via CSS, NOT JS. 100dvh is the dynamic viewport height, which
+     fills an iOS home-screen (standalone) PWA reliably. The old position:fixed;inset:0
+     shell was the regression (1fe72e6): in standalone iOS it sizes to a short viewport
+     and leaves a dead strip under the whole app — the "shifted up" look. The keyboard
+     lift is a padding driven by --kb, applied ONLY while the keyboard is genuinely up
+     (body.kbup), so a bad at-rest --kb reading can never strand a strip. */
+  body{height:100vh;height:100dvh;min-height:100svh;display:flex;flex-direction:column;background:var(--bg);color:var(--text);
     font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  body.kbup{padding-bottom:var(--kb,0px)}
   button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;padding:0}
   svg{display:block}
 
@@ -2542,6 +2546,46 @@
     vv.addEventListener("scroll", () => { window.scrollTo(0, 0); applyKb(); });
     fit(); // reconcile the initial geometry so a short launch viewport can't strand a strip
   }
+
+  // ---- TEMP diagnostic readout (remove after the dead-strip is confirmed fixed).
+  // Visible by default; triple-tap anywhere to hide/show. Reports the live viewport
+  // geometry so we can see exactly why (if) a strip appears in the real standalone PWA.
+  (function () {
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:fixed;left:-9999px;top:0;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)";
+    document.body.appendChild(probe);
+    const box = document.createElement("pre");
+    box.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;margin:0;padding:5px 8px;font:10px/1.3 ui-monospace,Menlo,monospace;color:#25ff9a;background:rgba(0,0,0,.85);white-space:pre-wrap;pointer-events:none";
+    document.body.appendChild(box);
+    const de = document.documentElement;
+    let on = true;
+    const read = () => {
+      if (!on) return;
+      const vv = window.visualViewport || {};
+      const cs = getComputedStyle(probe);
+      const b = document.body.getBoundingClientRect();
+      const comp = document.querySelector(".composer");
+      const cr = comp ? comp.getBoundingClientRect() : { bottom: 0 };
+      const standalone = (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone || false;
+      box.textContent = [
+        "standalone=" + standalone + "  screen=" + screen.width + "x" + screen.height + "  dpr=" + window.devicePixelRatio,
+        "innerH=" + window.innerHeight + "  docClientH=" + de.clientHeight,
+        "vv.h=" + Math.round(vv.height || 0) + "  vv.offTop=" + Math.round(vv.offsetTop || 0) + "  vv.scale=" + (vv.scale || 1),
+        "safeTop=" + cs.paddingTop + "  safeBot=" + cs.paddingBottom + "  --kb=" + (de.style.getPropertyValue("--kb") || "0"),
+        "body top=" + Math.round(b.top) + " bot=" + Math.round(b.bottom) + " h=" + Math.round(b.height),
+        ">> GAP under body = " + (window.innerHeight - Math.round(b.bottom)) + "px   composerBot=" + Math.round(cr.bottom),
+      ].join("\n");
+    };
+    setInterval(read, 400);
+    read();
+    if (window.visualViewport) { visualViewport.addEventListener("resize", read); visualViewport.addEventListener("scroll", read); }
+    let taps = [];
+    document.addEventListener("touchend", () => {
+      const now = Date.now();
+      taps = taps.filter((t) => now - t < 600); taps.push(now);
+      if (taps.length >= 3) { taps = []; on = !on; box.style.display = on ? "block" : "none"; read(); }
+    }, { passive: true });
+  })();
 
   showHint();
   setHeader();
