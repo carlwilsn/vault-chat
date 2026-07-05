@@ -62,5 +62,9 @@ function usable(s: string): boolean {
 // both read the same definition of "crashed".
 export function isCrashBubble(content: string | undefined | null): boolean {
   const c = (content ?? "").trim();
-  return c === "[object Object]" || c.startsWith("⚠️");
+  // A ⚠️ error marker at the start OR appended on its own line after some prose
+  // (the "…worked a bit, then the turn errored" case). The error appends in
+  // offVaultRun always put the marker after a blank line, so a mid-sentence ⚠️
+  // in legitimate output won't false-trigger — only a marker that begins a line.
+  return c === "[object Object]" || c.startsWith("⚠️") || /\n\s*⚠️/.test(c);
 }

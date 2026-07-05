@@ -490,10 +490,18 @@ export async function runWorkerTurn(
       // AskUser → AWAITING_USER; otherwise back to RUNNING (never overwrite a
       // terminal DONE/KILLED — CompleteMission/stop may have stamped it mid-turn).
       const cur = finalList[fi]!;
+      // [harness v2] AskUser → AWAITING_USER. Otherwise RUNNING — EXCEPT never
+      // clobber a live AWAITING_USER from an autonomous turn (a worker-finish
+      // wake landing while the mission waits on the user); only a genuine user
+      // reply (opts.direct) clears the wait. Terminal states are untouched.
       const v2state: Conversation["missionState"] =
         harnessV2Enabled() && supervisorMode && cur.source === "mission" &&
         cur.missionState !== "DONE" && cur.missionState !== "KILLED"
-          ? (askedUserThisTurn ? "AWAITING_USER" : "RUNNING")
+          ? askedUserThisTurn
+            ? "AWAITING_USER"
+            : cur.missionState === "AWAITING_USER" && !opts.direct
+              ? "AWAITING_USER"
+              : "RUNNING"
           : cur.missionState;
       finalList[fi] = {
         ...cur,
@@ -1161,6 +1169,22 @@ export async function recordJudgment(
     path,
     contents: (prev ? prev.replace(/\n?$/, "\n") : "") + JSON.stringify(rec) + "\n",
   });
+}
+
+// [harness v2] Stamp a mission AWAITING_USER (idempotent) — called when a pending
+// unanswered AskUser is detected, so the board shows "needs you" instead of a
+// healthy-idle card. lastActivityAt bumps in lockstep (union tie-break rule).
+export async function stampMissionAwaitingUser(vault: string, conversationId: string): Promise<void> {
+  await withConvLock(async () => {
+    const list = await readConversations(vault);
+    const i = list.findIndex((c) => c.id === conversationId && c.source === "mission");
+    if (i < 0) return;
+    const cur = list[i]!;
+    if (cur.completedAt || cur.missionState === "AWAITING_USER" || cur.missionState === "DONE" || cur.missionState === "KILLED") return;
+    list[i] = { ...cur, missionState: "AWAITING_USER" as const, lastActivityAt: Date.now() };
+    await writeConversations(vault, list);
+  });
+  await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
 }
 
 // Create a fresh conversation entry on disk for a vault that's not

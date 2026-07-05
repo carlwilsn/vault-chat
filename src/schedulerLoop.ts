@@ -10,6 +10,7 @@ import { sendMessage } from "./chat-controller";
 import { readConversations } from "./conversations";
 import { tickRunWatcher } from "./runWatcher";
 import { vlog } from "./debugLog";
+import { harnessV2Enabled } from "./harness";
 import { invoke } from "@tauri-apps/api/core";
 
 // Resume sweep runs at most once per vault per app session.
@@ -454,6 +455,36 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
     conversationId = s.target.conversationId;
   } else {
     conversationId = await createScheduledConversation(vault, s);
+  }
+
+  // [harness v2] Never fire a self-check into a mission that is WAITING ON THE
+  // USER. A pending unanswered AskUser means the mission asked a question and is
+  // holding for the reply; firing a self-check keeps the thread "running", which
+  // (a) reads as busy/idle instead of "needs you" and (b) makes the app REJECT
+  // the user's answer as "a run is in progress" — exactly the dropped-$5-answer
+  // bug. Detect it structurally (last non-system message is an assistant turn
+  // that called AskUser, with no user reply after), stamp AWAITING_USER for the
+  // board, and skip — the user's reply is the wake.
+  if (s.target.kind === "existing" && harnessV2Enabled()) {
+    try {
+      const conv =
+        useStore.getState().conversations.find((c) => c.id === conversationId) ??
+        (await readConversations(vault)).find((c) => c.id === conversationId);
+      if (conv && conv.source === "mission" && !conv.completedAt) {
+        const msgs = conv.messages.filter((m) => !m.system);
+        const last = msgs[msgs.length - 1];
+        const pendingAsk =
+          !!last && last.role === "assistant" && (last.toolCalls ?? []).some((t) => t.name === "AskUser");
+        if (pendingAsk) {
+          vlog("sched.skip.awaitinguser", { conv: conversationId.slice(0, 8), name: s.name });
+          const { stampMissionAwaitingUser } = await import("./offVaultRun");
+          await stampMissionAwaitingUser(vault, conversationId).catch(() => {});
+          return; // hold — do not run a turn; the user's answer resumes it
+        }
+      }
+    } catch {
+      // If the check itself fails, fall through and fire (fail toward liveness).
+    }
   }
 
   const store = useStore.getState();
