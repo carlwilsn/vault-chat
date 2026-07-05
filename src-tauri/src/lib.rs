@@ -4701,7 +4701,7 @@ async fn vault_sync_set_remote(vault: String, url: String) -> Result<(), String>
     .map_err(|e| e.to_string())?
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct SyncOpResult {
     ok: bool,
     /// Short summary suitable for the status row. e.g.
@@ -5945,6 +5945,264 @@ mod repo_class_tests {
             repo_name("https://github.com/Buckarney/IEMS-305-Soccer-Forecasting").as_deref(),
             Some("IEMS-305-Soccer-Forecasting")
         );
+    }
+}
+
+// Simulates the exact two-machine pattern the sync design exists for (an
+// always-on box + an intermittent laptop — "github" + "summer" in the
+// vault-chat fleet): a shared bare "origin" plus two independent working
+// clones, driven straight through the real private helpers (`run_git`,
+// `reconcile_with_upstream`, `resolve_merge_conflicts`, `abort_stuck_merge_or_rebase`,
+// `with_repo_lock`) rather than a re-implementation, so a regression in the
+// actual merge/conflict/self-heal logic fails a test here.
+#[cfg(test)]
+mod sync_convergence_tests {
+    use super::{
+        abort_stuck_merge_or_rebase, clear_stale_index_lock, reconcile_with_upstream, run_git,
+        run_git_as, run_git_mut, with_repo_lock, VAULT_GITATTRIBUTES,
+    };
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    const TEST_NAME: &str = "vault-chat-agent";
+    const TEST_EMAIL: &str = "agent@vault-chat.local";
+
+    fn tmp_dir(label: &str) -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "vault-chat-synctest-{}-{}-{}",
+            std::process::id(),
+            n,
+            label
+        ));
+        std::fs::create_dir_all(&dir).expect("create tmp dir");
+        dir
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> (String, String, i32) {
+        run_git(&dir.to_string_lossy(), args).expect("git invocation")
+    }
+
+    fn commit_all(dir: &Path, msg: &str) {
+        let d = dir.to_string_lossy();
+        let (_, stderr, code) = run_git_as(&d, TEST_NAME, TEST_EMAIL, &["add", "-A"]).unwrap();
+        assert_eq!(code, 0, "add failed: {}", stderr);
+        let (_, stderr, code) =
+            run_git_as(&d, TEST_NAME, TEST_EMAIL, &["commit", "-q", "-m", msg]).unwrap();
+        assert_eq!(code, 0, "commit failed: {}", stderr);
+    }
+
+    /// Bare "origin" plus one initialized-and-pushed working clone ("machine A").
+    /// Returns (bare_dir, machine_a_dir).
+    fn setup_origin_and_machine_a(seed_files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
+        let bare = tmp_dir("origin.git");
+        let (_, stderr, code) = git(&bare, &["init", "-q", "--bare"]);
+        assert_eq!(code, 0, "bare init failed: {}", stderr);
+        // Bare repos default HEAD to whatever init.defaultBranch is configured
+        // (often "master"), which may not match the branch we're about to push
+        // ("main") — pin it explicitly so a later `clone` checks out the right ref.
+        git(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+
+        let a = tmp_dir("machine-a");
+        let (_, stderr, code) = git(&a, &["init", "-q", "-b", "main"]);
+        assert_eq!(code, 0, "init failed: {}", stderr);
+        for (name, contents) in seed_files {
+            std::fs::write(a.join(name), contents).unwrap();
+        }
+        commit_all(&a, "seed");
+        let (_, stderr, code) =
+            git(&a, &["remote", "add", "origin", &bare.to_string_lossy()]);
+        assert_eq!(code, 0, "remote add failed: {}", stderr);
+        let (_, stderr, code) = git(&a, &["push", "-u", "origin", "main"]);
+        assert_eq!(code, 0, "initial push failed: {}", stderr);
+        (bare, a)
+    }
+
+    fn clone_machine_b(bare: &Path) -> PathBuf {
+        let parent = tmp_dir("machine-b-parent");
+        let (_, stderr, code) = run_git_mut(
+            &parent.to_string_lossy(),
+            &["clone", "-q", &bare.to_string_lossy(), "machine-b"],
+        )
+        .unwrap();
+        assert_eq!(code, 0, "clone failed: {}", stderr);
+        parent.join("machine-b")
+    }
+
+    fn fetch_and_reconcile(dir: &Path, branch: &str) -> Result<String, super::SyncOpResult> {
+        let d = dir.to_string_lossy().to_string();
+        let (_, stderr, code) = run_git(&d, &["fetch", "origin", branch]).unwrap();
+        assert_eq!(code, 0, "fetch failed: {}", stderr);
+        with_repo_lock(&d, || reconcile_with_upstream(&d, branch))
+            .expect("reconcile_with_upstream infra error")
+    }
+
+    fn is_clean(dir: &Path) -> bool {
+        let (out, _, _) = git(dir, &["status", "--porcelain"]);
+        out.trim().is_empty()
+    }
+
+    fn unresolved_conflicts(dir: &Path) -> String {
+        let (out, _, _) = git(dir, &["diff", "--name-only", "--diff-filter=U"]);
+        out
+    }
+
+    /// The common case per the design comments: two machines each committed
+    /// independently (a box that never stopped syncing + a laptop that was
+    /// offline) touching DIFFERENT files. Must converge via a real merge
+    /// commit with no conflicts and no data loss from either side.
+    #[test]
+    fn diverged_edits_to_different_files_merge_cleanly() {
+        let (bare, a) = setup_origin_and_machine_a(&[("a.md", "line1\n")]);
+        let b = clone_machine_b(&bare);
+
+        // Machine A advances and pushes while B is "offline".
+        std::fs::write(a.join("a.md"), "line1\nA2\n").unwrap();
+        commit_all(&a, "A2");
+        let (_, stderr, code) = git(&a, &["push", "origin", "main"]);
+        assert_eq!(code, 0, "A2 push failed: {}", stderr);
+
+        // Machine B independently commits a NEW file — now diverged from origin.
+        std::fs::write(b.join("b.md"), "from B\n").unwrap();
+        commit_all(&b, "B1");
+
+        let outcome = fetch_and_reconcile(&b, "main").expect("clean merge must not error");
+        assert!(
+            outcome.contains("merged"),
+            "expected a real merge outcome, got: {outcome}"
+        );
+        assert!(is_clean(&b), "working tree must be clean after reconcile");
+        assert!(unresolved_conflicts(&b).is_empty());
+
+        // Both sides' work must survive the merge — this is the whole point.
+        assert_eq!(std::fs::read_to_string(b.join("a.md")).unwrap(), "line1\nA2\n");
+        assert_eq!(std::fs::read_to_string(b.join("b.md")).unwrap(), "from B\n");
+
+        // B must now be able to push its merge commit back — proves the
+        // follower actually reconciled onto a fast-forwardable state.
+        let (_, stderr, code) = git(&b, &["push", "origin", "main"]);
+        assert_eq!(code, 0, "post-merge push must succeed: {}", stderr);
+    }
+
+    /// A genuine divergent edit to the SAME file/region. Must never wedge the
+    /// sync loop: `resolve_merge_conflicts` takes theirs into the tree and
+    /// preserves ours as a `.conflict` sidecar, so nothing is silently dropped.
+    #[test]
+    fn conflicting_same_file_edits_resolve_via_sidecar_and_converge() {
+        let (bare, a) = setup_origin_and_machine_a(&[("notes.md", "line1\n")]);
+        let b = clone_machine_b(&bare);
+
+        std::fs::write(a.join("notes.md"), "line1\nA-edit\n").unwrap();
+        commit_all(&a, "A edits notes");
+        let (_, stderr, code) = git(&a, &["push", "origin", "main"]);
+        assert_eq!(code, 0, "A push failed: {}", stderr);
+
+        std::fs::write(b.join("notes.md"), "line1\nB-edit\n").unwrap();
+        commit_all(&b, "B edits notes");
+
+        let outcome = fetch_and_reconcile(&b, "main").expect("conflict must auto-resolve, not error");
+        assert!(
+            outcome.contains("auto-resolved"),
+            "expected an auto-resolved conflict outcome, got: {outcome}"
+        );
+        assert!(is_clean(&b), "auto-resolution must leave a clean tree");
+        assert!(unresolved_conflicts(&b).is_empty());
+
+        // Policy: theirs (the remote / machine A) lands in the real file...
+        assert_eq!(
+            std::fs::read_to_string(b.join("notes.md")).unwrap(),
+            "line1\nA-edit\n"
+        );
+        // ...and ours (machine B's divergent edit) is never silently dropped —
+        // it survives as a sidecar for the user to reconcile by hand.
+        let sidecar = std::fs::read_to_string(b.join("notes.md.conflict")).unwrap();
+        assert_eq!(sidecar, "line1\nB-edit\n");
+
+        let (_, stderr, code) = git(&b, &["push", "origin", "main"]);
+        assert_eq!(code, 0, "post-conflict push must succeed: {}", stderr);
+    }
+
+    /// Append-only JSONL logs (conversations/schedules/notes) rely on
+    /// `.gitattributes`' `merge=union` to combine both machines' appended
+    /// lines instead of raising a line-level conflict. This is what lets two
+    /// machines each append a chat turn without ever wedging the merge.
+    #[test]
+    fn jsonl_union_attribute_keeps_both_machines_appended_lines() {
+        let (bare, a) = setup_origin_and_machine_a(&[
+            (".gitattributes", VAULT_GITATTRIBUTES),
+            ("log.jsonl", "{\"seed\":true}\n"),
+        ]);
+        let b = clone_machine_b(&bare);
+
+        std::fs::write(a.join("log.jsonl"), "{\"seed\":true}\n{\"from\":\"A\"}\n").unwrap();
+        commit_all(&a, "A appends");
+        let (_, stderr, code) = git(&a, &["push", "origin", "main"]);
+        assert_eq!(code, 0, "A push failed: {}", stderr);
+
+        std::fs::write(b.join("log.jsonl"), "{\"seed\":true}\n{\"from\":\"B\"}\n").unwrap();
+        commit_all(&b, "B appends");
+
+        let outcome = fetch_and_reconcile(&b, "main").expect("union merge must not conflict");
+        assert!(
+            !outcome.contains("auto-resolved"),
+            "union attribute should merge cleanly with no conflict resolution needed, got: {outcome}"
+        );
+        assert!(is_clean(&b));
+
+        let merged = std::fs::read_to_string(b.join("log.jsonl")).unwrap();
+        assert!(merged.contains("\"from\":\"A\""), "machine A's line must survive: {merged}");
+        assert!(merged.contains("\"from\":\"B\""), "machine B's line must survive: {merged}");
+    }
+
+    /// A crashed prior auto-sync can leave `.git/MERGE_HEAD` behind, silently
+    /// no-op'ing every later commit (the "wedged vault" failure mode). The
+    /// self-heal must clear it so the repo is usable again.
+    #[test]
+    fn abort_stuck_merge_or_rebase_clears_a_wedged_repo() {
+        let (_bare, a) = setup_origin_and_machine_a(&[("a.md", "hi\n")]);
+        // Fabricate the crash signature directly rather than engineering a real
+        // conflicting merge, since the abort helper only inspects these markers.
+        std::fs::write(a.join(".git").join("MERGE_HEAD"), "0".repeat(40)).unwrap();
+        std::fs::write(a.join(".git").join("MERGE_MSG"), "in progress\n").unwrap();
+        assert!(a.join(".git").join("MERGE_HEAD").exists());
+
+        abort_stuck_merge_or_rebase(&a.to_string_lossy());
+
+        assert!(
+            !a.join(".git").join("MERGE_HEAD").exists(),
+            "MERGE_HEAD must be cleared so later commits stop silently no-op'ing"
+        );
+        // The repo must be usable again: a fresh edit commits cleanly.
+        std::fs::write(a.join("a.md"), "hi\nafter-heal\n").unwrap();
+        commit_all(&a, "post-heal commit");
+        assert!(is_clean(&a));
+    }
+
+    /// A killed git process can leave a stale `.git/index.lock` behind, which
+    /// otherwise wedges every subsequent commit/status forever. `with_repo_lock`
+    /// must clear a lock old enough that no live git could still hold it.
+    #[test]
+    fn stale_index_lock_is_cleared_before_the_next_git_op() {
+        let (_bare, a) = setup_origin_and_machine_a(&[("a.md", "hi\n")]);
+        let lock = a.join(".git").join("index.lock");
+        std::fs::write(&lock, b"").unwrap();
+        // Back-date it well past STALE_LOCK_SECS so it reads as orphaned, not
+        // a lock a concurrent live git process still legitimately holds.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        set_mtime(&lock, old);
+        assert!(lock.exists());
+
+        clear_stale_index_lock(&a.to_string_lossy());
+
+        assert!(!lock.exists(), "a stale index.lock must be removed, not left to wedge sync");
+    }
+
+    // Back-date a file's mtime without pulling in the `filetime` crate — plain
+    // `std::fs::File::set_modified` is available on every platform we ship.
+    fn set_mtime(path: &Path, t: std::time::SystemTime) {
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.set_modified(t).unwrap();
     }
 }
 
