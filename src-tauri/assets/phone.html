@@ -2562,27 +2562,28 @@
     const pLvh = mk("position:fixed;left:-9999px;top:0;width:1px;height:100lvh");
     const pSafe = mk("position:fixed;left:-9999px;top:0;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)");
     const box = document.createElement("pre");
-    // Dead-center the readout so neither the Dynamic Island nor the home indicator
-    // can cover it in standalone (the top-anchored version spilled under the notch).
-    box.style.cssText = "display:none;position:fixed;top:50%;left:10px;right:10px;transform:translateY(-50%);z-index:99999;margin:0;padding:12px;border-radius:10px;font:13px/1.7 ui-monospace,Menlo,monospace;color:#25ff9a;background:rgba(0,0,0,.94);white-space:pre-wrap;pointer-events:none";
+    // Top-anchored (below the notch) so it stays visible ABOVE the keyboard while we
+    // measure how far the composer is hidden. Open the keyboard, then read the lines.
+    box.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;margin:0;padding:calc(env(safe-area-inset-top) + 4px) 8px 6px;font:11px/1.4 ui-monospace,Menlo,monospace;color:#25ff9a;background:rgba(0,0,0,.9);white-space:pre-wrap;pointer-events:none";
     document.body.appendChild(box);
     const de = document.documentElement;
     const H = (el) => Math.round(el.getBoundingClientRect().height);
-    let on = false; // hidden by default now; triple-tap anywhere to show the readout
+    let on = true; // visible for the keyboard measurement; triple-tap to hide
     const read = () => {
       if (!on) return;
       const vv = window.visualViewport || {};
-      const cs = getComputedStyle(pSafe);
-      const b = document.body.getBoundingClientRect();
+      const comp = document.querySelector(".composer");
+      const cb = comp ? Math.round(comp.getBoundingClientRect().bottom) : 0;
+      const vh = Math.round(vv.height || 0), voff = Math.round(vv.offsetTop || 0);
+      const kbTop = vh + voff; // bottom of the visible area = top of the keyboard
       const standalone = (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone || false;
       box.textContent = [
-        "standalone=" + standalone + "  dpr=" + window.devicePixelRatio,
-        "screen = " + screen.width + " x " + screen.height,
-        "viewport = " + window.innerWidth + " x " + window.innerHeight,
-        "100dvh=" + H(pDvh) + "  svh=" + H(pSvh) + "  lvh=" + H(pLvh),
-        "safeTop=" + cs.paddingTop + "  safeBot=" + cs.paddingBottom,
-        ">> screen-viewport = " + (screen.height - window.innerHeight) + "px",
-        ">> GAP under body = " + (window.innerHeight - Math.round(b.bottom)) + "px",
+        "standalone=" + standalone + "  kbup=" + document.body.classList.contains("kbup"),
+        "innerH=" + window.innerHeight + "  docCH=" + de.clientHeight + "  lvh=" + H(pLvh),
+        "vv.h=" + vh + "  vv.offTop=" + voff,
+        "--kb=" + (de.style.getPropertyValue("--kb") || "0"),
+        "compBot=" + cb + "  kbTop(vv.h+off)=" + kbTop,
+        ">> composer hidden by = " + (cb - kbTop) + "px",
       ].join("\n");
     };
     setInterval(read, 400);
