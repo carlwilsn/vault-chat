@@ -716,6 +716,24 @@
           }
           window.__m1seq = p >= 3 ? 0 : p + 1;
         }
+        // Re-armable via window.__chatSeq = 1: the two-lane conversational front
+        // answering while the executor keeps streaming CHANGING steps — to prove
+        // the executor edge FREEZES during the reply and the reply folds in at end.
+        if (typeof window.__chatSeq === "number" && window.__chatSeq >= 1) {
+          const p = window.__chatSeq;
+          if (!DB.runs.some((r) => r.convId === "m1")) DB.runs.push({ convId: "m1", title: "BitNet 160M MVP", mission: "BitNet 160M MVP", source: "mission", lastTool: "Bash", lastProgressAt: Date.now() });
+          evs.push({ type: "runtime", convId: "m1", text: "", tool: "Bash", steps: [{ thought: "executor still grinding — tick " + p + " (should stay frozen while answering)" }, { thought: "" }] });
+          const rep = "Seed 2's retry is at step 600, tracking seed 1 within 0.01 nat — on course. Holding the eval/writeup worker until its loss commits.";
+          if (p === 1) evs.push({ type: "chat", convId: "m1", phase: "start" });
+          else if (p === 2) evs.push({ type: "chat", convId: "m1", phase: "stream", text: rep.slice(0, 40) });
+          else if (p === 3) evs.push({ type: "chat", convId: "m1", phase: "stream", text: rep });
+          else if (p === 4) {
+            DB.threads.m1.messages.push({ role: "user", content: "how's seed 2 doing?" });
+            DB.threads.m1.messages.push({ role: "assistant", content: rep, direct: true });
+            evs.push({ type: "chat", convId: "m1", phase: "end" });
+          }
+          window.__chatSeq = p >= 4 ? 0 : p + 1;
+        }
         if (!pollWaited) { pollWaited = true; return reply({ events: evs, next: String(pollTick) }); }
         await new Promise((r) => setTimeout(r, 2500));
         return reply({ events: evs, next: String(pollTick) });
@@ -1321,8 +1339,19 @@
           sheetRunning = true; sheetOptimisticWorking = false;
           sheetLiveText = d.text || ""; sheetLiveSteps = Array.isArray(d.steps) ? d.steps : [];
           // Update the edge in place if it's there; if paint hadn't drawn it yet
-          // (first sign of life), repaint so it appears now.
-          if ($("liveEdge")) renderSheetLive(); else if (sheetRepaint) void sheetRepaint();
+          // (first sign of life), repaint so it appears now. While the
+          // conversational front is answering, hold the render frozen — the data
+          // is current, but the executor edge doesn't move until the reply lands.
+          if (!sheetChatActive) { if ($("liveEdge")) renderSheetLive(); else if (sheetRepaint) void sheetRepaint(); }
+        }
+      } else if (d.type === "chat") {
+        // The conversational-front lane on this mission thread.
+        if (d.phase === "start") { sheetChatActive = true; renderChatEdge(""); }
+        else if (d.phase === "stream") { renderChatEdge(d.text || ""); }
+        else if (d.phase === "end") {
+          sheetChatActive = false;
+          const ce = $("chatEdge"); if (ce) ce.remove();
+          if (sheetRepaint) void sheetRepaint(); // fold in the persisted reply, unfreeze the executor edge
         }
       } else if (d.type === "status") {
         sheetRunning = d.status === "running";
@@ -1496,6 +1525,13 @@
   // reopen the sheet" bug). Cleared only by a genuine new status:running (or a
   // fresh open), so once the box says done, the edge stays down.
   let sheetEnded = false;
+  // Two-lane mission chat: true while the conversational front (a second agent on
+  // the SAME thread) is answering something you asked. While it's true we FREEZE
+  // the executor's live edge — its steps keep updating in the data but we don't
+  // re-render them — and the reply streams into its own edge below. When it ends
+  // we unfreeze and fold the persisted reply in. One thread, two agents, no fight
+  // for the view.
+  let sheetChatActive = false;
   // The live edge appended to a RUNNING thread: the agent's work as it happens,
   // rendered as a GROWING thought→action timeline (same look as the finished,
   // Haiku-cleaned timeline above it — but building step by step, the last step
@@ -1539,9 +1575,22 @@
     const be = $("sheetBody");
     if (be && be.scrollHeight - be.scrollTop - be.clientHeight < 140) be.scrollTop = be.scrollHeight;
   }
+  // The conversational front's live reply — its own prose edge at the bottom of
+  // the sheet, streamed while it answers. Kept separate from the executor's edge
+  // (which is frozen meanwhile) so the two lanes never race in the view. Removed
+  // on chat-end, when paint folds the persisted reply into the thread.
+  function renderChatEdge(text) {
+    const be = $("sheetBody"); if (!be) return;
+    let ce = $("chatEdge");
+    if (!ce) { ce = document.createElement("div"); ce.id = "chatEdge"; ce.className = "liveplain chatedge"; be.appendChild(ce); }
+    const t = (text || "").trim();
+    ce.innerHTML = (t ? '<div class="md">' + md(t) + "</div>" : "")
+      + '<div class="thinking"><span class="pulse"></span><span class="tlbl show">answering…</span></div>';
+    if (be.scrollHeight - be.scrollTop - be.clientHeight < 160) be.scrollTop = be.scrollHeight;
+  }
   function openSheet(opts) {
     clearInterval(missionPoll); missionPoll = 0;
-    sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false;
+    sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false; sheetChatActive = false;
     const sh = $("sheet");
     sh.style.transition = "";
     // Cards open FULL-SCREEN by default (note 7a420a05) — not the old ~64% peek.
@@ -1573,7 +1622,7 @@
     typeset($("sheetBody"));
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
   }
-  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; markSeen(sheetConvId); /* leaving at close-time stamps it seen, after any open-time pin bump → never falsely unread (note ec78cbf8) */ sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; updateConvDot(); /* no longer viewing the sheet thread → a still-running one re-lights the dot */ }
+  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; markSeen(sheetConvId); /* leaving at close-time stamps it seen, after any open-time pin bump → never falsely unread (note ec78cbf8) */ sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false; sheetChatActive = false; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; updateConvDot(); /* no longer viewing the sheet thread → a still-running one re-lights the dot */ }
   // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
   // chat composer), Enter sends, Shift+Enter is a newline. The pinned footer +
   // the visualViewport lift keep it above the keyboard.
@@ -1729,6 +1778,10 @@
       }),
     });
     async function paint() {
+      // Frozen while the conversational front is answering: its reply drives
+      // #chatEdge directly, and a full rebuild here would wipe it and un-freeze the
+      // executor edge mid-answer. Resumes on chat-end (which repaints).
+      if (sheetChatActive) return;
       let brief = (mc.goal || "").trim();
       let rest = [];
       let threadErr = "";

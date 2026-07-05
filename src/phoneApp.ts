@@ -24,6 +24,7 @@ import { useStore, type ChatMessage } from "./store";
 import { abortRun, activeRuns } from "./runRegistry";
 import { emptyConversation, deriveConversationTitle, type Conversation } from "./conversations";
 import { isCrashBubble } from "./errfmt";
+import { twoLaneMissionChatEnabled } from "./harness";
 
 const STREAM_TAIL = 6_000;
 const MSG_CAP = 20_000;
@@ -160,6 +161,20 @@ async function handlePhoneMessage(
     };
     useStore.setState({ conversations: [fresh, ...useStore.getState().conversations] });
     conv = fresh;
+  }
+
+  // Two-lane mission chat (gated OFF by default): when the mission's executor is
+  // BUSY, don't queue the message silently behind its turn — answer immediately
+  // via the conversational front (the assistant persona, reading a snapshot of
+  // the executor's live state). The executor keeps working and picks the message
+  // up from the thread on its next turn. Idle missions fall through to the
+  // executor directly (the mission block below).
+  if (conv.source === "mission" && twoLaneMissionChatEnabled() && isThreadBusy(conv)) {
+    const { runMissionChatTurn } = await import("./offVaultRun");
+    void runMissionChatTurn(s.vaultPath, conv.id, trimmed).catch((e) =>
+      console.warn("[phone-app] mission chat turn failed:", e),
+    );
+    return { ok: true, convId: conv.id };
   }
 
   if (isThreadBusy(conv)) {

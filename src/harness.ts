@@ -31,3 +31,31 @@ export function setHarnessV2Enabled(on: boolean): void {
     /* ignore */
   }
 }
+
+// Two-lane mission chat: a message to a BUSY mission is answered immediately by
+// the assistant-persona conversational front (reading a snapshot of the
+// executor's live state) instead of silently queueing behind the executor's
+// turn — while the executor keeps working and still receives the message for
+// steering. One thread on the surface; two agents behind it. Default OFF: this
+// introduces concurrent runs on one mission thread, so it stays dark in
+// production until a live box self-test clears it, then flip on per-machine:
+//   localStorage.setItem("vault_chat_two_lane_chat", "true")
+const TWO_LANE_KEY = "vault_chat_two_lane_chat";
+
+export function twoLaneMissionChatEnabled(): boolean {
+  try {
+    if (typeof localStorage === "undefined") return false;
+    return localStorage.getItem(TWO_LANE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function setTwoLaneMissionChatEnabled(on: boolean): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(TWO_LANE_KEY, on ? "true" : "false");
+  } catch {
+    /* ignore */
+  }
+}

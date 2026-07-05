@@ -500,6 +500,13 @@ export async function runAgent(params: {
       if (src === "mission") tier = "mission";
       else if (src === "worker") tier = "worker";
     }
+    // The assistant persona is ALWAYS assistant-tier, even when it runs on a
+    // mission thread. The two-lane conversational front answers the user from a
+    // mission thread (so `conversationId` is a mission → source resolves to
+    // "mission" above), but it must read/answer only — never orchestrate. Assistant
+    // tier drops StartWorker/CompleteMission/MarkDoneWhen, so it cannot spawn or
+    // mutate the mission's work concurrently with the executor that owns it.
+    if (assistantMode) tier = "assistant";
 
     const builtinTools = buildTools(vault, {
       tavilyKey,
