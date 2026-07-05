@@ -211,6 +211,15 @@ fn resp_text(status: u16, mime: &str, body: String) -> Response<std::io::Cursor<
     if let Ok(h) = Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()) {
         r = r.with_header(h);
     }
+    // Never let the phone cache anything this server sends. Everything here is a
+    // live control surface — the app shell (phone.html), the service worker, the
+    // manifest, and all vault data — and the box being reachable IS the product.
+    // Without this, an iOS home-screen PWA (WKWebView) caches the shell HTML with
+    // no validators and keeps launching a STALE phone.html for days, so shipped
+    // UI fixes silently never reach the device. no-store forces a fresh fetch.
+    if let Ok(h) = Header::from_bytes(&b"Cache-Control"[..], &b"no-store, must-revalidate"[..]) {
+        r = r.with_header(h);
+    }
     r
 }
 
