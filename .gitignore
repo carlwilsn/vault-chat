@@ -22,8 +22,9 @@ dist-ssr
 *.sln
 *.sw?
 
-# Claude Code scratch / config
-.claude
+# Claude Code scratch / config — local, EXCEPT versioned skills (dev tooling)
+.claude/*
+!.claude/skills/
 
 # Agent scratch files — created by in-app agent tool calls
 _check.*
