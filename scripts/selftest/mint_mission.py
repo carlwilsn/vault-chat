@@ -64,7 +64,9 @@ def add_schedule(vault, name, prompt, target_conv, fire_in_min, model):
         "timezone": "America/Chicago",
         "target": ({"kind": "existing", "conversationId": target_conv} if target_conv else {"kind": "new"}),
         "modelId": model, "enabled": True, "markUnreadOnFinish": False,
-        "quietUnlessAlert": False, "createdAt": now_ms(),
+        # A mission kickoff is a supervisor turn — keep it silent by default (only
+        # an explicit ALERT: reaches the user), matching a self-scheduled wake.
+        "quietUnlessAlert": True, "createdAt": now_ms(),
     }
     with open(sched_path(vault), "a", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")

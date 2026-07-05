@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { runAgent } from "./agent";
 import {
   findModel,
@@ -23,7 +24,23 @@ import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import { registerRun, unregisterRun, abortRun } from "./runRegistry";
 import { vlog } from "./debugLog";
 import { errToString } from "./errfmt";
-import { harnessV2Enabled } from "./harness";
+import { harnessV2Enabled, twoLaneMissionChatEnabled } from "./harness";
+
+// A mission thread has an unaddressed user steer when a user message sits after
+// the executor's last real (non-direct) turn — e.g. one the two-lane
+// conversational front just appended while the executor was working. On its next
+// wake the executor must run WITH continuity (not fresh-context, which would drop
+// history and never see the steer), so the user's instruction actually lands.
+function hasTrailingUserSteer(messages: ChatMessage[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === "assistant" && !m.direct) return false; // hit the executor's last real turn first
+    if (m.role === "user" && !m.hidden && !/^(Watched run |Worker "|Reply from worker |HARNESS CHECK |MISSION BRIEF)/.test(m.content || "")) {
+      return true;
+    }
+  }
+  return false;
+}
 
 
 // withConvLock (shared read→modify→write serializer for the conversations
@@ -461,7 +478,14 @@ export async function runWorkerTurn(
       // relays, resumes) run FRESH-CONTEXT — drop the accumulated thread, re-hydrate
       // from mind.md + the kept brief + live-state. A direct reply to something the
       // user typed keeps full continuity. Gated by the kill-switch.
-      freshContext: supervisorMode && !opts.direct && harnessV2Enabled(),
+      // Fresh-context autonomous wake — UNLESS a two-lane conversational front
+      // left an unaddressed user steer in the thread, in which case keep continuity
+      // so the executor actually sees + handles it (gated: off = unchanged).
+      freshContext:
+        supervisorMode &&
+        !opts.direct &&
+        harnessV2Enabled() &&
+        !(twoLaneMissionChatEnabled() && hasTrailingUserSteer(baseMessages)),
       conversationId,
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
@@ -682,6 +706,167 @@ export async function runWorkerTurn(
   })();
 
   return { reply: acc, error: runErr };
+}
+
+// ---- the conversational front (two-lane mission chat) ----
+//
+// A message to a BUSY mission used to queue silently behind the executor's turn
+// and go unanswered for minutes. Instead, this runs the assistant persona as a
+// SECOND lane on the SAME thread: it reads a snapshot of the executor's live
+// state and answers the user immediately, while the executor keeps grinding.
+// One thread on the surface, two agents behind it.
+//
+// Safe-by-construction: it runs at ASSISTANT tier (assistantMode forces it in
+// agent.ts), which drops StartWorker/CompleteMission/MarkDoneWhen — so the
+// conversational front can READ and ANSWER but can never spawn or mutate the
+// mission's work concurrently with the executor that owns it. It registers under
+// a distinct `#chat` run key so it never collides with the executor's run,
+// status, or live-stream slot, and it broadcasts its own `chat` lane events
+// (start/stream/end) so the phone freezes the executor's edge while it answers.
+export async function runMissionChatTurn(
+  vault: string,
+  conversationId: string,
+  message: string,
+): Promise<{ reply: string; error?: string }> {
+  const store = useStore.getState();
+  const text = message.trim();
+  if (!text) return { reply: "", error: "empty message" };
+
+  // The conversational front is the interactive assistant — use the chat default
+  // model (a full-fidelity surface), not the heavy worker grind model.
+  let modelId = store.modelId;
+  let spec = findModel(modelId);
+  if (!spec || !store.apiKeys[spec.provider]) {
+    const fb = findModel(store.supervisorModelId) || findModel(DEFAULT_WORKER_MODEL_ID);
+    if (fb && store.apiKeys[fb.provider]) { modelId = fb.id; spec = fb; }
+  }
+  const apiKey = spec ? store.apiKeys[spec.provider] : undefined;
+  if (!spec || !apiKey) return { reply: "", error: "no model / API key configured" };
+
+  // Distinct run identity so the conversational lane never touches the executor's
+  // run registration, status, or convRuntime slot.
+  const chatKey = conversationId + "#chat";
+
+  const broadcastChat = (phase: string, extra?: Record<string, unknown>) =>
+    void invoke("phone_broadcast", {
+      json: JSON.stringify({ type: "chat", convId: conversationId, phase, ...(extra || {}) }),
+    }).catch(() => {});
+
+  // Append the user's turn to the mission thread up front, so the exchange is one
+  // clean [user, reply] pair in the right order and the executor's next turn sees
+  // the message in place (no duplicate append from a separate steering path).
+  const userMsg: ChatMessage = { role: "user", content: text, mid: newMessageId() };
+  const seeded = await withConvLock(async () => {
+    const list = await readConversations(vault);
+    const idx = list.findIndex((c) => c.id === conversationId);
+    if (idx < 0) return null;
+    const messages = [...list[idx]!.messages, userMsg];
+    // A genuine user reply clears an AWAITING_USER wait, same as the executor path.
+    const clearAwait =
+      harnessV2Enabled() && list[idx]!.source === "mission" && list[idx]!.missionState === "AWAITING_USER";
+    list[idx] = {
+      ...list[idx]!,
+      messages,
+      lastActivityAt: Date.now(),
+      ...(clearAwait ? { missionState: "RUNNING" as const } : {}),
+    };
+    await writeConversations(vault, list);
+    return { messages, title: list[idx]!.title };
+  });
+  if (!seeded) return { reply: "", error: `mission thread not found: ${conversationId}` };
+  await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+
+  // Snapshot the executor's live state at the instant of asking — where its
+  // current turn is, or that it's idle. This is what lets the front answer "what
+  // are you doing right now" without waiting for the executor to pause.
+  const rt = useStore.getState().convRuntime[conversationId];
+  let snapshot: string;
+  if (rt && (((rt.streamingText || "").trim()) || (rt.liveSteps || []).length)) {
+    const steps = (rt.liveSteps || [])
+      .map((s) => `- ${(s.thought || "").trim()}${s.action ? ` → ${s.action}` : ""}`)
+      .filter((l) => l.trim() !== "-")
+      .join("\n");
+    const tail = (rt.streamingText || "").slice(-1400);
+    snapshot =
+      "[LIVE EXECUTOR SNAPSHOT — the mission's executor (a separate agent) is working RIGHT NOW; this is where its current turn stands, frozen at the moment the user asked.]\n" +
+      (steps ? `Recent reasoning → actions:\n${steps}\n` : "") +
+      (tail ? `\nText in progress:\n${tail}\n` : "");
+  } else {
+    snapshot =
+      "[EXECUTOR STATE: idle right now — between self-checks. Its last completed work is the thread above.]";
+  }
+  const framing =
+    "You are the always-on conversational front for this mission — the person the user talks to. A separate executor agent does the actual work (spawns/steers workers, runs the mission loop); you do NOT orchestrate. Answer the user directly and concisely from the thread and the snapshot below. If they're steering the work, acknowledge it plainly — the executor will pick their message up from this thread on its next turn. Don't pretend to have done work yourself.";
+
+  const baseHistory = seeded.messages
+    .filter((m) => !m.system && m.content !== text) // exclude the just-appended turn (passed as userMessage)
+    .map((m) => ({ role: m.role, content: m.content }));
+
+  const controller = new AbortController();
+  registerRun(chatKey, controller);
+  broadcastChat("start");
+
+  let acc = "";
+  let lastLen = 0;
+  let runErr: string | undefined;
+  try {
+    await runAgent({
+      modelId,
+      apiKey,
+      vault,
+      history: baseHistory,
+      userMessage: `${framing}\n\n${snapshot}\n\n---\n\nUser: ${text}`,
+      abortSignal: controller.signal,
+      tavilyKey: store.serviceKeys.tavily,
+      strictVault: store.strictVaultMode,
+      bashDisabled: store.bashDisabled,
+      voiceMode: false,
+      // assistantMode forces assistant tier in agent.ts — read/answer only.
+      assistantMode: true,
+      conversationId,
+      reasoningEffort: store.reasoningEffort,
+      onEvent: (e) => {
+        if (e.kind === "text") {
+          acc += e.delta;
+          // Throttle stream broadcasts to keep the SSE light; final flush below.
+          if (acc.length - lastLen >= 16) {
+            lastLen = acc.length;
+            broadcastChat("stream", { text: acc.slice(-4000) });
+          }
+        } else if (e.kind === "error") {
+          runErr = errToString(e.message);
+        }
+      },
+    });
+  } catch (e) {
+    runErr = errToString(e);
+  } finally {
+    unregisterRun(chatKey, controller);
+  }
+
+  // Persist the reply as a DIRECT turn (natural prose — the timeline cleaner and
+  // the fresh-context executor wakes both skip `direct` messages).
+  const reply = acc.trim();
+  if (reply) {
+    await withConvLock(async () => {
+      const list = await readConversations(vault);
+      const idx = list.findIndex((c) => c.id === conversationId);
+      if (idx < 0) return;
+      const assistantMsg: ChatMessage = {
+        role: "assistant",
+        content: reply,
+        direct: true,
+        mid: newMessageId(),
+      };
+      list[idx] = { ...list[idx]!, messages: [...list[idx]!.messages, assistantMsg], lastActivityAt: Date.now() };
+      await writeConversations(vault, list);
+    });
+    await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+  }
+  // End the lane last, AFTER the reply is on disk — the phone unfreezes the
+  // executor edge and folds the reply in from the persisted thread.
+  broadcastChat("end");
+  return { reply, error: runErr };
 }
 
 // Spawn a NEW worker thread (subagent) and kick its task off in the
@@ -1143,7 +1328,11 @@ async function readNamedFiles(
 ): Promise<string> {
   const seen = new Set<string>();
   const rels: string[] = [];
-  const re = /`?([\w][\w./\-]*\.[A-Za-z0-9]{1,6})`?/g;
+  // The leading `\.?` is load-bearing: vault paths are dotfiles
+  // (`.vault-chat/...`), and a match that starts at `[\w]` would drop the dot and
+  // resolve `${vault}/vault-chat/...` — a path that never exists — making every
+  // criterion that names a vault file read as "absent" and get falsely rejected.
+  const re = /`?(\.?[\w][\w./\-]*\.[A-Za-z0-9]{1,6})`?/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const rel = m[1]!.replace(/^\.\//, "");
@@ -1158,7 +1347,11 @@ async function readNamedFiles(
   for (const rel of rels) {
     const body = await invoke<string>("read_text_file", { path: `${vault}/${rel}` }).catch(() => null);
     if (body == null) {
-      parts.push(`-- ${rel}: DOES NOT EXIST on disk --`);
+      // Could NOT read — treat as INCONCLUSIVE, never as proof of failure. A path
+      // this reader can't resolve (or a transient read error) must not hard-block
+      // a legitimate completion; the auditor falls back to the goal file. Only a
+      // file that reads with CONTRADICTING content is a hard fail.
+      parts.push(`-- ${rel}: could not be read here (unresolved path or read error) — inconclusive, not proof of absence --`);
     } else {
       const lineCount = body.split(/\r?\n/).length;
       parts.push(`-- ${rel} (${lineCount} lines, ${body.length} bytes) --\n${body.slice(0, 2500)}`);
