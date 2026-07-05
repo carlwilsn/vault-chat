@@ -564,9 +564,25 @@ export async function runWorkerTurn(
     const finalList = await readConversations(vault);
     const fi = finalList.findIndex((c) => c.id === conversationId);
     if (fi >= 0 && (acc.trim() || tools.length)) {
+      // [ask-visibility] AskUser's question otherwise lives ONLY in the tool-call
+      // input + the push notification — the thread rendered a bare "1 step" chip,
+      // and when the turn was JUST the ask (acc empty) the bubble was blank, so
+      // opening the asking thread from the notification showed nothing to answer.
+      // Surface the question as real message content so the thread reads as a
+      // question you can reply to right there.
+      let content = acc;
+      const ask = tools.find((t) => t.name === "AskUser");
+      if (ask && ask.input) {
+        const about = String((ask.input as { about?: unknown }).about ?? "").trim();
+        const question = String((ask.input as { question?: unknown }).question ?? "").trim();
+        if (question && !content.includes(question)) {
+          const block = `**❓ Needs your input${about ? ` — ${about}` : ""}**\n\n${question}`;
+          content = content.trim() ? `${content.trim()}\n\n${block}` : block;
+        }
+      }
       const assistantMsg: ChatMessage = {
         role: "assistant",
-        content: acc,
+        content,
         toolCalls: tools.length ? tools : undefined,
         // A direct reply to something the user typed stays natural prose — the
         // cleaner skips it (see the timeline pass below).
