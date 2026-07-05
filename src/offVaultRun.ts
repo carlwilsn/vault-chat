@@ -333,6 +333,10 @@ export async function runWorkerTurn(
   }
 
   const userMsg: ChatMessage = { role: "user", content: message, mid: newMessageId() };
+  // [harness v2] Harness-generated wakes (worker-finish, watched-run, fork nudge,
+  // async AskWorker replies) must NOT clear a mission's waiting-on-the-user state
+  // — only a genuine answer does. These are the harness's own wake prefixes.
+  const isHarnessWake = /^(Watched run |Worker "|Reply from worker |HARNESS CHECK )/.test(message);
   const seeded = await withConvLock(async () => {
     const list = await readConversations(vault);
     const idx = list.findIndex((c) => c.id === conversationId);
@@ -343,7 +347,24 @@ export async function runWorkerTurn(
     const messages = opts.resume
       ? list[idx]!.messages
       : [...list[idx]!.messages, userMsg];
-    list[idx] = { ...list[idx]!, messages, lastActivityAt: Date.now() };
+    // [harness v2] A genuine incoming message to a mission that's AWAITING_USER
+    // IS the user's answer — flip it back to RUNNING as the turn seeds, so the
+    // board stops saying "needs you" the moment the reply lands. (The scheduler
+    // refuses to fire self-checks into an awaiting mission, so anything arriving
+    // here that isn't a recognized harness wake came from the user, directly or
+    // relayed.)
+    const clearAwait =
+      harnessV2Enabled() &&
+      list[idx]!.source === "mission" &&
+      list[idx]!.missionState === "AWAITING_USER" &&
+      !opts.resume &&
+      !isHarnessWake;
+    list[idx] = {
+      ...list[idx]!,
+      messages,
+      lastActivityAt: Date.now(),
+      ...(clearAwait ? { missionState: "RUNNING" as const } : {}),
+    };
     await writeConversations(vault, list);
     return { messages, role: list[idx]!.role };
   });
@@ -839,11 +860,12 @@ export async function stopAndDeleteMission(vault: string, conversationId: string
 // a nudged turn that parks again escalates to the user's Alerts feed and flips
 // the mission to AWAITING_USER so the board shows the truth ("parked, needs
 // you") instead of a healthy-looking idle card.
+// NOTE: MarkDoneWhen is deliberately NOT here — checking off a criterion doesn't
+// secure a next tick (a turn can check a box and still strand the mission).
 const PROGRESS_TOOLS = new Set([
   "StartWorker",
   "AskWorker",
   "WatchRun",
-  "MarkDoneWhen",
   "CompleteMission",
   "Schedule",
 ]);

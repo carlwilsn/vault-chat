@@ -16,14 +16,15 @@ export type ConversationStatus = "idle" | "running";
 
 // [harness v2] Explicit mission lifecycle, replacing the old implicit
 // (derived-from-fields) state. Transitions are stamped in code at the choke
-// points: mint→RUNNING, AskUser(money/irreversible fork)→AWAITING_USER,
-// verify→VERIFYING, CompleteMission→DONE, StopMission→KILLED. Gated behind
-// harnessV2Enabled(); legacy readers ignore an unknown field harmlessly.
+// points: mint→RUNNING, AskUser(money/irreversible fork)→AWAITING_USER (sticky
+// until a genuine user reply), CompleteMission→DONE, StopMission→KILLED. Gated
+// behind harnessV2Enabled(); legacy readers ignore an unknown field harmlessly.
+// (No VERIFYING state: verification gates run synchronously inside
+// markDoneWhen/completeMission, so there is never a moment it would describe.)
 export type MissionState =
   | "PLANNING"
   | "RUNNING"
   | "AWAITING_USER"
-  | "VERIFYING"
   | "DONE"
   | "KILLED";
 
