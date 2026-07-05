@@ -1330,6 +1330,12 @@ fn conversations_summary_json(vault: &str) -> String {
                 // never learns a mission is done, so it lingered on Activity — the
                 // "mission never cleared" bug.
                 "completedAt": c.get("completedAt").and_then(|x| x.as_i64()),
+                // [harness v2] Explicit lifecycle state (RUNNING / AWAITING_USER /
+                // VERIFYING / DONE / KILLED) + live-billing flag, so the Archive
+                // can label a KILLED mission apart from a DONE one and the board
+                // can show AWAITING_USER as "needs you" instead of healthy-idle.
+                "missionState": c.get("missionState").and_then(|x| x.as_str()).unwrap_or(""),
+                "billing": c.get("billing").and_then(|x| x.as_bool()).unwrap_or(false),
                 // The user has opened this thread, so a mission/worker (normally
                 // Activity-only) earns a spot in the recent/Chats list. Set when
                 // the phone fetches /conversation for it.

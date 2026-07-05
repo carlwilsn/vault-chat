@@ -108,6 +108,41 @@ export async function summarizeWorkerState(
   }
 }
 
+// [harness v2] Independent verifier for MarkDoneWhen — a FRESH-context check
+// with none of the actor's accumulated rationalization (the generator-verifier
+// split: the thread that did the work does not get to grade it). It judges one
+// question: does the RECORDED state (mind.md + the thread's own recent claims)
+// concretely substantiate that this criterion is MET — named artifacts, logged
+// results, verified outcomes — or is the claim unsupported? Prompted as a
+// skeptic: unverified assertions ("the worker said it's done") FAIL. Returns
+// null when no fast model is configured or the call errors — the gate then
+// fails OPEN (legacy behavior) so a keyless setup keeps working.
+const VERIFY_SYSTEM = `You are a skeptical auditor for an autonomous agent's claim that a mission success-criterion is now MET. You get the CRITERION and the recorded EVIDENCE (the agent's own state notes and recent output). Decide: does the evidence CONCRETELY substantiate the criterion being met — specific artifacts named, results with numbers logged, checks actually run? Assertions without substance ("done", "the worker finished it", future tense, plans) do NOT pass. A criterion explicitly waived/rescoped by the user, with that decision recorded, passes. Be strict but fair: you're guarding against premature check-offs, not demanding ceremony. Reply with your verdict and a one-sentence reason.`;
+
+export async function verifyCriterionEvidence(
+  criterion: string,
+  evidence: string,
+  apiKeys: Partial<Record<ProviderId, string>>,
+): Promise<{ pass: boolean; reason: string } | null> {
+  const picked = pickFastModel(apiKeys);
+  if (!picked) return null;
+  try {
+    const model = buildModel(picked.spec, picked.apiKey);
+    const res = await generateObject({
+      model,
+      system: VERIFY_SYSTEM,
+      schema: z.object({
+        pass: z.boolean().describe("true only if the evidence concretely substantiates the criterion"),
+        reason: z.string().describe("one sentence: what substantiates it, or what's missing"),
+      }),
+      prompt: `CRITERION:\n${criterion.slice(0, 1000)}\n\nEVIDENCE:\n${(evidence ?? "").trim().slice(0, 12000) || "(no recorded evidence)"}`,
+    });
+    return { pass: !!res.object.pass, reason: (res.object.reason ?? "").slice(0, 300) };
+  } catch {
+    return null;
+  }
+}
+
 // Mode B of the cockpit transform: turn an agent's raw thinking + actions into a
 // SHORT, clean digest of its reasoning — what it reasoned through and why it
 // decided what it did — for the Activity supervisor/worker detail view. The user

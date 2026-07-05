@@ -23,6 +23,7 @@ import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import { registerRun, unregisterRun, abortRun } from "./runRegistry";
 import { vlog } from "./debugLog";
 import { errToString } from "./errfmt";
+import { harnessV2Enabled } from "./harness";
 
 
 // withConvLock (shared read→modify→write serializer for the conversations
@@ -108,6 +109,12 @@ export async function runScheduledHeadlessTurn(
       strictVault: store.strictVaultMode,
       bashDisabled: store.bashDisabled,
       voiceMode: false,
+      // [harness v2] A scheduled fire into a mission thread IS an autonomous
+      // supervisor wake — give it the supervisor prompt AND fresh context (drop
+      // history, re-hydrate from mind.md). Gated by the kill-switch, so legacy
+      // behavior (no supervisorMode here) is unchanged when it's off.
+      supervisorMode: harnessV2Enabled() && list[idx]?.role === "supervisor",
+      freshContext: harnessV2Enabled() && list[idx]?.role === "supervisor",
       conversationId,
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
@@ -290,7 +297,10 @@ export async function runWorkerTurn(
   vault: string,
   conversationId: string,
   message: string,
-  opts: { modelId?: string; resume?: boolean; direct?: boolean } = {},
+  // [harness v2] forkNudge marks the ONE deterministic re-entry the fork-forcing
+  // rule is allowed (see the end of this function) — a nudged turn that parks
+  // again escalates instead of recursing.
+  opts: { modelId?: string; resume?: boolean; direct?: boolean; forkNudge?: boolean } = {},
 ): Promise<{ reply: string; error?: string }> {
   const store = useStore.getState();
   // Workers default to the heavy long-horizon worker model (Fable), NOT the
@@ -367,6 +377,11 @@ export async function runWorkerTurn(
   const liveSteps: { thought: string; actions: string[] }[] = [{ thought: "", actions: [] }];
   let liveWasAction = false;
   let runErr: string | undefined;
+  // [harness v2] Whether this turn handed the user a decision (AskUser). The
+  // flag lives inside runAgent and isn't surfaced, so observe the tool stream —
+  // it drives the AWAITING_USER state stamp and exempts the turn from the
+  // fork-forcing rule.
+  let askedUserThisTurn = false;
   const controller = new AbortController();
   registerRun(conversationId, controller);
   try {
@@ -382,6 +397,11 @@ export async function runWorkerTurn(
       bashDisabled: store.bashDisabled,
       voiceMode: false,
       supervisorMode,
+      // [harness v2] Autonomous supervisor wakes (self-checks, worker-finished
+      // relays, resumes) run FRESH-CONTEXT — drop the accumulated thread, re-hydrate
+      // from mind.md + the kept brief + live-state. A direct reply to something the
+      // user typed keeps full continuity. Gated by the kill-switch.
+      freshContext: supervisorMode && !opts.direct && harnessV2Enabled(),
       conversationId,
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
@@ -393,6 +413,7 @@ export async function runWorkerTurn(
         }
         else if (e.kind === "reasoning") reasoningAcc += e.delta;
         else if (e.kind === "tool_use") {
+          if (e.name === "AskUser") askedUserThisTurn = true;
           tools.push({ id: e.id, name: e.name, input: e.input, startedAt: Date.now() });
           // Fold this action into the CURRENT update's action cluster (don't open
           // a new bolt) — the next prose will open the next update.
@@ -458,10 +479,20 @@ export async function runWorkerTurn(
         failed: runErr ? true : undefined,
         mid: newMessageId(),
       };
+      // [harness v2] Stamp the mission's lifecycle state as this turn lands:
+      // AskUser → AWAITING_USER; otherwise back to RUNNING (never overwrite a
+      // terminal DONE/KILLED — CompleteMission/stop may have stamped it mid-turn).
+      const cur = finalList[fi]!;
+      const v2state: Conversation["missionState"] =
+        harnessV2Enabled() && supervisorMode && cur.source === "mission" &&
+        cur.missionState !== "DONE" && cur.missionState !== "KILLED"
+          ? (askedUserThisTurn ? "AWAITING_USER" : "RUNNING")
+          : cur.missionState;
       finalList[fi] = {
-        ...finalList[fi]!,
-        messages: [...finalList[fi]!.messages, assistantMsg],
+        ...cur,
+        messages: [...cur.messages, assistantMsg],
         lastActivityAt: Date.now(),
+        missionState: v2state,
       };
       await writeConversations(vault, finalList);
     }
@@ -470,6 +501,25 @@ export async function runWorkerTurn(
   // Now that the final turn is on disk and in the store, drop the live stream
   // so the phone swaps from the streaming bubble to the persisted message.
   useStore.getState().clearConvRuntime(conversationId);
+
+  // [harness v2] Fork-forcing: a mission turn may not END PARKED. The Coconut
+  // gap-closer reached its budget fork, wrote a diagnosis, and went idle with no
+  // AskUser and no next wake — invisible for a day while the box billed to ~$100.
+  // Enforced deterministically after every autonomous supervisor turn: there must
+  // be a NEXT TICK (work delegated, a wake scheduled, a watched run, a live
+  // worker) or a pending user decision — otherwise re-enter once with a nudge,
+  // and if the nudged turn parks again, escalate to the user. Fire-and-forget so
+  // callers (AskWorker, watcher wakes) are never blocked on it.
+  if (harnessV2Enabled() && supervisorMode && !opts.direct && !opts.resume && !runErr) {
+    void enforceMissionLoopInvariant(
+      vault,
+      conversationId,
+      tools.map((t) => t.name),
+      askedUserThisTurn,
+      !!opts.forkNudge,
+      acc,
+    ).catch((e) => console.warn("[mission] loop-invariant check failed:", e));
+  }
 
   // Cockpit transform, fired AFTER the turn is persisted so it never delays the
   // thread landing (a no-op if no fast model is configured).
@@ -636,12 +686,42 @@ export async function startMission(
     role: "supervisor", // its turns run with the vault's supervisor.md prompt
     title: t,
     mission: t, // its own group key — workers it spawns share this
+    missionState: harnessV2Enabled() ? "RUNNING" : undefined,
   };
-  await withConvLock(async () => {
+  // [harness v2] One objective, one card. Two live cards for the same gap (the
+  // Coconut duplication) meant every status check first had to disambiguate
+  // WHICH mission — and the $80 cap lived on one card while the work ran on the
+  // other. If a live (not completed/killed) mission with this title already
+  // exists, approval re-binds to it instead of minting a twin. Checked INSIDE
+  // the lock so two rapid approvals can't race past each other.
+  const existing = await withConvLock(async () => {
     const list = await readConversations(vault);
+    if (harnessV2Enabled()) {
+      const same = list.find(
+        (c) =>
+          c.source === "mission" &&
+          !c.completedAt &&
+          c.missionState !== "DONE" &&
+          c.missionState !== "KILLED" &&
+          normalizeCriterion(c.title) === normalizeCriterion(t),
+      );
+      if (same) return same;
+    }
     list.unshift(fresh);
     await writeConversations(vault, list);
+    return null;
   });
+  if (existing) {
+    // Wake the existing mission with the (possibly refined) goal instead of
+    // starting a parallel twin.
+    void runWorkerTurn(
+      vault,
+      existing.id,
+      `The user re-approved this mission's objective. Refreshed brief follows — reconcile it with your current state (goal file + mind.md) and continue; do NOT restart finished work.\n\n${goal.trim()}`,
+      { modelId: useStore.getState().supervisorModelId },
+    ).catch((e) => console.warn("[mission] re-approve wake failed:", e));
+    return { id: existing.id, title: existing.title };
+  }
   await useStore.getState().refreshConversationFromDisk(vault, id).catch(() => {});
   const brief =
     `MISSION BRIEF (user-approved, handed off by their assistant). You own this goal end-to-end.\n\n` +
@@ -691,7 +771,37 @@ export async function stopAndDeleteMission(vault: string, conversationId: string
   } catch (e) {
     console.warn("[mission] schedule cleanup failed:", e);
   }
-  // 3) Tombstone-delete the mission + its workers (durable, resurrection-proof).
+  // 3) [harness v2] KEEP the thread, stamp it KILLED — the visible Archive.
+  // Silent deletion is what produced "missions disappearing???" / "what happened
+  // to my coconut mission": a killed mission vanished without a trace and the
+  // user had to reconstruct what happened. Now it leaves the live board (via
+  // completedAt, same as a finished mission) but survives in the archive with
+  // its final state readable. Workers are kept too — they're the mission's
+  // history. Aborts + wake-cancellation above already guarantee it can't
+  // resurrect itself onto Activity. Explicit swipe-delete in the archive remains
+  // the way to actually remove it (tombstoned, resurrection-proof).
+  // A mission that's ALREADY terminal (archived DONE/KILLED) being killed again
+  // is the user clearing it out of the archive (swipe-delete) — fall through to
+  // the real tombstone-delete below. First kill archives; second kill removes.
+  const alreadyTerminal =
+    !!mission.completedAt || mission.missionState === "DONE" || mission.missionState === "KILLED";
+  if (harnessV2Enabled() && !alreadyTerminal) {
+    await withConvLock(async () => {
+      const fresh = await readConversations(vault);
+      const t = Date.now();
+      for (let i = 0; i < fresh.length; i++) {
+        if (fresh[i]!.id === mission.id) {
+          // lastActivityAt bumps in lockstep so a union tie-break can't surface
+          // a stale not-killed meta line (same rule as completeMission).
+          fresh[i] = { ...fresh[i]!, missionState: "KILLED" as const, billing: false, completedAt: t, lastActivityAt: t };
+        }
+      }
+      await writeConversations(vault, fresh);
+    });
+    await useStore.getState().refreshConversationFromDisk(vault, mission.id).catch(() => {});
+    return;
+  }
+  // Legacy (kill-switch off): tombstone-delete the mission + its workers.
   // AWAIT the writes: the phone reloads its Activity list the instant /kill
   // returns, and a fire-and-forget delete let that reload re-read the still-on-
   // disk mission before its tombstone flushed — the "deleted mission comes back
@@ -699,6 +809,124 @@ export async function stopAndDeleteMission(vault: string, conversationId: string
   // desktop stays instant) and resolves once the write lands.
   const del = useStore.getState().deleteConversation;
   await Promise.all(ids.map((id) => del(id)));
+}
+
+// [harness v2] The fork-forcing rule: after an autonomous supervisor turn, the
+// mission must have a next tick or a pending user decision — "idle at a fork" is
+// illegal. Exits that satisfy the invariant:
+//   (a) work delegated / advanced this turn (StartWorker, AskWorker, WatchRun,
+//       MarkDoneWhen, CompleteMission) or a wake scheduled (Schedule),
+//   (b) the user was asked (AskUser → AWAITING_USER; their reply is the wake),
+//   (c) an external wake source already exists: an enabled schedule targeting
+//       this thread, a live watched run it owns, or a live worker of its mission,
+//   (d) the mission is terminal (DONE / KILLED).
+// If NONE hold, the harness re-enters the thread once with a corrective nudge;
+// a nudged turn that parks again escalates to the user's Alerts feed and flips
+// the mission to AWAITING_USER so the board shows the truth ("parked, needs
+// you") instead of a healthy-looking idle card.
+const PROGRESS_TOOLS = new Set([
+  "StartWorker",
+  "AskWorker",
+  "WatchRun",
+  "MarkDoneWhen",
+  "CompleteMission",
+  "Schedule",
+]);
+
+async function enforceMissionLoopInvariant(
+  vault: string,
+  conversationId: string,
+  toolNames: string[],
+  askedUser: boolean,
+  wasNudge: boolean,
+  turnText: string,
+): Promise<void> {
+  // (a) + (b): satisfied by this turn's own actions.
+  if (askedUser) return;
+  if (toolNames.some((n) => PROGRESS_TOOLS.has(n))) return;
+
+  const list = await readConversations(vault);
+  const mission = list.find((c) => c.id === conversationId && c.source === "mission");
+  if (!mission) return;
+  // (d) terminal.
+  if (mission.completedAt || mission.missionState === "DONE" || mission.missionState === "KILLED") return;
+
+  // (c) external wake sources.
+  try {
+    const { readSchedules } = await import("./schedules");
+    for (const sc of await readSchedules(vault)) {
+      const t = sc.target as { kind?: string; conversationId?: string };
+      if (
+        sc.enabled &&
+        t?.kind === "existing" &&
+        t.conversationId === conversationId &&
+        (sc.recurrence?.kind !== "once" || !sc.lastFiredAt)
+      )
+        return; // a wake is coming
+    }
+  } catch {
+    // unreadable schedules — fall through to the nudge rather than assume safety
+  }
+  try {
+    const { readJobs } = await import("./runWatcher");
+    if ((await readJobs(vault)).some((j) => j.status === "running" && j.ownerConvId === conversationId))
+      return; // the run-watcher will wake it
+  } catch {
+    /* same */
+  }
+  try {
+    const { activeRuns } = await import("./runRegistry");
+    const live = new Set(activeRuns());
+    const key = (mission.mission ?? mission.title ?? "").trim();
+    if (
+      key &&
+      list.some((c) => c.source === "worker" && (c.mission ?? "").trim() === key && live.has(c.id))
+    )
+      return; // a live worker's finish will wake it
+  } catch {
+    /* same */
+  }
+
+  if (!wasNudge) {
+    // One deterministic re-entry: name the violation, name the legal exits.
+    vlog("mission.parked.nudge", { conv: conversationId.slice(0, 8) });
+    void runWorkerTurn(
+      vault,
+      conversationId,
+      `HARNESS CHECK — your last turn ended PARKED: no worker running, no watched run, no scheduled wake, no question to the user. A mission may never idle silently. Pick the right exit now: (1) if you're at a genuine money/irreversible fork the user must decide, call AskUser with one crisp question; (2) if the next step is yours to take, take it (StartWorker / WatchRun / act directly) — for a reversible judgment call, decide it yourself and record it; (3) if you're waiting on something external, Schedule your own next check; (4) if the goal is verified done, call CompleteMission. Do not reply with only prose.`,
+      { modelId: useStore.getState().supervisorModelId, forkNudge: true },
+    ).catch((e) => console.warn("[mission] fork nudge failed:", e));
+    return;
+  }
+
+  // Nudged and STILL parked — stop burning turns, surface the truth to the user.
+  vlog("mission.parked.escalate", { conv: conversationId.slice(0, 8) });
+  await withConvLock(async () => {
+    const fresh = await readConversations(vault);
+    const i = fresh.findIndex((c) => c.id === conversationId);
+    if (i < 0) return;
+    if (fresh[i]!.missionState === "DONE" || fresh[i]!.missionState === "KILLED") return;
+    fresh[i] = { ...fresh[i]!, missionState: "AWAITING_USER" as const, lastActivityAt: Date.now() };
+    await writeConversations(vault, fresh);
+  });
+  try {
+    const { notify } = await import("./phoneApp");
+    const tail = (turnText || "").trim().slice(-400);
+    await notify(
+      "ask",
+      `Mission parked — ${mission.title}`,
+      `This mission ended two turns in a row with no next step (no worker, no wake, no question). It is HOLDING, not progressing. Its last words:\n\n${tail || "(no prose)"}\n\nOpen the thread and tell it how to proceed.`,
+      conversationId,
+      {
+        intention: `Mission parked · ${mission.title}`,
+        summary: "Supervisor idled at a decision point twice — needs your direction.",
+        icon: "⏸️",
+        cls: "r",
+      },
+    );
+  } catch (e) {
+    console.warn("[mission] parked-escalation notify failed:", e);
+  }
 }
 
 // Mark a mission FINISHED: its supervisor decided the goal is met. Stamps
@@ -712,19 +940,48 @@ export async function stopAndDeleteMission(vault: string, conversationId: string
 // was already complete. The caller notifies the user only on a true, so the
 // "Mission complete" card fires exactly once even when CompleteMission is
 // invoked twice (parallel tool calls, or a follow-up turn re-confirming done).
-export async function completeMission(vault: string, conversationId: string): Promise<boolean> {
+export async function completeMission(
+  vault: string,
+  conversationId: string,
+): Promise<{ ok: boolean; already?: boolean; missing?: string[] }> {
+  // [harness v2] Deterministic completion gate: a mission may only complete when
+  // every "Done when" bullet in its brief has been individually checked off via
+  // MarkDoneWhen (each of which passed the independent evidence check). Pure
+  // code, zero tokens — the supervisor cannot declare victory over an unmet
+  // criterion; it must either verify the remaining items or take the miss to the
+  // user. Closes the "sweep is done but the mission isn't" / silent-done class.
+  if (harnessV2Enabled()) {
+    const pre = await readConversations(vault);
+    const m0 = pre.find((c) => c.id === conversationId && c.source === "mission");
+    if (m0 && !m0.completedAt) {
+      const briefMsg =
+        m0.messages.find((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || "")) ??
+        m0.messages.find((m) => m.role === "user");
+      const criteria = parseDoneWhenCriteria(briefMsg?.content ?? "");
+      const done = new Set((m0.doneWhenDone ?? []).map(normalizeCriterion));
+      const missing = criteria.filter((c) => !done.has(normalizeCriterion(c)));
+      if (missing.length > 0) {
+        vlog("mission.complete.rejected", { conv: conversationId.slice(0, 8), missing: missing.length });
+        return { ok: false, missing };
+      }
+    }
+  }
   // Atomic check-and-set of completedAt: the FIRST caller inside the lock wins;
   // a racing/repeat caller sees it already stamped and bails. This is what kills
   // the duplicate "Mission complete" notification (two CompleteMission tool
   // calls in one turn used to both read no-completedAt and both notify).
   let mission: Conversation | undefined;
   let didComplete = false;
+  let already = false;
   await withConvLock(async () => {
     const fresh = await readConversations(vault);
     const i = fresh.findIndex((c) => c.id === conversationId && c.source === "mission");
     if (i < 0) return;
     mission = fresh[i];
-    if (fresh[i]!.completedAt) return; // already complete — leave didComplete false
+    if (fresh[i]!.completedAt) {
+      already = true;
+      return; // already complete — leave didComplete false
+    }
     // Bump lastActivityAt in lockstep with completedAt. Every cross-machine and
     // in-memory tie-break sorts on lastActivityAt — the Rust union meta-line
     // pick (reconstruct_conversation), the diskNewer test, and the persist
@@ -734,11 +991,11 @@ export async function completeMission(vault: string, conversationId: string): Pr
     // finished mission RESURRECTED onto Activity. One monotonic timestamp closes
     // all three layers at once.
     const t = Date.now();
-    fresh[i] = { ...fresh[i]!, completedAt: t, lastActivityAt: t };
+    fresh[i] = { ...fresh[i]!, completedAt: t, lastActivityAt: t, missionState: "DONE" as const, billing: false };
     await writeConversations(vault, fresh);
     didComplete = true;
   });
-  if (!didComplete || !mission) return false;
+  if (!didComplete || !mission) return { ok: false, already };
   // Real completion: stop leftover workers + cancel self-scheduled wakes so it
   // can't re-wake itself back onto Activity.
   const key = (mission.mission ?? mission.title ?? "").trim();
@@ -761,7 +1018,7 @@ export async function completeMission(vault: string, conversationId: string): Pr
     console.warn("[mission] complete: schedule cleanup failed:", e);
   }
   await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
-  return true;
+  return { ok: true };
 }
 
 // "Done when" bullets parsed from a mission brief — same shape the phone's
@@ -785,45 +1042,118 @@ export async function markDoneWhen(
   vault: string,
   conversationId: string,
   criterion: string,
-): Promise<string | null> {
-  let matched: string | null = null;
+): Promise<{ matched: string | null; verified: boolean; reason?: string }> {
+  // Fuzzy-match the claimed criterion to the brief's bullets (read-only pass —
+  // the write happens under the lock only after verification).
+  const list0 = await readConversations(vault);
+  const mission0 = list0.find((c) => c.id === conversationId && c.source === "mission");
+  if (!mission0) return { matched: null, verified: false, reason: "mission not found" };
+  const briefMsg =
+    mission0.messages.find((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || "")) ??
+    mission0.messages.find((m) => m.role === "user");
+  const criteria = parseDoneWhenCriteria(briefMsg?.content ?? "");
+  const cn = normalizeCriterion(criterion);
+  const cwords = new Set(cn.split(" ").filter((w) => w.length > 2));
+  let best: string | null = null;
+  let bestScore = 0;
+  for (const cand of criteria) {
+    const candn = normalizeCriterion(cand);
+    if (candn === cn || candn.includes(cn) || cn.includes(candn)) {
+      best = cand;
+      bestScore = 1;
+      break;
+    }
+    const candWords = new Set(candn.split(" ").filter((w) => w.length > 2));
+    let shared = 0;
+    for (const w of cwords) if (candWords.has(w)) shared++;
+    const score = shared / Math.max(1, Math.min(cwords.size, candWords.size));
+    if (score > bestScore) {
+      bestScore = score;
+      best = cand;
+    }
+  }
+  const matched = bestScore >= 0.5 ? best : criterion.trim();
+
+  // [harness v2] Independent verification BEFORE the check-off lands. The actor
+  // doesn't grade its own work: a fresh fast-model auditor judges whether the
+  // RECORDED state (mind.md + the thread's recent output) concretely
+  // substantiates the criterion. The BitNet-era lesson ("a worker reporting
+  // 'completed' is NOT evidence") becomes a rail instead of a prompt plea.
+  // Fails OPEN when no fast model is configured (verifier returns null).
+  if (harnessV2Enabled() && matched) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const mind: string = await invoke<string>("read_text_file", {
+        path: `${vault}/.vault-chat/supervisor/mind.md`,
+      }).catch(() => "");
+      const recent = mission0.messages
+        .filter((m) => m.role === "assistant")
+        .slice(-2)
+        .map((m) => m.content ?? "")
+        .join("\n\n");
+      const evidence =
+        `== supervisor mind.md (durable state) ==\n${(mind || "(none)").slice(0, 8000)}\n\n` +
+        `== mission thread, latest output ==\n${recent.slice(-4000)}`;
+      const { verifyCriterionEvidence } = await import("./alert-summary");
+      const verdict = await verifyCriterionEvidence(matched, evidence, useStore.getState().apiKeys);
+      if (verdict && !verdict.pass) {
+        vlog("mission.markdone.rejected", { conv: conversationId.slice(0, 8), reason: verdict.reason });
+        return { matched, verified: false, reason: verdict.reason };
+      }
+    } catch (e) {
+      console.warn("[mission] done-when verification errored (failing open):", e);
+    }
+  }
+
   await withConvLock(async () => {
     const list = await readConversations(vault);
     const i = list.findIndex((c) => c.id === conversationId && c.source === "mission");
     if (i < 0) return;
-    const mission = list[i]!;
-    const briefMsg =
-      mission.messages.find((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || "")) ??
-      mission.messages.find((m) => m.role === "user");
-    const criteria = parseDoneWhenCriteria(briefMsg?.content ?? "");
-    const cn = normalizeCriterion(criterion);
-    const cwords = new Set(cn.split(" ").filter((w) => w.length > 2));
-    let best: string | null = null;
-    let bestScore = 0;
-    for (const cand of criteria) {
-      const candn = normalizeCriterion(cand);
-      if (candn === cn || candn.includes(cn) || cn.includes(candn)) {
-        best = cand;
-        bestScore = 1;
-        break;
-      }
-      const candWords = new Set(candn.split(" ").filter((w) => w.length > 2));
-      let shared = 0;
-      for (const w of cwords) if (candWords.has(w)) shared++;
-      const score = shared / Math.max(1, Math.min(cwords.size, candWords.size));
-      if (score > bestScore) {
-        bestScore = score;
-        best = cand;
-      }
-    }
-    matched = bestScore >= 0.5 ? best : criterion.trim();
-    const done = new Set(mission.doneWhenDone ?? []);
+    const done = new Set(list[i]!.doneWhenDone ?? []);
     if (matched) done.add(matched);
-    list[i] = { ...mission, doneWhenDone: [...done] };
+    list[i] = { ...list[i]!, doneWhenDone: [...done], lastActivityAt: Date.now() };
     await writeConversations(vault, list);
   });
   await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
-  return matched;
+  return { matched, verified: true };
+}
+
+// [harness v2] The hard-note tool: append one structured judgment to the
+// per-vault decision log. Soft, head-only judgments ("the user sounded hesitant
+// about spend — lean conservative"; "seed 3's divergence is real, not noise")
+// were exactly what a fresh-context wake could lose if left un-written; this
+// gives them a durable, append-only home the model is contractually required to
+// use at decision time (see supervisor.md). decisions.jsonl is COLD storage —
+// audit/history, never auto-injected into context (mind.md stays the pruned hot
+// state), so it can grow without re-creating the dumb-zone problem in a file.
+export async function recordJudgment(
+  vault: string,
+  conversationId: string,
+  j: { claim: string; why: string; confidence: string; whatWouldChangeIt?: string },
+): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const path = `${vault}/.vault-chat/supervisor/decisions.jsonl`;
+  let missionTitle = "";
+  try {
+    const conv = (await readConversations(vault)).find((c) => c.id === conversationId);
+    missionTitle = conv?.mission ?? conv?.title ?? "";
+  } catch {
+    /* title is best-effort */
+  }
+  const rec = {
+    ts: Date.now(),
+    conv: conversationId,
+    mission: missionTitle,
+    claim: j.claim.slice(0, 600),
+    why: j.why.slice(0, 1000),
+    confidence: j.confidence,
+    whatWouldChangeIt: (j.whatWouldChangeIt ?? "").slice(0, 600) || undefined,
+  };
+  const prev = await invoke<string>("read_text_file", { path }).catch(() => "");
+  await invoke("write_text_file", {
+    path,
+    contents: (prev ? prev.replace(/\n?$/, "\n") : "") + JSON.stringify(rec) + "\n",
+  });
 }
 
 // Create a fresh conversation entry on disk for a vault that's not

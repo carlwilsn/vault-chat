@@ -5,6 +5,7 @@ import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useStore, type TodoItem } from "./store";
 import { buildNote } from "./notes";
+import { harnessV2Enabled } from "./harness";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -1068,9 +1069,13 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         // a supervisor block on AskWorker for ~2 hours waiting on a worker that
         // wasn't answering. Time-box the wait: on timeout we do NOT abort the
         // worker (its turn keeps running in the background) — we stop waiting and
-        // report back so the caller's turn can END and it can check in later via
-        // the worker's finish-wake or ReadConversation.
-        const ASK_TIMEOUT_MS = 3 * 60_000;
+        // report back so the caller's turn can END and it can check in later.
+        // [harness v2] For a mission caller the primitive is fully non-blocking:
+        // a short grace window catches quick answers inline, then the ask
+        // DETACHES and the worker's eventual reply is DELIVERED as a wake turn
+        // on the caller — fire-and-continue, never fire-and-hover.
+        const v2Async = harnessV2Enabled() && tier === "mission" && !!conversationId;
+        const ASK_TIMEOUT_MS = v2Async ? 45_000 : 3 * 60_000;
         const runP = runWorkerTurn(vault, conversation_id, message, {});
         const outcome = await Promise.race([
           runP.then((r) => ({ timedOut: false as const, ...r })),
@@ -1079,6 +1084,31 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           ),
         ]);
         if (outcome.timedOut) {
+          if (v2Async) {
+            const callerId = conversationId!;
+            const workerTitle = conv.title || conversation_id;
+            // Deliver the late reply as a fresh wake on the caller once BOTH
+            // turns are done — wait for the caller to go idle so the wake can't
+            // interleave with its still-running turn.
+            void runP
+              .then(async ({ reply, error }) => {
+                const { useStore } = await import("./store");
+                for (let i = 0; i < 40; i++) {
+                  const cur = useStore.getState().conversations.find((c) => c.id === callerId);
+                  if (!cur || cur.status !== "running") break;
+                  await new Promise((r) => setTimeout(r, 15_000));
+                }
+                const note = error && !(reply ?? "").trim() ? `The worker's turn ERRORED: ${error}` : (reply ?? "").slice(0, 6000);
+                await runWorkerTurn(
+                  vault,
+                  callerId,
+                  `Reply from worker "${workerTitle}" (answering your earlier AskWorker, delivered asynchronously):\n\n${note}`,
+                  { modelId: useStore.getState().supervisorModelId },
+                );
+              })
+              .catch((e) => console.warn("[askworker] async reply delivery failed:", e));
+            return `Worker "${workerTitle}" is still mid-turn after 45s — the ask is DETACHED. You'll be WOKEN with its reply when it lands; do not wait or poll. End your turn (after securing your next tick as usual).`;
+          }
           runP.catch(() => {}); // keeps running in the background; swallow late rejection
           return `Worker "${conv.title || conversation_id}" is still working after 3 min — it keeps running in the background. Don't block on it: end your turn now. You'll be woken when it finishes, or check it with ReadConversation (id ${conversation_id}).`;
         }
@@ -1157,16 +1187,28 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       }),
       execute: async ({ summary }) => {
         if (!conversationId) return "No mission context — can't complete.";
-        // completeMission atomically stamps completedAt and returns true only on
+        // completeMission atomically stamps completedAt and returns ok only on
         // the call that actually retired the mission — so the "Mission complete"
         // notification fires exactly once, even if this tool is called twice
-        // (parallel calls, or a follow-up turn re-confirming done).
+        // (parallel calls, or a follow-up turn re-confirming done). [harness v2]
+        // It also enforces the completion gate: every "Done when" bullet must be
+        // individually checked off (MarkDoneWhen, each evidence-verified) first.
         const { completeMission } = await import("./offVaultRun");
-        const didComplete = await completeMission(vault, conversationId).catch((e) => {
+        const res: { ok: boolean; already?: boolean; missing?: string[] } = await completeMission(
+          vault,
+          conversationId,
+        ).catch((e) => {
           console.warn("[mission] complete failed:", e);
-          return false;
+          return { ok: false, already: true };
         });
-        if (!didComplete) {
+        if (!res.ok) {
+          if (res.missing && res.missing.length) {
+            return (
+              `NOT completed — ${res.missing.length} "Done when" criteri${res.missing.length === 1 ? "on is" : "a are"} not verified yet:\n` +
+              res.missing.map((m) => `- ${m}`).join("\n") +
+              `\nVerify each and call MarkDoneWhen on it first. If a criterion is genuinely obsolete (the user rescoped), record that decision and MarkDoneWhen it with the rescope as evidence — or AskUser if the drop is their call.`
+            );
+          }
           return "This mission is already complete — nothing more to do. End your turn.";
         }
         const { notify } = await import("./phoneApp");
@@ -1190,10 +1232,45 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       execute: async ({ criterion }) => {
         if (!conversationId) return "No mission context — can't mark a criterion.";
         const { markDoneWhen } = await import("./offVaultRun");
-        const matched = await markDoneWhen(vault, conversationId, criterion).catch(() => null);
-        return matched
-          ? `Checked off "${matched}" — the user sees that criterion go green.`
+        const res = await markDoneWhen(vault, conversationId, criterion).catch(
+          () => ({ matched: null, verified: false, reason: "internal error" }) as const,
+        );
+        // [harness v2] The check-off is gated by an independent evidence audit —
+        // a rejected claim tells the supervisor exactly what's unsubstantiated
+        // instead of silently going green.
+        if (!res.verified) {
+          return (
+            `VERIFICATION FAILED — "${criterion}" was NOT checked off. Auditor: ${res.reason || "the recorded evidence doesn't substantiate this criterion"}. ` +
+            `Put the substance on the record first (update mind.md / the goal file with the concrete result — numbers, artifact paths, what test passed), then call MarkDoneWhen again. Never re-claim without new evidence.`
+          );
+        }
+        return res.matched
+          ? `Checked off "${res.matched}" — verified against the recorded evidence; the user sees that criterion go green.`
           : `Recorded "${criterion}". Couldn't match it to a listed criterion, but noted it.`;
+      },
+    }),
+    RecordJudgment: tool({
+      description:
+        "Put ONE significant judgment on the durable record — a decision you made, a conclusion you reached, or a soft read that should outlive this turn (\"user prefers stopping early over overspending\", \"seed 3's divergence is real — holding it\", \"bf16 is the top suspect because the latent loop is precision-sensitive\"). Your conversation history is NOT carried between wakes; anything load-bearing that isn't in mind.md, the goal file, or this log is LOST. Call it AT DECISION TIME, in the same turn you decide — not later. This appends to the vault's decision log (audit trail, not re-read automatically); ALSO reflect the current-state consequence in mind.md. For a reversible fork you resolved yourself, this is the required receipt: decide, record, move — don't AskUser.",
+      inputSchema: z.object({
+        claim: z.string().describe("The judgment itself, one plain sentence."),
+        why: z.string().describe("The reasoning/evidence behind it, 1-3 sentences."),
+        confidence: z.enum(["low", "medium", "high"]).describe("How sure you are."),
+        what_would_change_it: z
+          .string()
+          .optional()
+          .describe("What observation would overturn this judgment, if any."),
+      }),
+      execute: async ({ claim, why, confidence, what_would_change_it }) => {
+        if (!conversationId) return "No thread context — can't record a judgment.";
+        const { recordJudgment } = await import("./offVaultRun");
+        await recordJudgment(vault, conversationId, {
+          claim,
+          why,
+          confidence,
+          whatWouldChangeIt: what_would_change_it,
+        }).catch((e) => console.warn("[judgment] record failed:", e));
+        return "Recorded to the decision log. Reflect the consequence in mind.md before you end the turn if it changes your current picture.";
       },
     }),
     ProposeMission: tool({
@@ -1470,8 +1547,27 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           .optional()
           .describe("Working directory for the check/pull commands. Defaults to the vault root."),
         host: z.string().optional().describe("Informational label for which rented box this run is on."),
+        terminate_command: z
+          .string()
+          .optional()
+          .describe(
+            "COST GUARD — arm this on EVERY watch of a billing resource (a rented GPU box). A shell command the watcher itself runs to KILL the resource (e.g. the lambda tool's terminate) when the check reports sustained idle billing. For this to work your check_command must speak the billing tokens: print `WORKING <metric>` while the resource is earning its keep, `IDLE <note>` when it is billing with no work, and `GONE` once no billing resource exists. The guard is pure code — it fires with no agent turn, survives app restarts and a sleeping laptop, retires itself with proof when the check reports GONE, and pings the user once when it pulls the trigger. This replaces scheduling yourself as a cost watchdog: don't arm a recurring Schedule to babysit a box, arm this.",
+          ),
+        idle_kill_minutes: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            "How long the check may report IDLE before terminate_command fires. Default 15. Set higher only if the run has legitimate long quiet phases that your check can't distinguish from idle.",
+          ),
+        env_keys: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Secret names (keychain user keys, e.g. [\"lambda_api_key\"]) injected into the check/pull/terminate commands' environment. Required when those commands call a metered API — the watcher passes no secrets by default.",
+          ),
       }),
-      execute: async ({ title, check_command, pull_command, cadence_minutes, stall_minutes, cwd, host }) => {
+      execute: async ({ title, check_command, pull_command, cadence_minutes, stall_minutes, cwd, host, terminate_command, idle_kill_minutes, env_keys }) => {
         const { registerJob } = await import("./runWatcher");
         // Best-effort: tag the job with the mission it belongs to, for the alert.
         let mission: string | undefined;
@@ -1492,12 +1588,16 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           mission,
           cadenceMs: Math.max(1, cadence_minutes ?? 10) * 60_000,
           stallMs: Math.max(1, stall_minutes ?? 45) * 60_000,
+          terminateCmd: terminate_command || undefined,
+          idleKillMs: idle_kill_minutes ? Math.max(1, idle_kill_minutes) * 60_000 : undefined,
+          envKeys: env_keys && env_keys.length ? env_keys : undefined,
         });
         const everyM = Math.round(job.cadenceMs / 60_000);
         return (
           `Watching run "${title}" (id ${job.id}) — checking every ${everyM}m via your check_command. ` +
           `I'll ping the user and wake this thread the moment it finishes, fails, or stalls` +
-          `${job.pullCmd ? "; artifacts sync off the box each cycle" : ""}. ` +
+          `${job.pullCmd ? "; artifacts sync off the box each cycle" : ""}` +
+          `${job.terminateCmd ? `; COST GUARD ARMED — sustained IDLE past ${Math.round((job.idleKillMs ?? 15 * 60_000) / 60_000)}m auto-terminates the box in code, no agent turn needed` : ""}. ` +
           `Nothing else to do here — end your turn and keep working; the watcher carries it.`
         );
       },
@@ -1592,10 +1692,12 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   // fixed one) without surveying other threads' runs. The assistant only READS
   // the fleet (ListRuns) so it can answer "what's running / did anything die"
   // for the user; it doesn't launch or kill runs itself.
+  // RecordJudgment is for the working tiers (mission + worker) — the assistant
+  // chats with the user directly and has no between-wake state to protect.
   if (tier === "mission") drop(["ProposeMission", "StopMission"]);
   else if (tier === "worker")
     drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission", "MarkDoneWhen", "StopMission"]);
-  else drop(["StartWorker", "CompleteMission", "MarkDoneWhen", "WatchRun", "CancelRun"]);
+  else drop(["StartWorker", "CompleteMission", "MarkDoneWhen", "WatchRun", "CancelRun", "RecordJudgment"]);
   return full;
 }
 

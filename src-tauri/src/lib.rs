@@ -2037,10 +2037,13 @@ async fn bash_exec(
     cwd: Option<String>,
     timeout_ms: Option<u64>,
     cancel_id: Option<String>,
+    env: Option<std::collections::HashMap<String, String>>,
 ) -> Result<BashResult, String> {
-    tauri::async_runtime::spawn_blocking(move || bash_exec_sync(command, cwd, timeout_ms, cancel_id))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        bash_exec_sync(command, cwd, timeout_ms, cancel_id, env)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn bash_exec_sync(
@@ -2048,6 +2051,11 @@ fn bash_exec_sync(
     cwd: Option<String>,
     timeout_ms: Option<u64>,
     cancel_id: Option<String>,
+    // [harness v2] Optional extra env for the child (mirrors run_script's `env`).
+    // Added so the deterministic cost-guard in the run-watcher can invoke the
+    // per-vault lambda tool with `lambda_api_key` — bash_exec previously injected
+    // no secrets, which made an off-LLM terminate impossible.
+    env: Option<std::collections::HashMap<String, String>>,
 ) -> Result<BashResult, String> {
     use std::io::Read;
     use std::time::{Duration, Instant};
@@ -2096,6 +2104,13 @@ fn bash_exec_sync(
         cmd.current_dir(d);
     }
     strip_polluting_env(&mut cmd);
+    // [harness v2] Caller-supplied env (e.g. lambda_api_key for the cost-guard's
+    // terminate). Applied after the strip so an explicit key always wins.
+    if let Some(extra) = &env {
+        for (k, v) in extra {
+            cmd.env(k, v);
+        }
+    }
     // Any `git commit` the agent runs via Bash — in the vault root or a
     // nested repo — is authored as the agent, so it's distinguishable from
     // the user's own commits in that repo's history.
