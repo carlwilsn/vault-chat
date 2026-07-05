@@ -2518,27 +2518,28 @@
   });
   if (window.visualViewport) {
     const vv = window.visualViewport;
-    // Keyboard overlap of a bottom-anchored fixed element, in layout px. Use
-    // documentElement.clientHeight — the stable layout-viewport height that
-    // matches the position:fixed containing block. window.innerHeight diverges
-    // from it across iOS/Android, so the old innerHeight math under-computed the
-    // lift. Expose it as --kb; the composer's padding-bottom and the .sheet
-    // transform both consume it. Re-applied on scroll too because iOS shifts the
-    // viewport as the keyboard animates.
+    // Keyboard handling. --kb is the height the composer must rise to sit on top of
+    // the keyboard; the composer's padding-bottom and the .sheet transform consume
+    // it. Re-applied on scroll too because iOS shifts the viewport as the keyboard
+    // animates. The shell height itself is CSS-only (100lvh in standalone) — never
+    // JS-controlled — so nothing here can strand the old dead strip.
     const applyKb = () => {
-      const kb = Math.max(0, document.documentElement.clientHeight - vv.height - vv.offsetTop);
-      document.documentElement.style.setProperty("--kb", kb + "px");
+      // kbRaw: keyboard height measured against documentElement.clientHeight, the
+      // stable layout viewport that equals vv.height at rest — so this reads ~0 with
+      // no keyboard and is the reliable "is the keyboard up?" signal.
+      const kbRaw = Math.max(0, document.documentElement.clientHeight - vv.height - vv.offsetTop);
+      const up = kbRaw > 60;
       // Keyboard up: collapse the composer's home-indicator inset so the textbox
       // sits flush on the keyboard (the keyboard already covers that strip).
-      document.body.classList.toggle("kbup", kb > 60);
-      // The shell height is deliberately NOT set here. body stays position:fixed;
-      // inset:0 (full screen) and lifts the composer via `padding-bottom:var(--kb)`
-      // in CSS, so the outer box can never be shorter than the screen. The old
-      // `body.style.height = vv.height` pin was the dead strip: an explicit height
-      // on a top:0/bottom:0 fixed element beats `bottom`, and under viewport-fit=cover
-      // iOS reports vv.height a few px short, so the shell rendered shorter than the
-      // screen — a persistent buffer under every page. Two prior patches only tuned
-      // WHEN to pin/clear; the real fix is to never JS-control the shell height.
+      document.body.classList.toggle("kbup", up);
+      // The body is sized to the FULL screen (100lvh in standalone), which is taller
+      // than clientHeight's layout viewport by the safe-area-top band iOS excludes
+      // (measured: 874 vs 812 = 62px on a Dynamic Island phone). kbRaw is computed in
+      // the shorter clientHeight space, so the composer landed ~62px BEHIND the
+      // keyboard. Add that band back. It is 0 in a browser tab (body == 100dvh ==
+      // clientHeight), so Safari is unaffected.
+      const safeBand = Math.max(0, document.body.offsetHeight - document.documentElement.clientHeight);
+      document.documentElement.style.setProperty("--kb", (up ? kbRaw + safeBand : 0) + "px");
       // While editing a reply, cap the sheet to the space above the keyboard so
       // the whole sheet stays visible, not just the lifted foot.
       const sheet = $("sheet");
@@ -2549,53 +2550,6 @@
     vv.addEventListener("scroll", () => { window.scrollTo(0, 0); applyKb(); });
     fit(); // reconcile the initial geometry so a short launch viewport can't strand a strip
   }
-
-  // ---- TEMP diagnostic readout (remove after the dead-strip is confirmed fixed).
-  // Visible by default; triple-tap anywhere to hide/show. Reports the live viewport
-  // geometry so we can see exactly why (if) a strip appears in the real standalone PWA.
-  (function () {
-    const mk = (css) => { const d = document.createElement("div"); d.style.cssText = css; document.body.appendChild(d); return d; };
-    // Probes that measure each viewport unit in real px, so we can see whether
-    // 100dvh is coming up short of the screen by the safe-area amount in standalone.
-    const pDvh = mk("position:fixed;left:-9999px;top:0;width:1px;height:100dvh");
-    const pSvh = mk("position:fixed;left:-9999px;top:0;width:1px;height:100svh");
-    const pLvh = mk("position:fixed;left:-9999px;top:0;width:1px;height:100lvh");
-    const pSafe = mk("position:fixed;left:-9999px;top:0;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)");
-    const box = document.createElement("pre");
-    // Top-anchored (below the notch) so it stays visible ABOVE the keyboard while we
-    // measure how far the composer is hidden. Open the keyboard, then read the lines.
-    box.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;margin:0;padding:calc(env(safe-area-inset-top) + 4px) 8px 6px;font:11px/1.4 ui-monospace,Menlo,monospace;color:#25ff9a;background:rgba(0,0,0,.9);white-space:pre-wrap;pointer-events:none";
-    document.body.appendChild(box);
-    const de = document.documentElement;
-    const H = (el) => Math.round(el.getBoundingClientRect().height);
-    let on = true; // visible for the keyboard measurement; triple-tap to hide
-    const read = () => {
-      if (!on) return;
-      const vv = window.visualViewport || {};
-      const comp = document.querySelector(".composer");
-      const cb = comp ? Math.round(comp.getBoundingClientRect().bottom) : 0;
-      const vh = Math.round(vv.height || 0), voff = Math.round(vv.offsetTop || 0);
-      const kbTop = vh + voff; // bottom of the visible area = top of the keyboard
-      const standalone = (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone || false;
-      box.textContent = [
-        "standalone=" + standalone + "  kbup=" + document.body.classList.contains("kbup"),
-        "innerH=" + window.innerHeight + "  docCH=" + de.clientHeight + "  lvh=" + H(pLvh),
-        "vv.h=" + vh + "  vv.offTop=" + voff,
-        "--kb=" + (de.style.getPropertyValue("--kb") || "0"),
-        "compBot=" + cb + "  kbTop(vv.h+off)=" + kbTop,
-        ">> composer hidden by = " + (cb - kbTop) + "px",
-      ].join("\n");
-    };
-    setInterval(read, 400);
-    read();
-    if (window.visualViewport) { visualViewport.addEventListener("resize", read); visualViewport.addEventListener("scroll", read); }
-    let taps = [];
-    document.addEventListener("touchend", () => {
-      const now = Date.now();
-      taps = taps.filter((t) => now - t < 600); taps.push(now);
-      if (taps.length >= 3) { taps = []; on = !on; box.style.display = on ? "block" : "none"; read(); }
-    }, { passive: true });
-  })();
 
   showHint();
   setHeader();
