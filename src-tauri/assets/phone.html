@@ -24,14 +24,17 @@
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html{background:var(--bg);height:100%}
   html,body{margin:0;overflow:hidden;overscroll-behavior:none}
-  /* Full-screen shell via CSS, NOT JS. 100dvh is the dynamic viewport height, which
-     fills an iOS home-screen (standalone) PWA reliably. The old position:fixed;inset:0
-     shell was the regression (1fe72e6): in standalone iOS it sizes to a short viewport
-     and leaves a dead strip under the whole app — the "shifted up" look. The keyboard
-     lift is a padding driven by --kb, applied ONLY while the keyboard is genuinely up
-     (body.kbup), so a bad at-rest --kb reading can never strand a strip. */
-  body{height:100vh;height:100dvh;min-height:100svh;display:flex;flex-direction:column;background:var(--bg);color:var(--text);
+  /* Full-screen shell via CSS, NOT JS. In a browser tab 100dvh (the dynamic
+     viewport) is right — it tracks the visible area so the composer never hides
+     behind Safari's toolbar. But in an iOS home-screen (standalone) PWA, iOS treats
+     the translucent status-bar band as retractable UI, so 100dvh/100svh come up
+     ~safe-area-top short of the screen (measured 812 on an 874px iPhone) and leave a
+     dead strip at the bottom — the "shifted up" look. 100lvh is the true full-screen
+     height there, so standalone overrides to it below. Keyboard lift is a --kb
+     padding applied only while the keyboard is up (body.kbup). */
+  body{height:100vh;height:100dvh;display:flex;flex-direction:column;background:var(--bg);color:var(--text);
     font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  @media all and (display-mode:standalone){ body{height:100lvh} }
   body.kbup{padding-bottom:var(--kb,0px)}
   button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;padding:0}
   svg{display:block}
@@ -2561,11 +2564,11 @@
     const box = document.createElement("pre");
     // Dead-center the readout so neither the Dynamic Island nor the home indicator
     // can cover it in standalone (the top-anchored version spilled under the notch).
-    box.style.cssText = "position:fixed;top:50%;left:10px;right:10px;transform:translateY(-50%);z-index:99999;margin:0;padding:12px;border-radius:10px;font:13px/1.7 ui-monospace,Menlo,monospace;color:#25ff9a;background:rgba(0,0,0,.94);white-space:pre-wrap;pointer-events:none";
+    box.style.cssText = "display:none;position:fixed;top:50%;left:10px;right:10px;transform:translateY(-50%);z-index:99999;margin:0;padding:12px;border-radius:10px;font:13px/1.7 ui-monospace,Menlo,monospace;color:#25ff9a;background:rgba(0,0,0,.94);white-space:pre-wrap;pointer-events:none";
     document.body.appendChild(box);
     const de = document.documentElement;
     const H = (el) => Math.round(el.getBoundingClientRect().height);
-    let on = true;
+    let on = false; // hidden by default now; triple-tap anywhere to show the readout
     const read = () => {
       if (!on) return;
       const vv = window.visualViewport || {};
