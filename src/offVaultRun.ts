@@ -1322,10 +1322,37 @@ export async function completeMission(
 // "Done when" bullets parsed from a mission brief — same shape the phone's
 // spec view parses, so a marked criterion matches what the user sees.
 function parseDoneWhenCriteria(brief: string): string[] {
+  // Completion criteria are ONLY the bullets under the brief's "Done when:"
+  // header. A real brief also carries bulleted config blocks (WatchRun params
+  // like `title:` / `cadence_minutes:`), numbered step-by-step instructions, and
+  // a "GROUND-TRUTH VERDICT" bullet list — none of which are markable criteria.
+  // Grabbing EVERY bullet in the whole brief inflated the gate with un-markable
+  // junk, so a mission that HAD met its real criteria could never satisfy the
+  // gate and deadlocked RUNNING while billing (cost-guard C1 stuck at missing:1:
+  // the auditor rightly refused to "verify" `cadence_minutes: 1` as done). Scope
+  // strictly to the Done-when section: start at the header, take bullets, stop at
+  // the first non-blank line that isn't a bullet (the next section/prose).
+  const lines = (brief || "").split(/\r?\n/);
+  const bullet = /^\s*(?:[-*•]|\d+[.)])\s+(.+)$/;
   const out: string[] = [];
-  for (const ln of (brief || "").split(/\r?\n/)) {
-    const m = ln.match(/^\s*(?:[-*•]|\d+[.)])\s+(.+)$/);
-    if (m) out.push(m[1].trim());
+  let inSection = false;
+  for (const ln of lines) {
+    if (/^\s*\*{0,2}done\s+when\b/i.test(ln)) { inSection = true; continue; }
+    if (!inSection) continue;
+    const m = ln.match(bullet);
+    if (m) { out.push(m[1].trim()); continue; }
+    if (ln.trim() === "") continue; // blank lines between bullets are fine
+    break; // a non-blank, non-bullet line ends the Done-when list
+  }
+  // Fallback for a brief with NO "Done when" header at all: keep the legacy
+  // whole-brief scan so an unconventional brief still gets *some* gate rather
+  // than silently completing ungated. (Standard/probe briefs have the header and
+  // never reach this branch.)
+  if (!out.length && !/done\s+when/i.test(brief || "")) {
+    for (const ln of lines) {
+      const m = ln.match(bullet);
+      if (m) out.push(m[1].trim());
+    }
   }
   return out;
 }
