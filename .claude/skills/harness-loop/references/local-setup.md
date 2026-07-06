@@ -78,9 +78,47 @@ grep <convId> "$TEST_VAULT/.vault-chat/notifications.jsonl" | wc -l   # a silent
 ## Rust vs TS iteration cost
 
 - **`phone.html` / any TS**: hot-reloads in the running app — save and re-check, sub-second.
-- **Rust** (e.g. `src-tauri/src/lib.rs`): `tauri dev` recompiles incrementally — seconds after the first ~4-min build. Still far cheaper than ship + the box's ~2h updater poll.
+- **Rust** (e.g. `src-tauri/src/lib.rs`): `tauri dev` recompiles incrementally — seconds after the first ~4-min build. Still far cheaper than ship + the box's updater poll (now **5 min**, `UpdateBanner.tsx` `RECHECK_MS`; was 2 h).
 
 ## When to leave the rig and use the box
 
 - Multi-machine sync races (mission resurrection): needs the box, or two local checkouts each firing.
 - Final pre-real-run validation and any real GPU/spend: the box, gated on the user.
+
+## Reaching the box directly (Tailscale SSH) — added 2026-07-05
+
+The box (`home`, linux, tailnet `carwilson0929@`) is reachable and now runs the Tailscale SSH server:
+
+```bash
+tailscale ssh carlwilsn@home 'whoami'        # linux user is carlwilsn; hostname is `home`
+```
+
+- **Durable access:** the tailnet ACL had SSH `"action": "check"` (a browser approval per session, valid for the checkPeriod). For standing access with no prompts, set that SSH rule to `"action": "accept"` for the user's own devices in the tailnet policy.
+- With a shell you can force an update (`pkill -f vault-chat.AppImage` → autostart relaunches → on-mount update check picks up the latest release immediately, skipping the poll wait), tail the box's logs, and inspect the real summer vault. The box runs `~/Applications/vault-chat.AppImage` in background (`isRunInBackground`).
+- Do NOT run a second instance on the box — `tauri-plugin-single-instance` blocks it (same as the laptop).
+
+## Driving the LOCAL rig's cockpit (token) — added 2026-07-05
+
+`tauri dev` serves the real cockpit on `:8848`, but every call needs `X-Vault-Token`. The token is a 36-hex string in the app's WebView localStorage (`vault_chat_phone_voice_token`). With an isolated `WEBVIEW2_USER_DATA_FOLDER`, read it straight off disk:
+
+```bash
+strings "$SCRATCH/.webview2/EBWebView/Default/Local Storage/leveldb/"*.log | grep -oE '[0-9a-f]{36}' | head -1
+TOK=<that>
+curl -s -H "X-Vault-Token: $TOK" http://localhost:8848/status                      # {vault, version, runs}
+curl -s -H "X-Vault-Token: $TOK" "http://localhost:8848/conversation?id=<mid>&n=20" # the STORE view (see note below)
+# Inject a human reply the REAL way (verified 2026-07-05) — resumes an ask cleanly:
+curl -s -H "X-Vault-Token: $TOK" -H "Content-Type: application/json" \
+  -X POST http://localhost:8848/message -d '{"convId":"<mid>","text":"approve"}'
+```
+
+## CRITICAL: active vs headless — mission turns take DIFFERENT paths (learned 2026-07-05)
+
+`fireOnce` (`schedulerLoop.ts`) branches on `isActiveVault = store.vaultPath === vault`:
+- **Active vault** (the scratch vault is the foreground `vaultPath`, e.g. via the `VITE_DEV_VAULT` override): a fired mission runs through **`sendMessage` → chat-controller**, which persists to the in-memory STORE — the on-disk `.jsonl` LAGS — and **does NOT stamp `AWAITING_USER`** (that's the scheduler's next-tick structural check, or `offVaultRun`). Observed live: a *scheduled* mission turn fired its tools + the AskUser notification but its assistant turn did **not** land on disk OR in the store, and `missionState` stayed `RUNNING`.
+- **Headless vault** (tracked but NOT the active `vaultPath`): a fired mission runs through **`runScheduledHeadlessTurn` → `offVaultRun`**, writing **directly to disk** with the full harness-v2 state machine (`AWAITING_USER` stamp, fork invariant, the ask-visibility content). **This is how the box runs missions**, so it's the faithful path.
+
+**Implication for the rig:** don't make the scratch vault the *active* one if you want disk-authoritative mission ground truth. Two options:
+1. **Headless rig (faithful to the box):** seed `localStorage.vault_chat_tracked_vaults=["<scratch>"]` and leave `vaultPath` unset/other, so the scheduler fires the scratch vault headless (`App.tsx` starts loops for tracked vaults on boot). Then read ground truth from the `.jsonl` as the skill assumes. *(Recommended — verify this first in a new session before a battery.)*
+2. **Active rig + cockpit truth:** keep the scratch vault active, but read the STORE via `/conversation` (token) instead of the lagging disk, and inject replies via `/message`. This is how G2 was proven end-to-end on 2026-07-05 (ask → `/message` "approve" → `decision.md` written, exactly one AskUser).
+
+The verifier lesson bit here: the supervisor's own `mind.md` said "ask fired, awaiting reply" while disk said `RUNNING` with no turn. **Ground truth = disk (headless) or the store via the cockpit (active) — never the agent's mind.md.**

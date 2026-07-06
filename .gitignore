@@ -33,3 +33,6 @@ _scratch.*
 # Bundled sidecar binaries (Tectonic LaTeX engine). Downloaded at build
 # time by scripts/download-tectonic.mjs and bundled as a Tauri resource.
 src-tauri/binaries/
+
+.env.local
+.env*.local
