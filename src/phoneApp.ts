@@ -484,7 +484,18 @@ async function onRunEnded(convId: string): Promise<void> {
           `Do NOT treat this as done. Decide: respawn it with a fix, do the irreducible part yourself in this thread, or — only if you can't resolve it — bring the user in. Before trusting ANY claimed file, verify it exists on disk (ls/Read) — a crashed worker can report "completed" with nothing written.`
         : `Your worker "${c.title}" (id ${convId}) just finished its turn. Last output: ${body}\n\n` +
           `Review its thread and decide: verified done, steer it (AskWorker), respawn with learnings, or — only if you can't resolve it yourself — bring the user in. Before marking done, verify any claimed deliverable exists on disk.`;
-      if (isThreadBusy(missionConv)) {
+      // Decide queue-vs-run on the mission's CURRENT status, not the snapshot
+      // `s` captured at the top of this function — there is an `await`
+      // (summarizeForAlert) between that snapshot and here, and the mission's OWN
+      // setup turn can go running→idle during it. Using the stale "running"
+      // status queued the wake AFTER the mission's idle transition had already
+      // fired onRunEnded and flushed an empty queue, so the queued wake never
+      // flushed and a failed worker never woke its supervisor to recover (the
+      // worker-recover deadlock, surfaced by G3 when a quota-fallback pushed the
+      // worker's finish into that race window).
+      const missionNow =
+        useStore.getState().conversations.find((x) => x.id === missionConv.id) ?? missionConv;
+      if (isThreadBusy(missionNow)) {
         // Mission is mid-turn (likely the very AskWorker that drove this
         // worker). Queue the wake — it flushes when the mission's run ends.
         const q = queued.get(missionConv.id) ?? [];
