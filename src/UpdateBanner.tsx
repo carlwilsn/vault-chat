@@ -18,8 +18,11 @@ const isDev = import.meta.env.DEV;
 
 // How often a long-lived process re-checks for updates. The on-mount check only
 // fires at launch; an always-on box can run for days without relaunching, so it
-// would never see a new release without this.
-const RECHECK_MS = 2 * 60 * 60 * 1000;
+// would never see a new release without this. Kept SHORT (5 min) so a shipped fix
+// reaches the box — and the phone that reads it — in minutes, not hours: this is
+// the whole test loop. It's cheap (a manifest GET) and the box only RELAUNCHES
+// when idle (boxIsIdle), so a tight interval never interrupts a live mission.
+const RECHECK_MS = 5 * 60 * 1000;
 
 // Module-level: once an unattended download has staged the new version, only a
 // relaunch is needed to apply it — don't re-download on every later check.
