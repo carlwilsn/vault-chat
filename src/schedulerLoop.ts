@@ -29,18 +29,68 @@ async function resumeInterruptedMissions(vault: string): Promise<void> {
   if (!fireSchedulesOnThisMachine()) return;
   const convs = await readConversations(vault).catch(() => []);
   const cutoff = Date.now() - 72 * 60 * 60 * 1000; // don't resurrect ancient threads
+  // Enabled, not-yet-fired wakes bound to a conversation — used below to avoid
+  // re-waking a mission that already has a scheduled tick coming.
+  const schedules = await (await import("./schedules")).readSchedules(vault).catch(() => []);
+  const hasPendingWake = (id: string) =>
+    schedules.some((sc) => {
+      const t = sc.target as { kind?: string; conversationId?: string };
+      return (
+        sc.enabled &&
+        t?.kind === "existing" &&
+        t.conversationId === id &&
+        (sc.recurrence?.kind !== "once" || !sc.lastFiredAt)
+      );
+    });
   for (const c of convs) {
     if (c.source !== "mission") continue;
     if ((c.lastActivityAt ?? 0) < cutoff) continue;
+    if (c.completedAt || c.missionState === "DONE" || c.missionState === "KILLED") continue;
     const msgs = (c.messages ?? []).filter((m) => !m.hidden);
     const last = msgs[msgs.length - 1];
-    if (!last || last.role !== "user") continue; // completed turns end on an assistant message
-    vlog(`[mission-resume] ${c.id} (${c.title}) — re-running interrupted turn`);
+    if (!last) continue;
+    if (last.role === "user") {
+      // Interrupted mid-brief: the last message is still an unanswered user turn
+      // (a hard kill skipped the status reset), so the supervisor never started.
+      vlog(`[mission-resume] ${c.id} (${c.title}) — re-running interrupted turn`);
+      const { runWorkerTurn } = await import("./offVaultRun");
+      void runWorkerTurn(vault, c.id, last.content, {
+        modelId: useStore.getState().supervisorModelId,
+        resume: true,
+      }).catch((e) => console.warn("[mission-resume] failed:", e));
+      continue;
+    }
+    // [restart-durable worker wake] A mission parked after spawning a worker; the
+    // worker then FINISHED, but its finish wake lived only in phoneApp's IN-MEMORY
+    // queue, which a restart (the auto-update a multi-day run WILL hit) drops — so
+    // the supervisor never woke to review/recover and the mission stalls silently.
+    // On boot, re-post a review wake when a worker finished AFTER the mission's
+    // last turn (i.e. unreviewed), no worker is still live, and no wake is already
+    // scheduled. Skip AWAITING_USER — that's a legitimate wait on the user.
+    if (!harnessV2Enabled()) continue;
+    if (c.missionState === "AWAITING_USER") continue;
+    if (hasPendingWake(c.id)) continue;
+    const key = (c.mission ?? c.title ?? "").trim();
+    const workers = convs.filter(
+      (w) => w.source === "worker" && (w.mission ?? w.title ?? "").trim() === key,
+    );
+    if (workers.some((w) => w.status === "running")) continue; // a live worker's finish will wake it
+    const finishedUnreviewed = workers.filter(
+      (w) =>
+        w.status !== "running" &&
+        (w.messages ?? []).some((m) => m.role === "assistant" && !m.hidden) &&
+        (w.lastActivityAt ?? 0) > (c.lastActivityAt ?? 0),
+    );
+    if (!finishedUnreviewed.length) continue;
+    const names = finishedUnreviewed.map((w) => `"${w.title}" (id ${w.id})`).join(", ");
+    vlog("mission-resume.worker-wake", { conv: c.id.slice(0, 8), workers: finishedUnreviewed.length });
     const { runWorkerTurn } = await import("./offVaultRun");
-    void runWorkerTurn(vault, c.id, last.content, {
-      modelId: useStore.getState().supervisorModelId,
-      resume: true,
-    }).catch((e) => console.warn("[mission-resume] failed:", e));
+    void runWorkerTurn(
+      vault,
+      c.id,
+      `Your worker(s) ${names} finished while the app was restarting — the finish wake was not delivered. Review their thread(s) now: a worker may have FAILED and written a failure doc. Then continue the mission — verify a real deliverable exists on disk, reseed a fresh worker if one failed, or CompleteMission if the goal is genuinely met. Do not assume success without reading the files.`,
+      { modelId: useStore.getState().supervisorModelId },
+    ).catch((e) => console.warn("[mission-resume] worker-wake failed:", e));
   }
 }
 
