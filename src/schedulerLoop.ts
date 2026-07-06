@@ -484,10 +484,26 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
       if (conv && conv.source === "mission" && !conv.completedAt) {
         const msgs = conv.messages.filter((m) => !m.system);
         const last = msgs[msgs.length - 1];
-        const pendingAsk =
+        // Two independent signals that the mission is parked on the user's reply:
+        //  (1) the harness-stamped state — AUTHORITATIVE. offVaultRun stamps
+        //      missionState:"AWAITING_USER" the instant an ask turn ends, and
+        //      that survives even when a later line (a summary/system row, or a
+        //      trailing non-AskUser assistant turn) makes the message tail no
+        //      longer *look* like a bare trailing AskUser.
+        //  (2) the message-tail heuristic — belt-and-suspenders for a pre-v2
+        //      thread, or a race where the state stamp hasn't landed yet.
+        // Keying ONLY off (2) let a stale schedule fire into an AWAITING_USER
+        // mission whose tail wasn't a clean AskUser turn → a DUPLICATE parked
+        // ask (or a stale non-reply turn eating the wait). Skip on either.
+        const awaitingUserState = conv.missionState === "AWAITING_USER";
+        const trailingAsk =
           !!last && last.role === "assistant" && (last.toolCalls ?? []).some((t) => t.name === "AskUser");
-        if (pendingAsk) {
-          vlog("sched.skip.awaitinguser", { conv: conversationId.slice(0, 8), name: s.name });
+        if (awaitingUserState || trailingAsk) {
+          vlog("sched.skip.awaitinguser", {
+            conv: conversationId.slice(0, 8),
+            name: s.name,
+            via: awaitingUserState ? "state" : "tail",
+          });
           const { stampMissionAwaitingUser } = await import("./offVaultRun");
           await stampMissionAwaitingUser(vault, conversationId).catch(() => {});
           return; // hold — do not run a turn; the user's answer resumes it
