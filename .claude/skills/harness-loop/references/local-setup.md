@@ -111,7 +111,15 @@ curl -s -H "X-Vault-Token: $TOK" -H "Content-Type: application/json" \
   -X POST http://localhost:8848/message -d '{"convId":"<mid>","text":"approve"}'
 ```
 
-## CRITICAL: active vs headless — mission turns take DIFFERENT paths (learned 2026-07-05)
+## CORRECTION (2026-07-05 pm): the box runs ACTIVE, not headless — use an ACTIVE rig
+
+The earlier "headless is the faithful box path" claim below is **FALSIFIED by box ground truth**. On the box, `grep sched.fire ~/github/summer/.vault-chat/app-log.txt` shows **`active:true`** for every summer mission, and `boot {"view":null}` — i.e. summer IS the box's active `vaultPath`, so missions run the ACTIVE (`sendMessage`) path, NOT `runScheduledHeadlessTurn`. A multi-day Coconut run on the box will use the ACTIVE path. So the faithful rig is **ACTIVE**: set `VITE_DEV_VAULT=<scratch>` so the scratch vault is the active `vaultPath`; the cockpit then serves it too (step 5 UI lane works for free).
+
+**The active-rig gotcha — mint BEFORE boot (or after a git-sync):** a mission's turn is persisted by `appendMessageToConversation` → the `conversations` store-subscriber → disk. That subscriber early-returns unless the mission is IN THE STORE. A mission minted to disk *after* boot is NOT in the store (nothing reloads it), so its active turn runs with **empty history (no brief)** and its output is **silently lost** (turn "completes", disk unchanged, files unwritten). The box avoids this because git-sync's pull triggers `loadConversations`/refresh. Locally there is no remote, so: **mint the mission, THEN launch (or restart) the app** so boot's `loadConversations` pulls it into the store. Verified 2026-07-05 pm: mint-before-boot → F2 completes DONE+completedAt, G2 full ask→park→resume lifecycle works.
+
+**Other active-rig facts (2026-07-05 pm):** run probes ONE AT A TIME — two background mission turns firing concurrently cross-wire their tool/heartbeat/notification routing (an ask tags the wrong convId). The cost-guard probe (C1) uses bash `check_command`/`terminate_command` (`cat`/`printf`/`date -u`) — it only runs faithfully on the Linux box, never on the Windows rig; verify cost-guard on the box. `notify()` writes to `store.vaultPath` (active), not the run's vault — fine when active==mission vault (the box), a misroute otherwise.
+
+## (SUPERSEDED) active vs headless — mission turns take DIFFERENT paths (learned 2026-07-05 am)
 
 `fireOnce` (`schedulerLoop.ts`) branches on `isActiveVault = store.vaultPath === vault`:
 - **Active vault** (the scratch vault is the foreground `vaultPath`, e.g. via the `VITE_DEV_VAULT` override): a fired mission runs through **`sendMessage` → chat-controller**, which persists to the in-memory STORE — the on-disk `.jsonl` LAGS — and **does NOT stamp `AWAITING_USER`** (that's the scheduler's next-tick structural check, or `offVaultRun`). Observed live: a *scheduled* mission turn fired its tools + the AskUser notification but its assistant turn did **not** land on disk OR in the store, and `missionState` stayed `RUNNING`.
