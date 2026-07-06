@@ -2420,6 +2420,16 @@ struct GitCommit {
 
 const GIT_TIMEOUT_SECS: u64 = 90;
 const STALE_LOCK_SECS: u64 = 10;
+// Fetch/push move real bytes over the network — unlike status/add/commit
+// (always local, so 90s is generous), a vault's root fetch/push can carry
+// the full history of embedded PDFs/images on a slow home upstream. The rest
+// of this file already gives nested-repo pushes and submodule fetches 300s+
+// (see `sync_one_repo`, `adopt_unowned_subrepo`); the root vault's own
+// fetch/push had been left on the 90s default, so a merely-slow (not hung)
+// link killed it every cycle and never once got a real result — observed as
+// a "fetch/push failed: git timed out after 90s" line repeating forever
+// rather than the timeout ever being long enough to succeed.
+const GIT_NETWORK_TIMEOUT_SECS: u64 = 300;
 
 // Git identity model. Authorship follows *who actually did the work*:
 //   - the AGENT (an autonomous turn, or any `git commit` the agent runs via
@@ -5256,6 +5266,17 @@ fn reconcile_with_upstream(
     vault: &str,
     branch: &str,
 ) -> Result<Result<String, SyncOpResult>, String> {
+    // Defensive self-heal: `vault_sync_pull` already aborts a stuck
+    // rebase/merge before calling in, but `vault_sync_push`'s
+    // reconcile-on-rejection path does not — so a merge left mid-flight by a
+    // crash (or a killed `run_git_timeout`) would make the `merge --no-edit`
+    // below fail immediately with "You have not concluded your merge", and
+    // `resolve_merge_conflicts` would then see zero unmerged paths (the merge
+    // never even started) and wrongly report success — committing whatever
+    // stale, unrelated state the crashed merge had staged. Calling this here,
+    // in the one function both callers share, makes reconciliation safe no
+    // matter which path reaches it. No-op when nothing is stuck.
+    abort_stuck_merge_or_rebase(vault);
     let upstream = format!("origin/{}", branch);
     // Need identity for any regression-fix commits we may add below.
     let (mn, me) = human_identity(vault);
@@ -5368,7 +5389,8 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
                 error: false,
             });
         }
-        let (_, stderr, fetch_code) = run_git(&vault, &["fetch", "origin", branch])?;
+        let (_, stderr, fetch_code) =
+            run_git_timeout(&vault, &["fetch", "origin", branch], GIT_NETWORK_TIMEOUT_SECS)?;
         if fetch_code != 0 {
             return Ok(SyncOpResult {
                 ok: false,
@@ -5432,7 +5454,7 @@ async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
             });
         }
         let (_, stderr, push_code) =
-            run_git(&vault, &["push", "-u", "origin", &branch])?;
+            run_git_timeout(&vault, &["push", "-u", "origin", &branch], GIT_NETWORK_TIMEOUT_SECS)?;
         if push_code != 0 {
             // The push was rejected — almost always because the remote advanced
             // under us (the always-on box committed while this follower was
@@ -5443,7 +5465,8 @@ async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
             // cross-machine sync). If the rejection isn't a divergence
             // (auth/network), the fetch or the retry fails and we surface the
             // original error.
-            let (_, _, fcode) = run_git(&vault, &["fetch", "origin", &branch])?;
+            let (_, _, fcode) =
+                run_git_timeout(&vault, &["fetch", "origin", &branch], GIT_NETWORK_TIMEOUT_SECS)?;
             if fcode != 0 {
                 return Ok(SyncOpResult {
                     ok: false,
@@ -5454,8 +5477,11 @@ async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
             match reconcile_with_upstream(&vault, &branch)? {
                 Ok(_) => {
                     maybe_update_submodules(&vault);
-                    let (_, stderr2, push_code2) =
-                        run_git(&vault, &["push", "-u", "origin", &branch])?;
+                    let (_, stderr2, push_code2) = run_git_timeout(
+                        &vault,
+                        &["push", "-u", "origin", &branch],
+                        GIT_NETWORK_TIMEOUT_SECS,
+                    )?;
                     if push_code2 != 0 {
                         return Ok(SyncOpResult {
                             ok: false,
@@ -6118,6 +6144,148 @@ mod conversation_jsonl_tests {
         assert_eq!(deduped_line_count(disk_full), 4);
         assert_eq!(deduped_line_count(truncated), 3);
         assert!(deduped_line_count(truncated) < deduped_line_count(disk_full));
+    }
+}
+
+#[cfg(test)]
+mod reconcile_with_upstream_tests {
+    use super::reconcile_with_upstream;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn git(dir: &Path, args: &[&str]) -> (String, String, i32) {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git spawn");
+        (
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+            out.status.code().unwrap_or(-1),
+        )
+    }
+
+    fn unique_dir(tag: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "vault-chat-reconcile-test-{}-{}-{}",
+            std::process::id(),
+            tag,
+            n
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn init_identity(dir: &Path) {
+        git(dir, &["config", "user.name", "Test"]);
+        git(dir, &["config", "user.email", "test@example.com"]);
+    }
+
+    /// Regression test for the fix in `reconcile_with_upstream`: a prior sync
+    /// attempt that crashed mid-merge (leaving a `MERGE_HEAD` staged but never
+    /// committed) must not be blindly resolved against whatever it happened to
+    /// have staged. `vault_sync_pull` always called `abort_stuck_merge_or_rebase`
+    /// before reaching this function; `vault_sync_push`'s reconcile-on-rejection
+    /// path did not, so the leftover state could reach here directly.
+    ///
+    /// Without the abort, this repo's leftover merge (staged against `v2`, since
+    /// that's what the crashed attempt saw) has zero conflicted paths — it was a
+    /// clean, just-uncommitted merge — so the old code's "no unmerged paths ⇒
+    /// resolved" check would treat it as already resolved and commit it via
+    /// `git commit --no-edit`, producing a merge commit for the STALE `v2` even
+    /// though the remote has since advanced to `v3`. The follower would then
+    /// report success while actually sitting on a commit that isn't even a
+    /// descendant of the real upstream tip.
+    #[test]
+    fn discards_a_leftover_merge_from_a_crashed_prior_sync_and_reconciles_to_the_current_tip() {
+        let remote_dir = unique_dir("remote");
+        git(&remote_dir, &["init", "-q", "--bare", "-b", "main"]);
+        let remote_url = remote_dir.to_string_lossy().to_string();
+
+        // Seed history: origin at "v1".
+        let seed = unique_dir("seed");
+        git(&seed, &["init", "-q", "-b", "main"]);
+        init_identity(&seed);
+        std::fs::write(seed.join("file.txt"), "v1\n").unwrap();
+        git(&seed, &["add", "-A"]);
+        git(&seed, &["commit", "-q", "-m", "v1"]);
+        git(&seed, &["remote", "add", "origin", &remote_url]);
+        let (_, err, code) = git(&seed, &["push", "-q", "-u", "origin", "main"]);
+        assert_eq!(code, 0, "seed push failed: {}", err);
+
+        // The "machine" under test clones origin at v1.
+        let repo = unique_dir("machine");
+        let (_, err, code) = git(&repo, &["clone", "-q", &remote_url, "."]);
+        assert_eq!(code, 0, "clone failed: {}", err);
+        init_identity(&repo);
+
+        // A second machine advances origin to v2 (a non-conflicting new file).
+        let other = unique_dir("other-machine");
+        let (_, err, code) = git(&other, &["clone", "-q", &remote_url, "."]);
+        assert_eq!(code, 0, "other clone failed: {}", err);
+        init_identity(&other);
+        std::fs::write(other.join("second.txt"), "v2\n").unwrap();
+        git(&other, &["add", "-A"]);
+        git(&other, &["commit", "-q", "-m", "v2"]);
+        let (_, err, code) = git(&other, &["push", "-q", "origin", "main"]);
+        assert_eq!(code, 0, "v2 push failed: {}", err);
+
+        // Fabricate the crash: `repo` fetches v2 and starts (but never
+        // finishes) reconciling it — exactly the state a killed
+        // `run_git_as(..., "commit", "--no-edit")` would leave behind.
+        git(&repo, &["fetch", "-q", "origin", "main"]);
+        let (_, merr, mcode) = git(&repo, &["merge", "--no-commit", "--no-ff", "origin/main"]);
+        assert_eq!(mcode, 0, "setup merge --no-commit failed: {}", merr);
+        assert!(
+            repo.join(".git").join("MERGE_HEAD").exists(),
+            "test setup didn't actually leave a MERGE_HEAD"
+        );
+
+        // A third machine advances origin AGAIN, past what the crashed process
+        // ever saw — so blindly resolving the stale leftover would converge on
+        // a target that is no longer the real upstream tip.
+        let third = unique_dir("third-machine");
+        let (_, err, code) = git(&third, &["clone", "-q", &remote_url, "."]);
+        assert_eq!(code, 0, "third clone failed: {}", err);
+        init_identity(&third);
+        std::fs::write(third.join("third.txt"), "v3\n").unwrap();
+        git(&third, &["add", "-A"]);
+        git(&third, &["commit", "-q", "-m", "v3"]);
+        let (_, err, code) = git(&third, &["push", "-q", "origin", "main"]);
+        assert_eq!(code, 0, "v3 push failed: {}", err);
+
+        // Restart: fetch the CURRENT tip (v3) — mirroring what
+        // `vault_sync_push`'s rejection path does — then reconcile.
+        git(&repo, &["fetch", "-q", "origin", "main"]);
+        let vault = repo.to_string_lossy().to_string();
+        let result =
+            reconcile_with_upstream(&vault, "main").expect("reconcile_with_upstream errored");
+        match &result {
+            Ok(msg) => assert!(!msg.is_empty()),
+            Err(e) => panic!("reconcile reported failure: {}", e.message),
+        }
+
+        // No leftover merge state, and the tree reflects the CURRENT upstream
+        // (v3's file present) — not just the stale v2 the crash saw.
+        assert!(
+            !repo.join(".git").join("MERGE_HEAD").exists(),
+            "MERGE_HEAD should be cleared"
+        );
+        let (unmerged, _, _) = git(&repo, &["diff", "--name-only", "--diff-filter=U"]);
+        assert!(unmerged.trim().is_empty(), "should have no unmerged paths left");
+        assert!(
+            repo.join("third.txt").exists(),
+            "must have reconciled against the CURRENT upstream (v3), not the stale crashed-merge target"
+        );
+        assert!(repo.join("second.txt").exists(), "v2's file must still be present");
+
+        for d in [&remote_dir, &seed, &repo, &other, &third] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 }
 
