@@ -2710,13 +2710,38 @@
     fit(); // reconcile the initial geometry so a short launch viewport can't strand a strip
   }
 
+  // A push tapped while the app is already OPEN (iOS keeps the PWA backgrounded,
+  // not closed — the common case) can't be navigated from the service worker, so
+  // the SW postMessages the deep-link and we route in place to the asking thread.
+  // Without this a "Needs you" tap just re-focuses whatever chat you had open
+  // last — the wrong-conversation bug. Mirrors the ?conv= boot path below.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      const d = (e && e.data) || {};
+      if (d.type !== "deeplink" || !d.url) return;
+      try {
+        const cid = new URLSearchParams(String(d.url).split("?")[1] || "").get("conv");
+        if (cid) void openThread(cid);
+      } catch {}
+    });
+  }
+
   showHint();
   setHeader();
-  // Return to the thread you were in last session (404 falls back to a fresh chat).
-  try {
-    const saved = JSON.parse(localStorage.getItem(LAST_CONV_KEY) || "null");
-    if (saved && saved.id) void openThread(saved.id, saved.title);
-  } catch {}
+  // A tapped push notification deep-links to the ASKING thread via ?conv=<id>
+  // (from the push url, when the app was launched cold). It MUST win over the
+  // sticky last-thread restore below — otherwise the tap lands you on whatever
+  // chat you had open last, not the one waiting on your call.
+  const bootConv = qs.get("conv");
+  if (bootConv) {
+    void openThread(bootConv);
+  } else {
+    // Return to the thread you were in last session (404 falls back to a fresh chat).
+    try {
+      const saved = JSON.parse(localStorage.getItem(LAST_CONV_KEY) || "null");
+      if (saved && saved.id) void openThread(saved.id, saved.title);
+    } catch {}
+  }
   void refreshState();
   void refreshBadge();
   void pollLoop();

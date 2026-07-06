@@ -40,9 +40,17 @@ self.addEventListener("notificationclick", (e) => {
       for (const w of wins) {
         if (w.url.includes("/phone") && "focus" in w) {
           await w.focus();
+          // The window is already open (the common iOS case: the PWA is
+          // backgrounded, not closed). focus() alone leaves it on whatever
+          // conversation it last showed, so hand it the deep-link target and let
+          // the page route in place to the asking thread. Without this, tapping a
+          // "Needs you" push just re-focuses the last chat — the wrong one.
+          try { w.postMessage({ type: "deeplink", url }); } catch {}
           return;
         }
       }
+      // Nothing open — cold-start straight at the deep-link; the page reads
+      // ?conv= on boot and opens the asking thread.
       await self.clients.openWindow(url);
     })(),
   );

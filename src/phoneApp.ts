@@ -563,8 +563,15 @@ export async function notify(
   await invoke("notification_add", { vault, json: JSON.stringify(rec) }).catch(() => {});
   broadcast({ type: "notif" });
   // The push itself stays one notification-sized line; the full body lives in
-  // the feed.
-  await sendPush(rec.title as string, (rec.body as string).slice(0, 180)).catch(() => {});
+  // the feed. Carry the conversation id in the url so a tapped notification
+  // deep-links to the asking thread (the service worker + phone.html read
+  // ?conv=), instead of just re-focusing whatever chat was open last — the
+  // wrong-conversation bug the PROXY spend-fork surfaced.
+  await sendPush(
+    rec.title as string,
+    (rec.body as string).slice(0, 180),
+    convId ? `/phone?conv=${encodeURIComponent(convId)}` : "/phone",
+  ).catch(() => {});
 }
 
 // ---- Web Push: VAPID + RFC 8291 (aes128gcm), all WebCrypto ----
