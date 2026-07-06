@@ -75,15 +75,22 @@ async function resumeInterruptedMissions(vault: string): Promise<void> {
       (w) => w.source === "worker" && (w.mission ?? w.title ?? "").trim() === key,
     );
     if (workers.some((w) => w.status === "running")) continue; // a live worker's finish will wake it
-    const finishedUnreviewed = workers.filter(
+    // A worker that has FINISHED (idle + at least one assistant turn). Do NOT gate
+    // on the worker finishing AFTER the mission's lastActivityAt: a worker very
+    // often finishes DURING the spawn turn (that IS the race that drops the wake),
+    // so its timestamp is OLDER than the mission's — that gate made this sweep skip
+    // the exact case it exists for. A parked mission (last msg is an assistant
+    // turn) with no scheduled wake, no live worker, and a finished worker is
+    // stalled: re-wake it. Re-waking is idempotent — once the supervisor reviews
+    // and reseeds/completes, later boots see a live worker / DONE / a schedule.
+    const finished = workers.filter(
       (w) =>
         w.status !== "running" &&
-        (w.messages ?? []).some((m) => m.role === "assistant" && !m.hidden) &&
-        (w.lastActivityAt ?? 0) > (c.lastActivityAt ?? 0),
+        (w.messages ?? []).some((m) => m.role === "assistant" && !m.hidden),
     );
-    if (!finishedUnreviewed.length) continue;
-    const names = finishedUnreviewed.map((w) => `"${w.title}" (id ${w.id})`).join(", ");
-    vlog("mission-resume.worker-wake", { conv: c.id.slice(0, 8), workers: finishedUnreviewed.length });
+    if (!finished.length) continue;
+    const names = finished.map((w) => `"${w.title}" (id ${w.id})`).join(", ");
+    vlog("mission-resume.worker-wake", { conv: c.id.slice(0, 8), workers: finished.length });
     const { runWorkerTurn } = await import("./offVaultRun");
     void runWorkerTurn(
       vault,
