@@ -5409,10 +5409,37 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// A follower checkout pulls but never pushes. Without this, two machines both
+/// push the same branch (sync `enabled` lives in the SYNCED `config.json`, so
+/// it's identical everywhere), and a stale follower's push forces the active
+/// writer to reconcile against — and, via `resolve_merge_conflicts`' take-theirs,
+/// ADOPT — the follower's older mission state (the phase-16→15 approval revert).
+/// The role marker lives in the NON-synced git dir, so it's a property of THIS
+/// checkout and never rides git to another machine. Absent / `writer` = full sync.
+fn is_sync_follower(vault: &str) -> bool {
+    let git_dir = run_git(vault, &["rev-parse", "--absolute-git-dir"])
+        .ok()
+        .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_string()) } else { None })
+        .unwrap_or_else(|| format!("{}/.git", vault));
+    std::fs::read_to_string(format!("{}/vault-chat-sync-role", git_dir))
+        .map(|s| s.trim().eq_ignore_ascii_case("follower"))
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         with_repo_lock(&vault, || {
+        // Machine-local single-writer gate: a follower checkout pulls but never
+        // pushes, so it can never force the active writer to reconcile against
+        // (and adopt) the follower's stale mission state. See is_sync_follower.
+        if is_sync_follower(&vault) {
+            return Ok(SyncOpResult {
+                ok: true,
+                message: "follower: pull-only (push skipped)".into(),
+                error: false,
+            });
+        }
         let (branch_out, _, branch_code) =
             run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
         if branch_code != 0 || branch_out.trim() == "HEAD" {
@@ -6003,6 +6030,42 @@ mod conversation_storage_tests {
         assert!(!conversation_file_stem("a/b\\c").contains('\\'));
         assert_eq!(conversation_file_stem(""), "conversation");
         assert_eq!(conversation_file_stem("///"), "conversation");
+    }
+}
+
+#[cfg(test)]
+mod sync_role_tests {
+    use super::{is_sync_follower, run_git};
+
+    // The single-writer gate: a follower checkout must never push (else its stale
+    // state can force the active writer to reconcile against — and adopt — it, the
+    // phase-16→15 approval revert). Default (no marker) MUST stay a writer so the
+    // active box is unaffected.
+    #[test]
+    fn follower_marker_gates_push_and_writer_is_default() {
+        let base = std::env::temp_dir().join(format!("vc_sync_role_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let d = base.to_str().unwrap();
+        // Real repo so `rev-parse --absolute-git-dir` resolves the marker's home.
+        run_git(d, &["init", "-q"]).expect("git init");
+        let git_dir = run_git(d, &["rev-parse", "--absolute-git-dir"])
+            .unwrap()
+            .0
+            .trim()
+            .to_string();
+        let marker = format!("{}/vault-chat-sync-role", git_dir);
+
+        // Absent marker → writer (the box's default; must be unaffected).
+        assert!(!is_sync_follower(d), "absent marker must read as writer");
+        // Explicit writer → writer.
+        std::fs::write(&marker, "writer\n").unwrap();
+        assert!(!is_sync_follower(d), "writer marker must read as writer");
+        // Follower, tolerant of case + surrounding whitespace → follower.
+        std::fs::write(&marker, "  Follower \n").unwrap();
+        assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
 
