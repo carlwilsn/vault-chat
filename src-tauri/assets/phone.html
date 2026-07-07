@@ -220,6 +220,15 @@
   .mgroup .wpill{margin:0 9px 9px;background:var(--raised);border-color:#303036}
   .mgroup .wpill:last-child{margin-bottom:11px}
   .mgroup .wp-head:active{background:#26262c}
+  /* Outer collapse: the whole worker list under a mission hides behind one
+     tappable "N workers ›" row so a multi-worker mission doesn't sprawl down the
+     board. Tap flips .wt-cv and reveals the pills (separate from a pill's own
+     inner expand). Per-mission expanded state is held in memory (expandedMissions)
+     so a background refresh doesn't re-collapse what you opened. */
+  .wtoggle{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:2px 17px 12px;font-size:12px;color:var(--dim)}
+  .wtoggle:active{color:var(--text)}
+  .wtoggle .wt-cv{font-size:10px;color:#6f6f6f;width:11px;flex:none;transition:none}
+  .wtoggle b{font-weight:600;color:#b8b8b8}
   /* Archive: collapsed list of completed missions, low-key under the live board. */
   .arch-h{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:15px 18px 8px;font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;color:#8a8a8a;font-weight:600}
   .arch-h:active{color:var(--text)}
@@ -2072,6 +2081,11 @@
   }
   // Archive (completed missions) collapsed by default on the Activity page.
   let archiveOpen = false;
+  // A mission's worker list is collapsed by default (see .wtoggle). This holds
+  // the mission keys the user has expanded, in memory, so a background refresh
+  // that rebuilds the board doesn't re-collapse them. A fresh mission not in the
+  // set defaults collapsed.
+  const expandedMissions = new Set();
   async function loadActivity() {
     const box = $("actScroll");
     try {
@@ -2081,6 +2095,11 @@
       const runs = sd.runs || [], runIds = new Set(runs.map((x) => x.convId));
       const convs = cd.conversations || [], byId = new Map(convs.map((c) => [c.id, c]));
       runCount = activityRunCount(runs); setHeader();
+      // Setting innerHTML resets scrollTop to 0, which yanked the board to the TOP
+      // whenever a background refresh (a status event, a wake, the visibility
+      // handler) rebuilt it while you were scrolled down reading. Capture your
+      // position and restore it after the rebuild — never top.
+      const prevTop = box.scrollTop;
       box.innerHTML = "";
 
       // Activity is missions, full stop. Assistant chats never appear here —
@@ -2160,8 +2179,30 @@
         }
         head.onclick = () => openMission(mc, g);
         group.appendChild(head);
-        for (const { run, c } of g.active) group.appendChild(workerPill(run, c)); // running first
-        for (const c of g.done) group.appendChild(workerPill(null, c)); // then completed
+        // Worker pills, collapsed by default behind a "N workers ›" toggle so a
+        // multi-worker mission doesn't sprawl. The pills live in a holder we show/
+        // hide locally (like the archive) — no rebuild, so a pill's own inner
+        // expand survives the outer toggle. A single-worker mission skips the
+        // toggle (nothing to collapse); zero workers renders neither.
+        const workers = [...g.active.map((x) => ({ run: x.run, c: x.c })), ...g.done.map((c) => ({ run: null, c }))];
+        if (workers.length > 1) {
+          const open = expandedMissions.has(name);
+          const wt = el('<button class="wtoggle"><span class="wt-cv">' + (open ? "▾" : "▸") + '</span><b>' + workers.length + " workers</b></button>");
+          const cv = wt.querySelector(".wt-cv");
+          const hold = el('<div></div>'); hold.style.display = open ? "" : "none";
+          for (const { run, c } of workers) hold.appendChild(workerPill(run, c));
+          wt.onclick = (e) => {
+            e.stopPropagation(); // don't fall through to head → openMission
+            const nowOpen = !expandedMissions.has(name);
+            if (nowOpen) expandedMissions.add(name); else expandedMissions.delete(name);
+            hold.style.display = nowOpen ? "" : "none";
+            cv.textContent = nowOpen ? "▾" : "▸";
+          };
+          group.appendChild(wt);
+          group.appendChild(hold);
+        } else {
+          for (const { run, c } of workers) group.appendChild(workerPill(run, c));
+        }
         box.appendChild(group);
       }
 
@@ -2220,6 +2261,9 @@
         box.appendChild(card);
       }
       box.appendChild(el('<div style="height:18px"></div>'));
+      // Rebuild done — put the scroll back where the user was (see prevTop above).
+      // Clamp so a now-shorter board doesn't leave a blank overscroll.
+      box.scrollTop = Math.min(prevTop, Math.max(0, box.scrollHeight - box.clientHeight));
     } catch (e) { box.innerHTML = '<div class="empty">Activity unavailable: ' + esc(String(e.message || e)) + "</div>"; }
   }
 
