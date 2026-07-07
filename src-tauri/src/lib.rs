@@ -6070,6 +6070,309 @@ mod sync_role_tests {
 }
 
 #[cfg(test)]
+mod cross_machine_sync_tests {
+    // End-to-end, two-checkout races against a real shared bare remote — the
+    // class of bug a single-repo unit test can't see (see harness-loop skill,
+    // "a single local instance can't reproduce multi-machine sync races").
+    // Drives the real `#[tauri::command]` entry points (`vault_sync_commit_local`,
+    // `vault_sync_push`, `vault_sync_pull`), not just the inner helpers, so a
+    // regression in the command wiring itself would fail these too.
+    use super::{run_git, run_git_mut, vault_sync_commit_local, vault_sync_pull, vault_sync_push};
+
+    fn unique_base(tag: &str) -> std::path::PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "vc_xmachine_{}_{}_{}",
+            tag,
+            std::process::id(),
+            // A per-call nonce so tests running in parallel (same process id)
+            // never share a temp dir.
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn init_checkout(dir: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        run_git(dir, &["init", "-q", "-b", "main"]).expect("init");
+        run_git_mut(dir, &["config", "user.name", "Test User"]).expect("config name");
+        run_git_mut(dir, &["config", "user.email", "test@example.com"]).expect("config email");
+    }
+
+    fn write(dir: &str, rel: &str, content: &str) {
+        std::fs::write(format!("{}/{}", dir, rel), content).unwrap();
+    }
+
+    fn read(dir: &str, rel: &str) -> String {
+        std::fs::read_to_string(format!("{}/{}", dir, rel)).unwrap_or_default()
+    }
+
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        tauri::async_runtime::block_on(fut)
+    }
+
+    /// The exact regression the follower gate exists for (commit 83032cc): a
+    /// stale second checkout pushes its own local edit to a file the writer
+    /// just legitimately advanced, forcing the writer's next reconcile to take
+    /// "theirs" and adopt the stale value. With the follower marker set, the
+    /// follower's push must be a no-op — the writer's real state must survive
+    /// on the shared remote untouched, and the follower must still converge to
+    /// it on its next pull.
+    #[test]
+    fn follower_never_clobbers_the_writers_real_state() {
+        let base = unique_base("follower");
+        let bare = base.join("origin.git");
+        let box_dir = base.join("box");
+        let laptop_dir = base.join("laptop");
+        run_git(base.to_str().unwrap(), &["init", "-q", "--bare", "-b", "main", bare.to_str().unwrap()])
+            .expect("bare init");
+        let bare_s = bare.to_str().unwrap().to_string();
+        let box_s = box_dir.to_str().unwrap().to_string();
+        let laptop_s = laptop_dir.to_str().unwrap().to_string();
+
+        // Seed: both machines start from phase 15, pushed.
+        init_checkout(&box_s);
+        write(&box_s, "phase.txt", "15\n");
+        run_git_mut(&box_s, &["add", "-A"]).unwrap();
+        run_git_mut(&box_s, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(&box_s, &["remote", "add", "origin", &bare_s]).unwrap();
+        let (_, e, c) = run_git_mut(&box_s, &["push", "-u", "origin", "main"]).unwrap();
+        assert_eq!(c, 0, "seed push failed: {e}");
+
+        run_git(base.to_str().unwrap(), &["clone", "-q", &bare_s, &laptop_s]).expect("clone");
+        run_git_mut(&laptop_s, &["config", "user.name", "Test User"]).unwrap();
+        run_git_mut(&laptop_s, &["config", "user.email", "test@example.com"]).unwrap();
+
+        // Mark the laptop checkout as a follower.
+        let git_dir = run_git(&laptop_s, &["rev-parse", "--absolute-git-dir"])
+            .unwrap()
+            .0
+            .trim()
+            .to_string();
+        std::fs::write(format!("{}/vault-chat-sync-role", git_dir), "follower\n").unwrap();
+
+        // Box approves: phase 15 -> 16, commits + pushes for real via the same
+        // command the app calls.
+        write(&box_s, "phase.txt", "16\n");
+        let r = block_on(vault_sync_commit_local(box_s.clone())).unwrap();
+        assert!(r.ok, "box commit failed: {}", r.message);
+        let r = block_on(vault_sync_push(box_s.clone())).unwrap();
+        assert!(r.ok && !r.error, "box push failed: {}", r.message);
+
+        // Laptop is stale (never pulled) and independently rewrites the SAME
+        // file — a local autosave racing the box's approval, exactly the
+        // shape of the original bug.
+        write(&laptop_s, "phase.txt", "15-touched\n");
+        let r = block_on(vault_sync_commit_local(laptop_s.clone())).unwrap();
+        assert!(r.ok, "laptop commit failed: {}", r.message);
+        let r = block_on(vault_sync_push(laptop_s.clone())).unwrap();
+        assert!(r.ok && !r.error, "follower push must no-op cleanly: {}", r.message);
+        assert!(
+            r.message.contains("follower"),
+            "expected the follower no-op message, got: {}",
+            r.message
+        );
+
+        // The writer's real approval must be on the shared remote, unclobbered.
+        run_git(&box_s, &["fetch", "origin", "main"]).unwrap();
+        let remote_phase = run_git(&box_s, &["show", "origin/main:phase.txt"]).unwrap().0;
+        assert_eq!(
+            remote_phase.trim(),
+            "16",
+            "the box's real approval must survive a stale follower's push attempt"
+        );
+
+        // The follower must still converge to the writer's real state on its
+        // next pull (its own stale edit is preserved locally as a sidecar,
+        // never lost, never propagated).
+        let r = block_on(vault_sync_pull(laptop_s.clone())).unwrap();
+        assert!(r.ok, "follower pull/reconcile failed: {}", r.message);
+        assert_eq!(
+            read(&laptop_s, "phase.txt").trim(),
+            "16",
+            "follower must converge to the writer's state after reconciling"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The common, non-conflicting case: an always-on box and an intermittent
+    /// laptop each commit a DIFFERENT new file while offline from each other,
+    /// then both sync. Neither push should be rejected into a wedge, and both
+    /// files must survive on both sides — no data loss on the normal path.
+    #[test]
+    fn two_writers_non_conflicting_edits_both_survive() {
+        let base = unique_base("nonconflict");
+        let bare = base.join("origin.git");
+        let box_dir = base.join("box");
+        let laptop_dir = base.join("laptop");
+        run_git(base.to_str().unwrap(), &["init", "-q", "--bare", "-b", "main", bare.to_str().unwrap()])
+            .expect("bare init");
+        let bare_s = bare.to_str().unwrap().to_string();
+        let box_s = box_dir.to_str().unwrap().to_string();
+        let laptop_s = laptop_dir.to_str().unwrap().to_string();
+
+        init_checkout(&box_s);
+        write(&box_s, "seed.txt", "seed\n");
+        run_git_mut(&box_s, &["add", "-A"]).unwrap();
+        run_git_mut(&box_s, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(&box_s, &["remote", "add", "origin", &bare_s]).unwrap();
+        run_git_mut(&box_s, &["push", "-u", "origin", "main"]).unwrap();
+
+        run_git(base.to_str().unwrap(), &["clone", "-q", &bare_s, &laptop_s]).expect("clone");
+        run_git_mut(&laptop_s, &["config", "user.name", "Test User"]).unwrap();
+        run_git_mut(&laptop_s, &["config", "user.email", "test@example.com"]).unwrap();
+
+        // Box writes+pushes first, while the laptop is "offline" (no fetch yet).
+        write(&box_s, "from-box.md", "box note\n");
+        block_on(vault_sync_commit_local(box_s.clone())).unwrap();
+        let r = block_on(vault_sync_push(box_s.clone())).unwrap();
+        assert!(r.ok && !r.error, "box push failed: {}", r.message);
+
+        // Laptop, unaware, commits its own new file and tries to push — this
+        // MUST be rejected (remote moved) and self-heal via the retry-after-
+        // reconcile path in `vault_sync_push`, never require a second manual
+        // tick to converge.
+        write(&laptop_s, "from-laptop.md", "laptop note\n");
+        block_on(vault_sync_commit_local(laptop_s.clone())).unwrap();
+        let r = block_on(vault_sync_push(laptop_s.clone())).unwrap();
+        assert!(r.ok && !r.error, "laptop push should self-heal on rejection: {}", r.message);
+
+        // Both files must exist on the remote now.
+        run_git(&box_s, &["fetch", "origin", "main"]).unwrap();
+        let (ls, _, _) = run_git(&box_s, &["ls-tree", "-r", "--name-only", "origin/main"]).unwrap();
+        assert!(ls.contains("from-box.md"), "box's file missing from remote:\n{ls}");
+        assert!(ls.contains("from-laptop.md"), "laptop's file missing from remote:\n{ls}");
+
+        // Box pulls and must see the laptop's file too.
+        let r = block_on(vault_sync_pull(box_s.clone())).unwrap();
+        assert!(r.ok, "box pull failed: {}", r.message);
+        assert_eq!(read(&box_s, "from-laptop.md").trim(), "laptop note");
+        assert_eq!(read(&box_s, "from-box.md").trim(), "box note");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The genuinely-divergent case: both machines edit the SAME file
+    /// differently while offline from each other. The merge must never wedge
+    /// the vault (leftover conflict markers / unmerged index) — it must
+    /// auto-resolve deterministically (take theirs, sidecar ours) so sync
+    /// always makes forward progress, and the loser's edit must be preserved
+    /// in a `.conflict` sidecar rather than silently dropped.
+    #[test]
+    fn two_writers_conflicting_edit_auto_resolves_without_wedging() {
+        let base = unique_base("conflict");
+        let bare = base.join("origin.git");
+        let box_dir = base.join("box");
+        let laptop_dir = base.join("laptop");
+        run_git(base.to_str().unwrap(), &["init", "-q", "--bare", "-b", "main", bare.to_str().unwrap()])
+            .expect("bare init");
+        let bare_s = bare.to_str().unwrap().to_string();
+        let box_s = box_dir.to_str().unwrap().to_string();
+        let laptop_s = laptop_dir.to_str().unwrap().to_string();
+
+        init_checkout(&box_s);
+        write(&box_s, "notes.md", "original\n");
+        run_git_mut(&box_s, &["add", "-A"]).unwrap();
+        run_git_mut(&box_s, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(&box_s, &["remote", "add", "origin", &bare_s]).unwrap();
+        run_git_mut(&box_s, &["push", "-u", "origin", "main"]).unwrap();
+
+        run_git(base.to_str().unwrap(), &["clone", "-q", &bare_s, &laptop_s]).expect("clone");
+        run_git_mut(&laptop_s, &["config", "user.name", "Test User"]).unwrap();
+        run_git_mut(&laptop_s, &["config", "user.email", "test@example.com"]).unwrap();
+
+        // Box edits + pushes first.
+        write(&box_s, "notes.md", "box version\n");
+        block_on(vault_sync_commit_local(box_s.clone())).unwrap();
+        let r = block_on(vault_sync_push(box_s.clone())).unwrap();
+        assert!(r.ok && !r.error, "box push failed: {}", r.message);
+
+        // Laptop, unaware, edits the SAME file differently and tries to push.
+        write(&laptop_s, "notes.md", "laptop version\n");
+        block_on(vault_sync_commit_local(laptop_s.clone())).unwrap();
+        let r = block_on(vault_sync_push(laptop_s.clone())).unwrap();
+        assert!(
+            r.ok && !r.error,
+            "a genuine conflict must auto-resolve, never wedge the push: {}",
+            r.message
+        );
+
+        // No leftover unmerged state on the laptop — the vault must not be wedged.
+        let (unmerged, _, _) = run_git(&laptop_s, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+        assert!(unmerged.trim().is_empty(), "laptop left unmerged paths: {unmerged}");
+        let git_dir = std::path::PathBuf::from(&laptop_s).join(".git");
+        assert!(!git_dir.join("MERGE_HEAD").exists(), "laptop wedged mid-merge");
+
+        // Remote must hold the box's version (theirs, from the laptop's POV
+        // when it reconciled) and the laptop's own edit must be preserved as a
+        // sidecar rather than silently dropped.
+        run_git(&box_s, &["fetch", "origin", "main"]).unwrap();
+        let remote_notes = run_git(&box_s, &["show", "origin/main:notes.md"]).unwrap().0;
+        assert_eq!(remote_notes.trim(), "box version");
+        assert_eq!(
+            read(&laptop_s, "notes.md.conflict").trim(),
+            "laptop version",
+            "the laptop's own edit must survive in a .conflict sidecar, not vanish"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Same-machine load: several concurrent callers hitting the SAME vault at
+    /// once (autosave debounce, a manual save, the periodic sync tick all
+    /// landing together) — exactly what `with_repo_lock` exists to serialize.
+    /// None may be silently dropped and the repo must never come out wedged
+    /// (stale index.lock, half-finished commit).
+    #[test]
+    fn concurrent_commits_to_one_vault_never_corrupt_or_wedge() {
+        let base = unique_base("concurrent");
+        let vault = base.join("vault");
+        init_checkout(vault.to_str().unwrap());
+        let vault_s = vault.to_str().unwrap().to_string();
+
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let v = vault_s.clone();
+            let dir = vault.clone();
+            handles.push(std::thread::spawn(move || {
+                std::fs::write(dir.join(format!("concurrent-{i}.md")), format!("file {i}\n"))
+                    .unwrap();
+                block_on(super::vault_commit_local(v))
+            }));
+        }
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        for r in &results {
+            let r = r.as_ref().expect("vault_commit_local must not error");
+            assert!(r.ok, "a concurrent commit failed: {}", r.message);
+        }
+
+        // No leftover lock, no half-finished merge/rebase.
+        let git_dir = vault.join(".git");
+        assert!(!git_dir.join("index.lock").exists(), "left a stale index.lock");
+        assert!(!git_dir.join("MERGE_HEAD").exists());
+        assert!(!git_dir.join("rebase-merge").exists());
+
+        // Every file actually landed and is committed (nothing lost to a
+        // clobbered `add -A` racing another thread's commit).
+        for i in 0..8 {
+            assert!(
+                vault.join(format!("concurrent-{i}.md")).exists(),
+                "file {i} missing from working tree"
+            );
+        }
+        let (status, _, _) = run_git(&vault_s, &["status", "--porcelain"]).unwrap();
+        assert!(status.trim().is_empty(), "vault left dirty after all commits: {status}");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
 mod conversation_jsonl_tests {
     use super::reconstruct_conversation;
 
