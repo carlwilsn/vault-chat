@@ -136,6 +136,10 @@ export async function runScheduledHeadlessTurn(
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
         if (e.kind === "text") {
+          // Text resuming after a tool call = new paragraph; separate it so the
+          // content doesn't jam together ("…done.Next…"). finalSegment resets to ""
+          // on tool_use, so empty finalSegment + non-empty acc means we're resuming.
+          if (!finalSegment && acc && e.delta.trim() && !/\n\s*$/.test(acc)) acc += "\n\n";
           acc += e.delta;
           finalSegment += e.delta;
         } else if (e.kind === "reasoning") reasoningAcc += e.delta;
@@ -490,9 +494,14 @@ export async function runWorkerTurn(
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
         if (e.kind === "text") {
+          // Prose resuming AFTER a tool call starts a new paragraph. Insert a break
+          // into `acc` (→ the persisted turn content) so two text blocks either side
+          // of a tool boundary don't render jammed together ("…remove.The three…" —
+          // the run-together bug). liveSteps already splits on this; acc did not.
+          const resuming = liveWasAction && !!e.delta.trim();
+          if (resuming && acc && !/\n\s*$/.test(acc)) acc += "\n\n";
           acc += e.delta;
-          // Prose resuming after actions = the start of a NEW substantive update.
-          if (liveWasAction && e.delta.trim()) { liveSteps.push({ thought: "", actions: [] }); liveWasAction = false; }
+          if (resuming) { liveSteps.push({ thought: "", actions: [] }); liveWasAction = false; }
           liveSteps[liveSteps.length - 1]!.thought += e.delta;
         }
         else if (e.kind === "reasoning") reasoningAcc += e.delta;
@@ -824,6 +833,7 @@ export async function runMissionChatTurn(
 
   let acc = "";
   let lastLen = 0;
+  let sawTool = false;
   let runErr: string | undefined;
   try {
     await runAgent({
@@ -843,12 +853,18 @@ export async function runMissionChatTurn(
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
         if (e.kind === "text") {
+          // Text resuming after a (read-only) tool call = new paragraph; keep the
+          // segments from jamming together ("…checked.Here's…").
+          if (sawTool && acc && e.delta.trim() && !/\n\s*$/.test(acc)) acc += "\n\n";
+          sawTool = false;
           acc += e.delta;
           // Throttle stream broadcasts to keep the SSE light; final flush below.
           if (acc.length - lastLen >= 16) {
             lastLen = acc.length;
             broadcastChat("stream", { text: acc.slice(-4000) });
           }
+        } else if (e.kind === "tool_use") {
+          sawTool = true;
         } else if (e.kind === "error") {
           runErr = errToString(e.message);
         }

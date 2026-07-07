@@ -1636,7 +1636,16 @@
   function renderChatEdge(text, settled) {
     const be = $("sheetBody"); if (!be) return;
     let ce = $("chatEdge");
-    if (!ce) { ce = document.createElement("div"); ce.id = "chatEdge"; ce.className = "liveplain chatedge"; be.appendChild(ce); }
+    if (!ce) {
+      ce = document.createElement("div"); ce.id = "chatEdge"; ce.className = "liveplain chatedge";
+      // Put YOUR reply in the conversation flow — right after the thread, ABOVE the
+      // executor's background "working…" edge and the workers list — not dumped at
+      // the very bottom under everything (the "working indicator is in a weird
+      // spot" bug). Anchor before #liveEdge, else the Workers toggle, else append.
+      const anchor = $("liveEdge") || $("mWkToggle");
+      if (anchor && anchor.parentNode === be) be.insertBefore(ce, anchor);
+      else be.appendChild(ce);
+    }
     const t = (text || "").trim();
     // While streaming, a pulse + "answering…"; once settled (lane ended, waiting
     // for the persisted bubble to land) just the reply, no pulse — so the handoff
@@ -2069,11 +2078,16 @@
     if (!a.classList.contains("confirm")) { a.classList.add("confirm"); a.textContent = "Confirm?"; setTimeout(() => { a.classList.remove("confirm"); a.textContent = "Stop"; }, 2200); return; }
     const ids = new Set([mc.id, ...g.active.map((x) => x.run.convId)].filter(Boolean));
     for (const id of ids) api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: id }) }).catch(() => {});
+    // Drop it from the board NOW — don't wait on the box's tombstone to propagate
+    // through the next fetch (the laggy "wait on the state to update" feel). Mark it
+    // dismissed (so a reload can't flash it back) and repaint immediately; the
+    // delayed reload just confirms the box agrees.
+    if (mc.id) dismissedMissions.add(mc.id);
+    dismissedMissions.add((mc.mission || mc.title || "").trim() || mc.title);
     // The box tears the mission down when it handles the /kill above — aborts
     // the supervisor + its workers, cancels its scheduled wakes, and tombstone-
-    // deletes them, so it's gone for every client and can't resurrect. Reload
-    // after a beat to reflect it.
-    closeSheet(); toast("Mission stopped and cleared."); setTimeout(loadActivity, 600);
+    // deletes them, so it's gone for every client and can't resurrect.
+    closeSheet(); toast("Mission stopped and cleared."); loadActivity(); setTimeout(loadActivity, 600);
   }
   // A worker is a read-only artifact: just its supervisor ⇄ worker thread, with
   // the worker's thinking woven in per turn. No "State" section (read the thread,
@@ -2178,6 +2192,12 @@
   // that rebuilds the board doesn't re-collapse them. A fresh mission not in the
   // set defaults collapsed.
   const expandedMissions = new Set();
+  // Missions the user just stopped/completed from the sheet — dropped from the
+  // board INSTANTLY (optimistic), before the box's tombstone propagates and the
+  // next /conversations fetch stops returning them. Without this the mission
+  // lingered ~1s after you hit Stop, so the interaction felt laggy. Keyed by both
+  // the mission conv id and its name (the board buckets by name).
+  const dismissedMissions = new Set();
   async function loadActivity() {
     const box = $("actScroll");
     try {
@@ -2251,6 +2271,9 @@
       // mission is dropped box-side (dismissMissionFromActivity) and ages out
       // of this window for everyone, rather than being hidden on one device.
       for (const [name, g] of missions) {
+        // Optimistically hidden the instant the user stopped it — don't flash it
+        // back onto the board just because the box hasn't tombstoned it yet.
+        if (dismissedMissions.has(name) || (g.conv && dismissedMissions.has(g.conv.id))) continue;
         const mc = g.conv || { id: "", title: name, goal: "", preview: "" };
         // Just the mission name — no state chip, no "supervisor" button. Tapping
         // the row opens the one mission view (goal + done-when + thread). The

@@ -335,6 +335,14 @@ export async function sendMessage(
       const store = useStore.getState();
       const live = isTargetActive();
       if (e.kind === "text") {
+        // Text resuming AFTER a tool call is a new paragraph — separate it so the
+        // reply doesn't read "…done.Next…" (text blocks either side of a tool
+        // boundary jammed together). finalSegment is reset to "" on tool_use, so an
+        // empty finalSegment with non-empty acc means we're resuming after a tool.
+        if (!finalSegment && acc && e.delta.trim() && !/\n\s*$/.test(acc)) {
+          acc += "\n\n";
+          if (live) store.appendStreamingText("\n\n");
+        }
         acc += e.delta;
         finalSegment += e.delta;
         if (live) store.appendStreamingText(e.delta);
