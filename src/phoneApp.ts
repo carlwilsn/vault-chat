@@ -1101,6 +1101,44 @@ export async function startPhoneAppHost(): Promise<void> {
     },
   );
 
+  // Empty the resolved pile from the phone (the "Clear all" in Resolved Notes).
+  // Flip every resolved note to the terminal `cleared` status against the
+  // FRESHEST on-disk notes — never a filter-and-rewrite, which would drop the
+  // rows and let the union merge resurrect them from another machine's copy
+  // (the schedule-tombstone trap). A bumped last_updated + cleared > resolved
+  // (preferredNote) makes the clear win the cross-machine merge.
+  await listen<{ reqId: string }>("phone:notes-clear-resolved", async (event) => {
+    const { reqId } = event.payload;
+    try {
+      const s = useStore.getState();
+      if (!s.vaultPath) {
+        respond(reqId, { error: "no vault open" });
+        return;
+      }
+      const { readNotes, writeAllNotes } = await import("./notes");
+      const disk = await readNotes(s.vaultPath);
+      const now = new Date().toISOString();
+      let cleared = 0;
+      const updated = disk.map((n) =>
+        n.status === "resolved"
+          ? ((cleared += 1), { ...n, status: "cleared" as const, last_updated: now })
+          : n,
+      );
+      if (cleared > 0) await writeAllNotes(s.vaultPath, updated);
+      // Keep the box's in-memory store coherent if notes are loaded there.
+      if (cleared > 0 && s.notesLoaded) {
+        useStore.setState((st) => ({
+          notes: st.notes.map((n) =>
+            n.status === "resolved" ? { ...n, status: "cleared" as const, last_updated: now } : n,
+          ),
+        }));
+      }
+      respond(reqId, { ok: true, cleared });
+    } catch (e) {
+      respond(reqId, { error: String(e) });
+    }
+  });
+
   // The phone opened a thread — promote it into the recent/Chats list. Mission
   // and worker threads live on Activity and stay out of recent by default; the
   // moment the user views one it flips `surfaced` and joins recent so they can

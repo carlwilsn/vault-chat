@@ -37,7 +37,11 @@ export type Note = {
   anchors: NoteAnchor[];
   turns: NoteTurn[]; // empty for pure captures; populated when promoted from ask
   user_draft: string | null; // typed text not yet sent as a turn
-  status: "open" | "resolved";
+  // "cleared" is a terminal state past "resolved": the user emptied the resolved
+  // pile, so the note drops out of every view but stays on disk (no destructive
+  // delete). It must OUTRANK resolved in preferredNote so a stale resolved twin
+  // on another machine can't un-clear it across the union merge.
+  status: "open" | "resolved" | "cleared";
   /** Cached AI-written summary of the note — generated lazily on first
    *  expand in the panel and persisted so we don't re-spend tokens. */
   formatted?: string | null;
@@ -77,16 +81,19 @@ function parseNoteLines(lines: string[]): Note[] {
   return notes;
 }
 
-/** The winner between two rows that represent the same note. A `resolved`
- *  status is authoritative — once a note is resolved on any machine it must
- *  not be un-resolved by a stale `open` twin — so resolved beats open
- *  regardless of timestamps. Among rows of equal resolved-ness, the latest
+/** The winner between two rows that represent the same note. Status is
+ *  authoritative and ranked `cleared` > `resolved` > `open` — once a note is
+ *  cleared/resolved on any machine it must not be reverted by a staler-status
+ *  twin, regardless of timestamps. Among rows of equal status the latest
  *  `last_updated` (falling back to `timestamp`) wins, carrying the freshest
  *  edits/title/summary. Returns `a` on an exact tie. */
+function statusRank(s: Note["status"]): number {
+  return s === "cleared" ? 2 : s === "resolved" ? 1 : 0;
+}
 function preferredNote(a: Note, b: Note): Note {
-  const ar = a.status === "resolved";
-  const br = b.status === "resolved";
-  if (ar !== br) return ar ? a : b;
+  const ra = statusRank(a.status);
+  const rb = statusRank(b.status);
+  if (ra !== rb) return ra > rb ? a : b;
   const as = a.last_updated || a.timestamp || "";
   const bs = b.last_updated || b.timestamp || "";
   return as >= bs ? a : b;

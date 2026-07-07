@@ -396,6 +396,19 @@ fn handle(mut req: Request, token: &str) {
             };
             let _ = req.respond(body);
         }
+        (Method::Post, "/notes/clear-resolved") => {
+            // Empty the resolved pile from the phone: relay to the app so every
+            // resolved note is flipped to the terminal `cleared` status against the
+            // freshest on-disk notes and written the union-merge-safe way.
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            let body = match relay_request("phone:notes-clear-resolved", payload, Duration::from_secs(10)) {
+                Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
+                _ => resp_text(503, "application/json", "{\"error\":\"app not answering\"}".into()),
+            };
+            let _ = req.respond(body);
+        }
         (Method::Post, "/notifications/read") => {
             let mut raw = String::new();
             let _ = req.as_reader().read_to_string(&mut raw);
@@ -1096,15 +1109,22 @@ fn notes_path(vault: &str) -> PathBuf {
 }
 
 /// Whether note row `a` should win over the already-kept row `b` for the same
-/// id. A resolved status is authoritative — once resolved on any machine it must
-/// not be displaced by a stale open twin — so resolved beats open; among rows of
-/// equal resolved-ness the later last_updated wins. Mirrors preferredNote in
-/// src/notes.ts so the phone's open count matches the desktop's.
+/// id. Status is authoritative and ranked `cleared` > `resolved` > `open` — once
+/// cleared/resolved on any machine it must not be displaced by a staler-status
+/// twin; among rows of equal status the later last_updated wins. Mirrors
+/// statusRank/preferredNote in src/notes.ts so the phone matches the desktop.
+fn note_status_rank(v: &Value) -> u8 {
+    match v.get("status").and_then(|x| x.as_str()) {
+        Some("cleared") => 2,
+        Some("resolved") => 1,
+        _ => 0,
+    }
+}
 fn note_prefers(a: &Value, b: &Value) -> bool {
-    let ar = a.get("status").and_then(|x| x.as_str()) == Some("resolved");
-    let br = b.get("status").and_then(|x| x.as_str()) == Some("resolved");
-    if ar != br {
-        return ar;
+    let ra = note_status_rank(a);
+    let rb = note_status_rank(b);
+    if ra != rb {
+        return ra > rb;
     }
     let as_ = a.get("last_updated").and_then(|x| x.as_str()).unwrap_or("");
     let bs = b.get("last_updated").and_then(|x| x.as_str()).unwrap_or("");
@@ -1131,7 +1151,13 @@ fn notes_json(vault: &str) -> String {
             by_id.insert(id, v);
         }
     }
-    let mut list: Vec<Value> = by_id.into_values().map(|v| slim_note(&v)).collect();
+    // Cleared notes are terminal — the user emptied the resolved pile — so they
+    // drop out of the phone view entirely (they stay on disk for durability).
+    let mut list: Vec<Value> = by_id
+        .into_values()
+        .filter(|v| v.get("status").and_then(|x| x.as_str()) != Some("cleared"))
+        .map(|v| slim_note(&v))
+        .collect();
     // Reverse-chronological by last_updated; ISO-8601 strings sort lexically.
     list.sort_by(|a, b| {
         let ka = a.get("last_updated").and_then(|x| x.as_str()).unwrap_or("");
@@ -1141,7 +1167,7 @@ fn notes_json(vault: &str) -> String {
     list.truncate(200);
     let open = list
         .iter()
-        .filter(|v| v.get("status").and_then(|x| x.as_str()) != Some("resolved"))
+        .filter(|v| v.get("status").and_then(|x| x.as_str()) == Some("open"))
         .count();
     json!({ "open": open, "notes": list }).to_string()
 }

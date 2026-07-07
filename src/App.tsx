@@ -300,7 +300,17 @@ export default function App() {
   useEffect(() => {
     void (async () => {
       const { getTrackedVaults, startSchedulerLoop } = await import("./schedulerLoop");
-      for (const v of getTrackedVaults()) {
+      const tracked = getTrackedVaults();
+      // [harness-loop rig — DEV only, prod tree-shakes this out] Inject a
+      // headless scratch vault so the local rig fires it via offVaultRun
+      // (tracked-but-NOT-active), faithfully mirroring the box. Set
+      // VITE_DEV_TRACKED_VAULT to the scratch vault path at launch.
+      if (import.meta.env.DEV) {
+        const devTracked = (import.meta.env as unknown as Record<string, string | undefined>)
+          .VITE_DEV_TRACKED_VAULT;
+        if (devTracked && !tracked.includes(devTracked)) tracked.push(devTracked);
+      }
+      for (const v of tracked) {
         void startSchedulerLoop(v);
       }
     })();

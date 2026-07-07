@@ -757,7 +757,14 @@ type State = {
 };
 
 export const useStore = create<State>((set) => ({
-  vaultPath: localStorage.getItem(VAULT_STORAGE),
+  // [harness-loop rig — DEV only, prod ignores VITE_DEV_VAULT] Boot straight
+  // into a chosen active vault so the local rig has a deterministic vaultPath
+  // (needed for app-log flushing + the cockpit) without clicking the OS picker.
+  vaultPath:
+    localStorage.getItem(VAULT_STORAGE) ||
+    (import.meta.env.DEV
+      ? ((import.meta.env as unknown as Record<string, string | undefined>).VITE_DEV_VAULT ?? null)
+      : null),
   files: [],
   currentFile: null,
   currentContent: "",
@@ -1486,7 +1493,15 @@ export const useStore = create<State>((set) => ({
   clearResolvedNotes: async () => {
     const vault = useStore.getState().vaultPath;
     if (!vault) return;
-    const next = useStore.getState().notes.filter((n) => n.status !== "resolved");
+    // Flip resolved → cleared (a terminal status), do NOT drop the rows: notes.jsonl
+    // is merge=union, so a row removed by omission here comes right back when another
+    // machine's copy (which still has it) merges in — the schedule-tombstone trap.
+    // Writing an explicit `cleared` row that outranks `resolved` (preferredNote)
+    // makes the clear durable across the sync instead.
+    const now = new Date().toISOString();
+    const next = useStore.getState().notes.map((n) =>
+      n.status === "resolved" ? { ...n, status: "cleared" as const, last_updated: now } : n,
+    );
     set({ notes: next });
     try {
       await writeAllNotes(vault, next);

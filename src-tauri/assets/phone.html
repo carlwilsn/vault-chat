@@ -216,19 +216,22 @@
   /* A mission is a CONTAINER card — its name on top, its worker pills nested
      inside it — so a mission and its workers read as one unit. */
   .mgroup{margin:11px 14px 4px;background:var(--surface);border:1px solid var(--line);border-radius:20px;overflow:hidden}
-  .mgroup .msec{padding:14px 17px 10px}
+  .mgroup .msec{padding:14px 17px 12px;align-items:center}
+  /* The name shrinks-to-content (ellipsis on overflow) so the worker-count chip
+     sits right ALONGSIDE it on the left, not pushed to the far edge. */
+  .mgroup .msec b{flex:0 1 auto}
   .mgroup .wpill{margin:0 9px 9px;background:var(--raised);border-color:#303036}
   .mgroup .wpill:last-child{margin-bottom:11px}
   .mgroup .wp-head:active{background:#26262c}
-  /* Outer collapse: the whole worker list under a mission hides behind one
-     tappable "N workers ›" row so a multi-worker mission doesn't sprawl down the
-     board. Tap flips .wt-cv and reveals the pills (separate from a pill's own
-     inner expand). Per-mission expanded state is held in memory (expandedMissions)
-     so a background refresh doesn't re-collapse what you opened. */
-  .wtoggle{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:2px 17px 12px;font-size:12px;color:var(--dim)}
-  .wtoggle:active{color:var(--text)}
-  .wtoggle .wt-cv{font-size:10px;color:#6f6f6f;width:11px;flex:none;transition:none}
-  .wtoggle b{font-weight:600;color:#b8b8b8}
+  /* Worker count = a small chip INLINE beside the mission name (not a separate
+     row below). Tap it to expand the pill list in place; collapsed by default.
+     Per-mission expanded state is held in memory (expandedMissions) so a
+     background refresh doesn't re-collapse what you opened. */
+  .wcount{flex:none;display:inline-flex;align-items:center;gap:5px;font-size:11.5px;border:1px solid var(--line);border-radius:9px;padding:2px 9px;background:var(--raised);color:var(--dim);white-space:nowrap}
+  .wcount:active{color:var(--text);background:#26262c}
+  .wcount .wcn{font-weight:600;color:#b8b8b8}
+  .wcount .wt-cv{font-size:9px;color:#6f6f6f;width:8px;flex:none;text-align:center}
+  .whold{padding-top:2px}
   /* Archive: collapsed list of completed missions, low-key under the live board. */
   .arch-h{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:15px 18px 8px;font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;color:#8a8a8a;font-weight:600}
   .arch-h:active{color:var(--text)}
@@ -254,6 +257,7 @@
   .crow{display:flex;gap:12px}
   .ico{width:31px;height:31px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:none;font-size:13.5px;font-weight:700;background:var(--raised);color:var(--dim)}
   .ico.g{color:var(--ok)} .ico.a{color:var(--warn)} .ico.r{color:var(--err)}
+  .ico svg{width:18px;height:18px;display:block}
   .cb{flex:1;min-width:0}
   .ct{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
   .ct b{font-weight:600;font-size:14.5px;min-width:0;overflow-wrap:anywhere}
@@ -268,6 +272,8 @@
   .metabar{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#8a8a8a;font-weight:600;margin:4px 0 2px}
   .earlier{display:block;width:calc(100% - 28px);margin:6px 14px 0;text-align:center;font-size:12.5px;color:var(--dim);border:1px solid var(--line);border-radius:10px;padding:9px;min-height:38px}
   .earlier:active{background:var(--surface)}
+  .earlier.clearall{margin-bottom:8px;color:#9a9a9a}
+  .earlier.danger{color:var(--err);border-color:#5a302e}
   .dismiss{margin-top:10px;color:var(--dim);border:1px solid var(--line);border-radius:8px;padding:7px 14px;font-size:12.5px;min-height:34px}
   .dismiss:active{background:var(--raised)}
   .alsum{margin-top:10px;border-top:1px solid var(--line);padding-top:9px}
@@ -413,6 +419,7 @@
   .sheet-head{display:flex;align-items:flex-start;gap:11px;padding:4px 16px 8px;flex:none;touch-action:none}
   .sheet-ico{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:none;font-size:15px;font-weight:700;background:var(--raised);color:var(--dim)}
   .sheet-ico.g{color:var(--ok)} .sheet-ico.a{color:var(--warn)} .sheet-ico.r{color:var(--err)}
+  .sheet-ico svg{width:19px;height:19px;display:block}
   .sh-meta{flex:1;min-width:0}
   .sheet-intent{font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;color:#8a8a8a;font-weight:600}
   .sheet-title{font-size:16px;font-weight:600;line-height:1.3;margin-top:2px;overflow-wrap:anywhere}
@@ -436,6 +443,12 @@
   .sheet-foot .rsend{bottom:6px;top:auto}
   .sheet-body .md{font-size:13.5px;color:#cfcfcf;line-height:1.55}
   .sheet-body .lbl{color:#8a8a8a;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;margin:14px 0 5px}
+  /* Workers section header inside a mission sheet, tappable to expand/collapse
+     the worker rows (collapsed by default so they don't eat the thread's space). */
+  .sheet-body .wktoggle{display:flex;align-items:center;gap:8px;width:100%;text-align:left;margin:14px 0 5px;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;color:#8a8a8a}
+  .sheet-body .wktoggle:active{color:var(--text)}
+  .sheet-body .wktoggle .wt-cv{font-size:9px;color:#6f6f6f;width:9px;flex:none;text-align:center}
+  .sheet-body .wktoggle b{font-weight:600;color:#8a8a8a}
   .sheet-foot{flex:none;padding:8px 14px calc(env(safe-area-inset-bottom) + 8px);border-top:1px solid var(--line);background:#101012}
   .sheet-foot .reply{margin-top:0}
   /* A decision alert's single bottom CTA — opens the asking chat to reply there
@@ -634,6 +647,11 @@
         { id: "n2", ts: now - 1080000, kind: "info", title: "Worker finished — seed 44", intention: "Worker deliverable · BitNet 160M MVP", icon: "✓", cls: "g", summary: "eval.loss 1.5588, within tolerance; committed under results/.", body: "Seed 44 eval.loss **1.5588** — within the 0.005 nat tolerance. `results/seed44.jsonl` committed.", convId: "w1", read: false },
         { id: "n3", ts: now - 5400000, kind: "info", title: "Stopped an idle box", intention: "Cost / cleanup · autonomous action", icon: "$", cls: "r", summary: "idle GPU box auto-killed after its job exited; ~$0.26, nothing billing now.", body: "A box sat at zero GPU utilization for 12 minutes after its job exited — killed it. ~$0.26, nothing billing now.", read: true },
       ],
+      notes: [
+        { id: "nt1", status: "open", timestamp: new Date(now - 3600000).toISOString(), last_updated: new Date(now - 3600000).toISOString(), title: "Spectral clustering — why eigenvectors", user_draft: "In spectral clustering we build the Laplacian and take its eigenvectors to place each node in a new space. Why not the adjacency matrix directly?", turns: [], anchors: [] },
+        { id: "nt2", status: "resolved", timestamp: new Date(now - 7200000).toISOString(), last_updated: new Date(now - 7000000).toISOString(), title: "Message sent snaps sheet to top", user_draft: "The snap to the top happens when I send a message in the sheet.", turns: [], anchors: [] },
+        { id: "nt3", status: "resolved", timestamp: new Date(now - 9200000).toISOString(), last_updated: new Date(now - 9000000).toISOString(), title: "Sheets expand without scrolling to top", user_draft: "When the sheets expand they should not auto scroll to the top of the conversation.", turns: [], anchors: [] },
+      ],
       threads: {
         m1: { id: "m1", title: "BitNet 160M MVP", source: "mission", status: "idle", messages: [
           { role: "user", content: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP across 3 seeds; commit eval.loss; writeup under docs/. Done = three seeds within 0.005 nat." },
@@ -687,6 +705,9 @@
       if (u === "/notifications") return reply({ unread: DB.notifs.filter((n) => !n.read).length, notifications: DB.notifs });
       if (u === "/notifications/read") { const n = DB.notifs.find((x) => x.id === body.id); if (n) n.read = true; return reply({ ok: true }); }
       if (u === "/notifications/hide") { DB.notifs = DB.notifs.filter((x) => x.id !== body.id); return reply({ ok: true }); }
+      if (u === "/notes") { const ns = DB.notes.filter((n) => n.status !== "cleared"); return reply({ open: ns.filter((n) => n.status === "open").length, notes: ns }); }
+      if (u === "/notes/status") { const n = DB.notes.find((x) => x.id === body.id); if (n) n.status = body.status === "open" ? "open" : "resolved"; return reply({ ok: true }); }
+      if (u === "/notes/clear-resolved") { let c = 0; DB.notes.forEach((n) => { if (n.status === "resolved") { n.status = "cleared"; c += 1; } }); return reply({ ok: true, cleared: c }); }
       if (u === "/poll") {
         // Running workers stream signs of life so the thread's live timeline is
         // real in mock mode — the same "runtime" events (text + growing steps)
@@ -1634,6 +1655,33 @@
       return h;
     } catch { return 0; }
   }
+  // The height a sheet opens/snaps to at rest. A smidge below the very top so the
+  // header still clears the Dynamic Island, but HIGHER than the old
+  // full-safe-area gap — the user wanted it "a smidge higher, halfway between all
+  // the way up and where it used to default." So we give back half the safe-area
+  // band. 0 inset in a browser tab, so this is the near-full height there.
+  function sheetRestHeight() { return Math.round(0.96 * window.innerHeight) - Math.round(safeAreaTop() / 2); }
+  // Cohesive monochrome line-icon set — replaces the old punctuation glyphs (?, ≡,
+  // ✓, $, !, ◎, ✦, ◷) in the .ico / .sheet-ico tiles. Drawn with currentColor so
+  // the tile's status class (.a warn · .r err · .g white) tints the icon ONLY, in
+  // keeping with the near-monochrome app. Keyed by the same glyph values the
+  // producers + alertMeta still emit, so callers are unchanged; an unknown key
+  // (e.g. a stray emoji from a producer) falls back to the neutral info icon.
+  const ICON_PATHS = {
+    "?": '<path d="M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-4 4v-4H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M12 9.2v.01M12 12.4c0-1.1 1.4-1.3 1.4-2.4A1.4 1.4 0 0 0 11 9"/>',
+    "!": '<path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4"/><circle cx="12" cy="17.3" r=".6" fill="currentColor" stroke="none"/>',
+    "✓": '<circle cx="12" cy="12" r="9"/><path d="M8 12.4l2.6 2.6L16 9.6"/>',
+    "$": '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M14.5 9.3c-.6-.7-1.6-1.1-2.6-1.1-1.4 0-2.4.8-2.4 1.9 0 2.6 5 1.4 5 4 0 1.2-1 2-2.6 2-1.1 0-2.1-.4-2.7-1.1"/>',
+    "≡": '<path d="M4 6h16M4 12h16M4 18h10"/>',
+    "•": '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="7.7" r=".6" fill="currentColor" stroke="none"/>',
+    "◎": '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.4"/>',
+    "✦": '<path d="M4 20l4-1L19 8a2 2 0 0 0-3-3L5 16l-1 4z"/><path d="M14.5 6.5l3 3"/>',
+    "◷": '<circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/>',
+  };
+  function iconSvg(key) {
+    const p = ICON_PATHS[key] || ICON_PATHS["•"];
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + p + "</svg>";
+  }
   function openSheet(opts) {
     clearInterval(missionPoll); missionPoll = 0;
     sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false; sheetChatActive = false; sheetChatSettling = false; sheetChatText = "";
@@ -1644,11 +1692,11 @@
     // instead PRESERVES the current height, so back never "forces me back up"
     // after I've dragged the sheet down.
     sh.style.maxHeight = "none";
-    // Full-height open, but land the top edge BELOW the safe-area inset so it never
-    // slides up under the Dynamic Island (note 86073ceb — "goes too far up then needs
-    // to move barely down"). In a browser the inset is 0, so this is the old height.
-    sh.style.height = (sh.classList.contains("on") ? sh.offsetHeight : Math.round(0.96 * window.innerHeight) - safeAreaTop()) + "px";
-    $("sheetIco").textContent = opts.ico || "•";
+    // Open at the resting height (a smidge below the very top — see sheetRestHeight).
+    // A sheet→sheet transition (back ‹, or opening a worker from its mission)
+    // PRESERVES the current height so back never forces you back up.
+    sh.style.height = (sh.classList.contains("on") ? sh.offsetHeight : sheetRestHeight()) + "px";
+    $("sheetIco").innerHTML = iconSvg(opts.ico || "•");
     $("sheetIco").className = "sheet-ico" + (opts.cls ? " " + opts.cls : "");
     // A worker thread doesn't need an icon chip — the "Worker · …" intent label
     // already says what it is, and the ● sitting next to the back ‹ just looked
@@ -1688,11 +1736,31 @@
     ta.addEventListener("focus", () => {
       hideKb();
       const sheet = $("sheet");
+      // Remember the resting height BEFORE editing clears it, so blur can put the
+      // sheet back — the old code never restored it, so dismissing the keyboard
+      // dropped the sheet to the CSS 64% "middle" (notes 7edf4afd / 55ab9006).
+      sheet.dataset.restH = sheet.style.height || "";
       sheet.style.height = ""; sheet.style.maxHeight = "";
       sheet.classList.add("editing");
-      setTimeout(() => { try { ta.scrollIntoView({ block: "nearest" }); } catch {} }, 60);
+      const be = $("sheetBody");
+      const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 80;
+      setTimeout(() => { try { ta.scrollIntoView({ block: "nearest" }); } catch {} if (be && wasBottom) be.scrollTop = be.scrollHeight; }, 60);
     });
-    ta.addEventListener("blur", () => { const sh = $("sheet"); sh.classList.remove("editing"); sh.style.maxHeight = ""; });
+    ta.addEventListener("blur", () => {
+      const sh = $("sheet");
+      sh.classList.remove("editing");
+      // Restore the resting geometry (explicit height + maxHeight:none, like
+      // openSheet) so dismissing the keyboard doesn't collapse the sheet to the
+      // middle, and keep the thread pinned to its latest line across the resize.
+      const be = $("sheetBody");
+      const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 80;
+      sh.style.maxHeight = "none";
+      sh.style.height = sh.dataset.restH || (sheetRestHeight() + "px");
+      if (be && wasBottom) {
+        requestAnimationFrame(() => { be.scrollTop = be.scrollHeight; });
+        setTimeout(() => { if (be.scrollHeight - be.scrollTop - be.clientHeight < 220) be.scrollTop = be.scrollHeight; }, 300);
+      }
+    });
     const go = () => { const v = ta.value.trim(); if (!v) return; ta.value = ""; autosize(); onSend(v); };
     foot.querySelector(".rsend").onclick = go;
     // Enter inserts a newline; sending is via the send button.
@@ -1710,10 +1778,17 @@
   // Drag the grab/header: pull up to fill the screen for a long thread, pull
   // down past the threshold to dismiss. Snaps to peek / full / closed.
   (function sheetDrag() {
-    const sheet = $("sheet"); let startY = 0, startH = 0, dragging = false, H = 0;
-    const down = (y) => { dragging = true; startY = y; startH = sheet.offsetHeight; H = window.innerHeight; sheet.style.transition = "none"; sheet.style.maxHeight = "none"; };
-    const move = (y) => { if (!dragging) return; const h = Math.max(80, Math.min(startH - (y - startY), Math.round(0.97 * H))); sheet.style.height = h + "px"; };
-    const up = () => { if (!dragging) return; dragging = false; sheet.style.transition = ""; const h = sheet.offsetHeight; if (h < 0.30 * H) { closeSheet(); return; } if (h > 0.55 * H) sheet.style.height = Math.round(0.96 * H) - safeAreaTop() + "px"; else sheet.style.height = Math.min(sheet.scrollHeight, Math.round(0.62 * H)) + "px"; };
+    const sheet = $("sheet"); let startY = 0, startH = 0, dragging = false, H = 0, bodyBottom = false;
+    // Growing the sheet must NOT reveal the top of the thread: if the body was at
+    // the bottom (latest line in view), keep it there as the frame resizes — the
+    // "drag back up and it scrolls the conversation to the top" bug (note this
+    // session). Captured at drag-start, re-applied through the move + snap.
+    const be = () => $("sheetBody");
+    const atBot = () => { const b = be(); return !!b && b.scrollHeight - b.scrollTop - b.clientHeight < 80; };
+    const pin = () => { const b = be(); if (b && bodyBottom) b.scrollTop = b.scrollHeight; };
+    const down = (y) => { dragging = true; startY = y; startH = sheet.offsetHeight; H = window.innerHeight; bodyBottom = atBot(); sheet.style.transition = "none"; sheet.style.maxHeight = "none"; };
+    const move = (y) => { if (!dragging) return; const h = Math.max(80, Math.min(startH - (y - startY), Math.round(0.97 * H))); sheet.style.height = h + "px"; pin(); };
+    const up = () => { if (!dragging) return; dragging = false; sheet.style.transition = ""; const h = sheet.offsetHeight; if (h < 0.30 * H) { closeSheet(); return; } if (h > 0.55 * H) sheet.style.height = sheetRestHeight() + "px"; else sheet.style.height = Math.min(sheet.scrollHeight, Math.round(0.62 * H)) + "px"; setTimeout(pin, 300); };
     for (const elx of [$("sheetGrab"), $("sheetHead")]) {
       elx.addEventListener("touchstart", (e) => { if (e.target.closest(".sheet-x,.sheet-action")) return; down(e.touches[0].clientY); }, { passive: true });
       elx.addEventListener("mousedown", (e) => { if (e.target.closest(".sheet-x,.sheet-action")) return; e.preventDefault(); down(e.clientY); });
@@ -1772,6 +1847,10 @@
     // Arm the start-up "working…" exactly once, so a freshly-briefed mission shows
     // life off the jump instead of a blank/idle thread (see paint()).
     let armedStartWorking = false;
+    // Worker rows in the sheet are collapsed by default (they take unnecessary
+    // space above the thread) — tap the "Workers · N" header to expand. Held in
+    // this closure so a background repaint doesn't re-collapse what you opened.
+    let sheetWorkersOpen = false;
     // The mission's workers, as tappable rows in the sheet. For an ARCHIVED
     // mission this is the ONLY way back to its finished worker threads (the
     // Activity board only lists live ones) — note c0d532eb. Active workers get a
@@ -1921,8 +2000,8 @@
       // you. Idle ≠ asleep: it's waiting on its workers and free for a question.
       if (!showLive && !readonly && restPlus.length) body += '<div class="idlehint">Ready for you — it’s waiting on its workers and self-checks on its own schedule. Ask it anything below.</div>';
       if (wkItems.length) {
-        body += '<div class="lbl">Workers · ' + wkItems.length + "</div>";
-        body += wkItems.map((w, i) => '<button class="arch-row wk-row" data-wk="' + i + '"><span class="arch-t">' + (w.live ? "● " : "○ ") + esc(w.title) + '</span><span class="chev">›</span></button>').join("");
+        body += '<button class="wktoggle" id="mWkToggle"><span class="wt-cv">' + (sheetWorkersOpen ? "▾" : "▸") + '</span><b>Workers · ' + wkItems.length + "</b></button>";
+        body += '<div id="mWkHold"' + (sheetWorkersOpen ? "" : ' style="display:none"') + ">" + wkItems.map((w, i) => '<button class="arch-row wk-row" data-wk="' + i + '"><span class="arch-t">' + (w.live ? "● " : "○ ") + esc(w.title) + '</span><span class="chev">›</span></button>').join("") + "</div>";
       }
       const be = $("sheetBody");
       // Setting innerHTML resets scrollTop to 0, which yanked the user to the TOP
@@ -1953,6 +2032,14 @@
         // return to the supervisor/mission level (not just a full close).
         if (w) el.onclick = () => openWorkerArtifact(w.run, w.c, () => openMission(mc, g, { ...opts, fromBack: true }));
       });
+      // Workers collapse/expand toggle (re-wired each paint since innerHTML wipes
+      // handlers). Flips the closure flag so the state survives a background poll.
+      const wkToggle = be.querySelector("#mWkToggle");
+      if (wkToggle) wkToggle.onclick = () => {
+        sheetWorkersOpen = !sheetWorkersOpen;
+        const h = be.querySelector("#mWkHold"); if (h) h.style.display = sheetWorkersOpen ? "" : "none";
+        wkToggle.querySelector(".wt-cv").textContent = sheetWorkersOpen ? "▾" : "▸";
+      };
       be.scrollTop = (firstPaint || wasBottom || pinBottom) ? be.scrollHeight : prevTop;
       pinBottom = false;
     }
@@ -2081,7 +2168,7 @@
   }
   // Archive (completed missions) collapsed by default on the Activity page.
   let archiveOpen = false;
-  // A mission's worker list is collapsed by default (see .wtoggle). This holds
+  // A mission's worker list is collapsed by default (see .wcount). This holds
   // the mission keys the user has expanded, in memory, so a background refresh
   // that rebuilds the board doesn't re-collapse them. A fresh mission not in the
   // set defaults collapsed.
@@ -2163,6 +2250,7 @@
         // Just the mission name — no state chip, no "supervisor" button. Tapping
         // the row opens the one mission view (goal + done-when + thread). The
         // workers below are the at-a-glance state.
+        const workers = [...g.active.map((x) => ({ run: x.run, c: x.c })), ...g.done.map((c) => ({ run: null, c }))];
         const group = el('<div class="mgroup"></div>');
         const head = el('<div class="msec"><b></b></div>');
         head.querySelector("b").textContent = name;
@@ -2171,38 +2259,36 @@
         // fine for a day. Billing gets its own chip so "box burning money" is
         // visible at a glance, distinct from worker activity.
         if (mc.missionState === "AWAITING_USER") {
-          const chip = el('<span style="margin-left:8px;font-size:11px;font-weight:600;color:var(--warn,#e0a020);border:1px solid currentColor;border-radius:8px;padding:1px 7px;vertical-align:1px">needs you</span>');
+          const chip = el('<span style="margin-left:8px;font-size:11px;font-weight:600;color:var(--warn,#e0a020);border:1px solid currentColor;border-radius:8px;padding:1px 7px">needs you</span>');
           head.appendChild(chip);
         } else if (mc.billing) {
-          const chip = el('<span style="margin-left:8px;font-size:11px;font-weight:600;color:var(--accent,#4a9);border:1px solid currentColor;border-radius:8px;padding:1px 7px;vertical-align:1px">$ billing</span>');
+          const chip = el('<span style="margin-left:8px;font-size:11px;font-weight:600;color:var(--accent,#4a9);border:1px solid currentColor;border-radius:8px;padding:1px 7px">$ billing</span>');
           head.appendChild(chip);
         }
         head.onclick = () => openMission(mc, g);
-        group.appendChild(head);
-        // Worker pills, collapsed by default behind a "N workers ›" toggle so a
-        // multi-worker mission doesn't sprawl. The pills live in a holder we show/
-        // hide locally (like the archive) — no rebuild, so a pill's own inner
-        // expand survives the outer toggle. A single-worker mission skips the
-        // toggle (nothing to collapse); zero workers renders neither.
-        const workers = [...g.active.map((x) => ({ run: x.run, c: x.c })), ...g.done.map((c) => ({ run: null, c }))];
-        if (workers.length > 1) {
+        // Worker count = a small chip INLINE beside the name (note this session).
+        // Tapping the name opens the mission; tapping the chip expands the pills
+        // in place. Collapsed by default for ANY worker count (1+), so the board
+        // stays scannable — the pills live in a holder we show/hide locally (no
+        // rebuild, so a pill's own inner expand survives the outer toggle).
+        let hold = null;
+        if (workers.length) {
           const open = expandedMissions.has(name);
-          const wt = el('<button class="wtoggle"><span class="wt-cv">' + (open ? "▾" : "▸") + '</span><b>' + workers.length + " workers</b></button>");
-          const cv = wt.querySelector(".wt-cv");
-          const hold = el('<div></div>'); hold.style.display = open ? "" : "none";
+          const wc = el('<button class="wcount"><span class="wcn">' + workers.length + (workers.length === 1 ? " worker" : " workers") + '</span><span class="wt-cv">' + (open ? "▾" : "▸") + "</span></button>");
+          const cv = wc.querySelector(".wt-cv");
+          hold = el('<div class="whold"></div>'); hold.style.display = open ? "" : "none";
           for (const { run, c } of workers) hold.appendChild(workerPill(run, c));
-          wt.onclick = (e) => {
+          wc.onclick = (e) => {
             e.stopPropagation(); // don't fall through to head → openMission
             const nowOpen = !expandedMissions.has(name);
             if (nowOpen) expandedMissions.add(name); else expandedMissions.delete(name);
             hold.style.display = nowOpen ? "" : "none";
             cv.textContent = nowOpen ? "▾" : "▸";
           };
-          group.appendChild(wt);
-          group.appendChild(hold);
-        } else {
-          for (const { run, c } of workers) group.appendChild(workerPill(run, c));
+          head.appendChild(wc);
         }
+        group.appendChild(head);
+        if (hold) group.appendChild(hold);
         box.appendChild(group);
       }
 
@@ -2328,7 +2414,7 @@
     }
   }
   function noteCard(n) {
-    const card = el('<div class="card"><div class="crow"><div class="ico">✦</div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><p class="cs"></p></div></div><div class="ndetail" style="display:none"></div></div>');
+    const card = el('<div class="card"><div class="crow"><div class="ico">' + iconSvg("✦") + '</div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><p class="cs"></p></div></div><div class="ndetail" style="display:none"></div></div>');
     card.querySelector("b").textContent = noteTitle(n);
     card.querySelector(".t").textContent = noteWhen(n);
     const cs = card.querySelector(".cs");
@@ -2366,13 +2452,32 @@
       const list = d.notes || [];
       box.innerHTML = "";
       if (!list.length) { box.appendChild(el('<div class="empty">No notes yet. Jot one above, or capture them on the desktop — they all show up here.</div>')); return; }
-      const open = list.filter((n) => n.status !== "resolved");
+      // "cleared" notes are terminal (emptied resolved pile) — the box already
+      // drops them from /notes, but filter explicitly so open never catches them.
+      const open = list.filter((n) => n.status === "open");
       const resolved = list.filter((n) => n.status === "resolved");
       if (open.length) box.appendChild(el('<div class="sec">Open · ' + open.length + "</div>"));
       for (const n of open) box.appendChild(noteCard(n));
       if (!open.length) box.appendChild(el('<div class="empty">Nothing open — every note is resolved.</div>'));
       if (resolved.length) {
         const holder = el('<div style="margin-top:8px"></div>'); holder.style.display = notesResolvedOpen ? "" : "none";
+        // Clear-all empties the resolved pile durably (POST /notes/clear-resolved →
+        // the box flips them to the terminal `cleared` status, union-merge-safe).
+        // Two-tap confirm so a stray tap can't wipe the list.
+        const clr = el('<button class="earlier clearall">Clear all resolved</button>');
+        let armed = false, armTimer = 0;
+        clr.onclick = async () => {
+          if (!armed) { armed = true; clr.textContent = "Tap again to clear " + resolved.length; clr.classList.add("danger"); clearTimeout(armTimer); armTimer = setTimeout(() => { armed = false; clr.textContent = "Clear all resolved"; clr.classList.remove("danger"); }, 3000); return; }
+          clr.disabled = true;
+          try {
+            const r = await api("/notes/clear-resolved", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+            if (!r.ok) throw new Error();
+            toast("Cleared.");
+            notesResolvedOpen = false;
+            void loadNotes();
+          } catch { toast("Couldn't clear — try again"); clr.disabled = false; clr.classList.remove("danger"); clr.textContent = "Clear all resolved"; armed = false; }
+        };
+        holder.appendChild(clr);
         for (const n of resolved) holder.appendChild(noteCard(n));
         const t = el('<button class="earlier"></button>');
         const label = () => { t.textContent = (notesResolvedOpen ? "Hide resolved · " : "Resolved · ") + resolved.length; };
@@ -2450,7 +2555,7 @@
     const card = el('<div class="card' + (isAction ? " ask" : n.read ? "" : " unread") + '"><div class="crow"><div class="ico"></div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><div class="metabar"></div><p class="cs"></p></div></div></div>');
     const ico = card.querySelector(".ico");
     const cls = n.cls || meta.cls;
-    ico.textContent = n.icon || meta.icon; if (cls) ico.classList.add(cls);
+    ico.innerHTML = iconSvg(n.icon || meta.icon); if (cls) ico.classList.add(cls);
     card.querySelector("b").textContent = n.title;
     card.querySelector(".t").textContent = age(n.ts);
     card.querySelector(".metabar").textContent = n.intention || meta.intention;
