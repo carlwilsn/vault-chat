@@ -1520,6 +1520,21 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           quietUnlessAlert: missionQuiet,
         };
         await writeSchedules(vault, [...list, fresh]);
+        // Write-after-verify. A self-schedule is a mission's ONLY liveness
+        // lifeline: if this write silently no-ops (it has — the box's file writes
+        // can resolve without landing), the mission strands at a "parked" phase
+        // with nothing to wake it, while the tool cheerily reports "Scheduled".
+        // Read the row back and confirm it's really on disk; retry once; only
+        // then claim success. If it STILL isn't there, tell the agent the truth
+        // so it reacts instead of trusting a phantom wake.
+        let landed = (await readSchedules(vault)).some((s) => s.id === fresh.id);
+        if (!landed) {
+          await writeSchedules(vault, [...(await readSchedules(vault)), fresh]);
+          landed = (await readSchedules(vault)).some((s) => s.id === fresh.id);
+        }
+        if (!landed) {
+          return `SCHEDULE FAILED TO PERSIST: the wake (${fireDescription}) did not land on disk after two writes. Do NOT assume you have a next tick — this mission will stall silently. Take a concrete next action NOW (retry Schedule, StartWorker, AskUser, or CompleteMission); do not end your turn on this.`;
+        }
         return missionQuiet
           ? `Scheduled ${fireDescription}. This wake is SILENT — it fires a turn in this mission thread but posts NOTHING to the user's Alerts feed unless that turn's reply begins with "ALERT:". So run your loop quietly; prefix a reply with ALERT: only when something genuinely needs the user's attention.`
           : `Scheduled ${fireDescription}. Will fire as a turn in this conversation; its result lands in the Alerts feed.`;

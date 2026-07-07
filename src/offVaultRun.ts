@@ -1100,10 +1100,13 @@ export async function stopAndDeleteMission(vault: string, conversationId: string
 // mission must have a next tick or a pending user decision — "idle at a fork" is
 // illegal. Exits that satisfy the invariant:
 //   (a) work delegated / advanced this turn (StartWorker, AskWorker, WatchRun,
-//       MarkDoneWhen, CompleteMission) or a wake scheduled (Schedule),
+//       CompleteMission) — trusted by tool NAME because their effect is
+//       async/eventually-consistent (a spawned worker or watched run may not be
+//       on disk the instant this hook runs),
 //   (b) the user was asked (AskUser → AWAITING_USER; their reply is the wake),
-//   (c) an external wake source already exists: an enabled schedule targeting
-//       this thread, a live watched run it owns, or a live worker of its mission,
+//   (c) an external wake source already exists ON DISK: an enabled schedule
+//       targeting this thread, a live watched run it owns, or a live worker of
+//       its mission,
 //   (d) the mission is terminal (DONE / KILLED).
 // If NONE hold, the harness re-enters the thread once with a corrective nudge;
 // a nudged turn that parks again escalates to the user's Alerts feed and flips
@@ -1111,12 +1114,17 @@ export async function stopAndDeleteMission(vault: string, conversationId: string
 // you") instead of a healthy-looking idle card.
 // NOTE: MarkDoneWhen is deliberately NOT here — checking off a criterion doesn't
 // secure a next tick (a turn can check a box and still strand the mission).
+// NOTE: Schedule is deliberately NOT trusted by name either. Its effect is a
+// synchronous row in schedules.jsonl, which (c) reads directly — so a
+// self-schedule is VERIFIED on disk, not assumed from the tool call. A Schedule
+// whose write silently no-ops (the failure that stranded a mission at a "parked"
+// phase with a phantom wake) then correctly falls through to the nudge instead
+// of passing. Verifying the wake actually landed is the whole point.
 const PROGRESS_TOOLS = new Set([
   "StartWorker",
   "AskWorker",
   "WatchRun",
   "CompleteMission",
-  "Schedule",
 ]);
 
 async function enforceMissionLoopInvariant(

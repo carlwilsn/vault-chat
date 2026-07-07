@@ -101,6 +101,106 @@ async function resumeInterruptedMissions(vault: string): Promise<void> {
   }
 }
 
+// [harness v2] Independent per-mission liveness heartbeat. A mission advances by
+// self-scheduling its next wake each turn; that single wake is its whole
+// lifeline. If it's ever lost — a write that silently no-ops, or a turn that
+// errored before enforceMissionLoopInvariant (the turn-end backstop) even ran —
+// the mission is asleep with nothing to wake it, and a stalled mission is
+// indistinguishable from a healthy idle one, so nothing alarms (the human was
+// the only backstop that fired on PROXY phase 18). THIS is the out-of-band
+// backstop that fires even when no turn ran: for each parked mission with no
+// wake source that's been silent past a grace window, re-post a wake. Firer-
+// gated and de-duped so it can't spam. Liveness derived from disk — mirrors
+// tickRunWatcher / firingDarkMinutes — never from the agent remembering.
+function missionStallGraceMs(): number {
+  // Overridable per-install for the harness-loop rig — a real dropped-wake probe
+  // can't wait 45 min. Absent/invalid → the production default.
+  try {
+    const v = Number(localStorage.getItem("vault_chat_mission_stall_grace_ms"));
+    if (Number.isFinite(v) && v > 0) return v;
+  } catch {
+    /* localStorage unavailable — default */
+  }
+  return 45 * 60_000;
+}
+// Last time we re-woke each mission — so the sweep doesn't re-nudge every tick
+// while a nudge turn is still in flight (before it stamps a fresh lastActivityAt).
+const livenessNudgedAt = new Map<string, number>();
+// Per-vault throttle for the (heavier) conversations read this sweep does.
+const livenessSweptAt = new Map<string, number>();
+
+async function tickMissionLiveness(vault: string): Promise<void> {
+  if (!harnessV2Enabled()) return;
+  const now = Date.now();
+  const grace = missionStallGraceMs();
+  const throttle = Math.min(180_000, Math.max(20_000, Math.floor(grace / 3)));
+  if (now - (livenessSweptAt.get(vault) ?? 0) < throttle) return;
+  livenessSweptAt.set(vault, now);
+
+  const convs = await readConversations(vault).catch(() => []);
+  const cutoff = now - 72 * 60 * 60 * 1000; // don't resurrect ancient threads
+  const schedules = await readSchedules(vault).catch(() => []);
+  const hasPendingWake = (id: string) =>
+    schedules.some((sc) => {
+      const t = sc.target as { kind?: string; conversationId?: string };
+      return (
+        sc.enabled &&
+        t?.kind === "existing" &&
+        t.conversationId === id &&
+        (sc.recurrence?.kind !== "once" || !sc.lastFiredAt)
+      );
+    });
+  let jobs: { status?: string; ownerConvId?: string }[] = [];
+  try {
+    jobs = await (await import("./runWatcher")).readJobs(vault);
+  } catch {
+    /* unreadable jobs — treat as none, fall through to the wake */
+  }
+  let liveWorkers = new Set<string>();
+  try {
+    liveWorkers = new Set((await import("./runRegistry")).activeRuns());
+  } catch {
+    /* same */
+  }
+
+  for (const c of convs) {
+    if (c.source !== "mission") continue;
+    if (c.completedAt || c.missionState === "DONE" || c.missionState === "KILLED") continue;
+    if (c.missionState === "AWAITING_USER") continue; // legitimately waiting on the user
+    const la = c.lastActivityAt ?? 0;
+    if (la < cutoff) continue;
+    if (now - la < grace) continue; // still inside a healthy self-schedule cadence
+    if (now - (livenessNudgedAt.get(c.id) ?? 0) < grace) continue; // just re-woke it
+    const msgs = (c.messages ?? []).filter((m) => !m.hidden);
+    const last = msgs[msgs.length - 1];
+    // Parked on an assistant turn. An unanswered trailing USER turn is the
+    // interrupted-mid-brief case, which resumeInterruptedMissions (boot) owns.
+    if (!last || last.role !== "assistant") continue;
+    if (hasPendingWake(c.id)) continue; // a wake is coming
+    if (jobs.some((j) => j.status === "running" && j.ownerConvId === c.id)) continue; // run-watcher wakes it
+    const key = (c.mission ?? c.title ?? "").trim();
+    if (
+      key &&
+      convs.some(
+        (w) => w.source === "worker" && (w.mission ?? "").trim() === key && liveWorkers.has(w.id),
+      )
+    )
+      continue; // a live worker's finish will wake it
+
+    // Stalled: no wake source and silent past the grace. Re-establish the tick.
+    const staleMin = Math.round((now - la) / 60_000);
+    livenessNudgedAt.set(c.id, now);
+    vlog("mission.liveness.rewake", { conv: c.id.slice(0, 8), staleMin });
+    const { runWorkerTurn } = await import("./offVaultRun");
+    void runWorkerTurn(
+      vault,
+      c.id,
+      `LIVENESS CHECK — this mission has gone ${staleMin} min with no scheduled wake, no running worker, and no watched run: its next tick was lost, so nothing will wake it. You are NOT done. Read ground truth from disk FIRST (do not trust prior narration about where you are), then re-establish progress: take the next concrete step and Schedule your next wake — or AskUser if you're at a genuine fork, or CompleteMission if the goal is verifiably met on disk.`,
+      { modelId: useStore.getState().supervisorModelId },
+    ).catch((e) => console.warn("[mission-liveness] re-wake failed:", e));
+  }
+}
+
 // Multi-vault scheduler. Each tracked vault gets its own loop that
 // reads its schedules.jsonl every 30s and fires any due schedules.
 // Firing runs the agent against the target conversation — same vault
@@ -420,6 +520,12 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
     // remembered to self-schedule a wake. Same firing-machine gate as schedules.
     void tickRunWatcher(vault).catch((e) =>
       console.warn("[run-watcher] tick failed:", e),
+    );
+    // Independent liveness backstop: re-wake a mission whose self-scheduled tick
+    // was lost (silent write, or a turn that errored before its turn-end
+    // enforcement ran). Firer-gated like the watcher above; self-throttled.
+    void tickMissionLiveness(vault).catch((e) =>
+      console.warn("[mission-liveness] tick failed:", e),
     );
     const list = (schedulesByVault.get(vault) ?? []).slice();
     let changed = false;
