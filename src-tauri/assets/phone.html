@@ -238,6 +238,9 @@
   .arch-cv{font-size:10px;color:#6f6f6f;width:11px;flex:none}
   .arch-row{display:flex;align-items:center;gap:9px;width:100%;text-align:left;margin:0 14px 7px;width:calc(100% - 28px);padding:10px 14px;background:var(--surface);border:1px solid var(--line);border-radius:14px}
   .arch-row:active{background:var(--raised)}
+  .arch-ico{flex:none;display:flex;align-items:center;color:var(--dim)}
+  .arch-ico.r{color:var(--err)}
+  .arch-ico svg{width:16px;height:16px;display:block}
   .arch-t{flex:1;min-width:0;font-size:13px;font-weight:600;color:#cfcfcf;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .arch-age{font-size:10.5px;color:#8a8a8a;flex:none}
   /* worker pills: one short line per worker, tap to expand state + actions */
@@ -625,6 +628,7 @@
       convs: [
         { id: "m1", title: "BitNet 160M MVP", source: "mission", role: "supervisor", mission: "BitNet 160M MVP", lastActivityAt: now - 120000, msgCount: 9, preview: "seeds 1 & 3 verified; seed 2 rerunning", goal: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP.\n\nDone when (each defines completion — likely one worker each):\n- All 3 seeds trained, eval.loss committed for each\n- The three seeds land within 0.005 nat of each other\n- A short writeup lands under docs/", taskSummary: "Reproduce the BitNet 160M MVP across 3 seeds", statusSummary: "Seeds 1 & 3 verified; seed 2 rerunning", thinkingDigest: "Seeds 1 and 3 landed within tolerance, but seed 2 came in 0.13 nat high — likely an LR mismatch, so it respawned that worker at seed 1's learning rate rather than accept the gap. Holding the eval/writeup worker until seed 2 confirms.", doneWhenDone: ["All 3 seeds trained, eval.loss committed for each"] },
         { id: "m2", title: "Quiet watch — repo hygiene", source: "mission", role: "supervisor", mission: "Quiet watch — repo hygiene", lastActivityAt: now - 3600000, msgCount: 4, preview: "all clean on last sweep; next check at 9pm", goal: "MISSION BRIEF (user-approved). Quiet watch on repo hygiene.\n\nDone when:\n- No uncommitted drift older than 30 min\n- main pre-commit hook green", completedAt: now - 1800000 },
+        { id: "m3", title: "Scrapped — LR sweep", source: "mission", role: "supervisor", mission: "Scrapped — LR sweep", lastActivityAt: now - 9000000, msgCount: 2, preview: "stopped by user before it finished", goal: "MISSION BRIEF (user-approved). Sweep learning rates.\n\nDone when:\n- best LR committed", completedAt: now - 5400000, missionState: "KILLED" },
         { id: "w2", title: "seed-2 retry", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 60000, msgCount: 4, preview: "seed 2 retry running at matched LR", goal: "retry seed 2 at seed 1's LR; commit eval.loss", taskSummary: "Retry seed 2 at seed 1's LR", statusSummary: "Training relaunched; eval pending" },
         { id: "w4", title: "eval + writeup", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 30000, msgCount: 3, preview: "building the comparison table + writeup", goal: "build the per-seed comparison table and draft the writeup under docs/", taskSummary: "Per-seed comparison table + writeup", statusSummary: "Drafting the comparison table" },
         { id: "w1", title: "3-seed BitNet repro", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 1080000, msgCount: 6, preview: "all three seeds done; gap held at +0.13 nat", goal: "train + eval seeds 42/43/44 on the 1700-step config" },
@@ -1677,6 +1681,7 @@
     "◎": '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.4"/>',
     "✦": '<path d="M4 20l4-1L19 8a2 2 0 0 0-3-3L5 16l-1 4z"/><path d="M14.5 6.5l3 3"/>',
     "◷": '<circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/>',
+    "✕": '<circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/>',
   };
   function iconSvg(key) {
     const p = ICON_PATHS[key] || ICON_PATHS["•"];
@@ -2312,10 +2317,15 @@
         for (const mc of archived) {
           const key = (mc.mission || mc.title || "").trim() || mc.title;
           const workers = convs.filter((w) => w.source === "worker" && (w.mission || "").trim() === key);
-          const row = el('<button class="arch-row"><span class="arch-t"></span><span class="arch-age"></span><span class="chev">›</span></button>');
+          const row = el('<button class="arch-row"><span class="arch-ico"></span><span class="arch-t"></span><span class="arch-age"></span><span class="chev">›</span></button>');
           // [harness v2] A stopped mission is archived (not silently deleted) and
           // labeled apart from a finished one — "missions disappearing???" fix.
-          row.querySelector(".arch-t").textContent = (mc.missionState === "KILLED" ? "⏹ " : "✓ ") + (mc.mission || mc.title);
+          // Killed → a red X (icon set); finished → a neutral check.
+          const killed = mc.missionState === "KILLED";
+          const aico = row.querySelector(".arch-ico");
+          aico.innerHTML = iconSvg(killed ? "✕" : "✓");
+          if (killed) aico.classList.add("r");
+          row.querySelector(".arch-t").textContent = mc.mission || mc.title;
           row.querySelector(".arch-age").textContent = age(mc.completedAt);
           // Tap → re-inspect the finished mission. Swipe left → delete it (and its
           // worker threads): /kill on a mission routes to stopAndDeleteMission,
