@@ -1024,6 +1024,11 @@
   // ---------- state ----------
   let page = "chat";
   let convId = null, convTitle = "New chat";
+  // The open thread's source ("phone" | "mission" | "worker" | …). Missions and
+  // workers run in the BACKGROUND (their executor being busy is not "your turn
+  // generating"), so the composer must never offer the stop square for them —
+  // see stopMode().
+  let convSource = null;
   let running = false, stopping = false, streamText = "", streamTool = "", streamStartedAt = null;
   // Live in-flight state per conversation, NOT just the open one. Every runtime/
   // status event lands here keyed by convId, so leaving a generating thread and
@@ -1233,9 +1238,15 @@
 
   let streamEl = null, runlineEl = null, _shownTool = null;
   // Send (↑) flips to stop (■) while the open thread is running — the standard
-  // chatbot interrupt. Tapping it aborts that conversation's run.
+  // chatbot interrupt. ONLY for a direct chat (source phone/manual): a mission or
+  // worker thread is "running" whenever its BACKGROUND executor is busy — for
+  // minutes or hours — and flipping the composer made the only visible button a
+  // ■ that KILLS the mission run, exactly when a typed message would simply go
+  // to the conversational front ("the send button is weird"). Missions keep ↑
+  // always; stopping a mission lives in its Activity sheet, deliberately.
+  const stopMode = () => running && !!convId && convSource !== "mission" && convSource !== "worker";
   function syncSendBtn() {
-    const stop = running && !!convId;
+    const stop = stopMode();
     sendBtn.classList.toggle("stop", stop);
     sendBtn.textContent = stop ? "■" : "↑";
     sendBtn.setAttribute("aria-label", stop ? "stop" : "send");
@@ -1292,15 +1303,16 @@
   // were in, not a blank new one — replies keep landing where you expect.
   const LAST_CONV_KEY = "vc_phone_conv";
   function rememberConv() { try { if (convId) localStorage.setItem(LAST_CONV_KEY, JSON.stringify({ id: convId, title: convTitle })); else localStorage.removeItem(LAST_CONV_KEY); } catch {} }
-  function newChat() { convId = null; convTitle = "New chat"; rememberConv(); clearThreadUi(); showHint(); setPage("chat"); setHeader(); }
+  function newChat() { convId = null; convTitle = "New chat"; convSource = null; rememberConv(); clearThreadUi(); showHint(); setPage("chat"); setHeader(); }
   async function openThread(id, title) {
-    convId = id; convTitle = title || "New chat"; clearThreadUi(); markSeen(id);
+    convId = id; convTitle = title || "New chat"; convSource = null; clearThreadUi(); markSeen(id);
     setPage("chat"); setHeader();
     try {
       const r = await api("/conversation?id=" + encodeURIComponent(id) + "&n=120");
       if (!r.ok) throw new Error((await r.json()).error || r.status);
       const d = await r.json();
       convTitle = d.title;
+      convSource = d.source || null;
       clearThreadUi();
       // /conversation reads the on-disk (idle) status, so trust the live signals
       // too: the activity sets seeded from /status, plus any per-conv live state
@@ -1368,7 +1380,9 @@
       sending = false;
     }
   }
-  sendBtn.onclick = () => { if (running && convId) void killCurrent(); else void send(); };
+  // Same predicate as the visual: the tap does what the button SHOWS. (These
+  // diverging is how a ↑-looking button could kill a run, or a ■ re-send.)
+  sendBtn.onclick = () => { if (stopMode()) void killCurrent(); else void send(); };
   // Enter inserts a newline on the phone; sending is via the send button (no Shift+Enter on an iOS keyboard).
   let autosizeRAF = 0;
   function scheduleAutosize() {
