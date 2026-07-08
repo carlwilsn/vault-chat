@@ -337,6 +337,8 @@
   .tdecision .td-l{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:3px}
   /* (delib-bub/delib-conv are gone: the ask/info sheet conversation now renders
      with the SAME threadHtml as a supervisor sheet — one conversation look.) */
+  /* Note edit sheet (swipe a note right to open). */
+  .note-edit{width:100%;min-height:38vh;resize:vertical;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--text);font-size:14px;line-height:1.5;outline:none;font-family:inherit;box-sizing:border-box}
   /* The probe input reuses the app composer's .rinp/.rsend (inset send arrow). */
   .alsum{margin-top:10px;border-top:1px solid var(--line);padding-top:9px}
   .alsum .md{font-size:13px;color:#c9c9c9;line-height:1.5}
@@ -801,6 +803,7 @@
       if (u === "/notifications/clear") { DB.notifClearTs = Date.now(); return reply({ ok: true }); }
       if (u === "/notes") { const ns = DB.notes.filter((n) => n.status !== "cleared"); return reply({ open: ns.filter((n) => n.status === "open").length, notes: ns }); }
       if (u === "/notes/status") { const n = DB.notes.find((x) => x.id === body.id); if (n) n.status = body.status === "open" ? "open" : "resolved"; return reply({ ok: true }); }
+      if (u === "/notes/edit") { const n = DB.notes.find((x) => x.id === body.id); if (!n) return reply({ error: "note not found" }); n.user_draft = body.text; n.title = null; n.last_updated = new Date().toISOString(); return reply({ ok: true, id: n.id }); }
       if (u === "/notes/clear-resolved") { let c = 0; DB.notes.forEach((n) => { if (n.status === "resolved") { n.status = "cleared"; c += 1; } }); return reply({ ok: true, cleared: c }); }
       if (u === "/poll") {
         // Running workers stream signs of life so the thread's live timeline is
@@ -2600,6 +2603,9 @@
     // Swipe left to resolve an open note (or reopen a resolved one) — the same
     // acknowledge gesture as alerts. This now writes through to notes.jsonl on
     // the box, so resolving from the phone sticks across devices.
+    // Swipe RIGHT to edit (note 002c8029): opens a sheet with the note's text
+    // in a textarea; Save writes through /notes/edit (freshest-on-disk on the
+    // box, headline regenerated).
     const resolved = n.status === "resolved";
     attachSwipeArchive(
       card,
@@ -2608,8 +2614,41 @@
           .then((r) => { if (!r.ok) throw new Error(); toast(resolved ? "Reopened" : "Resolved"); })
           .catch(() => toast("Couldn't update note — try again")),
       loadNotes,
+      () => openNoteEditSheet(n),
     );
     return card;
+  }
+  // The note edit sheet: the note's text, editable, with one Save action. Only
+  // the user's own text (user_draft) is editable — captured turns/anchors are a
+  // record, not a draft.
+  function openNoteEditSheet(n) {
+    openSheet({
+      intent: "Note · edit", title: noteTitle(n), ico: "✦", cls: "",
+      bodyHtml: '<textarea class="note-edit" id="noteEditTa"></textarea>'
+        + '<div class="wbtns"><button class="wbtn" id="noteEditSave">Save</button></div>',
+      wire: (body) => {
+        const ta = body.querySelector("#noteEditTa");
+        ta.value = n.user_draft || "";
+        const save = body.querySelector("#noteEditSave");
+        save.onclick = async () => {
+          const t = ta.value.trim();
+          if (!t) { toast("Note text can't be empty"); return; }
+          save.disabled = true;
+          try {
+            const r = await api("/notes/edit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: n.id, text: t }) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || d.error) throw new Error(d.error || r.status);
+            toast("Note updated.");
+            closeSheet();
+            void loadNotes();
+            // The box re-headlines the edited note off the response path — refetch
+            // once more so the new title lands without leaving the page.
+            setTimeout(() => { if (page === "notes") void loadNotes(); }, 3500);
+          } catch (e) { toast("Couldn't save: " + (e.message || e)); save.disabled = false; }
+        };
+      },
+    });
+    setTimeout(() => { const ta = $("noteEditTa"); if (ta) { ta.focus(); } }, 250);
   }
   async function loadNotes() {
     const box = $("notesScroll");
@@ -3121,7 +3160,7 @@
     if ($("sheet").classList.contains("on")) closeSheet();
     void loadAlerts();
   }
-  function attachSwipeArchive(card, action, reload) {
+  function attachSwipeArchive(card, action, reload, rightAction) {
     reload = reload || loadAlerts;
     let x0 = 0, y0 = 0, dx = 0, mode = null;
     const start = (x, y) => { x0 = x; y0 = y; dx = 0; mode = null; card.style.transition = "none"; };
@@ -3133,7 +3172,10 @@
         mode = Math.abs(ndx) > Math.abs(ndy) ? "h" : "v";
         if (mode === "v") return false;
       }
-      dx = Math.min(0, ndx);
+      // Right-swipe only tracks when a rightAction exists (notes: swipe right to
+      // edit, note 002c8029); everywhere else the card stays pinned at 0 so the
+      // gesture keeps meaning exactly one thing (left = archive/resolve).
+      dx = rightAction ? Math.max(-innerWidth, Math.min(ndx, 90)) : Math.min(0, ndx);
       card.style.transform = "translateX(" + dx + "px)";
       return true;
     };
@@ -3148,7 +3190,12 @@
       setTimeout(() => { card.dataset.swiped = ""; }, 400);
       mode = null;
       card.style.transition = "transform .18s ease, opacity .18s ease";
-      if (dx < -70) {
+      if (rightAction && dx > 60) {
+        // Right-swipe: snap back and hand off (an edit opens a sheet — the card
+        // itself stays in place).
+        card.style.transform = "";
+        rightAction();
+      } else if (dx < -70) {
         // Remember WHERE in the list you were, so the reload below doesn't yank you
         // to the top. loadAlerts/loadActivity/loadNotes rebuild innerHTML (scrollTop
         // → 0), so swiping a card DOWN in the archive scrolled you back up to the

@@ -396,6 +396,19 @@ fn handle(mut req: Request, token: &str) {
             };
             let _ = req.respond(body);
         }
+        (Method::Post, "/notes/edit") => {
+            // Edit a note's text from the phone (swipe right → edit sheet). Same
+            // relay contract as /notes/status: the app applies it against the
+            // freshest on-disk notes and persists the desktop way.
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            let body = match relay_request("phone:note-edit", payload, Duration::from_secs(10)) {
+                Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
+                _ => resp_text(503, "application/json", "{\"error\":\"app not answering\"}".into()),
+            };
+            let _ = req.respond(body);
+        }
         (Method::Post, "/notes/clear-resolved") => {
             // Empty the resolved pile from the phone: relay to the app so every
             // resolved note is flipped to the terminal `cleared` status against the

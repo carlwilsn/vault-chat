@@ -1256,6 +1256,55 @@ export async function startPhoneAppHost(): Promise<void> {
     },
   );
 
+  // Edit a note's text from the phone (swipe right → edit sheet, note 002c8029).
+  // Same freshest-on-disk contract as note-status: apply against readNotes, bump
+  // last_updated so the edit wins the cross-machine union merge, and clear the
+  // AI headline so it regenerates to match the new content.
+  await listen<{ reqId: string; id?: string; text?: string }>("phone:note-edit", async (event) => {
+    const { reqId, id, text } = event.payload;
+    try {
+      const s = useStore.getState();
+      if (!s.vaultPath) {
+        respond(reqId, { error: "no vault open" });
+        return;
+      }
+      const noteId = (id ?? "").trim();
+      const t = (text ?? "").trim();
+      if (!noteId) {
+        respond(reqId, { error: "missing note id" });
+        return;
+      }
+      if (!t) {
+        respond(reqId, { error: "empty note text" });
+        return;
+      }
+      const { readNotes, writeAllNotes } = await import("./notes");
+      const disk = await readNotes(s.vaultPath);
+      const now = new Date().toISOString();
+      let found = false;
+      const updated = disk.map((n) =>
+        n.id === noteId ? ((found = true), { ...n, user_draft: t, title: null, last_updated: now }) : n,
+      );
+      if (!found) {
+        respond(reqId, { error: "note not found" });
+        return;
+      }
+      await writeAllNotes(s.vaultPath, updated);
+      if (s.notesLoaded) {
+        useStore.setState((st) => ({
+          notes: st.notes.map((n) =>
+            n.id === noteId ? { ...n, user_draft: t, title: null, last_updated: now } : n,
+          ),
+        }));
+      }
+      respond(reqId, { ok: true, id: noteId });
+      // Re-headline off the response path — the edited body needs a fresh title.
+      void ensureNoteTitles(s.vaultPath);
+    } catch (e) {
+      respond(reqId, { error: String(e) });
+    }
+  });
+
   // Empty the resolved pile from the phone (the "Clear all" in Resolved Notes).
   // Flip every resolved note to the terminal `cleared` status against the
   // FRESHEST on-disk notes — never a filter-and-rewrite, which would drop the
