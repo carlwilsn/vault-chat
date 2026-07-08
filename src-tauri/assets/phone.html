@@ -339,6 +339,11 @@
      with the SAME threadHtml as a supervisor sheet — one conversation look.) */
   /* Note edit sheet (swipe a note right to open). */
   .note-edit{width:100%;min-height:38vh;resize:vertical;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--text);font-size:14px;line-height:1.5;outline:none;font-family:inherit;box-sizing:border-box}
+  /* No-options ask: the ONE composer doubles as the answer box — this labeled
+     commit action under it sends the typed text as the formal answer. */
+  .ans-commit{width:100%;margin-top:8px;border-radius:10px;padding:9px 12px;font-size:13px;font-weight:600;border:1px solid #3a3a42;background:var(--raised);color:var(--text);font-family:inherit}
+  .ans-commit:active{opacity:.8}
+  .ans-commit:disabled{opacity:.5}
   /* The probe input reuses the app composer's .rinp/.rsend (inset send arrow). */
   .alsum{margin-top:10px;border-top:1px solid var(--line);padding-top:9px}
   .alsum .md{font-size:13px;color:#c9c9c9;line-height:1.5}
@@ -2903,22 +2908,21 @@
     return card;
   }
   // The deliberation sheet — reuses openSheet's frame/scrim/drag. Body: eyebrow
-  // "The decision" + the ask, the options as INLINE verbose cards you pick right
-  // in the conversation, then the live talk-it-through exchange (the real mission
-  // thread's direct turns). The pinned foot is an "Ask about this…" probe input
-  // (a plain /message — it does NOT resolve the ask, it talks it through). Picking
-  // an option or committing a freeform answer resolves via /answer.
+  // "The decision" + the ask + the option cards, then the DELIBERATION
+  // CONVERSATION. The conversation is styled exactly like a supervisor thread
+  // (sender labels, markdown bubbles, the same composer) but its CONTENT is its
+  // own: you and the agent talking about THIS decision — never the mission
+  // thread embedded (no brief, no wakes, no worker reports, no executor
+  // thought-chains: that content lives in Activity; embedding it here was poor
+  // design). The agent still has the mission's full context behind the scenes.
   //
-  // Multiple rounds: after a probe reply lands, the sheet re-fetches the thread so
-  // new direct turns appear; if the agent surfaces a fresh ask with new options,
-  // the newest ask's options replace the buttons (latest wins).
-  // Shared live-conversation plumbing for alert sheets (ask AND info): the sheet
-  // talks to the alert's source thread with the mission sheet's exact machinery —
-  // sheetConvId + a paint that renders the thread's DIRECT turns into #delibX +
-  // the 3s poll; the front's reply streams via #chatEdge and folds in when
-  // persisted. Returns the probe sender (a plain /message — never resolves an
-  // ask). This is what replaced the old "Open thread" jump into the raw
-  // execution log: you converse ABOUT the alert instead of decoding the log.
+  // Multiple rounds: each poll re-fetches; if the agent surfaces a fresh ask
+  // with new options, the newest ask's card replaces this one (latest wins).
+  // Shared plumbing for alert sheets (ask AND info): sheetConvId + a paint that
+  // renders the deliberation exchange into #delibX + the 3s poll; the front's
+  // reply streams via #chatEdge and folds in when persisted. Returns the probe
+  // sender (a plain /message — never resolves an ask). This is what replaced
+  // the old "Open thread" jump into the raw execution log.
   function attachSheetConversation(cid, hooks) {
     hooks = hooks || {};
     sheetConvId = cid;
@@ -2931,43 +2935,44 @@
       // Frozen while the front is answering: its reply drives #chatEdge directly;
       // chat-end repaints (same contract as the mission sheet).
       if (sheetChatActive) return;
-      let liveRun = false;
-      try { const st = await (await api("/status")).json(); liveRun = (st.runs || []).some((r) => r.convId === cid); } catch {}
       let msgs = [];
       let src = "";
       try {
-        const d = await (await api("/conversation?id=" + encodeURIComponent(cid) + "&n=40")).json();
+        const d = await (await api("/conversation?id=" + encodeURIComponent(cid) + "&n=60")).json();
         if (!d.error) {
           src = d.source || "";
-          // The REAL thread — same render as a supervisor conversation. Only the
-          // MISSION BRIEF blob is dropped (it's the spec, not the exchange; the
-          // mission sheet shows it as the Done-when list instead). The old
-          // direct-only filter is gone: it hid the ask, the worker reports —
-          // everything that led to the decision ("it doesn't have the
-          // information") — while showing PRIOR forks' answers, which read as
-          // this ask having been answered for you.
-          msgs = (d.messages || []).filter((m) => !/^\s*MISSION BRIEF/i.test(m.content || ""));
+          // The deliberation exchange ONLY: direct conversational turns (you ↔
+          // the front) plus decision receipts. Wakes, briefs, and executor turns
+          // never render here.
+          msgs = (d.messages || []).filter((m) =>
+            (m.role === "assistant" && m.direct) ||
+            (m.role === "user" && (m.direct || m.decision) && !isWakeMsg(m.content || "") && !/^\s*MISSION BRIEF/i.test(m.content || "")));
+          // Scope to the CURRENT deliberation: a decision receipt closes an
+          // exchange. A live ask shows only what came after the last decision —
+          // an old fork's answer rendering under a new ask was the "it was
+          // answered for me" bug. A settled ask shows the exchange that led to
+          // its own receipt, receipt included.
+          let last = -1;
+          for (let i = 0; i < msgs.length; i++) if (msgs[i].decision) last = i;
+          if (hooks.decided) {
+            let prev = -1;
+            for (let i = 0; i < last; i++) if (msgs[i].decision) prev = i;
+            msgs = msgs.slice(prev + 1);
+          } else if (last >= 0) {
+            msgs = msgs.slice(last + 1);
+          }
         }
       } catch {}
       // Drop optimistic bubbles the persisted thread now contains.
       for (let k = optimistic.length - 1; k >= 0; k--) {
         if (msgs.some((m) => m.role === "user" && (m.content || "").trim() === optimistic[k].trim())) optimistic.splice(k, 1);
       }
-      const shown = msgs.slice(-30).concat(optimistic.map((t) => ({ role: "user", content: t })));
-      if (liveRun) sheetEnded = false;
-      const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
-      sheetRunning = liveRun || (hasLive && !sheetEnded);
-      // Direct-reply vs thought-chain is a property of WHAT triggered the turn,
-      // same contract as the mission sheet: a turn answering something you typed
-      // streams as plain prose; a background wake renders as the compact
-      // thought-chain. (Forcing direct=true here let a status flip drop it and
-      // the executor's chain bled into the ask conversation as "weird boxes".)
-      {
-        const lastMsg = shown[shown.length - 1];
-        sheetDirectReply = !!(lastMsg && lastMsg.role === "user" && !isWakeMsg(lastMsg.content || ""));
-      }
-      const showLive = sheetRunning || sheetOptimisticWorking;
-      const sig = JSON.stringify(shown.map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + showLive;
+      const shown = msgs.slice(-12).concat(optimistic.map((t) => ({ role: "user", content: t })));
+      // One quiet pulse while a just-sent probe waits for the front's lane to
+      // open — the chat edge takes over from "start". The EXECUTOR's runtime
+      // never renders in this surface.
+      const showWorking = sheetOptimisticWorking && !sheetChatActive && !sheetChatSettling;
+      const sig = JSON.stringify(shown.map((m) => [m.role, (m.content || "").length])) + "|" + showWorking;
       if (sig === lastSig) return; // unchanged — don't disrupt reading/typing
       lastSig = sig;
       const x = $("delibX"); if (!x) return;
@@ -2976,8 +2981,8 @@
       const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 90;
       x.innerHTML = (shown.length
         ? threadHtml(shown, { user: "You", assistant: src === "mission" ? "Supervisor" : "Assistant" })
-        : '<div class="md dim">' + esc(hooks.emptyText || "No turns yet — ask below; the agent answers with the thread’s full context.") + "</div>")
-        + (showLive ? liveEdgeHtml() : "");
+        : '<div class="md dim">' + esc(hooks.emptyText || "No conversation yet — ask below; the agent answers with the thread’s full context.") + "</div>")
+        + (showWorking ? '<div class="liveplain"><div class="thinking"><span class="pulse"></span><span class="tlbl show">working…</span></div></div>' : "");
       typeset(x);
       // Two-lane fold-in with no gap, same as the mission sheet: hold a settling
       // chat reply on screen until its persisted bubble is in the fetched thread.
@@ -3048,11 +3053,6 @@
         h += '<div class="delib-done">' + (n.answeredWith
           ? "✓ Decided — <b>" + esc(n.answeredWith) + "</b>" + (n.answeredAt ? " · " + age(n.answeredAt) : "")
           : "Dismissed without a recorded decision") + "</div>";
-      } else if (!del.options.length) {
-        // Buttons are how you answer — the freeform commit input exists ONLY for
-        // an ask with no options, where it's the sole way to resolve. (The pinned
-        // foot below talks it through without resolving.)
-        h += '<div class="needs-ff delib-ans"><input placeholder="Answer in your words…" enterkeyhint="send"><button class="rsend">↑</button></div>';
       }
       return h;
     };
@@ -3068,27 +3068,35 @@
           resolveDeliberation(n, opt.answer);
         };
       });
-      const ans = root.querySelector(".delib-ans");
-      if (ans) {
-        const ai = ans.querySelector("input");
-        const go = () => { const v = ai.value.trim(); if (v && !root.classList.contains("deciding")) { root.classList.add("deciding"); resolveDeliberation(n, v); } };
-        ai.onkeydown = (e) => { if (e.key === "Enter" && ai.value.trim()) go(); };
-        ans.querySelector(".rsend").onclick = go;
-      }
     };
     openSheet({
       intent: decided ? "Your call · decided" : "Your call", title: del.mission || n.title, ico: "?", cls: "a",
       bodyHtml: '<div class="delib-eyebrow">The decision</div>'
         + '<div id="delibDecision">' + decisionHtml() + "</div>"
         + '<div class="lbl">Conversation</div><div id="delibX"></div>',
-      // Decision card on top, then the REGULAR conversation — the mission thread
-      // rendered exactly like a supervisor sheet. A decided ask gets no foot: the
-      // conversation is readable but dead.
-      footHtml: decided ? "" : probeFootHtml("Ask about this…"),
+      // Decision card on top, then the deliberation conversation. ONE text box:
+      // the composer talks it through; options answer by tap. For an ask with
+      // no options, a single labeled commit action under the composer sends the
+      // SAME text as the formal answer — no second input (the two-boxes
+      // complaint). A decided ask gets no foot: readable but dead.
+      footHtml: decided
+        ? ""
+        : probeFootHtml("Ask about this…")
+          + (!del.options.length ? '<button class="ans-commit">✓ Send it as my answer</button>' : ""),
       wire: (body, foot) => {
         wireDecision(body.querySelector("#delibDecision"));
         // The probe input talks it through — a plain /message, NOT an answer.
         if (!decided) wireReply(foot, (v) => probe && probe(v));
+        // The commit action formalizes: whatever is typed in the ONE composer
+        // becomes the tagged answer via /answer.
+        const commit = foot.querySelector(".ans-commit");
+        if (commit) commit.onclick = () => {
+          const ta = foot.querySelector(".rinp");
+          const v = (ta && ta.value.trim()) || "";
+          if (!v) { toast("Type your answer above first."); return; }
+          commit.disabled = true;
+          resolveDeliberation(n, v);
+        };
       },
     });
     // Mock/legacy ask with no thread behind it: render any baked sample exchange
@@ -3120,12 +3128,13 @@
         }
       } catch {}
     };
-    // [ask-conversation] Talk-it-through is a REAL conversation on the mission
-    // thread — the shared plumbing streams the front's reply and folds it in,
-    // rendered with the supervisor sheet's exact thread machinery.
+    // [ask-conversation] Talk-it-through is a REAL conversation — the shared
+    // plumbing streams the front's reply and folds it in, styled like a
+    // supervisor thread but scoped to THIS deliberation's exchange.
     probe = attachSheetConversation(cid, {
       openAtTop: true,
       onTick: checkNewerAsk,
+      decided,
       emptyText: "No conversation yet — talk it through below; the agent has the mission’s full context.",
     });
   }
@@ -3349,16 +3358,44 @@
   for (let i = 0; i < NUM_BARS; i++) { const b = document.createElement("div"); b.className = "vbar"; vizEl.appendChild(b); vBars.push(b); }
   let vConv = null, vConnecting = false, vRafId = 0, vLive = false, vAutoRetried = false, vMuted = false;
   const vSmoothed = new Array(NUM_BARS).fill(0);
-  let vMicCtx = null, vMicAnalyser = null, vMicBuf = null, vAgentLevel = 0, vAgentActiveUntil = 0;
+  // Agent speaking window + level, mirrored from voice.html: `vAgentSpeaking`
+  // follows the SDK's mode (onModeChange, worklet-playback-driven — flips false
+  // only when the output buffer DRAINS), and the level replays a per-50ms RMS
+  // envelope of the real chunks at wall-clock rate. Chunk ARRIVAL must never
+  // drive the bars — the SDK bursts a whole turn into the buffer seconds ahead
+  // of the audio the user hears, which is what desynced the wave (note 852e435b).
+  let vMicCtx = null, vMicAnalyser = null, vMicBuf = null, vAgentSpeaking = false;
+  const V_SLICE_MS = 50, V_SLICE_BYTES = (16000 * 2 * V_SLICE_MS) / 1000; // 16kHz mono PCM16
+  const vAgentEnv = []; let vAgentEnvPos = 0, vAgentEnvClock = 0;
+  function vAgentEnvReset() { vAgentEnv.length = 0; vAgentEnvPos = 0; vAgentEnvClock = 0; }
+  function vAgentEnvPush(b64) {
+    const s = atob(b64);
+    for (let off = 0; off + 1 < s.length; off += V_SLICE_BYTES) {
+      const end = Math.min(s.length, off + V_SLICE_BYTES);
+      let sum = 0, count = 0;
+      for (let i = off; i + 1 < end; i += 4) { let v = s.charCodeAt(i) | (s.charCodeAt(i + 1) << 8); if (v >= 32768) v -= 65536; sum += v * v; count++; }
+      const rms = count ? Math.sqrt(sum / count) / 32768 : 0;
+      vAgentEnv.push(Math.min(1, rms * 4));
+    }
+    const consumed = Math.floor(vAgentEnvPos);
+    if (consumed > 400) { vAgentEnv.splice(0, consumed); vAgentEnvPos -= consumed; }
+  }
+  function vAgentEnvLevel() {
+    const now = performance.now();
+    const dt = vAgentEnvClock ? Math.min(now - vAgentEnvClock, 200) : 0;
+    vAgentEnvClock = now;
+    vAgentEnvPos += dt / V_SLICE_MS;
+    if (!vAgentEnv.length) return 0;
+    return vAgentEnv[Math.min(vAgentEnv.length - 1, Math.floor(vAgentEnvPos))];
+  }
   const setVErr = (e) => { verrEl.textContent = e || ""; };
   const micAvailable = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
   function vTeardownAudio() { try { if (vMicCtx) vMicCtx.close(); } catch {} vMicCtx = null; vMicAnalyser = null; vMicBuf = null; }
-  function pcmLevel(b64) { const s = atob(b64); const n = s.length; if (n < 2) return 0; const step = n > 4000 ? 8 : 2; let sum = 0, count = 0; for (let i = 0; i + 1 < n; i += step) { let v = s.charCodeAt(i) | (s.charCodeAt(i + 1) << 8); if (v >= 32768) v -= 65536; sum += v * v; count++; } const rms = count ? Math.sqrt(sum / count) / 32768 : 0; return Math.min(1, rms * 4); }
   function vBin(data, n) { const out = new Array(n).fill(0); if (!data || !data.length) return out; const per = Math.max(1, Math.floor(data.length / n)); for (let i = 0; i < n; i++) { let s = 0; for (let j = 0; j < per; j++) s += data[i * per + j] || 0; out[i] = s / per / 255; } return out; }
   function vMeter() {
     if (!vLive) return;
-    const speaking = Date.now() < vAgentActiveUntil; let raw;
-    try { if (speaking) { raw = []; for (let i = 0; i < NUM_BARS; i++) { const shape = 0.55 + 0.45 * Math.sin((i / (NUM_BARS - 1)) * Math.PI); raw.push(vAgentLevel * shape); } } else if (vMicAnalyser) { vMicAnalyser.getByteFrequencyData(vMicBuf); raw = vBin(vMicBuf, NUM_BARS); } else { raw = vBin(vConv && vConv.getInputByteFrequencyData && vConv.getInputByteFrequencyData(), NUM_BARS); } } catch { raw = new Array(NUM_BARS).fill(0); }
+    const speaking = vAgentSpeaking; let raw;
+    try { if (speaking) { const lvl = vAgentEnvLevel(); raw = []; for (let i = 0; i < NUM_BARS; i++) { const shape = 0.55 + 0.45 * Math.sin((i / (NUM_BARS - 1)) * Math.PI); raw.push(lvl * shape); } } else if (vMicAnalyser) { vMicAnalyser.getByteFrequencyData(vMicBuf); raw = vBin(vMicBuf, NUM_BARS); } else { raw = vBin(vConv && vConv.getInputByteFrequencyData && vConv.getInputByteFrequencyData(), NUM_BARS); } } catch { raw = new Array(NUM_BARS).fill(0); }
     for (let i = 0; i < NUM_BARS; i++) { const decayed = vSmoothed[i] * DECAY; vSmoothed[i] = raw[i] > decayed ? raw[i] : decayed; const h = 0.16 + Math.min(1, vSmoothed[i]) * 0.84; vBars[i].style.transform = `scaleY(${h.toFixed(3)})`; }
     vRafId = requestAnimationFrame(vMeter);
   }
@@ -3390,8 +3427,11 @@
         onConnect: () => { if (timedOut) return; vConnecting = false; vAutoRetried = false; vLive = true; document.body.classList.remove("vconnecting"); vMeter(); },
         onDisconnect: () => { if (!timedOut) vTeardown(); },
         onError: (m) => setVErr(typeof m === "string" ? m : (m && m.message) || "voice error"),
-        onAudio: (b64) => { try { const lvl = pcmLevel(b64); vAgentLevel = Math.max(lvl, vAgentLevel * 0.6); vAgentActiveUntil = Date.now() + 280; } catch {} },
+        onAudio: (b64) => { try { vAgentEnvPush(b64); } catch {} },
         onMessage: ({ message, role }) => { const text = (message || "").trim(); if (!text) return; api("/voice-transcript", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role: role === "user" ? "user" : "assistant", text }) }).catch(() => {}); },
+        // Mode leaving "speaking" = the playback buffer drained (or barge-in) —
+        // everything that arrived was heard, so drop the queued envelope tail.
+        onModeChange: ({ mode }) => { vAgentSpeaking = mode === "speaking"; if (!vAgentSpeaking) vAgentEnvReset(); },
       });
       sessionPromise.then((c) => { clearTimeout(watchdog); if (timedOut && c) { try { c.endSession(); } catch {} } }).catch(() => clearTimeout(watchdog));
       vConv = await Promise.race([sessionPromise, new Promise((_, rej) => { watchdog = setTimeout(() => { timedOut = true; rej(new Error("connect timed out after 15s")); }, 15000); })]);
@@ -3402,7 +3442,7 @@
       setVErr(String((e && e.message) || e));
     }
   }
-  function vTeardown() { vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; vConv = null; vConnecting = false; }
+  function vTeardown() { vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vAgentSpeaking = false; vAgentEnvReset(); vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; vConv = null; vConnecting = false; }
   async function vStop() { try { if (vConv) await vConv.endSession(); } catch {} vTeardown(); }
   $("voiceRow").onclick = () => {
     closeMenu();
