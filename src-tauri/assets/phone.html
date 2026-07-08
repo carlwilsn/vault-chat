@@ -2730,17 +2730,30 @@
       : () => markRead(n.id));
     return card;
   }
-  // Tap -> bottom sheet. Every ask opens the deliberation sheet; info alerts keep
-  // the plain summary sheet.
+  // Tap -> bottom sheet. Every ask opens the deliberation sheet; an info alert
+  // gets the summary + the SAME live conversation on its source thread ("ask
+  // about this…"). This is the open-thread swap: the old "Open thread" action
+  // dumped the user into the raw execution log — worker wakes, tool chatter,
+  // harness plumbing — which is unreadable as an answer to "what is this alert?".
+  // Now you just ask, and the thread's conversational front answers in place.
+  // (The raw thread stays reachable via Activity → the mission, where it makes
+  // sense.)
   async function openAlertSheet(n, isAction) {
     if (isAction || n.kind === "ask") { openDeliberationSheet(n); return; }
     const meta = alertMeta(n);
+    const canTalk = !!n.convId;
+    let probe = null;
     openSheet({
       intent: n.intention || meta.intention, title: n.title, ico: n.icon || meta.icon, cls: n.cls || meta.cls,
-      action: (n.convId && !isAction) ? { label: "Open thread", onClick: () => { markRead(n.id); closeSheet(); surfaceThread(n.convId); openThread(n.convId, n.title); } } : null,
-      bodyHtml: '<div class="md">' + md(n.body || "*(no summary)*") + "</div>",
-      footHtml: "",
+      action: null,
+      bodyHtml: '<div class="md">' + md(n.body || "*(no summary)*") + "</div>"
+        + (canTalk ? '<div class="delib-conv"><div id="delibX"></div></div>' : ""),
+      footHtml: canTalk
+        ? '<div class="reply delib-probe"><textarea class="rinp" rows="1" placeholder="Ask about this…" enterkeyhint="send"></textarea><span class="rsend"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span></div>'
+        : "",
+      wire: (body, foot) => { if (canTalk) wireReply(foot, (v) => probe && probe(v)); },
     });
+    if (canTalk) probe = attachSheetConversation(n.convId);
   }
   // The feed card for an ask. A neutral card: a subtle near-white "Needs you" dot
   // + label, a top-right chat icon that opens the deliberation sheet ("dig in"),
@@ -2788,10 +2801,85 @@
   // Multiple rounds: after a probe reply lands, the sheet re-fetches the thread so
   // new direct turns appear; if the agent surfaces a fresh ask with new options,
   // the newest ask's options replace the buttons (latest wins).
-  let delibConvId = "";
+  // Shared live-conversation plumbing for alert sheets (ask AND info): the sheet
+  // talks to the alert's source thread with the mission sheet's exact machinery —
+  // sheetConvId + a paint that renders the thread's DIRECT turns into #delibX +
+  // the 3s poll; the front's reply streams via #chatEdge and folds in when
+  // persisted. Returns the probe sender (a plain /message — never resolves an
+  // ask). This is what replaced the old "Open thread" jump into the raw
+  // execution log: you converse ABOUT the alert instead of decoding the log.
+  function attachSheetConversation(cid) {
+    sheetConvId = cid;
+    updateConvDot();
+    const optimistic = [];
+    let lastSig = "";
+    async function paint() {
+      // Frozen while the front is answering: its reply drives #chatEdge directly;
+      // chat-end repaints (same contract as the mission sheet).
+      if (sheetChatActive) return;
+      let liveRun = false;
+      try { const st = await (await api("/status")).json(); liveRun = (st.runs || []).some((r) => r.convId === cid); } catch {}
+      let msgs = [];
+      try {
+        const d = await (await api("/conversation?id=" + encodeURIComponent(cid) + "&n=40")).json();
+        if (!d.error) msgs = (d.messages || []).filter((m) => m.direct && (m.role === "user" || m.role === "assistant"));
+      } catch {}
+      // Drop optimistic bubbles the persisted thread now contains.
+      for (let k = optimistic.length - 1; k >= 0; k--) {
+        if (msgs.some((m) => m.role === "user" && (m.content || "").trim() === optimistic[k].trim())) optimistic.splice(k, 1);
+      }
+      const shown = msgs.slice(-8).concat(optimistic.map((t) => ({ role: "user", content: t })));
+      if (liveRun) sheetEnded = false;
+      const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
+      sheetRunning = liveRun || (hasLive && !sheetEnded);
+      // This surface is a conversation — a reply here renders as prose, never the
+      // executor thought-chain.
+      sheetDirectReply = true;
+      const showLive = sheetRunning || sheetOptimisticWorking;
+      const sig = JSON.stringify(shown.map((m) => [m.role, (m.content || "").length])) + "|" + showLive;
+      if (sig === lastSig) return; // unchanged — don't disrupt reading/typing
+      lastSig = sig;
+      const x = $("delibX"); if (!x) return;
+      const be = $("sheetBody");
+      const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 90;
+      x.innerHTML = shown.map((m) => '<div class="delib-bub ' + (m.role === "user" ? "u" : "a") + '">' + esc((m.content || "").slice(0, 1200)) + "</div>").join("")
+        + (showLive ? liveEdgeHtml() : "");
+      // Two-lane fold-in with no gap, same as the mission sheet: hold a settling
+      // chat reply on screen until its persisted bubble is in the fetched thread.
+      if (sheetChatSettling && sheetChatText) {
+        const key = sheetChatText.replace(/\s+/g, " ").trim().slice(0, 30);
+        const landed = key && shown.some((m) => m.role === "assistant" && (m.content || "").replace(/\s+/g, " ").indexOf(key) >= 0);
+        if (landed) { sheetChatSettling = false; sheetChatText = ""; const ce = $("chatEdge"); if (ce) ce.remove(); }
+        else renderChatEdge(sheetChatText, true);
+      }
+      if (be && wasBottom) be.scrollTop = be.scrollHeight;
+    }
+    // Probe: a plain /message (the box routes it to the conversational front; a
+    // pending ask stays pending). Optimistic bubble + "working…" the instant you
+    // send, exactly like a supervisor thread.
+    async function sendProbe(text) {
+      optimistic.push(text);
+      sheetOptimisticWorking = true;
+      sheetEnded = false;
+      lastSig = ""; // force the next paint to re-render with the new bubble
+      setTimeout(() => { if (sheetOptimisticWorking) { sheetOptimisticWorking = false; if (sheetRepaint) void sheetRepaint(); } }, 15000);
+      void paint();
+      const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
+      await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: cid, text, clientMsgId }) }).catch(() => {});
+      setTimeout(() => { void paint(); }, 900); // pick up the durably-persisted turn quickly
+    }
+    sheetRepaint = paint;
+    void paint();
+    missionPoll = setInterval(() => {
+      if (!$("sheet").classList.contains("on")) { clearInterval(missionPoll); missionPoll = 0; return; }
+      void paint();
+    }, 3000);
+    return sendProbe;
+  }
   async function openDeliberationSheet(n) {
     const del = deliberationFromNotif(n);
-    delibConvId = n.convId || "";
+    const cid = n.convId || "";
+    let probe = null;
     let bodyHtml = '<div class="delib-conv">';
     bodyHtml += '<div class="delib-eyebrow">The decision</div>';
     bodyHtml += '<div class="delib-ask">' + esc(del.askLong || del.ask || "") + "</div>";
@@ -2825,90 +2913,22 @@
           ans.querySelector(".rsend").onclick = go;
         }
         // The probe input talks it through — a plain /message, NOT an answer.
-        wireReply(foot, (v) => sendProbe(v));
+        wireReply(foot, (v) => probe && probe(v));
       },
     });
     // Mock/legacy ask with no thread behind it: render any baked sample exchange
     // statically and stop — there's nothing live to wire.
-    if (!delibConvId) {
+    if (!cid) {
       const baked = Array.isArray(n.deliberation && n.deliberation.exchange) ? n.deliberation.exchange : [];
       const x0 = $("delibX");
       if (x0) x0.innerHTML = baked.map((m) => '<div class="delib-bub ' + (m.role === "user" ? "u" : "a") + '">' + esc(m.text || "") + "</div>").join("");
       return;
     }
-    // [ask-conversation] Talk-it-through is a REAL conversation, wired with the
-    // mission sheet's exact live plumbing (sheetConvId + sheetRepaint + poll): the
-    // conversational front's reply STREAMS into #chatEdge via the chat events, a
-    // direct executor turn streams via the live edge, and finished turns fold in
-    // from the persisted thread. The old one-shot re-render at 2.6s always missed
-    // the reply (turns take 5-30s), so the sheet looked dead ("the conversation
-    // doesn't work — it should work just like a supervisor one").
-    sheetConvId = delibConvId;
-    updateConvDot();
-    const optimistic = [];
-    let lastSig = "";
-    async function paint() {
-      // Frozen while the front is answering: its reply drives #chatEdge directly;
-      // chat-end repaints (same contract as the mission sheet).
-      if (sheetChatActive) return;
-      let liveRun = false;
-      try { const st = await (await api("/status")).json(); liveRun = (st.runs || []).some((r) => r.convId === delibConvId); } catch {}
-      let msgs = [];
-      try {
-        const d = await (await api("/conversation?id=" + encodeURIComponent(delibConvId) + "&n=40")).json();
-        if (!d.error) msgs = (d.messages || []).filter((m) => m.direct && (m.role === "user" || m.role === "assistant"));
-      } catch {}
-      // Drop optimistic bubbles the persisted thread now contains.
-      for (let k = optimistic.length - 1; k >= 0; k--) {
-        if (msgs.some((m) => m.role === "user" && (m.content || "").trim() === optimistic[k].trim())) optimistic.splice(k, 1);
-      }
-      const shown = msgs.slice(-8).concat(optimistic.map((t) => ({ role: "user", content: t })));
-      if (liveRun) sheetEnded = false;
-      const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
-      sheetRunning = liveRun || (hasLive && !sheetEnded);
-      // This surface is a conversation — a reply here renders as prose, never the
-      // executor thought-chain.
-      sheetDirectReply = true;
-      const showLive = sheetRunning || sheetOptimisticWorking;
-      const sig = JSON.stringify(shown.map((m) => [m.role, (m.content || "").length])) + "|" + showLive;
-      if (sig === lastSig) return; // unchanged — don't disrupt reading/typing
-      lastSig = sig;
-      const x = $("delibX"); if (!x) return;
-      const be = $("sheetBody");
-      const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 90;
-      x.innerHTML = shown.map((m) => '<div class="delib-bub ' + (m.role === "user" ? "u" : "a") + '">' + esc((m.content || "").slice(0, 1200)) + "</div>").join("")
-        + (showLive ? liveEdgeHtml() : "");
-      // Two-lane fold-in with no gap, same as the mission sheet: hold a settling
-      // chat reply on screen until its persisted bubble is in the fetched thread.
-      if (sheetChatSettling && sheetChatText) {
-        const key = sheetChatText.replace(/\s+/g, " ").trim().slice(0, 30);
-        const landed = key && shown.some((m) => m.role === "assistant" && (m.content || "").replace(/\s+/g, " ").indexOf(key) >= 0);
-        if (landed) { sheetChatSettling = false; sheetChatText = ""; const ce = $("chatEdge"); if (ce) ce.remove(); }
-        else renderChatEdge(sheetChatText, true);
-      }
-      if (be && wasBottom) be.scrollTop = be.scrollHeight;
-    }
-    // Probe: talk it through WITHOUT resolving — a plain /message (the box routes
-    // it to the conversational front; the ask stays pending). Optimistic bubble +
-    // "working…" the instant you send, exactly like a supervisor thread.
-    async function sendProbe(text) {
-      if (!delibConvId) return;
-      optimistic.push(text);
-      sheetOptimisticWorking = true;
-      sheetEnded = false;
-      lastSig = ""; // force the next paint to re-render with the new bubble
-      setTimeout(() => { if (sheetOptimisticWorking) { sheetOptimisticWorking = false; if (sheetRepaint) void sheetRepaint(); } }, 15000);
-      void paint();
-      const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
-      await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: delibConvId, text, clientMsgId }) }).catch(() => {});
-      setTimeout(() => { void paint(); }, 900); // pick up the durably-persisted turn quickly
-    }
-    sheetRepaint = paint;
-    await paint();
-    missionPoll = setInterval(() => {
-      if (!$("sheet").classList.contains("on")) { clearInterval(missionPoll); missionPoll = 0; return; }
-      void paint();
-    }, 3000);
+    // [ask-conversation] Talk-it-through is a REAL conversation on the mission
+    // thread — the shared plumbing streams the front's reply and folds it in.
+    // (The old one-shot re-render at 2.6s always missed the reply, so the sheet
+    // looked dead — "it should work just like a supervisor one".)
+    probe = attachSheetConversation(cid);
   }
   // Resolve an ask: the TAGGED answer path (a tapped option OR a committed
   // freeform reply). Hits /answer so the box clears AWAITING_USER and resumes the
