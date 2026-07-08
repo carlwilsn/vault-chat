@@ -2672,6 +2672,13 @@
       mode = null;
       card.style.transition = "transform .18s ease, opacity .18s ease";
       if (dx < -70) {
+        // Remember WHERE in the list you were, so the reload below doesn't yank you
+        // to the top. loadAlerts/loadActivity/loadNotes rebuild innerHTML (scrollTop
+        // → 0), so swiping a card DOWN in the archive scrolled you back up to the
+        // unread section — making it look like the swipe hit the wrong card and a
+        // "normal" alert reappeared. It didn't; the view just jumped.
+        const scroller = card.closest("#alScroll,#actScroll,#notesScroll");
+        const prevTop = scroller ? scroller.scrollTop : 0;
         card.style.transform = "translateX(-110%)"; card.style.opacity = "0";
         // Collapse the card's vertical space as it leaves so the list closes the
         // gap smoothly. A translateX alone leaves the card's HEIGHT in the layout,
@@ -2685,7 +2692,12 @@
           card.style.height = "0px"; card.style.marginTop = "0px"; card.style.marginBottom = "0px"; card.style.paddingTop = "0px"; card.style.paddingBottom = "0px";
         });
         await action();
-        setTimeout(reload, 240);
+        setTimeout(async () => {
+          await Promise.resolve(reload());
+          // Put the scroll back where it was (clamped to the now-shorter list) so the
+          // removed card just closes up in place instead of the view jumping to top.
+          if (scroller) scroller.scrollTop = Math.min(prevTop, Math.max(0, scroller.scrollHeight - scroller.clientHeight));
+        }, 240);
       } else {
         card.style.transform = "";
       }
