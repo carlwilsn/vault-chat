@@ -5396,7 +5396,20 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         if !st.trim().is_empty() {
             let (hn, he) = human_identity(&vault);
             let _ = run_git_as(&vault, &hn, &he, &["add", "-A"]);
-            let _ = run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: auto-sync submodule pointers"]);
+            // Same guard as vault_sync_commit_local: sync_nested_repos's own push
+            // for a sub-repo can fail silently (network blip, auth) while its local
+            // commit still landed, so the gitlink bump staged above can point at a
+            // sub-commit the sub-repo's remote never received. Publishing that
+            // pointer here — on every pull cycle, unattended — is exactly what
+            // strands a follower's recursive fetch on a lost ref. Hold any such
+            // pointer at its last-pushed value; it advances on a later cycle once
+            // the sub-repo's own push lands.
+            let held = hold_unpushed_submodule_gitlinks(&vault);
+            let nothing_staged = held > 0
+                && matches!(run_git(&vault, &["diff", "--cached", "--quiet"]), Ok((_, _, 0)));
+            if !nothing_staged {
+                let _ = run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: auto-sync submodule pointers"]);
+            }
         }
         Ok(SyncOpResult {
             ok: true,
