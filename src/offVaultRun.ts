@@ -1461,55 +1461,137 @@ function isAbsenceCriterion(text: string): boolean {
 
 async function readNamedFiles(
   vault: string,
-  text: string,
+  criterionText: string,
+  briefText: string,
   invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>,
 ): Promise<string> {
   // An absence/removal criterion inverts the read: a missing named file is the
   // proof of success, not an inconclusive gap.
-  const absence = isAbsenceCriterion(text);
-  const seen = new Set<string>();
-  const rels: string[] = [];
+  // [proxy-v3] Classified from the CRITERION ALONE — never the brief. The brief
+  // routinely describes a deliberately-missing file ("reconcile against
+  // missing-input.md, which does not exist"), and classifying from the combined
+  // text turned EVERY criterion into an absence check ("6 removal-absence
+  // checks (unrelated files)"), scrambling the auditor for the whole run.
+  const absence = isAbsenceCriterion(criterionText);
+  const vaultFwd = vault.replace(/\\/g, "/").replace(/\/+$/, "");
+  const toRel = (p: string) => {
+    const a = p.replace(/\\/g, "/");
+    return a.startsWith(vaultFwd + "/") ? a.slice(vaultFwd.length + 1) : a;
+  };
+  const globVault = async (pattern: string): Promise<string[]> =>
+    ((await invoke<string[]>("glob_files", { pattern, cwd: vault }).catch(() => [])) ?? [])
+      .filter((h) => !/\/(\.git|node_modules)\//.test(h.replace(/\\/g, "/")));
   // The leading `\.?` is load-bearing: vault paths are dotfiles
   // (`.vault-chat/...`), and a match that starts at `[\w]` would drop the dot and
   // resolve `${vault}/vault-chat/...` — a path that never exists — making every
   // criterion that names a vault file read as "absent" and get falsely rejected.
-  const re = /`?(\.?[\w][\w./\-]*\.[A-Za-z0-9]{1,6})`?/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const rel = m[1]!.replace(/^\.\//, "");
-    if (!rel.includes("/")) continue; // a bare filename is too ambiguous to resolve
-    if (rel.includes("..")) continue; // never traverse out of the vault
-    if (seen.has(rel)) continue;
-    seen.add(rel);
-    rels.push(rel);
-    if (rels.length >= 6) break; // bound the reads
+  const extractRels = (text: string): string[] => {
+    const out: string[] = [];
+    const re = /`?(\.?[\w][\w./\-]*\.[A-Za-z0-9]{1,6})`?/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const rel = m[1]!.replace(/^\.\//, "");
+      if (!rel.includes("/")) continue; // a bare filename is too ambiguous to resolve
+      if (rel.includes("..")) continue; // never traverse out of the vault
+      out.push(rel);
+    }
+    return out;
+  };
+  // Template/wildcard paths (`cap-<name>.md`, `fail-*.md`) — criteria phrase
+  // fan-out artifacts this way, and "verify every file exists and is
+  // substantive" was structurally unprovable while the reader skipped them
+  // (PROXY V3's fan-out criterion failed 8+ times with real files on disk).
+  // Require ≥3 literal chars in the basename prefix so `*.md` can't list the
+  // whole vault.
+  const extractTemplates = (text: string): string[] => {
+    const out: string[] = [];
+    const re = /`?(\.?[\w][\w./\-]*(?:<[^>`\s]{0,40}>|\*)[\w./\-]*\.[A-Za-z0-9]{1,6})`?/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const pat = m[1]!.replace(/^\.\//, "").replace(/<[^>]*>/g, "*");
+      if (pat.includes("..")) continue;
+      const base = pat.split("/").pop() || "";
+      if ((base.split("*")[0] || "").length < 3) continue;
+      out.push(pat);
+    }
+    return out;
+  };
+  // Criterion-named files take the read budget FIRST; brief-named files fill
+  // the remainder. (The old shared cap of 6 let the brief's paths starve the
+  // criterion's own files out of the evidence entirely.)
+  const seen = new Set<string>();
+  const rels: string[] = [];
+  for (const rel of extractRels(criterionText)) {
+    if (!seen.has(rel) && rels.length < 6) { seen.add(rel); rels.push(rel); }
   }
+  for (const rel of extractRels(briefText)) {
+    if (!seen.has(rel) && rels.length < 8) { seen.add(rel); rels.push(rel); }
+  }
+  const templates = [...new Set(extractTemplates(criterionText))].slice(0, 3);
   const parts: string[] = [];
   for (const rel of rels) {
-    const body = await invoke<string>("read_text_file", { path: `${vault}/${rel}` }).catch(() => null);
+    // Direct read first; on a miss, RESOLVE BY SUFFIX SEARCH before concluding
+    // anything. [proxy-v3 root cause] Briefs put artifacts under a base dir
+    // stated once in prose (".vault-chat/selftest/proxy-r3/") while criteria
+    // say "proxy-r3/wakes.log" — the strict `${vault}/${rel}` read missed for
+    // 20 hours straight and every artifact was reported absent while sitting
+    // on disk AND in committed git HEAD.
+    let at = rel;
+    let searched = false;
+    let body = await invoke<string>("read_text_file", { path: `${vault}/${rel}` }).catch(() => null);
+    if (body == null) {
+      searched = true;
+      const hits = await globVault(`**/${rel}`);
+      if (hits.length) {
+        body = await invoke<string>("read_text_file", { path: hits[0]! }).catch(() => null);
+        if (body != null) at = toRel(hits[0]!);
+      }
+    }
     if (body == null) {
       if (absence) {
         // [markdone auditor] A removal/absence criterion is SATISFIED by the file
-        // not existing. "not found" here IS the positive proof — never rejected as
-        // inconclusive. (The read helper can't distinguish "deleted" from "path I
-        // couldn't resolve", so this is a strong signal, not a certainty; the
-        // auditor still weighs it against the goal file — but it must not treat a
-        // successful deletion as a failure.)
-        parts.push(`-- ${rel}: NOT FOUND on disk — this is a removal/absence criterion, so a missing file is POSITIVE PROOF the criterion is MET (do not reject as inconclusive). --`);
+        // not existing — and with the recursive search behind it, "not found" is
+        // now a strong, honest signal rather than a maybe-unresolved path.
+        parts.push(`-- ${rel}: NOT FOUND anywhere under the vault (direct read + recursive search) — this is a removal/absence criterion, so a missing file is POSITIVE PROOF the criterion is MET (do not reject as inconclusive). --`);
       } else {
-        // Could NOT read — treat as INCONCLUSIVE, never as proof of failure. A path
-        // this reader can't resolve (or a transient read error) must not hard-block
-        // a legitimate completion; the auditor falls back to the goal file. Only a
-        // file that reads with CONTRADICTING content is a hard fail.
-        parts.push(`-- ${rel}: could not be read here (unresolved path or read error) — inconclusive, not proof of absence --`);
+        // Genuinely absent: the recursive search means this is no longer "maybe
+        // an unresolved path" — the file does not exist on this machine. State
+        // that plainly so the auditor can verify absence honestly (it used to be
+        // unable to distinguish "missing" from "misresolved").
+        parts.push(`-- ${rel}: NOT FOUND anywhere under the vault (direct read + recursive suffix search both missed) — for a presence criterion, this file genuinely does not exist here. --`);
       }
     } else if (absence && body.trim() === "") {
       // An empty file for an "emptied / cleared" criterion is also positive proof.
-      parts.push(`-- ${rel}: EXISTS but is EMPTY — for an emptied/cleared criterion this is POSITIVE PROOF the criterion is MET. --`);
+      parts.push(`-- ${at}: EXISTS but is EMPTY — for an emptied/cleared criterion this is POSITIVE PROOF the criterion is MET. --`);
     } else {
       const lineCount = body.split(/\r?\n/).length;
-      parts.push(`-- ${rel} (${lineCount} lines, ${body.length} bytes) --\n${body.slice(0, 2500)}`);
+      const where = searched && at !== rel ? `${rel} → resolved at ${at}` : at;
+      parts.push(`-- ${where} (${lineCount} lines, ${body.length} bytes) --\n${body.slice(0, 2500)}`);
     }
+  }
+  // Expand each template into a real listing + a bounded sample of contents —
+  // the ground truth for "all <pattern> files exist and are substantive".
+  for (const pat of templates) {
+    const hits = await globVault(`**/${pat}`);
+    if (!hits.length) {
+      parts.push(absence
+        ? `-- pattern ${pat}: matches NOTHING under the vault — for a removal/absence criterion this is POSITIVE PROOF the criterion is MET. --`
+        : `-- pattern ${pat}: matches NOTHING under the vault (recursive search) — the expected files do not exist here. --`);
+      continue;
+    }
+    const listed = hits.slice(0, 24);
+    const lines: string[] = [];
+    for (let i = 0; i < listed.length; i++) {
+      const body = await invoke<string>("read_text_file", { path: listed[i]! }).catch(() => null);
+      const relAt = toRel(listed[i]!);
+      if (body == null) { lines.push(`  - ${relAt} (unreadable)`); continue; }
+      const lc = body.split(/\r?\n/).length;
+      lines.push(`  - ${relAt} (${lc} lines, ${body.length} bytes)`);
+      // Content sample for the first few so "substantive" is judgeable, not
+      // just countable.
+      if (i < 3) lines.push(`    | ${body.slice(0, 400).replace(/\n/g, "\n    | ")}`);
+    }
+    parts.push(`-- pattern ${pat}: ${hits.length} file(s) match under the vault${hits.length > 24 ? " (showing 24)" : ""} --\n${lines.join("\n")}`);
   }
   return parts.join("\n\n");
 }
@@ -1618,7 +1700,11 @@ export async function markDoneWhen(
       const goalDoc = goalPath
         ? await invoke<string>("read_text_file", { path: `${vault}/${goalPath}` }).catch(() => "")
         : "";
-      const groundTruth = await readNamedFiles(vault, `${matched}\n${criterion}\n${briefText}`, invoke);
+      // Criterion text drives absence-classification and gets read priority;
+      // the brief only contributes secondary paths (see readNamedFiles —
+      // classifying absence from the combined text poisoned every PROXY V3
+      // audit via the brief's "which does not exist" phrase).
+      const groundTruth = await readNamedFiles(vault, `${matched}\n${criterion}`, briefText, invoke);
       const recent = mission0.messages
         .filter((m) => m.role === "assistant")
         .slice(-2)
