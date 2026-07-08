@@ -1228,11 +1228,17 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         criterion: z
           .string()
           .describe("The 'Done when' item you've just verified, roughly as it reads in the brief."),
+        user_waiver: z
+          .string()
+          .optional()
+          .describe(
+            "ONLY when the USER explicitly authorized checking this criterion off (a force-close, an 'I confirm it arrived', a rescope): their authorizing words, QUOTED VERBATIM from their message in this thread. The harness verifies the quote really exists in a user message and then passes the criterion on the user's authority — the escape hatch for a criterion only the user can verify (did a card reach their phone?) or that the auditor is wrongly blocking. Never paraphrase; never use for criteria you can evidence yourself.",
+          ),
       }),
-      execute: async ({ criterion }) => {
+      execute: async ({ criterion, user_waiver }) => {
         if (!conversationId) return "No mission context — can't mark a criterion.";
         const { markDoneWhen } = await import("./offVaultRun");
-        const res = await markDoneWhen(vault, conversationId, criterion).catch(
+        const res = await markDoneWhen(vault, conversationId, criterion, user_waiver).catch(
           () => ({ matched: null, verified: false, reason: "internal error" }) as const,
         );
         // [harness v2] The check-off is gated by an independent evidence audit —

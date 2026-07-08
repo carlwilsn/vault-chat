@@ -53,6 +53,13 @@ Vault selection is **localStorage-only** (`vault_chat_last_vault`), the firing/t
 
 **Prerequisite check:** if `netstat -ano | grep :8848` shows a LISTENER, the installed app is already running (it holds 8848 and syncs its vault). The dev instance MUST use a different `VITE_COCKPIT_PORT`, and you must NOT repoint the running app. API keys come from the OS keychain (per-user), so the isolated store still has them — the agent can run.
 
+**Vite port clash (another session's dev server on 1420):** `vite.config.ts` pins port 1420 with strictPort, and node often binds it IPv6-only (`[::1]:1420`) — check `netstat -ano | grep :1420` WITHOUT `-p tcp` or you'll miss it and get "Port 1420 is already in use" at boot. Don't kill the other session's server; boot on your own port with a tauri config override (2026-07-07, verified):
+```bash
+# override.json: {"build":{"beforeDevCommand":"npm run predev:tauri && npx vite --port 3420 --strictPort","devUrl":"http://localhost:3420"}}
+... npx tauri dev --config override.json
+```
+Note: when the beforeDevCommand FAILS, tauri may still have spawned `vault-chat.exe`, which orphan-loads whatever vite answers 1420 (the other session's — same working tree, so current code, env-less). Don't rely on that accident; use the override.
+
 ## Mint + watch locally (no push)
 
 For a local, single-instance test, mint writes the files directly — skip the `push` subcommand (that's for synced/box vaults):

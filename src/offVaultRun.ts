@@ -1514,10 +1514,26 @@ async function readNamedFiles(
 // passes the criterion (a paraphrase is fine); we fuzzy-match it to the brief's
 // bullets and store the matched bullet's exact text in doneWhenDone, so the
 // spec checks off that one bullet (per-criterion progress, not all-at-once).
+// Harness-generated wake prefixes share role:"user" with real user messages —
+// used to exclude plumbing wherever "the user's own words" matter (auditor
+// evidence, the user-waiver rail).
+const isPlumbingUserMsg = (t: string) =>
+  /^\s*(MISSION BRIEF|Watched run |Worker "|Your worker |Reply from worker |HARNESS CHECK )/.test(t);
+
 export async function markDoneWhen(
   vault: string,
   conversationId: string,
   criterion: string,
+  // [user-waiver rail] A verbatim quote of the USER's message that authorizes
+  // checking this criterion off (a force-close, an explicit confirmation, a
+  // rescope). Verified DETERMINISTICALLY: the quote must actually appear in a
+  // real (non-plumbing) user message on this thread — user messages arrive from
+  // the phone and cannot be authored by the agent. When it matches, the LLM
+  // audit is bypassed: the self-test deadlock proved a fast-model auditor
+  // cannot be trusted to APPLY its user-authority rule under conflict (it
+  // rejected a post-completion criterion over mind.md's "still EXECUTING" while
+  // four explicit force-close taps sat in its evidence).
+  userWaiver?: string,
 ): Promise<{ matched: string | null; verified: boolean; reason?: string }> {
   // Fuzzy-match the claimed criterion to the brief's bullets (read-only pass —
   // the write happens under the lock only after verification).
@@ -1550,13 +1566,38 @@ export async function markDoneWhen(
   }
   const matched = bestScore >= 0.5 ? best : criterion.trim();
 
+  // [user-waiver rail] Deterministic user authority: if the agent cites the
+  // user's authorizing words and the quote REALLY exists in a user message on
+  // this thread, the criterion passes without the LLM audit. String-match on
+  // normalized whitespace/case; minimum length so a trivial fragment ("ok")
+  // can't waive anything.
+  const waiverQuote = (userWaiver || "").replace(/\s+/g, " ").trim().toLowerCase();
+  let userAuthorized = false;
+  if (matched && waiverQuote.length >= 8) {
+    userAuthorized = mission0.messages.some(
+      (m) =>
+        m.role === "user" &&
+        !isPlumbingUserMsg(m.content || "") &&
+        (m.content || "").replace(/\s+/g, " ").trim().toLowerCase().includes(waiverQuote),
+    );
+    if (!userAuthorized) {
+      return {
+        matched,
+        verified: false,
+        reason: `the cited user_waiver quote does not appear in any user message on this thread — quote their authorization verbatim, or drop user_waiver and provide evidence`,
+      };
+    }
+    vlog("mission.markdone.user-waived", { conv: conversationId.slice(0, 8) });
+  }
+
   // [harness v2] Independent verification BEFORE the check-off lands. The actor
   // doesn't grade its own work: a fresh fast-model auditor judges whether the
   // RECORDED state (mind.md + the thread's recent output) concretely
   // substantiates the criterion. The BitNet-era lesson ("a worker reporting
   // 'completed' is NOT evidence") becomes a rail instead of a prompt plea.
   // Fails OPEN when no fast model is configured (verifier returns null).
-  if (harnessV2Enabled() && matched) {
+  // Skipped entirely when the user's own words authorized the check-off above.
+  if (harnessV2Enabled() && matched && !userAuthorized) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       // Evidence is GROUND TRUTH, not the agent's own prose. Two battery failures
@@ -1603,10 +1644,8 @@ export async function markDoneWhen(
       // saw the agent's second-hand record of the authorization (narration it is
       // told to distrust) — an unfixable deadlock that ping-spammed the user.
       // Harness wakes share role:"user", so exclude the known plumbing prefixes.
-      const isPlumbingMsg = (t: string) =>
-        /^\s*(MISSION BRIEF|Watched run |Worker "|Your worker |Reply from worker |HARNESS CHECK )/.test(t);
       const userVoice = mission0.messages
-        .filter((m) => m.role === "user" && (m.content || "").trim() && !isPlumbingMsg(m.content || ""))
+        .filter((m) => m.role === "user" && (m.content || "").trim() && !isPlumbingUserMsg(m.content || ""))
         .slice(-4)
         .map((m) => `- "${(m.content || "").trim().slice(0, 400)}"`)
         .join("\n");
