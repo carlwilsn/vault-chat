@@ -435,6 +435,19 @@ fn handle(mut req: Request, token: &str) {
                 let _ = req.respond(resp_text(400, "application/json", "{\"error\":\"missing id or vault\"}".into()));
             }
         }
+        (Method::Post, "/notifications/clear") => {
+            // "Clear notifications": empty the read/archived pile in one shot with a
+            // single {type:"clear", ts:now} marker (append-only, sync-friendly). Every
+            // READ notification at/older than now stops rendering; pending unread asks
+            // are kept. Beats swiping the 80-item cap one at a time.
+            if let Some(vault) = current_vault() {
+                let marker = json!({ "type": "clear", "ts": now_ms() }).to_string();
+                notification_append(&vault, &marker);
+                let _ = req.respond(resp_text(200, "application/json", "{\"ok\":true}".into()));
+            } else {
+                let _ = req.respond(resp_text(400, "application/json", "{\"error\":\"no vault\"}".into()));
+            }
+        }
         (Method::Get, "/schedules") => {
             let body = match relay_request("phone:schedules", json!({}), Duration::from_secs(10)) {
                 Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
@@ -1251,12 +1264,22 @@ fn notifications_json(vault: &str) -> String {
     // "hide" markers: swiped out of the Archive view. The jsonl line stays
     // (append-only, sync-friendly) — the notification just never renders again.
     let mut hidden_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // "clear" marker: the user emptied the feed. Every READ notification at/older
+    // than this ts stops rendering (pending unread asks are kept). One marker beats
+    // hiding the whole read pile one id at a time, and survives the 80-item cap.
+    // Latest clear ts wins.
+    let mut clear_before: i64 = 0;
     for line in raw.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         match v.get("type").and_then(|x| x.as_str()) {
             Some("read") => {
                 if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
                     read_ids.insert(id.to_string());
+                }
+            }
+            Some("clear") => {
+                if let Some(ts) = v.get("ts").and_then(|x| x.as_i64()) {
+                    clear_before = clear_before.max(ts);
                 }
             }
             Some("hide") => {
@@ -1272,10 +1295,16 @@ fn notifications_json(vault: &str) -> String {
         }
     }
     items.retain(|v| {
-        v.get("id")
-            .and_then(|x| x.as_str())
-            .map(|id| !hidden_ids.contains(id))
-            .unwrap_or(false)
+        let Some(id) = v.get("id").and_then(|x| x.as_str()) else { return false };
+        if hidden_ids.contains(id) {
+            return false;
+        }
+        // Cleared: a READ notification at/older than the last clear marker.
+        let ts = v.get("ts").and_then(|x| x.as_i64()).unwrap_or(0);
+        if read_ids.contains(id) && ts <= clear_before {
+            return false;
+        }
+        true
     });
     // Dedupe by id (union merges can duplicate lines), newest wins.
     let mut by_id: std::collections::HashMap<String, Value> = std::collections::HashMap::new();

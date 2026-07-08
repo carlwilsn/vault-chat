@@ -706,9 +706,10 @@
       if (u === "/conversation") { const t = DB.threads[q.get("id")]; return t ? reply(t) : reply({ error: "not found" }); }
       if (u === "/status") return reply({ vault: DB.vault, model: DB.model, version: "0.4.21-mock", runs: DB.runs });
       if (u === "/schedules") return reply({ schedules: DB.schedules });
-      if (u === "/notifications") return reply({ unread: DB.notifs.filter((n) => !n.read).length, notifications: DB.notifs });
+      if (u === "/notifications") { const ct = DB.notifClearTs || 0; const ns = DB.notifs.filter((n) => !(n.read && n.ts <= ct)); return reply({ unread: ns.filter((n) => !n.read).length, notifications: ns }); }
       if (u === "/notifications/read") { const n = DB.notifs.find((x) => x.id === body.id); if (n) n.read = true; return reply({ ok: true }); }
       if (u === "/notifications/hide") { DB.notifs = DB.notifs.filter((x) => x.id !== body.id); return reply({ ok: true }); }
+      if (u === "/notifications/clear") { DB.notifClearTs = Date.now(); return reply({ ok: true }); }
       if (u === "/notes") { const ns = DB.notes.filter((n) => n.status !== "cleared"); return reply({ open: ns.filter((n) => n.status === "open").length, notes: ns }); }
       if (u === "/notes/status") { const n = DB.notes.find((x) => x.id === body.id); if (n) n.status = body.status === "open" ? "open" : "resolved"; return reply({ ok: true }); }
       if (u === "/notes/clear-resolved") { let c = 0; DB.notes.forEach((n) => { if (n.status === "resolved") { n.status = "cleared"; c += 1; } }); return reply({ ok: true, cleared: c }); }
@@ -2585,6 +2586,22 @@
       if (!unread.length) box.appendChild(el('<div class="empty">All caught up — swipe a card left to archive it.</div>'));
       if (archived.length) {
         const holder = el('<div style="margin-top:8px"></div>'); holder.style.display = alertArchiveOpen ? "" : "none";
+        // Clear the whole read/archived pile in one shot (POST /notifications/clear
+        // writes a single clear-before marker) instead of swiping each — the 80-item
+        // cap means swiping never actually empties it. Two-tap confirm; pending
+        // unread asks are kept.
+        const clrN = el('<button class="earlier clearall">Clear archive · ' + archived.length + "</button>");
+        let armedN = false, armNT = 0;
+        clrN.onclick = async () => {
+          if (!armedN) { armedN = true; clrN.textContent = "Tap again to clear " + archived.length; clrN.classList.add("danger"); clearTimeout(armNT); armNT = setTimeout(() => { armedN = false; clrN.textContent = "Clear archive · " + archived.length; clrN.classList.remove("danger"); }, 3000); return; }
+          clrN.disabled = true;
+          try {
+            const r = await api("/notifications/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+            if (!r.ok) throw new Error();
+            toast("Notifications cleared."); alertArchiveOpen = false; void loadAlerts();
+          } catch { toast("Couldn't clear — try again"); clrN.disabled = false; clrN.classList.remove("danger"); clrN.textContent = "Clear archive · " + archived.length; armedN = false; }
+        };
+        holder.appendChild(clrN);
         for (const n of archived) holder.appendChild(alertCard(n, false));
         const t = el('<button class="earlier"></button>');
         const label = () => { t.textContent = (alertArchiveOpen ? "Hide archive · " : "Archive · ") + archived.length; };
