@@ -482,6 +482,22 @@ fn handle(mut req: Request, token: &str) {
             };
             let _ = req.respond(body);
         }
+        (Method::Post, "/answer") => {
+            // [AskUser redesign] The TAGGED answer to a "Needs you" ask — a tapped
+            // option or a committed free-form reply. Distinct from /message so a
+            // plain chat message (probing) can never resolve the ask: only this
+            // route clears AWAITING_USER and resumes the mission with the answer.
+            // Same relay pattern; the frontend's phone:answer handler applies the
+            // answer=true tag.
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            let body = match relay_request("phone:answer", payload, Duration::from_secs(15)) {
+                Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
+                _ => resp_text(503, "application/json", "{\"error\":\"app not answering — is a vault open?\"}".into()),
+            };
+            let _ = req.respond(body);
+        }
         (Method::Post, "/kill") => {
             let mut raw = String::new();
             let _ = req.as_reader().read_to_string(&mut raw);

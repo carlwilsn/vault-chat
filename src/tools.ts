@@ -1312,7 +1312,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     }),
     AskUser: tool({
       description:
-        "Surface a decision you need from the user as a 'Needs you' card on their phone (plus a push). They answer in their OWN words — no fixed options — and their reply comes back as the next message in THIS conversation. So the pattern is: call AskUser, then END YOUR TURN and wait; you'll be re-run with their answer. Use it ONLY at a real fork you shouldn't settle alone — a scope or design choice, a spend approval, a genuinely ambiguous result, or to get a freshly-scoped mission approved before you build the team. Do NOT use it for things you can reasonably decide yourself; the whole point of the system is to keep the user out of the loop except where their judgment is the input.",
+        "Surface a decision you need from the user as a 'Needs you' card on their phone (plus a push). Their reply comes back as the next message in THIS conversation. So the pattern is: call AskUser, then END YOUR TURN and wait; you'll be re-run with their answer. Use it ONLY at a real fork you shouldn't settle alone — a scope or design choice, a spend approval, a genuinely ambiguous result, or to get a freshly-scoped mission approved before you build the team. Do NOT use it for things you can reasonably decide yourself; the whole point of the system is to keep the user out of the loop except where their judgment is the input.\n\nWhen the fork has a small number of concrete paths, pass `options` — each a verbose {label, detail} card the user can tap on their phone to pick, or they can still answer in their own words (or dig in and talk it through with you first). Omit `options` for an open-ended question.",
       inputSchema: z.object({
         about: z
           .string()
@@ -1322,11 +1322,50 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           .describe(
             "The decision, stated tightly with the context/options they need — e.g. 'step 800, +0.05 nat above seed 1. real effect, or match the LR and rerun?'",
           ),
+        options: z
+          .array(
+            z.object({
+              label: z
+                .string()
+                .describe("The choice, as a short tappable phrase — e.g. 'Hold at $32' or 'Raise to $40'. This verbatim text is what gets fed back as the answer when the user taps it."),
+              detail: z
+                .string()
+                .describe("The full case for this option — the reasoning, tradeoffs, cost, and consequence, verbose is fine (1-4 sentences). Rendered as the option card's explanation on the phone."),
+              recommended: z
+                .boolean()
+                .optional()
+                .describe("Set true on AT MOST ONE option to mark it as your lean (rendered as the primary choice). Omit if you have no lean."),
+            }),
+          )
+          .optional()
+          .describe("Concrete paths the user can tap to pick. Omit for an open-ended, free-form question."),
       }),
-      execute: async ({ about, question }) => {
+      execute: async ({ about, question, options }) => {
         const { notify } = await import("./phoneApp");
-        await notify("ask", about || "Needs your call", question, conversationId);
-        return "Asked the user — their reply will arrive as the next message in this conversation. End your turn now and wait for it; do not guess the answer.";
+        const opts = Array.isArray(options) ? options.filter((o) => o?.label?.trim()) : [];
+        // With real options, carry the structured deliberation payload so the
+        // cockpit renders the "Needs you" deliberation card + inline-option sheet
+        // from REAL ask data. Without options, the free-form path is unchanged.
+        const extra =
+          opts.length > 0
+            ? {
+                deliberation: {
+                  mission: about || undefined,
+                  ask: question,
+                  askLong: question,
+                  options: opts.map((o) => ({
+                    answer: o.label.trim(),
+                    title: o.label.trim(),
+                    body: (o.detail || "").trim(),
+                    ...(o.recommended ? { primary: true } : {}),
+                  })),
+                },
+              }
+            : undefined;
+        await notify("ask", about || "Needs your call", question, conversationId, extra);
+        return opts.length > 0
+          ? "Asked the user with tappable options — their pick (or a typed answer) will arrive as the next message in this conversation. End your turn now and wait; do not guess the answer."
+          : "Asked the user — their reply will arrive as the next message in this conversation. End your turn now and wait for it; do not guess the answer.";
       },
     }),
     ListSchedules: tool({

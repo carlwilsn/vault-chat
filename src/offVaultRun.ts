@@ -328,7 +328,12 @@ export async function runWorkerTurn(
   // [harness v2] forkNudge marks the ONE deterministic re-entry the fork-forcing
   // rule is allowed (see the end of this function) — a nudged turn that parks
   // again escalates instead of recursing.
-  opts: { modelId?: string; resume?: boolean; direct?: boolean; forkNudge?: boolean } = {},
+  // [AskUser redesign] `answer` marks a TAGGED answer (a tapped option or a
+  // committed free-form reply, arriving via the /answer route) — the ONLY thing
+  // that clears a mission's AWAITING_USER wait and resumes the executor. A plain
+  // chat message (untagged /message) no longer clears the wait; it goes to the
+  // conversational front for probing instead of ending the ask.
+  opts: { modelId?: string; resume?: boolean; direct?: boolean; forkNudge?: boolean; answer?: boolean } = {},
 ): Promise<{ reply: string; error?: string }> {
   const store = useStore.getState();
   // Workers default to the heavy long-horizon worker model (Fable), NOT the
@@ -368,18 +373,20 @@ export async function runWorkerTurn(
     const messages = opts.resume
       ? list[idx]!.messages
       : [...list[idx]!.messages, userMsg];
-    // [harness v2] A genuine incoming message to a mission that's AWAITING_USER
-    // IS the user's answer — flip it back to RUNNING as the turn seeds, so the
-    // board stops saying "needs you" the moment the reply lands. (The scheduler
-    // refuses to fire self-checks into an awaiting mission, so anything arriving
-    // here that isn't a recognized harness wake came from the user, directly or
-    // relayed.)
+    // [AskUser redesign] Only a TAGGED answer (opts.answer — a tapped option or a
+    // committed free-form reply via /answer) clears a mission's AWAITING_USER wait
+    // and resumes the executor. A plain chat message no longer clears it: those go
+    // through the conversational front (runMissionChatTurn) for probing and never
+    // reach this function while AWAITING_USER. The `!isHarnessWake` guard stays as
+    // defense-in-depth — a harness wake must never clear the wait even if tagged.
+    // (The scheduler already refuses to fire self-checks into an awaiting mission.)
     const clearAwait =
       harnessV2Enabled() &&
       list[idx]!.source === "mission" &&
       list[idx]!.missionState === "AWAITING_USER" &&
       !opts.resume &&
-      !isHarnessWake;
+      !isHarnessWake &&
+      !!opts.answer;
     list[idx] = {
       ...list[idx]!,
       messages,
@@ -609,13 +616,14 @@ export async function runWorkerTurn(
       // [harness v2] AskUser → AWAITING_USER. Otherwise RUNNING — EXCEPT never
       // clobber a live AWAITING_USER from an autonomous turn (a worker-finish
       // wake landing while the mission waits on the user); only a genuine user
-      // reply (opts.direct) clears the wait. Terminal states are untouched.
+      // reply (opts.direct) or a TAGGED answer (opts.answer, via /answer) clears
+      // the wait. Terminal states are untouched.
       const v2state: Conversation["missionState"] =
         harnessV2Enabled() && supervisorMode && cur.source === "mission" &&
         cur.missionState !== "DONE" && cur.missionState !== "KILLED"
           ? askedUserThisTurn
             ? "AWAITING_USER"
-            : cur.missionState === "AWAITING_USER" && !opts.direct
+            : cur.missionState === "AWAITING_USER" && !opts.direct && !opts.answer
               ? "AWAITING_USER"
               : "RUNNING"
           : cur.missionState;
@@ -748,6 +756,33 @@ export async function runWorkerTurn(
 // a distinct `#chat` run key so it never collides with the executor's run,
 // status, or live-stream slot, and it broadcasts its own `chat` lane events
 // (start/stream/end) so the phone freezes the executor's edge while it answers.
+// [AskUser redesign] Durably record a user message on a mission thread WITHOUT
+// running any turn — used only for the two-lane-OFF fallback of a probe to an
+// AWAITING_USER mission: the message must be preserved (the executor picks it up
+// on its next run) but the wait must NOT be cleared and no executor turn should
+// fire. Deliberately does not touch missionState.
+export async function appendUserMessageOnly(
+  vault: string,
+  conversationId: string,
+  message: string,
+): Promise<void> {
+  const text = message.trim();
+  if (!text) return;
+  const userMsg: ChatMessage = { role: "user", content: text, mid: newMessageId() };
+  await withConvLock(async () => {
+    const list = await readConversations(vault);
+    const idx = list.findIndex((c) => c.id === conversationId);
+    if (idx < 0) return;
+    list[idx] = {
+      ...list[idx]!,
+      messages: [...list[idx]!.messages, userMsg],
+      lastActivityAt: Date.now(),
+    };
+    await writeConversations(vault, list);
+  });
+  await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+}
+
 export async function runMissionChatTurn(
   vault: string,
   conversationId: string,
@@ -786,14 +821,15 @@ export async function runMissionChatTurn(
     const idx = list.findIndex((c) => c.id === conversationId);
     if (idx < 0) return null;
     const messages = [...list[idx]!.messages, userMsg];
-    // A genuine user reply clears an AWAITING_USER wait, same as the executor path.
-    const clearAwait =
-      harnessV2Enabled() && list[idx]!.source === "mission" && list[idx]!.missionState === "AWAITING_USER";
+    // [AskUser redesign] The conversational front is PROBING — it does NOT clear
+    // an AWAITING_USER wait. Talking it through (a plain chat message to an asking
+    // mission) leaves the ask pending; only a TAGGED answer via /answer (which
+    // routes to runWorkerTurn with opts.answer) resumes the executor. So this path
+    // never touches missionState — it just records the exchange and replies.
     list[idx] = {
       ...list[idx]!,
       messages,
       lastActivityAt: Date.now(),
-      ...(clearAwait ? { missionState: "RUNNING" as const } : {}),
     };
     await writeConversations(vault, list);
     return { messages, title: list[idx]!.title };
@@ -1388,11 +1424,36 @@ const normalizeCriterion = (s: string) =>
 // file exists / has N lines / contains X" claim against the REAL bytes, not the
 // agent's paraphrase. Reports non-existence explicitly — a criterion that
 // requires a file the disk doesn't have is not met, whatever the agent wrote.
+// [markdone auditor] Whether a criterion is satisfied by a file's ABSENCE — a
+// removal / deletion / "is gone" / "cleaned up" criterion. For these, a file that
+// does NOT exist is POSITIVE proof of success, not "inconclusive". Detected from
+// the criterion text so the evidence line can say so, and the auditor stops
+// falsely rejecting a real cleanup (a "delete X" mission was rejected 4× then
+// killed because "not found" read as inconclusive — impossible to satisfy).
+function isAbsenceCriterion(text: string): boolean {
+  // Classify from the criterion's INTENT PROSE, not the filenames it names — a
+  // presence criterion that happens to name `delete-me.md` must NOT read as an
+  // absence criterion. Strip file-like tokens (word.ext, incl. dotted paths)
+  // first, then match. Stems carry no trailing \b (so "delete"/"deleted"/
+  // "deletion" all match — "\bdelet\b" would fail on "delete", no t|e boundary);
+  // whole-word tokens are \b-bounded (so "clean" doesn't match "cleanliness",
+  // "rm"/"gone" don't match inside other words).
+  const prose = text.replace(/`?\.?[\w][\w./\-]*\.[A-Za-z0-9]{1,6}`?/g, " ");
+  return (
+    /\b(delet|remov|purg|decommission|terminat|unlink|teardown|tear[\s-]?down|torn[\s-]?down|empt(y|ied)|no longer (exist|present)|does\s*n[o']?t exist)/i.test(prose) ||
+    /\b(gone|absent|cleared|cleaned|clean[\s-]?up|clean|dropped|rm)\b/i.test(prose) ||
+    /\bis\s+gone\b|\bare\s+gone\b|\bbe\s+gone\b/i.test(prose)
+  );
+}
+
 async function readNamedFiles(
   vault: string,
   text: string,
   invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>,
 ): Promise<string> {
+  // An absence/removal criterion inverts the read: a missing named file is the
+  // proof of success, not an inconclusive gap.
+  const absence = isAbsenceCriterion(text);
   const seen = new Set<string>();
   const rels: string[] = [];
   // The leading `\.?` is load-bearing: vault paths are dotfiles
@@ -1414,11 +1475,24 @@ async function readNamedFiles(
   for (const rel of rels) {
     const body = await invoke<string>("read_text_file", { path: `${vault}/${rel}` }).catch(() => null);
     if (body == null) {
-      // Could NOT read — treat as INCONCLUSIVE, never as proof of failure. A path
-      // this reader can't resolve (or a transient read error) must not hard-block
-      // a legitimate completion; the auditor falls back to the goal file. Only a
-      // file that reads with CONTRADICTING content is a hard fail.
-      parts.push(`-- ${rel}: could not be read here (unresolved path or read error) — inconclusive, not proof of absence --`);
+      if (absence) {
+        // [markdone auditor] A removal/absence criterion is SATISFIED by the file
+        // not existing. "not found" here IS the positive proof — never rejected as
+        // inconclusive. (The read helper can't distinguish "deleted" from "path I
+        // couldn't resolve", so this is a strong signal, not a certainty; the
+        // auditor still weighs it against the goal file — but it must not treat a
+        // successful deletion as a failure.)
+        parts.push(`-- ${rel}: NOT FOUND on disk — this is a removal/absence criterion, so a missing file is POSITIVE PROOF the criterion is MET (do not reject as inconclusive). --`);
+      } else {
+        // Could NOT read — treat as INCONCLUSIVE, never as proof of failure. A path
+        // this reader can't resolve (or a transient read error) must not hard-block
+        // a legitimate completion; the auditor falls back to the goal file. Only a
+        // file that reads with CONTRADICTING content is a hard fail.
+        parts.push(`-- ${rel}: could not be read here (unresolved path or read error) — inconclusive, not proof of absence --`);
+      }
+    } else if (absence && body.trim() === "") {
+      // An empty file for an "emptied / cleared" criterion is also positive proof.
+      parts.push(`-- ${rel}: EXISTS but is EMPTY — for an emptied/cleared criterion this is POSITIVE PROOF the criterion is MET. --`);
     } else {
       const lineCount = body.split(/\r?\n/).length;
       parts.push(`-- ${rel} (${lineCount} lines, ${body.length} bytes) --\n${body.slice(0, 2500)}`);
@@ -1496,12 +1570,31 @@ export async function markDoneWhen(
         .slice(-2)
         .map((m) => m.content ?? "")
         .join("\n\n");
+      // [markdone auditor] Tool-call RESULTS from the thread are ground truth for
+      // an EXTERNAL-VERIFICATION criterion (a box terminated shown by a list tool
+      // returning empty, a command's stdout). Surface the recent tool calls + their
+      // recorded results so the auditor can pass a criterion a tool already proved,
+      // instead of demanding a local file that doesn't exist for external state.
+      const toolResults = mission0.messages
+        .filter((m) => m.role === "assistant" && Array.isArray(m.toolCalls) && m.toolCalls.length)
+        .slice(-3)
+        .flatMap((m) => (m.toolCalls ?? []))
+        .filter((t) => t && typeof t.result === "string" && t.result.trim())
+        .slice(-8)
+        .map((t) => {
+          const input = t.input ? JSON.stringify(t.input).slice(0, 200) : "";
+          return `- ${t.name}(${input}) => ${String(t.result).trim().slice(0, 500)}`;
+        })
+        .join("\n");
       const evidence =
         (goalDoc
           ? `== this mission's goal file (scoped — no other mission's state) ==\n${goalDoc.slice(0, 6000)}\n\n`
           : "") +
         (groundTruth
           ? `== GROUND TRUTH: files named in the criterion, read from disk just now ==\n${groundTruth}\n\n`
+          : "") +
+        (toolResults
+          ? `== GROUND TRUTH: tool-call results recorded in the thread (external verification — e.g. a list/command result proving a box is terminated or a check passed) ==\n${toolResults}\n\n`
           : "") +
         `== the agent's own recent narration (a CLAIM — corroborate it against the ground truth above; do NOT trust it on its own) ==\n${recent.slice(-3000)}`;
       const { verifyCriterionEvidence } = await import("./alert-summary");

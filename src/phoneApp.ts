@@ -94,11 +94,12 @@ function dedupedPhoneMessage(
   convId: string | null,
   text: string,
   supervisor: boolean,
+  answer = false,
 ): Promise<Record<string, unknown>> {
-  if (!clientMsgId) return handlePhoneMessage(convId, text, supervisor);
+  if (!clientMsgId) return handlePhoneMessage(convId, text, supervisor, answer);
   const existing = inflightSends.get(clientMsgId);
   if (existing) return existing;
-  const p = handlePhoneMessage(convId, text, supervisor);
+  const p = handlePhoneMessage(convId, text, supervisor, answer);
   inflightSends.set(clientMsgId, p);
   p.then(
     (res) => {
@@ -114,6 +115,10 @@ async function handlePhoneMessage(
   convId: string | null,
   text: string,
   supervisor = false,
+  // [AskUser redesign] `answer` = this is a TAGGED answer to an AWAITING_USER
+  // mission (a tapped option or committed free-form reply via /answer), not a
+  // plain chat message. Only a tagged answer clears the wait + resumes.
+  answer = false,
 ): Promise<Record<string, unknown>> {
   const s = useStore.getState();
   if (!s.vaultPath) return { error: "no vault open on the box" };
@@ -163,12 +168,56 @@ async function handlePhoneMessage(
     conv = fresh;
   }
 
-  // Two-lane mission chat (gated OFF by default): when the mission's executor is
-  // BUSY, don't queue the message silently behind its turn — answer immediately
-  // via the conversational front (the assistant persona, reading a snapshot of
-  // the executor's live state). The executor keeps working and picks the message
-  // up from the thread on its next turn. Idle missions fall through to the
-  // executor directly (the mission block below).
+  // [AskUser redesign] A TAGGED answer (a tapped option or a committed free-form
+  // reply, arriving via /answer) is the ONLY thing that resumes an AWAITING_USER
+  // mission. Route it straight to the executor with opts.answer so clearAwait
+  // flips AWAITING_USER→RUNNING and the mission resumes with the answer fed in.
+  // (Falls through to the normal mission path for a non-awaiting mission — a
+  // tagged answer to a mission that isn't waiting is just a normal steer.)
+  if (answer && conv.source === "mission") {
+    const { runWorkerTurn } = await import("./offVaultRun");
+    void runWorkerTurn(s.vaultPath, conv.id, trimmed, {
+      modelId: useStore.getState().supervisorModelId,
+      direct: true,
+      answer: true,
+    }).catch((e) => console.warn("[phone-app] answer turn failed:", e));
+    return { ok: true, convId: conv.id, answered: true };
+  }
+
+  // [AskUser redesign] A plain chat message to a mission that is AWAITING_USER is
+  // PROBING — "talk it through" — NOT the answer. The ask stays pending until a
+  // tagged answer arrives via /answer. This branch is UNCONDITIONAL on the mission
+  // being AWAITING_USER (not gated on the two-lane flag) so the shipping-critical
+  // invariant "an untagged message never clears the wait" holds regardless of the
+  // flag: with two-lane ON, the conversational front replies (real probing); with
+  // it OFF, we record the message but run NOTHING (the executor path would end its
+  // turn stamping RUNNING via direct:true and silently clear the wait). Either way
+  // missionState stays AWAITING_USER.
+  if (conv.source === "mission" && conv.missionState === "AWAITING_USER") {
+    if (twoLaneMissionChatEnabled()) {
+      const { runMissionChatTurn } = await import("./offVaultRun");
+      void runMissionChatTurn(s.vaultPath, conv.id, trimmed).catch((e) =>
+        console.warn("[phone-app] deliberation probe failed:", e),
+      );
+      return { ok: true, convId: conv.id, probe: true };
+    }
+    // Two-lane off: durably record the probe message without running a turn, so
+    // the ask is preserved and the executor picks the message up when it next runs
+    // (on the tagged answer). Never route to the executor here — that would clear
+    // the wait.
+    const { appendUserMessageOnly } = await import("./offVaultRun");
+    await appendUserMessageOnly(s.vaultPath, conv.id, trimmed).catch((e) =>
+      console.warn("[phone-app] probe record failed:", e),
+    );
+    return { ok: true, convId: conv.id, probe: true, recordedOnly: true };
+  }
+
+  // Two-lane mission chat: when the mission's executor is BUSY, don't queue the
+  // message silently behind its turn — answer immediately via the conversational
+  // front (the assistant persona, reading a snapshot of the executor's live
+  // state). The executor keeps working and picks the message up from the thread
+  // on its next turn. Idle missions fall through to the executor directly (the
+  // mission block below).
   if (conv.source === "mission" && twoLaneMissionChatEnabled() && isThreadBusy(conv)) {
     const { runMissionChatTurn } = await import("./offVaultRun");
     void runMissionChatTurn(s.vaultPath, conv.id, trimmed).catch((e) =>
@@ -517,7 +566,22 @@ async function onRunEnded(convId: string): Promise<void> {
 // Every notification is (a) appended to <vault>/.vault-chat/notifications.jsonl
 // (the Alerts tab reads this), (b) delivered as Web Push, and (c) broadcast so
 // an open phone page updates its badge live.
-export type NotifyExtra = { intention?: string; summary?: string; icon?: string; cls?: string };
+export type NotifyExtra = {
+  intention?: string;
+  summary?: string;
+  icon?: string;
+  cls?: string;
+  // [AskUser redesign] Structured deliberation payload for an "ask" notification.
+  // When present, the cockpit renders the richer "Needs you" deliberation card +
+  // inline-option sheet from REAL ask data (not just ?mock=1). Passed straight
+  // through notifications.jsonl → the box's notifications_json → the phone.
+  deliberation?: {
+    mission?: string;
+    ask: string;
+    askLong?: string;
+    options?: { answer: string; title: string; body: string; primary?: boolean }[];
+  };
+};
 export async function notify(
   kind: "info" | "ask",
   title: string,
@@ -547,6 +611,24 @@ export async function notify(
   if (extra?.summary) rec.summary = String(extra.summary).slice(0, 200);
   if (extra?.icon) rec.icon = String(extra.icon).slice(0, 4);
   if (extra?.cls) rec.cls = String(extra.cls).slice(0, 4);
+  // [AskUser redesign] Carry the structured deliberation payload verbatim so the
+  // cockpit renders the option cards from real ask data. Bounded lengths so a
+  // verbose option set can't bloat the feed/push, but generous — the sheet shows
+  // the full option bodies. Only for "ask" notifications with real options.
+  if (extra?.deliberation && Array.isArray(extra.deliberation.options) && extra.deliberation.options.length) {
+    const d = extra.deliberation;
+    rec.deliberation = {
+      mission: d.mission ? String(d.mission).slice(0, 90) : undefined,
+      ask: String(d.ask || "").slice(0, 600),
+      askLong: d.askLong ? String(d.askLong).slice(0, 1200) : undefined,
+      options: d.options!.slice(0, 6).map((o) => ({
+        answer: String(o.answer || "").slice(0, 80),
+        title: String(o.title || o.answer || "").slice(0, 120),
+        body: String(o.body || "").slice(0, 800),
+        ...(o.primary ? { primary: true } : {}),
+      })),
+    };
+  }
   // Quality floor: a stringified error object must never reach the feed/push as
   // the literal "[object Object]" (it was even mislabeled as success). Blank it
   // so the title carries the signal instead of junk.
@@ -959,6 +1041,33 @@ export async function startPhoneAppHost(): Promise<void> {
       respond(
         reqId,
         await dedupedPhoneMessage(clientMsgId, convId ?? null, String(text ?? ""), !!supervisor),
+      );
+    } catch (e) {
+      respond(reqId, { error: String(e) });
+    }
+  });
+
+  // [AskUser redesign] The TAGGED answer channel: a tapped option or a committed
+  // free-form reply to a "Needs you" ask. Distinct from /message so a plain chat
+  // message (probing / talking it through) can NOT accidentally resolve the ask —
+  // only a tagged answer clears AWAITING_USER and resumes the executor with the
+  // answer fed in. Routes through the SAME deduped handler with answer=true.
+  await listen<{
+    reqId: string;
+    convId?: string | null;
+    text?: string;
+    clientMsgId?: string;
+  }>("phone:answer", async (event) => {
+    const { reqId, convId, text, clientMsgId } = event.payload;
+    try {
+      const t = String(text ?? "").trim();
+      if (!convId || !t) {
+        respond(reqId, { error: "answer needs a convId and non-empty text" });
+        return;
+      }
+      respond(
+        reqId,
+        await dedupedPhoneMessage(clientMsgId, convId, t, false, /* answer */ true),
       );
     } catch (e) {
       respond(reqId, { error: String(e) });
