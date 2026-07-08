@@ -1462,6 +1462,10 @@ fn conversation_json(vault: &str, id: &str, n: usize) -> Option<String> {
                 // reply), when one was computed. The phone renders it instead of
                 // the run-on content + collapsed tool chip.
                 "timeline": m.get("timeline").cloned().unwrap_or(Value::Null),
+                // Direct conversational turn (two-lane front / user reply) — the
+                // deliberation sheet filters on this; omitting it here made that
+                // filter match NOTHING, so the ask exchange always rendered empty.
+                "direct": m.get("direct").and_then(|x| x.as_bool()).unwrap_or(false),
             })
         })
         .collect();

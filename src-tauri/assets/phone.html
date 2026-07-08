@@ -113,7 +113,9 @@
   body.page-activity #pAct{display:flex}
   body.page-alerts #pAl{display:flex}
   body.page-notes #pNotes{display:flex}
-  .scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+  /* overflow-x:hidden: feeds scroll vertically ONLY — one unwrappable card must
+     never turn the whole page into an accidental sideways scroller. */
+  .scroll{flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
   /* notes detail (expanded card) */
   .ndetail{margin-top:9px;border-top:1px solid var(--line);padding-top:9px;display:flex;flex-direction:column;gap:9px}
   .nanchor{font-size:12px;color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}
@@ -285,7 +287,10 @@
      cue, a top-right chat icon that opens the deliberation sheet ("dig in"), the
      one primary action rendered in near-white (--primary), and an always-present
      freeform answer field with the send arrow INSET (the real composer style). */
-  .card.needsyou{background:var(--surface);border:1px solid var(--line);border-radius:15px;padding:14px 15px;cursor:pointer}
+  /* overflow:hidden + anywhere-wrapping below: a long unbreakable option label or
+     ask ("dummy/BLOCKER_INPUT_THAT_DOES_NOT_EXIST.txt") must WRAP inside the card,
+     never widen it past the viewport into a sideways-scrolling feed. */
+  .card.needsyou{background:var(--surface);border:1px solid var(--line);border-radius:15px;padding:12px 14px;cursor:pointer;overflow:hidden}
   .card.needsyou:active{background:var(--raised)}
   .needs-lbl{display:flex;align-items:center;gap:7px}
   .needs-lbl .d{width:6px;height:6px;border-radius:50%;background:var(--primary);flex:none}
@@ -293,10 +298,11 @@
   .needs-lbl .digin{margin-left:auto;flex:none;color:var(--dim);display:flex;align-items:center;justify-content:center;width:30px;height:30px;margin:-6px -6px -6px 0;border-radius:8px}
   .needs-lbl .digin:active{background:var(--raised);color:var(--text)}
   .needs-lbl .digin svg{width:18px;height:18px}
-  .needs-q{font-size:15px;line-height:1.46;margin:10px 0 12px}
-  .needs-qa{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
-  .needs-qa button{flex:1 1 40%;border-radius:10px;padding:9px 11px;font-size:13px;font-weight:600;border:1px solid var(--line);background:var(--raised);color:var(--text);font-family:inherit;min-height:38px}
-  .needs-qa button.prim{background:var(--primary);border:1px solid var(--primary);color:var(--primary-fg)}
+  .needs-q{font-size:14.5px;line-height:1.44;margin:8px 0 10px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+  .needs-qa{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:2px}
+  /* min-width:0 is load-bearing: flex items default to min-width:auto, so a long
+     option label made the button UNSHRINKABLE and pushed the row past the card. */
+  .needs-qa button{flex:1 1 40%;min-width:0;overflow-wrap:anywhere;border-radius:10px;padding:8px 11px;font-size:13px;font-weight:600;border:1px solid var(--line);background:var(--raised);color:var(--text);font-family:inherit;min-height:36px}
   .needs-qa button:active{opacity:.8}
   /* Freeform answer: the real message composer — send arrow INSET, right-aligned
      inside the field (reusing .rinp/.rsend geometry). */
@@ -307,15 +313,15 @@
   .needs-ff .rsend svg{width:15px;height:15px}
   /* ---- deliberation sheet: inline verbose option cards + probe (monochrome) ---- */
   .delib-eyebrow{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);margin:2px 0 0}
-  .delib-ask{font-size:14.5px;line-height:1.5;margin:6px 0 2px;color:var(--text)}
-  .delib-opt{border:1px solid var(--line);background:var(--raised);border-radius:13px;padding:12px 13px;cursor:pointer;transition:border-color .15s,background .15s;margin-top:10px}
+  .delib-ask{font-size:14.5px;line-height:1.5;margin:6px 0 2px;color:var(--text);overflow-wrap:anywhere}
+  .delib-opt{border:1px solid var(--line);background:var(--raised);border-radius:13px;padding:12px 13px;cursor:pointer;transition:border-color .15s,background .15s;margin-top:10px;overflow:hidden}
   .delib-opt:hover,.delib-opt:active{border-color:#3a3a42;background:#212127}
   .delib-opt.prim{border-color:#40404a}
-  .delib-opt .ot{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600}
+  .delib-opt .ot{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;min-width:0;flex-wrap:wrap;overflow-wrap:anywhere}
   .delib-opt .ot .pick{margin-left:auto;font-size:11px;color:var(--dim);display:flex;align-items:center;gap:3px;flex:none}
   .delib-opt .ot .pick svg{width:13px;height:13px}
   .delib-opt .ob{font-size:12.8px;line-height:1.5;color:#a9a9b0;margin-top:6px}
-  .delib-bub{max-width:88%;border-radius:14px;padding:9px 12px;font-size:13px;line-height:1.5;margin-top:12px}
+  .delib-bub{max-width:88%;border-radius:14px;padding:9px 12px;font-size:13px;line-height:1.5;margin-top:12px;overflow-wrap:anywhere}
   .delib-bub.u{align-self:flex-end;background:var(--raised);border:1px solid var(--line);border-radius:14px 14px 4px 14px;line-height:1.45;color:var(--text)}
   .delib-bub.a{align-self:flex-start;background:var(--surface);border:1px solid var(--line);border-radius:14px 14px 14px 4px;color:#d8d8dc}
   .delib-conv{display:flex;flex-direction:column}
@@ -2635,6 +2641,7 @@
       if (d.error) throw new Error(d.error);
       unreadN = d.unread || 0; setHeader();
       const list = d.notifications || [];
+      lastNotifList = list;
       box.innerHTML = "";
       if (!list.length) { box.appendChild(el('<div class="empty">Nothing yet. Worker results, failures that need a call, and your recurring briefings land here — with a push if notifications are on and the app isn’t already open.</div>')); return; }
       const unread = list.filter((n) => !n.read);
@@ -2675,6 +2682,9 @@
     } catch (e) { box.innerHTML = '<div class="empty">Alerts unavailable: ' + esc(String(e.message || e)) + "</div>"; }
   }
   const markRead = (id) => api("/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
+  // The feed as last fetched — so an action on one card (answering an ask) can
+  // reason about its siblings (other pending asks on the same conversation).
+  let lastNotifList = [];
   // ---- unified AskUser ----
   // EVERY kind:"ask" notification — a real AskUser fork AND the parked-mission
   // escalation — renders in the ONE "needs you" style: a neutral card with the
@@ -2750,19 +2760,16 @@
       const qa = el('<div class="needs-qa"></div>');
       for (const opt of del.options) {
         const b = el('<button></button>');
-        if (opt.primary) b.className = "prim";
         b.textContent = opt.answer;
         b.onclick = (e) => { e.stopPropagation(); resolveDeliberation(n, opt.answer); };
         qa.appendChild(b);
       }
       card.appendChild(qa);
     }
-    const ff = el('<div class="needs-ff"><input placeholder="Answer in your words…" enterkeyhint="send"><span class="rsend"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span></div>');
-    const ffInput = ff.querySelector("input");
-    ffInput.onclick = (e) => e.stopPropagation();
-    ffInput.onkeydown = (e) => { if (e.key === "Enter" && ffInput.value.trim()) { e.stopPropagation(); resolveDeliberation(n, ffInput.value.trim()); } };
-    ff.querySelector(".rsend").onclick = (e) => { e.stopPropagation(); if (ffInput.value.trim()) resolveDeliberation(n, ffInput.value.trim()); };
-    card.appendChild(ff);
+    // Freeform answer lives in the dig-in sheet now, not inline on every feed card —
+    // the always-present input made each card ~50px taller so only ~2 fit on screen
+    // (user: cards spill over, can't see the recent needs-you). Tap the card / chat
+    // icon to answer in your words; options stay tappable inline.
     card.addEventListener("click", (e) => {
       if (e.target.closest("button,input,.rsend,.digin")) return;
       if (card.dataset.swiped === "1") { card.dataset.swiped = ""; return; }
@@ -2785,36 +2792,21 @@
   async function openDeliberationSheet(n) {
     const del = deliberationFromNotif(n);
     delibConvId = n.convId || "";
-    // Live "talk it through" exchange = the mission thread's direct turns since the
-    // ask. Best-effort fetch; falls back to any sample exchange baked into the mock.
-    let exchange = Array.isArray(n.deliberation && n.deliberation.exchange) ? n.deliberation.exchange.slice() : [];
-    if (delibConvId) {
-      try {
-        const r = await api("/conversation?id=" + encodeURIComponent(delibConvId) + "&n=8");
-        if (r.ok) {
-          const j = await r.json();
-          const msgs = (j && j.messages) || [];
-          // The direct conversational turns AFTER the ask — the probing exchange.
-          const live = msgs.filter((m) => m.direct && (m.role === "user" || m.role === "assistant"))
-            .slice(-6).map((m) => ({ role: m.role, text: (m.content || "").slice(0, 900) }));
-          // Only replace the baked exchange if the thread actually has probing
-          // turns — otherwise keep any sample exchange (mock) so the sheet isn't
-          // bare before the first probe.
-          if (live.length) exchange = live;
-        }
-      } catch {}
-    }
     let bodyHtml = '<div class="delib-conv">';
     bodyHtml += '<div class="delib-eyebrow">The decision</div>';
     bodyHtml += '<div class="delib-ask">' + esc(del.askLong || del.ask || "") + "</div>";
     del.options.forEach((opt, i) => {
-      bodyHtml += '<div class="delib-opt' + (opt.primary ? " prim" : "") + '" data-i="' + i + '">'
+      bodyHtml += '<div class="delib-opt" data-i="' + i + '">'
         + '<div class="ot">' + esc(opt.title || opt.answer) + '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div>'
         + (opt.body ? '<div class="ob">' + esc(opt.body) + "</div>" : "") + "</div>";
     });
-    for (const m of exchange) {
-      bodyHtml += '<div class="delib-bub ' + (m.role === "user" ? "u" : "a") + '">' + esc(m.text) + "</div>";
+    // Buttons are how you answer — the freeform answer input exists ONLY for an
+    // ask with no options, where it's the sole way to resolve. (The pinned foot
+    // below talks it through without resolving.)
+    if (!del.options.length) {
+      bodyHtml += '<div class="needs-ff delib-ans"><input placeholder="Answer in your words…" enterkeyhint="send"><span class="rsend"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span></div>';
     }
+    bodyHtml += '<div id="delibX"></div>';
     bodyHtml += "</div>";
     openSheet({
       intent: "Your call", title: del.mission || n.title, ico: "?", cls: "a",
@@ -2824,10 +2816,99 @@
         body.querySelectorAll(".delib-opt").forEach((o) => {
           o.onclick = () => { const opt = del.options[+o.dataset.i]; if (opt) resolveDeliberation(n, opt.answer); };
         });
+        // Freeform answer field (no-options asks only; resolves the ask).
+        const ans = body.querySelector(".delib-ans");
+        if (ans) {
+          const ai = ans.querySelector("input");
+          const go = () => { const v = ai.value.trim(); if (v) resolveDeliberation(n, v); };
+          ai.onkeydown = (e) => { if (e.key === "Enter" && ai.value.trim()) go(); };
+          ans.querySelector(".rsend").onclick = go;
+        }
         // The probe input talks it through — a plain /message, NOT an answer.
-        wireReply(foot, (v) => probeDeliberation(n, v));
+        wireReply(foot, (v) => sendProbe(v));
       },
     });
+    // Mock/legacy ask with no thread behind it: render any baked sample exchange
+    // statically and stop — there's nothing live to wire.
+    if (!delibConvId) {
+      const baked = Array.isArray(n.deliberation && n.deliberation.exchange) ? n.deliberation.exchange : [];
+      const x0 = $("delibX");
+      if (x0) x0.innerHTML = baked.map((m) => '<div class="delib-bub ' + (m.role === "user" ? "u" : "a") + '">' + esc(m.text || "") + "</div>").join("");
+      return;
+    }
+    // [ask-conversation] Talk-it-through is a REAL conversation, wired with the
+    // mission sheet's exact live plumbing (sheetConvId + sheetRepaint + poll): the
+    // conversational front's reply STREAMS into #chatEdge via the chat events, a
+    // direct executor turn streams via the live edge, and finished turns fold in
+    // from the persisted thread. The old one-shot re-render at 2.6s always missed
+    // the reply (turns take 5-30s), so the sheet looked dead ("the conversation
+    // doesn't work — it should work just like a supervisor one").
+    sheetConvId = delibConvId;
+    updateConvDot();
+    const optimistic = [];
+    let lastSig = "";
+    async function paint() {
+      // Frozen while the front is answering: its reply drives #chatEdge directly;
+      // chat-end repaints (same contract as the mission sheet).
+      if (sheetChatActive) return;
+      let liveRun = false;
+      try { const st = await (await api("/status")).json(); liveRun = (st.runs || []).some((r) => r.convId === delibConvId); } catch {}
+      let msgs = [];
+      try {
+        const d = await (await api("/conversation?id=" + encodeURIComponent(delibConvId) + "&n=40")).json();
+        if (!d.error) msgs = (d.messages || []).filter((m) => m.direct && (m.role === "user" || m.role === "assistant"));
+      } catch {}
+      // Drop optimistic bubbles the persisted thread now contains.
+      for (let k = optimistic.length - 1; k >= 0; k--) {
+        if (msgs.some((m) => m.role === "user" && (m.content || "").trim() === optimistic[k].trim())) optimistic.splice(k, 1);
+      }
+      const shown = msgs.slice(-8).concat(optimistic.map((t) => ({ role: "user", content: t })));
+      if (liveRun) sheetEnded = false;
+      const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
+      sheetRunning = liveRun || (hasLive && !sheetEnded);
+      // This surface is a conversation — a reply here renders as prose, never the
+      // executor thought-chain.
+      sheetDirectReply = true;
+      const showLive = sheetRunning || sheetOptimisticWorking;
+      const sig = JSON.stringify(shown.map((m) => [m.role, (m.content || "").length])) + "|" + showLive;
+      if (sig === lastSig) return; // unchanged — don't disrupt reading/typing
+      lastSig = sig;
+      const x = $("delibX"); if (!x) return;
+      const be = $("sheetBody");
+      const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 90;
+      x.innerHTML = shown.map((m) => '<div class="delib-bub ' + (m.role === "user" ? "u" : "a") + '">' + esc((m.content || "").slice(0, 1200)) + "</div>").join("")
+        + (showLive ? liveEdgeHtml() : "");
+      // Two-lane fold-in with no gap, same as the mission sheet: hold a settling
+      // chat reply on screen until its persisted bubble is in the fetched thread.
+      if (sheetChatSettling && sheetChatText) {
+        const key = sheetChatText.replace(/\s+/g, " ").trim().slice(0, 30);
+        const landed = key && shown.some((m) => m.role === "assistant" && (m.content || "").replace(/\s+/g, " ").indexOf(key) >= 0);
+        if (landed) { sheetChatSettling = false; sheetChatText = ""; const ce = $("chatEdge"); if (ce) ce.remove(); }
+        else renderChatEdge(sheetChatText, true);
+      }
+      if (be && wasBottom) be.scrollTop = be.scrollHeight;
+    }
+    // Probe: talk it through WITHOUT resolving — a plain /message (the box routes
+    // it to the conversational front; the ask stays pending). Optimistic bubble +
+    // "working…" the instant you send, exactly like a supervisor thread.
+    async function sendProbe(text) {
+      if (!delibConvId) return;
+      optimistic.push(text);
+      sheetOptimisticWorking = true;
+      sheetEnded = false;
+      lastSig = ""; // force the next paint to re-render with the new bubble
+      setTimeout(() => { if (sheetOptimisticWorking) { sheetOptimisticWorking = false; if (sheetRepaint) void sheetRepaint(); } }, 15000);
+      void paint();
+      const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
+      await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: delibConvId, text, clientMsgId }) }).catch(() => {});
+      setTimeout(() => { void paint(); }, 900); // pick up the durably-persisted turn quickly
+    }
+    sheetRepaint = paint;
+    await paint();
+    missionPoll = setInterval(() => {
+      if (!$("sheet").classList.contains("on")) { clearInterval(missionPoll); missionPoll = 0; return; }
+      void paint();
+    }, 3000);
   }
   // Resolve an ask: the TAGGED answer path (a tapped option OR a committed
   // freeform reply). Hits /answer so the box clears AWAITING_USER and resumes the
@@ -2838,26 +2919,16 @@
     if (n.convId) {
       api("/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: answer, clientMsgId }) }).catch(() => {});
     }
+    // One answer settles the DECISION, not just this card: retire every live ask
+    // card pointing at the same conversation. The deadlocked self-test stacked 3
+    // cards for one fork; tapping the stale leftovers fed duplicate replies into
+    // the thread ("Force-close it" landed twice as separate turns).
+    for (const s of lastNotifList) {
+      if (s.kind === "ask" && !s.read && s.id !== n.id && s.convId && n.convId && s.convId === n.convId) markRead(s.id);
+    }
     markRead(n.id);
     if ($("sheet").classList.contains("on")) closeSheet();
     void loadAlerts();
-  }
-  // Probe an ask: talk it through WITHOUT resolving. A plain /message to the
-  // mission — the conversational front replies and the ask stays pending. After
-  // the reply settles, re-open the sheet so the new exchange (and any fresh
-  // options the agent surfaced) render.
-  async function probeDeliberation(n, text) {
-    if (!n.convId) return;
-    const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
-    // Optimistically show the user's probe turn in the open sheet.
-    const conv = $("sheetBody") && $("sheetBody").querySelector(".delib-conv");
-    if (conv) conv.appendChild(el('<div class="delib-bub u">' + esc(text) + "</div>"));
-    try {
-      await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text, clientMsgId }) });
-    } catch {}
-    // Poll the thread briefly for the front's reply, then re-render the sheet so a
-    // new round of options (if the agent surfaced any) shows.
-    setTimeout(() => { if (delibConvId === n.convId && $("sheet").classList.contains("on")) openDeliberationSheet(n); }, 2600);
   }
   function attachSwipeArchive(card, action, reload) {
     reload = reload || loadAlerts;

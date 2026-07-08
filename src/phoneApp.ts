@@ -642,6 +642,37 @@ export async function notify(
   // convId) would deadlock on a card that never appeared.
   const dupKey = `${kind} ${convId ?? ""} ${rec.title as string} ${rec.body as string}`;
   if (isDuplicateNotif(dupKey, rec.ts as number)) return;
+  // Latest ask wins, BY CONSTRUCTION: a conversation has at most ONE pending ask.
+  // A new "ask" retires any earlier unanswered asks for the same thread (append
+  // read markers — same append-only shape the phone's swipe writes). Without this
+  // the self-test deadlock stacked 3 live cards for one decision; the user tapped
+  // several, each tap woke another turn, and the thread filled with duplicate
+  // replies. The supervisor only ever honors the newest ask anyway.
+  if (kind === "ask" && convId) {
+    try {
+      const raw = await invoke<string>("read_text_file", {
+        path: `${vault}/.vault-chat/notifications.jsonl`,
+      }).catch(() => "");
+      const readIds = new Set<string>();
+      const priorAsks: string[] = [];
+      for (const line of String(raw || "").split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        let v: { type?: string; id?: string; kind?: string; convId?: string };
+        try { v = JSON.parse(line); } catch { continue; }
+        if (v.type === "read" && v.id) { readIds.add(v.id); continue; }
+        if (v.type) continue; // hide/clear markers
+        if (v.kind === "ask" && v.convId === convId && v.id) priorAsks.push(v.id);
+      }
+      for (const id of priorAsks.filter((i) => !readIds.has(i))) {
+        await invoke("notification_add", {
+          vault,
+          json: JSON.stringify({ type: "read", id, ts: Date.now() }),
+        }).catch(() => {});
+      }
+    } catch (e) {
+      console.warn("[notify] ask supersede failed (non-fatal):", e);
+    }
+  }
   await invoke("notification_add", { vault, json: JSON.stringify(rec) }).catch(() => {});
   broadcast({ type: "notif" });
   // The push itself stays one notification-sized line; the full body lives in

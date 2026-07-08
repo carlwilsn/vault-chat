@@ -358,7 +358,14 @@ export async function runWorkerTurn(
     return { reply: "", error: "no model / API key configured" };
   }
 
-  const userMsg: ChatMessage = { role: "user", content: message, mid: newMessageId() };
+  // A genuine user turn (a typed reply or a tapped /answer) is a DIRECT message —
+  // the deliberation sheet's exchange shows it; harness wakes stay unmarked.
+  const userMsg: ChatMessage = {
+    role: "user",
+    content: message,
+    direct: opts.direct || opts.answer ? true : undefined,
+    mid: newMessageId(),
+  };
   // [harness v2] Harness-generated wakes (worker-finish, watched-run, fork nudge,
   // async AskWorker replies) must NOT clear a mission's waiting-on-the-user state
   // — only a genuine answer does. These are the harness's own wake prefixes.
@@ -815,7 +822,9 @@ export async function runMissionChatTurn(
   // Append the user's turn to the mission thread up front, so the exchange is one
   // clean [user, reply] pair in the right order and the executor's next turn sees
   // the message in place (no duplicate append from a separate steering path).
-  const userMsg: ChatMessage = { role: "user", content: text, mid: newMessageId() };
+  // direct:true — the user typed this; the deliberation sheet's exchange filter
+  // (m.direct) needs it or the question renders without its answer's question.
+  const userMsg: ChatMessage = { role: "user", content: text, direct: true, mid: newMessageId() };
   const seeded = await withConvLock(async () => {
     const list = await readConversations(vault);
     const idx = list.findIndex((c) => c.id === conversationId);
@@ -1586,6 +1595,21 @@ export async function markDoneWhen(
           return `- ${t.name}(${input}) => ${String(t.result).trim().slice(0, 500)}`;
         })
         .join("\n");
+      // [markdone auditor] The USER's own replies are ground truth the agent cannot
+      // author — they arrive from the phone (/message and /answer), never from a
+      // tool. Without them the auditor's "a criterion explicitly waived by the user
+      // passes" rule was starved of data: the self-test kind-4 circular gate
+      // survived FOUR verbatim "Force-close it" taps because the auditor only ever
+      // saw the agent's second-hand record of the authorization (narration it is
+      // told to distrust) — an unfixable deadlock that ping-spammed the user.
+      // Harness wakes share role:"user", so exclude the known plumbing prefixes.
+      const isPlumbingMsg = (t: string) =>
+        /^\s*(MISSION BRIEF|Watched run |Worker "|Your worker |Reply from worker |HARNESS CHECK )/.test(t);
+      const userVoice = mission0.messages
+        .filter((m) => m.role === "user" && (m.content || "").trim() && !isPlumbingMsg(m.content || ""))
+        .slice(-4)
+        .map((m) => `- "${(m.content || "").trim().slice(0, 400)}"`)
+        .join("\n");
       const evidence =
         (goalDoc
           ? `== this mission's goal file (scoped — no other mission's state) ==\n${goalDoc.slice(0, 6000)}\n\n`
@@ -1595,6 +1619,9 @@ export async function markDoneWhen(
           : "") +
         (toolResults
           ? `== GROUND TRUTH: tool-call results recorded in the thread (external verification — e.g. a list/command result proving a box is terminated or a check passed) ==\n${toolResults}\n\n`
+          : "") +
+        (userVoice
+          ? `== GROUND TRUTH: the USER's own recent replies in this thread (typed/tapped on their phone — the agent cannot author these; the user is the final authority) ==\n${userVoice}\n\n`
           : "") +
         `== the agent's own recent narration (a CLAIM — corroborate it against the ground truth above; do NOT trust it on its own) ==\n${recent.slice(-3000)}`;
       const { verifyCriterionEvidence } = await import("./alert-summary");
