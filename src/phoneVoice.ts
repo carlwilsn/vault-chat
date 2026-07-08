@@ -57,7 +57,10 @@ async function wireToolRelay(): Promise<void> {
       // breaker for one fresh attempt; only seed the thread once we have a live
       // agent (a real spoken turn still lazily mints a thread below).
       resetAgentCreateBreaker();
-      const ctx = await buildPhoneVoiceContext();
+      // Pass the attached thread through: the system prompt's recent-history
+      // block must be built from the conversation the phone has open (where
+      // these transcripts will land), not the box's own active desktop thread.
+      const ctx = await buildPhoneVoiceContext(convId);
       if (ctx) {
         phoneVoiceConvId = ensureVoiceConversation({ stealFocus: false, convId });
         result = JSON.stringify(ctx);

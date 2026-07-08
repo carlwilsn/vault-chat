@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useStore } from "./store";
-import { getInputLevels, getOutputLevels } from "./voice-elevenlabs";
+import { getAgentEnvelopeLevels, getInputLevels, getOutputLevels } from "./voice-elevenlabs";
 
 const NUM_BARS = 12;
 const LEVEL_DECAY = 0.85;
@@ -46,16 +46,26 @@ function VoiceBars() {
     const tick = () => {
       const s = useStore.getState();
       // Two sources, picked per-frame:
-      //   • speaking + real audio → TTS output spectrum (agent talking)
+      //   • speaking → TTS output spectrum, or the chunk-derived playback
+      //     envelope when the analyser reads dead (suspended AudioContext /
+      //     buffer-up — the documented unreliable cases)
       //   • otherwise → live mic input (idle / listening / silent gaps)
+      // While voiceSpeaking is on, the mic is NEVER the source: bars tracking
+      // the user's ambient noise during the agent's turn is exactly the "wave
+      // out of sync with the voice" desync (note 852e435b).
       // No synthesized motion: a fake "thinking" wave reads as ongoing
       // audio after the user barges in, which is misleading. Bars
       // sitting flat-low during latency is fine — connecting state has
       // its own label, and the rest is honestly silence.
       const out = s.voiceSpeaking ? getOutputLevels(NUM_BARS) : null;
+      // Polled every speaking frame regardless of which source wins — polling
+      // advances the envelope's playback cursor, so it stays in sync for the
+      // frames where the analyser flakes out.
+      const env = s.voiceSpeaking ? getAgentEnvelopeLevels(NUM_BARS) : null;
       const outActive =
         out !== null && out.reduce((a, b) => a + b, 0) > 0.05;
-      const raw: number[] = outActive && out ? out : getInputLevels(NUM_BARS);
+      const raw: number[] =
+        outActive && out ? out : env !== null ? env : getInputLevels(NUM_BARS);
 
       const sm = smoothed.current;
       for (let i = 0; i < NUM_BARS; i++) {

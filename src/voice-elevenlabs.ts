@@ -819,6 +819,7 @@ export async function startElevenLabsSession(): Promise<void> {
   sentPdfPaths.clear();
   sessionMutationCount = 0;
   sessionFirstUserText = null;
+  resetAgentEnvelope();
 
   // Voice runs in its own thread. Start fresh unless we're resuming a
   // pure-voice conversation (the user toggled the mic off and back on, so
@@ -859,12 +860,19 @@ export async function startElevenLabsSession(): Promise<void> {
       // Linux: the webview can't play Web Audio, so play the agent's voice
       // natively. Harmless no-op elsewhere (the webview plays it normally and
       // playAgentAudioNative/stopAgentAudioNative short-circuit off Linux).
+      // Every chunk also feeds the visualizer's playback envelope — see
+      // pushAgentEnvelope for why the bars can't key off arrival time.
       onAudio: (audioBase64: string) => {
         playAgentAudioNative(audioBase64);
+        try {
+          pushAgentEnvelope(audioBase64);
+        } catch {}
       },
       onInterruption: () => {
-        // Barge-in: drop buffered agent audio so it stops immediately.
+        // Barge-in: drop buffered agent audio so it stops immediately, and
+        // the queued envelope with it — that audio will never be heard.
         stopAgentAudioNative();
+        resetAgentEnvelope();
       },
       onConnect: () => {
         useStore.getState().setVoiceConnecting(false);
@@ -875,6 +883,7 @@ export async function startElevenLabsSession(): Promise<void> {
       onDisconnect: () => {
         // Stop any native agent audio still playing/queued (Linux).
         stopAgentAudioNative();
+        resetAgentEnvelope();
         // Drain any agent text that was waiting for audio silence
         // before stamping the "session ended" marker — preserves
         // ordering between the last spoken turn and the end notice.
@@ -959,6 +968,10 @@ export async function startElevenLabsSession(): Promise<void> {
           flushAgentQueueImmediate();
           useStore.getState().setVoiceThinking(false);
           stopThinkingWatcher();
+          // Mode leaves "speaking" only when the output buffer has drained
+          // (or a barge-in cut it) — everything that arrived has been heard,
+          // so any unconsumed envelope tail is stale cursor lag. Drop it.
+          resetAgentEnvelope();
         }
       },
       onError: (message: string) => {
@@ -1471,6 +1484,93 @@ function binFrequencyData(data: Uint8Array, n: number): number[] {
   return out;
 }
 
+// ---- Agent-audio playback envelope (visualizer) ---------------------------
+//
+// getOutputByteFrequencyData is the natural source for the speaking bars, but
+// it's unreliable: the SDK's analyser sits post-gain on an AudioContext that
+// can stay suspended (webviews) or read silent through the buffer-up phase —
+// the same trap waitForSpeechEnd documents above. When it read dead while
+// `voiceSpeaking` said audio WAS playing, the cockpit fell back to the MIC
+// spectrum — bars tracking the user's ambient noise during the agent's turn is
+// exactly the "wave out of sync with the voice" report (note 852e435b).
+//
+// This envelope is the honest replacement: onAudio hands us the real PCM the
+// agent plays (16 kHz mono s16le, per the native-playback path at the top of
+// this file), we slice it into per-50ms RMS levels, and replay the queue at
+// wall-clock rate while the SDK's playback window (`voiceSpeaking`) is open.
+// The crucial subtlety: chunks ARRIVE much faster than real time (the platform
+// streams a whole turn into the client buffer in a burst), so the queue runs
+// ahead of the ear — the cursor, advanced by elapsed time, is what stays in
+// sync with what's audible. When mode flips back to "listening" the worklet
+// buffer has drained, i.e. everything that arrived has been heard — the reset
+// there drops any stale cursor lag so it can't animate silence.
+const ENVELOPE_SLICE_MS = 50;
+const ENVELOPE_SLICE_BYTES = (16_000 * 2 * ENVELOPE_SLICE_MS) / 1000;
+let agentEnvelope: number[] = [];
+let agentEnvelopePos = 0; // playback cursor, in (fractional) slices
+let agentEnvelopeClock = 0; // last poll timestamp; 0 = cursor parked
+
+function resetAgentEnvelope(): void {
+  agentEnvelope = [];
+  agentEnvelopePos = 0;
+  agentEnvelopeClock = 0;
+}
+
+// Slice a base64 PCM16 chunk into per-ENVELOPE_SLICE_MS RMS levels (0..1) and
+// queue them. If the payload ever isn't PCM16 the numbers are still
+// energy-correlated, so the bars degrade gracefully rather than freeze.
+function pushAgentEnvelope(audioBase64: string): void {
+  const s = atob(audioBase64);
+  for (let off = 0; off + 1 < s.length; off += ENVELOPE_SLICE_BYTES) {
+    const end = Math.min(s.length, off + ENVELOPE_SLICE_BYTES);
+    let sum = 0;
+    let count = 0;
+    // Every 2nd sample — plenty of resolution for a loudness meter.
+    for (let i = off; i + 1 < end; i += 4) {
+      let v = s.charCodeAt(i) | (s.charCodeAt(i + 1) << 8);
+      if (v >= 32768) v -= 65536;
+      sum += v * v;
+      count++;
+    }
+    const rms = count ? Math.sqrt(sum / count) / 32768 : 0;
+    // ×4 gain matches speech RMS (~0.1-0.2 of full scale) to the 0..1 bars.
+    agentEnvelope.push(Math.min(1, rms * 4));
+  }
+  // Compact the consumed prefix so a long monologue can't grow the queue.
+  const consumed = Math.floor(agentEnvelopePos);
+  if (consumed > 400) {
+    agentEnvelope.splice(0, consumed);
+    agentEnvelopePos -= consumed;
+  }
+}
+
+// Level of the slice that is audibly playing right now. Advances the cursor by
+// wall-clock time between polls; holds the last slice if the cursor briefly
+// outruns arrival (network stall — mode flips to listening right after anyway).
+function agentEnvelopeLevel(): number {
+  const now = performance.now();
+  // Clamp a big gap (first poll of a turn, tab was throttled) to one slice so
+  // the cursor can't leap past audio that hasn't played.
+  const dt = agentEnvelopeClock ? Math.min(now - agentEnvelopeClock, 200) : 0;
+  agentEnvelopeClock = now;
+  agentEnvelopePos += dt / ENVELOPE_SLICE_MS;
+  if (agentEnvelope.length === 0) return 0;
+  return agentEnvelope[Math.min(agentEnvelope.length - 1, Math.floor(agentEnvelopePos))];
+}
+
+// Envelope shaped into a centre hump so the scalar level reads like a spectrum
+// next to the analyser-driven bars it substitutes for. Poll once per frame
+// while `voiceSpeaking` — polling is what advances the playback cursor.
+export function getAgentEnvelopeLevels(n: number): number[] {
+  const lvl = agentEnvelopeLevel();
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const shape = 0.55 + 0.45 * Math.sin((i / (n - 1)) * Math.PI);
+    out.push(lvl * shape);
+  }
+  return out;
+}
+
 
 // Built-in default for the personality / speech-rules header.
 // Lives at the top of the system prompt and gets overridden if the
@@ -1525,8 +1625,19 @@ function buildVaultIndex(
  * Reuses the exact same builders the desktop session uses, so the phone gets an
  * identical brain. Returns null when voice can't run yet (no key, no vault, or
  * the agent couldn't be provisioned).
+ *
+ * `convId` is the thread the phone session is ATTACHED to (the conversation
+ * open in the cockpit — /session posts it, the voice:context relay hands it
+ * here). The recent-history block in the system prompt must come from THAT
+ * thread: `state.messages` is whatever conversation happens to be focused on
+ * the box's own desktop pane, so seeding from it left the phone's voice agent
+ * blind to the very thread its transcripts land in (note dfe39eb4 — "voice
+ * mode is not able to see conversations… even though the messages land in the
+ * same thread"). No convId (standalone /voice page, heartbeat cache) means a
+ * fresh voice thread gets minted at session start, so the honest history is
+ * none at all — not some other thread's.
  */
-export async function buildPhoneVoiceContext(): Promise<{
+export async function buildPhoneVoiceContext(convId?: string): Promise<{
   elKey: string;
   agentId: string;
   voiceId: string;
@@ -1549,11 +1660,23 @@ export async function buildPhoneVoiceContext(): Promise<{
     loadVoicePromptContext(state.vaultPath),
   ]);
   if (!agentId) return null;
+  // Resolve the attached thread's messages. The ACTIVE conversation's stored
+  // entry only mirrors the live top-level `messages` buffer on certain sync
+  // points, so when the phone is attached to the box's active thread, read the
+  // live buffer directly — the stored copy can lag it.
+  const attached = convId
+    ? state.conversations.find((c) => c.id === convId)
+    : undefined;
+  const historyMessages = attached
+    ? attached.id === state.activeConversationId
+      ? state.messages
+      : attached.messages
+    : [];
   return {
     elKey,
     agentId,
     voiceId: localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
-    systemPrompt: buildSystemPrompt(state, customHeader, northStar, promptContext),
+    systemPrompt: buildSystemPrompt(state, customHeader, northStar, promptContext, historyMessages),
     dynamicVariables: buildDynamicVariables(state),
     toolNames: Object.keys(buildClientToolHandlers()),
     vault: state.vaultPath,
@@ -1637,9 +1760,15 @@ function buildSystemPrompt(
   customHeader: string,
   northStar: string,
   extra?: VoicePromptContext,
+  // History source override. Desktop sessions run IN the active conversation,
+  // so the default (`state.messages`) is the right thread. Phone sessions are
+  // attached to an explicit convId whose messages live in `state.conversations`
+  // — buildPhoneVoiceContext resolves that thread and passes it here so the
+  // agent sees the history of the thread its transcripts land in.
+  historyMessages?: ChatMessage[],
 ): string {
   const vault = state.vaultPath ?? "(no vault)";
-  const recentHistory = formatRecentHistory(state.messages, 32);
+  const recentHistory = formatRecentHistory(historyMessages ?? state.messages, 32);
   const followNote = state.followAlong
     ? "Follow-along is on. The active document and viewport are in dynamic variables and will refresh via contextual updates as the user scrolls."
     : "Follow-along is off. The user is not asking about a specific document unless they name one.";
@@ -1734,7 +1863,9 @@ function buildSystemPrompt(
     "",
     "{{viewport_context}}",
     "",
-    recentHistory ? `Recent conversation context:\n${recentHistory}` : "",
+    recentHistory
+      ? `Recent conversation context (earlier turns of THIS same thread, oldest first — the user may refer back to them):\n${recentHistory}`
+      : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -1800,14 +1931,29 @@ function activeSectionFor(
   return `>>> USER IS CURRENTLY VIEWING ${activeFile} <<<\nContent:\n${truncate(fallback, VIEWPORT_TEXT_CAP)}`;
 }
 
+// Newest-last so the freshest turns sit closest to the live conversation. The
+// per-message cap keeps single walls of text from eating the block; the total
+// budget keeps a 32-turn thread of long messages under the ElevenLabs
+// session-override ceiling (same rationale as the caps in
+// loadVoicePromptContext). When the budget bites, the OLDEST turns drop first.
+const HISTORY_TOTAL_CHAR_BUDGET = 8000;
+
 function formatRecentHistory(messages: ChatMessage[], take: number): string {
   const recent = messages
     .filter((m) => !m.system && (m.role === "user" || m.role === "assistant"))
     .slice(-take);
   if (recent.length === 0) return "";
-  return recent
-    .map((m) => `${m.role === "user" ? "User" : "You"}: ${truncate(m.content.trim(), 400)}`)
-    .join("\n");
+  const lines = recent.map(
+    (m) => `${m.role === "user" ? "User" : "You"}: ${truncate(m.content.trim(), 400)}`,
+  );
+  // Trim from the front (oldest) until the newest turns fit the budget.
+  let total = lines.reduce((a, l) => a + l.length + 1, 0);
+  let start = 0;
+  while (start < lines.length - 1 && total > HISTORY_TOTAL_CHAR_BUDGET) {
+    total -= lines[start].length + 1;
+    start++;
+  }
+  return lines.slice(start).join("\n");
 }
 
 function truncate(s: string, cap: number): string {
