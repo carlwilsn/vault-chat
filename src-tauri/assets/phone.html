@@ -320,11 +320,23 @@
   .delib-opt .ot{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;min-width:0;flex-wrap:wrap;overflow-wrap:anywhere}
   .delib-opt .ot .pick{margin-left:auto;font-size:11px;color:var(--dim);display:flex;align-items:center;gap:3px;flex:none}
   .delib-opt .ot .pick svg{width:13px;height:13px}
-  .delib-opt .ob{font-size:12.8px;line-height:1.5;color:#a9a9b0;margin-top:6px}
-  .delib-bub{max-width:88%;border-radius:14px;padding:9px 12px;font-size:13px;line-height:1.5;margin-top:12px;overflow-wrap:anywhere}
-  .delib-bub.u{align-self:flex-end;background:var(--raised);border:1px solid var(--line);border-radius:14px 14px 4px 14px;line-height:1.45;color:var(--text)}
-  .delib-bub.a{align-self:flex-start;background:var(--surface);border:1px solid var(--line);border-radius:14px 14px 14px 4px;color:#d8d8dc}
-  .delib-conv{display:flex;flex-direction:column}
+  .delib-opt .ob{font-size:12.8px;line-height:1.5;color:#a9a9b0;margin-top:6px;overflow-wrap:anywhere;min-width:0}
+  /* Decided asks: options go inert; the one the user picked stays highlighted. */
+  .delib-opt.dead{pointer-events:none;opacity:.72}
+  .delib-opt.chosen{border-color:#7d7d86;background:#232329;opacity:1}
+  .delib-opt.chosen .pick{color:var(--text)}
+  #delibDecision.deciding{opacity:.55;pointer-events:none;transition:opacity .15s}
+  .delib-done{margin-top:12px;font-size:13px;color:var(--dim);overflow-wrap:anywhere}
+  .delib-done b{color:var(--text);font-weight:600}
+  /* Archived needs-you card: the recorded decision, one quiet line. */
+  .needs-decided{font-size:13px;color:var(--dim);margin-top:6px;overflow-wrap:anywhere}
+  .needs-decided b{color:var(--text);font-weight:600}
+  /* A formal decision in a thread — the tapped option / committed answer,
+     rendered as a receipt chip, not a chat bubble. */
+  .tdecision{border:1px solid #3a3a42;background:var(--raised);border-radius:12px;padding:9px 12px;margin:12px 0 2px;font-size:13px;line-height:1.5;overflow-wrap:anywhere;color:var(--text)}
+  .tdecision .td-l{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:3px}
+  /* (delib-bub/delib-conv are gone: the ask/info sheet conversation now renders
+     with the SAME threadHtml as a supervisor sheet — one conversation look.) */
   /* The probe input reuses the app composer's .rinp/.rsend (inset send arrow). */
   .alsum{margin-top:10px;border-top:1px solid var(--line);padding-top:9px}
   .alsum .md{font-size:13px;color:#c9c9c9;line-height:1.5}
@@ -715,6 +727,18 @@
         { id: "n0", ts: now - 18000000, kind: "info", title: "Morning briefing", intention: "Scheduled worker · summer vault", icon: "≡", cls: "", summary: "3 things moved overnight; today: finish the 3-seed writeup + push.", body: "## Overnight\n- 3-seed BitNet nearly there.\n- Repo sweep clean.\n- Idle box auto-killed (~$0.26).\n\n## Today\n1. Resolve the seed-3 divergence.\n2. Finish the writeup and push.", convId: "cch", read: false },
         { id: "n2", ts: now - 1080000, kind: "info", title: "Worker finished — seed 44", intention: "Worker deliverable · BitNet 160M MVP", icon: "✓", cls: "g", summary: "eval.loss 1.5588, within tolerance; committed under results/.", body: "Seed 44 eval.loss **1.5588** — within the 0.005 nat tolerance. `results/seed44.jsonl` committed.", convId: "w1", read: false },
         { id: "n3", ts: now - 5400000, kind: "info", title: "Stopped an idle box", intention: "Cost / cleanup · autonomous action", icon: "$", cls: "r", summary: "idle GPU box auto-killed after its job exited; ~$0.26, nothing billing now.", body: "A box sat at zero GPU utilization for 12 minutes after its job exited — killed it. ~$0.26, nothing billing now.", read: true },
+        // A SETTLED ask in the archive: shows the recorded decision on the card
+        // (answeredWith) and opens as a dead, read-only deliberation sheet.
+        { id: "nDone", ts: now - 7200000, kind: "ask", title: "Budget fork — old run", intention: "Mission needed your call · BitNet 160M MVP", icon: "?", cls: "a", summary: "Spend was at $18 of $20 with seed 2 mid-run — extend or stop?", convId: "m1", read: true, answeredWith: "Extend to $26", answeredAt: now - 7100000,
+          deliberation: {
+            mission: "Budget fork — old run",
+            ask: "Spend was at $18 of $20 with seed 2 mid-run — extend or stop?",
+            askLong: "Spend was at $18 of $20 with seed 2 mid-run — extend the cap or stop and bank what's committed?",
+            options: [
+              { answer: "Extend to $26", title: "Extend to $26 — let seed 2 finish", body: "Seed 2 was ~40 min from its eval; stopping mid-run wastes the spend so far." },
+              { answer: "Stop now", title: "Stop now — bank seeds 1 & 3", body: "Two seeds were already in tolerance; the writeup could proceed without seed 2." },
+            ],
+          } },
       ],
       notes: [
         { id: "nt1", status: "open", timestamp: new Date(now - 3600000).toISOString(), last_updated: new Date(now - 3600000).toISOString(), title: "Spectral clustering — why eigenvectors", user_draft: "In spectral clustering we build the Laplacian and take its eigenvectors to place each node in a new space. Why not the adjacency matrix directly?", turns: [], anchors: [] },
@@ -844,7 +868,14 @@
         return reply({ events: evs, next: String(pollTick) });
       }
       if (u === "/message") { if (body.mission) return reply({ ok: true, convId: "m_new", mission: body.mission.title }); return reply({ ok: true, convId: body.convId || "new-" + Date.now(), probe: true }); }
-      if (u === "/answer") return reply({ ok: true, convId: body.convId, answered: true });
+      if (u === "/answer") {
+        // Mirror the real box: stamp WHICH answer settled the ask (answeredWith)
+        // and mark it read, so the decided-card/dead-sheet states are testable.
+        const an = DB.notifs.find((x) => x.id === body.notifId);
+        if (an) { an.answeredWith = body.text; an.answeredAt = Date.now(); an.read = true; }
+        DB.threads[body.convId] && DB.threads[body.convId].messages.push({ role: "user", content: body.text, direct: true, decision: true });
+        return reply({ ok: true, convId: body.convId, answered: true });
+      }
       if (u === "/kill") { if (body.convId) { DB.runs = DB.runs.filter((r) => r.convId !== body.convId); const m = DB.convs.find((c) => c.id === body.convId); if (m && m.source === "mission") { const key = (m.mission || m.title || "").trim(); DB.convs = DB.convs.filter((c) => c.id !== body.convId && !(c.source === "worker" && (c.mission || "").trim() === key)); } } return reply({ ok: true, result: "Kill sent." }); }
       if (u === "/chats/clear") return reply({ ok: true, cleared: 0 });
       if (u === "/schedule") { if (body.action === "toggle") { const s = DB.schedules.find((x) => x.id === body.id); if (s) s.enabled = body.enabled; } else if (body.action === "delete") { DB.schedules = DB.schedules.filter((x) => x.id !== body.id); } return reply({ ok: true }); }
@@ -1599,6 +1630,10 @@
     return '<div class="thread">' + (msgs || []).map((m) => {
       const content = m.content || "";
       if (m.role === "user") {
+        // A FORMAL decision (a tapped AskUser option / committed answer via
+        // /answer) renders as a receipt chip — the durable record of which way
+        // the user called it — not as an ordinary chat bubble.
+        if (m.decision) return '<div class="tdecision"><span class="td-l">Your call</span>' + esc(content) + "</div>";
         // A run-watcher wake is a SYSTEM event, not something you said — render it
         // as a neutral note, not a "You" bubble of watcher boilerplate.
         if (/^\s*Watched run\s+"/i.test(content)) return wakeRunHtml(content);
@@ -2752,6 +2787,13 @@
   // Now you just ask, and the thread's conversational front answers in place.
   // (The raw thread stays reachable via Activity → the mission, where it makes
   // sense.)
+  // The ONE probe composer for alert sheets — byte-identical markup to the
+  // mission sheet's reply row (textarea + the ↑ button), so an ask/info
+  // conversation looks and sits exactly like a supervisor conversation
+  // (the mismatched svg-span send button was the "end button is off" bug).
+  function probeFootHtml(ph) {
+    return '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + esc(ph) + '" autocomplete="off"></textarea><button class="rsend">↑</button></div>';
+  }
   async function openAlertSheet(n, isAction) {
     if (isAction || n.kind === "ask") { openDeliberationSheet(n); return; }
     const meta = alertMeta(n);
@@ -2761,13 +2803,15 @@
       intent: n.intention || meta.intention, title: n.title, ico: n.icon || meta.icon, cls: n.cls || meta.cls,
       action: null,
       bodyHtml: '<div class="md">' + md(n.body || "*(no summary)*") + "</div>"
-        + (canTalk ? '<div class="delib-conv"><div id="delibX"></div></div>' : ""),
-      footHtml: canTalk
-        ? '<div class="reply delib-probe"><textarea class="rinp" rows="1" placeholder="Ask about this…" enterkeyhint="send"></textarea><span class="rsend"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span></div>'
-        : "",
+        + (canTalk ? '<div class="lbl">Conversation</div><div id="delibX"></div>' : ""),
+      footHtml: canTalk ? probeFootHtml("Ask about this…") : "",
       wire: (body, foot) => { if (canTalk) wireReply(foot, (v) => probe && probe(v)); },
     });
-    if (canTalk) probe = attachSheetConversation(n.convId);
+    // Same design as the ask sheet, minus the decision card: the alert's context
+    // on top, then the REAL conversation — the source thread rendered like a
+    // supervisor thread (wakes as compact notes, timelines, markdown), open at
+    // the alert context first.
+    if (canTalk) probe = attachSheetConversation(n.convId, { openAtTop: true, emptyText: "No turns yet — ask below and the thread’s agent answers with its full context." });
   }
   // The feed card for an ask. A neutral card: a subtle near-white "Needs you" dot
   // + label, a top-right chat icon that opens the deliberation sheet ("dig in"),
@@ -2777,18 +2821,30 @@
   // ask via /answer; the chat icon (or tapping the body) opens the sheet.
   function needsYouCard(n) {
     const del = deliberationFromNotif(n);
-    const card = el('<div class="card needsyou"></div>');
-    const lbl = el('<div class="needs-lbl"><span class="d"></span><span class="t">Needs you</span><span class="digin" title="Talk it through"></span></div>');
+    // A read/answered ask is DECIDED — its card shows the recorded decision, not
+    // live buttons. (Archived asks used to re-render tappable options; tapping a
+    // stale one fired /answer into a long-resolved thread.)
+    const decided = !!n.answeredWith || !!n.read;
+    const card = el('<div class="card needsyou' + (decided ? " decided" : "") + '"></div>');
+    const lbl = el('<div class="needs-lbl"><span class="d"></span><span class="t"></span><span class="digin" title="Talk it through"></span></div>');
+    lbl.querySelector(".t").textContent = decided ? "Your call · decided" : "Needs you";
     const digin = lbl.querySelector(".digin"); digin.innerHTML = iconSvg("chat");
     digin.onclick = (e) => { e.stopPropagation(); openDeliberationSheet(n); };
     card.appendChild(lbl);
     const q = el('<div class="needs-q"></div>'); q.textContent = del.ask; card.appendChild(q);
-    if (del.options.length) {
+    if (decided) {
+      // The decision that settled it, on the card itself (note d4db3542) — or an
+      // honest "no decision recorded" for an ask that was swiped away/superseded.
+      card.appendChild(el('<div class="needs-decided">' + (n.answeredWith ? "✓ <b>" + esc(n.answeredWith) + "</b>" : "dismissed — no decision recorded") + "</div>"));
+    } else if (del.options.length) {
       const qa = el('<div class="needs-qa"></div>');
       for (const opt of del.options) {
         const b = el('<button></button>');
         b.textContent = opt.answer;
-        b.onclick = (e) => { e.stopPropagation(); resolveDeliberation(n, opt.answer); };
+        // Lock every option the instant one is tapped — an accidental double-tap
+        // must not fire a second answer (note 6693e931). The backend collapses
+        // repeats too (deterministic clientMsgId), this just makes it visible.
+        b.onclick = (e) => { e.stopPropagation(); qa.querySelectorAll("button").forEach((x) => { x.disabled = true; }); resolveDeliberation(n, opt.answer); };
         qa.appendChild(b);
       }
       card.appendChild(qa);
@@ -2802,7 +2858,9 @@
       if (card.dataset.swiped === "1") { card.dataset.swiped = ""; return; }
       openDeliberationSheet(n);
     });
-    attachSwipeArchive(card, () => markRead(n.id));
+    attachSwipeArchive(card, n.read
+      ? () => api("/notifications/hide", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: n.id }) }).catch(() => {})
+      : () => markRead(n.id));
     return card;
   }
   // The deliberation sheet — reuses openSheet's frame/scrim/drag. Body: eyebrow
@@ -2822,11 +2880,14 @@
   // persisted. Returns the probe sender (a plain /message — never resolves an
   // ask). This is what replaced the old "Open thread" jump into the raw
   // execution log: you converse ABOUT the alert instead of decoding the log.
-  function attachSheetConversation(cid) {
+  function attachSheetConversation(cid, hooks) {
+    hooks = hooks || {};
     sheetConvId = cid;
     updateConvDot();
     const optimistic = [];
     let lastSig = "";
+    let firstPaint = true;
+    let pinBottom = false;
     async function paint() {
       // Frozen while the front is answering: its reply drives #chatEdge directly;
       // chat-end repaints (same contract as the mission sheet).
@@ -2834,30 +2895,51 @@
       let liveRun = false;
       try { const st = await (await api("/status")).json(); liveRun = (st.runs || []).some((r) => r.convId === cid); } catch {}
       let msgs = [];
+      let src = "";
       try {
         const d = await (await api("/conversation?id=" + encodeURIComponent(cid) + "&n=40")).json();
-        if (!d.error) msgs = (d.messages || []).filter((m) => m.direct && (m.role === "user" || m.role === "assistant"));
+        if (!d.error) {
+          src = d.source || "";
+          // The REAL thread — same render as a supervisor conversation. Only the
+          // MISSION BRIEF blob is dropped (it's the spec, not the exchange; the
+          // mission sheet shows it as the Done-when list instead). The old
+          // direct-only filter is gone: it hid the ask, the worker reports —
+          // everything that led to the decision ("it doesn't have the
+          // information") — while showing PRIOR forks' answers, which read as
+          // this ask having been answered for you.
+          msgs = (d.messages || []).filter((m) => !/^\s*MISSION BRIEF/i.test(m.content || ""));
+        }
       } catch {}
       // Drop optimistic bubbles the persisted thread now contains.
       for (let k = optimistic.length - 1; k >= 0; k--) {
         if (msgs.some((m) => m.role === "user" && (m.content || "").trim() === optimistic[k].trim())) optimistic.splice(k, 1);
       }
-      const shown = msgs.slice(-8).concat(optimistic.map((t) => ({ role: "user", content: t })));
+      const shown = msgs.slice(-30).concat(optimistic.map((t) => ({ role: "user", content: t })));
       if (liveRun) sheetEnded = false;
       const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
       sheetRunning = liveRun || (hasLive && !sheetEnded);
-      // This surface is a conversation — a reply here renders as prose, never the
-      // executor thought-chain.
-      sheetDirectReply = true;
+      // Direct-reply vs thought-chain is a property of WHAT triggered the turn,
+      // same contract as the mission sheet: a turn answering something you typed
+      // streams as plain prose; a background wake renders as the compact
+      // thought-chain. (Forcing direct=true here let a status flip drop it and
+      // the executor's chain bled into the ask conversation as "weird boxes".)
+      {
+        const lastMsg = shown[shown.length - 1];
+        sheetDirectReply = !!(lastMsg && lastMsg.role === "user" && !isWakeMsg(lastMsg.content || ""));
+      }
       const showLive = sheetRunning || sheetOptimisticWorking;
-      const sig = JSON.stringify(shown.map((m) => [m.role, (m.content || "").length])) + "|" + showLive;
+      const sig = JSON.stringify(shown.map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + showLive;
       if (sig === lastSig) return; // unchanged — don't disrupt reading/typing
       lastSig = sig;
       const x = $("delibX"); if (!x) return;
       const be = $("sheetBody");
+      const prevTop = be ? be.scrollTop : 0;
       const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 90;
-      x.innerHTML = shown.map((m) => '<div class="delib-bub ' + (m.role === "user" ? "u" : "a") + '">' + esc((m.content || "").slice(0, 1200)) + "</div>").join("")
+      x.innerHTML = (shown.length
+        ? threadHtml(shown, { user: "You", assistant: src === "mission" ? "Supervisor" : "Assistant" })
+        : '<div class="md dim">' + esc(hooks.emptyText || "No turns yet — ask below; the agent answers with the thread’s full context.") + "</div>")
         + (showLive ? liveEdgeHtml() : "");
+      typeset(x);
       // Two-lane fold-in with no gap, same as the mission sheet: hold a settling
       // chat reply on screen until its persisted bubble is in the fetched thread.
       if (sheetChatSettling && sheetChatText) {
@@ -2866,7 +2948,16 @@
         if (landed) { sheetChatSettling = false; sheetChatText = ""; const ce = $("chatEdge"); if (ce) ce.remove(); }
         else renderChatEdge(sheetChatText, true);
       }
-      if (be && wasBottom) be.scrollTop = be.scrollHeight;
+      // Scroll contract: the sheet OPENS on its context (the decision card / the
+      // alert summary at the top); after that, hold your place — re-pin to the
+      // bottom only if you were already there or you just sent something.
+      if (be) {
+        if (firstPaint) be.scrollTop = hooks.openAtTop ? 0 : be.scrollHeight;
+        else if (wasBottom || pinBottom) be.scrollTop = be.scrollHeight;
+        else be.scrollTop = prevTop;
+      }
+      firstPaint = false;
+      pinBottom = false;
     }
     // Probe: a plain /message (the box routes it to the conversational front; a
     // pending ask stays pending). Optimistic bubble + "working…" the instant you
@@ -2875,6 +2966,7 @@
       optimistic.push(text);
       sheetOptimisticWorking = true;
       sheetEnded = false;
+      pinBottom = true; // your own message → scroll to show it
       lastSig = ""; // force the next paint to re-render with the new bubble
       setTimeout(() => { if (sheetOptimisticWorking) { sheetOptimisticWorking = false; if (sheetRepaint) void sheetRepaint(); } }, 15000);
       void paint();
@@ -2886,48 +2978,78 @@
     void paint();
     missionPoll = setInterval(() => {
       if (!$("sheet").classList.contains("on")) { clearInterval(missionPoll); missionPoll = 0; return; }
+      if (hooks.onTick) void hooks.onTick();
       void paint();
     }, 3000);
     return sendProbe;
   }
   async function openDeliberationSheet(n) {
-    const del = deliberationFromNotif(n);
+    let del = deliberationFromNotif(n);
     const cid = n.convId || "";
     let probe = null;
-    let bodyHtml = '<div class="delib-conv">';
-    bodyHtml += '<div class="delib-eyebrow">The decision</div>';
-    bodyHtml += '<div class="delib-ask">' + esc(del.askLong || del.ask || "") + "</div>";
-    del.options.forEach((opt, i) => {
-      bodyHtml += '<div class="delib-opt" data-i="' + i + '">'
-        + '<div class="ot">' + esc(opt.title || opt.answer) + '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div>'
-        + (opt.body ? '<div class="ob">' + esc(opt.body) + "</div>" : "") + "</div>";
-    });
-    // Buttons are how you answer — the freeform answer input exists ONLY for an
-    // ask with no options, where it's the sole way to resolve. (The pinned foot
-    // below talks it through without resolving.)
-    if (!del.options.length) {
-      bodyHtml += '<div class="needs-ff delib-ans"><input placeholder="Answer in your words…" enterkeyhint="send"><span class="rsend"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span></div>';
-    }
-    bodyHtml += '<div id="delibX"></div>';
-    bodyHtml += "</div>";
+    // Decided = read or answered: the decision card renders its recorded outcome,
+    // options go inert, and the conversation below is DEAD (no probe foot) — a
+    // settled ask is a record, not a live surface.
+    const decided = !!n.answeredWith || !!n.read;
+    // The decision card — rebuilt in place when a newer ask supersedes this one
+    // ("latest wins", for real this time) or after the user decides.
+    const decisionHtml = () => {
+      let h = '<div class="delib-ask">' + esc(del.askLong || del.ask || "") + "</div>";
+      del.options.forEach((opt, i) => {
+        const chosen = !!n.answeredWith && (opt.answer === n.answeredWith);
+        h += '<div class="delib-opt' + (opt.primary ? " prim" : "") + (decided ? " dead" : "") + (chosen ? " chosen" : "") + '" data-i="' + i + '">'
+          + '<div class="ot">' + esc(opt.title || opt.answer)
+          + (chosen
+            ? '<span class="pick">✓ your call</span>'
+            : (decided ? "" : '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>'))
+          + "</div>"
+          + (opt.body ? '<div class="ob">' + esc(opt.body) + "</div>" : "") + "</div>";
+      });
+      if (decided) {
+        h += '<div class="delib-done">' + (n.answeredWith
+          ? "✓ Decided — <b>" + esc(n.answeredWith) + "</b>" + (n.answeredAt ? " · " + age(n.answeredAt) : "")
+          : "Dismissed without a recorded decision") + "</div>";
+      } else if (!del.options.length) {
+        // Buttons are how you answer — the freeform commit input exists ONLY for
+        // an ask with no options, where it's the sole way to resolve. (The pinned
+        // foot below talks it through without resolving.)
+        h += '<div class="needs-ff delib-ans"><input placeholder="Answer in your words…" enterkeyhint="send"><button class="rsend">↑</button></div>';
+      }
+      return h;
+    };
+    const wireDecision = (root) => {
+      if (decided) return;
+      root.querySelectorAll(".delib-opt").forEach((o) => {
+        o.onclick = () => {
+          if (root.classList.contains("deciding")) return;
+          const opt = del.options[+o.dataset.i]; if (!opt) return;
+          // Visible lockout the instant you pick — a double-tap can't fire twice
+          // (and the backend collapses repeats via the deterministic answer id).
+          root.classList.add("deciding"); o.classList.add("chosen");
+          resolveDeliberation(n, opt.answer);
+        };
+      });
+      const ans = root.querySelector(".delib-ans");
+      if (ans) {
+        const ai = ans.querySelector("input");
+        const go = () => { const v = ai.value.trim(); if (v && !root.classList.contains("deciding")) { root.classList.add("deciding"); resolveDeliberation(n, v); } };
+        ai.onkeydown = (e) => { if (e.key === "Enter" && ai.value.trim()) go(); };
+        ans.querySelector(".rsend").onclick = go;
+      }
+    };
     openSheet({
-      intent: "Your call", title: del.mission || n.title, ico: "?", cls: "a",
-      bodyHtml: bodyHtml,
-      footHtml: '<div class="reply delib-probe"><textarea class="rinp" rows="1" placeholder="Ask about this…" enterkeyhint="send"></textarea><span class="rsend"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span></div>',
+      intent: decided ? "Your call · decided" : "Your call", title: del.mission || n.title, ico: "?", cls: "a",
+      bodyHtml: '<div class="delib-eyebrow">The decision</div>'
+        + '<div id="delibDecision">' + decisionHtml() + "</div>"
+        + '<div class="lbl">Conversation</div><div id="delibX"></div>',
+      // Decision card on top, then the REGULAR conversation — the mission thread
+      // rendered exactly like a supervisor sheet. A decided ask gets no foot: the
+      // conversation is readable but dead.
+      footHtml: decided ? "" : probeFootHtml("Ask about this…"),
       wire: (body, foot) => {
-        body.querySelectorAll(".delib-opt").forEach((o) => {
-          o.onclick = () => { const opt = del.options[+o.dataset.i]; if (opt) resolveDeliberation(n, opt.answer); };
-        });
-        // Freeform answer field (no-options asks only; resolves the ask).
-        const ans = body.querySelector(".delib-ans");
-        if (ans) {
-          const ai = ans.querySelector("input");
-          const go = () => { const v = ai.value.trim(); if (v) resolveDeliberation(n, v); };
-          ai.onkeydown = (e) => { if (e.key === "Enter" && ai.value.trim()) go(); };
-          ans.querySelector(".rsend").onclick = go;
-        }
+        wireDecision(body.querySelector("#delibDecision"));
         // The probe input talks it through — a plain /message, NOT an answer.
-        wireReply(foot, (v) => probe && probe(v));
+        if (!decided) wireReply(foot, (v) => probe && probe(v));
       },
     });
     // Mock/legacy ask with no thread behind it: render any baked sample exchange
@@ -2935,23 +3057,58 @@
     if (!cid) {
       const baked = Array.isArray(n.deliberation && n.deliberation.exchange) ? n.deliberation.exchange : [];
       const x0 = $("delibX");
-      if (x0) x0.innerHTML = baked.map((m) => '<div class="delib-bub ' + (m.role === "user" ? "u" : "a") + '">' + esc(m.text || "") + "</div>").join("");
+      if (x0) x0.innerHTML = baked.length
+        ? threadHtml(baked.map((m) => ({ role: m.role, content: m.text || "" })), { user: "You", assistant: "Supervisor" })
+        : '<div class="md dim">No conversation behind this ask.</div>';
       return;
     }
+    // Latest wins, for real: while the sheet is open, each poll tick checks for a
+    // NEWER pending ask on this thread (the agent deliberating can surface fresh
+    // options mid-conversation — a new AskUser supersedes this one on the box).
+    // Swap the decision card in place so the buttons you see are always the live
+    // fork, not a stale one.
+    const checkNewerAsk = async () => {
+      if (decided) return;
+      try {
+        const d = await (await api("/notifications")).json();
+        const list = d.notifications || [];
+        lastNotifList = list;
+        const newest = list.find((s) => s.kind === "ask" && !s.read && s.convId === cid);
+        if (newest && newest.id !== n.id) {
+          n = newest; del = deliberationFromNotif(n);
+          const box = $("delibDecision");
+          if (box && !box.classList.contains("deciding")) { box.innerHTML = decisionHtml(); wireDecision(box); }
+        }
+      } catch {}
+    };
     // [ask-conversation] Talk-it-through is a REAL conversation on the mission
-    // thread — the shared plumbing streams the front's reply and folds it in.
-    // (The old one-shot re-render at 2.6s always missed the reply, so the sheet
-    // looked dead — "it should work just like a supervisor one".)
-    probe = attachSheetConversation(cid);
+    // thread — the shared plumbing streams the front's reply and folds it in,
+    // rendered with the supervisor sheet's exact thread machinery.
+    probe = attachSheetConversation(cid, {
+      openAtTop: true,
+      onTick: checkNewerAsk,
+      emptyText: "No conversation yet — talk it through below; the agent has the mission’s full context.",
+    });
   }
   // Resolve an ask: the TAGGED answer path (a tapped option OR a committed
   // freeform reply). Hits /answer so the box clears AWAITING_USER and resumes the
   // mission with this answer fed in — a plain /message could never do this. Marks
   // the alert read + closes the sheet.
+  const resolvingAsks = new Set();
   function resolveDeliberation(n, answer) {
-    const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
+    // One decision per ask, deterministically: repeat taps are locked out here,
+    // and the clientMsgId is DERIVED FROM THE ASK ID (not minted fresh per tap),
+    // so even a repeat that slips through — a double-fired handler, a PWA retry —
+    // collapses to ONE answer turn on the box (note 6693e931: double-tapping an
+    // option sent it twice and the thread went out of whack).
+    if (resolvingAsks.has(n.id)) return;
+    resolvingAsks.add(n.id);
+    setTimeout(() => resolvingAsks.delete(n.id), 60_000);
+    const clientMsgId = "answer-" + n.id;
     if (n.convId) {
-      api("/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: answer, clientMsgId }) }).catch(() => {});
+      // notifId lets the box durably stamp WHICH answer settled this ask
+      // (answeredWith), so the Archive shows the decision that was made.
+      api("/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: answer, clientMsgId, notifId: n.id }) }).catch(() => {});
     }
     // One answer settles the DECISION, not just this card: retire every live ask
     // card pointing at the same conversation. The deadlocked self-test stacked 3

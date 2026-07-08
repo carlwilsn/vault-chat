@@ -364,6 +364,10 @@ export async function runWorkerTurn(
     role: "user",
     content: message,
     direct: opts.direct || opts.answer ? true : undefined,
+    // A tapped option / committed answer via /answer is a FORMAL decision —
+    // flagged so the thread renders it as a decision chip and the record of
+    // which way the user called it is durable, not inferred from prose.
+    decision: opts.answer ? true : undefined,
     mid: newMessageId(),
   };
   // [harness v2] Harness-generated wakes (worker-finish, watched-run, fork nudge,

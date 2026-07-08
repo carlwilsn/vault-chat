@@ -1088,18 +1088,33 @@ export async function startPhoneAppHost(): Promise<void> {
     convId?: string | null;
     text?: string;
     clientMsgId?: string;
+    notifId?: string;
   }>("phone:answer", async (event) => {
-    const { reqId, convId, text, clientMsgId } = event.payload;
+    const { reqId, convId, text, clientMsgId, notifId } = event.payload;
     try {
       const t = String(text ?? "").trim();
       if (!convId || !t) {
         respond(reqId, { error: "answer needs a convId and non-empty text" });
         return;
       }
-      respond(
-        reqId,
-        await dedupedPhoneMessage(clientMsgId, convId, t, false, /* answer */ true),
-      );
+      const res = await dedupedPhoneMessage(clientMsgId, convId, t, false, /* answer */ true);
+      // Durably record WHICH answer settled this ask — an append-only "answered"
+      // marker keyed to the notification id. notifications_json folds it into the
+      // card as answeredWith/answeredAt (and treats it as read), so the Archive
+      // shows the decision that was made, not just that an ask once existed.
+      // Skipped when the send failed or deduped to an error — a phantom "decided"
+      // stamp on an ask whose answer never ran would lie to the archive.
+      if (notifId && !(res as { error?: unknown }).error) {
+        const vault = useStore.getState().vaultPath;
+        if (vault) {
+          await invoke("notification_add", {
+            vault,
+            json: JSON.stringify({ type: "answered", id: notifId, answer: t.slice(0, 160), ts: Date.now() }),
+          }).catch(() => {});
+          broadcast({ type: "notif" });
+        }
+      }
+      respond(reqId, res);
     } catch (e) {
       respond(reqId, { error: String(e) });
     }

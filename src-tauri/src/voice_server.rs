@@ -1285,11 +1285,26 @@ fn notifications_json(vault: &str) -> String {
     // hiding the whole read pile one id at a time, and survives the 80-item cap.
     // Latest clear ts wins.
     let mut clear_before: i64 = 0;
+    // "answered" markers: the decision that settled an ask (a tapped option or a
+    // committed free-form answer). Folded into the notification as answeredWith/
+    // answeredAt so the Archive shows WHICH way the user called it; an answered
+    // ask also counts as read (the decision retires the card even if the client's
+    // separate read marker was lost).
+    let mut answered: std::collections::HashMap<String, (String, i64)> =
+        std::collections::HashMap::new();
     for line in raw.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         match v.get("type").and_then(|x| x.as_str()) {
             Some("read") => {
                 if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                    read_ids.insert(id.to_string());
+                }
+            }
+            Some("answered") => {
+                if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                    let ans = v.get("answer").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let ts = v.get("ts").and_then(|x| x.as_i64()).unwrap_or(0);
+                    answered.insert(id.to_string(), (ans, ts));
                     read_ids.insert(id.to_string());
                 }
             }
@@ -1333,6 +1348,10 @@ fn notifications_json(vault: &str) -> String {
         .map(|(id, mut v)| {
             if let Some(obj) = v.as_object_mut() {
                 obj.insert("read".into(), json!(read_ids.contains(&id)));
+                if let Some((ans, ats)) = answered.get(&id) {
+                    obj.insert("answeredWith".into(), json!(ans));
+                    obj.insert("answeredAt".into(), json!(ats));
+                }
             }
             v
         })
@@ -1466,6 +1485,9 @@ fn conversation_json(vault: &str, id: &str, n: usize) -> Option<String> {
                 // deliberation sheet filters on this; omitting it here made that
                 // filter match NOTHING, so the ask exchange always rendered empty.
                 "direct": m.get("direct").and_then(|x| x.as_bool()).unwrap_or(false),
+                // A formal user decision (a tapped AskUser option / committed
+                // answer via /answer) — rendered as a decision chip in threads.
+                "decision": m.get("decision").and_then(|x| x.as_bool()).unwrap_or(false),
             })
         })
         .collect();

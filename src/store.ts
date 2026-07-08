@@ -97,6 +97,12 @@ export type ChatMessage = {
   // NATURAL — they're a conversation, not reasoning — so the cleaner leaves them
   // as prose instead of chopping them into a thought-chain timeline.
   direct?: boolean;
+  // A FORMAL user decision — a tapped AskUser option or a committed free-form
+  // answer arriving via the phone's /answer route. Distinct from an ordinary
+  // typed message so the cockpit renders it as a decision chip ("Your call —
+  // …") and the record of WHICH way the user decided survives in the thread,
+  // deterministically, instead of as loose prose.
+  decision?: boolean;
   // This assistant turn ended in an error (model/SDK failure or a thrown
   // exception), not a clean finish. The completion path reads this so a crashed
   // worker reports "FAILED" instead of a false "done — completed its task".
