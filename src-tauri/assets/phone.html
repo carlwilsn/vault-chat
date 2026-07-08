@@ -19,7 +19,10 @@
   :root{
     --bg:#000000; --surface:#111113; --raised:#1b1b1f; --line:#26262b;
     --text:#f0f0f0; --dim:#8c8c92; --primary:#f5f5f5; --primary-fg:#000000;
-    --err:#e5655f; --ok:#eaeaea; --warn:#e0a35a; --warn-ink:#2a1e0b; --warn-line:#4a3a22;
+    /* Attention accent is a calm, flat blue (user: no warm colors — "not orange";
+       Apple/Cursor-like blue). --warn keeps its name (it's the semantic
+       attention slot: asks, snags, needs-you) but reads cool now. */
+    --err:#e5655f; --ok:#eaeaea; --warn:#6aa5e8; --warn-ink:#0d1a29; --warn-line:#28486b;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html{background:var(--bg);height:100%}
@@ -339,6 +342,14 @@
      with the SAME threadHtml as a supervisor sheet — one conversation look.) */
   /* Note edit sheet (swipe a note right to open). */
   .note-edit{width:100%;min-height:38vh;resize:vertical;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px;color:var(--text);font-size:14px;line-height:1.5;outline:none;font-family:inherit;box-sizing:border-box}
+  /* Superseded deliberation rounds stacked above the live card. */
+  .delib-round{opacity:.62;margin-bottom:10px;padding-bottom:8px;border-bottom:1px dashed var(--line)}
+  .delib-ask.rdim{color:#a9a9b0;font-size:13.5px}
+  .delib-opt.mini{padding:7px 11px;margin-top:6px}
+  .delib-opt.mini .ot{font-size:13px}
+  /* Mission-head "needs you" chip: a compact icon, not wrapping words. */
+  .needschip{margin-left:8px;width:24px;height:24px;border-radius:8px;border:1px solid var(--warn-line);color:var(--warn);background:var(--warn-ink);display:inline-flex;align-items:center;justify-content:center;flex:none;cursor:pointer}
+  .needschip svg{width:14px;height:14px}
   /* No-options ask: the ONE composer doubles as the answer box — this labeled
      commit action under it sends the typed text as the formal answer. */
   .ans-commit{width:100%;margin-top:8px;border-radius:10px;padding:9px 12px;font-size:13px;font-weight:600;border:1px solid #3a3a42;background:var(--raised);color:var(--text);font-family:inherit}
@@ -1088,6 +1099,19 @@
   // Opening a thread clears its unseen state.
   const convRunning = new Set();
   const convUnseen = new Set();
+  // The conversations icon tracks YOUR chats only. A mission/worker self-wake
+  // ending in the background must never light it (note 8c84fc31 — "the icon is
+  // not accurate": CADENCE-FAST's 2-minute wakes kept flipping the dot as each
+  // wake started/ended). Eligible = a thread you actually converse in: a
+  // phone/manual chat, or any thread you sent a message to this session.
+  const convSourceById = new Map();
+  const userEngaged = new Set();
+  function dotEligible(id) {
+    if (!id) return false;
+    if (userEngaged.has(id) || id === convId) return true;
+    const s = convSourceById.get(id);
+    return s === "phone" || s === "manual";
+  }
   // One-time purge of the old per-conversation "seen" watermark. It used to drive
   // unread off conversation age, which spuriously badged old chats and resurfaced
   // "cleared" ones after an app update (note 9693499e). Nothing reads it now;
@@ -1113,7 +1137,9 @@
   // that WAS running and no longer is — and that you weren't looking at — becomes
   // done-unseen. Catches finishes even if the live status event was missed.
   function applyRunningSet(ids) {
-    const next = new Set(ids || []);
+    // Only YOUR chats count (dotEligible) — harness wakes on missions/workers
+    // used to churn through here and light the dot for plumbing.
+    const next = new Set((ids || []).filter(dotEligible));
     for (const id of convRunning) { if (!next.has(id) && id !== convId) convUnseen.add(id); }
     convRunning.clear();
     for (const id of next) { convRunning.add(id); convUnseen.delete(id); }
@@ -1205,6 +1231,9 @@
       // cosmetic hidden set (cleared "from this view") is filtered out, except
       // the chat you're currently in.
       const hidden = hiddenChats();
+      // Feed the dot's eligibility map — the icon needs sources to tell your
+      // chats from harness threads.
+      for (const c of convs) convSourceById.set(c.id, c.source);
       const chats = convs.filter((c) => ((c.source !== "worker" && c.source !== "mission") || c.surfaced) && (!hidden.has(c.id) || c.id === convId));
       // The chat you're in may not be on disk yet (the box persists ~500ms
       // after the first message). Show it anyway so a just-made chat never
@@ -1389,6 +1418,7 @@
     msgsEl.appendChild(bubble("user", text, null)); scrollDown(true);
     const mine = msgsEl.lastChild;
     try {
+      if (convId) userEngaged.add(convId); // you're conversing here → the dot may track it
       const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, text, clientMsgId, supervisor: convId ? undefined : true }) });
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || r.status);
@@ -1510,7 +1540,17 @@
         }
       } else if (d.type === "chat") {
         // The conversational-front lane on this mission thread.
-        if (d.phase === "start") { sheetChatActive = true; sheetChatSettling = false; sheetChatText = ""; renderChatEdge(""); }
+        if (d.phase === "start") {
+          sheetChatActive = true; sheetChatSettling = false; sheetChatText = "";
+          // The reply lane owns the indicator now — clear the probe's "working…"
+          // pulse in place (paint early-returns while the lane is active, so it
+          // could never clear it; the user saw BOTH "working…" and "answering…",
+          // note 9185d86a).
+          sheetOptimisticWorking = false;
+          const stale = document.querySelector("#delibX .liveplain");
+          if (stale) stale.remove();
+          renderChatEdge("");
+        }
         else if (d.phase === "stream") { sheetChatText = d.text || sheetChatText; renderChatEdge(sheetChatText); }
         else if (d.phase === "end") {
           // Don't yank the edge — hold the reply on screen (settled, no pulse) and
@@ -1540,7 +1580,9 @@
     // threads, and a reopened thread can replay its live state instead of a
     // blank "thinking".
     if (d.type === "runtime" && d.convId) {
-      convRunning.add(d.convId); convUnseen.delete(d.convId);
+      // Dot bookkeeping only for YOUR chats — a mission/worker wake's runtime
+      // frames must not light the conversations icon (note 8c84fc31).
+      if (dotEligible(d.convId)) { convRunning.add(d.convId); convUnseen.delete(d.convId); }
       const prev = liveByConv.get(d.convId);
       liveByConv.set(d.convId, { running: true, text: d.text || "", tool: d.tool || "", startedAt: d.startedAt ?? (prev && prev.startedAt) ?? null });
       updateConvDot();
@@ -1575,7 +1617,7 @@
   // burger badge read "1 activity" during an ordinary conversation and never
   // clear once it idled. Filter to mission/worker so the badge tracks real work.
   function activityRunCount(runs) { return (runs || []).filter((r) => r.source === "mission" || r.source === "worker").length; }
-  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; runCount = activityRunCount(d.runs); applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); return d; } catch { return null; } }
+  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; runCount = activityRunCount(d.runs); for (const r of d.runs || []) { if (r.convId && r.source) convSourceById.set(r.convId, r.source); } applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); return d; } catch { return null; } }
   async function refreshBadge() { try { const d = await (await api("/notifications")).json(); if (typeof d.unread === "number") { unreadN = d.unread; setHeader(); } } catch {} }
 
   // ---------- activity ----------
@@ -1860,47 +1902,59 @@
     $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
   }
   function closeSheet() { clearInterval(missionPoll); missionPoll = 0; markSeen(sheetConvId); /* leaving at close-time stamps it seen, after any open-time pin bump → never falsely unread (note ec78cbf8) */ sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false; sheetChatActive = false; sheetChatSettling = false; sheetChatText = ""; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; updateConvDot(); /* no longer viewing the sheet thread → a still-running one re-lights the dot */ }
+  // ONE keyboard contract for EVERY text input inside a sheet — the reply
+  // composer, the note editor, any future field (note ba0735c9: "find all of
+  // the text box enter use cases and get them straightened out"). On focus the
+  // sheet fills exactly the space ABOVE the keyboard:
+  //  - never shrink-to-content (the old code cleared the inline height, so a
+  //    sheet with a short conversation COLLAPSED the moment you tapped the
+  //    composer — "brings the sheet down from being expanded");
+  //  - never full-height + lift (an input NOT on this contract kept the sheet
+  //    at full height while translateY(-kb) lifted it, pushing the top clean
+  //    out of the screen — the note editor "swiping way up out of frame").
+  // On blur the resting geometry comes back.
+  function sheetEditFocus(el) {
+    hideKb();
+    const sheet = $("sheet");
+    // Remember the resting height once (not when hopping between two inputs),
+    // so blur can put the sheet back — never the CSS 64% "middle" fallback
+    // (notes 7edf4afd / 55ab9006).
+    if (!sheet.classList.contains("editing")) sheet.dataset.restH = sheet.style.height || "";
+    // Explicit FULL height, capped to the visible space: the visualViewport
+    // handler tightens maxHeight to the area above the keyboard as it animates.
+    sheet.style.height = "100%";
+    sheet.style.maxHeight = window.visualViewport ? window.visualViewport.height + "px" : "";
+    sheet.classList.add("editing");
+    const be = $("sheetBody");
+    const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 80;
+    setTimeout(() => { try { el.scrollIntoView({ block: "nearest" }); } catch {} if (be && wasBottom) be.scrollTop = be.scrollHeight; }, 60);
+  }
+  function sheetEditBlur() {
+    const sh = $("sheet");
+    sh.classList.remove("editing");
+    // Restore the resting geometry (explicit height + maxHeight:none, like
+    // openSheet) so dismissing the keyboard doesn't collapse the sheet, and
+    // keep the thread pinned to its latest line across the resize.
+    const be = $("sheetBody");
+    const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 80;
+    sh.style.maxHeight = "none";
+    sh.style.height = sh.dataset.restH || (sheetRestHeight() + "px");
+    if (be && wasBottom) {
+      requestAnimationFrame(() => { be.scrollTop = be.scrollHeight; });
+      setTimeout(() => { if (be.scrollHeight - be.scrollTop - be.clientHeight < 220) be.scrollTop = be.scrollHeight; }, 300);
+    }
+  }
   // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
-  // chat composer), Enter sends, Shift+Enter is a newline. The pinned footer +
-  // the visualViewport lift keep it above the keyboard.
+  // chat composer), Enter inserts a newline, the ↑ button sends. The pinned
+  // footer + the visualViewport lift keep it above the keyboard.
   function wireReply(foot, onSend) {
     if (!foot) return;
     const ta = foot.querySelector(".rinp"); if (!ta) return;
     ta.setAttribute("enterkeyhint", "enter");
     const autosize = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; };
     ta.addEventListener("input", autosize);
-    // Focusing the reply expands the sheet to fill the space above the keyboard
-    // so the body stays scrollable and the input sits right at the keyboard. The
-    // custom chat keyboard is force-hidden — only the native one shows here, so
-    // nothing double-pops. (The visualViewport handler keeps the lift in sync.)
-    ta.addEventListener("focus", () => {
-      hideKb();
-      const sheet = $("sheet");
-      // Remember the resting height BEFORE editing clears it, so blur can put the
-      // sheet back — the old code never restored it, so dismissing the keyboard
-      // dropped the sheet to the CSS 64% "middle" (notes 7edf4afd / 55ab9006).
-      sheet.dataset.restH = sheet.style.height || "";
-      sheet.style.height = ""; sheet.style.maxHeight = "";
-      sheet.classList.add("editing");
-      const be = $("sheetBody");
-      const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 80;
-      setTimeout(() => { try { ta.scrollIntoView({ block: "nearest" }); } catch {} if (be && wasBottom) be.scrollTop = be.scrollHeight; }, 60);
-    });
-    ta.addEventListener("blur", () => {
-      const sh = $("sheet");
-      sh.classList.remove("editing");
-      // Restore the resting geometry (explicit height + maxHeight:none, like
-      // openSheet) so dismissing the keyboard doesn't collapse the sheet to the
-      // middle, and keep the thread pinned to its latest line across the resize.
-      const be = $("sheetBody");
-      const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 80;
-      sh.style.maxHeight = "none";
-      sh.style.height = sh.dataset.restH || (sheetRestHeight() + "px");
-      if (be && wasBottom) {
-        requestAnimationFrame(() => { be.scrollTop = be.scrollHeight; });
-        setTimeout(() => { if (be.scrollHeight - be.scrollTop - be.clientHeight < 220) be.scrollTop = be.scrollHeight; }, 300);
-      }
-    });
+    ta.addEventListener("focus", () => sheetEditFocus(ta));
+    ta.addEventListener("blur", sheetEditBlur);
     const go = () => { const v = ta.value.trim(); if (!v) return; ta.value = ""; autosize(); onSend(v); };
     foot.querySelector(".rsend").onclick = go;
     // Enter inserts a newline; sending is via the send button.
@@ -2041,6 +2095,7 @@
         // dedupes sends that carry a clientMsgId — without one this reply path was
         // the unprotected "my message got sent twice" case on supervisor threads.
         const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
+        userEngaged.add(mc.id); // you steered this mission → the dot may track its reply
         await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v, clientMsgId }) }).catch(() => {});
         setTimeout(paint, 900); // pick up the durably-persisted turn quickly
       }),
@@ -2413,7 +2468,22 @@
         // fine for a day. Billing gets its own chip so "box burning money" is
         // visible at a glance, distinct from worker activity.
         if (mc.missionState === "AWAITING_USER") {
-          const chip = el('<span style="margin-left:8px;font-size:11px;font-weight:600;color:var(--warn,#e0a020);border:1px solid currentColor;border-radius:8px;padding:1px 7px">needs you</span>');
+          // A compact icon chip, not words (they wrapped on narrow cards — note
+          // d47a498d). Tapping it goes STRAIGHT to the decision: the pending
+          // ask's deliberation sheet, not the mission view (tapping the name
+          // still opens the mission).
+          const chip = el('<span class="needschip" title="Needs your call">' + iconSvg("?") + "</span>");
+          chip.onclick = async (e) => {
+            e.stopPropagation();
+            try {
+              const d = await (await api("/notifications")).json();
+              const list = d.notifications || [];
+              lastNotifList = list;
+              const ask = list.find((s) => s.kind === "ask" && !s.read && s.convId === mc.id);
+              if (ask) { openDeliberationSheet(ask); return; }
+            } catch {}
+            openMission(mc, g); // no live ask found — fall back to the mission view
+          };
           head.appendChild(chip);
         } else if (mc.billing) {
           const chip = el('<span style="margin-left:8px;font-size:11px;font-weight:600;color:var(--accent,#4a9);border:1px solid currentColor;border-radius:8px;padding:1px 7px">$ billing</span>');
@@ -2588,6 +2658,10 @@
       const f = el('<div class="ntext"></div>'); f.textContent = n.formatted; box.appendChild(f);
     }
   }
+  // Which notes are expanded — held OUTSIDE the cards so a list rebuild
+  // (loadNotes after a save/status change) puts every card back in the state
+  // you left it, instead of collapsing what you were reading (note ba0735c9).
+  const expandedNotes = new Set();
   function noteCard(n) {
     const card = el('<div class="card"><div class="crow"><div class="ico">' + iconSvg("✦") + '</div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><p class="cs"></p></div></div><div class="ndetail" style="display:none"></div></div>');
     card.querySelector("b").textContent = noteTitle(n);
@@ -2596,14 +2670,18 @@
     cs.textContent = n.formatted || n.user_draft || (n.turns && n.turns.length ? n.turns[n.turns.length - 1].content : "") || "";
     const detail = card.querySelector(".ndetail");
     let built = false;
+    const show = () => {
+      if (!built) { buildNoteDetail(detail, n); built = true; }
+      detail.style.display = ""; cs.style.display = "none";
+    };
+    if (expandedNotes.has(n.id)) show();
     card.addEventListener("click", () => {
       // A swipe fires a trailing click on mouseup — swallow that one so the
       // resolve gesture doesn't also toggle the detail open.
       if (card.dataset.swiped === "1") { card.dataset.swiped = ""; return; }
       const showing = detail.style.display !== "none";
-      if (showing) { detail.style.display = "none"; cs.style.display = ""; return; }
-      if (!built) { buildNoteDetail(detail, n); built = true; }
-      detail.style.display = ""; cs.style.display = "none";
+      if (showing) { detail.style.display = "none"; cs.style.display = ""; expandedNotes.delete(n.id); return; }
+      show(); expandedNotes.add(n.id);
     });
     // Swipe left to resolve an open note (or reopen a resolved one) — the same
     // acknowledge gesture as alerts. This now writes through to notes.jsonl on
@@ -2634,6 +2712,11 @@
       wire: (body) => {
         const ta = body.querySelector("#noteEditTa");
         ta.value = n.user_draft || "";
+        // Same keyboard contract as every other sheet input — without it the
+        // full-height sheet got LIFTED by the keyboard transform and its top
+        // flew out of the screen (note ba0735c9).
+        ta.addEventListener("focus", () => sheetEditFocus(ta));
+        ta.addEventListener("blur", sheetEditBlur);
         const save = body.querySelector("#noteEditSave");
         save.onclick = async () => {
           const t = ta.value.trim();
@@ -2643,8 +2726,12 @@
             const r = await api("/notes/edit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: n.id, text: t }) });
             const d = await r.json().catch(() => ({}));
             if (!r.ok || d.error) throw new Error(d.error || r.status);
-            toast("Note updated.");
-            closeSheet();
+            // Save IN PLACE (note ba0735c9): keep the sheet open with the saved
+            // text — "I might have just saved it and want to read what I saved."
+            // The list refreshes underneath without touching any card's state.
+            n.user_draft = t;
+            toast("Saved.");
+            save.disabled = false;
             void loadNotes();
             // The box re-headlines the edited note off the response path — refetch
             // once more so the new title lands without leaving the page.
@@ -2653,7 +2740,6 @@
         };
       },
     });
-    setTimeout(() => { const ta = $("noteEditTa"); if (ta) { ta.focus(); } }, 250);
   }
   async function loadNotes() {
     const box = $("notesScroll");
@@ -3015,6 +3101,7 @@
       setTimeout(() => { if (sheetOptimisticWorking) { sheetOptimisticWorking = false; if (sheetRepaint) void sheetRepaint(); } }, 15000);
       void paint();
       const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
+      userEngaged.add(cid); // probing this thread → the dot may track the reply
       await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: cid, text, clientMsgId }) }).catch(() => {});
       setTimeout(() => { void paint(); }, 900); // pick up the durably-persisted turn quickly
     }
@@ -3035,10 +3122,23 @@
     // options go inert, and the conversation below is DEAD (no probe foot) — a
     // settled ask is a record, not a live surface.
     const decided = !!n.answeredWith || !!n.read;
+    // Rounds superseded WHILE the sheet is open stack above the live card —
+    // the deliberation reads as a progression (round 1 → your pushback → a
+    // tighter round 2), not a card that silently swaps under you (note
+    // 9185d86a: "a conversation that stacks the options").
+    const priorRounds = [];
     // The decision card — rebuilt in place when a newer ask supersedes this one
     // ("latest wins", for real this time) or after the user decides.
     const decisionHtml = () => {
-      let h = '<div class="delib-ask">' + esc(del.askLong || del.ask || "") + "</div>";
+      let h = "";
+      for (const r of priorRounds.slice(-4)) {
+        h += '<div class="delib-round">'
+          + '<div class="delib-ask rdim">' + esc(r.ask) + "</div>"
+          + r.options.map((o) => '<div class="delib-opt dead mini"><div class="ot">' + esc(o.title || o.answer) + "</div></div>").join("")
+          + '<div class="delib-done">superseded — the agent tightened the fork below</div>'
+          + "</div>";
+      }
+      h += '<div class="delib-ask">' + esc(del.askLong || del.ask || "") + "</div>";
       del.options.forEach((opt, i) => {
         const chosen = !!n.answeredWith && (opt.answer === n.answeredWith);
         h += '<div class="delib-opt' + (opt.primary ? " prim" : "") + (decided ? " dead" : "") + (chosen ? " chosen" : "") + '" data-i="' + i + '">'
@@ -3122,6 +3222,8 @@
         lastNotifList = list;
         const newest = list.find((s) => s.kind === "ask" && !s.read && s.convId === cid);
         if (newest && newest.id !== n.id) {
+          // Stack the round being replaced, then swap in the new fork.
+          priorRounds.push({ ask: del.askLong || del.ask || "", options: del.options || [] });
           n = newest; del = deliberationFromNotif(n);
           const box = $("delibDecision");
           if (box && !box.classList.contains("deciding")) { box.innerHTML = decisionHtml(); wireDecision(box); }

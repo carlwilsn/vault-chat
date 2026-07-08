@@ -1491,8 +1491,15 @@ async function readNamedFiles(
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
       const rel = m[1]!.replace(/^\.\//, "");
-      if (!rel.includes("/")) continue; // a bare filename is too ambiguous to resolve
       if (rel.includes("..")) continue; // never traverse out of the vault
+      // Bare filenames are no longer skipped: "Write a RESULTS.md scorecard"
+      // is how criteria actually read, and skipping the name left the auditor
+      // with NO ground truth for a file sitting on disk — the residual
+      // blindness that made the notification-surfaces dummy need a force-close
+      // waiver on the very build that fixed the pathed cases. The suffix
+      // search below resolves them (newest match wins — for a "just written"
+      // artifact, mtime order is exactly the right disambiguator).
+      if (!rel.includes("/") && rel.length < 5) continue; // too short to search safely
       out.push(rel);
     }
     return out;
@@ -1538,13 +1545,20 @@ async function readNamedFiles(
     // on disk AND in committed git HEAD.
     let at = rel;
     let searched = false;
+    let alsoMatched = "";
     let body = await invoke<string>("read_text_file", { path: `${vault}/${rel}` }).catch(() => null);
     if (body == null) {
       searched = true;
       const hits = await globVault(`**/${rel}`);
       if (hits.length) {
+        // Newest match first (glob_files sorts by mtime) — for a just-written
+        // artifact that's the right pick. Surface any other matches so the
+        // auditor can see the ambiguity instead of trusting a silent choice.
         body = await invoke<string>("read_text_file", { path: hits[0]! }).catch(() => null);
-        if (body != null) at = toRel(hits[0]!);
+        if (body != null) {
+          at = toRel(hits[0]!);
+          if (hits.length > 1) alsoMatched = ` (newest of ${hits.length} matches; others: ${hits.slice(1, 3).map(toRel).join(", ")})`;
+        }
       }
     }
     if (body == null) {
@@ -1565,8 +1579,15 @@ async function readNamedFiles(
       parts.push(`-- ${at}: EXISTS but is EMPTY — for an emptied/cleared criterion this is POSITIVE PROOF the criterion is MET. --`);
     } else {
       const lineCount = body.split(/\r?\n/).length;
-      const where = searched && at !== rel ? `${rel} → resolved at ${at}` : at;
-      parts.push(`-- ${where} (${lineCount} lines, ${body.length} bytes) --\n${body.slice(0, 2500)}`);
+      const where = (searched && at !== rel ? `${rel} → resolved at ${at}` : at) + alsoMatched;
+      // An explicit truncation marker: the notification-surfaces dummy was
+      // rejected over a heartbeat line "cut mid-write" that was OUR 2500-char
+      // evidence cap, not the file — the auditor must never mistake the cap
+      // for a truncated/corrupt file.
+      const capped = body.length > 2500
+        ? `${body.slice(0, 2500)}\n[… evidence capped at 2500 chars by the auditor's reader — the FILE ITSELF CONTINUES (${body.length} bytes total). A line cut off right here is an artifact of this cap, not of the file.]`
+        : body;
+      parts.push(`-- ${where} (${lineCount} lines, ${body.length} bytes) --\n${capped}`);
     }
   }
   // Expand each template into a real listing + a bounded sample of contents —
