@@ -2337,6 +2337,22 @@
         const archHolder = el("<div></div>"); archHolder.style.display = archiveOpen ? "" : "none";
         box.appendChild(archHolder);
         ah.onclick = () => { archiveOpen = !archiveOpen; archHolder.style.display = archiveOpen ? "" : "none"; cv.textContent = archiveOpen ? "▾" : "▸"; };
+        // Clear-all: delete every archived mission at once instead of swiping them
+        // one by one. Two-tap confirm so a stray tap can't wipe the record. /kill
+        // tombstones each (gone on every client); dismissedMissions hides them
+        // instantly and the reload confirms.
+        const clrM = el('<button class="earlier clearall">Clear archived · ' + archived.length + "</button>");
+        let armedM = false, armMT = 0;
+        clrM.onclick = async () => {
+          if (!armedM) { armedM = true; clrM.textContent = "Tap again to clear " + archived.length; clrM.classList.add("danger"); clearTimeout(armMT); armMT = setTimeout(() => { armedM = false; clrM.textContent = "Clear archived · " + archived.length; clrM.classList.remove("danger"); }, 3000); return; }
+          clrM.disabled = true;
+          for (const mc of archived) { if (mc.id) dismissedMissions.add(mc.id); }
+          loadActivity(); // drop them from view immediately
+          for (const mc of archived) { await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id }) }).catch(() => {}); }
+          toast("Archive cleared.");
+          setTimeout(loadActivity, 400);
+        };
+        archHolder.appendChild(clrM);
         for (const mc of archived) {
           const key = (mc.mission || mc.title || "").trim() || mc.title;
           const workers = convs.filter((w) => w.source === "worker" && (w.mission || "").trim() === key);
@@ -2657,8 +2673,19 @@
       card.style.transition = "transform .18s ease, opacity .18s ease";
       if (dx < -70) {
         card.style.transform = "translateX(-110%)"; card.style.opacity = "0";
+        // Collapse the card's vertical space as it leaves so the list closes the
+        // gap smoothly. A translateX alone leaves the card's HEIGHT in the layout,
+        // so a hole sat where it was until the reload landed (the swipe-gap /
+        // orphaned-section-header jank in the recording). Animate height + margins
+        // + padding to 0, then reload to reconcile the count and headers.
+        const h = card.offsetHeight;
+        card.style.height = h + "px"; card.style.overflow = "hidden"; card.style.boxSizing = "border-box";
+        requestAnimationFrame(() => {
+          card.style.transition = "transform .18s ease, opacity .18s ease, height .2s ease, margin .2s ease, padding .2s ease";
+          card.style.height = "0px"; card.style.marginTop = "0px"; card.style.marginBottom = "0px"; card.style.paddingTop = "0px"; card.style.paddingBottom = "0px";
+        });
         await action();
-        setTimeout(reload, 180);
+        setTimeout(reload, 240);
       } else {
         card.style.transform = "";
       }
