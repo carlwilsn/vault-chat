@@ -322,13 +322,18 @@ export async function sendMessage(
     // Same agent, different surface — no second-class phone brain.
     assistantMode: targetConv?.source === "phone" || targetConv?.source === "manual",
     // [harness v2] Fresh-context only for AUTONOMOUS supervisor wakes on the active
-    // vault — a scheduled self-check or an off-target relay (targetConvIdOverride /
-    // scheduledBriefing / quietUnlessAlert set). A user typing into the mission
-    // thread has none of these and keeps full continuity. Gated by the kill-switch.
+    // vault — i.e. SCHEDULER-fired turns (scheduledBriefing / quietUnlessAlert; the
+    // scheduler always passes scheduledBriefing:true). targetConvIdOverride is NOT
+    // an autonomy signal: every phone-relayed message and every Mission Control
+    // send arrives off-target, and counting it here gave the user's own cockpit
+    // chats mission-wake amnesia — each turn saw only history[0] + the newest
+    // message, so the front kept obeying the FIRST instruction ("don't propose
+    // yet") while ignoring every later correction (the 2026-07-09 Coconut-proposal
+    // thread). A user message keeps continuity, whatever surface it came from.
     freshContext:
       harnessV2Enabled() &&
       targetConv?.role === "supervisor" &&
-      (!!targetConvIdOverride || !!scheduledBriefing || !!quietUnlessAlert),
+      (!!scheduledBriefing || !!quietUnlessAlert),
     conversationId: targetConvId ?? undefined,
     reasoningEffort: cur.reasoningEffort,
     onEvent: (e) => {
