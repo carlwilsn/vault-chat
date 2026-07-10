@@ -535,14 +535,17 @@
   .sheet-scrim{position:fixed;inset:0;background:var(--scrim-2);opacity:0;pointer-events:none;transition:opacity .25s;z-index:80}
   .sheet-scrim.on{opacity:1;pointer-events:auto}
   .sheet{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-top-left-radius:18px;border-top-right-radius:18px;transform:translateY(110%);transition:transform .3s cubic-bezier(.32,.72,0,1),height .26s ease;z-index:81;max-height:64%;display:flex;flex-direction:column;box-shadow:0 -12px 40px var(--scrim-2)}
-  /* Lift the sheet above the on-screen keyboard with a compositor transform
-     (--kb = keyboard height, set by the visualViewport handler). iOS ignores a
-     `bottom` offset on position:fixed while the keyboard is up, so the reply box
-     used to stay buried under it; translateY moves reliably on both platforms. */
-  .sheet.on{transform:translateY(calc(-1 * var(--kb, 0px)))}
-  /* Editing the reply expands the sheet so its body scrolls and the input sits
-     right above the keyboard (the visualViewport handler lifts it). */
-  .sheet.editing{max-height:94%}
+  /* The open sheet sits at its resting spot — NEVER translated up by the keyboard.
+     Lifting the whole sheet (translateY(-kb)) dragged its TOP up into the status
+     bar / notch on keyboard-open ("the top of the sheet should not expand because
+     I opened my keyboard — it should stay in the same spot"). */
+  .sheet.on{transform:none}
+  /* Keyboard up on a sheet input: keep the sheet's box (top AND height) fixed, and
+     reserve the keyboard height as INSIDE bottom padding. box-sizing:border-box
+     means the padding eats into the fixed height rather than growing the box, so
+     the top never moves — only the pinned .sheet-foot composer rides up above the
+     keyboard while .sheet-body (flex:1,min-height:0) shrinks and scrolls. */
+  .sheet.editing{padding-bottom:var(--kb,0px)}
   .sheet-grabwrap{padding:7px 0 3px;flex:none;cursor:grab;touch-action:none;display:flex;justify-content:center}
   .sheet-grab{width:40px;height:5px;border-radius:3px;background:var(--line-2)}
   .sheet-head{display:flex;align-items:flex-start;gap:11px;padding:4px 16px 8px;flex:none;touch-action:none}
@@ -2180,18 +2183,14 @@ interface MockDB {
     // so blur can put the sheet back — never the CSS 64% "middle" fallback
     // (notes 7edf4afd / 55ab9006).
     if (!sheet.classList.contains("editing")) sheet.dataset.restH = sheet.style.height || "";
-    // Keep the sheet at its RESTING height — do NOT balloon it to full-screen on
-    // focus. The old height:100% overshot to full-screen the instant you tapped the
-    // composer (before the keyboard finished rising), so the bottom briefly sat
-    // behind the incoming keyboard and content spilled for a frame (note 93b609bc:
-    // "when I use my keyboard the only thing that should move is the text box and
-    // the keyboard — no glitchy things affecting the sheet / overflow / spilling").
-    // maxHeight — tightened live by the visualViewport handler as the keyboard
-    // animates — still caps the sheet to the space above the keyboard, so a lifted
-    // sheet can never push its top off-screen (the bug height:100% originally
-    // fixed). The resting height is an explicit px value set in openSheet, so
-    // NOT touching it here can't collapse a short sheet the way clearing it did.
-    sheet.style.maxHeight = window.visualViewport ? window.visualViewport.height + "px" : "";
+    // Keep the sheet at its RESTING spot on focus — do NOT balloon or lift it. The
+    // `.editing` class (CSS) reserves the keyboard height as INSIDE padding, so the
+    // top stays fixed and only the pinned composer rises above the keyboard. Was:
+    // height:100% + a live maxHeight cap, which grew the sheet to full-screen and
+    // let the whole-sheet lift shove its top up into the notch — the on-device
+    // report ("the top should not expand because I opened my keyboard; keep it in
+    // the same spot") and note 93b609bc. Resting height is an explicit px from
+    // openSheet, so not touching it can't collapse a short sheet.
     sheet.classList.add("editing");
     const be = $("sheetBody");
     const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 80;
@@ -3871,10 +3870,10 @@ interface MockDB {
       // clientHeight), so Safari is unaffected.
       const safeBand = Math.max(0, document.body.offsetHeight - document.documentElement.clientHeight);
       document.documentElement.style.setProperty("--kb", (up ? kbRaw + safeBand : 0) + "px");
-      // While editing a reply, cap the sheet to the space above the keyboard so
-      // the whole sheet stays visible, not just the lifted foot.
-      const sheet = $("sheet");
-      if (sheet.classList.contains("editing")) sheet.style.maxHeight = vv.height + "px";
+      // The sheet is NOT resized or lifted on keyboard-open — `.sheet.editing`
+      // reserves --kb as inside padding, so its top stays fixed while only the
+      // pinned composer rides above the keyboard (see sheetEditFocus). Nothing to
+      // do here but keep --kb current, which the line above already did.
     };
     const fit = () => { applyKb(); window.scrollTo(0, 0); scrollDown(false); };
     vv.addEventListener("resize", fit);
