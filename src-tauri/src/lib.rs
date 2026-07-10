@@ -3300,23 +3300,45 @@ pub(crate) fn run_git(
 // Absolute path to the `gh` CLI, resolved once.
 static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-// GitHub token from `gh auth token`, cached for the app's lifetime.
-// Token lifetime is ~8h for gh OAuth; within a single app session this is fine.
-static GH_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+// GitHub token from `gh auth token`, cached with a TTL rather than for the
+// process's whole lifetime. gh OAuth/App tokens have a real expiry (on the
+// order of hours), and the headless sync box is meant to run for days
+// between updates — a OnceLock that never re-fetches would serve a stale
+// token forever once it expired, and every push/pull would then fail with a
+// silent, permanent auth error indistinguishable from "network down" until
+// the process restarts. Refreshing well inside the assumed lifetime avoids
+// ever actually hitting that expiry in practice.
+static GH_TOKEN: OnceLock<Mutex<Option<(String, Instant)>>> = OnceLock::new();
+const GH_TOKEN_TTL: Duration = Duration::from_secs(4 * 3600);
 
-/// Call `gh auth token` directly in Rust (no shell, no quoting), cache result.
+/// Call `gh auth token` directly in Rust (no shell, no quoting), cached for
+/// `GH_TOKEN_TTL` and refreshed thereafter. If a refresh attempt fails (gh
+/// transiently unreachable, momentary auth hiccup) we keep serving the
+/// last-known-good token rather than going dark — a single flaky refresh
+/// must not kill auth for every git op until the next one succeeds.
 fn get_gh_token() -> Option<String> {
-    GH_TOKEN
-        .get_or_init(|| {
-            let gh = find_gh()?;
-            let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if token.is_empty() { None } else { Some(token) }
-        })
-        .clone()
+    let cache = GH_TOKEN.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((tok, at)) = guard.as_ref() {
+        if at.elapsed() < GH_TOKEN_TTL {
+            return Some(tok.clone());
+        }
+    }
+    let refreshed = (|| {
+        let gh = find_gh()?;
+        let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if token.is_empty() { None } else { Some(token) }
+    })();
+    if let Some(token) = refreshed {
+        *guard = Some((token.clone(), Instant::now()));
+        return Some(token);
+    }
+    // Refresh failed — fall back to the last-known-good token, if any.
+    guard.as_ref().map(|(t, _)| t.clone())
 }
 
 fn find_gh() -> Option<PathBuf> {
@@ -4654,15 +4676,46 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
         let (status_out, _, _) =
             run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])?;
         let has_changes = !status_out.trim().is_empty();
-        // Count local commits not yet on the upstream. Errors (no upstream,
-        // detached HEAD) are treated as "nothing ahead".
+        // Count local commits not yet on the upstream. `@{upstream}` only
+        // resolves once a `push -u` has run at least once, so a vault that
+        // already has local history and just had a remote attached (no
+        // tracking ref yet) would otherwise report "0 ahead" despite having
+        // real unpushed commits — silently defeating the sync loop's
+        // stranded-commit flush (which only fires when `ahead > 0`) and
+        // leaving that history local-only until someone notices and pushes
+        // by hand. Fall back to `origin/<branch>` (populated by this same
+        // cycle's fetch, no tracking ref required), then to a nonzero
+        // sentinel if even that ref is missing (remote never fetched, or
+        // genuinely empty) but HEAD has a real commit — better to attempt a
+        // harmless no-op push than to silently strand history.
         let ahead = {
             let (out, _, code) =
                 run_git(&vault, &["rev-list", "--count", "@{upstream}..HEAD"])?;
             if code == 0 {
                 out.trim().parse::<u32>().unwrap_or(0)
             } else {
-                0
+                let (branch_out, _, bcode) =
+                    run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+                let branch = if bcode == 0 { branch_out.trim().to_string() } else { String::new() };
+                if branch.is_empty() {
+                    0
+                } else {
+                    let remote_ref = format!("origin/{}", branch);
+                    let (out2, _, code2) = run_git(
+                        &vault,
+                        &["rev-list", "--count", &format!("{}..HEAD", remote_ref)],
+                    )?;
+                    if code2 == 0 {
+                        out2.trim().parse::<u32>().unwrap_or(0)
+                    } else if matches!(
+                        run_git(&vault, &["rev-parse", "--verify", "--quiet", "HEAD"]),
+                        Ok((_, _, 0))
+                    ) {
+                        1
+                    } else {
+                        0
+                    }
+                }
             }
         };
         let nested_repos = find_nested_repos(&root);
