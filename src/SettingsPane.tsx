@@ -758,7 +758,10 @@ export function SettingsPane() {
             groups={[
               {
                 label: "Gemini (default — native PDF vision)",
-                options: [{ value: "gemini-2.5-flash", label: "gemini-2.5-flash (default)" }],
+                options: [
+                  { value: "gemini-3.5-flash", label: "gemini-3.5-flash (default)" },
+                  { value: "gemini-2.5-flash", label: "gemini-2.5-flash (older)" },
+                ],
               },
               {
                 label: "Claude — Sonnet",
@@ -776,7 +779,7 @@ export function SettingsPane() {
             ]}
           />
           <p className="text-[11px] text-muted-foreground/80">
-            Brain that handles voice turns. Gemini 2.5 Flash is the default —
+            Brain that handles voice turns. Gemini 3.5 Flash is the default —
             it sees PDFs natively (every page, diagram, equation) with the
             snappiest TTFT. Claude variants don't get the PDF blob piped in,
             so they fall back to the PdfExtract tool. Only models ElevenLabs

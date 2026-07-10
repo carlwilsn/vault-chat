@@ -22,6 +22,11 @@ export const MODELS: ModelSpec[] = [
   { provider: "openai", id: "gpt-5.5", label: "GPT-5.5" },
   { provider: "openai", id: "gpt-4.1", label: "GPT-4.1" },
   { provider: "openai", id: "gpt-4.1-mini", label: "GPT-4.1 mini" },
+  // GPT-5.6 via OpenRouter. Tiers are Luna (efficient) / Terra (balanced) /
+  // Sol (flagship); Terra is the "medium" tier the vault's worker+supervisor+
+  // assistant roles are pointed at. Bare alias tracks the newest snapshot.
+  { provider: "openrouter", id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra (medium)" },
+  { provider: "openrouter", id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol (flagship)" },
   { provider: "google", id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
   { provider: "google", id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { provider: "google", id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },

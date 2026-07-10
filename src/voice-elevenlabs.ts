@@ -40,25 +40,40 @@ const AGENT_NAME = "vault-chat";
 // Stored in localStorage as `vault_chat_elevenlabs_llm`. ElevenLabs Agents
 // accept both bare aliases (claude-sonnet-4-6) and dated forms
 // (claude-sonnet-4-5@20250929); we use the bare alias for the newest models
-// since it stays current as ElevenLabs rolls dates. Gemini 2.5 Flash: native
-// PDF + multimodal context, snappy TTFT for voice tempo — handles most
-// lecture-narration / "what does this say" work without Pro-tier reasoning.
-export const DEFAULT_LLM = "gemini-2.5-flash";
+// since it stays current as ElevenLabs rolls dates. Gemini 3.5 Flash: same
+// native PDF + multimodal context as 2.5 (why voice PDF-walkthroughs stay on a
+// Gemini model — see isGeminiLlm / pushPdfIfNeeded), but faster TTFT and
+// Sonnet-class reasoning. It pareto-dominates 2.5-flash, so it's the default
+// and stored 2.5 values migrate up (below). Verified in ElevenLabs' supported
+// LLM list (2026-07).
+export const DEFAULT_LLM = "gemini-3.5-flash";
 const LLM_STORAGE = "vault_chat_elevenlabs_llm";
 const AGENT_LLM_AT_PROVISION = "vault_chat_elevenlabs_agent_llm";
 
 // Models ElevenLabs Agents can actually run for voice — NOT every model the rest
 // of the app supports. Agents runs no Claude Opus, and only specific Gemini tiers
 // (no gemini-2.5-pro). Keep this in sync with the Settings voice-model dropdown.
-// Verified against ElevenLabs' supported-LLM list + changelog (2026-06).
+// Verified against ElevenLabs' supported-LLM list + changelog (2026-07).
 export const SUPPORTED_VOICE_LLMS = new Set<string>([
-  "gemini-2.5-flash",
+  "gemini-3.5-flash",
+  "gemini-2.5-flash", // superseded by 3.5-flash; kept so a stored value never hard-fails provisioning
   "claude-sonnet-4-6",
   "claude-sonnet-4-5@20250929",
   "claude-sonnet-4@20250514",
   "claude-3-7-sonnet",
   "claude-haiku-4-5-20251001",
 ]);
+
+// One-time pareto upgrade of the voice brain: gemini-2.5-flash → gemini-3.5-flash
+// (same Gemini family + native PDF vision, strictly faster/smarter). ensureAgent's
+// `provisionedWith !== wantedLlm` check then re-provisions the agent automatically
+// on the next voice session — no AGENT_CONFIG_VERSION bump needed. Only touches a
+// value explicitly set to old 2.5-flash; Claude / already-3.5 users are untouched.
+try {
+  if (localStorage.getItem(LLM_STORAGE) === "gemini-2.5-flash") {
+    localStorage.setItem(LLM_STORAGE, "gemini-3.5-flash");
+  }
+} catch {}
 
 // A stored value outside the supported set (e.g. left over from before a model
 // was dropped) falls back to the default, so voice never fails provisioning on a
