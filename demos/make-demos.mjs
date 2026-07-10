@@ -12,8 +12,8 @@ const shared = read("skin-shared.css");
 const APRON = '<div class="apron" aria-hidden="true"><i></i><i></i><i></i></div>';
 
 // The Depth design (Panel slab + Lift recede), shared by every icon option.
-const DEPTH_CSS = ["skin-ink.css", "ink-menu.css", "ink-depth.css", "ink-pagehead.css"];
-const DEPTH_JS = ["ink-drawer.js", "ink-pagehead.js"];
+const DEPTH_CSS = ["skin-ink.css", "ink-menu.css", "ink-depth.css"];
+const DEPTH_JS = ["ink-drawer.js"];
 
 const VARIANTS = [
   { name: "ink", title: "Ink", css: ["skin-ink.css"] },

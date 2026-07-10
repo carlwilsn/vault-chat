@@ -17,61 +17,61 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
 <style>
   :root{
-    /* ===== surfaces (dark -> light) ===== */
+    /* ===== surfaces: void black; "fills" are breath-thin white washes ===== */
     --bg:#000000;             /* pure-black root */
-    --panel:#101012;          /* deep panels: menus, sheets, drawers, code, keyboard */
-    --surface:#111113;        /* cards, message bubbles, inputs */
-    --fill:#17171b;           /* raised fills: plan card, idle hint, pressed card */
-    --raised:#1b1b1f;         /* raised chips & pills, pressed rows */
-    --fill-2:#1f1f24;         /* keyboard keys, toast */
-    --fill-3:#232329;         /* selected / current / hover / divider fills */
-    /* ===== lines / borders (weak -> strong) ===== */
-    --line:#26262b;           /* default hairline */
-    --line-2:#2c2c32;         /* slightly stronger */
-    --line-3:#3a3a42;         /* strong: rails, option outlines */
-    --line-4:#4a4a52;         /* strongest checkbox/box outline */
-    --ring:#5c5c66;           /* live-edge ring */
-    --border-sel:#7d7d86;     /* chosen option border */
-    /* ===== text (bright -> faint) ===== */
-    --primary:#f5f5f5;        /* primary accent ink (send, active) */
-    --text:#f0f0f0;           /* body text */
-    --ok:#eaeaea;             /* near-white "go" accent: approve, connected, eyebrows */
-    --text-hi:#e8e8ea;        /* high-emphasis timeline text */
-    --text-bright:#d7d7d7;    /* bright body: done-when, tasks, buttons */
-    --text-body:#cfcfcf;      /* sheet body text */
-    --text-strong:#bcbcbc;    /* strong labels: counts, descriptions */
-    --text-secondary:#ababab; /* secondary body: worker state, summaries */
-    --muted:#9a9a9a;          /* muted: clear-all, worker summary line */
-    --dim:#8c8c92;            /* dim sub-labels, hints */
-    --label:#8a8a8a;          /* section labels & captions */
-    --label-2:#7c7c7c;        /* faint labels: senders, read-only note */
-    --faint:#6f6f6f;          /* faintest: dim dots, chevrons, unread rail */
+    --panel:#000000;          /* deep panels: menus, sheets, drawers, code, keyboard */
+    --surface:#000000;        /* cards, message bubbles, inputs */
+    --fill:rgba(255,255,255,.03);   /* raised fills: plan card, idle hint, pressed card */
+    --raised:rgba(255,255,255,.05); /* raised chips & pills, pressed rows */
+    --fill-2:rgba(255,255,255,.06); /* keyboard keys, toast */
+    --fill-3:rgba(255,255,255,.08); /* selected / current / hover / divider fills */
+    /* ===== lines: alpha hairlines (weak -> strong) ===== */
+    --line:rgba(255,255,255,.10);
+    --line-2:rgba(255,255,255,.13);
+    --line-3:rgba(255,255,255,.18);
+    --line-4:rgba(255,255,255,.24);
+    --ring:rgba(255,255,255,.35);      /* live-edge ring */
+    --border-sel:rgba(255,255,255,.50);/* chosen option border */
+    /* ===== text: white at opacity tiers (bright -> faint) ===== */
+    --primary:rgba(255,255,255,.92);  /* primary accent ink (send, active) */
+    --text:rgba(255,255,255,.92);     /* body text */
+    --ok:rgba(255,255,255,.70);       /* "go" accent: approve, connected, eyebrows */
+    --text-hi:rgba(255,255,255,.92);
+    --text-bright:rgba(255,255,255,.86);
+    --text-body:rgba(255,255,255,.78);
+    --text-strong:rgba(255,255,255,.70);
+    --text-secondary:rgba(255,255,255,.62);
+    --muted:rgba(255,255,255,.50);
+    --dim:rgba(255,255,255,.50);
+    --label:rgba(255,255,255,.45);
+    --label-2:rgba(255,255,255,.40);
+    --faint:rgba(255,255,255,.30);
     --white:#ffffff;          /* max-contrast ink on error buttons */
     --primary-fg:#000000;     /* ink on primary/light fills */
-    --link:#9ec3e8;           /* markdown links (blue) */
-    --accent:#44aa99;         /* teal billing chip */
-    /* ===== attention (cool blue: asks / snags / needs-you) ===== */
-    --warn:#6aa5e8; --warn-ink:#0d1a29; --warn-line:#28486b;
-    /* ===== error (red) ===== */
-    --err:#e5655f;
-    --err-bg:#2a1d1c;         /* offline banner bg */
-    --err-line:#53312f;       /* offline banner border */
-    --err-line-2:#5a302e;     /* danger button borders */
-    --err-text:#e8b3b0;       /* offline banner text */
-    --err-text-2:#f0c9c7;     /* offline banner emphasis */
-    --danger:#e53e3e;         /* mic-mute red */
-    /* ===== amber (snags / warn accents) ===== */
-    --amber:#d9a861;          /* snag "!" */
-    --amber-line:#5a4a32;     /* warn report border */
-    --amber-text:#c69a5b;     /* warn report emphasis */
-    --ask-line:#5a4a26;       /* ask-card amber border */
+    --link:rgba(255,255,255,.92);   /* markdown links (underlined, no hue) */
+    --accent:rgba(255,255,255,.70); /* billing chip (was teal) */
+    /* ===== attention: structure, not hue (was cool blue) ===== */
+    --warn:rgba(255,255,255,.85); --warn-ink:rgba(255,255,255,.06); --warn-line:rgba(255,255,255,.22);
+    /* ===== error: the ONLY chromatic family — failure red ===== */
+    --err:#ff453a;
+    --err-bg:#1a0d0c;         /* offline banner bg */
+    --err-line:#3a1d1a;       /* offline banner border */
+    --err-line-2:#4a221f;     /* danger button borders */
+    --err-text:#f2b1ac;       /* offline banner text */
+    --err-text-2:#f7c9c5;     /* offline banner emphasis */
+    --danger:#ff453a;         /* mic-mute red */
+    /* ===== amber -> achromatic (snags read by shape/weight, not colour) ===== */
+    --amber:rgba(255,255,255,.85);      /* snag "!" */
+    --amber-line:rgba(255,255,255,.22); /* warn report border */
+    --amber-text:rgba(255,255,255,.75); /* warn report emphasis */
+    --ask-line:rgba(255,255,255,.22);   /* ask-card border */
     /* ===== overlays / glows ===== */
-    --scrim:rgba(0,0,0,.5);
-    --scrim-2:rgba(0,0,0,.55);
-    --mute-bg:rgba(229,62,62,.15);
-    --mute-line:rgba(229,62,62,.55);
-    --ok-glow:rgba(127,191,127,.75);
-    --err-glow:rgba(225,71,70,.75);
+    --scrim:rgba(0,0,0,.6);
+    --scrim-2:rgba(0,0,0,.65);
+    --mute-bg:rgba(255,69,58,.15);
+    --mute-line:rgba(255,69,58,.55);
+    --ok-glow:rgba(255,255,255,.5);
+    --err-glow:rgba(255,69,58,.7);
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html{background:var(--bg);height:100%}
@@ -648,6 +648,54 @@
   .specrow{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-top:14px}
   .specrow .sc{font-size:13px;color:var(--text);font-weight:600}
   .readonly{font-size:11.5px;color:var(--label-2);margin-top:14px;border-top:1px solid var(--line);padding-top:10px;line-height:1.5}
+
+  /* ===== INK design layer (2026-07-10) — monochrome OLED + the Depth drawer.
+     Appended last so equal-specificity rules override the base design. ===== */
+  :root{ --ease-out:cubic-bezier(.23,1,.32,1); --ease-sheet:cubic-bezier(.32,.72,0,1) }
+  /* press feedback on every control except the high-frequency keyboard */
+  button{transition:transform .15s var(--ease-out),opacity .15s ease,background-color .2s ease,color .2s ease}
+  button:active{transform:scale(.97)}
+  #kb button:active{transform:none}
+  button:focus-visible{outline:none;box-shadow:0 0 0 2px var(--bg),0 0 0 4px rgba(255,255,255,.4)}
+  body{font-variant-numeric:tabular-nums}
+  /* the ONLY gradient fade in the app: the conversation thread's scroll edges */
+  #msgs{--mask-h:32px;mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent);-webkit-mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent)}
+  .sheet{transition:transform .5s var(--ease-sheet)}
+  a{text-decoration:underline;text-underline-offset:3px;text-decoration-color:rgba(255,255,255,.35)}
+  .title .tx{letter-spacing:-.02em}
+  /* icons: the original set at native (bold) stroke, a touch larger */
+  .icbtn svg{width:23px;height:23px}
+  .mrow svg{width:20px;height:20px}
+  .send svg{width:19px;height:19px}
+  .sheet-x{display:flex;align-items:center;justify-content:center}
+  .sheet-x svg{width:20px;height:20px}
+  /* the empty chat is silent — no centered prompt */
+  .hint{display:none}
+  /* composer: a hairline ring on black */
+  .composer .field{background:transparent;border:.5px solid var(--line-2);border-radius:22px}
+  /* burger menu: compact, with a real entrance rooted at its trigger */
+  .menu{min-width:200px;padding:5px;border-radius:15px;border:.5px solid var(--line-2);box-shadow:0 12px 34px rgba(0,0,0,.6);transform-origin:top right}
+  .menu.on{animation:menuIn .22s var(--ease-out)}
+  @keyframes menuIn{from{opacity:0;transform:scale(.94) translateY(-4px)}to{opacity:1;transform:none}}
+  .mrow{padding:10px 13px;gap:12px;font-size:14.5px;border-radius:10px}
+  .mrow .ct{min-width:17px;height:17px;font-size:11px}
+  .mdiv{margin:4px 9px}
+  /* Depth drawer: hairline-edged slab; its shadow exists ONLY while open so
+     nothing ever bleeds onto a page's side when it's closed */
+  .cdraw{width:min(87vw,342px);border-right:.5px solid var(--line-3);border-top-right-radius:24px;border-bottom-right-radius:24px;transition:transform .5s var(--ease-sheet),box-shadow .5s ease;box-shadow:none}
+  .cdraw.on{box-shadow:44px 0 130px rgba(0,0,0,.92)}
+  .scrim{background:rgba(0,0,0,.74)}
+  /* the chat recedes beneath the open drawer */
+  .hdr,.body{transition:transform .46s var(--ease-sheet),filter .46s ease;transform-origin:50% 38%}
+  body.cdraw-open .hdr,body.cdraw-open .body{transform:scale(.9) translateY(10px);filter:brightness(.38)}
+  /* conversation rows carry their own hairline rhythm */
+  .crow2{border-bottom:.5px solid var(--line)}
+  .crow2:last-child{border-bottom:none}
+  .csec{border-top:.5px solid var(--line);margin-top:4px}
+  /* page switch: a quiet fade-up */
+  body.page-chat #pChat,body.page-activity #pAct,body.page-alerts #pAl,body.page-notes #pNotes{animation:pageIn .34s var(--ease-out)}
+  @keyframes pageIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){*{transition-duration:.01ms!important;animation:none!important}}
 </style>
 <style id="skin-ink-lucide">
 /* ===== shared foundation — both variants (design-brief.md §6 items 1-17) =====
@@ -866,23 +914,6 @@ body.cdraw-open .body {
 .crow2:last-child { border-bottom: none; }
 .csec { border-top: 0.5px solid var(--line); margin-top: 4px; }
 
-/* ---- staggered entrance for the list while the drawer is open ---- */
-body.cdraw-open .clist > * { animation: inkRowIn 0.5s var(--ease-out) both; }
-body.cdraw-open .clist > *:nth-child(1)  { animation-delay: 0.03s; }
-body.cdraw-open .clist > *:nth-child(2)  { animation-delay: 0.06s; }
-body.cdraw-open .clist > *:nth-child(3)  { animation-delay: 0.09s; }
-body.cdraw-open .clist > *:nth-child(4)  { animation-delay: 0.12s; }
-body.cdraw-open .clist > *:nth-child(5)  { animation-delay: 0.15s; }
-body.cdraw-open .clist > *:nth-child(6)  { animation-delay: 0.18s; }
-body.cdraw-open .clist > *:nth-child(7)  { animation-delay: 0.21s; }
-body.cdraw-open .clist > *:nth-child(8)  { animation-delay: 0.24s; }
-body.cdraw-open .clist > *:nth-child(9)  { animation-delay: 0.27s; }
-body.cdraw-open .clist > *:nth-child(10) { animation-delay: 0.30s; }
-body.cdraw-open .clist > *:nth-child(n+11) { animation-delay: 0.33s; }
-@keyframes inkRowIn {
-  from { opacity: 0; transform: translateX(-12px); }
-  to   { opacity: 1; transform: none; }
-}
 
 /* ---- page-switch fade (Chat / Activity / Alerts / Notes) ---- */
 body.page-chat #pChat,
@@ -897,44 +928,6 @@ body.page-notes #pNotes {
 }
 
 /* (no scroll-fade on the conversation list — fades are for the chat thread only) */
-
-/* Page mastheads — replace the bare header title on non-chat pages with a
-   real masthead: a large tight-tracked title, a live count, a quiet caption,
-   and a hairline. The header's small title is dropped on those pages so the
-   top isn't just a label. */
-
-/* drop the redundant small header title on non-chat pages */
-body:not(.page-chat) .title .tx { display: none; }
-
-.ink-mast {
-  flex: 0 0 auto;
-  padding: 12px 16px 13px;
-  border-bottom: 0.5px solid var(--line);
-}
-.ink-mast-row { display: flex; align-items: baseline; gap: 10px; }
-.ink-mast h1 {
-  margin: 0;
-  font-size: 28px;
-  font-weight: 600;
-  letter-spacing: -0.03em;
-  color: var(--text);
-  line-height: 1.1;
-}
-.ink-mast-ct {
-  font-size: 13px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
-}
-.ink-mast-ct:empty { display: none; }
-.ink-mast p {
-  margin: 4px 0 0;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--label);
-}
 
 </style>
 </head>
@@ -971,7 +964,7 @@ body:not(.page-chat) .title .tx { display: none; }
       <div class="composer">
         <div class="field">
           <textarea id="input" rows="1" placeholder="Message…" enterkeyhint="enter" autocomplete="off"></textarea>
-          <button class="send" id="sendBtn" aria-label="send">↑</button>
+          <button class="send" id="sendBtn" aria-label="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 12l6-6 6 6"/></svg></button>
         </div>
       </div>
       <div id="kb"></div>
@@ -999,7 +992,7 @@ body:not(.page-chat) .title .tx { display: none; }
   <div class="sheet-scrim" id="sheetScrim"></div>
   <div class="sheet" id="sheet">
     <div class="sheet-grabwrap" id="sheetGrab"><div class="sheet-grab"></div></div>
-    <div class="sheet-head" id="sheetHead"><button class="sheet-back" id="sheetBack" aria-label="back" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button><div class="sheet-ico" id="sheetIco"></div><div class="sh-meta"><div class="sheet-intent" id="sheetIntent"></div><div class="sheet-title" id="sheetTitle"></div></div><button class="sheet-action" id="sheetAction" style="display:none"></button><button class="sheet-x" id="sheetX">✕</button></div>
+    <div class="sheet-head" id="sheetHead"><button class="sheet-back" id="sheetBack" aria-label="back" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button><div class="sheet-ico" id="sheetIco"></div><div class="sh-meta"><div class="sheet-intent" id="sheetIntent"></div><div class="sheet-title" id="sheetTitle"></div></div><button class="sheet-action" id="sheetAction" style="display:none"></button><button class="sheet-x" id="sheetX"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
     <div class="sheet-body" id="sheetBody"></div>
     <div class="sheet-foot" id="sheetFoot" style="display:none"></div>
   </div>
@@ -1739,6 +1732,9 @@ interface MockDB {
   let vaultName = "", boxModel = "";
   let runCount = 0, unreadN = 0, offlineStreak = 0;
   const msgsEl = $("msgs"), input = $("input"), sendBtn = $("sendBtn");
+  // composer glyphs are drawn, not typed — one icon voice with the rest of the app
+  const SEND_ARROW_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 12l6-6 6 6"/></svg>';
+  const SEND_STOP_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>';
 
   // Cosmetic "clear chats": a per-device hidden set. Never deletes anything on
   // the box or in git — the chats just stop rendering in this drawer.
@@ -1790,8 +1786,8 @@ interface MockDB {
   $("settingsRow").onclick = () => { closeMenu(); openDrawer(); };
 
   const cdraw = $("cdraw"), scrim = $("scrim");
-  function openConvs() { scrim.classList.add("on"); cdraw.classList.add("on"); void loadConvs(); }
-  function closeConvs() { scrim.classList.remove("on"); cdraw.classList.remove("on"); }
+  function openConvs() { scrim.classList.add("on"); cdraw.classList.add("on"); document.body.classList.add("cdraw-open"); void loadConvs(); }
+  function closeConvs() { scrim.classList.remove("on"); cdraw.classList.remove("on"); document.body.classList.remove("cdraw-open"); }
   $("convBtn").onclick = openConvs;
   scrim.onclick = closeConvs;
   $("newBtn").onclick = () => { closeConvs(); newChat(); };
@@ -1907,7 +1903,7 @@ interface MockDB {
   function syncSendBtn() {
     const stop = stopMode();
     sendBtn.classList.toggle("stop", stop);
-    sendBtn.textContent = stop ? "■" : "↑";
+    sendBtn.innerHTML = stop ? SEND_STOP_SVG : SEND_ARROW_SVG;
     sendBtn.setAttribute("aria-label", stop ? "stop" : "send");
   }
   function fmtElapsed(ms) {
@@ -4391,49 +4387,6 @@ window.INK_ICONS = {
     var sync = function () { document.body.classList.toggle("cdraw-open", d.classList.contains("on")); };
     new MutationObserver(sync).observe(d, { attributes: true, attributeFilter: ["class"] });
     sync();
-  }
-  boot();
-})();
-
-</script>
-<script>
-/* Builds a masthead at the top of each non-chat page (Activity / Alerts /
-   Notes) and keeps its count live off the existing menu badges. Skin-only —
-   no app logic touched. */
-(function () {
-  var PAGES = [
-    { page: "activity", host: "#pAct", title: "Activity", caption: "missions & workers", badge: "mAct", unit: "running" },
-    { page: "alerts", host: "#pAl", title: "Alerts", caption: "decisions & updates", badge: "mAl", unit: "unread" },
-    { page: "notes", host: "#pNotes", title: "Notes", caption: "quick captures for the assistant" },
-  ];
-  function ensure() {
-    for (var i = 0; i < PAGES.length; i++) {
-      var p = PAGES[i], host = document.querySelector(p.host);
-      if (!host) continue;
-      if (!host.querySelector(".ink-mast")) {
-        var d = document.createElement("div");
-        d.className = "ink-mast";
-        d.innerHTML =
-          '<div class="ink-mast-row"><h1></h1><span class="ink-mast-ct"></span></div><p></p>';
-        d.querySelector("h1").textContent = p.title;
-        d.querySelector("p").textContent = p.caption;
-        host.insertBefore(d, host.firstChild);
-      }
-      if (p.badge) {
-        var b = document.getElementById(p.badge);
-        var ct = host.querySelector(".ink-mast-ct");
-        if (b && ct) {
-          var zero = b.classList.contains("zero");
-          var n = (b.textContent || "").trim();
-          ct.textContent = zero || !n || n === "0" ? "" : n + " " + p.unit;
-        }
-      }
-    }
-  }
-  function boot() {
-    if (!document.body) return setTimeout(boot, 40);
-    new MutationObserver(ensure).observe(document.body, { childList: true, subtree: true, characterData: true });
-    ensure();
   }
   boot();
 })();
