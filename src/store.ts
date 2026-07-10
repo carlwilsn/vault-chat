@@ -796,8 +796,11 @@ export const useStore = create<State>((set) => ({
   supervisorModelId: localStorage.getItem(SUPERVISOR_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
   workerModelId: localStorage.getItem(WORKER_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
   theme: loadTheme(),
-  strictVaultMode: loadBoolFlag(STRICT_VAULT_STORAGE, true),
-  bashDisabled: loadBoolFlag(BASH_DISABLED_STORAGE, true),
+  strictVaultMode: loadBoolFlag(STRICT_VAULT_STORAGE, !import.meta.env.DEV),
+  // [harness-loop rig — DEV only, prod default stays true] The box runs with
+  // Bash enabled; a fresh isolated dev store defaulting it OFF makes probe
+  // workers honestly refuse shell tasks and fail probes for the wrong reason.
+  bashDisabled: loadBoolFlag(BASH_DISABLED_STORAGE, !import.meta.env.DEV),
   reasoningEffort: loadReasoningEffort(),
   autoRouterCostBias: loadNumFlag(AUTO_COST_BIAS_STORAGE, 7),
   skills: [],

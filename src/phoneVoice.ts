@@ -93,7 +93,12 @@ async function wireToolRelay(): Promise<void> {
 }
 
 // Fixed port so the link is stable. High, unprivileged, unlikely to clash.
-const PORT = 8848;
+// [harness-loop rig — DEV only, prod always 8848] A dev instance can't bind
+// 8848 while the installed app holds it; VITE_COCKPIT_PORT gives the rig its
+// own cockpit without touching the real one.
+const PORT = import.meta.env.DEV
+  ? Number((import.meta.env as unknown as Record<string, string | undefined>).VITE_COCKPIT_PORT) || 8848
+  : 8848;
 const TOKEN_KEY = "vault_chat_phone_voice_token";
 
 /** Stable per-machine secret. Generated once; part of the phone link. */
