@@ -11,7 +11,7 @@
 <link rel="apple-touch-icon" href="/icon.svg" />
 <link rel="icon" type="image/svg+xml" href="/icon.svg" />
 <link rel="manifest" href="/manifest.webmanifest" />
-<title>vault-chat · Graphite</title>
+<title>vault-chat · Ink · Lift</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous" />
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
@@ -646,7 +646,7 @@
   .specrow .sc{font-size:13px;color:var(--text);font-weight:600}
   .readonly{font-size:11.5px;color:var(--label-2);margin-top:14px;border-top:1px solid var(--line);padding-top:10px;line-height:1.5}
 </style>
-<style id="skin-graphite">
+<style id="skin-ink-lift">
 /* ===== shared foundation — both variants (design-brief.md §6 items 1-17) =====
    Sits AFTER the app's own <style>, so equal-specificity rules here win.
    Sources: easing/durations Emil Kowalski (emilkowal.ski/ui/great-animations,
@@ -695,30 +695,29 @@ a { text-decoration: underline; text-underline-offset: 3px; text-decoration-colo
   * { transition-duration: 0.01ms !important; animation: none !important; }
 }
 
-/* ===== Variant B — "Graphite Glass" (layered charcoal + glass chrome) =====
-   Smear-immune #0A0A0A base (LookUp Design's grey-5 finding, scaled) with a
-   Geist-style surface ladder. Glass lives ONLY on the floating navigation
-   layer (the Liquid Glass rule) — header, menu, composer — never on content.
-   Glass recipe: tint + blur(20px) saturate(180%) (Comeau / Apple canon).
-   Text = white alpha tiers; red = failure only. */
+/* ===== Variant A — "Ink" (pure-OLED hairline gallery) =====
+   Opal's void-black stance (#000 everywhere, brandkit.opal.so) + Endel's
+   no-colour calm. NO filled cards: structure comes from spacing and 0.5px
+   hairlines. Text = white at alpha tiers (Linear/Material: .92/.70/.50/.30).
+   The ONE filled element per view is the white send CTA. Red = failure only. */
 
 :root {
-  /* surface ladder: bg -> card -> raised -> hover (Geist band semantics) */
-  --bg: #0a0a0a;
-  --panel: #121212;
-  --surface: #141416;
-  --fill: #17171a;
-  --raised: #1c1c1f;
-  --fill-2: #202024;
-  --fill-3: #26262b;
-  /* borders stay alpha, never lighter fills */
-  --line: rgba(255, 255, 255, 0.06);
-  --line-2: rgba(255, 255, 255, 0.09);
-  --line-3: rgba(255, 255, 255, 0.13);
-  --line-4: rgba(255, 255, 255, 0.18);
-  --ring: rgba(255, 255, 255, 0.30);
-  --border-sel: rgba(255, 255, 255, 0.45);
-  /* text tiers */
+  /* surfaces: everything is void; "fills" are breath-thin white washes */
+  --bg: #000000;
+  --panel: #000000;
+  --surface: #000000;
+  --fill: rgba(255, 255, 255, 0.03);
+  --raised: rgba(255, 255, 255, 0.05);
+  --fill-2: rgba(255, 255, 255, 0.06);
+  --fill-3: rgba(255, 255, 255, 0.08);
+  /* lines: alpha hairlines (Vercel gray-alpha logic) */
+  --line: rgba(255, 255, 255, 0.10);
+  --line-2: rgba(255, 255, 255, 0.13);
+  --line-3: rgba(255, 255, 255, 0.18);
+  --line-4: rgba(255, 255, 255, 0.24);
+  --ring: rgba(255, 255, 255, 0.35);
+  --border-sel: rgba(255, 255, 255, 0.50);
+  /* text: white at opacity tiers, never gray hues */
   --primary: rgba(255, 255, 255, 0.92);
   --text: rgba(255, 255, 255, 0.92);
   --ok: rgba(255, 255, 255, 0.70);
@@ -734,22 +733,22 @@ a { text-decoration: underline; text-underline-offset: 3px; text-decoration-colo
   --faint: rgba(255, 255, 255, 0.30);
   --white: #ffffff;
   --primary-fg: #000000;
-  /* de-chromed accents */
+  /* de-chromed accents: attention is structure, not hue */
   --link: rgba(255, 255, 255, 0.92);
   --accent: rgba(255, 255, 255, 0.70);
   --warn: rgba(255, 255, 255, 0.85);
-  --warn-ink: rgba(255, 255, 255, 0.07);
-  --warn-line: rgba(255, 255, 255, 0.20);
+  --warn-ink: rgba(255, 255, 255, 0.06);
+  --warn-line: rgba(255, 255, 255, 0.22);
   --amber: rgba(255, 255, 255, 0.85);
-  --amber-line: rgba(255, 255, 255, 0.20);
+  --amber-line: rgba(255, 255, 255, 0.22);
   --amber-text: rgba(255, 255, 255, 0.75);
-  --ask-line: rgba(255, 255, 255, 0.20);
+  --ask-line: rgba(255, 255, 255, 0.22);
   --scrim: rgba(0, 0, 0, 0.60);
   --scrim-2: rgba(0, 0, 0, 0.65);
   --ok-glow: rgba(255, 255, 255, 0.50);
-  /* failure red only */
+  /* the single chromatic family: failure red (iOS systemRed dark) */
   --err: #ff453a;
-  --err-bg: #1c0e0d;
+  --err-bg: #1a0d0c;
   --err-line: #3a1d1a;
   --err-line-2: #4a221f;
   --err-text: #f2b1ac;
@@ -760,83 +759,105 @@ a { text-decoration: underline; text-underline-offset: 3px; text-decoration-colo
   --err-glow: rgba(255, 69, 58, 0.70);
 }
 
-/* header floats as glass; content scrolls beneath it */
-.hdr {
-  position: fixed;
-  top: 0; left: 0; right: 0;
-  z-index: 40;
-  background: transparent;
+/* hairlines: 0.5px = 1 physical pixel on 2x+ (dieulot.net/css-retina-hairline) */
+.plancard, .composer .field, .menu, .cdraw, .sheet, #drawer .panel {
+  border-width: 0.5px;
 }
-.hdr::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  background: rgba(10, 10, 10, 0.72); /* tint is mandatory for legibility */
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border-bottom: 0.5px solid rgba(255, 255, 255, 0.08);
-}
-.body { padding-top: calc(env(safe-area-inset-top) + 60px); }
-
-/* progressive-blur apron under the header: the scroll "wall" becomes fog
-   (kennethnym.com/blog/progressive-blur-in-css — doubling blur, overlapped masks) */
-.apron {
-  position: fixed;
-  left: 0; right: 0;
-  top: calc(env(safe-area-inset-top) + 60px);
-  height: 44px;
-  pointer-events: none;
-  z-index: 39;
-}
-.apron i { position: absolute; inset: 0; display: block; }
-.apron i:nth-child(1) {
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  mask: linear-gradient(black, black 18%, transparent 45%);
-  -webkit-mask: linear-gradient(black, black 18%, transparent 45%);
-}
-.apron i:nth-child(2) {
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  mask: linear-gradient(transparent 5%, black 30%, black 45%, transparent 75%);
-  -webkit-mask: linear-gradient(transparent 5%, black 30%, black 45%, transparent 75%);
-}
-.apron i:nth-child(3) {
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
-  mask: linear-gradient(transparent 40%, black 65%, transparent 100%);
-  -webkit-mask: linear-gradient(transparent 40%, black 65%, transparent 100%);
+@media (-webkit-max-device-pixel-ratio: 1), (max-resolution: 1dppx) {
+  .plancard, .composer .field { border-width: 1px; }
 }
 
-/* the menu is navigation chrome -> glass */
-.menu {
-  background: rgba(16, 16, 16, 0.78);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 0.5px solid rgba(255, 255, 255, 0.08);
-}
+/* the header dissolves into the void — no bar, no edge */
+.hdr { border: none; background: transparent; }
 
-/* floating glass composer, detached from the bezel (Liquid Glass "bubbles") */
-.composer { padding: 0 12px calc(env(safe-area-inset-bottom, 0px) + 12px); }
+/* icons may breathe thinner at nav size for the ink look */
+.icbtn svg, .mrow svg { stroke-width: 1.25; }
+
+/* composer: a hairline ring on black; send is THE white element */
 .composer .field {
-  background: rgba(18, 18, 18, 0.72);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 0.5px solid rgba(255, 255, 255, 0.08);
-  border-radius: 24px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.50);
+  background: transparent;
+  border: 0.5px solid var(--line-2);
+  border-radius: 22px;
 }
-.send { background: #ffffff; color: #000000; border-radius: 50%; }
+.send {
+  background: #ffffff;
+  color: #000000;
+  border-radius: 50%;
+}
 
-/* content cards: surface fill + faint border, 12px inner radius */
-.plancard { border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 12px; }
+/* menu + drawer rows: no fills, whitespace separation */
+.mrow { background: transparent; border-radius: 12px; }
+.mrow:active, .mrow.cur { background: rgba(255, 255, 255, 0.06); }
 
-/* the sheet is content-adjacent chrome: surface fill, 20px radius, real depth */
-.sheet {
-  border-radius: 20px 20px 0 0;
-  border-top: 0.5px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.50);
+/* empty/ghost states whisper at tier-4 */
+.empty { color: rgba(255, 255, 255, 0.30); }
+
+/* the empty chat is silent — no centered prompt, just the void + composer */
+.hint { display: none; }
+
+/* sizing for the thin SVGs the icon pass injects in place of ↑ / ✕ glyphs
+   (harmless on the baseline, which keeps the glyphs and has no such svg) */
+.send { display: flex; align-items: center; justify-content: center; }
+.send svg { width: 18px; height: 18px; }
+.sheet-x svg { width: 19px; height: 19px; }
+.newbtn svg { width: 15px; height: 15px; }
+
+/* Compact burger menu — the dropdown, made smaller and quieter:
+   narrower, tighter rows, thinner icons, hairline border. */
+.menu {
+  min-width: 184px;
+  padding: 5px;
+  border-radius: 15px;
+  border: 0.5px solid var(--line-2);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.6);
+}
+.mrow {
+  padding: 8px 11px;
+  gap: 10px;
+  font-size: 13.5px;
+  border-radius: 9px;
+}
+.mrow svg { width: 16px; height: 16px; }
+.mrow .ct { min-width: 16px; height: 16px; font-size: 11px; }
+.mdiv { margin: 4px 9px; }
+
+/* Ink · Lift — opening Conversations pushes the chat BACK: it scales down and
+   dims while the drawer comes forward on top. Depth from the background
+   receding, not from the drawer itself — so the conversations read as lifted
+   toward you. (Your "chat stays down… you lift the conversations" idea.)
+
+   The drawer still slides fully off-screen when closed (translateX) so there
+   is never an invisible element over the chat — robust regardless of render. */
+
+/* chat + header recede while the drawer is up */
+.hdr, .body {
+  transition: transform 0.42s var(--ease-sheet), filter 0.42s ease;
+  transform-origin: 50% 42%;
+}
+body.cdraw-open .hdr,
+body.cdraw-open .body {
+  transform: scale(0.93);
+  filter: brightness(0.42);
+}
+
+/* the drawer itself: same off-screen slide, but softer easing + real depth */
+.cdraw {
+  width: min(88vw, 344px);
+  transform: translateX(-102%);
+  transition: transform 0.42s var(--ease-sheet);
+  border-right: 0.5px solid var(--line-2);
+  box-shadow: 30px 0 100px rgba(0, 0, 0, 0.9);
+}
+.cdraw.on { transform: none; }
+
+/* deepen the scrim to sell the layering */
+.scrim { background: rgba(0, 0, 0, 0.7); }
+
+/* the list dissolves at both edges — gradient, never a hard wall */
+.clist {
+  --mask-h: 26px;
+  mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
 }
 
 </style>
@@ -850,7 +871,6 @@ a { text-decoration: underline; text-underline-offset: 3px; text-decoration-colo
     <button class="icbtn" id="menuBtn" aria-label="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span class="reddot" id="menudot"></span></button>
   </div>
 
-  <div class="apron" aria-hidden="true"><i></i><i></i><i></i></div>
   <div class="offbar"><b>box unreachable</b> retrying — messages will queue</div>
 
   <div class="menu" id="menu">
@@ -4165,6 +4185,67 @@ interface MockDB {
   };
   document.head.appendChild(s);
 })();
+</script>
+<script>
+/* Ink icon pass — swap the two text glyphs (↑ send, ✕ close) for thin-stroke
+   SVGs so the whole app speaks ONE icon voice (stroke 1.5, round caps).
+   Resilient to the app's async boot: observes the DOM and is idempotent.
+   When the icon research lands we drop in Phosphor Thin here instead. */
+(function () {
+  var A = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"';
+  function svg(inner) { return '<svg viewBox="0 0 24 24" ' + A + '>' + inner + "</svg>"; }
+  var GLYPH = {
+    send: '<path d="M12 19V6M6 12l6-6 6 6"/>',
+    x: '<path d="M6 6l12 12M18 6L6 18"/>',
+    back: '<path d="M15 5l-7 7 7 7"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+  };
+  function set(sel, inner) {
+    document.querySelectorAll(sel).forEach(function (b) {
+      if (b.getAttribute("data-icd")) return;
+      b.setAttribute("data-icd", "1");
+      b.textContent = "";
+      b.innerHTML = svg(inner);
+    });
+  }
+  function apply() {
+    set(".send", GLYPH.send);
+    set(".sheet-x", GLYPH.x);
+    set(".newbtn", GLYPH.plus); // note: newbtn also has a text label; handled below
+  }
+  // newbtn has "New" text next to its icon — restore the label after swap
+  function fixNew() {
+    document.querySelectorAll(".newbtn[data-icd]").forEach(function (b) {
+      if (b.getAttribute("data-icd2")) return;
+      b.setAttribute("data-icd2", "1");
+      b.insertAdjacentText("beforeend", "New");
+    });
+  }
+  function tick() { apply(); fixNew(); }
+  function boot() {
+    if (!document.body) return setTimeout(boot, 40);
+    new MutationObserver(tick).observe(document.body, { childList: true, subtree: true });
+    tick();
+  }
+  boot();
+})();
+
+</script>
+<script>
+/* Mirrors the Conversations drawer's open state onto <body> as .cdraw-open,
+   so the skin can recede the chat behind it (the app itself sets no body
+   class for this). Pure observation — no app logic touched. */
+(function () {
+  function boot() {
+    var d = document.getElementById("cdraw");
+    if (!d) return setTimeout(boot, 60);
+    var sync = function () { document.body.classList.toggle("cdraw-open", d.classList.contains("on")); };
+    new MutationObserver(sync).observe(d, { attributes: true, attributeFilter: ["class"] });
+    sync();
+  }
+  boot();
+})();
+
 </script>
 </body>
 </html>

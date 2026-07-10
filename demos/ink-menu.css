@@ -1,0 +1,18 @@
+/* Compact burger menu — the dropdown, made smaller and quieter:
+   narrower, tighter rows, thinner icons, hairline border. */
+.menu {
+  min-width: 184px;
+  padding: 5px;
+  border-radius: 15px;
+  border: 0.5px solid var(--line-2);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.6);
+}
+.mrow {
+  padding: 8px 11px;
+  gap: 10px;
+  font-size: 13.5px;
+  border-radius: 9px;
+}
+.mrow svg { width: 16px; height: 16px; }
+.mrow .ct { min-width: 16px; height: 16px; font-size: 11px; }
+.mdiv { margin: 4px 9px; }

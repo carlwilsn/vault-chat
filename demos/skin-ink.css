@@ -97,3 +97,10 @@
 
 /* the empty chat is silent — no centered prompt, just the void + composer */
 .hint { display: none; }
+
+/* sizing for the thin SVGs the icon pass injects in place of ↑ / ✕ glyphs
+   (harmless on the baseline, which keeps the glyphs and has no such svg) */
+.send { display: flex; align-items: center; justify-content: center; }
+.send svg { width: 18px; height: 18px; }
+.sheet-x svg { width: 19px; height: 19px; }
+.newbtn svg { width: 15px; height: 15px; }

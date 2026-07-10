@@ -11,7 +11,7 @@
 <link rel="apple-touch-icon" href="/icon.svg" />
 <link rel="icon" type="image/svg+xml" href="/icon.svg" />
 <link rel="manifest" href="/manifest.webmanifest" />
-<title>vault-chat · ink</title>
+<title>vault-chat · Ink</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous" />
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
@@ -794,6 +794,13 @@ a { text-decoration: underline; text-underline-offset: 3px; text-decoration-colo
 
 /* the empty chat is silent — no centered prompt, just the void + composer */
 .hint { display: none; }
+
+/* sizing for the thin SVGs the icon pass injects in place of ↑ / ✕ glyphs
+   (harmless on the baseline, which keeps the glyphs and has no such svg) */
+.send { display: flex; align-items: center; justify-content: center; }
+.send svg { width: 18px; height: 18px; }
+.sheet-x svg { width: 19px; height: 19px; }
+.newbtn svg { width: 15px; height: 15px; }
 
 </style>
 </head>
