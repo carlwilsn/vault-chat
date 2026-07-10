@@ -12,13 +12,14 @@ const shared = read("skin-shared.css");
 const APRON = '<div class="apron" aria-hidden="true"><i></i><i></i><i></i></div>';
 
 // The Depth design (Panel slab + Lift recede), shared by every icon option.
-const DEPTH_CSS = ["skin-ink.css", "ink-menu.css", "ink-depth.css"];
+const DEPTH_CSS = ["skin-ink.css", "ink-menu.css", "ink-depth.css", "ink-pagehead.css"];
+const DEPTH_JS = ["ink-drawer.js", "ink-pagehead.js"];
 
 const VARIANTS = [
   { name: "ink", title: "Ink", css: ["skin-ink.css"] },
   { name: "graphite", title: "Graphite", css: ["skin-graphite.css"], html: APRON },
   // Depth with the app's current (Lucide-geometry) icons, glyphs fixed:
-  { name: "ink-depth", title: "Ink · Depth", css: DEPTH_CSS, js: ["ink-icons.js", "ink-drawer.js"] },
+  { name: "ink-depth", title: "Ink · Depth", css: DEPTH_CSS, js: ["ink-icons.js", ...DEPTH_JS] },
   // Depth with a full swapped icon set (built only if the set file exists):
   { name: "ink-lucide", title: "Ink · Depth · Lucide", css: DEPTH_CSS, iconset: "icons-lucide.js" },
   { name: "ink-iconoir", title: "Ink · Depth · Iconoir", css: DEPTH_CSS, iconset: "icons-iconoir.js" },
@@ -37,7 +38,7 @@ for (const v of VARIANTS) {
   let js = v.js || [];
   if (v.iconset) {
     if (!existsSync("demos/" + v.iconset)) { console.log(`(skip ${v.name} — ${v.iconset} not ready)`); continue; }
-    js = [v.iconset, "ink-iconswap.js", "ink-drawer.js"];
+    js = [v.iconset, "ink-iconswap.js", ...DEPTH_JS];
   }
   let out = base.replace("<title>vault-chat</title>", `<title>vault-chat · ${v.title}</title>`);
   const cssText = [shared, ...v.css.map(read)].join("\n");

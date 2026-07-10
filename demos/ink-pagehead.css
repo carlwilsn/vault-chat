@@ -1,0 +1,37 @@
+/* Page mastheads — replace the bare header title on non-chat pages with a
+   real masthead: a large tight-tracked title, a live count, a quiet caption,
+   and a hairline. The header's small title is dropped on those pages so the
+   top isn't just a label. */
+
+/* drop the redundant small header title on non-chat pages */
+body:not(.page-chat) .title .tx { display: none; }
+
+.ink-mast {
+  flex: 0 0 auto;
+  padding: 12px 16px 13px;
+  border-bottom: 0.5px solid var(--line);
+}
+.ink-mast-row { display: flex; align-items: baseline; gap: 10px; }
+.ink-mast h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  color: var(--text);
+  line-height: 1.1;
+}
+.ink-mast-ct {
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.ink-mast-ct:empty { display: none; }
+.ink-mast p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--label);
+}

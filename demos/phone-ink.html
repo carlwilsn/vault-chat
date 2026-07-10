@@ -678,8 +678,10 @@ button:focus-visible {
 /* timers, counters, costs never reflow as they tick */
 body { font-variant-numeric: tabular-nums; }
 
-/* the headline ask: scrolling dissolves through a gradient, never a hard wall */
-#msgs, .scroll, .clist, .sheet-body {
+/* the gradient scroll-fade belongs ONLY to the conversation thread — that is
+   the one thing that genuinely scrolls. Every other page fits on the phone,
+   so no fade on notes / activity / alerts / the drawer list / sheets. */
+#msgs {
   --mask-h: 32px;
   mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
   -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);

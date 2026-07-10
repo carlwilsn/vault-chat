@@ -678,8 +678,10 @@ button:focus-visible {
 /* timers, counters, costs never reflow as they tick */
 body { font-variant-numeric: tabular-nums; }
 
-/* the headline ask: scrolling dissolves through a gradient, never a hard wall */
-#msgs, .scroll, .clist, .sheet-body {
+/* the gradient scroll-fade belongs ONLY to the conversation thread — that is
+   the one thing that genuinely scrolls. Every other page fits on the phone,
+   so no fade on notes / activity / alerts / the drawer list / sheets. */
+#msgs {
   --mask-h: 32px;
   mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
   -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
@@ -894,11 +896,44 @@ body.page-notes #pNotes {
   to   { opacity: 1; transform: none; }
 }
 
-/* ---- the list dissolves at its edges (gradient, never a hard wall) ---- */
-.clist {
-  --mask-h: 28px;
-  mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
-  -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
+/* (no scroll-fade on the conversation list — fades are for the chat thread only) */
+
+/* Page mastheads — replace the bare header title on non-chat pages with a
+   real masthead: a large tight-tracked title, a live count, a quiet caption,
+   and a hairline. The header's small title is dropped on those pages so the
+   top isn't just a label. */
+
+/* drop the redundant small header title on non-chat pages */
+body:not(.page-chat) .title .tx { display: none; }
+
+.ink-mast {
+  flex: 0 0 auto;
+  padding: 12px 16px 13px;
+  border-bottom: 0.5px solid var(--line);
+}
+.ink-mast-row { display: flex; align-items: baseline; gap: 10px; }
+.ink-mast h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  color: var(--text);
+  line-height: 1.1;
+}
+.ink-mast-ct {
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.ink-mast-ct:empty { display: none; }
+.ink-mast p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--label);
 }
 
 </style>
@@ -4314,6 +4349,49 @@ interface MockDB {
     var sync = function () { document.body.classList.toggle("cdraw-open", d.classList.contains("on")); };
     new MutationObserver(sync).observe(d, { attributes: true, attributeFilter: ["class"] });
     sync();
+  }
+  boot();
+})();
+
+</script>
+<script>
+/* Builds a masthead at the top of each non-chat page (Activity / Alerts /
+   Notes) and keeps its count live off the existing menu badges. Skin-only —
+   no app logic touched. */
+(function () {
+  var PAGES = [
+    { page: "activity", host: "#pAct", title: "Activity", caption: "missions & workers", badge: "mAct", unit: "running" },
+    { page: "alerts", host: "#pAl", title: "Alerts", caption: "decisions & updates", badge: "mAl", unit: "unread" },
+    { page: "notes", host: "#pNotes", title: "Notes", caption: "quick captures for the assistant" },
+  ];
+  function ensure() {
+    for (var i = 0; i < PAGES.length; i++) {
+      var p = PAGES[i], host = document.querySelector(p.host);
+      if (!host) continue;
+      if (!host.querySelector(".ink-mast")) {
+        var d = document.createElement("div");
+        d.className = "ink-mast";
+        d.innerHTML =
+          '<div class="ink-mast-row"><h1></h1><span class="ink-mast-ct"></span></div><p></p>';
+        d.querySelector("h1").textContent = p.title;
+        d.querySelector("p").textContent = p.caption;
+        host.insertBefore(d, host.firstChild);
+      }
+      if (p.badge) {
+        var b = document.getElementById(p.badge);
+        var ct = host.querySelector(".ink-mast-ct");
+        if (b && ct) {
+          var zero = b.classList.contains("zero");
+          var n = (b.textContent || "").trim();
+          ct.textContent = zero || !n || n === "0" ? "" : n + " " + p.unit;
+        }
+      }
+    }
+  }
+  function boot() {
+    if (!document.body) return setTimeout(boot, 40);
+    new MutationObserver(ensure).observe(document.body, { childList: true, subtree: true, characterData: true });
+    ensure();
   }
   boot();
 })();

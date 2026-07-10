@@ -63,9 +63,4 @@ body.page-notes #pNotes {
   to   { opacity: 1; transform: none; }
 }
 
-/* ---- the list dissolves at its edges (gradient, never a hard wall) ---- */
-.clist {
-  --mask-h: 28px;
-  mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
-  -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
-}
+/* (no scroll-fade on the conversation list — fades are for the chat thread only) */
