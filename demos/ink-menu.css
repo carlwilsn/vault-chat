@@ -8,11 +8,11 @@
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.6);
 }
 .mrow {
-  padding: 8px 11px;
-  gap: 10px;
-  font-size: 13.5px;
-  border-radius: 9px;
+  padding: 9px 12px;
+  gap: 12px;
+  font-size: 14px;
+  border-radius: 10px;
 }
-.mrow svg { width: 16px; height: 16px; }
-.mrow .ct { min-width: 16px; height: 16px; font-size: 11px; }
+/* keep the icons full-size (21px from skin-ink) — only the box is compact */
+.mrow .ct { min-width: 17px; height: 17px; font-size: 11px; }
 .mdiv { margin: 4px 9px; }

@@ -74,7 +74,10 @@
 .hdr { border: none; background: transparent; }
 
 /* icons may breathe thinner at nav size for the ink look */
-.icbtn svg, .mrow svg { stroke-width: 1.25; }
+.icbtn svg, .mrow svg { stroke-width: 1.5; }
+/* bigger, more present icons (the earlier pass ran too small/thin) */
+.icbtn svg { width: 25px; height: 25px; }
+.mrow svg { width: 21px; height: 21px; }
 
 /* composer: a hairline ring on black; send is THE white element */
 .composer .field {
@@ -101,6 +104,8 @@
 /* sizing for the thin SVGs the icon pass injects in place of ↑ / ✕ glyphs
    (harmless on the baseline, which keeps the glyphs and has no such svg) */
 .send { display: flex; align-items: center; justify-content: center; }
-.send svg { width: 18px; height: 18px; }
-.sheet-x svg { width: 19px; height: 19px; }
-.newbtn svg { width: 15px; height: 15px; }
+.send svg { width: 21px; height: 21px; }
+.sheet-x svg { width: 22px; height: 22px; }
+.sheet-back svg { width: 24px; height: 24px; }
+.newbtn svg { width: 17px; height: 17px; }
+#vMuteBtn svg, #vEndBtn svg { width: 26px; height: 26px; }

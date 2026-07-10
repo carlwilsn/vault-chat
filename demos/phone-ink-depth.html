@@ -11,7 +11,7 @@
 <link rel="apple-touch-icon" href="/icon.svg" />
 <link rel="icon" type="image/svg+xml" href="/icon.svg" />
 <link rel="manifest" href="/manifest.webmanifest" />
-<title>vault-chat</title>
+<title>vault-chat · Ink · Depth</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous" />
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
@@ -649,6 +649,259 @@
   .specrow .sc{font-size:13px;color:var(--text);font-weight:600}
   .readonly{font-size:11.5px;color:var(--label-2);margin-top:14px;border-top:1px solid var(--line);padding-top:10px;line-height:1.5}
 </style>
+<style id="skin-ink-depth">
+/* ===== shared foundation — both variants (design-brief.md §6 items 1-17) =====
+   Sits AFTER the app's own <style>, so equal-specificity rules here win.
+   Sources: easing/durations Emil Kowalski (emilkowal.ski/ui/great-animations,
+   animations.dev easing blueprint), sheet curve = Vaul (Ionic/iOS canon),
+   press scale + focus + tabular-nums = interfaces.rauno.me,
+   scroll-edge mask fade = pqina.nl/blog/fade-out-overflow-using-css-mask-image. */
+
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* one icon voice: Lucide geometry at stroke 1.5, inheriting the text tiers */
+svg[stroke-width] { stroke-width: 1.5; }
+
+/* press state on every tappable: scale 0.97 @150ms, never darker than that */
+button {
+  transition: transform 0.15s var(--ease-out), opacity 0.15s ease, background-color 0.2s ease, color 0.2s ease;
+}
+button:active { transform: scale(0.97); }
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px rgba(255, 255, 255, 0.4);
+}
+
+/* timers, counters, costs never reflow as they tick */
+body { font-variant-numeric: tabular-nums; }
+
+/* the headline ask: scrolling dissolves through a gradient, never a hard wall */
+#msgs, .scroll, .clist, .sheet-body {
+  --mask-h: 32px;
+  mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
+}
+
+/* bottom sheet rides the iOS-sheet canon curve (Vaul: 500ms, .32,.72,0,1) */
+.sheet { transition: transform 0.5s var(--ease-sheet) !important; }
+
+/* links lose hue in monochrome — carry them on structure instead */
+a { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(255, 255, 255, 0.35); }
+
+/* type: negative tracking on the title, quiet micro-labels */
+.title .tx { letter-spacing: -0.02em; font-weight: 600; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 0.01ms !important; animation: none !important; }
+}
+
+/* ===== Variant A — "Ink" (pure-OLED hairline gallery) =====
+   Opal's void-black stance (#000 everywhere, brandkit.opal.so) + Endel's
+   no-colour calm. NO filled cards: structure comes from spacing and 0.5px
+   hairlines. Text = white at alpha tiers (Linear/Material: .92/.70/.50/.30).
+   The ONE filled element per view is the white send CTA. Red = failure only. */
+
+:root {
+  /* surfaces: everything is void; "fills" are breath-thin white washes */
+  --bg: #000000;
+  --panel: #000000;
+  --surface: #000000;
+  --fill: rgba(255, 255, 255, 0.03);
+  --raised: rgba(255, 255, 255, 0.05);
+  --fill-2: rgba(255, 255, 255, 0.06);
+  --fill-3: rgba(255, 255, 255, 0.08);
+  /* lines: alpha hairlines (Vercel gray-alpha logic) */
+  --line: rgba(255, 255, 255, 0.10);
+  --line-2: rgba(255, 255, 255, 0.13);
+  --line-3: rgba(255, 255, 255, 0.18);
+  --line-4: rgba(255, 255, 255, 0.24);
+  --ring: rgba(255, 255, 255, 0.35);
+  --border-sel: rgba(255, 255, 255, 0.50);
+  /* text: white at opacity tiers, never gray hues */
+  --primary: rgba(255, 255, 255, 0.92);
+  --text: rgba(255, 255, 255, 0.92);
+  --ok: rgba(255, 255, 255, 0.70);
+  --text-hi: rgba(255, 255, 255, 0.92);
+  --text-bright: rgba(255, 255, 255, 0.86);
+  --text-body: rgba(255, 255, 255, 0.78);
+  --text-strong: rgba(255, 255, 255, 0.70);
+  --text-secondary: rgba(255, 255, 255, 0.62);
+  --muted: rgba(255, 255, 255, 0.50);
+  --dim: rgba(255, 255, 255, 0.50);
+  --label: rgba(255, 255, 255, 0.45);
+  --label-2: rgba(255, 255, 255, 0.40);
+  --faint: rgba(255, 255, 255, 0.30);
+  --white: #ffffff;
+  --primary-fg: #000000;
+  /* de-chromed accents: attention is structure, not hue */
+  --link: rgba(255, 255, 255, 0.92);
+  --accent: rgba(255, 255, 255, 0.70);
+  --warn: rgba(255, 255, 255, 0.85);
+  --warn-ink: rgba(255, 255, 255, 0.06);
+  --warn-line: rgba(255, 255, 255, 0.22);
+  --amber: rgba(255, 255, 255, 0.85);
+  --amber-line: rgba(255, 255, 255, 0.22);
+  --amber-text: rgba(255, 255, 255, 0.75);
+  --ask-line: rgba(255, 255, 255, 0.22);
+  --scrim: rgba(0, 0, 0, 0.60);
+  --scrim-2: rgba(0, 0, 0, 0.65);
+  --ok-glow: rgba(255, 255, 255, 0.50);
+  /* the single chromatic family: failure red (iOS systemRed dark) */
+  --err: #ff453a;
+  --err-bg: #1a0d0c;
+  --err-line: #3a1d1a;
+  --err-line-2: #4a221f;
+  --err-text: #f2b1ac;
+  --err-text-2: #f7c9c5;
+  --danger: #ff453a;
+  --mute-bg: rgba(255, 69, 58, 0.14);
+  --mute-line: rgba(255, 69, 58, 0.50);
+  --err-glow: rgba(255, 69, 58, 0.70);
+}
+
+/* hairlines: 0.5px = 1 physical pixel on 2x+ (dieulot.net/css-retina-hairline) */
+.plancard, .composer .field, .menu, .cdraw, .sheet, #drawer .panel {
+  border-width: 0.5px;
+}
+@media (-webkit-max-device-pixel-ratio: 1), (max-resolution: 1dppx) {
+  .plancard, .composer .field { border-width: 1px; }
+}
+
+/* the header dissolves into the void — no bar, no edge */
+.hdr { border: none; background: transparent; }
+
+/* icons may breathe thinner at nav size for the ink look */
+.icbtn svg, .mrow svg { stroke-width: 1.5; }
+/* bigger, more present icons (the earlier pass ran too small/thin) */
+.icbtn svg { width: 25px; height: 25px; }
+.mrow svg { width: 21px; height: 21px; }
+
+/* composer: a hairline ring on black; send is THE white element */
+.composer .field {
+  background: transparent;
+  border: 0.5px solid var(--line-2);
+  border-radius: 22px;
+}
+.send {
+  background: #ffffff;
+  color: #000000;
+  border-radius: 50%;
+}
+
+/* menu + drawer rows: no fills, whitespace separation */
+.mrow { background: transparent; border-radius: 12px; }
+.mrow:active, .mrow.cur { background: rgba(255, 255, 255, 0.06); }
+
+/* empty/ghost states whisper at tier-4 */
+.empty { color: rgba(255, 255, 255, 0.30); }
+
+/* the empty chat is silent — no centered prompt, just the void + composer */
+.hint { display: none; }
+
+/* sizing for the thin SVGs the icon pass injects in place of ↑ / ✕ glyphs
+   (harmless on the baseline, which keeps the glyphs and has no such svg) */
+.send { display: flex; align-items: center; justify-content: center; }
+.send svg { width: 21px; height: 21px; }
+.sheet-x svg { width: 22px; height: 22px; }
+.sheet-back svg { width: 24px; height: 24px; }
+.newbtn svg { width: 17px; height: 17px; }
+#vMuteBtn svg, #vEndBtn svg { width: 26px; height: 26px; }
+
+/* Compact burger menu — the dropdown, made smaller and quieter:
+   narrower, tighter rows, thinner icons, hairline border. */
+.menu {
+  min-width: 184px;
+  padding: 5px;
+  border-radius: 15px;
+  border: 0.5px solid var(--line-2);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.6);
+}
+.mrow {
+  padding: 9px 12px;
+  gap: 12px;
+  font-size: 14px;
+  border-radius: 10px;
+}
+/* keep the icons full-size (21px from skin-ink) — only the box is compact */
+.mrow .ct { min-width: 17px; height: 17px; font-size: 11px; }
+.mdiv { margin: 4px 9px; }
+
+/* Ink · Depth — Panel + Lift in one:
+   the drawer is a hairline-edged slab with rounded corners + shadow (Panel),
+   AND opening it pushes the chat back so the conversations read as lifted
+   toward you (Lift). Plus sharper motion: soft-spring easing, staggered rows,
+   and a page-switch fade. */
+
+/* ---- the receding chat (Lift) ---- */
+.hdr, .body {
+  transition: transform 0.46s var(--ease-sheet), filter 0.46s ease;
+  transform-origin: 50% 38%;
+}
+body.cdraw-open .hdr,
+body.cdraw-open .body {
+  transform: scale(0.9) translateY(10px);
+  filter: brightness(0.38);
+}
+
+/* ---- the drawer slab (Panel) ---- */
+.cdraw {
+  width: min(87vw, 342px);
+  transform: translateX(-102%);
+  transition: transform 0.5s var(--ease-sheet);
+  border-right: 0.5px solid var(--line-3);
+  border-top-right-radius: 24px;
+  border-bottom-right-radius: 24px;
+  box-shadow: 44px 0 130px rgba(0, 0, 0, 0.92);
+}
+.cdraw.on { transform: none; }
+.scrim { background: rgba(0, 0, 0, 0.74); }
+
+/* rows: their own hairline rhythm + a header that reads as a label */
+.crow2 { border-bottom: 0.5px solid var(--line); }
+.crow2:last-child { border-bottom: none; }
+.csec { border-top: 0.5px solid var(--line); margin-top: 4px; }
+
+/* ---- staggered entrance for the list while the drawer is open ---- */
+body.cdraw-open .clist > * { animation: inkRowIn 0.5s var(--ease-out) both; }
+body.cdraw-open .clist > *:nth-child(1)  { animation-delay: 0.03s; }
+body.cdraw-open .clist > *:nth-child(2)  { animation-delay: 0.06s; }
+body.cdraw-open .clist > *:nth-child(3)  { animation-delay: 0.09s; }
+body.cdraw-open .clist > *:nth-child(4)  { animation-delay: 0.12s; }
+body.cdraw-open .clist > *:nth-child(5)  { animation-delay: 0.15s; }
+body.cdraw-open .clist > *:nth-child(6)  { animation-delay: 0.18s; }
+body.cdraw-open .clist > *:nth-child(7)  { animation-delay: 0.21s; }
+body.cdraw-open .clist > *:nth-child(8)  { animation-delay: 0.24s; }
+body.cdraw-open .clist > *:nth-child(9)  { animation-delay: 0.27s; }
+body.cdraw-open .clist > *:nth-child(10) { animation-delay: 0.30s; }
+body.cdraw-open .clist > *:nth-child(n+11) { animation-delay: 0.33s; }
+@keyframes inkRowIn {
+  from { opacity: 0; transform: translateX(-12px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ---- page-switch fade (Chat / Activity / Alerts / Notes) ---- */
+body.page-chat #pChat,
+body.page-activity #pAct,
+body.page-alerts #pAl,
+body.page-notes #pNotes {
+  animation: inkPageIn 0.34s var(--ease-out);
+}
+@keyframes inkPageIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ---- the list dissolves at its edges (gradient, never a hard wall) ---- */
+.clist {
+  --mask-h: 28px;
+  mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
+}
+
+</style>
 </head>
 <body class="page-chat">
 
@@ -908,7 +1161,7 @@ interface MockDB {
 (() => {
   "use strict";
   const qs = new URLSearchParams(location.search);
-  const MOCK = qs.get("mock") === "1";
+  const MOCK = qs.get("mock") !== "0"; // DEMO: mock ON unless ?mock=0 (generated by scripts/make-phone-demo.mjs)
 
   // @ts-ignore — URL import; the browser resolves it at runtime
   const sdkPromise = MOCK ? Promise.resolve(null) : import("https://esm.sh/@elevenlabs/client@1.7.0").catch(() => null);
@@ -4012,6 +4265,59 @@ interface MockDB {
   };
   document.head.appendChild(s);
 })();
+</script>
+<script>
+/* Ink glyph pass — replace the two text glyphs (↑ send, ✕ close) with thin
+   stroke SVGs so the app speaks one icon voice, while KEEPING the app's own
+   icons. Re-applies whenever the app re-renders the glyph (it toggles the send
+   button), and never touches the running-state "stop" button (only swaps the
+   exact ↑ / ✕ glyphs). Idempotent — our svg carries data-ink so we skip it. */
+(function () {
+  var A = 'fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"';
+  function svg(inner) { return '<svg viewBox="0 0 24 24" ' + A + ' data-ink="1">' + inner + "</svg>"; }
+  function node(m) { var t = document.createElement("template"); t.innerHTML = m.trim(); return t.content.firstChild; }
+  var JOBS = [
+    [".send", "↑", '<path d="M12 19V6M6 12l6-6 6 6"/>'],
+    [".sheet-x", "✕", '<path d="M6 6l12 12M18 6L6 18"/>'],
+  ];
+  function tick() {
+    for (var i = 0; i < JOBS.length; i++) {
+      var sel = JOBS[i][0], glyph = JOBS[i][1], inner = JOBS[i][2];
+      var list = document.querySelectorAll(sel);
+      for (var j = 0; j < list.length; j++) {
+        var el = list[j];
+        if (el.querySelector("svg[data-ink]")) continue; // already ours
+        if (el.querySelector("svg")) continue;           // app's own svg — leave it
+        if (el.textContent.trim() !== glyph) continue;   // not the expected glyph
+        el.textContent = "";
+        el.appendChild(node(svg(inner)));
+      }
+    }
+  }
+  function boot() {
+    if (!document.body) return setTimeout(boot, 40);
+    new MutationObserver(tick).observe(document.body, { childList: true, subtree: true });
+    tick();
+  }
+  boot();
+})();
+
+</script>
+<script>
+/* Mirrors the Conversations drawer's open state onto <body> as .cdraw-open,
+   so the skin can recede the chat behind it (the app itself sets no body
+   class for this). Pure observation — no app logic touched. */
+(function () {
+  function boot() {
+    var d = document.getElementById("cdraw");
+    if (!d) return setTimeout(boot, 60);
+    var sync = function () { document.body.classList.toggle("cdraw-open", d.classList.contains("on")); };
+    new MutationObserver(sync).observe(d, { attributes: true, attributeFilter: ["class"] });
+    sync();
+  }
+  boot();
+})();
+
 </script>
 </body>
 </html>

@@ -1,0 +1,71 @@
+/* Ink · Depth — Panel + Lift in one:
+   the drawer is a hairline-edged slab with rounded corners + shadow (Panel),
+   AND opening it pushes the chat back so the conversations read as lifted
+   toward you (Lift). Plus sharper motion: soft-spring easing, staggered rows,
+   and a page-switch fade. */
+
+/* ---- the receding chat (Lift) ---- */
+.hdr, .body {
+  transition: transform 0.46s var(--ease-sheet), filter 0.46s ease;
+  transform-origin: 50% 38%;
+}
+body.cdraw-open .hdr,
+body.cdraw-open .body {
+  transform: scale(0.9) translateY(10px);
+  filter: brightness(0.38);
+}
+
+/* ---- the drawer slab (Panel) ---- */
+.cdraw {
+  width: min(87vw, 342px);
+  transform: translateX(-102%);
+  transition: transform 0.5s var(--ease-sheet);
+  border-right: 0.5px solid var(--line-3);
+  border-top-right-radius: 24px;
+  border-bottom-right-radius: 24px;
+  box-shadow: 44px 0 130px rgba(0, 0, 0, 0.92);
+}
+.cdraw.on { transform: none; }
+.scrim { background: rgba(0, 0, 0, 0.74); }
+
+/* rows: their own hairline rhythm + a header that reads as a label */
+.crow2 { border-bottom: 0.5px solid var(--line); }
+.crow2:last-child { border-bottom: none; }
+.csec { border-top: 0.5px solid var(--line); margin-top: 4px; }
+
+/* ---- staggered entrance for the list while the drawer is open ---- */
+body.cdraw-open .clist > * { animation: inkRowIn 0.5s var(--ease-out) both; }
+body.cdraw-open .clist > *:nth-child(1)  { animation-delay: 0.03s; }
+body.cdraw-open .clist > *:nth-child(2)  { animation-delay: 0.06s; }
+body.cdraw-open .clist > *:nth-child(3)  { animation-delay: 0.09s; }
+body.cdraw-open .clist > *:nth-child(4)  { animation-delay: 0.12s; }
+body.cdraw-open .clist > *:nth-child(5)  { animation-delay: 0.15s; }
+body.cdraw-open .clist > *:nth-child(6)  { animation-delay: 0.18s; }
+body.cdraw-open .clist > *:nth-child(7)  { animation-delay: 0.21s; }
+body.cdraw-open .clist > *:nth-child(8)  { animation-delay: 0.24s; }
+body.cdraw-open .clist > *:nth-child(9)  { animation-delay: 0.27s; }
+body.cdraw-open .clist > *:nth-child(10) { animation-delay: 0.30s; }
+body.cdraw-open .clist > *:nth-child(n+11) { animation-delay: 0.33s; }
+@keyframes inkRowIn {
+  from { opacity: 0; transform: translateX(-12px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ---- page-switch fade (Chat / Activity / Alerts / Notes) ---- */
+body.page-chat #pChat,
+body.page-activity #pAct,
+body.page-alerts #pAl,
+body.page-notes #pNotes {
+  animation: inkPageIn 0.34s var(--ease-out);
+}
+@keyframes inkPageIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ---- the list dissolves at its edges (gradient, never a hard wall) ---- */
+.clist {
+  --mask-h: 28px;
+  mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
+}

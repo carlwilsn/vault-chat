@@ -535,14 +535,17 @@
   .sheet-scrim{position:fixed;inset:0;background:var(--scrim-2);opacity:0;pointer-events:none;transition:opacity .25s;z-index:80}
   .sheet-scrim.on{opacity:1;pointer-events:auto}
   .sheet{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-top-left-radius:18px;border-top-right-radius:18px;transform:translateY(110%);transition:transform .3s cubic-bezier(.32,.72,0,1),height .26s ease;z-index:81;max-height:64%;display:flex;flex-direction:column;box-shadow:0 -12px 40px var(--scrim-2)}
-  /* Lift the sheet above the on-screen keyboard with a compositor transform
-     (--kb = keyboard height, set by the visualViewport handler). iOS ignores a
-     `bottom` offset on position:fixed while the keyboard is up, so the reply box
-     used to stay buried under it; translateY moves reliably on both platforms. */
-  .sheet.on{transform:translateY(calc(-1 * var(--kb, 0px)))}
-  /* Editing the reply expands the sheet so its body scrolls and the input sits
-     right above the keyboard (the visualViewport handler lifts it). */
-  .sheet.editing{max-height:94%}
+  /* The open sheet sits at its resting spot — NEVER translated up by the keyboard.
+     Lifting the whole sheet (translateY(-kb)) dragged its TOP up into the status
+     bar / notch on keyboard-open ("the top of the sheet should not expand because
+     I opened my keyboard — it should stay in the same spot"). */
+  .sheet.on{transform:none}
+  /* Keyboard up on a sheet input: keep the sheet's box (top AND height) fixed, and
+     reserve the keyboard height as INSIDE bottom padding. box-sizing:border-box
+     means the padding eats into the fixed height rather than growing the box, so
+     the top never moves — only the pinned .sheet-foot composer rides up above the
+     keyboard while .sheet-body (flex:1,min-height:0) shrinks and scrolls. */
+  .sheet.editing{padding-bottom:var(--kb,0px)}
   .sheet-grabwrap{padding:7px 0 3px;flex:none;cursor:grab;touch-action:none;display:flex;justify-content:center}
   .sheet-grab{width:40px;height:5px;border-radius:3px;background:var(--line-2)}
   .sheet-head{display:flex;align-items:flex-start;gap:11px;padding:4px 16px 8px;flex:none;touch-action:none}
@@ -1138,6 +1141,11 @@ interface MockDB {
         { id: "w1", title: "3-seed BitNet repro", source: "worker", role: "", mission: "BitNet 160M MVP", lastActivityAt: now - 1080000, msgCount: 6, preview: "all three seeds done; gap held at +0.13 nat", goal: "train + eval seeds 42/43/44 on the 1700-step config" },
         { id: "sup", title: "cockpit nav testing", source: "phone", role: "supervisor", lastActivityAt: now - 300000, msgCount: 14, preview: "shipped the unified app; working through nav", goal: "" },
         { id: "c1", title: "densing law — readings", source: "manual", role: "", lastActivityAt: now - 5400000, msgCount: 10, preview: "the crossover moves with task difficulty, not just scale", goal: "" },
+        { id: "cL", title: "scaling-law deep dive — the long one", source: "manual", role: "", lastActivityAt: now - 900000, msgCount: 22, preview: "walking the loss curve end to end — data, LR schedule, the crossover, and what to actually log", goal: "" },
+        { id: "cx1", title: "paper notes — Chinchilla, revisited", source: "manual", role: "", lastActivityAt: now - 7200000, msgCount: 6, preview: "compute-optimal vs data-optimal, and why the frontier moved", goal: "" },
+        { id: "cx2", title: "infra — weekly box cost log", source: "manual", role: "", lastActivityAt: now - 12600000, msgCount: 4, preview: "A10 vs A100 hours this week; where the spend went", goal: "" },
+        { id: "cx3", title: "reading — muP & hyperparameter transfer", source: "manual", role: "", lastActivityAt: now - 18000000, msgCount: 8, preview: "transfer across width; what actually held at 160M", goal: "" },
+        { id: "cx4", title: "scratch — eval harness TODOs", source: "manual", role: "", lastActivityAt: now - 26000000, msgCount: 5, preview: "dedup the loaders, cache tokenization, pin the seed", goal: "" },
       ],
       runs: [
         { convId: "w2", title: "seed-2 retry", mission: "BitNet 160M MVP", source: "worker", lastTool: "Bash", lastProgressAt: now - 60000 },
@@ -1227,6 +1235,44 @@ interface MockDB {
         c1: { id: "c1", title: "densing law — readings", source: "manual", status: "idle", messages: [
           { role: "user", content: "summarize BitNet's ternary quantization + the STE trick, with the loss gap" },
           { role: "assistant", content: "## BitNet 160M — quick notes\n\nWeights are **ternary**, mapped to $\\{-1,0,+1\\}$ by a scaled sign:\n\n$$\\hat{w}=\\alpha\\cdot\\operatorname{sign}(w),\\qquad \\alpha=\\frac{1}{n}\\sum_i |w_i|$$\n\nThe *straight-through estimator* passes the gradient through unchanged:\n\n$$\\frac{\\partial\\mathcal{L}}{\\partial w}\\approx\\frac{\\partial\\mathcal{L}}{\\partial\\hat{w}}$$\n\nAcross three seeds the eval-loss gap held at about $+0.13$ nat." },
+        ] },
+        cL: { id: "cL", title: "scaling-law deep dive \u2014 the long one", source: "manual", status: "idle", messages: [
+          { role: "user", content: "ok walk me through the whole scaling-law picture for the 160M runs — I want the end-to-end, not just the headline number" },
+          { role: "assistant", content: "## The shape of it\n\nThree levers set the loss: **parameters** N, **tokens** D, and the **compute** C \u2248 6ND that ties them. Hold compute fixed and there is an optimal split between making the model bigger and training it longer. Miss the split and you leave loss on the table.\n\nFor our 160M budget the compute-optimal token count lands around **3.2B tokens** \u2014 we have been training closer to 1.7B, which is why the curve still looks hungry at the end." },
+          { role: "user", content: "why 3.2B specifically" },
+          { role: "assistant", content: "From the compute-optimal ratio D/N \u2248 20 tokens per parameter (the Chinchilla-ish regime). At N = 160M that is ~3.2B tokens. Below it you are param-rich / data-poor \u2014 the model has capacity it never fills. Our 1.7B run sits at ~10.6 tok/param, so it is under-trained by roughly 2x." },
+          { role: "user", content: "show me the seeds again" },
+          { role: "assistant", content: "All three, final eval loss:\n\n| seed | tokens | eval loss |\n|---|---|---|\n| 42 | 1.70B | 1.5576 |\n| 43 | 1.70B | 1.5601 |\n| 44 | 1.70B | 1.5588 |\n\nSpread is **0.0025 nat** \u2014 inside the 0.005 tolerance, so the run is reproducible. The gap to the paper\u2019s number is ~**+0.13 nat**, and almost all of it is the token shortfall, not the architecture.", "tools": ["Read", "Bash"] },
+          { role: "user", content: "so if it is just tokens, why not crank D and move on" },
+          { role: "assistant", content: "Because the LR schedule is coupled to D. The cosine decay is set to reach its floor at the *planned* last step. If you extend tokens without re-planning the schedule, you either (a) hit the LR floor early and waste the tail on a near-zero LR, or (b) never decay enough and leave the model noisy. Extending D means re-fitting the schedule, not just running longer." },
+          { role: "user", content: "walk me through the schedule you would use for 3.2B" },
+          { role: "assistant", content: "Warmup 2% of steps, then cosine to 10% of peak. Peak LR from the muP transfer at this width \u2014 not the 12M proxy\u2019s value. Concretely:\n\n```python\nsteps = tokens // (batch * seq)      # ~3.2B / (0.5M) = 6100\nwarmup = int(0.02 * steps)\npeak_lr = 3.0e-3                       # muP-transferred to 160M width\nfloor = 0.1 * peak_lr\nsched = cosine(warmup, steps, peak_lr, floor)\n```\n\nThe one number people get wrong is the floor: 10% not 0. Decaying to a hard zero over-smooths the last few hundred steps and the eval loss ticks *up*." },
+          { role: "user", content: "what is the muP part doing for us" },
+          { role: "assistant", content: "muP makes the optimal LR **width-invariant**, so we tune it once on a cheap narrow proxy and transfer it up without re-sweeping. We fit peak_lr on a 12M-width model, and it transfers to 160M essentially unchanged \u2014 which is why the 3.0e-3 above is not a guess. What does *not* transfer is depth-dependent stuff (residual scaling), so keep depth fixed between proxy and target." },
+          { role: "user", content: "and this actually held? or is that the theory talking" },
+          { role: "assistant", content: "It held \u2014 mostly. Seed 3 diverged at step 800, +0.05 nat above seed 1, and it turned out to be an LR mismatch: that worker inherited the proxy\u2019s raw LR instead of the transferred one, so it was ~1.6x too hot. Re-ran it at the matched LR and it fell back into the pack. So the transfer held; the *plumbing* around it did not, once.", "tools": ["Read"] },
+          { role: "user", content: "that is the kind of thing I want caught automatically" },
+          { role: "assistant", content: "Agreed. The fix is to log the *effective* LR each worker actually used and assert it against the transferred target at step 0 \u2014 a one-line guard that would have caught seed 3 before it burned 800 steps. I can add that to the harness as a pre-flight check so a hot-LR worker fails fast instead of quietly diverging." },
+          { role: "user", content: "do it, and while you are there tell me what else we should be logging" },
+          { role: "assistant", content: "### Minimum log set for a run you can trust\n\n- **effective LR** at step 0 and at every decay checkpoint (catches the seed-3 class of bug)\n- **tokens seen**, not just steps \u2014 steps lie when batch size changes\n- **grad norm** pre-clip (spikes precede divergence by ~50 steps)\n- **eval loss** on a *fixed* held-out shard, same shard every run, or the numbers are not comparable\n- **throughput** (tok/s) to catch a silently-degraded box\n- the **git SHA + config hash** stamped into the checkpoint, so a result is always traceable to exactly what produced it\n\nEverything else is nice-to-have. Those six are the ones whose absence has actually cost us a run." },
+          { role: "user", content: "good. last thing \u2014 give me the one-paragraph version I can paste into the writeup" },
+          { role: "assistant", content: "The 160M reproduction is stable across three seeds (eval loss 1.559 \u00b1 0.001) and sits ~0.13 nat above the reference, a gap almost entirely explained by training on 1.7B tokens against a compute-optimal ~3.2B. The learning rate was set once on a 12M-width proxy and transferred via muP to the target width unchanged; the only divergence (seed 3) traced to a worker running the un-transferred LR, now guarded by a step-0 effective-LR assertion. Closing the gap is a token-count decision, not an architecture one, and requires re-fitting the cosine schedule to the longer horizon rather than simply training further." },
+        ] },
+        cx1: { id: "cx1", title: "paper notes \u2014 Chinchilla, revisited", source: "manual", status: "idle", messages: [
+          { role: "user", content: "was Chinchilla compute-optimal or data-optimal, and why did the frontier move" },
+          { role: "assistant", content: "Compute-optimal for a *fixed* compute budget. The frontier moved because inference cost changed the objective: if you serve a model a lot, it is worth over-training a smaller one past its compute-optimal point to save every future forward pass. So \u201coptimal\u201d depends on whether you are counting training FLOPs or lifetime FLOPs." },
+        ] },
+        cx2: { id: "cx2", title: "infra \u2014 weekly box cost log", source: "manual", status: "idle", messages: [
+          { role: "user", content: "where did the GPU spend go this week" },
+          { role: "assistant", content: "## This week\n\n- A10 \u00d7 41h \u2014 the 3-seed reruns\n- A100 \u00d7 6h \u2014 the 3.2B pilot\n- ~$0.26 wasted on an idle box (auto-killed)\n\nTotal tracked spend is within the cap; the A100 hours are the only thing worth watching." },
+        ] },
+        cx3: { id: "cx3", title: "reading \u2014 muP & hyperparameter transfer", source: "manual", status: "idle", messages: [
+          { role: "user", content: "one-line: what does muP actually buy us" },
+          { role: "assistant", content: "Width-invariant optimal LR \u2014 tune once on a narrow proxy, transfer up without re-sweeping. Depth-dependent terms do not transfer, so hold depth fixed between proxy and target." },
+        ] },
+        cx4: { id: "cx4", title: "scratch \u2014 eval harness TODOs", source: "manual", status: "idle", messages: [
+          { role: "user", content: "list the eval harness cleanups" },
+          { role: "assistant", content: "- dedup the data loaders (two copies drift)\n- cache tokenization so eval is not re-tokenizing each run\n- pin the eval seed + fixed held-out shard\n- stamp git SHA into every result row" },
         ] },
       },
     };
@@ -2375,18 +2421,14 @@ interface MockDB {
     // so blur can put the sheet back — never the CSS 64% "middle" fallback
     // (notes 7edf4afd / 55ab9006).
     if (!sheet.classList.contains("editing")) sheet.dataset.restH = sheet.style.height || "";
-    // Keep the sheet at its RESTING height — do NOT balloon it to full-screen on
-    // focus. The old height:100% overshot to full-screen the instant you tapped the
-    // composer (before the keyboard finished rising), so the bottom briefly sat
-    // behind the incoming keyboard and content spilled for a frame (note 93b609bc:
-    // "when I use my keyboard the only thing that should move is the text box and
-    // the keyboard — no glitchy things affecting the sheet / overflow / spilling").
-    // maxHeight — tightened live by the visualViewport handler as the keyboard
-    // animates — still caps the sheet to the space above the keyboard, so a lifted
-    // sheet can never push its top off-screen (the bug height:100% originally
-    // fixed). The resting height is an explicit px value set in openSheet, so
-    // NOT touching it here can't collapse a short sheet the way clearing it did.
-    sheet.style.maxHeight = window.visualViewport ? window.visualViewport.height + "px" : "";
+    // Keep the sheet at its RESTING spot on focus — do NOT balloon or lift it. The
+    // `.editing` class (CSS) reserves the keyboard height as INSIDE padding, so the
+    // top stays fixed and only the pinned composer rises above the keyboard. Was:
+    // height:100% + a live maxHeight cap, which grew the sheet to full-screen and
+    // let the whole-sheet lift shove its top up into the notch — the on-device
+    // report ("the top should not expand because I opened my keyboard; keep it in
+    // the same spot") and note 93b609bc. Resting height is an explicit px from
+    // openSheet, so not touching it can't collapse a short sheet.
     sheet.classList.add("editing");
     const be = $("sheetBody");
     const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 80;
@@ -4066,10 +4108,10 @@ interface MockDB {
       // clientHeight), so Safari is unaffected.
       const safeBand = Math.max(0, document.body.offsetHeight - document.documentElement.clientHeight);
       document.documentElement.style.setProperty("--kb", (up ? kbRaw + safeBand : 0) + "px");
-      // While editing a reply, cap the sheet to the space above the keyboard so
-      // the whole sheet stays visible, not just the lifted foot.
-      const sheet = $("sheet");
-      if (sheet.classList.contains("editing")) sheet.style.maxHeight = vv.height + "px";
+      // The sheet is NOT resized or lifted on keyboard-open — `.sheet.editing`
+      // reserves --kb as inside padding, so its top stays fixed while only the
+      // pinned composer rides above the keyboard (see sheetEditFocus). Nothing to
+      // do here but keep --kb current, which the line above already did.
     };
     const fit = () => { applyKb(); window.scrollTo(0, 0); scrollDown(false); };
     vv.addEventListener("resize", fit);

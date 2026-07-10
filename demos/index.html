@@ -3,45 +3,48 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>vault-chat — design demos</title>
+<title>vault-chat — Ink, ideating</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100vh; background: #000; color: rgba(255,255,255,.92);
     font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased; padding: 40px 20px 64px; }
-  main { max-width: 460px; margin: 0 auto; }
+  main { max-width: 470px; margin: 0 auto; }
   h1 { font-size: 21px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 4px; }
   .sub { color: rgba(255,255,255,.5); font-size: 14px; margin: 0 0 8px; }
-  .tip { color: rgba(255,255,255,.4); font-size: 12.5px; margin: 0 0 30px; }
+  .tip { color: rgba(255,255,255,.42); font-size: 12.5px; margin: 0 0 6px; }
+  .tip b { color: rgba(255,255,255,.7); font-weight: 600; }
   h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
     color: rgba(255,255,255,.4); margin: 30px 0 12px; }
   a.card { display: block; text-decoration: none; color: inherit; padding: 16px 18px; margin-bottom: 12px;
     border: 0.5px solid rgba(255,255,255,.14); border-radius: 14px;
     transition: transform .15s cubic-bezier(.23,1,.32,1), background-color .2s ease, border-color .2s ease; }
   a.card:active { transform: scale(.985); }
-  a.card:hover { background: rgba(255,255,255,.035); border-color: rgba(255,255,255,.24); }
-  b { display: block; font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
+  a.card:hover { background: rgba(255,255,255,.035); border-color: rgba(255,255,255,.26); }
+  b.t { display: block; font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
   span { display: block; color: rgba(255,255,255,.5); font-size: 13px; margin-top: 3px; }
-  em { color: rgba(255,255,255,.72); font-style: normal; }
+  em { color: rgba(255,255,255,.74); font-style: normal; }
   .ref a.card { border-style: dashed; }
 </style>
 </head>
 <body>
 <main>
   <h1>vault-chat — Ink, ideating</h1>
-  <p class="sub">The real app on mock data. Pick a direction; I map the winner into the shipped app.</p>
-  <p class="tip">All three below share the smaller burger menu + thin-SVG icons (↑ and ✕ are real icons now). They differ in how <em>Conversations</em> arrives — open it with the top-left icon, and tap the ☰ menu top-right.</p>
+  <p class="sub">The real app on mock data. Each link opens a long conversation so you can see the scroll-fade.</p>
+  <p class="tip"><b>The design is the same in all three below</b> — the merged <em>Depth</em> drawer (Panel's hairline slab + Lift's receding chat), bigger icons, smaller burger menu, sharper transitions. They differ only in the <b>icon set</b>, so you can pick one.</p>
+  <p class="tip">To feel it: <b>scroll the chat</b> (fade at top/bottom), open <b>Conversations</b> (top-left) to see the drawer + row stagger, and the <b>☰ menu</b> (top-right).</p>
 
-  <h2>Pick a drawer / transition</h2>
-  <a class="card" href="/phone-ink-lift.html"><b>Ink · Lift</b><span>Conversations <em>rise onto a higher plane</em>; the chat sinks back and dims beneath. Depth from motion + shadow.</span></a>
-  <a class="card" href="/phone-ink-panel.html"><b>Ink · Panel</b><span>Conversations slide in as a <em>hairline-edged slab with rounded corners + shadow</em> over a dimmed chat. Depth from borders + z-index.</span></a>
-  <a class="card" href="/phone-ink-sheet.html"><b>Ink · Sheet</b><span>The menu <em>and</em> Conversations <em>rise from the bottom as iOS sheets</em>; chat recedes. One motion metaphor for everything.</span></a>
+  <h2>Pick an icon set — same Depth design</h2>
+  <a class="card" href="/phone-ink-lucide.html?conv=cL"><b class="t">Lucide</b><span>Stroke-based, even geometry. The clean, neutral default — one stroke-width dials the whole set. <em>(the researched recommendation)</em></span></a>
+  <a class="card" href="/phone-ink-iconoir.html?conv=cL"><b class="t">Iconoir</b><span>Stroke-based but thinner-by-default — airier, more editorial. The elegant middle option.</span></a>
+  <a class="card" href="/phone-ink-phosphor.html?conv=cL"><b class="t">Phosphor Thin</b><span>The most delicate/luxury thin weight — but fill-based, so it can't share the hairline dial. See if the extra refinement is worth it.</span></a>
 
   <h2>Reference</h2>
   <div class="ref">
-    <a class="card" href="/phone-ink.html"><b>Ink · baseline</b><span>Where we started — old glyphs, old drawer, old menu. Compare against this.</span></a>
-    <a class="card" href="/phone-graphite.html"><b>Graphite</b><span>The other palette direction (charcoal + glass) — for contrast.</span></a>
+    <a class="card" href="/phone-ink-depth.html?conv=cL"><b class="t">Depth · current icons</b><span>Same design with the app's existing icons (glyphs fixed) — the "refine what we have" baseline.</span></a>
+    <a class="card" href="/phone-ink.html"><b class="t">Ink · original</b><span>Where we started — old drawer, old menu, old icons.</span></a>
+    <a class="card" href="/phone-graphite.html"><b class="t">Graphite</b><span>The other palette direction (charcoal + glass).</span></a>
   </div>
 </main>
 </body>
