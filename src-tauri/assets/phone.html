@@ -1099,6 +1099,24 @@
   // approve/refine card instead of code. Format: a `title:` line, then one
   // `- task` bullet per worker the agent would fan out. Buttons are wired by
   // delegation on #msgs (see approvePlan).
+  // Approved plan cards must STAY approved across leaving + reopening the thread.
+  // renderPlanCard runs on EVERY thread render, so without persistence the ✓
+  // state (a live DOM class approvePlan adds on click) is lost on re-render and a
+  // fresh "Approve & run" button reappears on an already-minted mission — inviting
+  // a duplicate approve (note 92536339). Persist a short signature per approved
+  // plan; renderPlanCard re-derives it so the card comes back approved.
+  const APPROVED_PLANS_KEY = "vc_approved_plans";
+  function planSig(title, tasks) {
+    const s = title + "\n" + tasks.join("\n");
+    let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return "p" + (h >>> 0).toString(36);
+  }
+  function approvedPlans() { try { return JSON.parse(localStorage.getItem(APPROVED_PLANS_KEY) || "[]"); } catch { return []; } }
+  function isPlanApproved(sig) { return approvedPlans().indexOf(sig) >= 0; }
+  function markPlanApproved(sig) {
+    const a = approvedPlans().filter((x) => x !== sig); a.push(sig);
+    try { localStorage.setItem(APPROVED_PLANS_KEY, JSON.stringify(a.slice(-100))); } catch {}
+  }
   function planParse(lines) {
     let title = ""; const tasks = [], desc = [];
     for (const ln of lines) {
@@ -1112,11 +1130,18 @@
   }
   function renderPlanCard(lines) {
     const { title, tasks, desc } = planParse(lines);
-    let h = '<div class="plancard"><div class="pc-h">Proposed mission · approve to start</div>';
+    const sig = planSig(title, tasks);
+    const done = isPlanApproved(sig);
+    let h = '<div class="plancard' + (done ? " approved" : "") + '" data-sig="' + sig + '"><div class="pc-h">'
+      + (done ? "Proposed mission · approved ✓" : "Proposed mission · approve to start") + "</div>";
     if (title) h += '<div class="pc-title">' + inline(title) + "</div>";
     if (desc) h += '<div class="pc-desc">' + inline(desc) + "</div>";
     if (tasks.length) { h += '<div class="pc-dw">Done when</div><ul class="pc-tasks">'; for (const t of tasks) h += "<li>" + inline(t) + "</li>"; h += "</ul>"; }
-    h += '<div class="pc-btns"><button class="pc-approve">Approve &amp; run</button></div></div>';
+    // Approved → no live button (the .approved class also hides .pc-btns), just a
+    // receipt. Un-approved → the Approve button, wired by delegation on #msgs.
+    h += done
+      ? '<div class="pc-done" style="color:var(--ok);font-size:12px;margin-top:11px">✓ Approved — running in Activity</div></div>'
+      : '<div class="pc-btns"><button class="pc-approve">Approve &amp; run</button></div></div>';
     return h;
   }
 
@@ -1542,6 +1567,9 @@
       const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mission: { title, goal } }) });
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || r.status);
+      // Persist the approval so re-rendering this thread (on return) keeps the card
+      // approved instead of resurrecting a live Approve button (note 92536339).
+      const sig = card.getAttribute("data-sig"); if (sig) markPlanApproved(sig);
       toast("Mission created — it’s underway."); setPage("activity");
     } catch (e) { card.classList.remove("approved"); card.querySelectorAll("button").forEach((b) => { b.disabled = false; }); toast("Approve failed: " + (e.message || e)); }
   }
@@ -1969,9 +1997,17 @@
     // so blur can put the sheet back — never the CSS 64% "middle" fallback
     // (notes 7edf4afd / 55ab9006).
     if (!sheet.classList.contains("editing")) sheet.dataset.restH = sheet.style.height || "";
-    // Explicit FULL height, capped to the visible space: the visualViewport
-    // handler tightens maxHeight to the area above the keyboard as it animates.
-    sheet.style.height = "100%";
+    // Keep the sheet at its RESTING height — do NOT balloon it to full-screen on
+    // focus. The old height:100% overshot to full-screen the instant you tapped the
+    // composer (before the keyboard finished rising), so the bottom briefly sat
+    // behind the incoming keyboard and content spilled for a frame (note 93b609bc:
+    // "when I use my keyboard the only thing that should move is the text box and
+    // the keyboard — no glitchy things affecting the sheet / overflow / spilling").
+    // maxHeight — tightened live by the visualViewport handler as the keyboard
+    // animates — still caps the sheet to the space above the keyboard, so a lifted
+    // sheet can never push its top off-screen (the bug height:100% originally
+    // fixed). The resting height is an explicit px value set in openSheet, so
+    // NOT touching it here can't collapse a short sheet the way clearing it did.
     sheet.style.maxHeight = window.visualViewport ? window.visualViewport.height + "px" : "";
     sheet.classList.add("editing");
     const be = $("sheetBody");
@@ -2185,6 +2221,13 @@
           threadErr = String(e.message || e);
         }
       }
+      // Bleed guard: the fetches above are async. If the sheet was replaced while
+      // we awaited (closed + a different conversation/note opened), sheetConvId no
+      // longer matches ours — writing now would splash THIS mission's thread into
+      // the sheet showing something else (note 4264e049: "a supervisor reply I
+      // never asked for bled into the note conversation"). The new sheet owns the
+      // DOM now; bail before any state mutation or write.
+      if (sheetConvId !== mc.id) return;
       const restPlus = rest.concat(optimistic.map((t) => ({ role: "user", content: t })));
       const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
       // The box's own liveRun is authoritative: if it reports a run, we're live
@@ -2349,6 +2392,9 @@
         if (d.error) throw new Error(d.error);
         msgs = d.messages || [];
       } catch (e) { err = String(e.message || e); }
+      // Bleed guard: awaited fetches above — if the sheet was swapped meanwhile,
+      // don't write this worker thread into whatever sheet is showing now.
+      if (sheetConvId !== convId) return;
       const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
       sheetRunning = liveRun || hasLive;
       const showLive = sheetRunning;
@@ -3098,6 +3144,12 @@
           }
         }
       } catch {}
+      // Bleed guard: /conversation is async. If you closed this ask/note sheet and
+      // opened a DIFFERENT conversation during the fetch, sheetConvId changed — and
+      // since another deliberation sheet also has a #delibX, the null check below
+      // wouldn't stop us writing THIS thread's turns into it. That was the "a reply
+      // I didn't send showed up in the note conversation" bleed (note 4264e049).
+      if (sheetConvId !== cid) return;
       // Drop optimistic bubbles the persisted thread now contains.
       for (let k = optimistic.length - 1; k >= 0; k--) {
         if (msgs.some((m) => m.role === "user" && (m.content || "").trim() === optimistic[k].trim())) optimistic.splice(k, 1);
