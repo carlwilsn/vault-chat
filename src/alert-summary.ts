@@ -126,6 +126,7 @@ CRUCIAL — judge against the EVIDENCE TYPE THE CRITERION IMPLIES. Not every cri
 - POST-COMPLETION EFFECTS: a criterion whose truth can only exist AFTER the mission completes (e.g. "the mission-done notification fires and reaches the user" — it fires ON CompleteMission) is structurally unverifiable beforehand; refusing it deadlocks the mission forever (CompleteMission waits on the criterion, the criterion waits on CompleteMission). When everything pre-completion the criterion depends on is in place, PASS it — the effect then happens by construction — and say that's why.
 - HONEST-OUTCOME criteria ("record the number + its delta to the reference", "score the pre-registered prediction honestly", "write the verdict"): these ask for honest REPORTING of an outcome, not for the outcome to hit the reference. A recorded MISS — the number below the band, the prediction scored as missed, a verdict of "not reproduced / needs a second variable" — is exactly what an honest report looks like: PASS it on the artifact. Only fail a reporting criterion when the artifact is missing, incomplete, or contradicts the ground truth. NEVER convert "report X and its delta to Y" into "X must equal Y" — that misreading blocked a finished, honestly-documented mission from ever completing.
 - STEP / CONDITIONAL bullets: a "Done when" bullet that is really a step instruction ("Read A + B for context", "pull artifacts then terminate the box") is met when the evidence shows the work it gates actually happened. An if/else branch whose condition never arose (an "else, self-schedule a re-check" bullet when the primary land-branch fired and is evidenced) is satisfied BY the taken branch — do not demand actions from the branch that didn't fire.
+- STALE STATUS TEXT: recorded tool results OUTRANK narrative status text when they conflict. A goal file, mind file, or the agent's narration saying a step is "still executing", "awaiting", or "failed so far" is a snapshot that goes stale the moment the work lands; a recorded tool result cannot go stale. If a recorded tool result (the mission's or a worker's) substantiates the criterion, PASS it even when narrative text written earlier still describes the step as pending or failing — and NEVER treat a previous verification verdict quoted in the evidence as proof about the world; judge only the underlying artifacts and tool results.
 
 A file marked "could not be read here … inconclusive" is NOT proof of failure for a PRESENCE criterion: the reader may not have resolved that path — judge that criterion by the goal file and its own logic. Assertions without substance ("done", "the worker finished it", future tense, plans) do NOT pass on their own. A criterion explicitly waived/rescoped by the user, with that decision recorded, passes. Be strict but fair: you guard against premature check-offs and self-report inflation, and against a genuinely-unmet criterion — but you do NOT reject a valid completion merely because the proof is an absence or an external tool result. Reply with your verdict and a one-sentence reason.`;
 
@@ -145,7 +146,20 @@ export async function verifyCriterionEvidence(
         pass: z.boolean().describe("true only if the evidence concretely substantiates the criterion"),
         reason: z.string().describe("one sentence: what substantiates it, or what's missing"),
       }),
-      prompt: `CRITERION:\n${criterion.slice(0, 1000)}\n\nEVIDENCE:\n${(evidence ?? "").trim().slice(0, 12000) || "(no recorded evidence)"}`,
+      // 24K cap with an EXPLICIT truncation marker. The old silent 12K slice
+      // cut whole trailing evidence sections off — the worker-results section
+      // (the only proof of a worker-built deliverable) vanished and the judge
+      // truthfully reported "no recorded tool result" on every retry. If we
+      // must cut, the judge has to KNOW it's judging a prefix.
+      prompt: (() => {
+        const ev = (evidence ?? "").trim();
+        const CAP = 24000;
+        const clipped =
+          ev.length > CAP
+            ? `${ev.slice(0, CAP)}\n[… EVIDENCE TRUNCATED by the reader at ${CAP} of ${ev.length} chars — later sections were cut; do not treat anything as absent solely because it would have appeared after this point.]`
+            : ev;
+        return `CRITERION:\n${criterion.slice(0, 1000)}\n\nEVIDENCE:\n${clipped || "(no recorded evidence)"}`;
+      })(),
     });
     return { pass: !!res.object.pass, reason: (res.object.reason ?? "").slice(0, 300) };
   } catch {

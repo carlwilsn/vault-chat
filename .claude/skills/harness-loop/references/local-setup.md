@@ -2,6 +2,31 @@
 
 Read this the first time you set up the fast loop, or when the scratch vault needs a reset.
 
+## Rig gotchas (2026-07-10 run — each cost a restart)
+
+- **Kill the INSTALLED app first** (`Get-Process vault-chat`): `tauri-plugin-single-instance`
+  makes the dev exe exit silently (code 0, right after "Running target\debug\vault-chat.exe")
+  while the installed app runs. Record its path (`C:\Users\wada2\AppData\Local\vault-chat\
+  vault-chat.exe`) and relaunch it when done.
+- **TaskStop on the npm task orphans BOTH `vault-chat.exe` AND vite** — the orphan exe keeps
+  single-instance held and the orphan vite keeps 1420, so the next launch dies twice. Kill
+  by process before relaunching (vite PID via `Get-NetTCPConnection -LocalPort 1420`).
+- **Dev-store defaults**: a fresh isolated `WEBVIEW2_USER_DATA_FOLDER` store used to default
+  `bashDisabled:true` → probe workers honestly refuse shell tasks and the probe fails for
+  the wrong reason. Fixed in store.ts (dev defaults bash-enabled); if workers report "no
+  Bash tool", the store predates that fix — restart the rig, don't fight HMR (zustand
+  doesn't hot-swap store defaults).
+- **`python -c` with a multiline program breaks** through the pyenv-win .bat shim
+  ("|| goto :error" IndentationError) — write watcher/reader scripts to real .py files.
+- **VITE_COCKPIT_PORT** (dev-gated in phoneVoice.ts) gives the rig its own cockpit (e.g.
+  8850). Token: `strings "$SCRATCH/.webview2/.../Local Storage/leveldb/"*.log | grep -oE
+  '[0-9a-f]{36}'`. POST /message and /answer bodies via `--data-binary @file.json` — inline
+  `-d '{...}'` with punctuation got mangled to `{"error":"empty message"}` once.
+- **Evidence-lane debugging**: the `mission.markdone.evidence` vlog line in the scratch
+  vault's `.vault-chat/app-log.txt` prints per-section evidence sizes (goal/files/thread/
+  workers/user) — an auditor rejection with `workers:0` (or a section that vanishes at the
+  judge) is an evidence-gathering bug, not a judging bug. Fix gathering before prompt-tuning.
+
 ## What a "vault" is
 
 A vault is just a directory with a `.vault-chat/` subfolder. The app reads its state straight from the working tree:

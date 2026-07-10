@@ -1536,6 +1536,12 @@ async function readNamedFiles(
   }
   const templates = [...new Set(extractTemplates(criterionText))].slice(0, 3);
   const parts: string[] = [];
+  // Dedup by RESOLVED location, not by the rel string: briefs name the same
+  // file both pathed (".vault-chat/…/journal.log") and bare ("journal.log"),
+  // and reading it twice burned half the judge's hard-capped evidence window
+  // on a duplicate — which sliced the worker-results section off entirely
+  // (the evidence-tail-worker probe's silent-rejection root cause).
+  const readResolved = new Set<string>();
   for (const rel of rels) {
     // Direct read first; on a miss, RESOLVE BY SUFFIX SEARCH before concluding
     // anything. [proxy-v3 root cause] Briefs put artifacts under a base dir
@@ -1574,18 +1580,30 @@ async function readNamedFiles(
         // unable to distinguish "missing" from "misresolved").
         parts.push(`-- ${rel}: NOT FOUND anywhere under the vault (direct read + recursive suffix search both missed) — for a presence criterion, this file genuinely does not exist here. --`);
       }
+    } else if (body != null && readResolved.has(at)) {
+      // Already read under another name this pass — don't burn the evidence
+      // window on a byte-identical duplicate.
+      continue;
     } else if (absence && body.trim() === "") {
       // An empty file for an "emptied / cleared" criterion is also positive proof.
+      readResolved.add(at);
       parts.push(`-- ${at}: EXISTS but is EMPTY — for an emptied/cleared criterion this is POSITIVE PROOF the criterion is MET. --`);
     } else {
+      readResolved.add(at);
       const lineCount = body.split(/\r?\n/).length;
       const where = (searched && at !== rel ? `${rel} → resolved at ${at}` : at) + alsoMatched;
       // An explicit truncation marker: the notification-surfaces dummy was
       // rejected over a heartbeat line "cut mid-write" that was OUR 2500-char
       // evidence cap, not the file — the auditor must never mistake the cap
-      // for a truncated/corrupt file.
-      const capped = body.length > 2500
-        ? `${body.slice(0, 2500)}\n[… evidence capped at 2500 chars by the auditor's reader — the FILE ITSELF CONTINUES (${body.length} bytes total). A line cut off right here is an artifact of this cap, not of the file.]`
+      // for a truncated/corrupt file. HEAD+TAIL, not head-only: proof routinely
+      // lives at the END of a long file (a journal's last wake line, a
+      // scorecard's totals, an endurance span = first ts vs last ts), and the
+      // head-only cap made the HARD proxy fail 7+ verification rounds until it
+      // rewrote its own journal tersely enough to fit the reader's blind spot.
+      const HEAD = 1900;
+      const TAIL = 1900;
+      const capped = body.length > HEAD + TAIL
+        ? `${body.slice(0, HEAD)}\n[… middle elided by the auditor's reader — showing the first ${HEAD} and last ${TAIL} of ${body.length} bytes. The FILE ITSELF IS CONTINUOUS; a line cut at either edge of this gap is an artifact of the cap, not of the file.]\n${body.slice(-TAIL)}`
         : body;
       parts.push(`-- ${where} (${lineCount} lines, ${body.length} bytes) --\n${capped}`);
     }
@@ -1736,16 +1754,49 @@ export async function markDoneWhen(
       // returning empty, a command's stdout). Surface the recent tool calls + their
       // recorded results so the auditor can pass a criterion a tool already proved,
       // instead of demanding a local file that doesn't exist for external state.
-      const toolResults = mission0.messages
-        .filter((m) => m.role === "assistant" && Array.isArray(m.toolCalls) && m.toolCalls.length)
-        .slice(-3)
-        .flatMap((m) => (m.toolCalls ?? []))
-        .filter((t) => t && typeof t.result === "string" && t.result.trim())
-        .slice(-8)
-        .map((t) => {
-          const input = t.input ? JSON.stringify(t.input).slice(0, 200) : "";
-          return `- ${t.name}(${input}) => ${String(t.result).trim().slice(0, 500)}`;
+      // Self-referential harness tools are EXCLUDED from evidence: a prior
+      // MarkDoneWhen's "VERIFICATION FAILED — no worker tool result…" is the
+      // auditor's OWN past verdict, and surfacing it as in-thread "ground
+      // truth" made every retry re-reject by citing the previous rejection —
+      // a self-reinforcing loop the evidence-tail-worker probe caught live
+      // (the auditor literally wrote "the ground-truth MarkDoneWhen response
+      // explicitly states verification failed" while a genuine worker Bash
+      // result sat in the evidence). Verdicts are not world state.
+      const SELF_REFERENTIAL_TOOLS = new Set(["MarkDoneWhen", "CompleteMission", "AskUser", "RecordJudgment"]);
+      const clipToolResults = (msgs: typeof mission0.messages, msgWindow: number, keep: number) =>
+        msgs
+          .filter((m) => m.role === "assistant" && Array.isArray(m.toolCalls) && m.toolCalls.length)
+          .slice(-msgWindow)
+          .flatMap((m) => (m.toolCalls ?? []))
+          .filter((t) => t && typeof t.result === "string" && t.result.trim() && !SELF_REFERENTIAL_TOOLS.has(t.name))
+          .slice(-keep)
+          .map((t) => {
+            const input = t.input ? JSON.stringify(t.input).slice(0, 200) : "";
+            return `- ${t.name}(${input}) => ${String(t.result).trim().slice(0, 1200)}`;
+          })
+          .join("\n");
+      const toolResults = clipToolResults(mission0.messages, 3, 8);
+      // [markdone auditor] WORKER threads are where deliverables actually get
+      // built — a mission that fans out writes its artifacts through worker
+      // tool calls the mission thread never sees. Auditing only the mission
+      // thread made every worker-built deliverable look unevidenced (the
+      // handoff's defect B). Surface the freshest workers' recorded tool
+      // results as labeled ground truth, same rules as the mission's own.
+      const workerConvs = list0
+        .filter(
+          (c) =>
+            c.source === "worker" &&
+            (c.mission ?? "") === (mission0.mission ?? mission0.title ?? "") &&
+            c.messages.some((m) => m.role === "assistant" && (m.toolCalls ?? []).length),
+        )
+        .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
+        .slice(0, 3);
+      const workerToolResults = workerConvs
+        .map((w) => {
+          const r = clipToolResults(w.messages, 2, 4);
+          return r ? `worker "${w.title ?? w.id}":\n${r}` : "";
         })
+        .filter(Boolean)
         .join("\n");
       // [markdone auditor] The USER's own replies are ground truth the agent cannot
       // author — they arrive from the phone (/message and /answer), never from a
@@ -1760,20 +1811,41 @@ export async function markDoneWhen(
         .slice(-4)
         .map((m) => `- "${(m.content || "").trim().slice(0, 400)}"`)
         .join("\n");
+      // Section ORDER is load-bearing: the judge prompt hard-caps the evidence,
+      // so the compact, highest-signal sections (recorded tool results, the
+      // user's own words) go FIRST and the bulky ones (file bodies, narration)
+      // last. The evidence-tail-worker probe caught the failure mode live: a
+      // double-read journal + thread results filled the whole cap and the
+      // worker section — which held the only proof — was silently sliced off,
+      // so the judge truthfully reported "no recorded tool result" forever.
       const evidence =
-        (goalDoc
-          ? `== this mission's goal file (scoped — no other mission's state) ==\n${goalDoc.slice(0, 6000)}\n\n`
-          : "") +
-        (groundTruth
-          ? `== GROUND TRUTH: files named in the criterion, read from disk just now ==\n${groundTruth}\n\n`
-          : "") +
         (toolResults
           ? `== GROUND TRUTH: tool-call results recorded in the thread (external verification — e.g. a list/command result proving a box is terminated or a check passed) ==\n${toolResults}\n\n`
+          : "") +
+        (workerToolResults
+          ? `== GROUND TRUTH: tool-call results from this mission's worker threads (workers build the deliverables — their recorded writes/commands are evidence the mission thread itself never shows) ==\n${workerToolResults}\n\n`
           : "") +
         (userVoice
           ? `== GROUND TRUTH: the USER's own recent replies in this thread (typed/tapped on their phone — the agent cannot author these; the user is the final authority) ==\n${userVoice}\n\n`
           : "") +
+        (groundTruth
+          ? `== GROUND TRUTH: files named in the criterion, read from disk just now ==\n${groundTruth}\n\n`
+          : "") +
+        (goalDoc
+          ? `== this mission's goal file (scoped — no other mission's state) ==\n${goalDoc.slice(0, 6000)}\n\n`
+          : "") +
         `== the agent's own recent narration (a CLAIM — corroborate it against the ground truth above; do NOT trust it on its own) ==\n${recent.slice(-3000)}`;
+      // Section sizes make an empty evidence lane diagnosable from the app log
+      // (an auditor rejection with workers=0 while a worker built the artifact
+      // is an evidence-gathering bug, not a judging bug).
+      vlog("mission.markdone.evidence", {
+        conv: conversationId.slice(0, 8),
+        goal: goalDoc.length,
+        files: groundTruth.length,
+        thread: toolResults.length,
+        workers: workerToolResults.length,
+        user: userVoice.length,
+      });
       const { verifyCriterionEvidence } = await import("./alert-summary");
       const verdict = await verifyCriterionEvidence(matched, evidence, useStore.getState().apiKeys);
       if (verdict && !verdict.pass) {
