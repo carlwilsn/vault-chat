@@ -1,0 +1,96 @@
+/* ===== Variant A — "Ink" (pure-OLED hairline gallery) =====
+   Opal's void-black stance (#000 everywhere, brandkit.opal.so) + Endel's
+   no-colour calm. NO filled cards: structure comes from spacing and 0.5px
+   hairlines. Text = white at alpha tiers (Linear/Material: .92/.70/.50/.30).
+   The ONE filled element per view is the white send CTA. Red = failure only. */
+
+:root {
+  /* surfaces: everything is void; "fills" are breath-thin white washes */
+  --bg: #000000;
+  --panel: #000000;
+  --surface: #000000;
+  --fill: rgba(255, 255, 255, 0.03);
+  --raised: rgba(255, 255, 255, 0.05);
+  --fill-2: rgba(255, 255, 255, 0.06);
+  --fill-3: rgba(255, 255, 255, 0.08);
+  /* lines: alpha hairlines (Vercel gray-alpha logic) */
+  --line: rgba(255, 255, 255, 0.10);
+  --line-2: rgba(255, 255, 255, 0.13);
+  --line-3: rgba(255, 255, 255, 0.18);
+  --line-4: rgba(255, 255, 255, 0.24);
+  --ring: rgba(255, 255, 255, 0.35);
+  --border-sel: rgba(255, 255, 255, 0.50);
+  /* text: white at opacity tiers, never gray hues */
+  --primary: rgba(255, 255, 255, 0.92);
+  --text: rgba(255, 255, 255, 0.92);
+  --ok: rgba(255, 255, 255, 0.70);
+  --text-hi: rgba(255, 255, 255, 0.92);
+  --text-bright: rgba(255, 255, 255, 0.86);
+  --text-body: rgba(255, 255, 255, 0.78);
+  --text-strong: rgba(255, 255, 255, 0.70);
+  --text-secondary: rgba(255, 255, 255, 0.62);
+  --muted: rgba(255, 255, 255, 0.50);
+  --dim: rgba(255, 255, 255, 0.50);
+  --label: rgba(255, 255, 255, 0.45);
+  --label-2: rgba(255, 255, 255, 0.40);
+  --faint: rgba(255, 255, 255, 0.30);
+  --white: #ffffff;
+  --primary-fg: #000000;
+  /* de-chromed accents: attention is structure, not hue */
+  --link: rgba(255, 255, 255, 0.92);
+  --accent: rgba(255, 255, 255, 0.70);
+  --warn: rgba(255, 255, 255, 0.85);
+  --warn-ink: rgba(255, 255, 255, 0.06);
+  --warn-line: rgba(255, 255, 255, 0.22);
+  --amber: rgba(255, 255, 255, 0.85);
+  --amber-line: rgba(255, 255, 255, 0.22);
+  --amber-text: rgba(255, 255, 255, 0.75);
+  --ask-line: rgba(255, 255, 255, 0.22);
+  --scrim: rgba(0, 0, 0, 0.60);
+  --scrim-2: rgba(0, 0, 0, 0.65);
+  --ok-glow: rgba(255, 255, 255, 0.50);
+  /* the single chromatic family: failure red (iOS systemRed dark) */
+  --err: #ff453a;
+  --err-bg: #1a0d0c;
+  --err-line: #3a1d1a;
+  --err-line-2: #4a221f;
+  --err-text: #f2b1ac;
+  --err-text-2: #f7c9c5;
+  --danger: #ff453a;
+  --mute-bg: rgba(255, 69, 58, 0.14);
+  --mute-line: rgba(255, 69, 58, 0.50);
+  --err-glow: rgba(255, 69, 58, 0.70);
+}
+
+/* hairlines: 0.5px = 1 physical pixel on 2x+ (dieulot.net/css-retina-hairline) */
+.plancard, .composer .field, .menu, .cdraw, .sheet, #drawer .panel {
+  border-width: 0.5px;
+}
+@media (-webkit-max-device-pixel-ratio: 1), (max-resolution: 1dppx) {
+  .plancard, .composer .field { border-width: 1px; }
+}
+
+/* the header dissolves into the void — no bar, no edge */
+.hdr { border: none; background: transparent; }
+
+/* icons may breathe thinner at nav size for the ink look */
+.icbtn svg, .mrow svg { stroke-width: 1.25; }
+
+/* composer: a hairline ring on black; send is THE white element */
+.composer .field {
+  background: transparent;
+  border: 0.5px solid var(--line-2);
+  border-radius: 22px;
+}
+.send {
+  background: #ffffff;
+  color: #000000;
+  border-radius: 50%;
+}
+
+/* menu + drawer rows: no fills, whitespace separation */
+.mrow { background: transparent; border-radius: 12px; }
+.mrow:active, .mrow.cur { background: rgba(255, 255, 255, 0.06); }
+
+/* empty/ghost states whisper at tier-4 */
+.empty { color: rgba(255, 255, 255, 0.30); }

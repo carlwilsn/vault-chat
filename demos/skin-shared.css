@@ -1,0 +1,47 @@
+/* ===== shared foundation — both variants (design-brief.md §6 items 1-17) =====
+   Sits AFTER the app's own <style>, so equal-specificity rules here win.
+   Sources: easing/durations Emil Kowalski (emilkowal.ski/ui/great-animations,
+   animations.dev easing blueprint), sheet curve = Vaul (Ionic/iOS canon),
+   press scale + focus + tabular-nums = interfaces.rauno.me,
+   scroll-edge mask fade = pqina.nl/blog/fade-out-overflow-using-css-mask-image. */
+
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* one icon voice: Lucide geometry at stroke 1.5, inheriting the text tiers */
+svg[stroke-width] { stroke-width: 1.5; }
+
+/* press state on every tappable: scale 0.97 @150ms, never darker than that */
+button {
+  transition: transform 0.15s var(--ease-out), opacity 0.15s ease, background-color 0.2s ease, color 0.2s ease;
+}
+button:active { transform: scale(0.97); }
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px rgba(255, 255, 255, 0.4);
+}
+
+/* timers, counters, costs never reflow as they tick */
+body { font-variant-numeric: tabular-nums; }
+
+/* the headline ask: scrolling dissolves through a gradient, never a hard wall */
+#msgs, .scroll, .clist, .sheet-body {
+  --mask-h: 32px;
+  mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--mask-h), black calc(100% - var(--mask-h)), transparent);
+}
+
+/* bottom sheet rides the iOS-sheet canon curve (Vaul: 500ms, .32,.72,0,1) */
+.sheet { transition: transform 0.5s var(--ease-sheet) !important; }
+
+/* links lose hue in monochrome — carry them on structure instead */
+a { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(255, 255, 255, 0.35); }
+
+/* type: negative tracking on the title, quiet micro-labels */
+.title .tx { letter-spacing: -0.02em; font-weight: 600; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 0.01ms !important; animation: none !important; }
+}
