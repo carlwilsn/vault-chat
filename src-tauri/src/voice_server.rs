@@ -53,7 +53,7 @@ const PHONE_MANIFEST: &str = r##"{
 
 /// Home-screen app icon: a dark rounded square with the accent-gradient voice
 /// bars, matching the page.
-const ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" viewBox="0 0 180 180"><rect width="180" height="180" rx="40" fill="#1a1a1a"/><g fill="#d9d9d9"><rect x="56" y="70" width="13" height="40" rx="6.5"/><rect x="79" y="52" width="13" height="76" rx="6.5"/><rect x="102" y="44" width="13" height="92" rx="6.5"/><rect x="125" y="74" width="13" height="32" rx="6.5"/></g></svg>"##;
+const ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" viewBox="0 0 180 180"><rect width="180" height="180" rx="40" fill="#000000"/><g fill="#f5f5f5"><rect x="44" y="76" width="92" height="9" rx="4.5"/><rect x="44" y="97" width="64" height="9" rx="4.5"/></g></svg>"##;
 
 /// The live voice context the desktop app pushes in. Everything the server needs
 /// to mint a session + answer "about the vault" tool calls.

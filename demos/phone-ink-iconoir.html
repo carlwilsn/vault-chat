@@ -659,12 +659,12 @@
   button:focus-visible{outline:none;box-shadow:0 0 0 2px var(--bg),0 0 0 4px rgba(255,255,255,.4)}
   body{font-variant-numeric:tabular-nums}
   /* the ONLY gradient fade in the app: the conversation thread's scroll edges */
-  #msgs{--mask-h:32px;mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent);-webkit-mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent)}
+  #msgs,.scroll,.clist,.sheet-body{--mask-h:32px;mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent);-webkit-mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent)}
   .sheet{transition:transform .5s var(--ease-sheet)}
   a{text-decoration:underline;text-underline-offset:3px;text-decoration-color:rgba(255,255,255,.35)}
   .title .tx{letter-spacing:-.02em}
   /* icons: the original set at native (bold) stroke, a touch larger */
-  .icbtn svg{width:23px;height:23px}
+  .icbtn svg{width:21px;height:21px}
   .mrow svg{width:20px;height:20px}
   .send svg{width:19px;height:19px}
   .sheet-x{display:flex;align-items:center;justify-content:center}
@@ -675,8 +675,8 @@
   .composer .field{background:transparent;border:.5px solid var(--line-2);border-radius:22px}
   /* burger menu: compact, with a real entrance rooted at its trigger */
   .menu{min-width:200px;padding:5px;border-radius:15px;border:.5px solid var(--line-2);box-shadow:0 12px 34px rgba(0,0,0,.6);transform-origin:top right}
-  .menu.on{animation:menuIn .22s var(--ease-out)}
-  @keyframes menuIn{from{opacity:0;transform:scale(.94) translateY(-4px)}to{opacity:1;transform:none}}
+  .menu.on{animation:menuIn .3s var(--ease-out)}
+  @keyframes menuIn{from{opacity:0;transform:scale(.92) translateY(-6px)}to{opacity:1;transform:none}}
   .mrow{padding:10px 13px;gap:12px;font-size:14.5px;border-radius:10px}
   .mrow .ct{min-width:17px;height:17px;font-size:11px}
   .mdiv{margin:4px 9px}
@@ -695,6 +695,28 @@
   /* page switch: a quiet fade-up */
   body.page-chat #pChat,body.page-activity #pAct,body.page-alerts #pAl,body.page-notes #pNotes{animation:pageIn .34s var(--ease-out)}
   @keyframes pageIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  /* batch 2026-07-10b: header up + smaller, fully white icons, unified text
+     boxes with a rest width that expands on focus, drawn chevrons, clear-chats
+     lower */
+  .hdr{padding:calc(env(safe-area-inset-top) + 6px) 12px 6px}
+  .icbtn{min-width:36px;min-height:36px}
+  .icbtn{color:var(--white)}
+  .mrow svg{color:var(--white)}
+  .ico{color:var(--white)}
+  .sheet-ico{color:var(--white)}
+  .digin{color:var(--white)}
+  .composer .field{max-width:88%;transition:max-width .34s var(--ease-out)}
+  .composer .field:focus-within{max-width:100%}
+  .reply{max-width:88%;transition:max-width .34s var(--ease-out)}
+  .reply:focus-within{max-width:100%}
+  .rinp{background:transparent;border:.5px solid var(--line-2);border-radius:22px}
+  .sheet-foot{border-top:none;background:transparent}
+  .rsend svg{width:16px;height:16px}
+  .chev svg{width:15px;height:15px;display:block}
+  .wt-cv svg,.arch-cv svg{width:14px;height:14px;display:block}
+  .chev-t{transition:transform .22s var(--ease-out)}
+  .chev-t.open{transform:rotate(90deg)}
+  .cclear{margin-bottom:calc(env(safe-area-inset-bottom) + 6px)}
   @media (prefers-reduced-motion:reduce){*{transition-duration:.01ms!important;animation:none!important}}
 </style>
 <style id="skin-ink-iconoir">
@@ -934,7 +956,7 @@ body.page-notes #pNotes {
 <body class="page-chat">
 
   <div class="hdr">
-    <button class="icbtn" id="convBtn" aria-label="conversations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="reddot" id="convdot"></span></button>
+    <button class="icbtn" id="convBtn" aria-label="conversations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8.5h16M4 15.5h11.2"/></svg><span class="reddot" id="convdot"></span></button>
     <button class="title" id="titleBtn"><span class="tx" id="titleTx">connecting…</span><span class="sub" id="titleSub"></span></button>
     <button class="vpill" id="vpill"><span class="d"></span> voice</button>
     <button class="icbtn" id="menuBtn" aria-label="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span class="reddot" id="menudot"></span></button>
@@ -1790,6 +1812,62 @@ interface MockDB {
   function closeConvs() { scrim.classList.remove("on"); cdraw.classList.remove("on"); document.body.classList.remove("cdraw-open"); }
   $("convBtn").onclick = openConvs;
   scrim.onclick = closeConvs;
+  // [swipe-open] Swipe right from the left edge of the chat page and the
+  // conversations drawer follows the finger; release past a third of its
+  // width (or a flick) commits, anything less snaps back.
+  (() => {
+    const EDGE = 44;
+    let x0 = 0, y0 = 0, mode: any = null, W = 0, lastX = 0, lastT = 0, vx = 0;
+    const onStart = (e: TouchEvent) => {
+      mode = null;
+      if (page !== "chat" || cdraw.classList.contains("on")) return;
+      if ($("sheet").classList.contains("on") || menu.classList.contains("on")) return;
+      const t = e.touches[0];
+      if (t.clientX > EDGE) return;
+      x0 = lastX = t.clientX; y0 = t.clientY; lastT = e.timeStamp; vx = 0;
+      W = Math.min(window.innerWidth * 0.87, 342);
+      mode = "arm";
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!mode) return;
+      const t = e.touches[0];
+      const dx = t.clientX - x0, dy = t.clientY - y0;
+      if (mode === "arm") {
+        if (Math.abs(dx) < 9 && Math.abs(dy) < 9) return;
+        if (Math.abs(dy) > Math.abs(dx) || dx <= 0) { mode = null; return; }
+        mode = "drag";
+        hideKb();
+        cdraw.style.transition = "none";
+        scrim.classList.add("on");
+      }
+      if (mode !== "drag") return;
+      e.preventDefault();
+      const p = Math.max(0, Math.min(1, dx / W));
+      cdraw.style.transform = "translateX(" + (-(1 - p) * 102) + "%)";
+      scrim.style.opacity = String(0.15 + p * 0.85);
+      const dt = e.timeStamp - lastT;
+      if (dt > 0) { vx = (t.clientX - lastX) / dt; lastX = t.clientX; lastT = e.timeStamp; }
+    };
+    const onEnd = () => {
+      if (mode !== "drag") { mode = null; return; }
+      mode = null;
+      const m = /translateX\((-?[\d.]+)%\)/.exec(cdraw.style.transform || "");
+      const shown = m ? 1 - Math.abs(parseFloat(m[1])) / 102 : 0;
+      cdraw.style.transition = ""; scrim.style.opacity = "";
+      // settle on the next frame — or a timeout, because rAF stalls when the
+      // page isn't rendering (backgrounded PWA) and the gesture must still land
+      const settle = (fn) => { let done = false; const go = () => { if (!done) { done = true; fn(); } }; requestAnimationFrame(go); setTimeout(go, 40); };
+      if (shown > 0.33 || vx > 0.45) {
+        settle(() => { cdraw.style.transform = ""; openConvs(); });
+      } else {
+        settle(() => { cdraw.style.transform = ""; scrim.classList.remove("on"); });
+      }
+    };
+    document.addEventListener("touchstart", onStart, { passive: true });
+    document.addEventListener("touchmove", onMove, { passive: false });
+    document.addEventListener("touchend", onEnd, { passive: true });
+    document.addEventListener("touchcancel", onEnd, { passive: true });
+  })();
   $("newBtn").onclick = () => { closeConvs(); newChat(); };
   $("clearChatsBtn").onclick = () => {
     if (!confirm("Clear these chats from this view? Nothing is deleted — they stay on the box and in git; this only hides them on this device.")) return;
@@ -2212,6 +2290,9 @@ interface MockDB {
 
   // ---------- activity ----------
   function el(html: string): any { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
+  // drawn chevrons — the text glyphs (› ▸ ▾) read as fallback characters
+  const CHEV_R = '<svg class="chev-i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
+  const chevT = (open) => '<svg class="chev-t' + (open ? " open" : "") + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
 
   // ---------- bottom sheet (the detail surface) ----------
   // Threads render as a transcript with sender labels and bubble-free agent
@@ -2437,7 +2518,7 @@ interface MockDB {
   // producers + alertMeta still emit, so callers are unchanged; an unknown key
   // (e.g. a stray emoji from a producer) falls back to the neutral info icon.
   const ICON_PATHS = {
-    "?": '<path d="M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-4 4v-4H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M12 9.2v.01M12 12.4c0-1.1 1.4-1.3 1.4-2.4A1.4 1.4 0 0 0 11 9"/>',
+    "?": '<circle cx="6" cy="6" r="2.7"/><circle cx="18" cy="6" r="2.7"/><circle cx="12" cy="18" r="2.7"/><path d="M6 8.7v.6a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-.6M12 12.6v2.7"/>',
     "!": '<path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4"/><circle cx="12" cy="17.3" r=".6" fill="currentColor" stroke="none"/>',
     "✓": '<circle cx="12" cy="12" r="9"/><path d="M8 12.4l2.6 2.6L16 9.6"/>',
     "$": '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M14.5 9.3c-.6-.7-1.6-1.1-2.6-1.1-1.4 0-2.4.8-2.4 1.9 0 2.6 5 1.4 5 4 0 1.2-1 2-2.6 2-1.1 0-2.1-.4-2.7-1.1"/>',
@@ -2662,7 +2743,7 @@ interface MockDB {
       // The reply composer stays even for a COMPLETED mission: the supervisor is
       // always on, so the user can still discuss the finished work or its workers
       // (note c0d532eb). Only "Stop" is gated — there's nothing to stop once done.
-      footHtml: '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + (readonly ? "ask the supervisor about this finished mission…" : "steer the supervisor, or tell it to spawn a worker…") + '" autocomplete="off"></textarea><button class="rsend">↑</button></div>',
+      footHtml: '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + (readonly ? "ask the supervisor about this finished mission…" : "steer the supervisor, or tell it to spawn a worker…") + '" autocomplete="off"></textarea><button class="rsend">' + SEND_ARROW_SVG + '</button></div>',
       action: readonly ? null : { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
       // A NORMAL conversation: sending keeps the sheet open, shows the message
       // right away, and the poll below folds in the supervisor's reply. Not a
@@ -2796,8 +2877,8 @@ interface MockDB {
       // you. Idle ≠ asleep: it's waiting on its workers and free for a question.
       if (!showLive && !readonly && restPlus.length) body += '<div class="idlehint">Ready for you — it’s waiting on its workers and self-checks on its own schedule. Ask it anything below.</div>';
       if (wkItems.length) {
-        body += '<button class="wktoggle" id="mWkToggle"><span class="wt-cv">' + (sheetWorkersOpen ? "▾" : "▸") + '</span><b>Workers · ' + wkItems.length + "</b></button>";
-        body += '<div id="mWkHold"' + (sheetWorkersOpen ? "" : ' style="display:none"') + ">" + wkItems.map((w, i) => '<button class="arch-row wk-row" data-wk="' + i + '"><span class="arch-t">' + (w.live ? "● " : "○ ") + esc(w.title) + '</span><span class="chev">›</span></button>').join("") + "</div>";
+        body += '<button class="wktoggle" id="mWkToggle"><span class="wt-cv">' + chevT(sheetWorkersOpen) + '</span><b>Workers · ' + wkItems.length + "</b></button>";
+        body += '<div id="mWkHold"' + (sheetWorkersOpen ? "" : ' style="display:none"') + ">" + wkItems.map((w, i) => '<button class="arch-row wk-row" data-wk="' + i + '"><span class="arch-t">' + (w.live ? "● " : "○ ") + esc(w.title) + '</span><span class="chev">' + CHEV_R + '</span></button>').join("") + "</div>";
       }
       const be = $("sheetBody");
       // Setting innerHTML resets scrollTop to 0, which yanked the user to the TOP
@@ -2834,7 +2915,7 @@ interface MockDB {
       if (wkToggle) wkToggle.onclick = () => {
         sheetWorkersOpen = !sheetWorkersOpen;
         const h = be.querySelector("#mWkHold"); if (h) h.style.display = sheetWorkersOpen ? "" : "none";
-        wkToggle.querySelector(".wt-cv").textContent = sheetWorkersOpen ? "▾" : "▸";
+        wkToggle.querySelector(".wt-cv").innerHTML = chevT(sheetWorkersOpen);
       };
       be.scrollTop = (firstPaint || wasBottom || pinBottom) ? be.scrollHeight : prevTop;
       pinBottom = false;
@@ -2953,7 +3034,7 @@ interface MockDB {
   // Finished workers don't accumulate here — their alert is the way back.
   function workerPill(run, c) {
     const done = !run; // no live run → a completed/idle worker
-    const pill = el('<div class="wpill"><button class="wp-head"><span class="wp-dot' + (done ? " done" : "") + '"></span><span class="wp-main"><span class="wp-t"></span></span><span class="wp-age"></span><span class="chev">›</span></button></div>');
+    const pill = el('<div class="wpill"><button class="wp-head"><span class="wp-dot' + (done ? " done" : "") + '"></span><span class="wp-main"><span class="wp-t"></span></span><span class="wp-age"></span><span class="chev">' + CHEV_R + '</span></button></div>');
     // Just the task + a live tool·age — no summarized "state" line (the user
     // found it weak; the full thread is one tap away). Fall back to title until
     // the first turn-completion task summary lands.
@@ -3102,7 +3183,7 @@ interface MockDB {
         let hold = null;
         if (workers.length) {
           const open = expandedMissions.has(name);
-          const wc = el('<button class="wcount"><span class="wcn">' + workers.length + (workers.length === 1 ? " worker" : " workers") + '</span><span class="wt-cv">' + (open ? "▾" : "▸") + "</span></button>");
+          const wc = el('<button class="wcount"><span class="wcn">' + workers.length + (workers.length === 1 ? " worker" : " workers") + '</span><span class="wt-cv">' + chevT(open) + "</span></button>");
           const cv = wc.querySelector(".wt-cv");
           hold = el('<div class="whold"></div>'); hold.style.display = open ? "" : "none";
           for (const { run, c } of workers) hold.appendChild(workerPill(run, c));
@@ -3111,7 +3192,7 @@ interface MockDB {
             const nowOpen = !expandedMissions.has(name);
             if (nowOpen) expandedMissions.add(name); else expandedMissions.delete(name);
             hold.style.display = nowOpen ? "" : "none";
-            cv.textContent = nowOpen ? "▾" : "▸";
+            cv.innerHTML = chevT(nowOpen);
           };
           head.appendChild(wc);
         }
@@ -3128,7 +3209,7 @@ interface MockDB {
         .filter((c) => c.source === "mission" && c.completedAt)
         .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
       if (archived.length) {
-        const ah = el('<button class="arch-h"><span class="arch-cv">' + (archiveOpen ? "▾" : "▸") + "</span><span>Archive · " + archived.length + "</span></button>");
+        const ah = el('<button class="arch-h"><span class="arch-cv">' + chevT(archiveOpen) + "</span><span>Archive · " + archived.length + "</span></button>");
         const cv = ah.querySelector(".arch-cv");
         box.appendChild(ah);
         // Toggle the archive locally: flip a pre-built holder + the caret glyph. The
@@ -3136,7 +3217,7 @@ interface MockDB {
         // page rebuild) — the lag/scroll-jump. Mirrors the Alerts archive toggle below.
         const archHolder = el("<div></div>"); archHolder.style.display = archiveOpen ? "" : "none";
         box.appendChild(archHolder);
-        ah.onclick = () => { archiveOpen = !archiveOpen; archHolder.style.display = archiveOpen ? "" : "none"; cv.textContent = archiveOpen ? "▾" : "▸"; };
+        ah.onclick = () => { archiveOpen = !archiveOpen; archHolder.style.display = archiveOpen ? "" : "none"; cv.innerHTML = chevT(archiveOpen); };
         // Clear-all: delete every archived mission at once instead of swiping them
         // one by one. Two-tap confirm so a stray tap can't wipe the record. /kill
         // tombstones each (gone on every client); dismissedMissions hides them
@@ -3156,7 +3237,7 @@ interface MockDB {
         for (const mc of archived) {
           const key = (mc.mission || mc.title || "").trim() || mc.title;
           const workers = convs.filter((w) => w.source === "worker" && (w.mission || "").trim() === key);
-          const row = el('<button class="arch-row"><span class="arch-ico"></span><span class="arch-t"></span><span class="arch-age"></span><span class="chev">›</span></button>');
+          const row = el('<button class="arch-row"><span class="arch-ico"></span><span class="arch-t"></span><span class="arch-age"></span><span class="chev">' + CHEV_R + '</span></button>');
           // [harness v2] A stopped mission is archived (not silently deleted) and
           // labeled apart from a finished one — "missions disappearing???" fix.
           // Killed → a red X (icon set); finished → a neutral check.
@@ -3186,9 +3267,9 @@ interface MockDB {
       // Hide one-off schedules — those are the agents' own self-scheduled wakes
       // (background plumbing), not things you monitor. Recurring ones are yours.
       const scheds = (schd.schedules || []).filter((s) => !s.once);
-      if (!scheds.length) box.appendChild(el('<div class="empty">Nothing scheduled. Tell the agent — “brief me every morning at 7” is enough.</div>'));
+      if (!scheds.length) box.appendChild(el('<div class="empty">Nothing scheduled.</div>'));
       for (const sc of scheds) {
-        const card = el('<button class="card schedcard"><div class="schedrow"><div class="info"><b></b><small></small></div><span class="chev">›</span></div></button>');
+        const card = el('<button class="card schedcard"><div class="schedrow"><div class="info"><b></b><small></small></div><span class="chev">' + CHEV_R + '</span></div></button>');
         card.querySelector("b").textContent = sc.name;
         card.querySelector("small").textContent = [sc.label, sc.enabled ? null : "paused", sc.quietUnlessAlert ? "quiet" : null, sc.lastFiredAt ? "fired " + age(sc.lastFiredAt) + " ago" : null].filter(Boolean).join(" · ");
         if (!sc.enabled) card.style.opacity = ".55";
@@ -3526,7 +3607,7 @@ interface MockDB {
   // conversation looks and sits exactly like a supervisor conversation
   // (the mismatched svg-span send button was the "end button is off" bug).
   function probeFootHtml(ph) {
-    return '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + esc(ph) + '" autocomplete="off"></textarea><button class="rsend">↑</button></div>';
+    return '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + esc(ph) + '" autocomplete="off"></textarea><button class="rsend">' + SEND_ARROW_SVG + '</button></div>';
   }
   async function openAlertSheet(n, isAction) {
     if (isAction || n.kind === "ask") { openDeliberationSheet(n); return; }
@@ -3736,7 +3817,19 @@ interface MockDB {
     // the deliberation reads as a progression (round 1 → your pushback → a
     // tighter round 2), not a card that silently swaps under you (note
     // 9185d86a: "a conversation that stacks the options").
+    // Rounds persist NATURALLY: rebuild the stack from notification history —
+    // every older ask on this conversation is a round of this deliberation
+    // (answered rounds carry their recorded decision). The stack used to live
+    // only in sheet-local memory, so closing and reopening erased the
+    // progression and a new fork read as an overwrite of the old one.
     const priorRounds = [];
+    for (const s of lastNotifList) {
+      if (s.kind !== "ask" || s.id === n.id || !cid || s.convId !== cid) continue;
+      if ((s.ts || 0) > (n.ts || 0)) continue;
+      const sd = deliberationFromNotif(s);
+      priorRounds.push({ ask: sd.askLong || sd.ask || "", options: sd.options || [], answeredWith: s.answeredWith || "", answeredAt: s.answeredAt || 0, ts: s.ts || 0 });
+    }
+    priorRounds.sort((a, b) => (a.ts || 0) - (b.ts || 0));
     // The decision card — rebuilt in place when a newer ask supersedes this one
     // ("latest wins", for real this time) or after the user decides.
     const decisionHtml = () => {
@@ -3744,8 +3837,10 @@ interface MockDB {
       for (const r of priorRounds.slice(-4)) {
         h += '<div class="delib-round">'
           + '<div class="delib-ask rdim">' + esc(r.ask) + "</div>"
-          + r.options.map((o) => '<div class="delib-opt dead mini"><div class="ot">' + esc(o.title || o.answer) + "</div></div>").join("")
-          + '<div class="delib-done">superseded — the agent tightened the fork below</div>'
+          + r.options.map((o) => '<div class="delib-opt dead mini' + (r.answeredWith && o.answer === r.answeredWith ? " chosen" : "") + '"><div class="ot">' + esc(o.title || o.answer) + (r.answeredWith && o.answer === r.answeredWith ? '<span class="pick">✓ your call</span>' : "") + "</div></div>").join("")
+          + '<div class="delib-done">' + (r.answeredWith
+            ? "✓ Decided — <b>" + esc(r.answeredWith) + "</b>" + (r.answeredAt ? " · " + age(r.answeredAt) : "")
+            : "superseded — the agent tightened the fork below") + "</div>"
           + "</div>";
       }
       h += '<div class="delib-ask">' + esc(del.askLong || del.ask || "") + "</div>";
@@ -3833,7 +3928,7 @@ interface MockDB {
         const newest = list.find((s) => s.kind === "ask" && !s.read && s.convId === cid);
         if (newest && newest.id !== n.id) {
           // Stack the round being replaced, then swap in the new fork.
-          priorRounds.push({ ask: del.askLong || del.ask || "", options: del.options || [] });
+          priorRounds.push({ ask: del.askLong || del.ask || "", options: del.options || [], answeredWith: "", answeredAt: 0, ts: n.ts || 0 });
           n = newest; del = deliberationFromNotif(n);
           const box = $("delibDecision");
           if (box && !box.classList.contains("deciding")) { box.innerHTML = decisionHtml(); wireDecision(box); }
