@@ -659,7 +659,7 @@
   button:focus-visible{outline:none;box-shadow:0 0 0 2px var(--bg),0 0 0 4px rgba(255,255,255,.4)}
   body{font-variant-numeric:tabular-nums}
   /* the ONLY gradient fade in the app: the conversation thread's scroll edges */
-  #msgs,.scroll,.clist,.sheet-body{--mask-h:32px;mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent);-webkit-mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent)}
+  #msgs.can-scroll,.scroll.can-scroll,.clist.can-scroll,.sheet-body.can-scroll{--mask-h:32px;mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent);-webkit-mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent)}
   .sheet{transition:transform .5s var(--ease-sheet)}
   a{text-decoration:underline;text-underline-offset:3px;text-decoration-color:rgba(255,255,255,.35)}
   .title .tx{letter-spacing:-.02em}
@@ -717,6 +717,16 @@
   .chev-t{transition:transform .22s var(--ease-out)}
   .chev-t.open{transform:rotate(90deg)}
   .cclear{margin-bottom:calc(env(safe-area-inset-bottom) + 6px)}
+  /* batch 2026-07-10c: centered rest-width composers, no width animation in
+     sheets (it fought the keyboard lift), composer a touch lower, narrower
+     centered clear-chats, truly white CTAs */
+  .composer .field{margin-left:auto;margin-right:auto}
+  .reply{margin-left:auto;margin-right:auto}
+  .sheet-foot .reply{transition:none}
+  .composer{padding-bottom:calc(env(safe-area-inset-bottom) + 3px)}
+  .cclear{width:62%;margin-left:auto;margin-right:auto}
+  .pc-approve{background:var(--white);color:#000}
+  .reply-cta{background:var(--white);color:#000}
   @media (prefers-reduced-motion:reduce){*{transition-duration:.01ms!important;animation:none!important}}
 </style>
 <style id="skin-graphite">
@@ -2249,7 +2259,7 @@ interface MockDB {
   // burger badge read "1 activity" during an ordinary conversation and never
   // clear once it idled. Filter to mission/worker so the badge tracks real work.
   function activityRunCount(runs) { return (runs || []).filter((r) => r.source === "mission" || r.source === "worker").length; }
-  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; runCount = activityRunCount(d.runs); for (const r of d.runs || []) { if (r.convId && r.source) convSourceById.set(r.convId, r.source); } applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); return d; } catch { return null; } }
+  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; void maybeUpdateCard(d.version); boxModel = d.model || ""; runCount = activityRunCount(d.runs); for (const r of d.runs || []) { if (r.convId && r.source) convSourceById.set(r.convId, r.source); } applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); return d; } catch { return null; } }
   async function refreshBadge() { try { const d = await (await api("/notifications")).json(); if (typeof d.unread === "number") { unreadN = d.unread; setHeader(); } } catch {} }
 
   // ---------- activity ----------
@@ -2707,7 +2717,7 @@ interface MockDB {
       // The reply composer stays even for a COMPLETED mission: the supervisor is
       // always on, so the user can still discuss the finished work or its workers
       // (note c0d532eb). Only "Stop" is gated — there's nothing to stop once done.
-      footHtml: '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + (readonly ? "ask the supervisor about this finished mission…" : "steer the supervisor, or tell it to spawn a worker…") + '" autocomplete="off"></textarea><button class="rsend">' + SEND_ARROW_SVG + '</button></div>',
+      footHtml: '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + (readonly ? "Ask about this mission…" : "Steer, or spawn a worker…") + '" autocomplete="off"></textarea><button class="rsend">' + SEND_ARROW_SVG + '</button></div>',
       action: readonly ? null : { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
       // A NORMAL conversation: sending keeps the sheet open, shows the message
       // right away, and the poll below folds in the supervisor's reply. Not a
@@ -3469,6 +3479,12 @@ interface MockDB {
       if (d.error) throw new Error(d.error);
       unreadN = d.unread || 0; setHeader();
       const list = d.notifications || [];
+      const un = updateNote();
+      if (un && !un.read) {
+        list.unshift({ id: "local-update-" + un.ver, kind: "info", title: "Updated to v" + un.ver, intention: "vault-chat · auto-update", icon: "✦",
+          summary: ((un.body || "").split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#")) || "release notes").slice(0, 140),
+          body: un.body, ts: un.ts, read: false });
+      }
       lastNotifList = list;
       box.innerHTML = "";
       if (!list.length) { box.appendChild(el('<div class="empty">Nothing yet. Worker results, failures that need a call, and your recurring briefings land here — with a push if notifications are on and the app isn’t already open.</div>')); return; }
@@ -3509,7 +3525,39 @@ interface MockDB {
       box.appendChild(el('<div style="height:18px"></div>'));
     } catch (e) { box.innerHTML = '<div class="empty">Alerts unavailable: ' + esc(String(e.message || e)) + "</div>"; }
   }
-  const markRead = (id) => api("/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
+  const markRead = (id) => {
+    // the local "box updated" card lives in localStorage, not on the box
+    if (String(id).startsWith("local-update-")) {
+      const u = updateNote();
+      if (u) { u.read = true; try { localStorage.setItem(UPDN_KEY, JSON.stringify(u)); } catch {} }
+      return Promise.resolve();
+    }
+    return api("/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
+  };
+  // ---------- box-update card: WHAT changed, not just that it changed ----------
+  // Desktop shows the release notes in its update banner; the phone now does
+  // the same — when /status reports a new box version, fetch that release's
+  // notes from GitHub and surface them as a local info card in Alerts.
+  const UPDN_KEY = "vc_update_note", VER_KEY = "vc_box_ver";
+  function updateNote() { try { return JSON.parse(localStorage.getItem(UPDN_KEY) || "null"); } catch { return null; } }
+  async function maybeUpdateCard(ver) {
+    if (!ver) return;
+    let prev = "";
+    try { prev = localStorage.getItem(VER_KEY) || ""; } catch {}
+    if (prev === ver) return;
+    try { localStorage.setItem(VER_KEY, ver); } catch {}
+    if (!prev) return; // first sighting on this device — nothing to announce
+    let body = "";
+    try {
+      const r = await fetch("https://api.github.com/repos/carlwilsn/vault-chat/releases/tags/v" + ver);
+      const j: any = await r.json();
+      body = (j && j.body) || "";
+    } catch {}
+    if (!body) body = "The box auto-updated. Full notes: github.com/carlwilsn/vault-chat/releases";
+    try { localStorage.setItem(UPDN_KEY, JSON.stringify({ ver, body, ts: Date.now(), read: false })); } catch {}
+    toast("vault-chat updated to v" + ver);
+    if (page === "alerts") void loadAlerts();
+  }
   // The feed as last fetched — so an action on one card (answering an ask) can
   // reason about its siblings (other pending asks on the same conversation).
   let lastNotifList = [];
@@ -4282,6 +4330,17 @@ interface MockDB {
       } catch {}
     });
   }
+
+  // The scroll fade is a scrolling AFFORDANCE — a list that fits gets no fade.
+  const fadeWatch = () => {
+    document.querySelectorAll("#msgs,.scroll,.clist,.sheet-body").forEach((sc) => {
+      sc.classList.toggle("can-scroll", sc.scrollHeight > sc.clientHeight + 4);
+    });
+  };
+  new MutationObserver(fadeWatch).observe(document.body, { childList: true, subtree: true });
+  window.addEventListener("resize", fadeWatch);
+  setInterval(fadeWatch, 1200);
+  fadeWatch();
 
   showHint();
   setHeader();
