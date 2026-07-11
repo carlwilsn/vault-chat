@@ -2918,15 +2918,27 @@ enum RepoClass {
 /// per process — telling the user's own repos from other people's needs it, and
 /// it never changes within a run. None if `gh` is missing/unauthenticated.
 fn gh_login(cwd: &str) -> Option<String> {
-    static CACHE: OnceLock<Option<String>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            run_gh(cwd, &["api", "user", "-q", ".login"])
-                .ok()
-                .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_lowercase()) } else { None })
-                .filter(|s| !s.is_empty())
-        })
-        .clone()
+    // A `Mutex<Option<String>>`, NOT a `OnceLock<Option<String>>`: the latter
+    // would freeze whatever the FIRST call returned, including `None` — e.g.
+    // `gh` not yet authenticated the moment a vault first opens. Every nested
+    // repo would then be permanently `RepoClass::Skip` (see `classify_repo`)
+    // for the rest of the app's run, with no way to recover short of a
+    // restart, even after the user runs `gh auth login`. Retry on every call
+    // until a login resolves; once resolved it's cached for good (a login
+    // doesn't change mid-session).
+    static CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Some(login) = cache.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        return Some(login);
+    }
+    let resolved = run_gh(cwd, &["api", "user", "-q", ".login"])
+        .ok()
+        .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_lowercase()) } else { None })
+        .filter(|s| !s.is_empty());
+    if let Some(ref login) = resolved {
+        *cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(login.clone());
+    }
+    resolved
 }
 
 /// "https://github.com/owner/Repo.git" → "Repo" (repo name, case preserved).
@@ -3048,12 +3060,20 @@ fn sync_one_repo(
     agent: bool,
     me: Option<&str>,
     cfg_branch: Option<&str>,
+    follower: bool,
 ) {
     let mut class = classify_repo(sub, me);
 
     // Foreign → fork to the user's account and repoint origin at the fork, then
-    // sync the fork exactly like one of the user's own repos.
+    // sync the fork exactly like one of the user's own repos. A follower must
+    // never do this — forking creates a real remote repo and repoints origin,
+    // exactly the kind of remote-touching side effect the follower flag exists
+    // to prevent (see `is_sync_follower`). Leave it read-only, same as the
+    // "can't fork" case.
     if class == RepoClass::Foreign {
+        if follower {
+            return;
+        }
         match me.and_then(|m| adopt_unowned_subrepo(vault, rel, sub, m)) {
             Some(fork) => {
                 eprintln!("[sync] foreign repo '{}' forked → {}", rel, fork);
@@ -3121,7 +3141,17 @@ fn sync_one_repo(
         }
     }
 
-    // Push.
+    // Push — skipped entirely for a follower checkout. Without this, a
+    // follower's nested/embedded repos were pushed to their own remotes on
+    // every pull tick (~30s) and every debounced commit tick regardless of
+    // the follower flag, since that flag was previously only checked in
+    // `vault_sync_push` for the ROOT repo — defeating the single-writer
+    // guarantee for exactly the vaults (with nested repos) it matters most
+    // for. The local commit above still runs, so a follower keeps its own
+    // version history; it just never publishes it.
+    if follower {
+        return;
+    }
     match (&shared_branch, class) {
         // Shared → push only the dedicated branch, with -u so it exists on the
         // remote and tracks. Never the team's default branch.
@@ -3185,18 +3215,26 @@ fn find_all_nested_repos(root: &std::path::Path) -> Vec<String> {
                 Some(n) => n,
                 None => continue,
             };
-            if name.starts_with('.')
-                || matches!(
-                    name,
-                    "node_modules" | "target" | "__pycache__" | "venv" | ".venv" | "dist" | "build"
-                )
-            {
+            if name.starts_with('.') {
                 continue;
             }
+            // Record a nested repo BEFORE the heavy-dir name check below — a
+            // directory that happens to be named exactly "build"/"venv"/etc.
+            // and is itself a git repo must not be silently dropped from
+            // sync just because that name usually means "skip me".
             if p.join(".git").exists() {
                 if let Ok(rel) = p.strip_prefix(root) {
                     found.push(rel.to_string_lossy().replace('\\', "/"));
                 }
+            }
+            // Never descend INTO a heavy dependency/build directory looking
+            // for further nested repos (perf) — but the directory itself was
+            // already checked above, so this only bounds recursion depth.
+            if matches!(
+                name,
+                "node_modules" | "target" | "__pycache__" | "venv" | ".venv" | "dist" | "build"
+            ) {
+                continue;
             }
             walk(&p, root, depth + 1, found); // descend (repos inside repos)
         }
@@ -3213,7 +3251,7 @@ fn find_all_nested_repos(root: &std::path::Path) -> Vec<String> {
 /// nested repo now syncs even when the vault root has no remote, and an embedded
 /// repo never registered as a submodule is handled too. This is what clears the
 /// per-repo "uncommitted changes" dots. Best-effort; never fatal to vault sync.
-fn sync_nested_repos(vault: &str, agent: bool) {
+fn sync_nested_repos(vault: &str, agent: bool, follower: bool) {
     // Build the work list: registered submodules (carry a .gitmodules tracking
     // branch we use for stale-pin recovery) ∪ embedded repos found on disk.
     let mut repos: Vec<(String, Option<String>)> = Vec::new();
@@ -3268,7 +3306,7 @@ fn sync_nested_repos(vault: &str, agent: bool) {
         if !PathBuf::from(&sub).join(".git").exists() {
             continue; // not materialized on this machine
         }
-        sync_one_repo(vault, &sub, &rel, agent, me.as_deref(), cfg_branch.as_deref());
+        sync_one_repo(vault, &sub, &rel, agent, me.as_deref(), cfg_branch.as_deref(), follower);
     }
 }
 
@@ -4665,7 +4703,12 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
                 0
             }
         };
-        let nested_repos = find_nested_repos(&root);
+        // Same recursive scan `sync_nested_repos` actually commits/pushes —
+        // previously this used a shallower, unfiltered one-level scan, so a
+        // repo 2+ levels deep synced with no UI trace, while a top-level repo
+        // named e.g. "build" showed here as "about to sync" but was never
+        // actually touched. One function, one truth for both.
+        let nested_repos = find_all_nested_repos(&root);
         Ok(SyncStatus {
             has_repo,
             remote,
@@ -4678,57 +4721,35 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
     .map_err(|e| e.to_string())?
 }
 
-// Walk one level deep and identify directories that have their own
-// .git subdir. Used by the auto-sync loop to skip nested repos so they
-// don't get accidentally committed into the outer vault.
-fn find_nested_repos(root: &std::path::Path) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return found;
-    };
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if !p.is_dir() {
-            continue;
-        }
-        let name = match p.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n,
-            None => continue,
-        };
-        if name.starts_with('.') {
-            continue;
-        }
-        if p.join(".git").is_dir() {
-            found.push(name.to_string());
-        }
-    }
-    found.sort();
-    found
-}
-
 #[tauri::command]
 async fn vault_sync_set_remote(vault: String, url: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let url_t = url.trim();
-        if url_t.is_empty() {
-            // Clearing the remote — `remote remove origin` errors if
-            // origin doesn't exist, which is fine.
-            let _ = run_git(&vault, &["remote", "remove", "origin"]);
-            return Ok(());
-        }
-        let (_, _, code) = run_git(&vault, &["remote", "get-url", "origin"])?;
-        if code == 0 {
-            let (_, stderr, c) = run_git(&vault, &["remote", "set-url", "origin", url_t])?;
-            if c != 0 {
-                return Err(format!("set-url failed: {}", stderr.trim()));
+        // Wrapped like every other git-mutating command: without this lock, a
+        // remote add/set-url from the Settings pane can race directly against
+        // a background pull/push mid-flight on the same repo (same class of
+        // index/config race with_repo_lock exists to prevent elsewhere).
+        with_repo_lock(&vault, || {
+            let url_t = url.trim();
+            if url_t.is_empty() {
+                // Clearing the remote — `remote remove origin` errors if
+                // origin doesn't exist, which is fine.
+                let _ = run_git(&vault, &["remote", "remove", "origin"]);
+                return Ok(());
             }
-        } else {
-            let (_, stderr, c) = run_git(&vault, &["remote", "add", "origin", url_t])?;
-            if c != 0 {
-                return Err(format!("add origin failed: {}", stderr.trim()));
+            let (_, _, code) = run_git(&vault, &["remote", "get-url", "origin"])?;
+            if code == 0 {
+                let (_, stderr, c) = run_git(&vault, &["remote", "set-url", "origin", url_t])?;
+                if c != 0 {
+                    return Err(format!("set-url failed: {}", stderr.trim()));
+                }
+            } else {
+                let (_, stderr, c) = run_git(&vault, &["remote", "add", "origin", url_t])?;
+                if c != 0 {
+                    return Err(format!("add origin failed: {}", stderr.trim()));
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -4884,7 +4905,10 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         // relationship to it (own / shared / foreign / internal). This commits
         // their working trees (clearing the per-repo dots) and advances owned
         // HEADs so the parent's gitlink bumps get staged and committed below.
-        sync_nested_repos(&vault, false);
+        // Respect the root's own follower gate: a follower still captures
+        // local history for its nested repos but must never push/fork them —
+        // that was previously ungated here (see `is_sync_follower`).
+        sync_nested_repos(&vault, false, is_sync_follower(&vault));
         // `--ignore-submodules=dirty`: don't recurse into submodule working
         // trees to detect dirtiness (on a vault with big submodules — e.g.
         // torchtitan — that scan is what pushed `status` past the 90s timeout).
@@ -5389,7 +5413,9 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         // Re-attach any sub-repos that `submodule update` left detached, and
         // advance them to their configured branch tip. This runs on every
         // pull cycle (~30s) so self-healing no longer requires a local edit.
-        sync_nested_repos(&vault, false);
+        // Same follower gate as above — a follower must never push/fork a
+        // nested repo, only re-attach/commit it locally.
+        sync_nested_repos(&vault, false, is_sync_follower(&vault));
         // Commit any gitlink pointer bumps that sync_nested_repos produced.
         let (st, _, _) = run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])
             .unwrap_or_default();
@@ -5520,6 +5546,10 @@ async fn vault_sync_gh_create_repo(
     private_repo: bool,
 ) -> Result<SyncOpResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // `gh repo create --push` adds a remote and pushes, just like
+        // `vault_sync_push` — hold the same per-repo lock so it can't race a
+        // background pull/push mid-flight on this vault.
+        with_repo_lock(&vault, || {
         let n = name.trim();
         if n.is_empty() {
             return Ok(SyncOpResult {
@@ -5568,6 +5598,7 @@ async fn vault_sync_gh_create_repo(
             ok: true,
             message: "repo created".into(),
             error: false,
+        })
         })
     })
     .await
