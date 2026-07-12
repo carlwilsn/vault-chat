@@ -147,6 +147,45 @@ export async function sendMessage(
   }
   try {
 
+  // [sync split] On a follower checkout, mission/worker/ask threads belong to
+  // the mission host (the box). Relay the message over HTTP like the phone —
+  // never run a local executor turn here: this machine may not author mission
+  // state (the sanitize pass discards it) and the box would grind the same
+  // mission in parallel. The box appends the turn; its reply syncs back via
+  // git and the local view converges to the box's canonical thread.
+  if (
+    targetConv &&
+    (targetConv.source === "mission" || targetConv.source === "worker" || targetConv.source === "ask")
+  ) {
+    const mh = await import("./missionHost");
+    if (s.vaultPath && (await mh.isFollowerVault(s.vaultPath))) {
+      const cur0 = useStore.getState();
+      const append = (m: ChatMessage) => {
+        if (targetConvId && targetConvId !== cur0.activeConversationId) cur0.appendMessageToConversation(targetConvId, m);
+        else cur0.appendMessage(m);
+      };
+      if (trimmed) append({ role: "user", content: trimmed, direct: true });
+      if (!mh.missionHostConfigured()) {
+        append({
+          role: "assistant",
+          system: true,
+          content:
+            "⚠️ This machine doesn't host missions for this vault, and no mission host is configured — the message was NOT delivered to the running mission. Set the box's URL + token under Settings → Mission host, or reply from your phone.",
+        });
+        return;
+      }
+      const res = await mh.relayMissionMessage(targetConv.id, trimmed);
+      append({
+        role: "assistant",
+        system: true,
+        content: res.ok
+          ? "→ Relayed to the box (the mission host). The mission's reply lands here as the vault syncs — typically within a minute."
+          : `⚠️ Couldn't reach the box: ${res.error}. The message was NOT delivered — try again when the box is reachable, or reply from your phone.`,
+      });
+      return;
+    }
+  }
+
   // Skip compaction for off-target runs — compaction reaches into
   // the global s.messages view, which doesn't belong to the target.
   // If a Telegram-driven background run grows past the threshold,

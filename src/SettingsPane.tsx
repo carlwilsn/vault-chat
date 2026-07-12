@@ -77,6 +77,9 @@ export function SettingsPane() {
   } = useStore();
   const autoRouterCostBias = useStore((s) => s.autoRouterCostBias);
   const setAutoRouterCostBias = useStore((s) => s.setAutoRouterCostBias);
+  const missionHostUrl = useStore((s) => s.missionHostUrl);
+  const missionHostToken = useStore((s) => s.missionHostToken);
+  const setMissionHost = useStore((s) => s.setMissionHost);
   const assistantModelId = useStore((s) => s.assistantModelId);
   const supervisorModelId = useStore((s) => s.supervisorModelId);
   const workerModelId = useStore((s) => s.workerModelId);
@@ -514,6 +517,25 @@ export function SettingsPane() {
               <option value="medium">Medium</option>
               <option value="high">High</option>
             </select>
+          </div>
+          <div className="space-y-1.5">
+            <div className="text-[12px]">Mission host (box)</div>
+            <p className="text-[11px] text-muted-foreground/80">
+              When this machine's vault checkout is a content-writer (follower), messages you type into mission threads relay to the mission host over HTTP — exactly like the phone — instead of running locally. Set the box's cockpit URL and vault token. Machine-local; never syncs.
+            </p>
+            <input
+              className="vc-input w-full text-[12px] rounded-md border border-border bg-background px-2 py-1 font-mono"
+              placeholder="http://100.79.81.14:8848"
+              defaultValue={missionHostUrl}
+              onBlur={(e) => setMissionHost(e.target.value, useStore.getState().missionHostToken)}
+            />
+            <input
+              className="vc-input w-full text-[12px] rounded-md border border-border bg-background px-2 py-1 font-mono"
+              placeholder="vault token (X-Vault-Token)"
+              type="password"
+              defaultValue={missionHostToken}
+              onBlur={(e) => setMissionHost(useStore.getState().missionHostUrl, e.target.value)}
+            />
           </div>
         </section>
 

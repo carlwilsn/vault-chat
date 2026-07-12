@@ -4880,6 +4880,18 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         // Self-heal the ignore set + shed tracked ephemerals every cycle, so a
         // vault never gets stuck churning history on a machine-local file.
         prepare_vault_repo(&vault);
+        // A follower (content writer) resets the mission zone to origin BEFORE
+        // staging, so the commit it's about to make can never carry a
+        // mission-state change — the surgical replacement for the old
+        // pull-only gate. See is_sync_follower / sanitize_mission_zone.
+        if is_sync_follower(&vault) {
+            if let Ok((b, _, 0)) = run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+                let b = b.trim().to_string();
+                if b != "HEAD" {
+                    sanitize_mission_zone(&vault, &b);
+                }
+            }
+        }
         // Sync every nested repo first — each by its own remote and the user's
         // relationship to it (own / shared / foreign / internal). This commits
         // their working trees (clearing the per-repo dots) and advances owned
@@ -5409,13 +5421,19 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// A follower checkout pulls but never pushes. Without this, two machines both
-/// push the same branch (sync `enabled` lives in the SYNCED `config.json`, so
-/// it's identical everywhere), and a stale follower's push forces the active
-/// writer to reconcile against — and, via `resolve_merge_conflicts`' take-theirs,
-/// ADOPT — the follower's older mission state (the phase-16→15 approval revert).
-/// The role marker lives in the NON-synced git dir, so it's a property of THIS
-/// checkout and never rides git to another machine. Absent / `writer` = full sync.
+/// A follower checkout is a CONTENT WRITER, not a mission host. Historically it
+/// was pull-only (the blunt gate that stopped the phase-16→15 clobber: a stale
+/// follower push forced the writer to reconcile against — and, via
+/// `resolve_merge_conflicts`' take-theirs, ADOPT — old mission state). The gate
+/// is now surgical instead of total: a follower pushes freely, but
+/// `sanitize_mission_zone` first resets every mission-owned path (supervisor
+/// state, schedules, notifications, jobs, selftest, and mission/worker/ask
+/// conversation files) to origin's version, so its pushes can never introduce a
+/// mission-state diff. Docs, notes, and the user's own chats flow both ways;
+/// mission interaction happens live against the host (the box) over HTTP, like
+/// the phone. The role marker lives in the NON-synced git dir, so it's a
+/// property of THIS checkout and never rides git to another machine.
+/// Absent / `writer` = mission host, full sync.
 fn is_sync_follower(vault: &str) -> bool {
     let git_dir = run_git(vault, &["rev-parse", "--absolute-git-dir"])
         .ok()
@@ -5426,19 +5444,103 @@ fn is_sync_follower(vault: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The sync role for the frontend (scheduler + mission-routing gates).
+#[tauri::command]
+fn vault_sync_role(vault: String) -> String {
+    if is_sync_follower(&vault) { "follower".into() } else { "writer".into() }
+}
+
+/// The mission zone: paths only the mission host may author. A follower resets
+/// these to origin before every commit, so no follower push can carry a
+/// mission-state change (proven by the two-checkout scratch test: the box's
+/// DONE meta survives, chats union both ways, docs flow).
+const MISSION_ZONE_PATHS: &[&str] = &[
+    ".vault-chat/supervisor",
+    ".vault-chat/selftest",
+    ".vault-chat/schedules.jsonl",
+    ".vault-chat/notifications.jsonl",
+    ".vault-chat/jobs.jsonl",
+];
+
+/// Does this conversation file belong to the mission zone? Mission, worker and
+/// ask threads are host-owned (their state is live execution state); the user's
+/// own chats (phone/manual/voice/scheduled) are content and sync freely. Reads
+/// the meta line's `"source"` field from the given file CONTENT.
+fn conv_is_mission_zone(head_line: &str) -> bool {
+    for tag in ["\"source\":\"mission\"", "\"source\":\"worker\"", "\"source\":\"ask\""] {
+        if head_line.contains(tag) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Reset every mission-zone path to origin/<branch>'s version in a follower's
+/// index + working tree. Committed-but-unpushed divergence dies here too: the
+/// sanitized commit's TIP matches origin for the zone, so the eventual merge
+/// carries no mission-state change from this machine (the 153-commits-ahead
+/// migration case). Uses the last-fetched origin ref — no network; the pull
+/// loop keeps it fresh. Local-only files (present here, absent on origin) are
+/// left alone: with no origin counterpart they can't clobber anything.
+fn sanitize_mission_zone(vault: &str, branch: &str) {
+    let origin = format!("origin/{}", branch);
+    // Origin must exist (a vault with no remote / never-fetched ref: nothing to
+    // sanitize against — and nothing to push to either).
+    let (_, _, c) = run_git(vault, &["rev-parse", "--verify", "--quiet", &origin]).unwrap_or_default();
+    if c != 0 {
+        return;
+    }
+    for p in MISSION_ZONE_PATHS {
+        // Only paths origin knows; checkout fails harmlessly otherwise.
+        let _ = run_git_mut(vault, &["checkout", &origin, "--", p]);
+    }
+    // Conversations: classify by the meta line, local version first, origin's
+    // as fallback (a file deleted locally still needs restoring if origin says
+    // it's a mission thread).
+    let (ls, _, lc) = run_git(vault, &["ls-tree", "-r", "--name-only", &origin, ".vault-chat/conversations"]).unwrap_or_default();
+    if lc != 0 {
+        return;
+    }
+    for path in ls.lines().map(str::trim).filter(|l| l.ends_with(".jsonl")) {
+        let local_head = std::fs::File::open(format!("{}/{}", vault, path))
+            .ok()
+            .and_then(|f| {
+                use std::io::BufRead;
+                std::io::BufReader::new(f).lines().next().and_then(|r| r.ok())
+            })
+            .unwrap_or_default();
+        let zone = if !local_head.is_empty() {
+            conv_is_mission_zone(&local_head)
+        } else {
+            run_git(vault, &["show", &format!("{}:{}", origin, path)])
+                .ok()
+                .map(|(o, _, c)| c == 0 && conv_is_mission_zone(o.lines().next().unwrap_or("")))
+                .unwrap_or(false)
+        };
+        if zone {
+            let _ = run_git_mut(vault, &["checkout", &origin, "--", path]);
+        }
+    }
+}
+
 #[tauri::command]
 async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         with_repo_lock(&vault, || {
-        // Machine-local single-writer gate: a follower checkout pulls but never
-        // pushes, so it can never force the active writer to reconcile against
-        // (and adopt) the follower's stale mission state. See is_sync_follower.
+        // A follower is a CONTENT writer now: its commits are sanitized (the
+        // mission zone matches origin, see vault_sync_commit_local), so its
+        // pushes carry docs/notes/chats and can never re-introduce the stale
+        // mission-state clobber the old pull-only gate existed for. Self-heal
+        // the disabling push URL that gate installed.
         if is_sync_follower(&vault) {
-            return Ok(SyncOpResult {
-                ok: true,
-                message: "follower: pull-only (push skipped)".into(),
-                error: false,
-            });
+            if let Ok((purl, _, 0)) = run_git(&vault, &["remote", "get-url", "--push", "origin"]) {
+                if purl.trim().starts_with("DISABLED") {
+                    if let Ok((furl, _, 0)) = run_git(&vault, &["remote", "get-url", "origin"]) {
+                        let furl = furl.trim().to_string();
+                        let _ = run_git_mut(&vault, &["remote", "set-url", "--push", "origin", &furl]);
+                    }
+                }
+            }
         }
         let (branch_out, _, branch_code) =
             run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
@@ -6035,12 +6137,98 @@ mod conversation_storage_tests {
 
 #[cfg(test)]
 mod sync_role_tests {
-    use super::{is_sync_follower, run_git};
+    use super::{conv_is_mission_zone, is_sync_follower, run_git, run_git_mut, sanitize_mission_zone};
 
-    // The single-writer gate: a follower checkout must never push (else its stale
-    // state can force the active writer to reconcile against — and adopt — it, the
-    // phase-16→15 approval revert). Default (no marker) MUST stay a writer so the
-    // active box is unaffected.
+    // The follower sanitize pass, end to end on real repos: a diverged
+    // follower's mission-zone files reset to origin's version (stale mission
+    // meta, injected steer, and stale supervisor state all die) while its
+    // CONTENT divergence (own chat lines, docs) survives to be pushed. This is
+    // the in-code twin of the two-checkout scratch proof.
+    #[test]
+    fn sanitize_resets_mission_zone_to_origin_and_keeps_content() {
+        let base = std::env::temp_dir().join(format!("vc_sanitize_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "master"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "master"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git(ds, &["remote", "add", "origin", og]).unwrap();
+        }
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+        // Seed from A (the box).
+        std::fs::create_dir_all(a.join(".vault-chat/conversations")).unwrap();
+        std::fs::create_dir_all(a.join(".vault-chat/supervisor")).unwrap();
+        std::fs::write(
+            a.join(".vault-chat/conversations/m1.jsonl"),
+            "{\"id\":\"m1\",\"source\":\"mission\",\"missionState\":\"DONE\"}\n{\"role\":\"assistant\",\"content\":\"box turn\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            a.join(".vault-chat/conversations/chat1.jsonl"),
+            "{\"id\":\"chat1\",\"source\":\"phone\"}\n{\"role\":\"user\",\"content\":\"hello\"}\n",
+        )
+        .unwrap();
+        std::fs::write(a.join(".vault-chat/supervisor/mind.md"), "epoch 17\n").unwrap();
+        std::fs::write(a.join("note.md"), "original\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+        // B pulls, then diverges: stale mission write + supervisor write
+        // (zone) AND a chat append + doc edit (content).
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+        std::fs::write(
+            b.join(".vault-chat/conversations/m1.jsonl"),
+            "{\"id\":\"m1\",\"source\":\"mission\",\"missionState\":\"RUNNING\",\"surfaced\":true}\n{\"role\":\"assistant\",\"content\":\"box turn\"}\n{\"role\":\"user\",\"content\":\"laptop stale steer\"}\n",
+        )
+        .unwrap();
+        std::fs::write(b.join(".vault-chat/supervisor/mind.md"), "epoch 15 STALE\n").unwrap();
+        let mut chat = std::fs::read_to_string(b.join(".vault-chat/conversations/chat1.jsonl")).unwrap();
+        chat.push_str("{\"role\":\"user\",\"content\":\"laptop chat line\"}\n");
+        std::fs::write(b.join(".vault-chat/conversations/chat1.jsonl"), chat).unwrap();
+        std::fs::write(b.join("note.md"), "original\nlaptop edit\n").unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "laptop divergence"]).unwrap();
+        // Sanitize against the last-fetched origin.
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+        sanitize_mission_zone(bs, "master");
+        let m1 = std::fs::read_to_string(b.join(".vault-chat/conversations/m1.jsonl")).unwrap();
+        assert!(m1.contains("\"missionState\":\"DONE\""), "mission meta must be origin's");
+        assert!(!m1.contains("laptop stale steer"), "laptop mission write must die");
+        let mind = std::fs::read_to_string(b.join(".vault-chat/supervisor/mind.md")).unwrap();
+        assert!(mind.contains("epoch 17") && !mind.contains("STALE"), "supervisor state must be origin's");
+        let chat = std::fs::read_to_string(b.join(".vault-chat/conversations/chat1.jsonl")).unwrap();
+        assert!(chat.contains("laptop chat line"), "own chat content must survive");
+        let note = std::fs::read_to_string(b.join("note.md")).unwrap();
+        assert!(note.contains("laptop edit"), "doc content must survive");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Mission/worker/ask threads are host-owned (execution state); the user's
+    // own chats are content and must NOT be sanitized away on a follower.
+    #[test]
+    fn mission_zone_conversation_classifier() {
+        assert!(conv_is_mission_zone(r#"{"id":"m1","source":"mission","missionState":"RUNNING"}"#));
+        assert!(conv_is_mission_zone(r#"{"id":"w1","source":"worker"}"#));
+        assert!(conv_is_mission_zone(r#"{"id":"a1","source":"ask","askOf":"m1"}"#));
+        assert!(!conv_is_mission_zone(r#"{"id":"c1","source":"phone","role":"supervisor"}"#));
+        assert!(!conv_is_mission_zone(r#"{"id":"c2","source":"manual"}"#));
+        assert!(!conv_is_mission_zone(r#"{"id":"c3","source":"voice"}"#));
+    }
+
+    // The role marker: a follower is a CONTENT writer whose commits are
+    // sanitized against origin's mission zone before every push (the surgical
+    // replacement for the old pull-only gate — the phase-16→15 clobber can't
+    // recur because a follower commit's tip never diffs the zone). Default
+    // (no marker) MUST stay a writer so the active box is unaffected.
     #[test]
     fn follower_marker_gates_push_and_writer_is_default() {
         let base = std::env::temp_dir().join(format!("vc_sync_role_{}", std::process::id()));
@@ -7317,6 +7505,7 @@ pub fn run() {
             default_supervisor_prompt,
             default_assistant_prompt,
             default_ask_prompt,
+            vault_sync_role,
             run_script,
             keychain_get,
             keychain_set,

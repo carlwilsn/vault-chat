@@ -223,6 +223,10 @@ type ActiveLoop = {
 
 const active = new Map<string, ActiveLoop>();
 const schedulesByVault = new Map<string, Schedule[]>();
+// [sync split] Vaults whose checkout is a follower (content writer) — this
+// machine never fires their schedules/missions; the mission host does.
+// Populated at loop start from the per-checkout role marker.
+const followerVaults = new Set<string>();
 const listeners = new Set<(s: Schedule[]) => void>();
 
 // Process-global guard against firing the same schedule SLOT twice. The
@@ -467,12 +471,24 @@ function addTrackedVault(vault: string): void {
 export async function startSchedulerLoop(vault: string): Promise<void> {
   addTrackedVault(vault);
   if (active.has(vault)) return; // idempotent
+  // [sync split] A follower checkout (content writer) NEVER fires this vault's
+  // missions/schedules — the mission host (the box) owns execution. This is a
+  // per-vault gate on top of the machine-wide firing flag: the role marker is
+  // per-checkout truth, so a laptop that also fires its OWN vaults still never
+  // fires the box's. Resolved once here (the marker is a checkout constant).
+  try {
+    const { isFollowerVault } = await import("./missionHost");
+    if (await isFollowerVault(vault)) followerVaults.add(vault);
+    else followerVaults.delete(vault);
+  } catch {
+    /* role unknown → treat as writer (matches the box default) */
+  }
   const initialSchedules = await readSchedules(vault).catch(() => []);
   schedulesByVault.set(vault, initialSchedules);
   emit();
   // One-shot on the server box: resume any mission left mid-turn by a
   // crash/restart, so an approved mission never just sits there unworked.
-  if (!resumedVaults.has(vault)) {
+  if (!resumedVaults.has(vault) && !followerVaults.has(vault)) {
     resumedVaults.add(vault);
     void resumeInterruptedMissions(vault).catch((e) =>
       console.warn("[mission-resume] sweep failed:", e),
@@ -515,6 +531,9 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
     // lastFiredAt and pushed it, the firing machine would read it as
     // "already fired" and skip — silently disabling the schedule.
     if (!fireSchedulesOnThisMachine()) return;
+    // [sync split] Per-vault: a follower checkout never fires this vault's
+    // schedules, run-watcher, or liveness backstop — the mission host does.
+    if (followerVaults.has(vault)) return;
     // Poll any long external jobs (training runs etc.) handed to the run-watcher.
     // Deterministic recheck in code — independent of whether the agent
     // remembered to self-schedule a wake. Same firing-machine gate as schedules.

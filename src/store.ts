@@ -225,6 +225,11 @@ const VAULT_STORAGE = "vault_chat_last_vault";
 const CHAT_STORAGE = "vault_chat_history";
 const STRICT_VAULT_STORAGE = "vault_chat_strict_vault";
 const BASH_DISABLED_STORAGE = "vault_chat_bash_disabled";
+// [sync split] Where THIS machine sends mission interaction when it isn't the
+// mission host (a follower checkout): the box's cockpit URL + token, exactly
+// what the phone uses. Machine-local by design — never in the synced config.
+const MISSION_HOST_URL_STORAGE = "vault_chat_mission_host_url";
+const MISSION_HOST_TOKEN_STORAGE = "vault_chat_mission_host_token";
 const REASONING_EFFORT_STORAGE = "vault_chat_reasoning_effort";
 const AUTO_COST_BIAS_STORAGE = "vault_chat_auto_cost_bias";
 // The active/open conversation is PER-DEVICE, not synced: your phone chat and
@@ -454,6 +459,11 @@ type State = {
   strictVaultMode: boolean;
   // Don't expose the Bash tool to the agent at all.
   bashDisabled: boolean;
+  // [sync split] The mission host (the box) this machine relays mission
+  // interaction to when its checkout is a follower — URL + X-Vault-Token,
+  // same contract as the phone. Empty = no relay configured.
+  missionHostUrl: string;
+  missionHostToken: string;
   // How hard reasoning-capable models think before answering.
   reasoningEffort: ReasoningEffort;
   // Cost ⇄ quality dial for OpenRouter's auto router (0 = quality … 10 =
@@ -649,6 +659,7 @@ type State = {
   setStrictVaultMode: (b: boolean) => void;
   setAutoRouterCostBias: (n: number) => void;
   setBashDisabled: (b: boolean) => void;
+  setMissionHost: (url: string, token: string) => void;
   setReasoningEffort: (e: ReasoningEffort) => void;
   setSkills: (s: Skill[]) => void;
   setBusy: (b: boolean) => void;
@@ -807,6 +818,8 @@ export const useStore = create<State>((set) => ({
   // Bash enabled; a fresh isolated dev store defaulting it OFF makes probe
   // workers honestly refuse shell tasks and fail probes for the wrong reason.
   bashDisabled: loadBoolFlag(BASH_DISABLED_STORAGE, !import.meta.env.DEV),
+  missionHostUrl: localStorage.getItem(MISSION_HOST_URL_STORAGE) ?? "",
+  missionHostToken: localStorage.getItem(MISSION_HOST_TOKEN_STORAGE) ?? "",
   reasoningEffort: loadReasoningEffort(),
   autoRouterCostBias: loadNumFlag(AUTO_COST_BIAS_STORAGE, 7),
   skills: [],
@@ -1348,6 +1361,13 @@ export const useStore = create<State>((set) => ({
   setBashDisabled: (b) => {
     localStorage.setItem(BASH_DISABLED_STORAGE, String(b));
     set({ bashDisabled: b });
+  },
+  setMissionHost: (url, token) => {
+    const u = url.trim().replace(/\/+$/, "");
+    const t = token.trim();
+    localStorage.setItem(MISSION_HOST_URL_STORAGE, u);
+    localStorage.setItem(MISSION_HOST_TOKEN_STORAGE, t);
+    set({ missionHostUrl: u, missionHostToken: t });
   },
   setReasoningEffort: (e) => {
     localStorage.setItem(REASONING_EFFORT_STORAGE, e);
