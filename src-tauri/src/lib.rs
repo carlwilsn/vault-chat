@@ -3300,23 +3300,40 @@ pub(crate) fn run_git(
 // Absolute path to the `gh` CLI, resolved once.
 static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-// GitHub token from `gh auth token`, cached for the app's lifetime.
-// Token lifetime is ~8h for gh OAuth; within a single app session this is fine.
-static GH_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+// GitHub token from `gh auth token`, cached with a TTL (see get_gh_token).
+static GH_TOKEN: OnceLock<Mutex<Option<(String, Instant)>>> = OnceLock::new();
 
-/// Call `gh auth token` directly in Rust (no shell, no quoting), cache result.
+// gh's OAuth token is valid ~8h. Re-resolve once the cached value is older
+// than this, kept comfortably under that expiry.
+const GH_TOKEN_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+
+fn fetch_gh_token() -> Option<String> {
+    let gh = find_gh()?;
+    let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if token.is_empty() { None } else { Some(token) }
+}
+
+/// Call `gh auth token` directly in Rust (no shell, no quoting), cached for
+/// `GH_TOKEN_TTL`. A process-lifetime cache (the original design) goes stale
+/// on the always-on box: past ~8h uptime every fetch/push over HTTPS would
+/// fail auth with the same dead token forever, since nothing else ever
+/// re-derives it short of an app restart. Re-resolving on expiry keeps
+/// long-running sync authenticating.
 fn get_gh_token() -> Option<String> {
-    GH_TOKEN
-        .get_or_init(|| {
-            let gh = find_gh()?;
-            let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if token.is_empty() { None } else { Some(token) }
-        })
-        .clone()
+    let cell = GH_TOKEN.get_or_init(|| Mutex::new(None));
+    let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((tok, at)) = guard.as_ref() {
+        if at.elapsed() < GH_TOKEN_TTL {
+            return Some(tok.clone());
+        }
+    }
+    let fresh = fetch_gh_token();
+    *guard = fresh.clone().map(|t| (t, Instant::now()));
+    fresh
 }
 
 fn find_gh() -> Option<PathBuf> {
@@ -3488,6 +3505,26 @@ fn run_git_timeout(
     args: &[&str],
     timeout_secs: u64,
 ) -> Result<(String, String, i32), String> {
+    let (out, err, code) = run_git_timeout_raw(cwd, args, timeout_secs)?;
+    Ok((String::from_utf8_lossy(&out).into_owned(), err, code))
+}
+
+/// Byte-safe git invocation for stdout: used to read a blob (`git show
+/// <rev>:<path>`) whose content may be binary, where the lossy UTF-8
+/// re-encoding `run_git_timeout` does for its `String` stdout would corrupt
+/// it (invalid bytes silently become U+FFFD, or the whole capture is dropped
+/// — see `run_git_timeout_raw`'s stdout thread). stderr is still decoded
+/// lossily: it is always diagnostic text, never a payload we round-trip.
+fn run_git_bytes(cwd: &str, args: &[&str]) -> Result<(Vec<u8>, i32), String> {
+    let (out, _stderr, code) = run_git_timeout_raw(cwd, args, GIT_TIMEOUT_SECS)?;
+    Ok((out, code))
+}
+
+fn run_git_timeout_raw(
+    cwd: &str,
+    args: &[&str],
+    timeout_secs: u64,
+) -> Result<(Vec<u8>, String, i32), String> {
     use std::io::Read;
     #[cfg(windows)]
     let mut cmd = {
@@ -3545,11 +3582,11 @@ fn run_git_timeout(
     let so = child.stdout.take();
     let se = child.stderr.take();
     let h_out = std::thread::spawn(move || {
-        let mut s = String::new();
+        let mut buf = Vec::new();
         if let Some(mut o) = so {
-            let _ = o.read_to_string(&mut s);
+            let _ = o.read_to_end(&mut buf);
         }
-        s
+        buf
     });
     let h_err = std::thread::spawn(move || {
         let mut s = String::new();
@@ -5210,9 +5247,19 @@ fn resolve_merge_conflicts(vault: &str) -> bool {
             continue;
         }
         // Regular file: preserve OURS as a sidecar, take THEIRS into the tree.
-        let ours_content = run_git(vault, &["show", &format!(":2:{}", path)])
-            .ok()
-            .and_then(|(c, _, code)| if code == 0 { Some(c) } else { None });
+        // Byte-safe capture (`run_git_bytes`, not the lossy-UTF8 `run_git`) —
+        // `git show :2:<path>` on a binary blob (a PDF/PNG/zip, per
+        // .gitattributes) is not valid UTF-8, and a lossy String capture would
+        // silently corrupt or empty the sidecar, defeating the whole point of
+        // preserving `ours`.
+        let has_stage2 = uf.lines().any(|l| l.split_whitespace().nth(2) == Some("2"));
+        let ours_bytes = if has_stage2 {
+            run_git_bytes(vault, &["show", &format!(":2:{}", path)])
+                .ok()
+                .and_then(|(bytes, code)| if code == 0 { Some(bytes) } else { None })
+        } else {
+            None
+        };
         let took_theirs = matches!(run_git_mut(vault, &["checkout", "--theirs", "--", path]), Ok((_, _, 0)));
         if !took_theirs {
             // Theirs deleted the file — keep ours so a live edit isn't lost.
@@ -5228,10 +5275,23 @@ fn resolve_merge_conflicts(vault: &str) -> bool {
             Ok((_, _, 0))
         );
         if took_theirs && !ignored {
-            if let Some(content) = ours_content {
+            if let Some(bytes) = ours_bytes {
                 let sidecar = format!("{}.conflict", path);
-                if std::fs::write(format!("{}/{}", vault, sidecar), content).is_ok() {
+                if std::fs::write(format!("{}/{}", vault, sidecar), &bytes).is_ok() {
                     let _ = run_git_mut(vault, &["add", "--", &sidecar]);
+                }
+            } else if !has_stage2 {
+                // Ours side DELETED the file while theirs edited it — `checkout
+                // --theirs` just resurrected it with zero record of that
+                // deletion, which silently overrides the user's intent instead
+                // of preserving it like the edit case above does. Leave a note
+                // so it's discoverable rather than lost.
+                let note_path = format!("{}.conflict-deleted", path);
+                let note = "This file was deleted on this machine but modified \
+on the other during a sync merge. The remote version was kept; delete this \
+file (and this note) again if the deletion was intentional.\n";
+                if std::fs::write(format!("{}/{}", vault, note_path), note).is_ok() {
+                    let _ = run_git_mut(vault, &["add", "--", &note_path]);
                 }
             }
         }
@@ -5424,6 +5484,51 @@ fn is_sync_follower(vault: &str) -> bool {
     std::fs::read_to_string(format!("{}/vault-chat-sync-role", git_dir))
         .map(|s| s.trim().eq_ignore_ascii_case("follower"))
         .unwrap_or(false)
+}
+
+/// Read this machine's sync role for `vault` — the counterpart the Settings
+/// UI needs to show/toggle what `is_sync_follower` gates. Kept as a separate
+/// command (rather than folding into `SyncStatus`) so reading it never needs
+/// a git invocation beyond the one-time git-dir resolution.
+#[tauri::command]
+async fn vault_sync_get_role(vault: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || Ok(is_sync_follower(&vault)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Write/clear the non-synced marker `is_sync_follower` reads. This is the
+/// ONLY place that ever writes `vault-chat-sync-role` — without it the
+/// single-writer gate exists in code but is unreachable through the app
+/// (every machine defaults to, and stays, a writer), so the divergence class
+/// it was built to prevent (the phase-16→15 approval revert) can still recur
+/// on any vault shared between two normally-configured machines. Writer is
+/// the default, so turning follower off removes the marker rather than
+/// writing "writer" — nothing lingers stale if the app is later reinstalled
+/// into a fresh `.git` dir. Plain sync fn (not the `#[tauri::command]`
+/// wrapper below) so it's directly unit-testable, like `is_sync_follower`.
+fn set_sync_role(vault: &str, follower: bool) -> Result<(), String> {
+    let git_dir = run_git(vault, &["rev-parse", "--absolute-git-dir"])
+        .ok()
+        .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_string()) } else { None })
+        .unwrap_or_else(|| format!("{}/.git", vault));
+    let marker = format!("{}/vault-chat-sync-role", git_dir);
+    if follower {
+        std::fs::write(&marker, "follower\n").map_err(|e| e.to_string())
+    } else {
+        match std::fs::remove_file(&marker) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+#[tauri::command]
+async fn vault_sync_set_role(vault: String, follower: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || set_sync_role(&vault, follower))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -6035,7 +6140,7 @@ mod conversation_storage_tests {
 
 #[cfg(test)]
 mod sync_role_tests {
-    use super::{is_sync_follower, run_git};
+    use super::{is_sync_follower, run_git, set_sync_role};
 
     // The single-writer gate: a follower checkout must never push (else its stale
     // state can force the active writer to reconcile against — and adopt — it, the
@@ -6064,6 +6169,125 @@ mod sync_role_tests {
         // Follower, tolerant of case + surrounding whitespace → follower.
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Regression: before `set_sync_role` existed, nothing in the app ever wrote
+    // the marker `is_sync_follower` reads, so the single-writer gate above was
+    // unreachable in practice — every real machine defaulted to, and stayed,
+    // a writer. This exercises the actual read/write round trip a Settings UI
+    // toggle now drives, including reverting to the (marker-absent) writer
+    // default rather than leaving a stale "writer" marker behind.
+    #[test]
+    fn set_sync_role_round_trips_and_clears_to_default() {
+        let base = std::env::temp_dir().join(format!("vc_sync_role_set_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let d = base.to_str().unwrap();
+        run_git(d, &["init", "-q"]).expect("git init");
+
+        assert!(!is_sync_follower(d), "fresh repo starts as writer");
+        set_sync_role(d, true).expect("set follower");
+        assert!(is_sync_follower(d), "role toggle must take effect immediately");
+        set_sync_role(d, false).expect("set writer");
+        assert!(!is_sync_follower(d), "toggling back off must clear, not just overwrite");
+        // Clearing an already-absent marker must not error (idempotent).
+        set_sync_role(d, false).expect("clearing an absent marker is a no-op, not an error");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod resolve_merge_conflicts_tests {
+    use super::{resolve_merge_conflicts, run_git, run_git_mut};
+
+    fn git_ok(d: &str, args: &[&str]) {
+        let (_, err, code) = run_git_mut(d, args).unwrap_or_else(|e| panic!("{:?}: {}", args, e));
+        assert_eq!(code, 0, "git {:?} failed: {}", args, err);
+    }
+
+    // Simulates a real two-machine divergence: `ours` edited a binary file AND
+    // deleted a text file; `theirs` (already fetched, e.g. from the other
+    // machine's push) edited both differently. Exercises the two gaps found in
+    // resolve_merge_conflicts: (1) a binary blob round-tripped through the
+    // `.conflict` sidecar must survive byte-for-byte, not get corrupted/emptied
+    // by a lossy UTF-8 capture; (2) a local deletion overridden by the remote's
+    // edit must leave a discoverable record, not vanish with zero trace.
+    #[test]
+    fn binary_conflict_round_trips_bytes_and_deletion_leaves_a_note() {
+        let base = std::env::temp_dir().join(format!("vc_merge_conflict_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let d = base.to_str().unwrap();
+
+        run_git(d, &["init", "-q"]).expect("git init");
+        git_ok(d, &["config", "user.name", "Test"]);
+        git_ok(d, &["config", "user.email", "test@test.local"]);
+
+        let photo_base: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        std::fs::write(format!("{}/photo.bin", d), photo_base).unwrap();
+        std::fs::write(format!("{}/note.md", d), "hello\n").unwrap();
+        git_ok(d, &["add", "-A"]);
+        git_ok(d, &["commit", "-q", "-m", "base"]);
+        let base_branch = run_git(d, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .unwrap()
+            .0
+            .trim()
+            .to_string();
+
+        // "theirs": diverge on a branch simulating the other machine's already-
+        // fetched commit — edit the binary file, edit the text file.
+        git_ok(d, &["checkout", "-q", "-b", "theirs"]);
+        let photo_theirs: &[u8] = &[0x01, 0x02, 0x03, 0xFE, 0xFF, 0x00, 0x80, 0x81];
+        std::fs::write(format!("{}/photo.bin", d), photo_theirs).unwrap();
+        std::fs::write(format!("{}/note.md", d), "hello world\n").unwrap();
+        git_ok(d, &["add", "-A"]);
+        git_ok(d, &["commit", "-q", "-m", "theirs"]);
+
+        // "ours": back on the base branch — edit the binary file differently,
+        // DELETE the text file.
+        git_ok(d, &["checkout", "-q", &base_branch]);
+        let photo_ours: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF, 0xFF, 0x00, 0x9C, 0x9D];
+        std::fs::write(format!("{}/photo.bin", d), photo_ours).unwrap();
+        std::fs::remove_file(format!("{}/note.md", d)).unwrap();
+        git_ok(d, &["add", "-A"]);
+        git_ok(d, &["commit", "-q", "-m", "ours"]);
+
+        let (_, _, merge_code) = run_git_mut(d, &["merge", "--no-edit", "theirs"]).unwrap();
+        assert_ne!(merge_code, 0, "setup bug: this merge must actually conflict");
+
+        assert!(resolve_merge_conflicts(d), "must resolve every conflict");
+        assert!(
+            run_git(d, &["diff", "--name-only", "--diff-filter=U"])
+                .map(|(out, _, _)| out.trim().is_empty())
+                .unwrap_or(false),
+            "no conflict markers may remain"
+        );
+
+        // Binary conflict: tree takes theirs; ours is preserved byte-exact.
+        let photo_final = std::fs::read(format!("{}/photo.bin", d)).unwrap();
+        assert_eq!(photo_final, photo_theirs, "binary conflict must take theirs into the tree");
+        let photo_sidecar = std::fs::read(format!("{}/photo.bin.conflict", d)).unwrap();
+        assert_eq!(
+            photo_sidecar, photo_ours,
+            "binary sidecar must preserve ours byte-for-byte — a lossy UTF-8 \
+             capture would corrupt or empty this"
+        );
+
+        // Delete/modify conflict: theirs' edit wins in the tree, but the local
+        // deletion is now recorded instead of silently overridden.
+        let note_final = std::fs::read_to_string(format!("{}/note.md", d)).unwrap();
+        assert_eq!(note_final, "hello world\n");
+        assert!(
+            std::path::Path::new(&format!("{}/note.md.conflict-deleted", d)).exists(),
+            "a local deletion overridden by the remote edit must leave a discoverable record"
+        );
+        assert!(
+            !std::path::Path::new(&format!("{}/note.md.conflict", d)).exists(),
+            "there is no ours content for a deleted file — no (empty/wrong) .conflict sidecar"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -7301,6 +7525,8 @@ pub fn run() {
             vault_commit_local,
             vault_sync_pull,
             vault_sync_push,
+            vault_sync_get_role,
+            vault_sync_set_role,
             vault_sync_gh_create_repo,
             path_exists,
             default_system_prompt,

@@ -167,6 +167,19 @@ export async function vaultGhCreateRepo(
   });
 }
 
+// Machine-local single-writer gate (see `is_sync_follower` in lib.rs): a
+// follower checkout pulls but never pushes, so a stale secondary machine can
+// never force the active writer to reconcile against — and adopt — its older
+// state. Without a way to actually set this, every machine defaults to (and
+// stays) a writer and the gate is unreachable in practice.
+export async function getVaultSyncRole(vault: string): Promise<boolean> {
+  return await invoke<boolean>("vault_sync_get_role", { vault });
+}
+
+export async function setVaultSyncRole(vault: string, follower: boolean): Promise<void> {
+  await invoke("vault_sync_set_role", { vault, follower });
+}
+
 // ---- durable sync-failure log ----
 //
 // The red sync-status banner is transient: `lastError` is overwritten on the

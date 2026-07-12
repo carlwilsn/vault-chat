@@ -34,6 +34,8 @@ import {
   subscribeSyncStatus,
   startVaultSyncLoop,
   stopVaultSyncLoop,
+  getVaultSyncRole,
+  setVaultSyncRole,
   DEFAULT_SYNC_CONFIG,
   type VaultSyncConfig,
 } from "./vaultSync";
@@ -937,6 +939,12 @@ function VaultSyncSection() {
   const [fireHere, setFireHere] = useState(true);
   // Machine-local "run in background" daemon toggle (close-to-tray + autostart).
   const [runBg, setRunBg] = useState(false);
+  // Machine-local single-writer gate for THIS vault (a marker file in .git,
+  // not synced config — see is_sync_follower in lib.rs). A follower pulls but
+  // never pushes, so a stale secondary machine can never force the active
+  // writer to reconcile against (and adopt) its older state.
+  const [follower, setFollower] = useState(false);
+  const [roleBusy, setRoleBusy] = useState(false);
 
   useEffect(() => {
     setFireHere(fireSchedulesOnThisMachine());
@@ -952,6 +960,10 @@ function VaultSyncSection() {
     void readVaultSyncConfig(vaultPath).then((c) => {
       if (cancelled) return;
       setConfig(c);
+    });
+    void getVaultSyncRole(vaultPath).then((isFollower) => {
+      if (cancelled) return;
+      setFollower(isFollower);
     });
     return () => {
       cancelled = true;
@@ -995,6 +1007,18 @@ function VaultSyncSection() {
       await startVaultSyncLoop(vaultPath);
     } else {
       stopVaultSyncLoop(vaultPath);
+    }
+  };
+
+  const toggleFollower = async (next: boolean) => {
+    setRoleBusy(true);
+    try {
+      await setVaultSyncRole(vaultPath, next);
+      setFollower(next);
+    } catch (e) {
+      console.warn("[vault-sync] set role failed:", e);
+    } finally {
+      setRoleBusy(false);
     }
   };
 
@@ -1100,6 +1124,32 @@ function VaultSyncSection() {
               setFireSchedulesOnThisMachine(e.target.checked);
               setFireHere(e.target.checked);
             }}
+          />
+        </label>
+      </div>
+      <div className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
+        <div>
+          <div className="text-[11.5px] font-medium text-foreground/90">
+            Push from this machine
+          </div>
+          <p className="text-[10.5px] text-muted-foreground/80 mt-0.5">
+            Turn off on a secondary/intermittent machine sharing this vault
+            with an always-on box, so a stale follower can never force the
+            active writer to reconcile against — and adopt — its older state.
+            Pull-only when off. Machine-local — not synced. Leave one machine
+            (the always-on one) as the writer.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 shrink-0 cursor-pointer">
+          <span className="text-[10.5px] text-muted-foreground">
+            {follower ? "off" : "on"}
+          </span>
+          <input
+            type="checkbox"
+            className="vc-checkbox"
+            checked={!follower}
+            disabled={roleBusy}
+            onChange={(e) => toggleFollower(!e.target.checked)}
           />
         </label>
       </div>
