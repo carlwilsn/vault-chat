@@ -11,7 +11,14 @@ export type ConversationSource =
   // goal — it spawns and monitors that goal's workers and reports by Notify.
   // Created deterministically when the user approves a proposed mission (no
   // agent mints one); it lives on the Activity surface, not the chats list.
-  | "mission";
+  | "mission"
+  // [ask redesign] A notification's OWN conversation — minted when an AskUser
+  // fires (and lazily for an info alert the user follows up on). Isolated from
+  // the mission thread by construction (the spillover fix): the user talks to a
+  // dedicated ask agent here; option cards relay the decision to the waiting
+  // mission via the tagged /answer path. Lives behind the alert card, not the
+  // chats list.
+  | "ask";
 export type ConversationStatus = "idle" | "running";
 
 // [harness v2] Explicit mission lifecycle, replacing the old implicit
@@ -98,6 +105,17 @@ export type Conversation = {
   // GPU box). The deterministic cost guard (runWatcher) reads this so a mission
   // that has gone idle while still billing auto-terminates without an LLM turn.
   billing?: boolean;
+  // [ask redesign] Set on source "ask" threads only. `askOf` points at the
+  // conversation the notification came FROM (the mission whose supervisor is
+  // waiting — the deterministic relay target); `askNotifId` is the notification
+  // this thread belongs to. Once the user commits a decision, `askDecided` +
+  // `askDecidedAt` freeze the thread into a read-only record (the phone drops
+  // the composer). All four MUST be carried through readConversations below —
+  // the same load-bearing strip-trap as `mission`.
+  askOf?: string;
+  askNotifId?: string;
+  askDecided?: string;
+  askDecidedAt?: number;
 };
 
 
@@ -210,6 +228,13 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         // them and every appended turn resets a mission's state/billing on disk).
         missionState: parsed.missionState,
         billing: parsed.billing,
+        // [ask redesign] Carry the ask-thread linkage + decision record (same
+        // strip-trap: dropping askDecided here would resurrect a settled ask's
+        // composer on every append).
+        askOf: parsed.askOf,
+        askNotifId: parsed.askNotifId,
+        askDecided: parsed.askDecided,
+        askDecidedAt: parsed.askDecidedAt,
       });
     } catch {
       // skip

@@ -266,11 +266,13 @@ export type BuildToolsOptions = {
   // schedules to this conversation, so when the schedule fires the
   // reply lands in (and routes from) the right chat.
   conversationId?: string;
-  // Which layer this conversation sits in — assistant → missions → workers.
-  // The layers are enforced HERE, not by prompt discipline: assistants mint
-  // missions but cannot spawn workers; only a mission thread holds
-  // StartWorker; workers hold neither (they do the task, not orchestration).
-  tier?: "assistant" | "mission" | "worker";
+  // Which layer this conversation sits in — assistant → missions → workers,
+  // plus the ask agent (a notification's own conversation). The layers are
+  // enforced HERE, not by prompt discipline: assistants mint missions but
+  // cannot spawn workers; only a mission thread holds StartWorker; workers
+  // hold neither (they do the task, not orchestration); the ask tier is
+  // read+converse only, with ProposeOptions as its ONE unique ability.
+  tier?: "assistant" | "mission" | "worker" | "ask";
   // The run's abort signal. Used to HARD-interrupt a long tool (Bash) — on
   // Stop we kill the subprocess instead of waiting for it to run to completion.
   abortSignal?: AbortSignal;
@@ -378,6 +380,23 @@ async function assertNotDenied(absPath: string, vault: string): Promise<void> {
       );
     }
   }
+}
+
+// [ask redesign] Options the ask agent staged this turn via ProposeOptions,
+// keyed by ask-conversation id. The ask turn runner (runAskTurn) takes them
+// after the agent finishes and attaches them to the persisted reply message,
+// so the cards land in-order WITH the prose that argues for them (a tool that
+// appended its own message mid-turn would render before the reply text).
+const pendingAskOptions = new Map<
+  string,
+  { answer: string; title: string; body: string; primary?: boolean }[]
+>();
+export function takePendingAskOptions(
+  conversationId: string,
+): { answer: string; title: string; body: string; primary?: boolean }[] {
+  const list = pendingAskOptions.get(conversationId) ?? [];
+  pendingAskOptions.delete(conversationId);
+  return list;
 }
 
 export function buildTools(vault: string, options: BuildToolsOptions = {}) {
@@ -1374,6 +1393,58 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           : "Asked the user — their reply will arrive as the next message in this conversation. End your turn now and wait for it; do not guess the answer.";
       },
     }),
+    // [ask redesign] The ask agent's ONE unique ability: put a fresh option set
+    // in front of the user, as tappable cards in the ask conversation. The cards
+    // STACK — the ask's original options stay pinned at the top; a proposed set
+    // never replaces anything. Tapping any card relays that option as the
+    // TAGGED answer to the mission supervisor waiting on this ask — the same
+    // deterministic /answer path as the original options. Only the ask tier
+    // holds this tool.
+    ProposeOptions: tool({
+      description:
+        "Propose a new set of options for the decision the user is deliberating with you. Use it when the conversation has genuinely moved the fork — the user pushed back on the original options, surfaced a constraint, or asked for a middle path — and you can now offer tighter choices. Each option becomes a tappable card; tapping one SENDS IT AS THE USER'S FORMAL ANSWER to the mission that is waiting, exactly like the ask's original options. The original options remain available above — your set stacks, it never replaces. Don't re-propose the original options unchanged, and don't propose options the deliberation hasn't earned.",
+      inputSchema: z.object({
+        options: z
+          .array(
+            z.object({
+              label: z
+                .string()
+                .describe("The choice, as a short tappable phrase. This verbatim text is what gets sent as the user's answer when they tap it."),
+              detail: z
+                .string()
+                .describe("The case for this option — reasoning, tradeoffs, cost, consequence (1-4 sentences). Rendered as the card's explanation."),
+              recommended: z
+                .boolean()
+                .optional()
+                .describe("Set true on AT MOST ONE option to mark your lean."),
+            }),
+          )
+          .min(1)
+          .max(5)
+          .describe("The proposed choices, 1-5 of them."),
+      }),
+      execute: async ({ options }) => {
+        const opts = (options || []).filter((o) => o?.label?.trim());
+        if (!opts.length) return "No usable options — every option needs a non-empty label.";
+        if (!conversationId) return "No conversation to attach options to.";
+        const list = pendingAskOptions.get(conversationId) ?? [];
+        let primarySeen = list.some((o) => o.primary);
+        list.push(
+          ...opts.map((o) => {
+            const primary = !!o.recommended && !primarySeen;
+            if (primary) primarySeen = true;
+            return {
+              answer: o.label.trim().slice(0, 80),
+              title: o.label.trim().slice(0, 120),
+              body: (o.detail || "").trim().slice(0, 800),
+              ...(primary ? { primary: true } : {}),
+            };
+          }),
+        );
+        pendingAskOptions.set(conversationId, list.slice(0, 6));
+        return "Options staged — they'll render as tappable answer cards with your reply. Present them naturally in your reply text too (the cards carry the tap action; your prose carries the why).";
+      },
+    }),
     ListSchedules: tool({
       description:
         "List the scheduled prompts in this vault. Use to find a schedule's id before cancelling it, or to remind the user what they have set up. Returns id, name, prompt (truncated), recurrence, next-fire time, target conversation, and enabled state.",
@@ -1767,10 +1838,21 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   // for the user; it doesn't launch or kill runs itself.
   // RecordJudgment is for the working tiers (mission + worker) — the assistant
   // chats with the user directly and has no between-wake state to protect.
-  if (tier === "mission") drop(["ProposeMission", "StopMission"]);
+  if (tier === "mission") drop(["ProposeMission", "StopMission", "ProposeOptions"]);
   else if (tier === "worker")
-    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission", "MarkDoneWhen", "StopMission"]);
-  else drop(["StartWorker", "CompleteMission", "MarkDoneWhen", "WatchRun", "CancelRun", "RecordJudgment"]);
+    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission", "MarkDoneWhen", "StopMission", "ProposeOptions"]);
+  else if (tier === "ask")
+    // [ask redesign] The ask agent reads + converses + proposes option cards —
+    // nothing else. It must not orchestrate (no workers/missions), must not
+    // notify or re-ask (it IS the notification's conversation), and must not
+    // touch schedules or runs. Read tools + Bash stay so it can fetch live
+    // ground truth ("what's the spend NOW?") the way any tier does.
+    drop([
+      "StartWorker", "AskWorker", "CompleteMission", "MarkDoneWhen", "StopMission",
+      "ProposeMission", "Notify", "AskUser", "WatchRun", "CancelRun", "RecordJudgment",
+      "Schedule", "CancelSchedule", "Write", "Edit", "Delete", "NotebookEdit",
+    ]);
+  else drop(["StartWorker", "CompleteMission", "MarkDoneWhen", "WatchRun", "CancelRun", "RecordJudgment", "ProposeOptions"]);
   return full;
 }
 

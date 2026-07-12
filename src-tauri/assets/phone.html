@@ -380,6 +380,10 @@
   #delibDecision.deciding{opacity:.55;pointer-events:none;transition:opacity .15s}
   .delib-done{margin-top:12px;font-size:13px;color:var(--dim);overflow-wrap:anywhere}
   .delib-done b{color:var(--text);font-weight:600}
+  /* [ask redesign] option cards the ask agent proposes inside the conversation —
+     same card language as the decision card's options, spaced as a group */
+  .delib-proposed{margin:4px 0 12px}
+  .delib-proposed .delib-opt:first-child{margin-top:6px}
   /* Archived needs-you card: the recorded decision, one quiet line. */
   .needs-decided{font-size:13px;color:var(--dim);margin-top:6px;overflow-wrap:anywhere}
   .needs-decided b{color:var(--text);font-weight:600}
@@ -1052,7 +1056,7 @@ interface MockDB {
         // richer "Needs you" card on the feed and the inline-option sheet: a
         // decision + verbose option cards you pick INLINE in the conversation,
         // plus a short sample "talk it through" exchange and a probe input.
-        { id: "nAsk", ts: now - 90000, kind: "ask", title: "Coconut fp32", intention: "Mission needs your call · Coconut fp32", icon: "?", cls: "a", summary: "Raise the cost cap? Spend's at $28 of the $32 cap; accuracy climbing 0.68 → 0.85, ~a few hours to the result.", convId: "m1", read: false,
+        { id: "nAsk", ts: now - 90000, kind: "ask", title: "Coconut fp32", intention: "Mission needs your call · Coconut fp32", icon: "?", cls: "a", summary: "Raise the cost cap? Spend's at $28 of the $32 cap; accuracy climbing 0.68 → 0.85, ~a few hours to the result.", convId: "m1", askConvId: "a1", read: false,
           deliberation: {
             mission: "Coconut fp32",
             ask: "Raise the cost cap? Spend's at $28 of the $32 cap; accuracy climbing 0.68 → 0.85, ~a few hours to the result.",
@@ -1089,6 +1093,18 @@ interface MockDB {
         { id: "nt3", status: "resolved", timestamp: new Date(now - 9200000).toISOString(), last_updated: new Date(now - 9000000).toISOString(), title: "Sheets expand without scrolling to top", user_draft: "When the sheets expand they should not auto scroll to the top of the conversation.", turns: [], anchors: [] },
       ],
       threads: {
+        // [ask redesign] The nAsk notification's OWN conversation — the user ↔
+        // ask-agent deliberation, including an agent-proposed option set
+        // (askOptions render as tappable relay cards that stack).
+        a1: { id: "a1", title: "Coconut fp32", source: "ask", status: "idle", askOf: "m1", askNotifId: "nAsk", messages: [
+          { role: "user", content: "is the 0.85 real, or noise?", direct: true },
+          { role: "assistant", content: "Real — it's climbed 0.68 → 0.71 → 0.78 → 0.85 across the last 4 epochs, exactly the latent-stage ramp. The run that plateaued never cleared 0.83.", direct: true },
+          { role: "user", content: "what if we split the difference on the cap?", direct: true },
+          { role: "assistant", content: "A middle cap is workable — here's how I'd frame it:", direct: true, askOptions: [
+            { answer: "Raise to $36", title: "Raise to $36 — one more latent stage", body: "Covers epochs 26-28 where most of the remaining gain lives; hard-stops $4 earlier than the full ask." , primary: true },
+            { answer: "Hold, re-ask at 0.90", title: "Hold at $32, re-ask if it crosses 0.90", body: "Keeps the cap; the mission fires a fresh ask only if accuracy proves the ramp is still going." },
+          ] },
+        ] },
         m1: { id: "m1", title: "BitNet 160M MVP", source: "mission", status: "idle", messages: [
           { role: "user", content: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP across 3 seeds; commit eval.loss; writeup under docs/. Done = three seeds within 0.005 nat." },
           { role: "assistant", content: "Criterion pinned. Fanning out a worker per seed plus an eval/writeup worker; I'll watch on 15-min wakes and verify before I call it.", tools: ["StartWorker", "StartWorker", "StartWorker", "Schedule"] },
@@ -1681,7 +1697,9 @@ interface MockDB {
       // Feed the dot's eligibility map — the icon needs sources to tell your
       // chats from harness threads.
       for (const c of convs) convSourceById.set(c.id, c.source);
-      const chats = convs.filter((c) => ((c.source !== "worker" && c.source !== "mission") || c.surfaced) && (!hidden.has(c.id) || c.id === convId));
+      // Ask threads live behind their alert card (the deliberation sheet), never
+      // in Chats — surfacing them here would recreate the two-surfaces confusion.
+      const chats = convs.filter((c) => c.source !== "ask" && ((c.source !== "worker" && c.source !== "mission") || c.surfaced) && (!hidden.has(c.id) || c.id === convId));
       // The chat you're in may not be on disk yet (the box persists ~500ms
       // after the first message). Show it anyway so a just-made chat never
       // looks missing.
@@ -2170,6 +2188,13 @@ interface MockDB {
   // Refresh handle for the live mission view — any new sheet (and closing one)
   // cancels it so a mission's poll never bleeds into another sheet's body.
   let missionPoll = 0;
+  // Per-attach token: every sheet-conversation attach takes ++sheetSeq and its
+  // paints bail when a NEWER attach exists. This is the structural fix for the
+  // cross-sheet bleed class (note 4264e049): the shared sheetConvId guard alone
+  // couldn't catch "closed A, opened B, then A's in-flight fetch resolved while
+  // B shows the same conversation id or a same-named #delibX". A stale token can
+  // never paint, whatever the ids say.
+  let sheetSeq = 0;
   // Live-sheet state: while a worker/mission thread is open AND running, its
   // in-flight words stream into the sheet (sheetLiveText, fed by runtime events),
   // and sheetRepaint folds in finalized turns. Reset whenever a sheet opens/closes.
@@ -2605,8 +2630,10 @@ interface MockDB {
       // longer matches ours — writing now would splash THIS mission's thread into
       // the sheet showing something else (note 4264e049: "a supervisor reply I
       // never asked for bled into the note conversation"). The new sheet owns the
-      // DOM now; bail before any state mutation or write.
-      if (sheetConvId !== mc.id) return;
+      // DOM now; bail before any state mutation or write. The token check closes
+      // the id-collision hole the convId compare can't (same conversation reopened
+      // in a NEW sheet while an old fetch is in flight).
+      if (sheetConvId !== mc.id || sheetSeq !== myTok) return;
       const restPlus = rest.concat(optimistic.map((t) => ({ role: "user", content: t })));
       const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
       // The box's own liveRun is authoritative: if it reports a run, we're live
@@ -2714,6 +2741,7 @@ interface MockDB {
     // Stream runtime events + repaint for ANY open mission sheet, including a
     // completed one being discussed — so a reply to a finished mission streams
     // and folds in just like a live one.
+    const myTok = ++sheetSeq;
     sheetConvId = mc.id; sheetRepaint = paint;
     updateConvDot(); // now viewing this thread → drop it from the background dot
     await paint();
@@ -2757,6 +2785,7 @@ interface MockDB {
       bodyHtml: '<div class="lbl">Thread · supervisor ↔ worker</div><div class="alsum-load" id="wkLoad">loading…</div>',
       back: back || null,
     });
+    const myTok = ++sheetSeq;
     sheetConvId = convId;
     updateConvDot(); // now viewing this worker thread → drop it from the background dot
     // Seed running from the live run passed in (a non-null run = it's working);
@@ -2773,7 +2802,7 @@ interface MockDB {
       } catch (e) { err = String(e.message || e); }
       // Bleed guard: awaited fetches above — if the sheet was swapped meanwhile,
       // don't write this worker thread into whatever sheet is showing now.
-      if (sheetConvId !== convId) return;
+      if (sheetConvId !== convId || sheetSeq !== myTok) return;
       const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
       sheetRunning = liveRun || hasLive;
       const showLive = sheetRunning;
@@ -3440,21 +3469,48 @@ interface MockDB {
   async function openAlertSheet(n, isAction) {
     if (isAction || n.kind === "ask") { openDeliberationSheet(n); return; }
     const meta = alertMeta(n);
-    const canTalk = !!n.convId;
     let probe = null;
+    // [ask redesign] Info alerts are chats too (the user follows up on some) —
+    // but in the alert's OWN thread, created LAZILY on the first message, never
+    // as a lens on the source mission/worker thread (the bleed we removed). The
+    // agent is seeded with the alert + mission context and reads live state for
+    // "how does it stand now" questions; a relay card it proposes can steer the
+    // source mission via the tagged answer path.
+    const followupEmpty = "No follow-up yet — ask below; the agent knows this alert's mission and can check live state.";
+    const attachFollowup = (fid) =>
+      attachSheetConversation(fid, {
+        openAtTop: true,
+        onOption: (ans) => resolveDeliberation(n, ans),
+        emptyText: followupEmpty,
+      });
     openSheet({
       intent: n.intention || meta.intention, title: n.title, ico: n.icon || meta.icon, cls: n.cls || meta.cls,
       action: null,
       bodyHtml: '<div class="md">' + md(n.body || "*(no summary)*") + "</div>"
-        + (canTalk ? '<div class="lbl">Conversation</div><div id="delibX"></div>' : ""),
-      footHtml: canTalk ? probeFootHtml("Ask about this…") : "",
-      wire: (body, foot) => { if (canTalk) wireReply(foot, (v) => probe && probe(v)); },
+        + '<div class="lbl">Conversation</div><div id="delibX"></div>',
+      footHtml: probeFootHtml("Ask about this…"),
+      wire: (body, foot) => {
+        wireReply(foot, async (v) => {
+          if (probe) { probe(v); return; }
+          // First follow-up: mint the alert's thread, then send through the
+          // normal message path so the optimistic bubble + stream work as one
+          // code path.
+          try {
+            const r = await api("/alert-followup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notifId: n.id, title: n.title || "", body: n.body || n.summary || "", convId: n.convId || "" }) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || d.error || !d.convId) throw new Error(d.error || r.status);
+            n.followupConvId = d.convId;
+            probe = attachFollowup(d.convId);
+            probe(v);
+          } catch (e) { toast("Couldn't start the follow-up: " + (e.message || e)); }
+        });
+      },
     });
-    // Same design as the ask sheet, minus the decision card: the alert's context
-    // on top, then the REAL conversation — the source thread rendered like a
-    // supervisor thread (wakes as compact notes, timelines, markdown), open at
-    // the alert context first.
-    if (canTalk) probe = attachSheetConversation(n.convId, { openAtTop: true, emptyText: "No turns yet — ask below and the thread’s agent answers with its full context." });
+    if (n.followupConvId) probe = attachFollowup(n.followupConvId);
+    else {
+      const x0 = $("delibX");
+      if (x0) x0.innerHTML = '<div class="md dim">' + esc(followupEmpty) + "</div>";
+    }
   }
   // The feed card for an ask. A neutral card: a subtle near-white "Needs you" dot
   // + label, a top-right chat icon that opens the deliberation sheet ("dig in"),
@@ -3522,8 +3578,23 @@ interface MockDB {
   // reply streams via #chatEdge and folds in when persisted. Returns the probe
   // sender (a plain /message — never resolves an ask). This is what replaced
   // the old "Open thread" jump into the raw execution log.
+  // [ask redesign] Render a proposed option set (a message's askOptions) as
+  // tappable cards. Same visual language as the decision card's options; the
+  // "proposed" class scopes the tap wiring.
+  function askOptionCardsHtml(opts) {
+    return '<div class="delib-proposed">' + opts.map((o, i) =>
+      '<div class="delib-opt proposed' + (o.primary ? " prim" : "") + '" data-ans="' + esc(o.answer) + '">'
+        + '<div class="ot">' + esc(o.title || o.answer)
+        + '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div>'
+        + (o.body ? '<div class="ob">' + esc(o.body) + "</div>" : "")
+      + "</div>").join("") + "</div>";
+  }
   function attachSheetConversation(cid, hooks) {
     hooks = hooks || {};
+    // One live poll per sheet — kill any predecessor so a replaced sheet's
+    // interval doesn't keep firing no-op paints underneath.
+    if (missionPoll) { clearInterval(missionPoll); missionPoll = 0; }
+    const myTok = ++sheetSeq;
     sheetConvId = cid;
     updateConvDot();
     const optimistic = [];
@@ -3540,54 +3611,69 @@ interface MockDB {
         const d = await (await api("/conversation?id=" + encodeURIComponent(cid) + "&n=60")).json();
         if (!d.error) {
           src = d.source || "";
-          // The deliberation exchange ONLY: direct conversational turns (you ↔
-          // the front) plus decision receipts. Wakes, briefs, and executor turns
-          // never render here.
+          // The conversation is the notification's OWN thread now (source "ask"),
+          // scoped by construction — no mission traffic can appear here and no
+          // slicing-by-decision is needed (the positional slice was exactly how
+          // an archived ask showed a DIFFERENT ask's exchange). The filter below
+          // only matters for legacy pre-redesign asks whose convId still points
+          // at a mission thread.
           msgs = (d.messages || []).filter((m) =>
-            (m.role === "assistant" && m.direct) ||
+            (m.role === "assistant" && (m.direct || (m.askOptions && m.askOptions.length))) ||
             (m.role === "user" && (m.direct || m.decision) && !isWakeMsg(m.content || "") && !/^\s*MISSION BRIEF/i.test(m.content || "")));
-          // Scope to the CURRENT deliberation: a decision receipt closes an
-          // exchange. A live ask shows only what came after the last decision —
-          // an old fork's answer rendering under a new ask was the "it was
-          // answered for me" bug. A settled ask shows the exchange that led to
-          // its own receipt, receipt included.
-          let last = -1;
-          for (let i = 0; i < msgs.length; i++) if (msgs[i].decision) last = i;
-          if (hooks.decided) {
-            let prev = -1;
-            for (let i = 0; i < last; i++) if (msgs[i].decision) prev = i;
-            msgs = msgs.slice(prev + 1);
-          } else if (last >= 0) {
-            msgs = msgs.slice(last + 1);
-          }
         }
       } catch {}
       // Bleed guard: /conversation is async. If you closed this ask/note sheet and
-      // opened a DIFFERENT conversation during the fetch, sheetConvId changed — and
-      // since another deliberation sheet also has a #delibX, the null check below
-      // wouldn't stop us writing THIS thread's turns into it. That was the "a reply
-      // I didn't send showed up in the note conversation" bleed (note 4264e049).
-      if (sheetConvId !== cid) return;
+      // opened a DIFFERENT conversation during the fetch, this attach's token is
+      // stale — bail before touching the DOM (note 4264e049; the token also
+      // covers reopening the SAME conversation in a new sheet).
+      if (sheetConvId !== cid || sheetSeq !== myTok) return;
       // Drop optimistic bubbles the persisted thread now contains.
       for (let k = optimistic.length - 1; k >= 0; k--) {
         if (msgs.some((m) => m.role === "user" && (m.content || "").trim() === optimistic[k].trim())) optimistic.splice(k, 1);
       }
-      const shown = msgs.slice(-12).concat(optimistic.map((t) => ({ role: "user", content: t })));
+      const shown = msgs.slice(-16).concat(optimistic.map((t) => ({ role: "user", content: t })));
       // One quiet pulse while a just-sent probe waits for the front's lane to
       // open — the chat edge takes over from "start". The EXECUTOR's runtime
       // never renders in this surface.
       const showWorking = sheetOptimisticWorking && !sheetChatActive && !sheetChatSettling;
-      const sig = JSON.stringify(shown.map((m) => [m.role, (m.content || "").length])) + "|" + showWorking;
+      const sig = JSON.stringify(shown.map((m) => [m.role, (m.content || "").length, m.askOptions ? m.askOptions.length : 0, !!m.decision])) + "|" + showWorking;
       if (sig === lastSig) return; // unchanged — don't disrupt reading/typing
       lastSig = sig;
       const x = $("delibX"); if (!x) return;
       const be = $("sheetBody");
       const prevTop = be ? be.scrollTop : 0;
       const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 90;
+      // Build the thread in segments so decision receipts render as receipts and
+      // a turn's proposed option cards stack right under its prose.
+      let html = "";
+      let seg = [];
+      const names = { user: "You", assistant: src === "mission" ? "Supervisor" : "Assistant" };
+      const flushSeg = () => { if (seg.length) { html += threadHtml(seg, names); seg = []; } };
+      for (const m of shown) {
+        if (m.decision) {
+          flushSeg();
+          html += '<div class="delib-done">✓ Decided — <b>' + esc((m.content || "").slice(0, 200)) + "</b></div>";
+          continue;
+        }
+        seg.push(m);
+        if (m.askOptions && m.askOptions.length) { flushSeg(); html += askOptionCardsHtml(m.askOptions); }
+      }
+      flushSeg();
       x.innerHTML = (shown.length
-        ? threadHtml(shown, { user: "You", assistant: src === "mission" ? "Supervisor" : "Assistant" })
+        ? html
         : '<div class="md dim">' + esc(hooks.emptyText || "No conversation yet — ask below; the agent answers with the thread’s full context.") + "</div>")
         + (showWorking ? '<div class="liveplain"><div class="thinking"><span class="pulse"></span><span class="tlbl show">working…</span></div></div>' : "");
+      // Wire the proposed cards: a tap relays that option as the user's formal
+      // answer (hooks.onOption — the deliberation sheet passes resolveDeliberation).
+      if (hooks.onOption) {
+        x.querySelectorAll(".delib-opt.proposed").forEach((o) => {
+          o.addEventListener("click", () => {
+            if (x.classList.contains("deciding")) return;
+            x.classList.add("deciding"); o.classList.add("chosen");
+            hooks.onOption(o.dataset.ans || "");
+          });
+        });
+      }
       typeset(x);
       // Two-lane fold-in with no gap, same as the mission sheet: hold a settling
       // chat reply on screen until its persisted bubble is in the fetched thread.
@@ -3635,7 +3721,14 @@ interface MockDB {
   }
   async function openDeliberationSheet(n) {
     let del = deliberationFromNotif(n);
-    const cid = n.convId || "";
+    // [ask redesign] The conversation behind an ask is the ask's OWN thread
+    // (askConvId), never the mission thread — the structural spillover fix.
+    // n.convId stays what it always was: the deterministic /answer relay target.
+    // Legacy asks minted before the redesign have no askConvId; they render
+    // their options + decision but attach no conversation (attaching the
+    // mission thread is exactly the bleed we removed).
+    const cid = n.askConvId || "";
+    const legacy = !n.askConvId;
     let probe = null;
     // Decided = read or answered: the decision card renders its recorded outcome,
     // options go inert, and the conversation below is DEAD (no probe foot) — a
@@ -3652,10 +3745,18 @@ interface MockDB {
     // progression and a new fork read as an overwrite of the old one.
     const priorRounds = [];
     for (const s of lastNotifList) {
-      if (s.kind !== "ask" || s.id === n.id || !cid || s.convId !== cid) continue;
+      // Rounds of one deliberation share the MISSION conv (the relay target),
+      // not the per-ask thread — each round has its own askConvId now.
+      if (s.kind !== "ask" || s.id === n.id || !n.convId || s.convId !== n.convId) continue;
       if ((s.ts || 0) > (n.ts || 0)) continue;
+      // Only SUPERSEDED forks are rounds of THIS deliberation — retired (read)
+      // without an answer when the agent tightened the ask. An ANSWERED ask is
+      // its own settled decision (archive material — rendering it inside a
+      // different ask's sheet was the "one ask shows another ask's decision"
+      // confusion, note 9f971aec), and a still-live ask is its own card.
+      if (s.answeredWith || !s.read) continue;
       const sd = deliberationFromNotif(s);
-      priorRounds.push({ ask: sd.askLong || sd.ask || "", options: sd.options || [], answeredWith: s.answeredWith || "", answeredAt: s.answeredAt || 0, ts: s.ts || 0 });
+      priorRounds.push({ ask: sd.askLong || sd.ask || "", options: sd.options || [], answeredWith: "", answeredAt: 0, ts: s.ts || 0 });
     }
     priorRounds.sort((a, b) => (a.ts || 0) - (b.ts || 0));
     // The decision card — rebuilt in place when a newer ask supersedes this one
@@ -3718,8 +3819,11 @@ interface MockDB {
           + (!del.options.length ? '<button class="ans-commit">✓ Send it as my answer</button>' : ""),
       wire: (body, foot) => {
         wireDecision(body.querySelector("#delibDecision"));
-        // The probe input talks it through — a plain /message, NOT an answer.
-        if (!decided) wireReply(foot, (v) => probe && probe(v));
+        // The composer talks to the ask's own agent (a plain /message to the ask
+        // thread, never an answer). LEGACY asks (pre-redesign, no ask thread)
+        // have nobody to talk to — there the send arrow commits the text as the
+        // formal answer, the old semantics, so the input is never dead UI.
+        if (!decided) wireReply(foot, (v) => (legacy ? resolveDeliberation(n, v) : probe && probe(v)));
         // The commit action formalizes: whatever is typed in the ONE composer
         // becomes the tagged answer via /answer.
         const commit = foot.querySelector(".ans-commit");
@@ -3732,45 +3836,44 @@ interface MockDB {
         };
       },
     });
-    // Mock/legacy ask with no thread behind it: render any baked sample exchange
-    // statically and stop — there's nothing live to wire.
+    // Mock/legacy ask with no per-ask thread behind it: render any baked sample
+    // exchange statically and stop — attaching the MISSION thread here is
+    // exactly the spillover we removed, so a legacy ask gets no conversation.
     if (!cid) {
       const baked = Array.isArray(n.deliberation && n.deliberation.exchange) ? n.deliberation.exchange : [];
       const x0 = $("delibX");
       if (x0) x0.innerHTML = baked.length
         ? threadHtml(baked.map((m) => ({ role: m.role, content: m.text || "" })), { user: "You", assistant: "Supervisor" })
-        : '<div class="md dim">No conversation behind this ask.</div>';
+        : '<div class="md dim">' + (legacy && !decided ? "This ask predates per-ask conversations — the options above still work." : "No conversation behind this ask.") + "</div>";
       return;
     }
-    // Latest wins, for real: while the sheet is open, each poll tick checks for a
-    // NEWER pending ask on this thread (the agent deliberating can surface fresh
-    // options mid-conversation — a new AskUser supersedes this one on the box).
-    // Swap the decision card in place so the buttons you see are always the live
-    // fork, not a stale one.
+    // Latest wins: while the sheet is open, each poll tick checks for a NEWER
+    // pending ask on the same MISSION (the executor can tighten the fork with a
+    // fresh AskUser). A superseding ask is a NEW card with its OWN thread now —
+    // reopen the sheet on it so the decision card, the conversation, and the
+    // relay target swap together (an in-place card swap over the OLD thread
+    // would mix two asks' surfaces).
     const checkNewerAsk = async () => {
       if (decided) return;
       try {
         const d = await (await api("/notifications")).json();
         const list = d.notifications || [];
         lastNotifList = list;
-        const newest = list.find((s) => s.kind === "ask" && !s.read && s.convId === cid);
-        if (newest && newest.id !== n.id) {
-          // Stack the round being replaced, then swap in the new fork.
-          priorRounds.push({ ask: del.askLong || del.ask || "", options: del.options || [], answeredWith: "", answeredAt: 0, ts: n.ts || 0 });
-          n = newest; del = deliberationFromNotif(n);
-          const box = $("delibDecision");
-          if (box && !box.classList.contains("deciding")) { box.innerHTML = decisionHtml(); wireDecision(box); }
-        }
+        const newest = list.find((s) => s.kind === "ask" && !s.read && s.convId === n.convId);
+        if (newest && newest.id !== n.id) openDeliberationSheet(newest);
       } catch {}
     };
-    // [ask-conversation] Talk-it-through is a REAL conversation — the shared
-    // plumbing streams the front's reply and folds it in, styled like a
-    // supervisor thread but scoped to THIS deliberation's exchange.
+    // [ask-conversation] The conversation is the ask's OWN thread — the
+    // dedicated ask agent answers here (with live ground-truth reads), and any
+    // option set it proposes renders as tappable relay cards (onOption).
     probe = attachSheetConversation(cid, {
       openAtTop: true,
       onTick: checkNewerAsk,
       decided,
-      emptyText: "No conversation yet — talk it through below; the agent has the mission’s full context.",
+      onOption: decided ? null : (ans) => resolveDeliberation(n, ans),
+      emptyText: decided
+        ? "No deliberation happened — the decision was made straight from the card."
+        : "No conversation yet — talk it through below; the agent knows the mission and can check live state.",
     });
   }
   // Resolve an ask: the TAGGED answer path (a tapped option OR a committed
@@ -3791,7 +3894,10 @@ interface MockDB {
     if (n.convId) {
       // notifId lets the box durably stamp WHICH answer settled this ask
       // (answeredWith), so the Archive shows the decision that was made.
-      api("/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: answer, clientMsgId, notifId: n.id }) }).catch(() => {});
+      // askConvId lets it freeze the ask's own thread into a read-only record
+      // with the decision receipt pinned (only asks carry one — an info
+      // follow-up thread stays live after a relayed steer).
+      api("/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: answer, clientMsgId, notifId: n.id, ...(n.kind === "ask" && n.askConvId ? { askConvId: n.askConvId } : {}) }) }).catch(() => {});
     }
     // One answer settles the DECISION, not just this card: retire every live ask
     // card pointing at the same conversation. The deadlocked self-test stacked 3
@@ -4141,10 +4247,30 @@ interface MockDB {
       const d = (e && e.data) || {};
       if (d.type !== "deeplink" || !d.url) return;
       try {
-        const cid = new URLSearchParams(String(d.url).split("?")[1] || "").get("conv");
+        const p = new URLSearchParams(String(d.url).split("?")[1] || "");
+        // [ask redesign] An ask push deep-links to the ask surface (?ask=), not
+        // to the mission thread — the main composer must never get silently
+        // re-bound to a mission by a notification tap (spillover vector B3).
+        const aid = p.get("ask");
+        if (aid) { void openAskById(aid); return; }
+        const cid = p.get("conv");
         if (cid) void openThread(cid);
       } catch {}
     });
+  }
+
+  // [ask redesign] Open an ask's deliberation sheet by notification id — the
+  // push deep-link target. Lands on the Alerts page with the sheet up; never
+  // touches the main chat's bound conversation.
+  async function openAskById(nid) {
+    try {
+      const d = await (await api("/notifications")).json();
+      lastNotifList = d.notifications || [];
+      setPage("alerts");
+      void loadAlerts();
+      const n = lastNotifList.find((x) => x.id === nid);
+      if (n) openDeliberationSheet(n);
+    } catch {}
   }
 
   // The scroll fade is a scrolling AFFORDANCE — per edge, and only when content
@@ -4170,8 +4296,13 @@ interface MockDB {
   // (from the push url, when the app was launched cold). It MUST win over the
   // sticky last-thread restore below — otherwise the tap lands you on whatever
   // chat you had open last, not the one waiting on your call.
+  const bootAsk = qs.get("ask");
   const bootConv = qs.get("conv");
-  if (bootConv) {
+  if (bootAsk) {
+    // [ask redesign] Cold-launch from an ask push: open the ask surface, never
+    // a thread — the main composer keeps whatever chat it had.
+    void openAskById(bootAsk);
+  } else if (bootConv) {
     void openThread(bootConv);
   } else {
     // Return to the thread you were in last session (404 falls back to a fresh chat).

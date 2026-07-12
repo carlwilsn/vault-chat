@@ -495,6 +495,20 @@ fn handle(mut req: Request, token: &str) {
             };
             let _ = req.respond(body);
         }
+        (Method::Post, "/alert-followup") => {
+            // [ask redesign] First follow-up message on an INFO alert: the app
+            // lazily mints the alert's own conversation, records the binding as
+            // a "followup" marker, runs the ask agent on the message, and
+            // returns { convId } so the phone attaches the new thread.
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            let body = match relay_request("phone:alert-followup", payload, Duration::from_secs(15)) {
+                Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
+                _ => resp_text(503, "application/json", "{\"error\":\"app not answering\"}".into()),
+            };
+            let _ = req.respond(body);
+        }
         (Method::Post, "/answer") => {
             // [AskUser redesign] The TAGGED answer to a "Needs you" ask — a tapped
             // option or a committed free-form reply. Distinct from /message so a
@@ -1305,6 +1319,11 @@ fn notifications_json(vault: &str) -> String {
     // separate read marker was lost).
     let mut answered: std::collections::HashMap<String, (String, i64)> =
         std::collections::HashMap::new();
+    // [ask redesign] "followup" markers bind an info alert to its lazily-minted
+    // follow-up conversation. Folded into the card as followupConvId so the
+    // sheet reattaches the same thread on reopen.
+    let mut followups: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for line in raw.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         match v.get("type").and_then(|x| x.as_str()) {
@@ -1319,6 +1338,14 @@ fn notifications_json(vault: &str) -> String {
                     let ts = v.get("ts").and_then(|x| x.as_i64()).unwrap_or(0);
                     answered.insert(id.to_string(), (ans, ts));
                     read_ids.insert(id.to_string());
+                }
+            }
+            Some("followup") => {
+                if let (Some(id), Some(cid)) = (
+                    v.get("id").and_then(|x| x.as_str()),
+                    v.get("convId").and_then(|x| x.as_str()),
+                ) {
+                    followups.insert(id.to_string(), cid.to_string());
                 }
             }
             Some("clear") => {
@@ -1364,6 +1391,9 @@ fn notifications_json(vault: &str) -> String {
                 if let Some((ans, ats)) = answered.get(&id) {
                     obj.insert("answeredWith".into(), json!(ans));
                     obj.insert("answeredAt".into(), json!(ats));
+                }
+                if let Some(fcid) = followups.get(&id) {
+                    obj.insert("followupConvId".into(), json!(fcid));
                 }
             }
             v
@@ -1501,6 +1531,9 @@ fn conversation_json(vault: &str, id: &str, n: usize) -> Option<String> {
                 // A formal user decision (a tapped AskUser option / committed
                 // answer via /answer) — rendered as a decision chip in threads.
                 "decision": m.get("decision").and_then(|x| x.as_bool()).unwrap_or(false),
+                // [ask redesign] Option cards the ask agent proposed with this
+                // turn — tappable answer relays, stacked under the exchange.
+                "askOptions": m.get("askOptions").cloned().unwrap_or(Value::Null),
             })
         })
         .collect();
@@ -1515,6 +1548,13 @@ fn conversation_json(vault: &str, id: &str, n: usize) -> Option<String> {
             // event arrives. (On-disk status is written idle, so "is it running"
             // still comes from /status; this is only the clock's start.)
             "runStartedAt": c.get("runStartedAt").and_then(|x| x.as_i64()),
+            // [ask redesign] Ask-thread linkage + decision record: the phone
+            // routes option taps at askOf (the waiting mission) and freezes the
+            // composer once askDecided is set.
+            "askOf": c.get("askOf").and_then(|x| x.as_str()).unwrap_or(""),
+            "askNotifId": c.get("askNotifId").and_then(|x| x.as_str()).unwrap_or(""),
+            "askDecided": c.get("askDecided").and_then(|x| x.as_str()).unwrap_or(""),
+            "askDecidedAt": c.get("askDecidedAt").and_then(|x| x.as_i64()),
             "messages": visible,
         })
         .to_string(),

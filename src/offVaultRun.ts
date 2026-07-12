@@ -950,6 +950,255 @@ export async function runMissionChatTurn(
   return { reply, error: runErr };
 }
 
+// [ask redesign] Mint a notification's OWN conversation. Called when an AskUser
+// fires (and lazily when the user follows up on an info alert). The thread is
+// isolated from the mission by construction — the structural fix for the
+// "supervisor chat bleeds into the ask" spillover: there is no shared thread to
+// bleed across. The ask's question + original options are seeded as a hidden
+// context message; the phone renders the decision card from the notification,
+// so the visible thread starts empty.
+export async function mintAskConversation(
+  vault: string,
+  opts: {
+    // The conversation the notification came from — the mission whose
+    // supervisor waits on the answer (the deterministic relay target). Absent
+    // for a sourceless info alert.
+    missionConvId?: string;
+    notifId: string;
+    title: string;
+    // Mission group label, for display.
+    mission?: string;
+    question: string;
+    options?: { answer: string; title?: string; body?: string; primary?: boolean }[];
+    // "ask" seeds a decision conversation; "info" a follow-up conversation.
+    kind: "ask" | "info";
+  },
+): Promise<string> {
+  const now = Date.now();
+  const seedLines = [
+    opts.kind === "ask" ? `[ASK CONTEXT — the decision this conversation is about]` : `[ALERT CONTEXT — the notification this conversation follows up on]`,
+    opts.mission ? `Mission: ${opts.mission}` : "",
+    `Question/alert: ${opts.question}`,
+    ...(opts.options && opts.options.length
+      ? [
+          "Original options (pinned above the conversation on the user's screen):",
+          ...opts.options.map((o, i) => `${i + 1}. ${o.answer}${o.body ? ` — ${o.body}` : ""}${o.primary ? " (recommended)" : ""}`),
+        ]
+      : []),
+  ].filter(Boolean);
+  const conv: Conversation = {
+    ...emptyConversation(),
+    source: "ask",
+    title: opts.title.slice(0, 90),
+    mission: opts.mission,
+    askOf: opts.missionConvId,
+    askNotifId: opts.notifId,
+    createdAt: now,
+    lastActivityAt: now,
+    messages: [
+      { role: "user", content: seedLines.join("\n"), hidden: true, system: true, mid: newMessageId() },
+    ],
+  };
+  await withConvLock(async () => {
+    const list = await readConversations(vault);
+    await writeConversations(vault, [conv, ...list]);
+  });
+  await useStore.getState().refreshConversationFromDisk(vault, conv.id).catch(() => {});
+  return conv.id;
+}
+
+// [ask redesign] One turn of the dedicated ask agent, in the notification's own
+// conversation. Modeled on runMissionChatTurn (same chat lane + broadcast
+// contract, so the phone sheet streams it identically) but a different persona:
+// ask.md, ask-tier tools (read + converse + ProposeOptions), and a briefing
+// compiled FRESH each turn from the source mission's thread on disk — a
+// starting snapshot, not a blindfold; the agent reads live ground truth when
+// the user asks how things stand now.
+export async function runAskTurn(
+  vault: string,
+  conversationId: string,
+  message: string,
+): Promise<{ reply: string; error?: string }> {
+  const store = useStore.getState();
+  const text = message.trim();
+  if (!text) return { reply: "", error: "empty message" };
+
+  let modelId = store.modelId;
+  let spec = findModel(modelId);
+  if (!spec || !store.apiKeys[spec.provider]) {
+    const fb = findModel(store.supervisorModelId) || findModel(DEFAULT_WORKER_MODEL_ID);
+    if (fb && store.apiKeys[fb.provider]) { modelId = fb.id; spec = fb; }
+  }
+  const apiKey = spec ? store.apiKeys[spec.provider] : undefined;
+  if (!spec || !apiKey) return { reply: "", error: "no model / API key configured" };
+
+  const chatKey = conversationId + "#chat";
+  const broadcastChat = (phase: string, extra?: Record<string, unknown>) =>
+    void invoke("phone_broadcast", {
+      json: JSON.stringify({ type: "chat", convId: conversationId, phase, ...(extra || {}) }),
+    }).catch(() => {});
+
+  // Append the user's turn up front (durable before anything can refresh over
+  // it), and refuse writes to a settled ask — the decision has been made, the
+  // thread is a record now.
+  const userMsg: ChatMessage = { role: "user", content: text, direct: true, mid: newMessageId() };
+  const seeded = await withConvLock(async () => {
+    const list = await readConversations(vault);
+    const idx = list.findIndex((c) => c.id === conversationId);
+    if (idx < 0) return null;
+    if (list[idx]!.askDecided) return { decided: true as const };
+    const messages = [...list[idx]!.messages, userMsg];
+    list[idx] = { ...list[idx]!, messages, lastActivityAt: Date.now() };
+    await writeConversations(vault, list);
+    return { messages, askOf: list[idx]!.askOf };
+  });
+  if (!seeded) return { reply: "", error: `ask thread not found: ${conversationId}` };
+  if ("decided" in seeded) return { reply: "", error: "this ask is decided — the conversation is a read-only record" };
+  await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+
+  // Compile the source mission's context fresh from disk — title, state, and a
+  // compact tail of its thread. Fresh-at-turn-time beats a mint-time freeze
+  // (the user may return hours later), and reading disk never touches the
+  // executor.
+  let missionBlock = "[No source thread — this notification has no conversation behind it.]";
+  if (seeded.askOf) {
+    try {
+      const src = (await readConversations(vault)).find((c) => c.id === seeded.askOf);
+      if (src) {
+        const tail = src.messages
+          .filter((m) => !m.hidden && (m.content || "").trim())
+          .slice(-12)
+          .map((m) => {
+            const one = (m.content || "").replace(/\s+/g, " ").slice(0, 280);
+            return `- ${m.role}${m.direct ? " (direct)" : ""}${m.decision ? " [DECISION]" : ""}: ${one}`;
+          })
+          .join("\n");
+        missionBlock =
+          `[SOURCE MISSION — compiled from its thread on disk just now]\n` +
+          `Title: ${src.title}\n` +
+          (src.missionState ? `State: ${src.missionState}\n` : "") +
+          (src.statusSummary ? `Status: ${src.statusSummary}\n` : "") +
+          (src.taskSummary ? `Task: ${src.taskSummary}\n` : "") +
+          `Recent thread tail:\n${tail}`;
+      }
+    } catch {
+      /* keep placeholder */
+    }
+  }
+  // The hidden seed (ask question + original options) rides in the system
+  // framing, not the visible history.
+  const seedCtx = seeded.messages.find((m) => m.system && m.hidden)?.content || "";
+  const framing =
+    "You are the dedicated agent for ONE notification (see your role prompt). The user is deliberating with you in the notification's own conversation. The mission context below is a fresh snapshot — read live ground truth with your tools when the user asks how things stand now. If the deliberation moves the fork, call ProposeOptions.";
+
+  const baseHistory = seeded.messages
+    .filter((m) => !m.hidden && !m.system && m.content !== text)
+    .map((m) => ({ role: m.role, content: m.content }));
+
+  const controller = new AbortController();
+  registerRun(chatKey, controller);
+  broadcastChat("start");
+
+  let acc = "";
+  let lastLen = 0;
+  let sawTool = false;
+  let runErr: string | undefined;
+  try {
+    await runAgent({
+      modelId,
+      apiKey,
+      vault,
+      history: baseHistory,
+      userMessage: `${framing}\n\n${seedCtx}\n\n${missionBlock}\n\n---\n\nUser: ${text}`,
+      abortSignal: controller.signal,
+      tavilyKey: store.serviceKeys.tavily,
+      strictVault: store.strictVaultMode,
+      bashDisabled: store.bashDisabled,
+      voiceMode: false,
+      askMode: true,
+      conversationId,
+      reasoningEffort: store.reasoningEffort,
+      onEvent: (e) => {
+        if (e.kind === "text") {
+          if (sawTool && acc && e.delta.trim() && !/\n\s*$/.test(acc)) acc += "\n\n";
+          sawTool = false;
+          acc += e.delta;
+          if (acc.length - lastLen >= 16) {
+            lastLen = acc.length;
+            broadcastChat("stream", { text: acc.slice(-4000) });
+          }
+        } else if (e.kind === "tool_use") {
+          sawTool = true;
+        } else if (e.kind === "error") {
+          runErr = errToString(e.message);
+        }
+      },
+    });
+  } catch (e) {
+    runErr = errToString(e);
+  } finally {
+    unregisterRun(chatKey, controller);
+  }
+
+  // Persist the reply as a DIRECT turn, carrying any option cards the agent
+  // staged via ProposeOptions — cards land WITH the prose that argues for them.
+  const reply = acc.trim();
+  const { takePendingAskOptions } = await import("./tools");
+  const staged = takePendingAskOptions(conversationId);
+  if (reply || staged.length) {
+    await withConvLock(async () => {
+      const list = await readConversations(vault);
+      const idx = list.findIndex((c) => c.id === conversationId);
+      if (idx < 0) return;
+      const assistantMsg: ChatMessage = {
+        role: "assistant",
+        content: reply || "Here are the options I'd put in front of you:",
+        direct: true,
+        mid: newMessageId(),
+        ...(staged.length ? { askOptions: staged } : {}),
+      };
+      list[idx] = { ...list[idx]!, messages: [...list[idx]!.messages, assistantMsg], lastActivityAt: Date.now() };
+      await writeConversations(vault, list);
+    });
+    await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+  }
+  broadcastChat("end");
+  return { reply, error: runErr };
+}
+
+// [ask redesign] Stamp a settled ask: append the decision receipt to the ask
+// thread and freeze it read-only (askDecided). Called from the /answer path
+// AFTER the tagged answer was accepted by the mission — the ask thread records
+// what was decided; the mission thread received the actual answer.
+export async function stampAskDecided(
+  vault: string,
+  askConvId: string,
+  answer: string,
+): Promise<void> {
+  await withConvLock(async () => {
+    const list = await readConversations(vault);
+    const idx = list.findIndex((c) => c.id === askConvId);
+    if (idx < 0) return;
+    if (list[idx]!.askDecided) return; // one decision per ask, idempotent
+    const receipt: ChatMessage = {
+      role: "user",
+      content: answer,
+      direct: true,
+      decision: true,
+      mid: newMessageId(),
+    };
+    list[idx] = {
+      ...list[idx]!,
+      messages: [...list[idx]!.messages, receipt],
+      askDecided: answer.slice(0, 160),
+      askDecidedAt: Date.now(),
+      lastActivityAt: Date.now(),
+    };
+    await writeConversations(vault, list);
+  });
+  await useStore.getState().refreshConversationFromDisk(vault, askConvId).catch(() => {});
+}
+
 // Spawn a NEW worker thread (subagent) and kick its task off in the
 // background, returning immediately with the new conversation's id + title.
 // The orchestrator (supervisor / the phone's front agent) calls this when the

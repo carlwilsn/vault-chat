@@ -168,6 +168,18 @@ async function handlePhoneMessage(
     conv = fresh;
   }
 
+  // [ask redesign] A message to an ask thread runs the dedicated ask agent —
+  // its own conversation, its own persona, physically incapable of touching
+  // the mission thread. A settled ask refuses writes (read-only record).
+  if (conv.source === "ask") {
+    if (conv.askDecided) return { error: "this ask is decided — the conversation is a read-only record" };
+    const { runAskTurn } = await import("./offVaultRun");
+    void runAskTurn(s.vaultPath, conv.id, trimmed).catch((e) =>
+      console.warn("[phone-app] ask turn failed:", e),
+    );
+    return { ok: true, convId: conv.id, ask: true };
+  }
+
   // [AskUser redesign] A TAGGED answer (a tapped option or a committed free-form
   // reply, arriving via /answer) is the ONLY thing that resumes an AWAITING_USER
   // mission. Route it straight to the executor with opts.answer so clearAwait
@@ -634,14 +646,43 @@ export async function notify(
   // so the title carries the signal instead of junk.
   if (rec.body === "[object Object]") rec.body = "";
   if (rec.summary === "[object Object]") rec.summary = "";
+  // [ask redesign] Every ask gets its OWN conversation, minted here — isolated
+  // from the mission thread by construction (the spillover fix). The phone's
+  // deliberation sheet attaches THIS thread; the notification keeps convId (the
+  // mission) as the deterministic /answer relay target and gains askConvId (the
+  // conversation surface). Mint failure is non-fatal: the card still renders
+  // and options still answer; only the talk-it-through surface degrades.
   // Coalesce a byte-identical re-fire inside the 60s window (dark-alarm
   // triple-fire, parallel worker pings) before it hits feed + push. Key on
   // kind+convId+title+body — NOT title+body alone: two different threads asking
   // the SAME stock AskUser question must each surface their own card, or the
   // second asker (which already ended its turn awaiting a reply routed to its
-  // convId) would deadlock on a card that never appeared.
-  const dupKey = `${kind} ${convId ?? ""} ${rec.title as string} ${rec.body as string}`;
+  // convId) would deadlock on a card that never appeared. The ask-thread mint
+  // below sits AFTER this gate — the probe run proved a doubled AskUser call
+  // mints an orphan thread when the mint runs first (the notification deduped,
+  // the mint didn't).
+  const dupKey = `${kind} ${convId ?? ""} ${rec.title as string} ${rec.body as string}`;
   if (isDuplicateNotif(dupKey, rec.ts as number)) return;
+  if (kind === "ask") {
+    try {
+      const { mintAskConversation } = await import("./offVaultRun");
+      const missionLabel = convId
+        ? useStore.getState().conversations.find((c) => c.id === convId)?.mission ||
+          useStore.getState().conversations.find((c) => c.id === convId)?.title
+        : undefined;
+      rec.askConvId = await mintAskConversation(vault, {
+        missionConvId: convId,
+        notifId: rec.id as string,
+        title: (title || "Needs your call").slice(0, 90),
+        mission: missionLabel,
+        question: body,
+        options: extra?.deliberation?.options,
+        kind: "ask",
+      });
+    } catch (e) {
+      console.warn("[notify] ask-conversation mint failed (non-fatal):", e);
+    }
+  }
   // Latest ask wins, BY CONSTRUCTION: a conversation has at most ONE pending ask.
   // A new "ask" retires any earlier unanswered asks for the same thread (append
   // read markers — same append-only shape the phone's swipe writes). Without this
@@ -680,11 +721,17 @@ export async function notify(
   // deep-links to the asking thread (the service worker + phone.html read
   // ?conv=), instead of just re-focusing whatever chat was open last — the
   // wrong-conversation bug the PROXY spend-fork surfaced.
-  await sendPush(
-    rec.title as string,
-    (rec.body as string).slice(0, 180),
-    convId ? `/phone?conv=${encodeURIComponent(convId)}` : "/phone",
-  ).catch(() => {});
+  // [ask redesign] An ask's push deep-links to the ASK surface (?ask=<notifId>
+  // → the deliberation sheet over its own thread) — never to the mission thread,
+  // which silently re-bound the main composer (spillover vector B3). Info
+  // pushes keep the ?conv deep-link.
+  const pushUrl =
+    kind === "ask"
+      ? `/phone?ask=${encodeURIComponent(rec.id as string)}`
+      : convId
+        ? `/phone?conv=${encodeURIComponent(convId)}`
+        : "/phone";
+  await sendPush(rec.title as string, (rec.body as string).slice(0, 180), pushUrl).catch(() => {});
 }
 
 // ---- Web Push: VAPID + RFC 8291 (aes128gcm), all WebCrypto ----
@@ -1089,8 +1136,9 @@ export async function startPhoneAppHost(): Promise<void> {
     text?: string;
     clientMsgId?: string;
     notifId?: string;
+    askConvId?: string;
   }>("phone:answer", async (event) => {
-    const { reqId, convId, text, clientMsgId, notifId } = event.payload;
+    const { reqId, convId, text, clientMsgId, notifId, askConvId } = event.payload;
     try {
       const t = String(text ?? "").trim();
       if (!convId || !t) {
@@ -1114,7 +1162,75 @@ export async function startPhoneAppHost(): Promise<void> {
           broadcast({ type: "notif" });
         }
       }
+      // [ask redesign] Freeze the ask's own thread into a read-only record with
+      // the decision receipt pinned — after the answer was accepted, same
+      // no-phantom-stamp rule as the marker above.
+      if (askConvId && !(res as { error?: unknown }).error) {
+        const vault = useStore.getState().vaultPath;
+        if (vault) {
+          const { stampAskDecided } = await import("./offVaultRun");
+          await stampAskDecided(vault, askConvId, t).catch((e) =>
+            console.warn("[phone-app] ask-decided stamp failed:", e),
+          );
+        }
+      }
       respond(reqId, res);
+    } catch (e) {
+      respond(reqId, { error: String(e) });
+    }
+  });
+
+  // [ask redesign] Lazy follow-up thread for an INFO alert: minted on the
+  // user's FIRST message about that alert, then reused (a "followup" marker in
+  // notifications.jsonl records the binding; notifications_json folds it into
+  // the card as followupConvId). The first message runs the ask agent
+  // immediately, so one round-trip both creates the thread and answers.
+  await listen<{
+    reqId: string;
+    notifId?: string;
+    title?: string;
+    body?: string;
+    convId?: string;
+    text?: string;
+  }>("phone:alert-followup", async (event) => {
+    const { reqId, notifId, title, body, convId, text } = event.payload;
+    try {
+      const s = useStore.getState();
+      if (!s.vaultPath) {
+        respond(reqId, { error: "no vault open on the box" });
+        return;
+      }
+      const t = String(text ?? "").trim();
+      if (!notifId) {
+        respond(reqId, { error: "follow-up needs a notifId" });
+        return;
+      }
+      const { mintAskConversation, runAskTurn } = await import("./offVaultRun");
+      const missionLabel = convId
+        ? s.conversations.find((c) => c.id === convId)?.mission ||
+          s.conversations.find((c) => c.id === convId)?.title
+        : undefined;
+      const askConvId = await mintAskConversation(s.vaultPath, {
+        missionConvId: convId || undefined,
+        notifId,
+        title: `Re: ${(title || "alert").slice(0, 80)}`,
+        mission: missionLabel,
+        question: [title, body].filter(Boolean).join(" — ").slice(0, 1200),
+        kind: "info",
+      });
+      await invoke("notification_add", {
+        vault: s.vaultPath,
+        json: JSON.stringify({ type: "followup", id: notifId, convId: askConvId, ts: Date.now() }),
+      }).catch(() => {});
+      broadcast({ type: "notif" });
+      // Mint-only when no text: the phone attaches the fresh thread and sends
+      // the first message through the normal /message path.
+      if (t) {
+        void runAskTurn(s.vaultPath, askConvId, t).catch((e) =>
+          console.warn("[phone-app] alert follow-up turn failed:", e),
+        );
+      }
+      respond(reqId, { ok: true, convId: askConvId });
     } catch (e) {
       respond(reqId, { error: String(e) });
     }

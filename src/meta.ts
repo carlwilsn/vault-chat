@@ -199,6 +199,20 @@ export async function saveVaultAssistantPrompt(vault: string, contents: string):
   });
 }
 
+/** [ask redesign] Per-vault ask-agent prompt at `.vault-chat/agent/ask.md`.
+ *  Steers the dedicated agent behind a notification's own conversation —
+ *  deliberate, read live ground truth, propose stacking option cards. ""
+ *  when absent (the agent falls back to the compiled-in baseline). */
+export async function loadVaultAskPrompt(vault: string | null): Promise<string> {
+  if (!vault) return "";
+  return readAgentConfig(vault, "ask.md");
+}
+
+export async function ensureVaultAskPrompt(vault: string | null): Promise<void> {
+  if (!vault) return;
+  await ensureAgentConfig(vault, "ask.md", "default_ask_prompt");
+}
+
 /** Read the per-vault north-star brief (the user's declaration of
  *  what the vault is for). Stored at <vault>/.vault-chat/agent/north-star.md
  *  (migrated from the older flat `.vault-chat/north-star.md`). Prepended to

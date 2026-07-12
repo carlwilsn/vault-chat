@@ -19,7 +19,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 // The agent-config names map 1:1 to defaults/<file>; keep in sync with the
 // ensureAgentConfig calls in meta.ts.
-const FILES = ["system.md", "voice.md", "supervisor.md", "assistant.md"];
+const FILES = ["system.md", "voice.md", "supervisor.md", "assistant.md", "ask.md"];
 const DEFAULTS_DIR = "src-tauri/defaults";
 
 // Canonical normalization: CRLF/CR → LF, strip trailing whitespace, single

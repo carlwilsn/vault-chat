@@ -48,5 +48,8 @@ export const DEFAULT_PROMPT_HISTORY: Record<string, readonly string[]> = {
     "9f00d09789ecaa481601ef6ec5ab2f93e637995163badad5f483d392f6aa9b8a",
     "ab9a270c08bfb16305aae773b5667cdb8d97da2277c0d4a8a55f0ceecf037301",
     "ee5c474d2731641d883a62dc82f2e0faa8344a3c7ff3bb5d67cd9f8f4361d66f"
+  ],
+  "ask.md": [
+    "475b9ac2c97c823850964b65ab786671cccae6cce76d6aaf9e4f3217850f1665"
   ]
 } as const;

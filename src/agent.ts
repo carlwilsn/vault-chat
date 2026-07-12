@@ -7,7 +7,7 @@ import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./provi
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext, buildLiveStateBlock } from "./context";
-import { loadVaultSystemPrompt, loadVaultTools, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock, loadVaultSupervisorPrompt, loadVaultAssistantPrompt } from "./meta";
+import { loadVaultSystemPrompt, loadVaultTools, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock, loadVaultSupervisorPrompt, loadVaultAssistantPrompt, loadVaultAskPrompt } from "./meta";
 import { harnessV2Enabled } from "./harness";
 
 export type TokenUsage = {
@@ -42,6 +42,11 @@ The user keeps a scratchpad of notes at <vault>/.vault-chat/notes.jsonl — quic
 // editable source of truth — kept in sync with defaults/assistant.md. Distilled
 // to the load-bearing behaviors; the full guidance lives in the seeded file.
 const FALLBACK_ASSISTANT = `## Assistant\n\nYou are the light, conversational chat the user talks to directly — the same assistant on their phone and in the desktop app. You answer, look things up, read/write this vault, take notes, set reminders. You do NOT grind long jobs here and you cannot spawn workers.\n\n- Talk like a person. A greeting gets a short human reply — never a status dump of what's running or what you read. Give a briefing only when asked, and keep it tight.\n- Read whose task it is: "walk me through / help me understand / I'm implementing" = coach and let them hold the pen; "do X for me / a task that'd take YOU 20 minutes / go research X" = own it yourself or propose a mission. Don't hand work back when they asked you to take it.\n- Missions are the heart of the workflow: almost anything where the user wants you to actually DO / build / run / figure out something is a mission, not this chat — only quick answers, lookups, notes, and "check in on X" aren't. Lean toward missions when unsure. When they're heading toward real work, either propose it or OFFER first ("want me to set this up as a mission?") when they haven't committed — don't silently fire the tool, and don't let a real task dissolve into chat. To propose, call \`ProposeMission\` with a \`title\` (the goal, briefly stated) and \`tasks\` — the sub-components that DEFINE IT DONE (each a concrete sub-result that'll likely become a worker; the supervisor decides how to split). Approval mints the mission; you can't start one or spawn workers yourself.\n- Don't claim you "started" something you only proposed, and don't narrate mission progress you haven't verified by reading its thread.`;
+
+// [ask redesign] Compiled-in fallback for the ask agent, used when a vault
+// hasn't seeded `.vault-chat/agent/ask.md` yet. Kept in sync with
+// defaults/ask.md (the editable, seeded source of truth).
+const FALLBACK_ASK = `## The ask conversation\n\nYou are the dedicated agent for ONE notification — a decision (or alert) a mission surfaced to the user. This thread exists so the user can deliberate without touching the mission thread. You are not the mission's supervisor and you never act on the mission.\n\n- The ask's question and its original options are pinned above this conversation — don't restate them at length.\n- You start with the mission's context (provided below) and you may READ live ground truth (files, logs, remote state) when the user asks how things stand NOW — hindsight is allowed and encouraged.\n- When the deliberation genuinely moves the fork — pushback, a new constraint, a middle path — call ProposeOptions with a tighter option set. The cards stack under your reply; the originals stay. Tapping any card sends that option as the user's FORMAL answer to the waiting mission.\n- You cannot answer for the user, notify anyone, or change the mission. Your only output is conversation and proposed option cards.\n- Be concise and concrete. This is a decision surface, not a status feed.`;
 
 function detectPlatform(): "windows" | "mac" | "linux" {
   const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
@@ -190,6 +195,10 @@ export async function runAgent(params: {
   // over supervisorMode (the phone cockpit thread is role "supervisor", so
   // supervisorMode is also set there).
   assistantMode?: boolean;
+  // [ask redesign] The dedicated ask agent — a notification's own conversation.
+  // Read+converse only, with ProposeOptions as its one unique tool; loads
+  // ask.md. Takes precedence over assistant/supervisor modes.
+  askMode?: boolean;
   conversationId?: string;
   reasoningEffort?: import("./store").ReasoningEffort;
   // [harness v2] Run this supervisor turn on FRESH CONTEXT: drop the accumulated
@@ -198,7 +207,7 @@ export async function runAgent(params: {
   // foreground user chat, which keeps continuity), gated by harnessV2Enabled().
   freshContext?: boolean;
 }) {
-  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, supervisorMode, assistantMode, conversationId, freshContext } = params;
+  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, supervisorMode, assistantMode, askMode, conversationId, freshContext } = params;
   const reasoningEffort = params.reasoningEffort ?? "medium";
 
   try {
@@ -206,7 +215,7 @@ export async function runAgent(params: {
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey);
 
-    const [sessionContext, skills, vaultSystem, vaultTools, northStar, memoryIndex, shellKind, vaultSupervisor, vaultAssistant] = await Promise.all([
+    const [sessionContext, skills, vaultSystem, vaultTools, northStar, memoryIndex, shellKind, vaultSupervisor, vaultAssistant, vaultAsk] = await Promise.all([
       loadSessionContext(vault),
       loadSkills(vault),
       loadVaultSystemPrompt(vault),
@@ -218,11 +227,13 @@ export async function runAgent(params: {
       // goal loop, worker steering) onto the agent. Loaded for mission threads
       // (supervisorMode) — but NOT the interactive assistant, which gets the
       // lighter assistant prompt.
-      supervisorMode && !assistantMode
+      supervisorMode && !assistantMode && !askMode
         ? loadVaultSupervisorPrompt(vault)
         : Promise.resolve(""),
       // The light assistant prompt for the interactive chat (phone + desktop).
-      assistantMode ? loadVaultAssistantPrompt(vault) : Promise.resolve(""),
+      assistantMode && !askMode ? loadVaultAssistantPrompt(vault) : Promise.resolve(""),
+      // [ask redesign] The ask-agent role for a notification's own conversation.
+      askMode ? loadVaultAskPrompt(vault) : Promise.resolve(""),
     ]);
 
     const { body: expandedMessage } = expandSkillInvocation(userMessage, skills);
@@ -291,9 +302,13 @@ export async function runAgent(params: {
     // compiled-in baseline when the vault hasn't seeded assistant.md (e.g. an
     // existing vault on a fresh update, before the seed/git-sync runs) so the
     // assistant is never left with no role at all.
-    const assistantNote = assistantMode
+    const assistantNote = assistantMode && !askMode
       ? `\n${vaultAssistant.trim() || FALLBACK_ASSISTANT}`
       : "";
+
+    // [ask redesign] Ask-agent role: the notification's own conversation. Falls
+    // back to the compiled-in baseline when the vault hasn't seeded ask.md yet.
+    const askNote = askMode ? `\n${vaultAsk.trim() || FALLBACK_ASK}` : "";
 
     const system = [
       baseSystem,
@@ -313,6 +328,7 @@ export async function runAgent(params: {
       voiceNote,
       supervisorNote,
       assistantNote,
+      askNote,
     ]
       .filter(Boolean)
       .join("\n");
@@ -480,7 +496,7 @@ export async function runAgent(params: {
     // toolset is hard-gated by it. Resolved from the conversation's source —
     // store first (hot path), disk as fallback for headless off-vault runs —
     // so every caller gets the right tools without wiring it through.
-    let tier: "assistant" | "mission" | "worker" = "assistant";
+    let tier: "assistant" | "mission" | "worker" | "ask" = "assistant";
     if (conversationId) {
       let src: string | undefined;
       try {
@@ -499,6 +515,7 @@ export async function runAgent(params: {
       }
       if (src === "mission") tier = "mission";
       else if (src === "worker") tier = "worker";
+      else if (src === "ask") tier = "ask";
     }
     // The assistant persona is ALWAYS assistant-tier, even when it runs on a
     // mission thread. The two-lane conversational front answers the user from a
@@ -506,7 +523,9 @@ export async function runAgent(params: {
     // "mission" above), but it must read/answer only — never orchestrate. Assistant
     // tier drops StartWorker/CompleteMission/MarkDoneWhen, so it cannot spawn or
     // mutate the mission's work concurrently with the executor that owns it.
-    if (assistantMode) tier = "assistant";
+    if (assistantMode && !askMode) tier = "assistant";
+    // [ask redesign] The ask agent is always ask-tier — read+converse+propose.
+    if (askMode) tier = "ask";
 
     const builtinTools = buildTools(vault, {
       tavilyKey,

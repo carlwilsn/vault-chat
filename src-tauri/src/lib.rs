@@ -6219,6 +6219,7 @@ const DEFAULT_SYSTEM_MD: &str = include_str!("../defaults/system.md");
 const DEFAULT_VOICE_MD: &str = include_str!("../defaults/voice.md");
 const DEFAULT_SUPERVISOR_MD: &str = include_str!("../defaults/supervisor.md");
 const DEFAULT_ASSISTANT_MD: &str = include_str!("../defaults/assistant.md");
+const DEFAULT_ASK_MD: &str = include_str!("../defaults/ask.md");
 
 /// The bundled default agent system prompt. New vaults seed
 /// `<vault>/.vault-chat/agent/system.md` from this; it can then be
@@ -6251,6 +6252,14 @@ fn default_supervisor_prompt() -> String {
 #[tauri::command]
 fn default_assistant_prompt() -> String {
     DEFAULT_ASSISTANT_MD.to_string()
+}
+
+/// [ask redesign] Bundled default for `.vault-chat/agent/ask.md` — the
+/// dedicated agent behind a notification's own conversation (deliberate,
+/// read live ground truth, propose stacking option cards). Editable per vault.
+#[tauri::command]
+fn default_ask_prompt() -> String {
+    DEFAULT_ASK_MD.to_string()
 }
 
 // ----- run_script -----
@@ -7307,6 +7316,7 @@ pub fn run() {
             default_voice_prompt,
             default_supervisor_prompt,
             default_assistant_prompt,
+            default_ask_prompt,
             run_script,
             keychain_get,
             keychain_set,

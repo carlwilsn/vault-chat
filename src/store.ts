@@ -112,6 +112,12 @@ export type ChatMessage = {
   // absence. INERT for now (no merge logic reads it yet); it just rides on disk
   // so it has propagated everywhere before a later release dedupes/merges by id.
   mid?: string;
+  // [ask redesign] A fresh option set the ask agent proposed mid-conversation
+  // (via its ProposeOptions tool). The phone renders these as tappable cards
+  // that STACK under the exchange — the original options at the top of the ask
+  // are never replaced. Tapping one relays it as the tagged answer to the
+  // waiting mission. Only ever set on assistant turns in source:"ask" threads.
+  askOptions?: { answer: string; title: string; body: string; primary?: boolean }[];
 };
 
 // Shallow content-compare for the chat message list. The popout
