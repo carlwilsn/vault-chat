@@ -658,8 +658,14 @@
   #kb button:active{transform:none}
   button:focus-visible{outline:none;box-shadow:0 0 0 2px var(--bg),0 0 0 4px rgba(255,255,255,.4)}
   body{font-variant-numeric:tabular-nums}
-  /* the ONLY gradient fade in the app: the conversation thread's scroll edges */
-  #msgs.can-scroll,.scroll.can-scroll,.clist.can-scroll,.sheet-body.can-scroll{--mask-h:32px;mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent);-webkit-mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent)}
+  /* the ONLY gradient fade in the app: the conversation thread's scroll edges.
+     Per-edge, gated on SCROLL POSITION — a surface at rest never dims its first
+     line (note 25b7b572: "premature shadow effects make reading the first line
+     unpleasant"); the top edge only dissolves once content is actually scrolled
+     off above, the bottom only while there's more below. */
+  #msgs.fade-top,.scroll.fade-top,.clist.fade-top,.sheet-body.fade-top{--mask-t:32px}
+  #msgs.fade-bot,.scroll.fade-bot,.clist.fade-bot,.sheet-body.fade-bot{--mask-b:32px}
+  #msgs.fade-top,#msgs.fade-bot,.scroll.fade-top,.scroll.fade-bot,.clist.fade-top,.clist.fade-bot,.sheet-body.fade-top,.sheet-body.fade-bot{mask-image:linear-gradient(to bottom,transparent,black var(--mask-t,0px),black calc(100% - var(--mask-b,0px)),transparent);-webkit-mask-image:linear-gradient(to bottom,transparent,black var(--mask-t,0px),black calc(100% - var(--mask-b,0px)),transparent)}
   .sheet{transition:transform .5s var(--ease-sheet)}
   a{text-decoration:underline;text-underline-offset:3px;text-decoration-color:rgba(255,255,255,.35)}
   .title .tx{letter-spacing:-.02em}
@@ -669,8 +675,7 @@
   .send svg{width:19px;height:19px}
   .sheet-x{display:flex;align-items:center;justify-content:center}
   .sheet-x svg{width:20px;height:20px}
-  /* the empty chat is silent — no centered prompt */
-  .hint{display:none}
+  /* the empty chat greets you (note 25b7b572) — the small-bold hint, back on */
   /* composer: a hairline ring on black */
   .composer .field{background:transparent;border:.5px solid var(--line-2);border-radius:22px}
   /* burger menu: compact, with a real entrance rooted at its trigger */
@@ -1807,7 +1812,14 @@ interface MockDB {
     renderRunline(); scrollDown(false);
   }
   function clearThreadUi() { running = false; stopping = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
-  function showHint() { msgsEl.innerHTML = '<div class="hint"><b>What needs doing?</b>quick questions get answers. bigger asks get scoped before anything runs.</div>'; }
+  // A rotating greeting, Claude-style (note 25b7b572) — the same small-bold
+  // slot as the old "What needs doing?", but JUST the greeting: the Ink empty
+  // chat stays quiet, no explainer boilerplate under it.
+  const GREETS = ["Welcome back!", "He returns!", "Ready to work?", "Welcome, sir.", "At your service."];
+  function showHint() {
+    const g = GREETS[Math.floor(Math.random() * GREETS.length)];
+    msgsEl.innerHTML = '<div class="hint"><b>' + g + "</b></div>";
+  }
 
   // The open thread is sticky: reopening the app returns you to the chat you
   // were in, not a blank new one — replies keep landing where you expect.
@@ -3188,12 +3200,13 @@ interface MockDB {
             const r = await api("/notes/edit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: n.id, text: t }) });
             const d = await r.json().catch(() => ({}));
             if (!r.ok || d.error) throw new Error(d.error || r.status);
-            // Save IN PLACE (note ba0735c9): keep the sheet open with the saved
-            // text — "I might have just saved it and want to read what I saved."
-            // The list refreshes underneath without touching any card's state.
+            // Save COLLAPSES (note 122ec04d, superseding ba0735c9's stay-open):
+            // the sheet closes and the inline card folds shut — the saved note
+            // reads from the refreshed list, not a lingering editor.
             n.user_draft = t;
             toast("Saved.");
-            save.disabled = false;
+            expandedNotes.delete(n.id);
+            closeSheet();
             void loadNotes();
             // The box re-headlines the edited note off the response path — refetch
             // once more so the new title lands without leaving the page.
@@ -4134,14 +4147,20 @@ interface MockDB {
     });
   }
 
-  // The scroll fade is a scrolling AFFORDANCE — a list that fits gets no fade.
+  // The scroll fade is a scrolling AFFORDANCE — per edge, and only when content
+  // is actually cut off on that edge. At rest (scrollTop 0) the first line is
+  // fully readable; the top fade appears only once you scroll down.
   const fadeWatch = () => {
     document.querySelectorAll("#msgs,.scroll,.clist,.sheet-body").forEach((sc) => {
-      sc.classList.toggle("can-scroll", sc.scrollHeight > sc.clientHeight + 4);
+      const can = sc.scrollHeight > sc.clientHeight + 4;
+      sc.classList.toggle("fade-top", can && sc.scrollTop > 4);
+      sc.classList.toggle("fade-bot", can && sc.scrollTop + sc.clientHeight < sc.scrollHeight - 4);
     });
   };
   new MutationObserver(fadeWatch).observe(document.body, { childList: true, subtree: true });
   window.addEventListener("resize", fadeWatch);
+  // scroll doesn't bubble — capture phase catches every scrollable surface.
+  document.addEventListener("scroll", fadeWatch, true);
   setInterval(fadeWatch, 1200);
   fadeWatch();
 
