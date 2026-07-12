@@ -1208,6 +1208,14 @@ async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<()
         // on one giant single-object line. Only written when changed, so an
         // untouched conversation produces no git diff.
         let tombstones = conversation_tombstone_stems(&vault);
+        // [sync split] A follower (content writer) never WRITES mission-zone
+        // conversations — mission/worker/ask files on its disk are read-only
+        // mirrors of the host's, refreshed by git pulls. Without this, the
+        // in-memory store re-dirties the files the sanitize pass just reset
+        // (store content vs origin content differ → content-compare rewrites
+        // → dirty tree every cycle → the pull's merge refuses to start).
+        // Enforced here because every writer funnels through this command.
+        let follower = is_sync_follower_cached(&vault);
         for line in &lines {
             let t = line.trim();
             if t.is_empty() {
@@ -1217,6 +1225,12 @@ async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<()
                 Ok(v) => v,
                 Err(_) => continue,
             };
+            if follower {
+                let src = v.get("source").and_then(|x| x.as_str()).unwrap_or("");
+                if src == "mission" || src == "worker" || src == "ask" {
+                    continue;
+                }
+            }
             let id = match v.get("id").and_then(|x| x.as_str()) {
                 Some(id) if !id.is_empty() => id.to_string(),
                 _ => continue,
@@ -5296,8 +5310,30 @@ fn reconcile_with_upstream(
     // abort-and-loop. Whatever the union can't handle (submodule pointers, a
     // genuinely divergent file edit) is auto-resolved so sync always makes
     // progress and never drops data.
-    let (_, mstderr, merge_code) =
+    let (_, mstderr, mut merge_code) =
         run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
+    // A DIRTY working tree makes `git merge` REFUSE TO START ("your local
+    // changes would be overwritten") — a failure with NO unmerged paths, which
+    // the conflict-resolution path below misreads as "resolved, commit it" and
+    // dies on an empty commit (the "merge commit failed:" loop the sync split's
+    // first live migration hit: the app autosaves between the cycle's commit
+    // and its pull). Commit the drift the way the auto-sync would, retry once.
+    if merge_code != 0 {
+        let unmerged_empty = matches!(
+            run_git(vault, &["ls-files", "-u"]),
+            Ok((ref o, _, 0)) if o.trim().is_empty()
+        );
+        let merge_in_progress = run_git(vault, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+            .map(|(_, _, c)| c == 0)
+            .unwrap_or(false);
+        if unmerged_empty && !merge_in_progress {
+            let _ = run_git_as(vault, &mn, &me, &["add", "-A"]);
+            let _ = run_git_as(vault, &mn, &me, &["commit", "-q", "-m", "vault-chat: auto-sync"]);
+            let (_, _, retry_code) =
+                run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
+            merge_code = retry_code;
+        }
+    }
     if merge_code == 0 {
         let fixed = fix_regressed_gitlinks(vault);
         if !fixed.is_empty() {
@@ -5448,6 +5484,25 @@ fn is_sync_follower(vault: &str) -> bool {
 #[tauri::command]
 fn vault_sync_role(vault: String) -> String {
     if is_sync_follower(&vault) { "follower".into() } else { "writer".into() }
+}
+
+/// is_sync_follower behind a 60s cache — for hot paths (every conversations
+/// autosave) where a git subprocess per call would be a spawn storm. The role
+/// marker is a per-checkout constant; 60s staleness is irrelevant.
+fn is_sync_follower_cached(vault: &str) -> bool {
+    use std::sync::Mutex;
+    use std::time::Instant;
+    static CACHE: Mutex<Option<std::collections::HashMap<String, (bool, Instant)>>> = Mutex::new(None);
+    let mut guard = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    if let Some((v, at)) = map.get(vault) {
+        if at.elapsed().as_secs() < 60 {
+            return *v;
+        }
+    }
+    let v = is_sync_follower(vault);
+    map.insert(vault.to_string(), (v, Instant::now()));
+    v
 }
 
 /// The mission zone: paths only the mission host may author. A follower resets
