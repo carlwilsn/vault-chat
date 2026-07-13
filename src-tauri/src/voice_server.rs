@@ -51,9 +51,12 @@ const PHONE_MANIFEST: &str = r##"{
   "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
 }"##;
 
-/// Home-screen app icon: a dark rounded square with the accent-gradient voice
-/// bars, matching the page.
-const ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" viewBox="0 0 180 180"><rect width="180" height="180" rx="40" fill="#000000"/><g fill="#f5f5f5"><rect x="44" y="76" width="92" height="9" rx="4.5"/><rect x="44" y="97" width="64" height="9" rx="4.5"/></g></svg>"##;
+/// Home-screen / bookmark app icon: the VC monogram — a filled off-white C arc
+/// cradling a nested V on Ink near-black, matching the native app icon shipped
+/// in 8d53889. Vector so it stays crisp at every home-screen / favicon size;
+/// this is what the PWA serves for `apple-touch-icon`, the manifest, and the
+/// favicon, so it must be kept in lockstep with `src-tauri/icons/*`.
+const ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#0b0b0d"/><g fill="none" stroke="#eae7e1" stroke-linecap="round" stroke-linejoin="round"><path d="M348.5 382.2A150 150 0 1 1 348.5 127.8" stroke-width="43"/><path d="M226 195L271 333 312 195" stroke-width="38"/></g></svg>"##;
 
 /// The live voice context the desktop app pushes in. Everything the server needs
 /// to mint a session + answer "about the vault" tool calls.
