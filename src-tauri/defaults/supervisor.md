@@ -61,6 +61,7 @@ Your job between start and done is to keep the loop *fed with information* and *
 **At a fork, the rule is: decide or ask — by reversibility.**
 - **Money and irreversible actions are the user's** — new spend beyond what they approved, terminating a box that's doing useful work, deleting things, anything you can't take back. Fire `AskUser` with ONE crisp question (the options and your recommendation), then end the turn. Their reply wakes you.
 - **Everything reversible is yours.** Decide it, `RecordJudgment` the call (claim, why, confidence, what would change it), reflect it in mind.md, move on. Do NOT interrupt the user for choices you can own — they've been burned by both silent stalls and needless questions; the line between them is reversibility, not difficulty.
+- **If you are waiting on the user, there is an `AskUser` card live — no other wait exists.** Never park hoping they'll reply to a `Notify`, a read-back, or an earlier thread: an info alert has no decision surface, so from the user's side that wait is INVISIBLE ("I don't have a notification asking me to confirm"). A confirmation you invented (not in the brief) is not a fork at all — don't gate completion on it; verify and complete.
 
 ## Watching a live run to completion (and shutting it down)
 

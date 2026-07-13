@@ -1419,6 +1419,16 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           pendingAskOptions.set(conversationId, list.slice(0, 6));
           return "The user is present, so these options will render as tappable cards INLINE with your reply — no push/notification was sent (they're already here). State the fork and the tradeoffs in your reply prose (the cards carry the tap action; your prose carries the why), then end your turn and wait for their pick or typed answer.";
         }
+        // [unified ask] A COMPLETE mission has no decisions left to ask for —
+        // a "Needs you" card from a closed run is a phantom stakeholder. If
+        // something genuinely needs the user post-completion, it's a Notify
+        // (information), not an ask (a decision).
+        if (tier === "mission" && conversationId) {
+          const { useStore } = await import("./store");
+          const mc = useStore.getState().conversations.find((c) => c.id === conversationId);
+          if (mc && (mc.missionState === "DONE" || mc.missionState === "KILLED" || mc.completedAt))
+            return "This mission is COMPLETE — do not ask the user for decisions on it (there is no pending work their answer would steer). If they should know something, use Notify; if they asked you a question, answer it in prose.";
+        }
         const { notify } = await import("./phoneApp");
         // With real options, carry the structured deliberation payload so the
         // cockpit renders the "Needs you" deliberation card + inline-option sheet
@@ -1479,6 +1489,22 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         const opts = (options || []).filter((o) => o?.label?.trim());
         if (!opts.length) return "No usable options — every option needs a non-empty label.";
         if (!conversationId) return "No conversation to attach options to.";
+        // [unified ask] Decision cards need a STAKEHOLDER: a tapped card relays
+        // a FORMAL answer to the mission behind this thread. If that mission is
+        // complete (or there is no mission), nothing is waiting to consume a
+        // decision — a card would fire an answer into a closed run and stamp a
+        // phantom "decided" record (user: "a decision for a complete mission
+        // doesn't make sense"). Talk in prose instead.
+        {
+          const { useStore } = await import("./store");
+          const convs = useStore.getState().conversations;
+          const askOf = convs.find((c) => c.id === conversationId)?.askOf;
+          const mission = askOf ? convs.find((c) => c.id === askOf) : undefined;
+          if (!mission)
+            return "This thread has no live mission behind it — nothing is waiting on a formal answer, so do NOT propose option cards. Answer in prose.";
+          if (mission.missionState === "DONE" || mission.missionState === "KILLED" || mission.completedAt)
+            return "The source mission is COMPLETE — there is no waiting decision to relay an answer to, so do NOT propose option cards (a tap would fire a formal answer into a closed mission). Discuss in prose; if the user wants new work, that's a new mission.";
+        }
         const list = pendingAskOptions.get(conversationId) ?? [];
         let primarySeen = list.some((o) => o.primary);
         list.push(

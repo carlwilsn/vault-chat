@@ -193,6 +193,18 @@ async function handlePhoneMessage(
   // tagged answer to a mission that isn't waiting is just a normal steer.)
   if (answer && conv.source === "mission") {
     const { runWorkerTurn } = await import("./offVaultRun");
+    // [unified ask] A formal answer to a COMPLETE mission is meaningless —
+    // there's no waiting decision to consume it (a stale card tapped after the
+    // run closed). Downgrade to a plain steer: the supervisor still hears it
+    // and replies, but no answer semantics and — via missionDone below — no
+    // "answered" marker or decision receipt gets stamped on the archive.
+    if (conv.missionState === "DONE" || conv.missionState === "KILLED" || conv.completedAt) {
+      void runWorkerTurn(s.vaultPath, conv.id, trimmed, {
+        modelId: useStore.getState().supervisorModelId,
+        direct: true,
+      }).catch((e) => console.warn("[phone-app] post-completion steer failed:", e));
+      return { ok: true, convId: conv.id, missionDone: true };
+    }
     void runWorkerTurn(s.vaultPath, conv.id, trimmed, {
       modelId: useStore.getState().supervisorModelId,
       direct: true,
@@ -1164,8 +1176,11 @@ export async function startPhoneAppHost(): Promise<void> {
       // card as answeredWith/answeredAt (and treats it as read), so the Archive
       // shows the decision that was made, not just that an ask once existed.
       // Skipped when the send failed or deduped to an error — a phantom "decided"
-      // stamp on an ask whose answer never ran would lie to the archive.
-      if (notifId && !(res as { error?: unknown }).error) {
+      // stamp on an ask whose answer never ran would lie to the archive. ALSO
+      // skipped when the mission was already complete (missionDone): the tap
+      // was downgraded to a plain steer — a "decision" record for a closed
+      // mission would be a lie too.
+      if (notifId && !(res as { error?: unknown }).error && !(res as { missionDone?: boolean }).missionDone) {
         const vault = useStore.getState().vaultPath;
         if (vault) {
           await invoke("notification_add", {
@@ -1178,8 +1193,8 @@ export async function startPhoneAppHost(): Promise<void> {
       // [ask redesign] Pin the decision receipt into the ask's own thread —
       // after the answer was accepted, same no-phantom-stamp rule as the
       // marker above. [unified ask] The thread stays talkable after; the stamp
-      // is the record, not a freeze.
-      if (askConvId && !(res as { error?: unknown }).error) {
+      // is the record, not a freeze. No receipt for a missionDone downgrade.
+      if (askConvId && !(res as { error?: unknown }).error && !(res as { missionDone?: boolean }).missionDone) {
         const vault = useStore.getState().vaultPath;
         if (vault) {
           const { stampAskDecided } = await import("./offVaultRun");
