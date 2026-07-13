@@ -3689,6 +3689,7 @@ interface MockDB {
       attachSheetConversation(fid, {
         openAtTop: true,
         onOption: (ans) => resolveDeliberation(n, ans),
+        answeredWith: n.answeredWith,
         emptyText: followupEmpty,
       });
     openSheet({
@@ -3788,14 +3789,26 @@ interface MockDB {
   // the old "Open thread" jump into the raw execution log.
   // [ask redesign] Render a proposed option set (a message's askOptions) as
   // tappable cards. Same visual language as the decision card's options; the
-  // "proposed" class scopes the tap wiring.
-  function askOptionCardsHtml(opts) {
-    return '<div class="delib-proposed">' + opts.map((o, i) =>
-      '<div class="delib-opt proposed' + (o.primary ? " prim" : "") + '" data-ans="' + esc(o.answer) + '">'
+  // "proposed" class scopes the tap wiring. `decided` (a Set of answer
+  // strings) marks the DURABLE record: the card whose answer was committed
+  // renders "✓ your call" and its siblings go dead — so reopening a settled
+  // ask shows WHICH refined card won, not a stack that looks still-live
+  // (the record is the whole deliberation, including what the fork's rounds
+  // offered and what you picked).
+  function askOptionCardsHtml(opts, decided) {
+    const anyChosen = decided && opts.some((o) => decided.has(o.answer));
+    return '<div class="delib-proposed">' + opts.map((o, i) => {
+      const chosen = decided && decided.has(o.answer);
+      return '<div class="delib-opt proposed' + (o.primary ? " prim" : "") + (chosen ? " chosen" : anyChosen ? " dead" : "") + '" data-ans="' + esc(o.answer) + '">'
         + '<div class="ot">' + esc(o.title || o.answer)
-        + '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div>'
+        + (chosen
+          ? '<span class="pick">✓ your call</span>'
+          : anyChosen ? ""
+          : '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>')
+        + "</div>"
         + (o.body ? '<div class="ob">' + esc(o.body) + "</div>" : "")
-      + "</div>").join("") + "</div>";
+      + "</div>";
+    }).join("") + "</div>";
   }
   function attachSheetConversation(cid, hooks) {
     hooks = hooks || {};
@@ -3859,6 +3872,12 @@ interface MockDB {
       const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 90;
       // Build the thread in segments so decision receipts render as receipts and
       // a turn's proposed option cards stack right under its prose.
+      // The DURABLE decided set: answers committed in this session (local taps),
+      // decision receipts persisted in the thread, and the notification's own
+      // recorded answer — so a reopened settled ask marks WHICH card won.
+      const decidedAnswers = new Set(pickedAnswers);
+      for (const m of shown) if (m.decision && (m.content || "").trim()) decidedAnswers.add((m.content || "").trim());
+      if (hooks.answeredWith) decidedAnswers.add(String(hooks.answeredWith));
       let html = "";
       let seg = [];
       const names = { user: "You", assistant: src === "mission" ? "Supervisor" : "Assistant" };
@@ -3870,7 +3889,7 @@ interface MockDB {
           continue;
         }
         seg.push(m);
-        if (m.askOptions && m.askOptions.length) { flushSeg(); html += askOptionCardsHtml(m.askOptions); }
+        if (m.askOptions && m.askOptions.length) { flushSeg(); html += askOptionCardsHtml(m.askOptions, decidedAnswers); }
       }
       flushSeg();
       x.innerHTML = (shown.length
@@ -4112,6 +4131,7 @@ interface MockDB {
       // mid-follow-up relays as a REVISED answer (the mission treats a tagged
       // answer to a non-waiting thread as a normal steer).
       onOption: (ans) => resolveDeliberation(n, ans),
+      answeredWith: n.answeredWith,
       emptyText: decided
         ? "Decided — but not closed. Ask below if you want to dig into it or revise."
         : "No conversation yet — talk it through below; the agent knows the mission and can check live state.",
