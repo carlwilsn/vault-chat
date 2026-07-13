@@ -1390,6 +1390,16 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         // an inline tap would post a plain message, i.e. a probe, and the
         // mission would park forever.
         if (interactive && conversationId && tier !== "mission") {
+          // Inline decision cards exist ONLY where the decision has a
+          // STAKEHOLDER — the conversational front of a mission, where a tap
+          // steers the executor doing real work. A plain assistant chat has
+          // nobody waiting on the answer: options there are just talk, so ask
+          // in prose (user feedback 2026-07-12: "there is no purpose for the
+          // general assistant to give me decision cards").
+          const { useStore } = await import("./store");
+          const src = useStore.getState().conversations.find((c) => c.id === conversationId)?.source;
+          if (src !== "mission")
+            return "You're in a live conversation with nobody blocked on the answer — decision cards don't apply here. Ask the question directly in your reply prose, then end your turn; the user answers by typing. (No card or notification was sent.)";
           if (!opts.length)
             return "The user is present in this live conversation — no card or notification was sent (none is needed; they're here). Ask the question directly in your reply prose, then end your turn; their answer arrives as the next message.";
           const list = pendingAskOptions.get(conversationId) ?? [];

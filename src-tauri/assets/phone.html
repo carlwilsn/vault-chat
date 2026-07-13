@@ -1120,6 +1120,14 @@ interface MockDB {
           ], reply: "Seeds **42 & 44** landed in tolerance; **seed 3 diverged** at step 800 (+0.05 nat) — I held it and surfaced the call to you. Kicked the eval/writeup worker since 2 of 3 are in." } },
           { role: "user", content: "don't wait on it — spin up a worker to rerun seed 3 at seed 42's LR." },
           { role: "assistant", content: "On it — spawning a worker to rerun seed 3 at seed 42's LR.", tools: ["StartWorker"] },
+          // [unified ask] The supervisor FRONT staging inline option cards on a
+          // reply — the only surface that does (a plain chat just talks). Last
+          // message → cards render live/tappable in the mission sheet.
+          { role: "user", content: "how should seed 3 land in the writeup?", direct: true },
+          { role: "assistant", content: "Two clean ways to fold seed 3 in — your call:", direct: true, askOptions: [
+            { answer: "Report seed 3 as a plumbing incident with the LR-guard fix, keep the headline table to the three clean seeds", title: "Plumbing incident + clean table", body: "Honest about what happened without polluting the headline numbers; the guard note makes it actionable.", primary: true },
+            { answer: "Fold seed 3's rerun into the table as a fourth row and footnote the original divergence", title: "Fourth row + footnote", body: "Everything in one table; slightly muddies the 3-seed protocol the brief promised." },
+          ] },
         ] },
         w2: { id: "w2", title: "seed-2 retry", source: "worker", status: "running", messages: [
           { role: "user", content: "retry seed 2 at seed 1's LR; commit eval.loss" },
@@ -1140,13 +1148,6 @@ interface MockDB {
         sup: { id: "sup", title: "cockpit nav testing", source: "phone", status: "idle", messages: [
           { role: "user", content: "rebuild the phone nav — pages from the menu" },
           { role: "assistant", content: "Done — pages live behind the menu now, conversations are the left button." },
-          // [unified ask] A presence-gated AskUser in a LIVE chat: the options
-          // ride the reply inline (no push). Last message → cards tappable.
-          { role: "user", content: "should the drawer animate open or snap?" },
-          { role: "assistant", content: "Both are defensible — it comes down to what you want the drawer to feel like:", direct: true, askOptions: [
-            { answer: "Animate it — 240ms ease-out", title: "Animate — 240ms ease-out", body: "Feels native; matches the sheet's motion language. Costs a frame of perceived latency on older phones.", primary: true },
-            { answer: "Snap it — no animation", title: "Snap — zero animation", body: "Instant, and the drawer is a utility surface — speed over polish." },
-          ] },
         ] },
         c1: { id: "c1", title: "densing law — readings", source: "manual", status: "idle", messages: [
           { role: "user", content: "summarize BitNet's ternary quantization + the STE trick, with the loss gap" },
@@ -2670,25 +2671,18 @@ interface MockDB {
         live: false,
       })),
     ];
-    openSheet({
-      intent: readonly ? "Mission · complete" : "Mission",
-      title: mc.title, ico: readonly ? "✓" : "◎", cls: readonly ? "g" : "",
-      bodyHtml: '<div class="alsum-load" id="mLoad">loading…</div>',
-      // The reply composer stays even for a COMPLETED mission: the supervisor is
-      // always on, so the user can still discuss the finished work or its workers
-      // (note c0d532eb). Only "Stop" is gated — there's nothing to stop once done.
-      footHtml: '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + (readonly ? "Ask about this mission…" : "Steer, or spawn a worker…") + '" autocomplete="off"></textarea><button class="rsend">' + SEND_ARROW_SVG + '</button></div>',
-      action: readonly ? null : { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
-      // A NORMAL conversation: sending keeps the sheet open, shows the message
-      // right away, and the poll below folds in the supervisor's reply. Not a
-      // one-and-done — send follow-ups without reopening. BLOCK-UNTIL-DONE
-      // (note 4bd29abb): while the conversational FRONT is still answering your
-      // last message, a second send is refused (returns false → the composer
-      // keeps your text). The executor being busy does NOT block — talking to a
-      // working mission is the whole point of the two-lane design.
-      wire: (body, foot) => wireReply(foot, (v) => {
-        if (sheetChatActive || chatBusy.has(mc.id)) { toast("Still answering — wait for the reply to finish."); return false; }
-        void (async () => {
+    // Options the user tapped in THIS sheet — survives the poll repaint (which
+    // rebuilds innerHTML) until the persisted thread carries the answer.
+    const pickedFront = new Set();
+    // Send to the mission thread — the ONE path for the composer AND a tapped
+    // inline option card. BLOCK-UNTIL-DONE (note 4bd29abb): while the
+    // conversational FRONT is still answering your last message, a second send
+    // is refused (returns false → the composer keeps your text). The executor
+    // being busy does NOT block — talking to a working mission is the whole
+    // point of the two-lane design.
+    const sendFront = (v) => {
+      if (sheetChatActive || chatBusy.has(mc.id)) { toast("Still answering — wait for the reply to finish."); return false; }
+      void (async () => {
         optimistic.push(v);
         // Show "working…" the INSTANT you send — before the box has even started
         // the turn — so there's never a dead gap (the "no sign of life" the user
@@ -2713,8 +2707,22 @@ interface MockDB {
         userEngaged.add(mc.id); // you steered this mission → the dot may track its reply
         await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v, clientMsgId }) }).catch(() => {});
         setTimeout(paint, 900); // pick up the durably-persisted turn quickly
-        })();
-      }),
+      })();
+      return true;
+    };
+    openSheet({
+      intent: readonly ? "Mission · complete" : "Mission",
+      title: mc.title, ico: readonly ? "✓" : "◎", cls: readonly ? "g" : "",
+      bodyHtml: '<div class="alsum-load" id="mLoad">loading…</div>',
+      // The reply composer stays even for a COMPLETED mission: the supervisor is
+      // always on, so the user can still discuss the finished work or its workers
+      // (note c0d532eb). Only "Stop" is gated — there's nothing to stop once done.
+      footHtml: '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + (readonly ? "Ask about this mission…" : "Steer, or spawn a worker…") + '" autocomplete="off"></textarea><button class="rsend">' + SEND_ARROW_SVG + '</button></div>',
+      action: readonly ? null : { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
+      // A NORMAL conversation: sending keeps the sheet open, shows the message
+      // right away, and the poll below folds in the supervisor's reply. Not a
+      // one-and-done — send follow-ups without reopening.
+      wire: (body, foot) => wireReply(foot, sendFront),
     });
     async function paint() {
       // Frozen while the conversational front is answering: its reply drives
@@ -2806,8 +2814,34 @@ interface MockDB {
       } else {
         body += '<div class="md dim">No explicit criteria recorded for this mission.</div>';
       }
+      // [unified ask] The supervisor front can stage inline option cards on a
+      // reply (an interactive AskUser — the ONLY surface that does; a plain
+      // assistant chat just talks). Build the thread in segments so each option
+      // set lands right under the reply that argues it. Liveness mirrors the
+      // main chat: tappable only while it's the live fork — a later matching
+      // user message (or a tap remembered in pickedFront) renders it settled.
+      let threadBody = "";
+      {
+        let seg = [];
+        const names = { user: "You", assistant: "Supervisor" };
+        const flush = () => { if (seg.length) { threadBody += threadHtml(seg, names); seg = []; } };
+        for (let i = 0; i < restPlus.length; i++) {
+          const m = restPlus[i];
+          seg.push(m);
+          if (m.role === "assistant" && Array.isArray(m.askOptions) && m.askOptions.length) {
+            let chosen = "";
+            for (let j = i + 1; j < restPlus.length && !chosen; j++) {
+              if (restPlus[j].role === "user" && m.askOptions.some((x) => (x.answer || "") === (restPlus[j].content || "").trim())) chosen = (restPlus[j].content || "").trim();
+            }
+            if (!chosen) chosen = m.askOptions.map((x) => x.answer).find((a) => pickedFront.has(a)) || "";
+            flush();
+            threadBody += inlineOptionsHtml(m.askOptions, !chosen && i === restPlus.length - 1, chosen);
+          }
+        }
+        flush();
+      }
       body += '<div class="lbl">Thread</div>' + (restPlus.length
-        ? threadHtml(restPlus, { user: "You", assistant: "Supervisor" }) + (showLive ? liveEdgeHtml() : "")
+        ? threadBody + (showLive ? liveEdgeHtml() : "")
         : (showLive
             ? liveEdgeHtml()
             : (threadErr
@@ -2843,6 +2877,25 @@ interface MockDB {
         if (landed) { sheetChatSettling = false; sheetChatText = ""; }
         else renderChatEdge(sheetChatText, true);
       }
+      // [unified ask] Wire the front's inline option cards: a tap posts the
+      // option as YOUR message to the mission thread (the same sendFront path
+      // as typing it — the executor reads it as a steer) and records the
+      // decision to the Alerts archive.
+      be.querySelectorAll(".delib-opt.inline").forEach((o) => {
+        o.addEventListener("click", () => {
+          if (o.classList.contains("dead") || o.classList.contains("chosen")) return;
+          const ans = o.dataset.ans || "";
+          if (!ans) return;
+          const q = o.dataset.q || "";
+          if (sendFront(ans) === false) return; // lane busy — card stays live
+          pickedFront.add(ans);
+          const set = o.closest(".delib-proposed");
+          if (set) set.querySelectorAll(".delib-opt").forEach((x) => { x.classList.add("dead"); const p = x.querySelector(".pick"); if (p) p.remove(); });
+          o.classList.remove("dead"); o.classList.add("chosen");
+          const ot = o.querySelector(".ot"); if (ot) ot.insertAdjacentHTML("beforeend", '<span class="pick">✓ your call</span>');
+          void api("/decision-record", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: ans, title: mc.title || "Mission decision", question: q, convId: mc.id }) }).catch(() => {});
+        });
+      });
       // Re-attach worker-row taps each paint (innerHTML wipes handlers). Opening a
       // worker swaps the sheet to its read-only thread; a fresh openMission tap
       // brings you back.
