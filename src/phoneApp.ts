@@ -170,9 +170,14 @@ async function handlePhoneMessage(
 
   // [ask redesign] A message to an ask thread runs the dedicated ask agent —
   // its own conversation, its own persona, physically incapable of touching
-  // the mission thread. A settled ask refuses writes (read-only record).
+  // the mission thread. [unified ask] A DECIDED ask stays talkable (note: the
+  // user keeps talking after making the call — the decision is recorded, the
+  // conversation is not over); the busy guard blocks a second turn while the
+  // agent is still answering the last one (block-until-done, note 4bd29abb).
   if (conv.source === "ask") {
-    if (conv.askDecided) return { error: "this ask is decided — the conversation is a read-only record" };
+    const { isRunActive } = await import("./runRegistry");
+    if (isRunActive(conv.id + "#chat"))
+      return { error: "still answering your last message — wait for it to finish" };
     const { runAskTurn } = await import("./offVaultRun");
     void runAskTurn(s.vaultPath, conv.id, trimmed).catch((e) =>
       console.warn("[phone-app] ask turn failed:", e),
@@ -379,6 +384,11 @@ function runDiff(): void {
           role: m.role,
           content: (m.content ?? "").slice(0, MSG_CAP),
           tools: toolNames(m),
+          // [unified ask] Inline option cards ride the live message event too,
+          // so a presence-gated ask renders its tappable cards the moment the
+          // reply lands — not only on a thread reopen.
+          ...(m.askOptions && m.askOptions.length ? { askOptions: m.askOptions } : {}),
+          ...(m.decision ? { decision: true } : {}),
         });
       }
     }
@@ -634,7 +644,10 @@ export async function notify(
       ask: String(d.ask || "").slice(0, 600),
       askLong: d.askLong ? String(d.askLong).slice(0, 1200) : undefined,
       options: d.options!.slice(0, 6).map((o) => ({
-        answer: String(o.answer || "").slice(0, 80),
+        // 200, not 80: the answer text is relayed VERBATIM as the user's
+        // message when tapped — an 80-char cap once delivered "…then t"
+        // (truncated mid-word) to the waiting supervisor.
+        answer: String(o.answer || "").slice(0, 200),
         title: String(o.title || o.answer || "").slice(0, 120),
         body: String(o.body || "").slice(0, 800),
         ...(o.primary ? { primary: true } : {}),
@@ -1162,9 +1175,10 @@ export async function startPhoneAppHost(): Promise<void> {
           broadcast({ type: "notif" });
         }
       }
-      // [ask redesign] Freeze the ask's own thread into a read-only record with
-      // the decision receipt pinned — after the answer was accepted, same
-      // no-phantom-stamp rule as the marker above.
+      // [ask redesign] Pin the decision receipt into the ask's own thread —
+      // after the answer was accepted, same no-phantom-stamp rule as the
+      // marker above. [unified ask] The thread stays talkable after; the stamp
+      // is the record, not a freeze.
       if (askConvId && !(res as { error?: unknown }).error) {
         const vault = useStore.getState().vaultPath;
         if (vault) {

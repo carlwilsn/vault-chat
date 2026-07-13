@@ -461,6 +461,41 @@ fn handle(mut req: Request, token: &str) {
                 let _ = req.respond(resp_text(400, "application/json", "{\"error\":\"no vault\"}".into()));
             }
         }
+        (Method::Post, "/decision-record") => {
+            // [unified ask] Record a decision made INLINE in a live conversation
+            // (a tapped option card in the thread). Writes a pre-decided card
+            // straight to the Alerts ARCHIVE: a kind:"ask" row + its answered
+            // marker in one append — never unread, never pushed (the user was
+            // present; the record is the point, note ff31231e). Same card shape
+            // the deliberation-sheet answer path produces, so the archive shows
+            // every call you made in one visual language regardless of origin.
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+            let answer = v.get("answer").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+            if let (Some(vault), false) = (current_vault(), answer.is_empty()) {
+                let ts = now_ms();
+                let id = format!("dec-{:x}", ts);
+                let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("Inline decision");
+                let question = v.get("question").and_then(|x| x.as_str()).unwrap_or("");
+                let conv_id = v.get("convId").and_then(|x| x.as_str()).unwrap_or("");
+                let mut rec = json!({
+                    "id": id, "ts": ts, "kind": "ask",
+                    "title": title.chars().take(90).collect::<String>(),
+                    "body": question.chars().take(600).collect::<String>(),
+                    "intention": "Your call · decided in-conversation",
+                });
+                if !conv_id.is_empty() {
+                    rec.as_object_mut().unwrap().insert("convId".into(), json!(conv_id));
+                }
+                notification_append(&vault, &rec.to_string());
+                let marker = json!({ "type": "answered", "id": id, "answer": answer.chars().take(200).collect::<String>(), "ts": ts }).to_string();
+                notification_append(&vault, &marker);
+                let _ = req.respond(resp_text(200, "application/json", "{\"ok\":true}".into()));
+            } else {
+                let _ = req.respond(resp_text(400, "application/json", "{\"error\":\"missing answer or vault\"}".into()));
+            }
+        }
         (Method::Get, "/schedules") => {
             let body = match relay_request("phone:schedules", json!({}), Duration::from_secs(10)) {
                 Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
@@ -1304,6 +1339,10 @@ fn notifications_json(vault: &str) -> String {
     let raw = std::fs::read_to_string(notifications_path(vault)).unwrap_or_default();
     let mut items: Vec<Value> = Vec::new();
     let mut read_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // When each notification was ARCHIVED (its first read/answered marker ts) —
+    // folded in as readAt so the Archive sorts by when you archived it, not by
+    // when the notification originally fired (note 56e57731).
+    let mut read_ts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     // "hide" markers: swiped out of the Archive view. The jsonl line stays
     // (append-only, sync-friendly) — the notification just never renders again.
     let mut hidden_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1330,6 +1369,9 @@ fn notifications_json(vault: &str) -> String {
             Some("read") => {
                 if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
                     read_ids.insert(id.to_string());
+                    if let Some(ts) = v.get("ts").and_then(|x| x.as_i64()) {
+                        read_ts.entry(id.to_string()).or_insert(ts);
+                    }
                 }
             }
             Some("answered") => {
@@ -1338,6 +1380,9 @@ fn notifications_json(vault: &str) -> String {
                     let ts = v.get("ts").and_then(|x| x.as_i64()).unwrap_or(0);
                     answered.insert(id.to_string(), (ans, ts));
                     read_ids.insert(id.to_string());
+                    if ts > 0 {
+                        read_ts.entry(id.to_string()).or_insert(ts);
+                    }
                 }
             }
             Some("followup") => {
@@ -1388,6 +1433,9 @@ fn notifications_json(vault: &str) -> String {
         .map(|(id, mut v)| {
             if let Some(obj) = v.as_object_mut() {
                 obj.insert("read".into(), json!(read_ids.contains(&id)));
+                if let Some(rts) = read_ts.get(&id) {
+                    obj.insert("readAt".into(), json!(rts));
+                }
                 if let Some((ans, ats)) = answered.get(&id) {
                     obj.insert("answeredWith".into(), json!(ans));
                     obj.insert("answeredAt".into(), json!(ats));

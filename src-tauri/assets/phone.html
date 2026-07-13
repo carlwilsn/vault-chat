@@ -1073,7 +1073,10 @@ interface MockDB {
         { id: "n1", ts: now - 120000, kind: "ask", title: "Seed 3 diverged", intention: "Mission needs your call · BitNet 160M MVP", icon: "?", cls: "a", summary: "step 800, +0.05 nat above seed 1 — real effect, or match the LR and rerun?", body: "Seed 3 is **+0.05 nat above seed 1** at step 800 and still drifting.\n\nTwo readings:\n- **Real effect** — seed sensitivity worth reporting.\n- **LR mismatch** — match seed 1's LR and rerun (~9 min).\n\nReply and the mission's supervisor takes it from there.", convId: "m1", read: false },
         { id: "n0", ts: now - 18000000, kind: "info", title: "Morning briefing", intention: "Scheduled worker · summer vault", icon: "≡", cls: "", summary: "3 things moved overnight; today: finish the 3-seed writeup + push.", body: "## Overnight\n- 3-seed BitNet nearly there.\n- Repo sweep clean.\n- Idle box auto-killed (~$0.26).\n\n## Today\n1. Resolve the seed-3 divergence.\n2. Finish the writeup and push.", convId: "cch", read: false },
         { id: "n2", ts: now - 1080000, kind: "info", title: "Worker finished — seed 44", intention: "Worker deliverable · BitNet 160M MVP", icon: "✓", cls: "g", summary: "eval.loss 1.5588, within tolerance; committed under results/.", body: "Seed 44 eval.loss **1.5588** — within the 0.005 nat tolerance. `results/seed44.jsonl` committed.", convId: "w1", read: false },
-        { id: "n3", ts: now - 5400000, kind: "info", title: "Stopped an idle box", intention: "Cost / cleanup · autonomous action", icon: "$", cls: "r", summary: "idle GPU box auto-killed after its job exited; ~$0.26, nothing billing now.", body: "A box sat at zero GPU utilization for 12 minutes after its job exited — killed it. ~$0.26, nothing billing now.", read: true },
+        // readAt DELIBERATELY older than nDone's answeredAt though its ts is
+        // newer — proves the Archive sorts by archive date, not fire date
+        // (note 56e57731): nDone must render ABOVE this one.
+        { id: "n3", ts: now - 5400000, kind: "info", title: "Stopped an idle box", intention: "Cost / cleanup · autonomous action", icon: "$", cls: "r", summary: "idle GPU box auto-killed after its job exited; ~$0.26, nothing billing now.", body: "A box sat at zero GPU utilization for 12 minutes after its job exited — killed it. ~$0.26, nothing billing now.", read: true, readAt: now - 8000000 },
         // A SETTLED ask in the archive: shows the recorded decision on the card
         // (answeredWith) and opens as a dead, read-only deliberation sheet.
         { id: "nDone", ts: now - 7200000, kind: "ask", title: "Budget fork — old run", intention: "Mission needed your call · BitNet 160M MVP", icon: "?", cls: "a", summary: "Spend was at $18 of $20 with seed 2 mid-run — extend or stop?", convId: "m1", read: true, answeredWith: "Extend to $26", answeredAt: now - 7100000,
@@ -1137,6 +1140,13 @@ interface MockDB {
         sup: { id: "sup", title: "cockpit nav testing", source: "phone", status: "idle", messages: [
           { role: "user", content: "rebuild the phone nav — pages from the menu" },
           { role: "assistant", content: "Done — pages live behind the menu now, conversations are the left button." },
+          // [unified ask] A presence-gated AskUser in a LIVE chat: the options
+          // ride the reply inline (no push). Last message → cards tappable.
+          { role: "user", content: "should the drawer animate open or snap?" },
+          { role: "assistant", content: "Both are defensible — it comes down to what you want the drawer to feel like:", direct: true, askOptions: [
+            { answer: "Animate it — 240ms ease-out", title: "Animate — 240ms ease-out", body: "Feels native; matches the sheet's motion language. Costs a frame of perceived latency on older phones.", primary: true },
+            { answer: "Snap it — no animation", title: "Snap — zero animation", body: "Instant, and the drawer is a utility surface — speed over polish." },
+          ] },
         ] },
         c1: { id: "c1", title: "densing law — readings", source: "manual", status: "idle", messages: [
           { role: "user", content: "summarize BitNet's ternary quantization + the STE trick, with the loss gap" },
@@ -1266,6 +1276,12 @@ interface MockDB {
         return reply({ events: evs, next: String(pollTick) });
       }
       if (u === "/message") { if (body.mission) return reply({ ok: true, convId: "m_new", mission: body.mission.title }); return reply({ ok: true, convId: body.convId || "new-" + Date.now(), probe: true }); }
+      if (u === "/decision-record") {
+        // Mirror the real box: an inline decision lands in the archive as a
+        // pre-decided ask card (never unread, never pushed).
+        DB.notifs.push({ id: "dec-" + Date.now(), ts: Date.now(), kind: "ask", title: body.title || "Inline decision", intention: "Your call · decided in-conversation", icon: "?", cls: "a", body: body.question || "", convId: body.convId || "", read: true, answeredWith: body.answer, answeredAt: Date.now(), readAt: Date.now() });
+        return reply({ ok: true });
+      }
       if (u === "/answer") {
         // Mirror the real box: stamp WHICH answer settled the ask (answeredWith)
         // and mark it read, so the decided-card/dead-sheet states are testable.
@@ -1552,6 +1568,19 @@ interface MockDB {
   let vaultName = "", boxModel = "";
   let runCount = 0, unreadN = 0, offlineStreak = 0;
   const msgsEl = $("msgs"), input = $("input"), sendBtn = $("sendBtn");
+  // One-tap send with the keyboard up (note 85933e24). A plain onclick needed
+  // TWO taps on iOS: the first tap blurred the textarea → the keyboard
+  // collapsed → the layout shifted → the click landed nowhere. preventDefault
+  // on pointerdown keeps focus (and the keyboard) exactly where they are; the
+  // action fires on pointerup, and the trailing synthetic click is swallowed.
+  // The bare click handler stays as the fallback for non-pointer browsers.
+  function wireTap(btn, fn) {
+    if (!btn) return;
+    let tappedAt = 0;
+    btn.addEventListener("pointerdown", (e) => e.preventDefault());
+    btn.addEventListener("pointerup", (e) => { e.preventDefault(); tappedAt = Date.now(); fn(); });
+    btn.addEventListener("click", () => { if (Date.now() - tappedAt < 700) return; fn(); });
+  }
   // composer glyphs are drawn, not typed — one icon voice with the rest of the app
   const SEND_ARROW_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 12l6-6 6 6"/></svg>';
   const SEND_STOP_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>';
@@ -1687,19 +1716,17 @@ interface MockDB {
       const runIds = new Set();
       if (sr && sr.ok) { const sd = await sr.json().catch(() => ({})); for (const x of sd.runs || []) runIds.add(x.convId); }
       const convs = d.conversations || [];
-      // The drawer is YOUR conversations with the assistant — workers and
-      // missions live on Activity and stay out by default. But once you've
-      // VIEWED a worker/mission thread it flips `surfaced` and joins recent, so
-      // you can get back to it here without hunting through Activity. The
-      // cosmetic hidden set (cleared "from this view") is filtered out, except
-      // the chat you're currently in.
+      // The drawer is ONLY your conversations with the assistant (note
+      // 1b0ee05a — the earlier design surfaced viewed mission/worker threads
+      // here via `surfaced`; the user asked for that back OUT). Missions and
+      // workers live on Activity; ask threads live behind their alert cards.
+      // The cosmetic hidden set (cleared "from this view") is filtered out,
+      // except the chat you're currently in.
       const hidden = hiddenChats();
       // Feed the dot's eligibility map — the icon needs sources to tell your
       // chats from harness threads.
       for (const c of convs) convSourceById.set(c.id, c.source);
-      // Ask threads live behind their alert card (the deliberation sheet), never
-      // in Chats — surfacing them here would recreate the two-surfaces confusion.
-      const chats = convs.filter((c) => c.source !== "ask" && ((c.source !== "worker" && c.source !== "mission") || c.surfaced) && (!hidden.has(c.id) || c.id === convId));
+      const chats = convs.filter((c) => c.source !== "ask" && c.source !== "worker" && c.source !== "mission" && (!hidden.has(c.id) || c.id === convId));
       // The chat you're in may not be on disk yet (the box persists ~500ms
       // after the first message). Show it anyway so a just-made chat never
       // looks missing.
@@ -1753,8 +1780,33 @@ interface MockDB {
       '<svg class="scv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button><div class="steps-list">' +
       items + "</div></div>";
   }
+  // [unified ask] Inline option cards riding a reply — the presence-gated ask
+  // (same visual language as the deliberation sheet's cards; the "inline"
+  // class scopes the main-chat tap wiring). live=false renders them inert —
+  // a later message already answered, or they're history.
+  function inlineOptionsHtml(opts, live, chosenAns) {
+    return '<div class="delib-proposed inline">' + opts.map((o) => {
+      const chosen = !!chosenAns && o.answer === chosenAns;
+      return '<div class="delib-opt inline' + (o.primary ? " prim" : "") + (!live || chosen ? " dead" : "") + (chosen ? " chosen" : "") + '" data-ans="' + esc(o.answer) + '" data-q="' + esc((o.body || o.title || o.answer).slice(0, 300)) + '">'
+        + '<div class="ot">' + esc(o.title || o.answer)
+        + (chosen
+          ? '<span class="pick">✓ your call</span>'
+          : (live ? '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>' : ""))
+        + "</div>"
+        + (o.body ? '<div class="ob">' + esc(o.body) + "</div>" : "")
+        + "</div>";
+    }).join("") + "</div>";
+  }
   function bubble(role: string, content: string, tools?: string[], opts: Record<string, any> = {}) {
     const div = document.createElement("div");
+    // A FORMAL decision (a tapped option / committed answer) renders as the
+    // same quiet "Your call" receipt the sheets use — one visual language for
+    // decisions everywhere.
+    if (role === "user" && opts.decision) {
+      div.className = "tdecision";
+      div.innerHTML = '<span class="td-l">Your call</span>' + esc(content);
+      return div;
+    }
     // Agent replies are bubble-free (full-width markdown); user + system keep
     // their bubbles.
     const asst = role !== "user" && !opts.system;
@@ -1763,6 +1815,10 @@ interface MockDB {
     else div.innerHTML = '<div class="md">' + md(content) + "</div>";
     // Finished-turn tool calls collapse to a "Ran N steps" summary at the end.
     if (asst) div.insertAdjacentHTML("beforeend", stepsStr(tools));
+    // [unified ask] Tappable option cards land WITH the reply that argues for
+    // them (a presence-gated AskUser — no push was sent, you're here).
+    if (asst && Array.isArray(opts.askOptions) && opts.askOptions.length)
+      div.insertAdjacentHTML("beforeend", inlineOptionsHtml(opts.askOptions, !!opts.optionsLive, opts.chosenAnswer || ""));
     if (asst) typeset(div);
     return div;
   }
@@ -1861,7 +1917,27 @@ interface MockDB {
       const live = liveByConv.get(id);
       running = d.status === "running" || convRunning.has(id) || !!(live && live.running);
       if (!d.messages || !d.messages.length) showHint();
-      else for (const m of d.messages) msgsEl.appendChild(bubble(m.role, m.content, m.tools, { system: m.system }));
+      else {
+        // [unified ask] Option sets stay tappable only while they're the live
+        // fork (nothing after them); once a later user message answered —
+        // matched by verbatim option text — they render inert with the pick
+        // marked. Computed from the thread itself: no extra state to sync.
+        const msgs = d.messages;
+        for (let i = 0; i < msgs.length; i++) {
+          const m = msgs[i];
+          const o = { system: m.system, decision: m.decision };
+          if (Array.isArray(m.askOptions) && m.askOptions.length) {
+            o.askOptions = m.askOptions;
+            let chosen = "";
+            for (let j = i + 1; j < msgs.length && !chosen; j++) {
+              if (msgs[j].role === "user" && m.askOptions.some((x) => (x.answer || "") === (msgs[j].content || "").trim())) chosen = (msgs[j].content || "").trim();
+            }
+            o.chosenAnswer = chosen;
+            o.optionsLive = !chosen && i === msgs.length - 1;
+          }
+          msgsEl.appendChild(bubble(m.role, m.content, m.tools, o));
+        }
+      }
       if (running && live) { streamText = live.text || ""; streamTool = live.tool || ""; streamStartedAt = live.startedAt ?? null; }
       renderStream(); renderRunline(); setHeader(); scrollDown(true); rememberConv();
     } catch (e) {
@@ -1877,11 +1953,15 @@ interface MockDB {
   // and the box would spin up a SECOND conversation. This flag closes that
   // window; the clientMsgId below closes the network/service-worker-retry one.
   let sending = false;
-  async function send() {
+  // send() with no argument sends the composer text; send(text) sends a given
+  // string through the SAME pipeline (optimistic bubble, clientMsgId dedupe,
+  // busy flags) — that's how a tapped inline option card becomes your message.
+  async function send(forced) {
     if (sending) return;
-    const text = input.value.trim(); if (!text) return;
+    const text = (forced !== undefined ? String(forced) : input.value).trim(); if (!text) return;
     sending = true;
-    input.value = ""; input.style.height = "auto"; lastSentText = text;
+    if (forced === undefined) { input.value = ""; input.style.height = "auto"; }
+    lastSentText = text;
     // Idempotency key: a flaky network or the PWA service worker can deliver the
     // same POST twice. The box collapses duplicate ids to a single turn (one
     // conversation, one run) — the "my message got sent twice" bug.
@@ -1923,7 +2003,8 @@ interface MockDB {
   }
   // Same predicate as the visual: the tap does what the button SHOWS. (These
   // diverging is how a ↑-looking button could kill a run, or a ■ re-send.)
-  sendBtn.onclick = () => { if (stopMode()) void killCurrent(); else void send(); };
+  // wireTap: one tap works with the keyboard up (note 85933e24).
+  wireTap(sendBtn, () => { if (stopMode()) void killCurrent(); else void send(); });
   // Enter inserts a newline on the phone; sending is via the send button (no Shift+Enter on an iOS keyboard).
   let autosizeRAF = 0;
   function scheduleAutosize() {
@@ -1976,6 +2057,24 @@ interface MockDB {
     if (ap) { void approvePlan(ap.closest(".plancard")); return; }
     const rf = e.target.closest(".pc-refine");
     if (rf) { try { input.focus({ preventScroll: true }); } catch {} showKb(); return; }
+    // [unified ask] Tap an inline option card → it becomes YOUR message (the
+    // same send pipeline as typing it), the set goes inert, and the decision
+    // lands in the Alerts ARCHIVE as a decided card (/decision-record) — the
+    // presence-gated ask leaves the same paper trail as the push kind.
+    const opt = e.target.closest(".delib-opt.inline");
+    if (opt) {
+      if (opt.classList.contains("dead") || opt.classList.contains("chosen") || sending) return;
+      const ans = opt.dataset.ans || "";
+      if (!ans) return;
+      const q = opt.dataset.q || "";
+      const wrap = opt.closest(".delib-proposed");
+      if (wrap) wrap.querySelectorAll(".delib-opt").forEach((x) => { x.classList.add("dead"); const p = x.querySelector(".pick"); if (p) p.remove(); });
+      opt.classList.remove("dead"); opt.classList.add("chosen");
+      const ot = opt.querySelector(".ot"); if (ot) ot.insertAdjacentHTML("beforeend", '<span class="pick">✓ your call</span>');
+      void send(ans);
+      void api("/decision-record", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: ans, title: convTitle || "Inline decision", question: q, convId: convId || "" }) }).catch(() => {});
+      return;
+    }
     const sh = e.target.closest(".steps-h");
     if (sh) { sh.closest(".steps").classList.toggle("open"); }
   });
@@ -1999,6 +2098,13 @@ interface MockDB {
     // folds in its turns the moment they land, so a thread opened mid-run shows
     // the worker working / the supervisor supervising on the fly — not a frozen
     // snapshot. Runs alongside (not instead of) the active-chat handling below.
+    // Chat-lane busy bookkeeping for EVERY conversation (not just the open
+    // sheet) — a closed sheet's generation keeps going on the box; this is how
+    // a reopened sheet knows to show "working…" and block a second send.
+    if (d.type === "chat" && d.convId) {
+      if (d.phase === "start" || d.phase === "stream") chatBusy.add(d.convId);
+      else if (d.phase === "end") chatBusy.delete(d.convId);
+    }
     if (sheetConvId && d.convId === sheetConvId) {
       if (d.type === "runtime") {
         // Ignore a live frame that arrives after the box already said this thread
@@ -2077,7 +2183,12 @@ interface MockDB {
     else if (d.type === "message" && d.convId === convId) {
       markSeen(convId);
       if (d.role === "user" && lastSentText !== null && d.content === lastSentText) { lastSentText = null; return; }
-      streamText = ""; streamTool = ""; renderStream(); msgsEl.appendChild(bubble(d.role, d.content, d.tools)); scrollDown(false);
+      streamText = ""; streamTool = ""; renderStream();
+      // A landing reply with askOptions retires any older live option set —
+      // the newest fork is the one that counts (latest wins, same as sheets).
+      if (Array.isArray(d.askOptions) && d.askOptions.length)
+        msgsEl.querySelectorAll(".delib-opt.inline:not(.dead)").forEach((x) => x.classList.add("dead"));
+      msgsEl.appendChild(bubble(d.role, d.content, d.tools, { askOptions: d.askOptions, decision: d.decision, optionsLive: !!(d.askOptions && d.askOptions.length) })); scrollDown(false);
     } else if (d.type === "status") {
       if (d.convId === convId) { running = d.status === "running"; stopping = false; if (!running) { streamText = ""; streamTool = ""; streamStartedAt = null; renderStream(); } renderRunline(); }
       void refreshState(); if (page === "activity") void loadActivity();
@@ -2231,6 +2342,11 @@ interface MockDB {
   // we unfreeze and fold the persisted reply in. One thread, two agents, no fight
   // for the view.
   let sheetChatActive = false;
+  // Chat-lane busy set, tracked GLOBALLY (every "chat" broadcast, not just the
+  // open sheet's): closing a sheet mid-answer must not lose the fact that the
+  // agent is still generating — reopening shows the working pulse and the
+  // composer stays blocked until the reply lands (notes b5908f4c + 4bd29abb).
+  const chatBusy = new Set();
   // The conversational front's reply while it SETTLES: after the lane ends we keep
   // the reply text here and hold its edge on screen until the persisted bubble is
   // actually in the fetched thread — closing the ~½s gap where the reply belonged
@@ -2298,11 +2414,13 @@ interface MockDB {
       else be.appendChild(ce);
     }
     const t = (text || "").trim();
-    // While streaming, a pulse + "answering…"; once settled (lane ended, waiting
-    // for the persisted bubble to land) just the reply, no pulse — so the handoff
-    // to the folded-in message is invisible.
+    // While streaming, a pulse + "working…" — the SAME label every lane uses
+    // (note b5908f4c: "answering…" made these threads read like a different
+    // kind of thing). Once settled (lane ended, waiting for the persisted
+    // bubble to land) just the reply, no pulse — so the handoff to the
+    // folded-in message is invisible.
     ce.innerHTML = (t ? '<div class="md">' + md(t) + "</div>" : "")
-      + (settled ? "" : '<div class="thinking"><span class="pulse"></span><span class="tlbl show">answering…</span></div>');
+      + (settled ? "" : '<div class="thinking"><span class="pulse"></span><span class="tlbl show">working…</span></div>');
     if (be.scrollHeight - be.scrollTop - be.clientHeight < 160) be.scrollTop = be.scrollHeight;
   }
   // Measure the top safe-area inset (Dynamic Island / notch) in px — 0 in a browser
@@ -2444,8 +2562,10 @@ interface MockDB {
     ta.addEventListener("input", autosize);
     ta.addEventListener("focus", () => sheetEditFocus(ta));
     ta.addEventListener("blur", sheetEditBlur);
-    const go = () => { const v = ta.value.trim(); if (!v) return; ta.value = ""; autosize(); onSend(v); };
-    foot.querySelector(".rsend").onclick = go;
+    // onSend returning false = blocked (lane busy) — keep the typed text so
+    // nothing is lost; anything else counts as accepted and clears the box.
+    const go = () => { const v = ta.value.trim(); if (!v) return; if (onSend(v) === false) return; ta.value = ""; autosize(); };
+    wireTap(foot.querySelector(".rsend"), go);
     // Enter inserts a newline; sending is via the send button.
     setTimeout(autosize, 0);
   }
@@ -2561,8 +2681,14 @@ interface MockDB {
       action: readonly ? null : { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
       // A NORMAL conversation: sending keeps the sheet open, shows the message
       // right away, and the poll below folds in the supervisor's reply. Not a
-      // one-and-done — send follow-ups without reopening.
-      wire: (body, foot) => wireReply(foot, async (v) => {
+      // one-and-done — send follow-ups without reopening. BLOCK-UNTIL-DONE
+      // (note 4bd29abb): while the conversational FRONT is still answering your
+      // last message, a second send is refused (returns false → the composer
+      // keeps your text). The executor being busy does NOT block — talking to a
+      // working mission is the whole point of the two-lane design.
+      wire: (body, foot) => wireReply(foot, (v) => {
+        if (sheetChatActive || chatBusy.has(mc.id)) { toast("Still answering — wait for the reply to finish."); return false; }
+        void (async () => {
         optimistic.push(v);
         // Show "working…" the INSTANT you send — before the box has even started
         // the turn — so there's never a dead gap (the "no sign of life" the user
@@ -2587,6 +2713,7 @@ interface MockDB {
         userEngaged.add(mc.id); // you steered this mission → the dot may track its reply
         await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v, clientMsgId }) }).catch(() => {});
         setTimeout(paint, 900); // pick up the durably-persisted turn quickly
+        })();
       }),
     });
     async function paint() {
@@ -3296,7 +3423,7 @@ interface MockDB {
     if (!ta || !btn) return;
     const autosize = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; };
     ta.addEventListener("input", autosize);
-    btn.onclick = async () => {
+    wireTap(btn, async () => {
       const text = ta.value.trim();
       if (!text) return;
       btn.disabled = true;
@@ -3314,7 +3441,7 @@ interface MockDB {
         setTimeout(() => { if (page === "notes") void loadNotes(); }, 3500);
       } catch (e) { toast("Couldn't save: " + (e.message || e)); }
       finally { btn.disabled = false; }
-    };
+    });
   })();
 
   async function loadAlerts() {
@@ -3333,8 +3460,17 @@ interface MockDB {
       lastNotifList = list;
       box.innerHTML = "";
       if (!list.length) { box.appendChild(el('<div class="empty">Nothing yet. Worker results, failures that need a call, and your recurring briefings land here — with a push if notifications are on and the app isn’t already open.</div>')); return; }
+      // Strictly chronological (note 56e57731): the server sorts by ts, but the
+      // local "Updated to vX" card was unshifted ABOVE the list — an old unread
+      // update pinned itself over today's alerts. Re-sort so nothing jumps line.
+      list.sort((a, b) => (b.ts || 0) - (a.ts || 0));
       const unread = list.filter((n) => !n.read);
-      const archived = list.filter((n) => n.read);
+      // The Archive orders by WHEN YOU ARCHIVED (answered/read time — readAt is
+      // the read-marker ts the server now folds in), not by when the alert
+      // originally fired (note 56e57731): the pile reads as "what I put away,
+      // most recently first".
+      const archived = list.filter((n) => n.read)
+        .sort((a, b) => (b.answeredAt || b.readAt || b.ts || 0) - (a.answeredAt || a.readAt || a.ts || 0));
       const actions = unread.filter((n) => n.kind === "ask");
       const infos = unread.filter((n) => n.kind !== "ask");
       if (actions.length) box.appendChild(el('<div class="sec">Needs a reply</div>'));
@@ -3430,8 +3566,11 @@ interface MockDB {
   function alertCard(n, isAction) {
     // EVERY ask (a decision the agent needs from you) is the unified "needs you"
     // card — whether or not it carries structured options. isAction (unread ask)
-    // and any kind:"ask" both route here.
-    if (isAction || n.kind === "ask") return needsYouCard(n);
+    // and any kind:"ask" both route here. So does ANY alert that carries a
+    // recorded decision (answeredWith) — e.g. an info alert whose follow-up
+    // relayed your call to the mission: one visual language for every decision
+    // you made, whatever surface it was made on (note ff31231e).
+    if (isAction || n.kind === "ask" || n.answeredWith) return needsYouCard(n);
     const meta = alertMeta(n);
     const card = el('<div class="card' + (isAction ? " ask" : n.read ? "" : " unread") + '"><div class="crow"><div class="ico"></div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><div class="metabar"></div><p class="cs"></p></div></div></div>');
     const ico = card.querySelector(".ico");
@@ -3598,6 +3737,9 @@ interface MockDB {
     sheetConvId = cid;
     updateConvDot();
     const optimistic = [];
+    // Answers tapped in THIS sheet — survives the 3s repaint (which rebuilds
+    // innerHTML and would otherwise resurrect a live-looking card).
+    const pickedAnswers = new Set();
     let lastSig = "";
     let firstPaint = true;
     let pinBottom = false;
@@ -3634,8 +3776,11 @@ interface MockDB {
       const shown = msgs.slice(-16).concat(optimistic.map((t) => ({ role: "user", content: t })));
       // One quiet pulse while a just-sent probe waits for the front's lane to
       // open — the chat edge takes over from "start". The EXECUTOR's runtime
-      // never renders in this surface.
-      const showWorking = sheetOptimisticWorking && !sheetChatActive && !sheetChatSettling;
+      // never renders in this surface. chatBusy covers the REOPEN case: you
+      // closed the sheet mid-answer, the generation kept going on the box, and
+      // coming back should read "working…" — not a dead-looking thread
+      // (note b5908f4c: "they should finish generating if I close them").
+      const showWorking = (sheetOptimisticWorking || chatBusy.has(cid)) && !sheetChatActive && !sheetChatSettling;
       const sig = JSON.stringify(shown.map((m) => [m.role, (m.content || "").length, m.askOptions ? m.askOptions.length : 0, !!m.decision])) + "|" + showWorking;
       if (sig === lastSig) return; // unchanged — don't disrupt reading/typing
       lastSig = sig;
@@ -3664,13 +3809,22 @@ interface MockDB {
         : '<div class="md dim">' + esc(hooks.emptyText || "No conversation yet — ask below; the agent answers with the thread’s full context.") + "</div>")
         + (showWorking ? '<div class="liveplain"><div class="thinking"><span class="pulse"></span><span class="tlbl show">working…</span></div></div>' : "");
       // Wire the proposed cards: a tap relays that option as the user's formal
-      // answer (hooks.onOption — the deliberation sheet passes resolveDeliberation).
+      // answer (hooks.onOption — the deliberation sheet passes
+      // resolveDeliberation). Tapped answers are remembered locally so the 3s
+      // repaint keeps them marked; the lockout is PER SET (this fork is
+      // settled), not sheet-wide — keep-talking means the agent can propose a
+      // fresh set later and it must be tappable (a revision).
       if (hooks.onOption) {
         x.querySelectorAll(".delib-opt.proposed").forEach((o) => {
+          const ans = o.dataset.ans || "";
+          if (ans && pickedAnswers.has(ans)) { o.classList.add("dead", "chosen"); return; }
           o.addEventListener("click", () => {
-            if (x.classList.contains("deciding")) return;
-            x.classList.add("deciding"); o.classList.add("chosen");
-            hooks.onOption(o.dataset.ans || "");
+            if (o.classList.contains("dead") || o.classList.contains("chosen")) return;
+            const set = o.closest(".delib-proposed");
+            if (set) set.querySelectorAll(".delib-opt").forEach((s) => s.classList.add("dead"));
+            o.classList.remove("dead"); o.classList.add("chosen");
+            if (ans) pickedAnswers.add(ans);
+            hooks.onOption(ans);
           });
         });
       }
@@ -3696,8 +3850,18 @@ interface MockDB {
     }
     // Probe: a plain /message (the box routes it to the conversational front; a
     // pending ask stays pending). Optimistic bubble + "working…" the instant you
-    // send, exactly like a supervisor thread.
-    async function sendProbe(text) {
+    // send, exactly like a supervisor thread. BLOCK-UNTIL-DONE (note 4bd29abb,
+    // the user's call): one message at a time on this lane — a second send while
+    // the agent is mid-answer returns false so the composer keeps the text.
+    function sendProbe(text) {
+      if (sheetChatActive || sheetOptimisticWorking || chatBusy.has(cid)) {
+        toast("Still answering — wait for the reply to finish.");
+        return false;
+      }
+      void sendProbeNow(text);
+      return true;
+    }
+    async function sendProbeNow(text) {
       optimistic.push(text);
       sheetOptimisticWorking = true;
       sheetEnded = false;
@@ -3727,8 +3891,10 @@ interface MockDB {
     // Legacy asks minted before the redesign have no askConvId; they render
     // their options + decision but attach no conversation (attaching the
     // mission thread is exactly the bleed we removed).
-    const cid = n.askConvId || "";
-    const legacy = !n.askConvId;
+    // followupConvId covers a DECIDED INFO alert (an inline relay made from its
+    // follow-up thread) whose card now routes here — same sheet, same thread.
+    const cid = n.askConvId || n.followupConvId || "";
+    const legacy = !cid;
     let probe = null;
     // Decided = read or answered: the decision card renders its recorded outcome,
     // options go inert, and the conversation below is DEAD (no probe foot) — a
@@ -3812,28 +3978,31 @@ interface MockDB {
       // the composer talks it through; options answer by tap. For an ask with
       // no options, a single labeled commit action under the composer sends the
       // SAME text as the formal answer — no second input (the two-boxes
-      // complaint). A decided ask gets no foot: readable but dead.
-      footHtml: decided
+      // complaint). [unified ask] A DECIDED ask keeps its composer — deciding
+      // records the call, it does not end the conversation (the user keeps
+      // talking after: dig into why, or revise). Only a LEGACY decided ask
+      // (pre-redesign, no thread behind it) is a dead record.
+      footHtml: decided && legacy
         ? ""
-        : probeFootHtml("Ask about this…")
-          + (!del.options.length ? '<button class="ans-commit">✓ Send it as my answer</button>' : ""),
+        : probeFootHtml(decided ? "Keep talking about this…" : "Ask about this…")
+          + (!decided && !del.options.length ? '<button class="ans-commit">✓ Send it as my answer</button>' : ""),
       wire: (body, foot) => {
         wireDecision(body.querySelector("#delibDecision"));
         // The composer talks to the ask's own agent (a plain /message to the ask
         // thread, never an answer). LEGACY asks (pre-redesign, no ask thread)
         // have nobody to talk to — there the send arrow commits the text as the
         // formal answer, the old semantics, so the input is never dead UI.
-        if (!decided) wireReply(foot, (v) => (legacy ? resolveDeliberation(n, v) : probe && probe(v)));
+        if (!(decided && legacy)) wireReply(foot, (v) => (legacy ? resolveDeliberation(n, v) : probe ? probe(v) : undefined));
         // The commit action formalizes: whatever is typed in the ONE composer
         // becomes the tagged answer via /answer.
         const commit = foot.querySelector(".ans-commit");
-        if (commit) commit.onclick = () => {
+        if (commit) wireTap(commit, () => {
           const ta = foot.querySelector(".rinp");
           const v = (ta && ta.value.trim()) || "";
           if (!v) { toast("Type your answer above first."); return; }
           commit.disabled = true;
           resolveDeliberation(n, v);
-        };
+        });
       },
     });
     // Mock/legacy ask with no per-ask thread behind it: render any baked sample
@@ -3870,9 +4039,12 @@ interface MockDB {
       openAtTop: true,
       onTick: checkNewerAsk,
       decided,
-      onOption: decided ? null : (ans) => resolveDeliberation(n, ans),
+      // Stays wired after a decision — a fresh option set the agent proposes
+      // mid-follow-up relays as a REVISED answer (the mission treats a tagged
+      // answer to a non-waiting thread as a normal steer).
+      onOption: (ans) => resolveDeliberation(n, ans),
       emptyText: decided
-        ? "No deliberation happened — the decision was made straight from the card."
+        ? "Decided — but not closed. Ask below if you want to dig into it or revise."
         : "No conversation yet — talk it through below; the agent knows the mission and can check live state.",
     });
   }
@@ -3882,21 +4054,22 @@ interface MockDB {
   // the alert read + closes the sheet.
   const resolvingAsks = new Set();
   function resolveDeliberation(n, answer) {
-    // One decision per ask, deterministically: repeat taps are locked out here,
-    // and the clientMsgId is DERIVED FROM THE ASK ID (not minted fresh per tap),
-    // so even a repeat that slips through — a double-fired handler, a PWA retry —
-    // collapses to ONE answer turn on the box (note 6693e931: double-tapping an
-    // option sent it twice and the thread went out of whack).
-    if (resolvingAsks.has(n.id)) return;
-    resolvingAsks.add(n.id);
-    setTimeout(() => resolvingAsks.delete(n.id), 60_000);
-    const clientMsgId = "answer-" + n.id;
+    // One decision per (ask, answer), deterministically: repeat taps of the
+    // SAME option are locked out here, and the clientMsgId is DERIVED from the
+    // ask id + answer (not minted fresh per tap), so even a repeat that slips
+    // through — a double-fired handler, a PWA retry — collapses to ONE answer
+    // turn on the box (note 6693e931). Keyed per ANSWER, not per ask: a
+    // decided-but-open conversation can send a REVISED call later.
+    const rkey = n.id + " " + answer;
+    if (resolvingAsks.has(rkey)) return;
+    resolvingAsks.add(rkey);
+    setTimeout(() => resolvingAsks.delete(rkey), 60_000);
+    const clientMsgId = "answer-" + n.id + "-" + encodeURIComponent(answer).slice(0, 32);
     if (n.convId) {
       // notifId lets the box durably stamp WHICH answer settled this ask
       // (answeredWith), so the Archive shows the decision that was made.
-      // askConvId lets it freeze the ask's own thread into a read-only record
-      // with the decision receipt pinned (only asks carry one — an info
-      // follow-up thread stays live after a relayed steer).
+      // askConvId pins the decision receipt into the ask's own thread (the
+      // thread stays TALKABLE after — deciding records, it doesn't close).
       api("/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: answer, clientMsgId, notifId: n.id, ...(n.kind === "ask" && n.askConvId ? { askConvId: n.askConvId } : {}) }) }).catch(() => {});
     }
     // One answer settles the DECISION, not just this card: retire every live ask
@@ -3907,7 +4080,12 @@ interface MockDB {
       if (s.kind === "ask" && !s.read && s.id !== n.id && s.convId && n.convId && s.convId === n.convId) markRead(s.id);
     }
     markRead(n.id);
-    if ($("sheet").classList.contains("on")) closeSheet();
+    // [unified ask] Deciding does NOT slam the sheet shut — the conversation
+    // keeps going (keep-talking). Re-render the ask sheet in its decided-but-
+    // live form; an info sheet just stays as it is (its tapped card is already
+    // marked by the sheet's own wiring).
+    n.answeredWith = answer; n.answeredAt = Date.now(); n.read = true;
+    if (n.kind === "ask" && $("sheet").classList.contains("on")) openDeliberationSheet(n);
     void loadAlerts();
   }
   function attachSwipeArchive(card: any, action: any, reload?: any, rightAction?: any) {

@@ -273,6 +273,14 @@ export type BuildToolsOptions = {
   // hold neither (they do the task, not orchestration); the ask tier is
   // read+converse only, with ProposeOptions as its ONE unique ability.
   tier?: "assistant" | "mission" | "worker" | "ask";
+  // [unified ask] True when this turn is a LIVE conversation the user is
+  // driving right now (they just typed the message this turn answers).
+  // Presence gates an ask's WEIGHT, not the ability (note ff31231e): an
+  // interactive AskUser renders as tappable option cards INLINE with the
+  // reply — no push, no "Needs you" card — while a background turn's AskUser
+  // (scheduled wake, mission executor) keeps the full async treatment. Same
+  // object either way; only how it reaches the user changes.
+  interactive?: boolean;
   // The run's abort signal. Used to HARD-interrupt a long tool (Bash) — on
   // Stop we kill the subprocess instead of waiting for it to run to completion.
   abortSignal?: AbortSignal;
@@ -406,6 +414,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     bashDisabled = false,
     conversationId,
     tier = "assistant",
+    interactive = false,
     abortSignal,
   } = options;
   const guardPath = (path: string) => assertAllowed(path, vault, strictVault);
@@ -1337,7 +1346,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     }),
     AskUser: tool({
       description:
-        "Surface a decision you need from the user as a 'Needs you' card on their phone (plus a push). Their reply comes back as the next message in THIS conversation. So the pattern is: call AskUser, then END YOUR TURN and wait; you'll be re-run with their answer. Use it ONLY at a real fork you shouldn't settle alone — a scope or design choice, a spend approval, a genuinely ambiguous result, or to get a freshly-scoped mission approved before you build the team. Do NOT use it for things you can reasonably decide yourself; the whole point of the system is to keep the user out of the loop except where their judgment is the input.\n\nWhen the fork has a small number of concrete paths, pass `options` — each a verbose {label, detail} card the user can tap on their phone to pick, or they can still answer in their own words (or dig in and talk it through with you first). Omit `options` for an open-ended question.",
+        "Surface a decision you need from the user. Their reply comes back as the next message in THIS conversation. So the pattern is: call AskUser, then END YOUR TURN and wait; you'll be re-run with their answer. Use it ONLY at a real fork you shouldn't settle alone — a scope or design choice, a spend approval, a genuinely ambiguous result, or to get a freshly-scoped mission approved before you build the team. Do NOT use it for things you can reasonably decide yourself; the whole point of the system is to keep the user out of the loop except where their judgment is the input.\n\nHow it reaches them depends on presence (the tool result tells you which happened): in a LIVE conversation the user is driving right now, the options render as tappable cards INLINE with your reply — no push, no card; if this is a background turn (a scheduled wake, a mission loop), it fires a 'Needs you' card + push to fetch them. Same decision object either way — a tap becomes their answer.\n\nWhen the fork has a small number of concrete paths, pass `options` — each a verbose {label, detail} card the user can tap to pick, or they can still answer in their own words (or dig in and talk it through with you first). Omit `options` for an open-ended question.",
       inputSchema: z.object({
         about: z
           .string()
@@ -1366,8 +1375,41 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           .describe("Concrete paths the user can tap to pick. Omit for an open-ended, free-form question."),
       }),
       execute: async ({ about, question, options }) => {
-        const { notify } = await import("./phoneApp");
         const opts = Array.isArray(options) ? options.filter((o) => o?.label?.trim()) : [];
+        // [unified ask] Presence gates the WEIGHT, not the ability (note
+        // ff31231e): in a LIVE conversation (the user drove this very turn) the
+        // fork renders as tappable option cards INLINE with this reply — no
+        // push, no "Needs you" card. A push about the conversation the user is
+        // literally looking at is noise; the tap still becomes their next
+        // message, and the cockpit records the decision to the Alerts archive.
+        // Background turns (scheduled wakes, the mission executor) keep the
+        // full async treatment below — that's what fetches an absent user.
+        // The mission tier is EXCLUDED even on an interactive turn: an
+        // executor ask parks the mission AWAITING_USER, and only the tagged
+        // /answer relay (which rides the notification) can clear that wait —
+        // an inline tap would post a plain message, i.e. a probe, and the
+        // mission would park forever.
+        if (interactive && conversationId && tier !== "mission") {
+          if (!opts.length)
+            return "The user is present in this live conversation — no card or notification was sent (none is needed; they're here). Ask the question directly in your reply prose, then end your turn; their answer arrives as the next message.";
+          const list = pendingAskOptions.get(conversationId) ?? [];
+          let primarySeen = list.some((o) => o.primary);
+          list.push(
+            ...opts.map((o) => {
+              const primary = !!o.recommended && !primarySeen;
+              if (primary) primarySeen = true;
+              return {
+                answer: o.label.trim().slice(0, 200),
+                title: o.label.trim().slice(0, 120),
+                body: (o.detail || "").trim().slice(0, 800),
+                ...(primary ? { primary: true } : {}),
+              };
+            }),
+          );
+          pendingAskOptions.set(conversationId, list.slice(0, 6));
+          return "The user is present, so these options will render as tappable cards INLINE with your reply — no push/notification was sent (they're already here). State the fork and the tradeoffs in your reply prose (the cards carry the tap action; your prose carries the why), then end your turn and wait for their pick or typed answer.";
+        }
+        const { notify } = await import("./phoneApp");
         // With real options, carry the structured deliberation payload so the
         // cockpit renders the "Needs you" deliberation card + inline-option sheet
         // from REAL ask data. Without options, the free-form path is unchanged.
@@ -1434,7 +1476,10 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
             const primary = !!o.recommended && !primarySeen;
             if (primary) primarySeen = true;
             return {
-              answer: o.label.trim().slice(0, 80),
+              // 200, not 80: this verbatim text IS the user's relayed answer —
+              // an 80-char cap delivered "…then t" to a waiting supervisor
+              // (truncated mid-word) and the supervisor had to guess the rest.
+              answer: o.label.trim().slice(0, 200),
               title: o.label.trim().slice(0, 120),
               body: (o.detail || "").trim().slice(0, 800),
               ...(primary ? { primary: true } : {}),

@@ -9,6 +9,7 @@ import { safetyCommit } from "./autosave";
 import { scheduledDeliveryText } from "./scheduleDelivery";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import { registerRun, unregisterRun, abortRun } from "./runRegistry";
+import { takePendingAskOptions } from "./tools";
 import { harnessV2Enabled } from "./harness";
 import {
   useStore,
@@ -373,6 +374,10 @@ export async function sendMessage(
       harnessV2Enabled() &&
       targetConv?.role === "supervisor" &&
       (!!scheduledBriefing || !!quietUnlessAlert),
+    // [unified ask] A user-driven turn is LIVE — an AskUser mid-turn renders as
+    // inline option cards with the reply, no push (weight follows presence).
+    // Scheduler-fired turns are background: their asks keep the full card+push.
+    interactive: !scheduledBriefing && !quietUnlessAlert,
     conversationId: targetConvId ?? undefined,
     reasoningEffort: cur.reasoningEffort,
     onEvent: (e) => {
@@ -478,11 +483,16 @@ export async function sendMessage(
           store.addTokenUsage(e.usage);
           store.setLastContext(e.usage.context);
         }
+        // [unified ask] Carry option cards staged by an interactive AskUser —
+        // the presence-gated inline form: tappable cards land WITH the reply
+        // prose that argues for them (no push was sent; the user is here).
+        const stagedOpts = targetConvId ? takePendingAskOptions(targetConvId) : [];
         const assistantMsg: ChatMessage = {
           role: "assistant",
           content: acc,
           toolCalls: tools.length ? tools : undefined,
           usage: e.usage,
+          ...(stagedOpts.length ? { askOptions: stagedOpts } : {}),
         };
         if (live) {
           // User is still watching this conversation — write to the

@@ -21,7 +21,7 @@ import { scheduledDeliveryText } from "./scheduleDelivery";
 import { useStore, type ChatMessage, type LiveTool } from "./store";
 import type { Timeline } from "./alert-summary";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
-import { registerRun, unregisterRun, abortRun } from "./runRegistry";
+import { registerRun, unregisterRun, abortRun, isRunActive } from "./runRegistry";
 import { vlog } from "./debugLog";
 import { errToString } from "./errfmt";
 import { harnessV2Enabled, twoLaneMissionChatEnabled } from "./harness";
@@ -818,6 +818,10 @@ export async function runMissionChatTurn(
   // run registration, status, or convRuntime slot.
   const chatKey = conversationId + "#chat";
 
+  // One turn at a time on the chat lane (block-until-done, note 4bd29abb) — a
+  // second send mid-answer would interleave two generations into the thread.
+  if (isRunActive(chatKey)) return { reply: "", error: "still answering the last message — wait for it to finish" };
+
   const broadcastChat = (phase: string, extra?: Record<string, unknown>) =>
     void invoke("phone_broadcast", {
       json: JSON.stringify({ type: "chat", convId: conversationId, phase, ...(extra || {}) }),
@@ -898,6 +902,8 @@ export async function runMissionChatTurn(
       voiceMode: false,
       // assistantMode forces assistant tier in agent.ts — read/answer only.
       assistantMode: true,
+      // The user drove this turn — presence-gated asks render inline.
+      interactive: true,
       conversationId,
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
@@ -926,18 +932,23 @@ export async function runMissionChatTurn(
   }
 
   // Persist the reply as a DIRECT turn (natural prose — the timeline cleaner and
-  // the fresh-context executor wakes both skip `direct` messages).
+  // the fresh-context executor wakes both skip `direct` messages). [unified ask]
+  // Carry any option cards the front staged via an interactive AskUser — the
+  // presence-gated inline form: cards land WITH the prose that argues for them.
   const reply = acc.trim();
-  if (reply) {
+  const { takePendingAskOptions } = await import("./tools");
+  const staged = takePendingAskOptions(conversationId);
+  if (reply || staged.length) {
     await withConvLock(async () => {
       const list = await readConversations(vault);
       const idx = list.findIndex((c) => c.id === conversationId);
       if (idx < 0) return;
       const assistantMsg: ChatMessage = {
         role: "assistant",
-        content: reply,
+        content: reply || "Here are the options I'd put in front of you:",
         direct: true,
         mid: newMessageId(),
+        ...(staged.length ? { askOptions: staged } : {}),
       };
       list[idx] = { ...list[idx]!, messages: [...list[idx]!.messages, assistantMsg], lastActivityAt: Date.now() };
       await writeConversations(vault, list);
@@ -1038,22 +1049,28 @@ export async function runAskTurn(
       json: JSON.stringify({ type: "chat", convId: conversationId, phase, ...(extra || {}) }),
     }).catch(() => {});
 
+  // One turn at a time on this lane (block-until-done, note 4bd29abb): a second
+  // message while the agent is mid-answer would interleave two generations'
+  // writes into one thread. The phone disables send while the lane streams;
+  // this is the backstop for a raced request.
+  if (isRunActive(chatKey)) return { reply: "", error: "still answering the last message — wait for it to finish" };
+
   // Append the user's turn up front (durable before anything can refresh over
-  // it), and refuse writes to a settled ask — the decision has been made, the
-  // thread is a record now.
+  // it). [unified ask] A DECIDED ask stays talkable — the decision receipt is
+  // recorded (askDecided + the archive card) but the conversation is not
+  // frozen: the user keeps talking after making the call, can dig into why, or
+  // revise with a follow-up. "Settled" means recorded, not closed.
   const userMsg: ChatMessage = { role: "user", content: text, direct: true, mid: newMessageId() };
   const seeded = await withConvLock(async () => {
     const list = await readConversations(vault);
     const idx = list.findIndex((c) => c.id === conversationId);
     if (idx < 0) return null;
-    if (list[idx]!.askDecided) return { decided: true as const };
     const messages = [...list[idx]!.messages, userMsg];
     list[idx] = { ...list[idx]!, messages, lastActivityAt: Date.now() };
     await writeConversations(vault, list);
     return { messages, askOf: list[idx]!.askOf };
   });
   if (!seeded) return { reply: "", error: `ask thread not found: ${conversationId}` };
-  if ("decided" in seeded) return { reply: "", error: "this ask is decided — the conversation is a read-only record" };
   await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
 
   // Compile the source mission's context fresh from disk — title, state, and a
@@ -1116,6 +1133,8 @@ export async function runAskTurn(
       bashDisabled: store.bashDisabled,
       voiceMode: false,
       askMode: true,
+      // The user drove this turn — presence-gated asks render inline.
+      interactive: true,
       conversationId,
       reasoningEffort: store.reasoningEffort,
       onEvent: (e) => {
@@ -1167,9 +1186,11 @@ export async function runAskTurn(
 }
 
 // [ask redesign] Stamp a settled ask: append the decision receipt to the ask
-// thread and freeze it read-only (askDecided). Called from the /answer path
-// AFTER the tagged answer was accepted by the mission — the ask thread records
-// what was decided; the mission thread received the actual answer.
+// thread and record it on the header (askDecided). Called from the /answer
+// path AFTER the tagged answer was accepted by the mission — the ask thread
+// records what was decided; the mission thread received the actual answer.
+// [unified ask] The stamp is a RECORD, not a freeze — the thread stays
+// talkable (runAskTurn accepts turns after it; only the first stamp wins).
 export async function stampAskDecided(
   vault: string,
   askConvId: string,
@@ -1179,7 +1200,11 @@ export async function stampAskDecided(
     const list = await readConversations(vault);
     const idx = list.findIndex((c) => c.id === askConvId);
     if (idx < 0) return;
-    if (list[idx]!.askDecided) return; // one decision per ask, idempotent
+    // Idempotent against the SAME answer (double-tap / PWA retry) — but a
+    // DIFFERENT answer is a revision from the still-open conversation: append
+    // a fresh receipt and update the record so the thread and the archive
+    // card tell the same story.
+    if (list[idx]!.askDecided === answer.slice(0, 160)) return;
     const receipt: ChatMessage = {
       role: "user",
       content: answer,

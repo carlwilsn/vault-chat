@@ -199,6 +199,11 @@ export async function runAgent(params: {
   // Read+converse only, with ProposeOptions as its one unique tool; loads
   // ask.md. Takes precedence over assistant/supervisor modes.
   askMode?: boolean;
+  // [unified ask] The user drove this very turn (they just typed the message
+  // it answers) — presence-gates an AskUser to inline option cards instead of
+  // the push + "Needs you" card. Background turns (scheduled, executor wakes)
+  // leave this unset and keep the full async ask treatment.
+  interactive?: boolean;
   conversationId?: string;
   reasoningEffort?: import("./store").ReasoningEffort;
   // [harness v2] Run this supervisor turn on FRESH CONTEXT: drop the accumulated
@@ -207,7 +212,7 @@ export async function runAgent(params: {
   // foreground user chat, which keeps continuity), gated by harnessV2Enabled().
   freshContext?: boolean;
 }) {
-  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, supervisorMode, assistantMode, askMode, conversationId, freshContext } = params;
+  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, supervisorMode, assistantMode, askMode, interactive, conversationId, freshContext } = params;
   const reasoningEffort = params.reasoningEffort ?? "medium";
 
   try {
@@ -533,6 +538,7 @@ export async function runAgent(params: {
       bashDisabled: bashDisabled ?? false,
       conversationId,
       tier,
+      interactive: interactive ?? false,
       abortSignal,
     });
     const innerTools = { ...builtinTools, ...customTools };

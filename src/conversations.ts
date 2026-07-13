@@ -109,9 +109,11 @@ export type Conversation = {
   // conversation the notification came FROM (the mission whose supervisor is
   // waiting — the deterministic relay target); `askNotifId` is the notification
   // this thread belongs to. Once the user commits a decision, `askDecided` +
-  // `askDecidedAt` freeze the thread into a read-only record (the phone drops
-  // the composer). All four MUST be carried through readConversations below —
-  // the same load-bearing strip-trap as `mission`.
+  // `askDecidedAt` record WHAT was decided and when — the receipt for the
+  // Archive card. [unified ask] The thread stays TALKABLE after (deciding
+  // records the call, it does not close the conversation). All four MUST be
+  // carried through readConversations below — the same load-bearing strip-trap
+  // as `mission`.
   askOf?: string;
   askNotifId?: string;
   askDecided?: string;
