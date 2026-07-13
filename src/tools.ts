@@ -1397,9 +1397,16 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           // in prose (user feedback 2026-07-12: "there is no purpose for the
           // general assistant to give me decision cards").
           const { useStore } = await import("./store");
-          const src = useStore.getState().conversations.find((c) => c.id === conversationId)?.source;
-          if (src !== "mission")
+          const mc = useStore.getState().conversations.find((c) => c.id === conversationId);
+          if (mc?.source !== "mission")
             return "You're in a live conversation with nobody blocked on the answer — decision cards don't apply here. Ask the question directly in your reply prose, then end your turn; the user answers by typing. (No card or notification was sent.)";
+          // ONE decision surface per fork: while a formal ask is pending, the
+          // "Needs you" card IS the surface — an inline tap posts a plain
+          // message (a probe) that can NOT clear AWAITING_USER, so a second
+          // option set here would look answerable while leaving the mission
+          // parked forever. Point the user at the pending card instead.
+          if (mc.missionState === "AWAITING_USER")
+            return "This mission is ALREADY parked on a formal ask — its 'Needs you' card is the one decision surface, and only answering THERE resumes the executor. Do NOT stage a second option set here (an inline tap cannot clear the wait). Discuss in prose and point the user at the pending card.";
           if (!opts.length)
             return "The user is present in this live conversation — no card or notification was sent (none is needed; they're here). Ask the question directly in your reply prose, then end your turn; their answer arrives as the next message.";
           const list = pendingAskOptions.get(conversationId) ?? [];

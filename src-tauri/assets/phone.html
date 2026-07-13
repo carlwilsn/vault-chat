@@ -2343,11 +2343,27 @@ interface MockDB {
   // we unfreeze and fold the persisted reply in. One thread, two agents, no fight
   // for the view.
   let sheetChatActive = false;
-  // Chat-lane busy set, tracked GLOBALLY (every "chat" broadcast, not just the
-  // open sheet's): closing a sheet mid-answer must not lose the fact that the
-  // agent is still generating — reopening shows the working pulse and the
+  // Chat-lane busy state, tracked GLOBALLY (every "chat" broadcast, not just
+  // the open sheet's): closing a sheet mid-answer must not lose the fact that
+  // the agent is still generating — reopening shows the working pulse and the
   // composer stays blocked until the reply lands (notes b5908f4c + 4bd29abb).
-  const chatBusy = new Set();
+  // TTL-backed, not a plain Set: if the phone misses a single "end" event
+  // (SSE reconnect, backgrounded PWA), a plain latch would brick the composer
+  // with "Still answering…" until a full reload. Entries auto-expire 180s
+  // after the last chat event; the backend's isRunActive guard stays the hard
+  // stop, so a premature expiry degrades to a server-refused send, never an
+  // interleaved turn.
+  const chatBusyAt = new Map();
+  const chatBusy = {
+    add(id) { chatBusyAt.set(id, Date.now()); },
+    delete(id) { chatBusyAt.delete(id); },
+    has(id) {
+      const t = chatBusyAt.get(id);
+      if (!t) return false;
+      if (Date.now() - t > 180000) { chatBusyAt.delete(id); return false; }
+      return true;
+    },
+  };
   // The conversational front's reply while it SETTLES: after the lane ends we keep
   // the reply text here and hold its edge on screen until the persisted bubble is
   // actually in the fetched thread — closing the ~½s gap where the reply belonged

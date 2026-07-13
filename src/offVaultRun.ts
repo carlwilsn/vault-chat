@@ -1738,6 +1738,14 @@ async function readNamedFiles(
   criterionText: string,
   briefText: string,
   invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>,
+  // When set, a criterion that concerns a Notify/notification/alert also gets
+  // this mission's slice of notifications.jsonl as ground truth. [shakedown
+  // root cause] "one completion Notify was sent" is DISK-VERIFIABLE — the
+  // Notify row sits in notifications.jsonl — but the auditor couldn't see it,
+  // refused the criterion twice, and the cornered supervisor escaped into an
+  // invented wait-on-the-user (the one illegal dependency a mission must never
+  // have). Evidence gathering first, judge tuning never.
+  missionConvId?: string,
 ): Promise<string> {
   // An absence/removal criterion inverts the read: a missing named file is the
   // proof of success, not an inconclusive gap.
@@ -1906,6 +1914,26 @@ async function readNamedFiles(
     }
     parts.push(`-- pattern ${pat}: ${hits.length} file(s) match under the vault${hits.length > 24 ? " (showing 24)" : ""} --\n${lines.join("\n")}`);
   }
+  // Notification ground truth: a criterion about a Notify/alert/ask is
+  // verifiable from notifications.jsonl — every Notify/AskUser call appends a
+  // row keyed to the mission's conversation id. Surface this mission's slice
+  // (newest last, bounded) so "a completion Notify was sent" is judged from
+  // the record, not from whether the auditor believes the supervisor's story.
+  if (missionConvId && /\b(notif|alert|push|ask ?user|needs ?you)/i.test(criterionText)) {
+    const raw = await invoke<string>("read_text_file", { path: `${vault}/.vault-chat/notifications.jsonl` }).catch(() => "");
+    const mine: string[] = [];
+    for (const line of String(raw || "").split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const v = JSON.parse(line) as { type?: string; convId?: string; ts?: number; kind?: string; title?: string; body?: string };
+        if (v.type || v.convId !== missionConvId) continue; // rows only, this mission only
+        mine.push(`  - ts=${v.ts} kind=${v.kind} title=${JSON.stringify((v.title || "").slice(0, 90))} body=${JSON.stringify((v.body || "").slice(0, 140))}`);
+      } catch { /* skip unparsable */ }
+    }
+    parts.push(mine.length
+      ? `-- notifications.jsonl, rows for THIS mission (${mine.length} total; newest last) — the durable record of every Notify/AskUser that reached the user's feed. A criterion about a notification being sent is PROVEN or REFUTED by these rows: --\n${mine.slice(-15).join("\n")}`
+      : `-- notifications.jsonl: NO rows for this mission's conversation — no Notify/AskUser from this mission has reached the user's feed. --`);
+  }
   return parts.join("\n\n");
 }
 
@@ -2017,7 +2045,7 @@ export async function markDoneWhen(
       // the brief only contributes secondary paths (see readNamedFiles —
       // classifying absence from the combined text poisoned every PROXY V3
       // audit via the brief's "which does not exist" phrase).
-      const groundTruth = await readNamedFiles(vault, `${matched}\n${criterion}`, briefText, invoke);
+      const groundTruth = await readNamedFiles(vault, `${matched}\n${criterion}`, briefText, invoke, conversationId);
       const recent = mission0.messages
         .filter((m) => m.role === "assistant")
         .slice(-2)
