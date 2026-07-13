@@ -1276,12 +1276,27 @@ interface MockDB {
         await new Promise((r) => setTimeout(r, 2500));
         return reply({ events: evs, next: String(pollTick) });
       }
-      if (u === "/message") { if (body.mission) return reply({ ok: true, convId: "m_new", mission: body.mission.title }); return reply({ ok: true, convId: body.convId || "new-" + Date.now(), probe: true }); }
+      if (u === "/message") {
+        if (body.mission) return reply({ ok: true, convId: "m_new", mission: body.mission.title });
+        // Append to an existing thread + a canned reply so follow-up threads
+        // (ask / minted fu-) render a real round in the sheet.
+        const th = body.convId && DB.threads[body.convId];
+        if (th) { th.messages.push({ role: "user", content: body.text, direct: true }); setTimeout(() => { th.messages.push({ role: "assistant", content: "Here's the context on that call — happy to dig into any part of it.", direct: true }); }, 350); }
+        return reply({ ok: true, convId: body.convId || "new-" + Date.now(), probe: true });
+      }
       if (u === "/decision-record") {
         // Mirror the real box: an inline decision lands in the archive as a
         // pre-decided ask card (never unread, never pushed).
         DB.notifs.push({ id: "dec-" + Date.now(), ts: Date.now(), kind: "ask", title: body.title || "Inline decision", intention: "Your call · decided in-conversation", icon: "?", cls: "a", body: body.question || "", convId: body.convId || "", read: true, answeredWith: body.answer, answeredAt: Date.now(), readAt: Date.now() });
         return reply({ ok: true });
+      }
+      if (u === "/alert-followup") {
+        // Mirror the box: mint an isolated follow-up thread for this notification
+        // (an info alert OR a dec- inline-decision record) and bind it to the card.
+        const fid = "fu-" + Date.now();
+        DB.threads[fid] = { id: fid, title: "Re: " + (body.title || "alert"), source: "ask", status: "idle", askOf: body.convId || "", messages: [ { role: "user", hidden: true, system: true, content: "[CONTEXT] " + (body.title || "") + " — " + (body.body || "") } ] };
+        const nn = DB.notifs.find((x) => x.id === body.notifId); if (nn) nn.followupConvId = fid;
+        return reply({ ok: true, convId: fid });
       }
       if (u === "/answer") {
         // Mirror the real box: stamp WHICH answer settled the ask (answeredWith)
@@ -3981,8 +3996,14 @@ interface MockDB {
     // mission thread is exactly the bleed we removed).
     // followupConvId covers a DECIDED INFO alert (an inline relay made from its
     // follow-up thread) whose card now routes here — same sheet, same thread.
-    const cid = n.askConvId || n.followupConvId || "";
-    const legacy = !cid;
+    let cid = n.askConvId || n.followupConvId || "";
+    // [unified ask] A dec- inline-decision record (an option tapped in a live
+    // conversation) is a standard ask object too: no thread YET, but it mints
+    // an isolated follow-up lazily on the first message, exactly like an info
+    // alert. Only a true pre-redesign ask (no thread, not a dec- record) is a
+    // dead record.
+    const inlineRec = !cid && /^dec-/.test(String(n.id || ""));
+    const legacy = !cid && !inlineRec;
     let probe = null;
     // Decided = read or answered: the decision card renders its recorded outcome,
     // options go inert, and the conversation below is DEAD (no probe foot) — a
@@ -4080,7 +4101,21 @@ interface MockDB {
         // thread, never an answer). LEGACY asks (pre-redesign, no ask thread)
         // have nobody to talk to — there the send arrow commits the text as the
         // formal answer, the old semantics, so the input is never dead UI.
-        if (!(decided && legacy)) wireReply(foot, (v) => (legacy ? resolveDeliberation(n, v) : probe ? probe(v) : undefined));
+        if (!(decided && legacy)) wireReply(foot, async (v) => {
+          if (probe) { probe(v); return; }
+          if (legacy) { resolveDeliberation(n, v); return; }
+          // [unified ask] inlineRec (a dec- record) has no thread yet — mint the
+          // isolated follow-up lazily on the first message, then talk to it. Same
+          // path an info alert uses; the thread is seeded with the decision.
+          try {
+            const r = await api("/alert-followup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notifId: n.id, title: n.title || "", body: (n.answeredWith ? "Decided: " + n.answeredWith + "\n\n" : "") + (n.body || n.summary || ""), convId: n.convId || "" }) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || d.error || !d.convId) throw new Error(d.error || r.status);
+            n.followupConvId = d.convId; cid = d.convId;
+            probe = attachSheetConversation(d.convId, { openAtTop: true, decided, answeredWith: n.answeredWith, emptyText: "Follow-up on this decision — the agent has its context." });
+            probe(v);
+          } catch (e) { toast("Couldn't start the follow-up: " + (e.message || e)); }
+        });
         // The commit action formalizes: whatever is typed in the ONE composer
         // becomes the tagged answer via /answer.
         const commit = foot.querySelector(".ans-commit");
@@ -4101,7 +4136,7 @@ interface MockDB {
       const x0 = $("delibX");
       if (x0) x0.innerHTML = baked.length
         ? threadHtml(baked.map((m) => ({ role: m.role, content: m.text || "" })), { user: "You", assistant: "Supervisor" })
-        : '<div class="md dim">' + (legacy && !decided ? "This ask predates per-ask conversations — the options above still work." : "No conversation behind this ask.") + "</div>";
+        : '<div class="md dim">' + (inlineRec ? "Decided in the conversation. Ask below to open an isolated follow-up on this call." : legacy && !decided ? "This ask predates per-ask conversations — the options above still work." : "No conversation behind this ask.") + "</div>";
       return;
     }
     // Latest wins: while the sheet is open, each poll tick checks for a NEWER
