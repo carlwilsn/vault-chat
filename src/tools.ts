@@ -1401,12 +1401,38 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           if (mc?.source !== "mission")
             return "You're in a live conversation with nobody blocked on the answer — decision cards don't apply here. Ask the question directly in your reply prose, then end your turn; the user answers by typing. (No card or notification was sent.)";
           // ONE decision surface per fork: while a formal ask is pending, the
-          // "Needs you" card IS the surface — an inline tap posts a plain
-          // message (a probe) that can NOT clear AWAITING_USER, so a second
-          // option set here would look answerable while leaving the mission
-          // parked forever. Point the user at the pending card instead.
-          if (mc.missionState === "AWAITING_USER")
+          // "Needs you" card IS the surface — an inline tap here posts a plain
+          // message (a probe) that can NOT clear AWAITING_USER. So refined
+          // options born from this deliberation are ROUTED TO THE PENDING ASK:
+          // they stack under its original pinned options in the decision
+          // sheet, where a tap rides the real /answer relay and resumes the
+          // executor — and the decision record stays in one place (the user:
+          // "I need to see the options the supervisor generated inline inside
+          // the conversation with the ask").
+          if (mc.missionState === "AWAITING_USER") {
+            if (opts.length) {
+              const { appendOptionsToPendingAsk } = await import("./offVaultRun");
+              let primarySeen = false;
+              const landed = await appendOptionsToPendingAsk(
+                vault,
+                conversationId,
+                opts.map((o) => {
+                  const primary = !!o.recommended && !primarySeen;
+                  if (primary) primarySeen = true;
+                  return {
+                    answer: o.label.trim().slice(0, 200),
+                    title: o.label.trim().slice(0, 120),
+                    body: (o.detail || "").trim().slice(0, 800),
+                    ...(primary ? { primary: true } : {}),
+                  };
+                }),
+                question ? `Refined from the deliberation — ${String(question).slice(0, 200)}` : "Refined options from the deliberation:",
+              ).catch(() => null);
+              if (landed)
+                return "This mission is parked on a formal ask, so your refined options were added to THAT ask's decision sheet — they stack under its original options as tappable cards, and a tap there is the real answer that resumes the executor. Tell the user in prose that the tightened options are waiting on the ask card; do not restate them as if tappable here.";
+            }
             return "This mission is ALREADY parked on a formal ask — its 'Needs you' card is the one decision surface, and only answering THERE resumes the executor. Do NOT stage a second option set here (an inline tap cannot clear the wait). Discuss in prose and point the user at the pending card.";
+          }
           if (!opts.length)
             return "The user is present in this live conversation — no card or notification was sent (none is needed; they're here). Ask the question directly in your reply prose, then end your turn; their answer arrives as the next message.";
           const list = pendingAskOptions.get(conversationId) ?? [];

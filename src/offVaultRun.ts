@@ -1018,6 +1018,51 @@ export async function mintAskConversation(
   return conv.id;
 }
 
+// [unified ask] Land a refined option set ON THE PENDING ASK. When the user
+// deliberates a parked fork with the mission's conversational FRONT (not the
+// ask thread) and the front tightens the options, those cards must live where
+// the DECISION lives: appended to the ask's own conversation, where the
+// decision sheet renders them as tappable relay cards stacking under the
+// original pinned options — a tap there rides the real /answer path and
+// actually clears AWAITING_USER. (Inline cards in the mission thread would
+// look answerable while clearing nothing — NF-1; and dropping the options
+// entirely wasted the deliberation.) Returns the ask thread's title, or null
+// when no live ask conversation exists to land on.
+export async function appendOptionsToPendingAsk(
+  vault: string,
+  missionConvId: string,
+  options: { answer: string; title: string; body: string; primary?: boolean }[],
+  note: string,
+): Promise<string | null> {
+  if (!options.length) return null;
+  let landedTitle: string | null = null;
+  let landedId: string | null = null;
+  await withConvLock(async () => {
+    const list = await readConversations(vault);
+    // The live ask = the NEWEST ask conversation pointing at this mission
+    // (a superseding ask mints a fresh thread; older ones are settled rounds).
+    const asks = list
+      .filter((c) => c.source === "ask" && c.askOf === missionConvId)
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const ask = asks[0];
+    if (!ask) return;
+    const idx = list.findIndex((c) => c.id === ask.id);
+    const msg: ChatMessage = {
+      role: "assistant",
+      content: note || "Refined options from the deliberation:",
+      direct: true,
+      mid: newMessageId(),
+      askOptions: options,
+    };
+    list[idx] = { ...ask, messages: [...ask.messages, msg], lastActivityAt: Date.now() };
+    await writeConversations(vault, list);
+    landedTitle = ask.title;
+    landedId = ask.id;
+  });
+  if (landedId) await useStore.getState().refreshConversationFromDisk(vault, landedId).catch(() => {});
+  return landedTitle;
+}
+
 // [ask redesign] One turn of the dedicated ask agent, in the notification's own
 // conversation. Modeled on runMissionChatTurn (same chat lane + broadcast
 // contract, so the phone sheet streams it identically) but a different persona:
