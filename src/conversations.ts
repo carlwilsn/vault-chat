@@ -118,6 +118,15 @@ export type Conversation = {
   askNotifId?: string;
   askDecided?: string;
   askDecidedAt?: number;
+  // [ask-object] Auto-defer (Stage 4b): the declared fallback + stakes + the
+  // deadline after which an UNANSWERED low-stakes ask self-defers ("Not now" on
+  // the user's behalf, resuming the mission on its onDefer branch). Only set
+  // when the ask opted in with a timeout; a high-stakes ask never carries a live
+  // deadline (only the user may end it). All three MUST be carried through
+  // readConversations below — the same strip-trap as askDecided.
+  askStakes?: "low" | "high";
+  askOnDefer?: string;
+  askDeadlineAt?: number;
 };
 
 
@@ -237,6 +246,9 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         askNotifId: parsed.askNotifId,
         askDecided: parsed.askDecided,
         askDecidedAt: parsed.askDecidedAt,
+        askStakes: parsed.askStakes,
+        askOnDefer: parsed.askOnDefer,
+        askDeadlineAt: parsed.askDeadlineAt,
       });
     } catch {
       // skip

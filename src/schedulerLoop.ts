@@ -7,7 +7,7 @@ import {
   writeSchedules,
 } from "./schedules";
 import { sendMessage } from "./chat-controller";
-import { readConversations } from "./conversations";
+import { readConversations, type Conversation } from "./conversations";
 import { tickRunWatcher } from "./runWatcher";
 import { vlog } from "./debugLog";
 import { harnessV2Enabled } from "./harness";
@@ -166,7 +166,17 @@ async function tickMissionLiveness(vault: string): Promise<void> {
   for (const c of convs) {
     if (c.source !== "mission") continue;
     if (c.completedAt || c.missionState === "DONE" || c.missionState === "KILLED") continue;
-    if (c.missionState === "AWAITING_USER") continue; // legitimately waiting on the user
+    if (c.missionState === "AWAITING_USER") {
+      // [ask-object 4b] A parked mission is normally left alone. But if its open
+      // ask opted into a self-defer timeout (low-stakes + a declared fallback)
+      // and that deadline has passed with no answer, auto-"Not now": resume the
+      // mission on its onDefer branch so it never hangs forever. High-stakes asks
+      // carry no deadline, so they still wait for the user.
+      await maybeAutoDeferAsk(vault, c, convs, now, grace).catch((e) =>
+        console.warn("[ask-autodefer] sweep failed:", e),
+      );
+      continue;
+    }
     const la = c.lastActivityAt ?? 0;
     if (la < cutoff) continue;
     if (now - la < grace) continue; // still inside a healthy self-schedule cadence
@@ -199,6 +209,56 @@ async function tickMissionLiveness(vault: string): Promise<void> {
       { modelId: useStore.getState().supervisorModelId },
     ).catch((e) => console.warn("[mission-liveness] re-wake failed:", e));
   }
+}
+
+// [ask-object 4b] Self-defer a timed-out, low-stakes, fallback-declared ask on
+// the user's behalf — so a mission never hangs forever on a decision that has a
+// safe default. Finds the mission's one open ask; if it armed a deadline
+// (askDeadlineAt, set only for low-stakes asks with an onDefer) and that
+// deadline has passed with no answer, this records "Not now" on the ask (same
+// receipt + feed retirement as a user tap) and resumes the mission on its
+// onDefer branch via a tagged answer turn. High-stakes asks never carry a
+// deadline, so they are never auto-ended here — only the user can end those.
+async function maybeAutoDeferAsk(
+  vault: string,
+  mission: Conversation,
+  convs: Conversation[],
+  now: number,
+  grace: number,
+): Promise<void> {
+  const ask = convs
+    .filter((c) => c.source === "ask" && c.askOf === mission.id && !c.askDecided)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+  if (!ask) return;
+  if (!ask.askOnDefer || ask.askStakes === "high") return; // never auto-end these
+  if (!ask.askDeadlineAt || now < ask.askDeadlineAt) return; // not timed out yet
+  if (now - (livenessNudgedAt.get(ask.id) ?? 0) < grace) return; // just handled it
+  livenessNudgedAt.set(ask.id, now);
+  vlog("ask.autodefer", {
+    conv: mission.id.slice(0, 8),
+    ask: ask.id.slice(0, 8),
+    overdueMin: Math.round((now - ask.askDeadlineAt) / 60_000),
+  });
+  const { stampAskDecided, runWorkerTurn } = await import("./offVaultRun");
+  // Record the terminal on the ask thread + retire its feed card — byte-for-byte
+  // what a user "Not now" writes, so every surface shows the same settled state.
+  await stampAskDecided(vault, ask.id, "Not now (no reply)").catch(() => {});
+  if (ask.askNotifId) {
+    await invoke("notification_add", {
+      vault,
+      json: JSON.stringify({ type: "answered", id: ask.askNotifId, answer: "Not now", ts: now }),
+    }).catch(() => {});
+    // The phone's next /notifications poll retires the card — no broadcast needed.
+  }
+  // Resume the mission on its declared fallback. answer:true clears AWAITING_USER
+  // (clearAwait), exactly like the /answer defer relay.
+  const injected =
+    `[NOT NOW — auto] You raised this ask with a self-defer timeout and it elapsed with no reply from the user. Do not wait any longer and do not re-raise the same ask. Fall back to the plan you declared when you raised it: ${ask.askOnDefer}. If that plan is a hold/stand-down, do exactly that; otherwise carry it out. Then say plainly what you did.`;
+  await runWorkerTurn(vault, mission.id, injected, {
+    answer: true,
+    direct: true,
+    modelId: useStore.getState().supervisorModelId,
+  }).catch((e) => console.warn("[ask-autodefer] resume failed:", e));
 }
 
 // Multi-vault scheduler. Each tracked vault gets its own loop that

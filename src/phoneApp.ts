@@ -613,6 +613,13 @@ export type NotifyExtra = {
     mission?: string;
     ask: string;
     askLong?: string;
+    // [ask-object] The declared fallback if the user doesn't answer (Not now /
+    // timeout), and how consequential the fork is. `stakes:"high"` means a
+    // no-answer must STAND DOWN, never auto-proceed.
+    stakes?: "low" | "high";
+    onDefer?: string;
+    // [ask-object 4b] Minutes to wait before a low-stakes ask self-defers.
+    timeoutMin?: number;
     options?: { answer: string; title: string; body: string; primary?: boolean }[];
   };
 };
@@ -655,6 +662,8 @@ export async function notify(
       mission: d.mission ? String(d.mission).slice(0, 90) : undefined,
       ask: String(d.ask || "").slice(0, 600),
       askLong: d.askLong ? String(d.askLong).slice(0, 1200) : undefined,
+      ...(d.stakes === "high" || d.stakes === "low" ? { stakes: d.stakes } : {}),
+      ...(d.onDefer && String(d.onDefer).trim() ? { onDefer: String(d.onDefer).trim().slice(0, 300) } : {}),
       options: d.options!.slice(0, 6).map((o) => ({
         // 200, not 80: the answer text is relayed VERBATIM as the user's
         // message when tapped — an 80-char cap once delivered "…then t"
@@ -695,6 +704,7 @@ export async function notify(
         ? useStore.getState().conversations.find((c) => c.id === convId)?.mission ||
           useStore.getState().conversations.find((c) => c.id === convId)?.title
         : undefined;
+      const dlbMin = Number(extra?.deliberation?.timeoutMin);
       rec.askConvId = await mintAskConversation(vault, {
         missionConvId: convId,
         notifId: rec.id as string,
@@ -702,6 +712,10 @@ export async function notify(
         mission: missionLabel,
         question: body,
         options: extra?.deliberation?.options,
+        stakes: extra?.deliberation?.stakes,
+        onDefer: extra?.deliberation?.onDefer,
+        // Arm a self-defer deadline only when the ask gave a positive timeout.
+        deadlineAt: Number.isFinite(dlbMin) && dlbMin > 0 ? Date.now() + dlbMin * 60_000 : undefined,
         kind: "ask",
       });
     } catch (e) {
@@ -1162,15 +1176,32 @@ export async function startPhoneAppHost(): Promise<void> {
     clientMsgId?: string;
     notifId?: string;
     askConvId?: string;
+    defer?: boolean;
+    onDefer?: string;
   }>("phone:answer", async (event) => {
-    const { reqId, convId, text, clientMsgId, notifId, askConvId } = event.payload;
+    const { reqId, convId, text, clientMsgId, notifId, askConvId, defer, onDefer } = event.payload;
     try {
       const t = String(text ?? "").trim();
-      if (!convId || !t) {
+      if (!convId || (!t && !defer)) {
         respond(reqId, { error: "answer needs a convId and non-empty text" });
         return;
       }
-      const res = await dedupedPhoneMessage(clientMsgId, convId, t, false, /* answer */ true);
+      // [ask-object] "Not now" is the ask's single terminal ALONGSIDE answering:
+      // it ends the ask without picking an option and — crucially — RESUMES the
+      // parked mission (clears AWAITING_USER) instead of stranding it forever the
+      // way a swiped-away card used to. The injected turn tells the executor to
+      // fall back to what it declared when it raised the ask (act on a named
+      // default, or stand down for anything high-stakes/irreversible). The
+      // recorded decision is the short "Not now" for the card + archive.
+      const onDeferTxt = String(onDefer ?? "").trim();
+      const injected = defer
+        ? "[NOT NOW] I'm deferring this decision — I did not pick any of the options. Don't wait on me further, and don't re-raise the same ask. " +
+          (onDeferTxt
+            ? `The fallback you declared when you raised it: “${onDeferTxt.slice(0, 300)}”. Do that now if it's an action; if it's a hold, or this ask was high-stakes/irreversible, stand down and don't act. Say plainly what you're doing.`
+            : "Fall back to what you decided when you raised it: if you named a default action for no-answer, take it now; if this needs my explicit go and I haven't given it (a spend, or anything irreversible or high-stakes), do NOT act — stand down or hold, and say plainly what you're doing.")
+        : t;
+      const recorded = defer ? "Not now" : t;
+      const res = await dedupedPhoneMessage(clientMsgId, convId, injected, false, /* answer */ true);
       // Durably record WHICH answer settled this ask — an append-only "answered"
       // marker keyed to the notification id. notifications_json folds it into the
       // card as answeredWith/answeredAt (and treats it as read), so the Archive
@@ -1185,7 +1216,7 @@ export async function startPhoneAppHost(): Promise<void> {
         if (vault) {
           await invoke("notification_add", {
             vault,
-            json: JSON.stringify({ type: "answered", id: notifId, answer: t.slice(0, 160), ts: Date.now() }),
+            json: JSON.stringify({ type: "answered", id: notifId, answer: recorded.slice(0, 160), ts: Date.now() }),
           }).catch(() => {});
           broadcast({ type: "notif" });
         }
@@ -1198,7 +1229,7 @@ export async function startPhoneAppHost(): Promise<void> {
         const vault = useStore.getState().vaultPath;
         if (vault) {
           const { stampAskDecided } = await import("./offVaultRun");
-          await stampAskDecided(vault, askConvId, t).catch((e) =>
+          await stampAskDecided(vault, askConvId, recorded).catch((e) =>
             console.warn("[phone-app] ask-decided stamp failed:", e),
           );
         }

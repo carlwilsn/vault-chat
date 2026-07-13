@@ -981,6 +981,13 @@ export async function mintAskConversation(
     mission?: string;
     question: string;
     options?: { answer: string; title?: string; body?: string; primary?: boolean }[];
+    // [ask-object] Auto-defer inputs (Stage 4b) — only meaningful for "ask" with
+    // a declared fallback + timeout. Stored on the ask thread so the liveness
+    // sweep can self-defer a timed-out low-stakes ask without cross-referencing
+    // the notification.
+    stakes?: "low" | "high";
+    onDefer?: string;
+    deadlineAt?: number;
     // "ask" seeds a decision conversation; "info" a follow-up conversation.
     kind: "ask" | "info";
   },
@@ -1004,6 +1011,13 @@ export async function mintAskConversation(
     mission: opts.mission,
     askOf: opts.missionConvId,
     askNotifId: opts.notifId,
+    ...(opts.kind === "ask" && opts.onDefer ? { askOnDefer: opts.onDefer } : {}),
+    ...(opts.kind === "ask" && opts.stakes ? { askStakes: opts.stakes } : {}),
+    // A deadline is armed ONLY for a low-stakes ask with a declared fallback —
+    // a high-stakes ask never self-defers (only the user may end it).
+    ...(opts.kind === "ask" && opts.deadlineAt && opts.stakes !== "high" && opts.onDefer
+      ? { askDeadlineAt: opts.deadlineAt }
+      : {}),
     createdAt: now,
     lastActivityAt: now,
     messages: [
@@ -1041,8 +1055,12 @@ export async function appendOptionsToPendingAsk(
     const list = await readConversations(vault);
     // The live ask = the NEWEST ask conversation pointing at this mission
     // (a superseding ask mints a fresh thread; older ones are settled rounds).
+    // The live ask = the newest UNDECIDED ask pointing at this mission. Never
+    // an already-decided round: appending fresh options to a settled ask would
+    // resurrect a closed decision (and mismatch findLiveAsk, which also filters
+    // on !askDecided).
     const asks = list
-      .filter((c) => c.source === "ask" && c.askOf === missionConvId)
+      .filter((c) => c.source === "ask" && c.askOf === missionConvId && !c.askDecided)
       .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     const ask = asks[0];
     if (!ask) return;
@@ -1061,6 +1079,62 @@ export async function appendOptionsToPendingAsk(
   });
   if (landedId) await useStore.getState().refreshConversationFromDisk(vault, landedId).catch(() => {});
   return landedTitle;
+}
+
+// [ask-object] The mission's single OPEN ask (one-per-mission by design), if
+// any. An ask is one first-class object with a clear start and end; while it is
+// open, a re-raise UPDATES it rather than minting a second thread + feed card —
+// the structural cure for the duplicate-thread bug (one "pick a color" decision
+// surfaced as FOUR ask threads in the notif-surface self-test, because the
+// mission executor re-fired notify("ask") every turn with no idempotency). Also
+// the enforcement point for "no nesting": a mission cannot open a second ask
+// while one is still live; it must resolve or defer the current one first.
+// "Open" = an ask thread pointing at this mission that has NOT been decided.
+// Returns the newest such thread, or null when the mission has no open ask (so
+// the caller mints a fresh one).
+export async function findLiveAsk(
+  vault: string,
+  missionConvId: string,
+): Promise<Conversation | null> {
+  const list = await readConversations(vault);
+  const open = list
+    .filter((c) => c.source === "ask" && c.askOf === missionConvId && !c.askDecided)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return open[0] ?? null;
+}
+
+// [ask-object] The other half of "no duplicate asks": the notif-surface
+// self-test spawned FOUR threads for one decision because each ANSWER resumed
+// the executor, which — confused about whether its card had fired — immediately
+// re-asked the SAME thing. By then the prior ask was DECIDED (so findLiveAsk
+// excludes it) and the re-ask minted a fresh thread. This catches that: if this
+// mission got an answer to an ask with the SAME title moments ago, the executor
+// should USE that answer, not re-open the decision. Scoped to THIS mission +
+// this title + a short window, so two different missions asking the same stock
+// question are unaffected (that's why the old dedupe deliberately kept them
+// separate). Returns the decided answer, or null.
+export async function recentDecidedAsk(
+  vault: string,
+  missionConvId: string,
+  title: string,
+  withinMs = 6 * 60_000,
+): Promise<{ answer: string; at: number } | null> {
+  const key = (title || "").trim().toLowerCase();
+  if (!key) return null;
+  const now = Date.now();
+  const list = await readConversations(vault);
+  const hit = list
+    .filter(
+      (c) =>
+        c.source === "ask" &&
+        c.askOf === missionConvId &&
+        !!c.askDecided &&
+        !!c.askDecidedAt &&
+        now - (c.askDecidedAt as number) < withinMs &&
+        (c.title || "").trim().toLowerCase() === key,
+    )
+    .sort((a, b) => (b.askDecidedAt || 0) - (a.askDecidedAt || 0))[0];
+  return hit ? { answer: hit.askDecided as string, at: hit.askDecidedAt as number } : null;
 }
 
 // [ask redesign] One turn of the dedicated ask agent, in the notification's own

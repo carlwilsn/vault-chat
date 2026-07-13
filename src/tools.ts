@@ -1373,8 +1373,20 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           )
           .optional()
           .describe("Concrete paths the user can tap to pick. Omit for an open-ended, free-form question."),
+        stakes: z
+          .enum(["low", "high"])
+          .optional()
+          .describe("How consequential the fork is. 'high' = a spend, or anything irreversible/hard-to-undo: if you don't hear back you must STAND DOWN, never auto-proceed. 'low' = safe to fall back to a default if the user goes quiet. Defaults to low."),
+        onDefer: z
+          .string()
+          .optional()
+          .describe("Your declared fallback if the user does NOT answer (they tap 'Not now', or a timeout fires) — e.g. 'proceed at $32/hr' or 'pause the run and hold'. For a 'high' stakes ask this MUST be a stand-down/hold, never an action. Shown on the card so the user sees the cost of not answering, and fed back to you if the ask is deferred."),
+        timeoutMin: z
+          .number()
+          .optional()
+          .describe("LOW-stakes asks only: minutes to wait before the ask self-defers on your onDefer fallback if the user hasn't answered. Requires onDefer. Omit to wait indefinitely. Ignored for high-stakes asks (they always wait for the user). Use this so a mission never hangs forever on a decision that has a safe default."),
       }),
-      execute: async ({ about, question, options }) => {
+      execute: async ({ about, question, options, stakes, onDefer, timeoutMin }) => {
         const opts = Array.isArray(options) ? options.filter((o) => o?.label?.trim()) : [];
         // [unified ask] Presence gates the WEIGHT, not the ability (note
         // ff31231e): in a LIVE conversation (the user drove this very turn) the
@@ -1462,6 +1474,51 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           if (mc && (mc.missionState === "DONE" || mc.missionState === "KILLED" || mc.completedAt))
             return "This mission is COMPLETE — do not ask the user for decisions on it (there is no pending work their answer would steer). If they should know something, use Notify; if they asked you a question, answer it in prose.";
         }
+        // [ask-object] ONE open ask per mission (no nesting). If this
+        // conversation already has an open ask the user hasn't decided, a
+        // re-raise must UPDATE that same object — never mint a second card +
+        // thread. This is the structural fix for the duplicate-thread bug (the
+        // notif-surface self-test spawned four "pick a color" threads for one
+        // decision because the executor re-fired AskUser every turn). Refined
+        // options stack under the open ask's original ones; nothing new hits the
+        // feed. A normal chat has no ask threads pointing at it, so findLiveAsk
+        // returns null there and this is a no-op.
+        if (conversationId) {
+          const { findLiveAsk, appendOptionsToPendingAsk, recentDecidedAsk } = await import("./offVaultRun");
+          // Re-asking the SAME decision moments after it was answered = the
+          // re-confirm loop that spawned four threads in the self-test. Tell the
+          // executor to use the answer it already has, don't reopen the fork.
+          const recent = about ? await recentDecidedAsk(vault, conversationId, about) : null;
+          if (recent) {
+            return `You already asked "${about}" and the user answered "${recent.answer}" moments ago — take THAT as the decision and proceed. Do NOT re-raise the same ask; it would open a duplicate. Only ask again if you genuinely need a DIFFERENT decision.`;
+          }
+          const open = await findLiveAsk(vault, conversationId);
+          if (open) {
+            if (opts.length) {
+              let primarySeen = false;
+              await appendOptionsToPendingAsk(
+                vault,
+                conversationId,
+                opts.map((o) => {
+                  const primary = !!o.recommended && !primarySeen;
+                  if (primary) primarySeen = true;
+                  return {
+                    answer: o.label.trim().slice(0, 200),
+                    title: o.label.trim().slice(0, 120),
+                    body: (o.detail || "").trim().slice(0, 800),
+                    ...(primary ? { primary: true } : {}),
+                  };
+                }),
+                question ? `Refined from the deliberation — ${String(question).slice(0, 200)}` : "Refined options from the deliberation:",
+              ).catch(() => null);
+            }
+            return (
+              "This mission already has ONE open ask — its 'Needs you' card is the single decision surface, so I updated that same ask" +
+              (opts.length ? " (your refined options stack under its original ones)" : "") +
+              " instead of opening a second one. Do NOT raise another ask until this one is answered or deferred; end your turn and wait."
+            );
+          }
+        }
         const { notify } = await import("./phoneApp");
         // With real options, carry the structured deliberation payload so the
         // cockpit renders the "Needs you" deliberation card + inline-option sheet
@@ -1473,6 +1530,13 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
                   mission: about || undefined,
                   ask: question,
                   askLong: question,
+                  ...(stakes ? { stakes } : {}),
+                  ...(onDefer && onDefer.trim() ? { onDefer: onDefer.trim() } : {}),
+                  // A self-defer timeout is armed only for a non-high-stakes ask
+                  // that declared a fallback — otherwise it waits for the user.
+                  ...(timeoutMin && timeoutMin > 0 && stakes !== "high" && onDefer && onDefer.trim()
+                    ? { timeoutMin }
+                    : {}),
                   options: opts.map((o) => ({
                     answer: o.label.trim(),
                     title: o.label.trim(),

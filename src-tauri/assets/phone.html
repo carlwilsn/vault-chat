@@ -356,6 +356,14 @@
      option label made the button UNSHRINKABLE and pushed the row past the card. */
   .needs-qa button{flex:1 1 40%;min-width:0;overflow-wrap:anywhere;border-radius:10px;padding:8px 11px;font-size:13px;font-weight:600;border:1px solid var(--line);background:var(--raised);color:var(--text);font-family:inherit;min-height:36px}
   .needs-qa button:active{opacity:.8}
+  .needs-qa button.prim,.supask-opt.prim{border-color:var(--text);font-weight:700}
+  .card.needsyou.supask{margin:2px 0 4px}
+  .supask-foot{display:flex;align-items:center;gap:10px;margin-top:10px}
+  .supask-defer{border-radius:10px;padding:6px 12px;font-size:12.5px;font-weight:600;border:1px solid var(--line);background:transparent;color:var(--dim);font-family:inherit}
+  .supask-defer:active{opacity:.7}
+  .supask-hint{font-size:11.5px;color:var(--dim)}
+  .needs-defer{border:none;background:transparent;color:var(--dim);font-size:12px;font-weight:600;padding:6px 2px;margin-top:4px;font-family:inherit}
+  .needs-defer:active{opacity:.7}
   /* Freeform answer: the real message composer — send arrow INSET, right-aligned
      inside the field (reusing .rinp/.rsend geometry). */
   .needs-ff{position:relative;display:flex;align-items:center}
@@ -2791,6 +2799,25 @@ interface MockDB {
           threadErr = String(e.message || e);
         }
       }
+      // [ask-object] Shared mount: the mission's ONE open ask renders inline in
+      // THIS supervisor sheet too, not only in the Alerts feed — the same object
+      // (one notif id), so answering here or there is one decision. A tap rides
+      // resolveDeliberation → /answer (the tagged relay that clears the wait),
+      // never the sendFront probe path the front's inline cards use. (User note:
+      // the supervisor conversation had no ask card and wasn't stacked onto the
+      // alerts one.) The !read/!answeredWith filter makes the card vanish the
+      // moment the ask is decided, even before this closure's mc goes RUNNING.
+      let pendingAsk = null;
+      if (!readonly && mc.missionState === "AWAITING_USER") {
+        try {
+          const nd = await (await api("/notifications")).json();
+          const nl = nd.notifications || [];
+          lastNotifList = nl;
+          pendingAsk = nl
+            .filter((x) => x.kind === "ask" && x.convId === mc.id && !x.read && !x.answeredWith)
+            .sort((a, b) => (b.ts || 0) - (a.ts || 0))[0] || null;
+        } catch {}
+      }
       // Bleed guard: the fetches above are async. If the sheet was replaced while
       // we awaited (closed + a different conversation/note opened), sheetConvId no
       // longer matches ours — writing now would splash THIS mission's thread into
@@ -2831,7 +2858,7 @@ interface MockDB {
       }
       // Live edge content updates in place via renderSheetLive between polls, so a
       // steady showLive doesn't force a disruptive full repaint here.
-      const sig = JSON.stringify(restPlus.map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + showLive;
+      const sig = JSON.stringify(restPlus.map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + showLive + "|" + (pendingAsk ? pendingAsk.id + ":" + (pendingAsk.answeredWith || "") : "");
       if (sig === lastSig) return; // nothing changed — don't disrupt reading
       lastSig = sig;
       const comps = parseDoneWhen(brief);
@@ -2844,6 +2871,24 @@ interface MockDB {
         body += '<div class="md">' + md(brief) + "</div>";
       } else {
         body += '<div class="md dim">No explicit criteria recorded for this mission.</div>';
+      }
+      // [ask-object] The mission's one open ask, pinned near the top of the sheet
+      // as a live decision card — the shared mount (same object as the Alerts
+      // card). Options tap through to /answer; the body opens the deliberation
+      // sheet. "Not now" is the formal defer terminal (Stage 3).
+      if (pendingAsk) {
+        const del = deliberationFromNotif(pendingAsk);
+        let ac = '<div class="lbl">Needs your call</div><div class="card needsyou supask">';
+        ac += '<div class="needs-q">' + esc(del.ask) + "</div>";
+        if (del.options.length) {
+          ac += '<div class="needs-qa">';
+          for (const o of del.options) ac += '<button class="supask-opt' + (o.primary ? " prim" : "") + '" data-ans="' + esc(o.answer) + '">' + esc(o.answer) + "</button>";
+          ac += "</div>";
+        }
+        if (del.onDefer) ac += '<div class="supask-hint" style="margin:8px 0 0">If you don’t answer: ' + esc(del.onDefer) + (del.stakes === "high" ? " · high-stakes, so I’ll hold" : "") + "</div>";
+        ac += '<div class="supask-foot"><button class="supask-defer">Not now</button><span class="supask-hint">tap to talk it through</span></div>';
+        ac += "</div>";
+        body += ac;
       }
       // [unified ask] The supervisor front can stage inline option cards on a
       // reply (an interactive AskUser — the ONLY surface that does; a plain
@@ -2927,6 +2972,34 @@ interface MockDB {
           void api("/decision-record", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: ans, title: mc.title || "Mission decision", question: q, convId: mc.id }) }).catch(() => {});
         });
       });
+      // [ask-object] Wire the inline supervisor ask card. An option tap rides
+      // resolveDeliberation (/answer) — the ONLY tap in this sheet that clears
+      // AWAITING_USER and resumes the executor (the front's inline cards above go
+      // through sendFront, a probe that clears nothing). "Not now" is the formal
+      // defer terminal; the card body opens the deliberation sheet to talk it
+      // through. Re-wired each paint (innerHTML wipes handlers).
+      if (pendingAsk) {
+        be.querySelectorAll(".supask-opt").forEach((b) => {
+          b.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if ((b as HTMLButtonElement).disabled) return;
+            be.querySelectorAll(".supask-opt,.supask-defer").forEach((x) => { (x as HTMLButtonElement).disabled = true; });
+            resolveDeliberation(pendingAsk, (b as HTMLElement).dataset.ans || "");
+          });
+        });
+        const df = be.querySelector(".supask-defer");
+        if (df) df.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if ((df as HTMLButtonElement).disabled) return;
+          be.querySelectorAll(".supask-opt,.supask-defer").forEach((x) => { (x as HTMLButtonElement).disabled = true; });
+          deferAsk(pendingAsk);
+        });
+        const supcard = be.querySelector(".supask");
+        if (supcard) supcard.addEventListener("click", (e) => {
+          if ((e.target as HTMLElement).closest("button")) return;
+          openDeliberationSheet(pendingAsk);
+        });
+      }
       // Re-attach worker-row taps each paint (innerHTML wipes handlers). Opening a
       // worker swaps the sheet to its read-only thread; a fresh openMission tap
       // brings you back.
@@ -3641,6 +3714,10 @@ interface MockDB {
       mission: d.mission || n.title || "",
       ask,
       askLong: d.askLong || d.ask || n.body || n.summary || ask,
+      // [ask-object] The declared fallback + stakes, so every ask surface can
+      // show "if you don't answer, X" and the defer relay can feed X back.
+      stakes: d.stakes || "",
+      onDefer: d.onDefer || "",
       options: Array.isArray(d.options) ? d.options : [],
     };
   }
@@ -3771,6 +3848,15 @@ interface MockDB {
         qa.appendChild(b);
       }
       card.appendChild(qa);
+    }
+    // [ask-object] "Not now" — the formal defer terminal, on every live ask card.
+    // It ends the ask AND resumes the parked mission (unlike swipe-archive, which
+    // only hid the card and left the mission stranded AWAITING_USER).
+    if (!decided) {
+      if (del.onDefer) card.appendChild(el('<div class="supask-hint" style="margin-top:8px">If you don’t answer: ' + esc(del.onDefer) + (del.stakes === "high" ? " · high-stakes, so I’ll hold" : "") + "</div>"));
+      const df = el('<button class="needs-defer">Not now</button>');
+      df.onclick = (e) => { e.stopPropagation(); (df as HTMLButtonElement).disabled = true; deferAsk(n); };
+      card.appendChild(df);
     }
     // Freeform answer lives in the dig-in sheet now, not inline on every feed card —
     // the always-present input made each card ~50px taller so only ~2 fit on screen
@@ -4209,6 +4295,30 @@ interface MockDB {
     // live form; an info sheet just stays as it is (its tapped card is already
     // marked by the sheet's own wiring).
     n.answeredWith = answer; n.answeredAt = Date.now(); n.read = true;
+    if (n.kind === "ask" && $("sheet").classList.contains("on")) openDeliberationSheet(n);
+    void loadAlerts();
+  }
+  // [ask-object] "Not now" — the ask's terminal that ends it WITHOUT choosing an
+  // option and RESUMES the parked mission (the box injects the fallback
+  // instruction and clears AWAITING_USER; a swiped-away card used to strand the
+  // mission forever). Mirrors resolveDeliberation's /answer relay but tags
+  // defer:true and records "Not now" as the decision on the card + archive.
+  function deferAsk(n) {
+    const rkey = n.id + " __defer__";
+    if (resolvingAsks.has(rkey)) return;
+    resolvingAsks.add(rkey);
+    setTimeout(() => resolvingAsks.delete(rkey), 60_000);
+    const del = deliberationFromNotif(n);
+    if (n.convId) {
+      api("/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: "Not now", clientMsgId: "defer-" + n.id, notifId: n.id, defer: true, ...(del.onDefer ? { onDefer: del.onDefer } : {}), ...(n.kind === "ask" && n.askConvId ? { askConvId: n.askConvId } : {}) }) }).catch(() => {});
+    }
+    // One terminal settles the DECISION: retire every live ask card for the same
+    // conversation, same as answering (a mission has ONE open ask).
+    for (const s of lastNotifList) {
+      if (s.kind === "ask" && !s.read && s.id !== n.id && s.convId && n.convId && s.convId === n.convId) markRead(s.id);
+    }
+    markRead(n.id);
+    n.answeredWith = "Not now"; n.answeredAt = Date.now(); n.read = true;
     if (n.kind === "ask" && $("sheet").classList.contains("on")) openDeliberationSheet(n);
     void loadAlerts();
   }
