@@ -36,14 +36,32 @@ function boxIsIdle(): boolean {
   return !useStore.getState().conversations.some((c) => c.status === "running");
 }
 
-// Best-effort heads-up to the user's phone that the box updated itself.
-async function notifyUpdated(version: string): Promise<void> {
+// Best-effort heads-up to the user's phone that the box updated itself. This is
+// the ONE update alert: it carries the release notes (the same Claude-generated
+// body the desktop banner shows) as its details, so the phone needs no separate
+// "what changed" card — this single notification is both "it updated" and
+// "here's what's new".
+async function notifyUpdated(version: string, notes?: string): Promise<void> {
   try {
     const { notify } = await import("./phoneApp");
+    const body = (notes || "").trim();
+    // Card lede: the first real prose line of the notes, skipping markdown
+    // headings — mirrors the desktop banner's summary.
+    const summary =
+      body
+        .split("\n")
+        .map((l) => l.trim())
+        .find((l) => l && !l.startsWith("#")) || "";
     await notify(
       "info",
-      "Updated & restarting",
-      `vault-chat updated to v${version} on this box — restarting now.`,
+      `Updated to v${version}`,
+      body || `vault-chat updated to v${version} on this box — restarting now.`,
+      undefined,
+      {
+        intention: "vault-chat · auto-update",
+        icon: "✦",
+        summary: (summary || `Restarting on v${version}.`).slice(0, 140),
+      },
     );
   } catch {
     /* the heads-up is optional; the restart is what matters */
@@ -74,7 +92,7 @@ export function UpdateBanner() {
         // applies it. Re-check idle right before the restart, not just before
         // the download, since a run can start during the download.
         if (cancelled || !boxIsIdle()) return;
-        await notifyUpdated(update.version);
+        await notifyUpdated(update.version, update.body);
         await relaunch();
       } catch (e) {
         // A non-AppImage Linux install (deb/rpm can't self-replace) or a
