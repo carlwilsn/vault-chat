@@ -1570,6 +1570,7 @@ interface MockDB {
   // Opening a thread clears its unseen state.
   const convRunning = new Set();
   const convUnseen = new Set();
+  let __dotState = ""; // last-logged conversations-icon dot state (think/solid/off)
   // The conversations icon tracks YOUR chats only. A mission/worker self-wake
   // ending in the background must never light it (note 8c84fc31 — "the icon is
   // not accurate": CADENCE-FAST's 2-minute wakes kept flipping the dot as each
@@ -1603,6 +1604,12 @@ interface MockDB {
     dot.classList.toggle("on", running || unseen);
     dot.classList.toggle("think", running);
     dot.classList.toggle("solid", unseen);
+    // [experience-log] Record every change of the conversations-icon dot with
+    // WHY (which threads are running / unseen, what you're viewing) — the
+    // "unread indicator is out of whack" complaint is unreconstructable without
+    // seeing when it lit and what it was tracking at that moment.
+    const st = running ? "think" : unseen ? "solid" : "off";
+    if (st !== __dotState) { __dotState = st; try { logEvent("convdot", { state: st, running: [...convRunning], unseen: [...convUnseen], viewing: convId || null, sheet: sheetConvId || null }); } catch {} }
   }
   // Reconcile the running set against the heartbeat-backed /status truth. A conv
   // that WAS running and no longer is — and that you weren't looking at — becomes
@@ -1795,6 +1802,13 @@ interface MockDB {
       // it only comes from a run finishing while you were looking elsewhere, so
       // opening the drawer never conjures unread dots on chats you didn't miss.
       applyRunningSet([...runIds]);
+      // Opening the drawer = looking at your conversations. A chat whose reply
+      // finished while you were elsewhere has now been SEEN — clear its unseen
+      // so the icon dot stops claiming "unread" after you've looked (the "still
+      // out of whack" case: I opened my conversations and the dot stayed on).
+      // Scoped to the chats actually shown and only the finished ones — a chat
+      // still generating keeps its think-dot; workers/missions aren't here.
+      if (cdraw.classList.contains("on")) { for (const c of chats) { if (!runIds.has(c.id)) convUnseen.delete(c.id); } }
       updateConvDot();
       box.innerHTML = "";
       if (chats.length) {
@@ -2234,13 +2248,22 @@ interface MockDB {
       liveByConv.set(d.convId, { running: true, text: d.text || "", tool: d.tool || "", startedAt: d.startedAt ?? (prev && prev.startedAt) ?? null });
       updateConvDot();
     } else if (d.type === "status" && d.convId) {
+      // The dot sets (convRunning/convUnseen) track YOUR chats only — the
+      // runtime handler above gates on dotEligible, but this status branch used
+      // to add ANY finished conv to convUnseen. So a mission or worker ending in
+      // the background lit the conversations icon with a phantom "unread" you
+      // could never clear (it isn't in the drawer) — the "indicator is out of
+      // whack" bug, and a direct violation of note 8c84fc31. Gate both writes on
+      // dotEligible. liveByConv is NOT gated: the sheet still replays a
+      // mission/worker's live state.
+      const elig = dotEligible(d.convId);
       if (d.status === "running") {
-        convRunning.add(d.convId); convUnseen.delete(d.convId);
+        if (elig) { convRunning.add(d.convId); convUnseen.delete(d.convId); }
         const prev = liveByConv.get(d.convId) || {};
         liveByConv.set(d.convId, { ...prev, running: true });
       } else {
         convRunning.delete(d.convId); liveByConv.delete(d.convId);
-        if (d.convId === convId) markSeen(convId); else convUnseen.add(d.convId);
+        if (d.convId === convId) markSeen(convId); else if (elig) convUnseen.add(d.convId);
       }
       updateConvDot();
     }
