@@ -385,6 +385,18 @@ fn handle(mut req: Request, token: &str) {
             };
             let _ = req.respond(body);
         }
+        (Method::Post, "/client-event") => {
+            // [experience-log] The phone posts UI events (card renders, taps, send
+            // outcomes, errors) so the agent can read what the user actually saw.
+            // Relay to the app, which appends to client-events.jsonl. STRICTLY
+            // best-effort: always 200, never surface a failure — logging must not
+            // affect the app.
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            let _ = relay_request("phone:client-event", payload, Duration::from_secs(5));
+            let _ = req.respond(resp_text(200, "application/json", "{\"ok\":true}".into()));
+        }
         (Method::Post, "/notes/status") => {
             // Resolve / reopen a note from the phone (swipe-to-resolve). Relay to
             // the app so the change is applied against the freshest on-disk notes

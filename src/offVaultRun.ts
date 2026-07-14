@@ -854,6 +854,28 @@ export async function runMissionChatTurn(
   if (!seeded) return { reply: "", error: `mission thread not found: ${conversationId}` };
   await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
 
+  // [presence] Claim the chat lane NOW so a second send during the wait below is
+  // caught by the guard at the top of this function (isRunActive chatKey), not
+  // raced into a duplicate turn.
+  const controller = new AbortController();
+  registerRun(chatKey, controller);
+  // [presence] If the executor is mid-generation, briefly WAIT for its current
+  // turn to settle before we snapshot — answering from a half-formed thought reads
+  // as confusion ("wait if it's going to look at the living threads"). Bounded to
+  // a few seconds because the user is live; we broadcast a "waiting" phase so the
+  // cockpit can say we're waiting, then answer from the settled state — or from
+  // the snapshot as-is if it doesn't settle in time, so we NEVER hang.
+  const execBusy = () => {
+    const r = useStore.getState().convRuntime[conversationId];
+    return isRunActive(conversationId) && !!r && (!!(r.streamingText || "").trim() || (r.liveSteps || []).length > 0);
+  };
+  if (execBusy()) {
+    broadcastChat("waiting");
+    const deadline = Date.now() + 6000;
+    while (execBusy() && Date.now() < deadline) await new Promise((res) => setTimeout(res, 400));
+    await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+  }
+
   // Snapshot the executor's live state at the instant of asking — where its
   // current turn is, or that it's idle. This is what lets the front answer "what
   // are you doing right now" without waiting for the executor to pause.
@@ -880,8 +902,7 @@ export async function runMissionChatTurn(
     .filter((m) => !m.system && m.content !== text) // exclude the just-appended turn (passed as userMessage)
     .map((m) => ({ role: m.role, content: m.content }));
 
-  const controller = new AbortController();
-  registerRun(chatKey, controller);
+  // controller + registerRun already claimed the lane above (before the wait).
   broadcastChat("start");
 
   let acc = "";

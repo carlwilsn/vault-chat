@@ -816,7 +816,7 @@
   <div id="voice">
     <div class="vtop"><button class="icbtn" id="vMinBtn" aria-label="keep talking while you read"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button></div>
     <div class="vmid"><div class="viz" id="viz"></div><div class="vconn">Connecting…</div><div class="verr" id="verr"></div></div>
-    <div class="vend"><div class="vbtns"><button class="vx" id="vMuteBtn" aria-label="mute mic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="21" x2="12" y2="17"/><line x1="9" y1="21" x2="15" y2="21"/></svg></button><button class="vx" id="vEndBtn" aria-label="end voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><span class="vhint">tap to end</span></div>
+    <div class="vend"><div class="vbtns"><button class="vx" id="vMuteBtn" aria-label="mute mic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="21" x2="12" y2="17"/><line x1="9" y1="21" x2="15" y2="21"/></svg></button><button class="vx" id="vEndBtn" aria-label="end voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><span class="vhint" id="vhint"></span></div>
   </div>
 
 <!-- Tailwind Play CDN. Utilities live under the tw- prefix (so no generated
@@ -1018,7 +1018,7 @@ interface MockDB {
   const $ = (id: string): any => document.getElementById(id);
   const toastEl = $("toast");
   let toastT = 0;
-  const toast = (m: string) => { toastEl.textContent = m; toastEl.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove("show"), 2600); };
+  const toast = (m: string) => { toastEl.textContent = m; toastEl.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove("show"), 2600); try { logEvent("toast", { msg: (m || "").slice(0, 160) }); } catch {} };
   if (!TOKEN && !MOCK) {
     document.body.innerHTML = '<div class="gate"><b style="color:var(--text)">No access token</b><div>Open the phone link from vault-chat Settings once — it carries the token, which is then remembered on this device.</div></div>';
     return;
@@ -1326,6 +1326,16 @@ interface MockDB {
   }
 
   const api = (path: string, opts: RequestInit = {}) => fetch(path, { ...opts, headers: { "X-Vault-Token": TOKEN, ...(opts.headers || {}) } });
+  // [experience-log] Fire-and-forget: stream what the user SEES and TAPS to a
+  // synced client-events.jsonl, so a bug report becomes a replay of the real
+  // session instead of a description ("I need Claude to see what I saw"). Never
+  // throws, never blocks — a missing/failing endpoint just drops the event.
+  let __alertsSig = "";
+  function logEvent(type: string, detail?: Record<string, any>) {
+    try {
+      api("/client-event", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t: Date.now(), type, page, ...(detail || {}) }) }).catch(() => {});
+    } catch {}
+  }
   const fileUrl = (p) => "/file?path=" + encodeURIComponent(p) + "&token=" + encodeURIComponent(TOKEN);
   // Pull a worker thread into the recent/Chats list so you can find it again
   // ("view history"). ONLY the thread-open entry points call this — opening a
@@ -1809,12 +1819,14 @@ interface MockDB {
   // class scopes the main-chat tap wiring). live=false renders them inert —
   // a later message already answered, or they're history.
   function inlineOptionsHtml(opts, live, chosenAns) {
-    return '<div class="delib-proposed inline">' + opts.map((o) => {
+    // [truth] Decided → losers say nothing: show ONLY the chosen option, "selected".
+    const shown = chosenAns ? opts.filter((o) => o.answer === chosenAns) : opts;
+    return '<div class="delib-proposed inline">' + shown.map((o) => {
       const chosen = !!chosenAns && o.answer === chosenAns;
       return '<div class="delib-opt inline' + (o.primary ? " prim" : "") + (!live || chosen ? " dead" : "") + (chosen ? " chosen" : "") + '" data-ans="' + esc(o.answer) + '" data-q="' + esc((o.body || o.title || o.answer).slice(0, 300)) + '">'
         + '<div class="ot">' + esc(o.title || o.answer)
         + (chosen
-          ? '<span class="pick">✓ your call</span>'
+          ? '<span class="pick">✓ selected</span>'
           : (live ? '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>' : ""))
         + "</div>"
         + (o.body ? '<div class="ob">' + esc(o.body) + "</div>" : "")
@@ -2126,7 +2138,7 @@ interface MockDB {
     // sheet) — a closed sheet's generation keeps going on the box; this is how
     // a reopened sheet knows to show "working…" and block a second send.
     if (d.type === "chat" && d.convId) {
-      if (d.phase === "start" || d.phase === "stream") chatBusy.add(d.convId);
+      if (d.phase === "start" || d.phase === "stream" || d.phase === "waiting") chatBusy.add(d.convId);
       else if (d.phase === "end") chatBusy.delete(d.convId);
     }
     if (sheetConvId && d.convId === sheetConvId) {
@@ -2155,6 +2167,14 @@ interface MockDB {
           const stale = document.querySelector("#delibX .liveplain");
           if (stale) stale.remove();
           renderChatEdge("");
+        }
+        else if (d.phase === "waiting") {
+          // [presence] The executor is mid-thought; the front is holding a beat
+          // for it to settle before it answers, so it reads live state instead of
+          // a half-formed one. Tell the user we're waiting (not a dead pause).
+          sheetChatActive = true; sheetChatSettling = false; sheetOptimisticWorking = false;
+          const stale = document.querySelector("#delibX .liveplain"); if (stale) stale.remove();
+          renderChatEdge("letting the mission finish this step…");
         }
         else if (d.phase === "stream") { sheetChatText = d.text || sheetChatText; renderChatEdge(sheetChatText); }
         else if (d.phase === "end") {
@@ -3624,6 +3644,14 @@ interface MockDB {
         .sort((a, b) => (b.answeredAt || b.readAt || b.ts || 0) - (a.answeredAt || a.readAt || a.ts || 0));
       const actions = unread.filter((n) => n.kind === "ask");
       const infos = unread.filter((n) => n.kind !== "ask");
+      // [experience-log] Snapshot the ask cards actually on screen, but only when
+      // the set CHANGES — so the log shows "you saw these N ask cards" (and would
+      // have caught the 4-duplicate-threads / two-sets-of-options case) without
+      // flooding on every repaint.
+      try {
+        const asig = JSON.stringify(actions.map((n) => [n.id, ((n.deliberation && n.deliberation.options) || []).length]));
+        if (asig !== __alertsSig) { __alertsSig = asig; logEvent("alerts", { asks: actions.map((n) => ({ id: n.id, conv: n.convId, title: (n.title || "").slice(0, 60), opts: ((n.deliberation && n.deliberation.options) || []).length })) }); }
+      } catch {}
       if (actions.length) box.appendChild(el('<div class="sec">Needs a reply</div>'));
       for (const n of actions) box.appendChild(alertCard(n, true));
       if (infos.length) box.appendChild(el('<div class="sec">Heads-up</div>'));
@@ -3864,13 +3892,16 @@ interface MockDB {
   // offered and what you picked).
   function askOptionCardsHtml(opts, decided) {
     const anyChosen = decided && opts.some((o) => decided.has(o.answer));
-    return '<div class="delib-proposed">' + opts.map((o, i) => {
+    // [truth] Once decided, the losers "say nothing": render ONLY the chosen card
+    // marked "selected" — never a stack of dimmed also-rans (matches the feed
+    // card, which drops the options and shows just the pick).
+    const shown = anyChosen ? opts.filter((o) => decided.has(o.answer)) : opts;
+    return '<div class="delib-proposed">' + shown.map((o) => {
       const chosen = decided && decided.has(o.answer);
-      return '<div class="delib-opt proposed' + (o.primary ? " prim" : "") + (chosen ? " chosen" : anyChosen ? " dead" : "") + '" data-ans="' + esc(o.answer) + '">'
+      return '<div class="delib-opt proposed' + (o.primary ? " prim" : "") + (chosen ? " chosen" : "") + '" data-ans="' + esc(o.answer) + '">'
         + '<div class="ot">' + esc(o.title || o.answer)
         + (chosen
-          ? '<span class="pick">✓ your call</span>'
-          : anyChosen ? ""
+          ? '<span class="pick">✓ selected</span>'
           : '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>')
         + "</div>"
         + (o.body ? '<div class="ob">' + esc(o.body) + "</div>" : "")
@@ -4100,12 +4131,14 @@ interface MockDB {
           + "</div>";
       }
       h += '<div class="delib-ask">' + esc(del.askLong || del.ask || "") + "</div>";
-      del.options.forEach((opt, i) => {
+      // [truth] Decided → show only the chosen option ("selected"); losers blank.
+      const shownOpts = decided && n.answeredWith ? del.options.filter((o) => o.answer === n.answeredWith) : del.options;
+      shownOpts.forEach((opt, i) => {
         const chosen = !!n.answeredWith && (opt.answer === n.answeredWith);
-        h += '<div class="delib-opt' + (opt.primary ? " prim" : "") + (decided ? " dead" : "") + (chosen ? " chosen" : "") + '" data-i="' + i + '">'
+        h += '<div class="delib-opt' + (opt.primary ? " prim" : "") + (decided && !chosen ? " dead" : "") + (chosen ? " chosen" : "") + '" data-i="' + i + '">'
           + '<div class="ot">' + esc(opt.title || opt.answer)
           + (chosen
-            ? '<span class="pick">✓ your call</span>'
+            ? '<span class="pick">✓ selected</span>'
             : (decided ? "" : '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>'))
           + "</div>"
           + (opt.body ? '<div class="ob">' + esc(opt.body) + "</div>" : "") + "</div>";
@@ -4164,7 +4197,7 @@ interface MockDB {
             const d = await r.json().catch(() => ({}));
             if (!r.ok || d.error || !d.convId) throw new Error(d.error || r.status);
             n.followupConvId = d.convId; cid = d.convId;
-            probe = attachSheetConversation(d.convId, { openAtTop: true, decided, answeredWith: n.answeredWith, emptyText: "Follow-up on this decision — the agent has its context." });
+            probe = attachSheetConversation(d.convId, { openAtTop: true, decided, answeredWith: n.answeredWith, emptyText: "Follow-up on this decision — the agent has its context.", onOption: (ans) => resolveDeliberation(n, ans) });
             probe(v);
           } catch (e) { toast("Couldn't start the follow-up: " + (e.message || e)); }
         });
@@ -4230,6 +4263,7 @@ interface MockDB {
   // the alert read + closes the sheet.
   const resolvingAsks = new Set();
   function resolveDeliberation(n, answer) {
+    try { logEvent("decide", { ask: n.id, conv: n.convId, answer: (answer || "").slice(0, 120) }); } catch {}
     // One decision per (ask, answer), deterministically: repeat taps of the
     // SAME option are locked out here, and the clientMsgId is DERIVED from the
     // ask id + answer (not minted fresh per tap), so even a repeat that slips
@@ -4270,6 +4304,7 @@ interface MockDB {
   // mission forever). Mirrors resolveDeliberation's /answer relay but tags
   // defer:true and records "Not now" as the decision on the card + archive.
   function deferAsk(n) {
+    try { logEvent("defer", { ask: n.id, conv: n.convId }); } catch {}
     const rkey = n.id + " __defer__";
     if (resolvingAsks.has(rkey)) return;
     resolvingAsks.add(rkey);
@@ -4515,6 +4550,11 @@ interface MockDB {
     if (!vLive) return;
     const speaking = vAgentSpeaking; let raw;
     try { if (speaking) { const lvl = vAgentEnvLevel(); raw = []; for (let i = 0; i < NUM_BARS; i++) { const shape = 0.55 + 0.45 * Math.sin((i / (NUM_BARS - 1)) * Math.PI); raw.push(lvl * shape); } } else if (vMicAnalyser) { vMicAnalyser.getByteFrequencyData(vMicBuf); raw = vBin(vMicBuf, NUM_BARS); } else { raw = vBin(vConv && vConv.getInputByteFrequencyData && vConv.getInputByteFrequencyData(), NUM_BARS); } } catch { raw = new Array(NUM_BARS).fill(0); }
+    // [truth] Muted + not the agent's turn → flat bars. The local mic analyser is
+    // a SEPARATE getUserMedia stream that vConv.setMicMuted() never touches, so
+    // without this the waves keep dancing to your voice while you're muted — the
+    // UI saying "you're being heard" when you aren't. (Mirrors voice.html:249.)
+    if (vMuted && !speaking) raw = new Array(NUM_BARS).fill(0);
     for (let i = 0; i < NUM_BARS; i++) { const decayed = vSmoothed[i] * DECAY; vSmoothed[i] = raw[i] > decayed ? raw[i] : decayed; const h = 0.16 + Math.min(1, vSmoothed[i]) * 0.84; vBars[i].style.transform = `scaleY(${h.toFixed(3)})`; }
     vRafId = requestAnimationFrame(vMeter);
   }
@@ -4562,7 +4602,7 @@ interface MockDB {
       setVErr(String((e && e.message) || e));
     }
   }
-  function vTeardown() { vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vAgentSpeaking = false; vAgentEnvReset(); vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; vConv = null; vConnecting = false; }
+  function vTeardown() { vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vAgentSpeaking = false; vAgentEnvReset(); vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; { const vh = $("vhint"); if (vh) vh.textContent = ""; } vConv = null; vConnecting = false; }
   async function vStop() { try { if (vConv) await vConv.endSession(); } catch {} vTeardown(); }
   $("voiceRow").onclick = () => {
     closeMenu();
@@ -4570,7 +4610,7 @@ interface MockDB {
     try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext!)(); if (vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {}); const b = vMicCtx.createBuffer(1, 1, 22050); const s = vMicCtx.createBufferSource(); s.buffer = b; s.connect(vMicCtx.destination); s.start(0); } catch {}
     hideKb(); document.body.classList.add("voice"); document.body.classList.remove("voicemin"); vStart();
   };
-  function vSetMute(m) { vMuted = m; document.body.classList.toggle("vmicmuted", m); if (vConv) try { vConv.setMicMuted(m); } catch {} }
+  function vSetMute(m) { vMuted = m; document.body.classList.toggle("vmicmuted", m); const vh = $("vhint"); if (vh) vh.textContent = m ? "Muted" : ""; if (vConv) try { vConv.setMicMuted(m); } catch {} }
   $("vMuteBtn").onclick = () => vSetMute(!vMuted);
   $("vEndBtn").onclick = vStop;
   $("vMinBtn").onclick = () => { if (vLive || vConnecting) { document.body.classList.add("voicemin"); document.body.classList.remove("voice"); } else vStop(); };

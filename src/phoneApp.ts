@@ -1384,6 +1384,23 @@ export async function startPhoneAppHost(): Promise<void> {
     }
   });
 
+  // [experience-log] The phone streams UI events (card renders, option taps, send
+  // outcomes, errors) so a bug report is a REPLAY of the real session rather than
+  // a description. Append them to client-events.jsonl. STRICTLY best-effort —
+  // always respond ok, never throw; logging must never affect the app.
+  await listen<{ reqId: string; [k: string]: unknown }>("phone:client-event", async (event) => {
+    const { reqId, ...ev } = event.payload as { reqId: string; [k: string]: unknown };
+    try {
+      const s = useStore.getState();
+      if (s.vaultPath) {
+        await invoke("client_event_append", { vault: s.vaultPath, line: JSON.stringify(ev) }).catch(() => {});
+      }
+    } catch {
+      /* logging must never surface */
+    }
+    respond(reqId, { ok: true });
+  });
+
   // Resolve / reopen a note from the phone (swipe-to-resolve). Apply the change
   // against the FRESHEST on-disk notes — never the box's in-memory store, which
   // can be empty or stale (a store-based rewrite would then blank the file). We

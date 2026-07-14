@@ -884,6 +884,35 @@ async fn notes_append(vault: String, line: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// [experience-log] Append one UI-event line to `.vault-chat/client-events.jsonl`
+/// — what the user SAW and TAPPED on the phone (card renders, option taps, send
+/// outcomes, errors). Append-only, synced like the rest of the vault, so a bug
+/// report becomes a replay of the real session instead of a description. Mirrors
+/// `notes_append`; best-effort on the caller side (a failure just drops a log).
+#[tauri::command]
+async fn client_event_append(vault: String, line: String) -> Result<(), String> {
+    use std::io::Write;
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = std::path::Path::new(&vault).join(NOTES_DIR);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
+        let path = dir.join("client-events.jsonl");
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("open {}: {}", path.display(), e))?;
+        let mut bytes = line.into_bytes();
+        if !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
+        }
+        f.write_all(&bytes).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn notes_write_all(vault: String, lines: Vec<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -7525,6 +7554,7 @@ pub fn run() {
             remove_prefix_from_humanized,
             notes_read,
             notes_append,
+            client_event_append,
             notes_write_all,
             conversations_read,
             conversations_write_all,
