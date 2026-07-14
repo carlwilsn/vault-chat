@@ -1336,6 +1336,23 @@ interface MockDB {
       api("/client-event", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t: Date.now(), type, page, ...(detail || {}) }) }).catch(() => {});
     } catch {}
   }
+  // [list-busy] A background refresh (an SSE run/notif tick, or returning to the
+  // foreground) rebuilds a whole list via innerHTML — which resets scrollTop AND
+  // discards per-card closure state, most importantly a clear-all's two-tap
+  // "armed" flag. During an active mission those ticks arrive constantly, so one
+  // landing inside the 3s arm window silently reset the confirm and the button
+  // "did nothing" (the clear-all weirdness), or yanked the archive back to the
+  // top mid-cleanup. Fix: while the user is actively touching a list — or has a
+  // control armed — DEFER the background rebuild until they go idle. Reloads the
+  // user asked for (tab switch, post-swipe reconcile) still run immediately.
+  let listBusyUntil = 0, softReloadT = 0;
+  const markListBusy = (ms = 4000) => { listBusyUntil = Date.now() + ms; };
+  function softReload(fn) {
+    const wait = listBusyUntil - Date.now();
+    if (wait <= 0) { void fn(); return; }
+    clearTimeout(softReloadT);
+    softReloadT = setTimeout(() => softReload(fn), wait + 60);
+  }
   const fileUrl = (p) => "/file?path=" + encodeURIComponent(p) + "&token=" + encodeURIComponent(TOKEN);
   // Pull a worker thread into the recent/Chats list so you can find it again
   // ("view history"). ONLY the thread-open entry points call this — opening a
@@ -1635,6 +1652,11 @@ interface MockDB {
 
   // ---------- pages ----------
   function setPage(name) {
+    // [experience-log] The spine of a replay: every page the user lands on, in
+    // order. `page` still holds the page we're leaving here — log both so the
+    // path reads "chat → alerts → activity" and a swipe/clear event can be
+    // placed on the page it happened.
+    if (name !== page) { try { logEvent("nav", { to: name, from: page }); } catch {} }
     page = name;
     document.body.classList.remove("page-chat", "page-activity", "page-alerts", "page-notes");
     document.body.classList.add("page-" + name);
@@ -2235,10 +2257,10 @@ interface MockDB {
       msgsEl.appendChild(bubble(d.role, d.content, d.tools, { askOptions: d.askOptions, decision: d.decision, optionsLive: !!(d.askOptions && d.askOptions.length) })); scrollDown(false);
     } else if (d.type === "status") {
       if (d.convId === convId) { running = d.status === "running"; stopping = false; if (!running) { streamText = ""; streamTool = ""; streamStartedAt = null; renderStream(); } renderRunline(); }
-      void refreshState(); if (page === "activity") void loadActivity();
+      void refreshState(); if (page === "activity") softReload(loadActivity);
       if (cdraw.classList.contains("on")) void loadConvs();
     } else if (d.type === "title" && d.convId === convId) { convTitle = d.title; setHeader(); }
-    else if (d.type === "notif") { void refreshBadge(); if (page === "alerts") void loadAlerts(); }
+    else if (d.type === "notif") { void refreshBadge(); if (page === "alerts") softReload(loadAlerts); }
   }
 
   // Activity badge counts what's ON the Activity page — missions + their
@@ -3347,7 +3369,8 @@ interface MockDB {
         const clrM = el('<button class="earlier clearall">Clear archived · ' + archived.length + "</button>");
         let armedM = false, armMT = 0;
         clrM.onclick = async () => {
-          if (!armedM) { armedM = true; clrM.textContent = "Tap again to clear " + archived.length; clrM.classList.add("danger"); clearTimeout(armMT); armMT = setTimeout(() => { armedM = false; clrM.textContent = "Clear archived · " + archived.length; clrM.classList.remove("danger"); }, 3000); return; }
+          if (!armedM) { armedM = true; clrM.textContent = "Tap again to clear " + archived.length; clrM.classList.add("danger"); clearTimeout(armMT); armMT = setTimeout(() => { armedM = false; clrM.textContent = "Clear archived · " + archived.length; clrM.classList.remove("danger"); }, 3000); markListBusy(3500); logEvent("clearall", { kind: "mission", act: "arm", n: archived.length }); return; }
+          logEvent("clearall", { kind: "mission", act: "fire", n: archived.length });
           clrM.disabled = true;
           for (const mc of archived) { if (mc.id) dismissedMissions.add(mc.id); }
           loadActivity(); // drop them from view immediately
@@ -3572,7 +3595,8 @@ interface MockDB {
         const clr = el('<button class="earlier clearall">Clear all resolved</button>');
         let armed = false, armTimer = 0;
         clr.onclick = async () => {
-          if (!armed) { armed = true; clr.textContent = "Tap again to clear " + resolved.length; clr.classList.add("danger"); clearTimeout(armTimer); armTimer = setTimeout(() => { armed = false; clr.textContent = "Clear all resolved"; clr.classList.remove("danger"); }, 3000); return; }
+          if (!armed) { armed = true; clr.textContent = "Tap again to clear " + resolved.length; clr.classList.add("danger"); clearTimeout(armTimer); armTimer = setTimeout(() => { armed = false; clr.textContent = "Clear all resolved"; clr.classList.remove("danger"); }, 3000); markListBusy(3500); logEvent("clearall", { kind: "note", act: "arm", n: resolved.length }); return; }
+          logEvent("clearall", { kind: "note", act: "fire", n: resolved.length });
           clr.disabled = true;
           try {
             const r = await api("/notes/clear-resolved", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
@@ -3666,7 +3690,8 @@ interface MockDB {
         const clrN = el('<button class="earlier clearall">Clear archive · ' + archived.length + "</button>");
         let armedN = false, armNT = 0;
         clrN.onclick = async () => {
-          if (!armedN) { armedN = true; clrN.textContent = "Tap again to clear " + archived.length; clrN.classList.add("danger"); clearTimeout(armNT); armNT = setTimeout(() => { armedN = false; clrN.textContent = "Clear archive · " + archived.length; clrN.classList.remove("danger"); }, 3000); return; }
+          if (!armedN) { armedN = true; clrN.textContent = "Tap again to clear " + archived.length; clrN.classList.add("danger"); clearTimeout(armNT); armNT = setTimeout(() => { armedN = false; clrN.textContent = "Clear archive · " + archived.length; clrN.classList.remove("danger"); }, 3000); markListBusy(3500); logEvent("clearall", { kind: "alert", act: "arm", n: archived.length }); return; }
+          logEvent("clearall", { kind: "alert", act: "fire", n: archived.length });
           clrN.disabled = true;
           try {
             const r = await api("/notifications/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
@@ -4323,10 +4348,15 @@ interface MockDB {
     if (n.kind === "ask" && $("sheet").classList.contains("on")) openDeliberationSheet(n);
     void loadAlerts();
   }
+  // [swipe-kind] Which list a swiped card lives in, for the experience-log — so a
+  // replay says "note swipe cancelled" not just "a card moved". Derived from the
+  // scroller it sits in; no call-site change needed.
+  const SWIPE_KIND = { alScroll: "alert", actScroll: "mission", notesScroll: "note" };
   function attachSwipeArchive(card: any, action: any, reload?: any, rightAction?: any) {
     reload = reload || loadAlerts;
-    let x0 = 0, y0 = 0, dx = 0, mode = null;
-    const start = (x, y) => { x0 = x; y0 = y; dx = 0; mode = null; card.style.transition = "none"; };
+    let x0 = 0, y0 = 0, dx = 0, mode = null, t0 = 0;
+    const kindOf = () => { const s = card.closest("#alScroll,#actScroll,#notesScroll"); return (s && SWIPE_KIND[s.id]) || "card"; };
+    const start = (x, y) => { x0 = x; y0 = y; dx = 0; mode = null; t0 = Date.now(); markListBusy(); card.style.transition = "none"; };
     const move = (x, y) => {
       if (mode === "v") return false;
       const ndx = x - x0, ndy = y - y0;
@@ -4352,13 +4382,20 @@ interface MockDB {
       card.dataset.swiped = "1";
       setTimeout(() => { card.dataset.swiped = ""; }, 400);
       mode = null;
+      // [experience-log] Record the OUTCOME of every committed horizontal
+      // gesture — commit vs cancel, distance, duration — so a replay shows the
+      // swipes that didn't take (dx never reached threshold) next to the ones
+      // that did. This is the signal for "swiping was out of whack".
+      const logSwipe = (act) => { try { logEvent("swipe", { kind: kindOf(), act, dx: Math.round(dx), ms: Date.now() - t0 }); } catch {} };
       card.style.transition = "transform .18s ease, opacity .18s ease";
       if (rightAction && dx > 60) {
         // Right-swipe: snap back and hand off (an edit opens a sheet — the card
         // itself stays in place).
+        logSwipe("edit");
         card.style.transform = "";
         rightAction();
       } else if (dx < -70) {
+        logSwipe("archive");
         // Remember WHERE in the list you were, so the reload below doesn't yank you
         // to the top. loadAlerts/loadActivity/loadNotes rebuild innerHTML (scrollTop
         // → 0), so swiping a card DOWN in the archive scrolled you back up to the
@@ -4386,11 +4423,22 @@ interface MockDB {
           if (scroller) scroller.scrollTop = Math.min(prevTop, Math.max(0, scroller.scrollHeight - scroller.clientHeight));
         }, 240);
       } else {
+        // Started a horizontal drag but released short of the archive threshold
+        // — snaps back. Logged so a run of these reads as "I kept trying to
+        // swipe and nothing happened".
+        logSwipe("cancel");
         card.style.transform = "";
       }
     };
     card.addEventListener("touchstart", (e) => start(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
-    card.addEventListener("touchmove", (e) => move(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+    // [axis-lock] touchmove is NON-passive so that once the gesture is locked
+    // horizontal (move() returns true) we preventDefault and the list stops
+    // scrolling underneath the finger. Without this the card followed the
+    // finger while the scroller ALSO scrolled — the two fought, the swipe
+    // distance never reached threshold, and archiving felt "state-dependent"
+    // and "all over the place". Mirrors the drawer swipe-open handler, which
+    // has always locked its axis this way.
+    card.addEventListener("touchmove", (e) => { if (move(e.touches[0].clientX, e.touches[0].clientY)) e.preventDefault(); }, { passive: false });
     card.addEventListener("touchend", end);
     card.addEventListener("touchcancel", end);
     let mouseDown = false;
@@ -4618,8 +4666,11 @@ interface MockDB {
 
   // ---------- lifecycle ----------
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") { void pollLoop(); void refreshState(); void refreshBadge(); if (page === "activity") void loadActivity(); if (page === "alerts") void loadAlerts(); }
+    if (document.visibilityState === "visible") { void pollLoop(); void refreshState(); void refreshBadge(); if (page === "activity") softReload(loadActivity); if (page === "alerts") softReload(loadAlerts); }
   });
+  // Touching a list at all marks it briefly busy, so a background tick can't
+  // rebuild it (scroll → top) while you're reading or reaching for a card.
+  ["alScroll", "actScroll", "notesScroll"].forEach((id) => { const s = $(id); if (s) s.addEventListener("touchstart", () => markListBusy(2500), { passive: true }); });
   if (window.visualViewport) {
     const vv = window.visualViewport;
     // Keyboard handling. --kb is the height the composer must rise to sit on top of
