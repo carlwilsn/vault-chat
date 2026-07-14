@@ -48,19 +48,27 @@ const PHONE_MANIFEST: &str = r##"{
   "display": "standalone",
   "background_color": "#1a1a1a",
   "theme_color": "#1a1a1a",
-  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+  "icons": [
+    { "src": "/icon.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
 }"##;
 
-/// Home-screen / bookmark app icon: the VC monogram — a filled off-white C arc
-/// cradling a nested V on Ink near-black, matching the native app icon shipped
-/// in 8d53889. Vector so it stays crisp at every home-screen / favicon size;
-/// this is what the PWA serves for `apple-touch-icon`, the manifest, and the
-/// favicon, so it must be kept in lockstep with `src-tauri/icons/*`.
-// Truly monochrome, keyed to the app's own ink: pure-black ground (--bg is
-// #000000) and pure-white strokes (--white is #ffffff) — no warm cream, no
-// off-black. Same C+V monogram geometry, now the same black-and-white voice as
-// the cockpit internals (note: "match the internals").
+/// Home-screen / bookmark app icon: the VC monogram — a white C arc cradling a
+/// nested V on a flat black ground (note 2026-07-14: "black background solid
+/// white letters"). Served for the SVG favicon and the Android manifest; iOS
+/// gets `ICON_PNG` (see below) because iOS Safari silently ignores SVG
+/// `apple-touch-icon`s and falls back to a beveled page-snapshot — that was the
+/// "off-white, 3-D" icon the user saw. Pure #000 ground, pure #fff strokes.
 const ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#000000"/><g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round"><path d="M348.5 382.2A150 150 0 1 1 348.5 127.8" stroke-width="43"/><path d="M226 195L271 333 312 195" stroke-width="38"/></g></svg>"##;
+
+/// The iOS home-screen icon. iOS Safari does NOT honor SVG `apple-touch-icon`s,
+/// so a raster is mandatory — without it iOS invents one from a page snapshot
+/// (the off-white, beveled artifact the user saw). Full-bleed flat BLACK square,
+/// white monogram, NO self-rounded corners and NO transparency: iOS masks it to
+/// the superellipse itself, and any transparent corner would be composited over
+/// black. Same C+V geometry as `ICON_SVG`, rasterized at 512² (iOS downscales).
+const ICON_PNG: &[u8] = include_bytes!("../assets/icon-apple-touch.png");
 
 /// The live voice context the desktop app pushes in. Everything the server needs
 /// to mint a session + answer "about the vault" tool calls.
@@ -230,6 +238,19 @@ fn resp_text(status: u16, mime: &str, body: String) -> Response<std::io::Cursor<
     r
 }
 
+/// Binary sibling of `resp_text` for assets like the PNG icon. Same no-store
+/// policy — the box being reachable with a fresh shell IS the product.
+fn resp_bytes(status: u16, mime: &str, body: Vec<u8>) -> Response<std::io::Cursor<Vec<u8>>> {
+    let mut r = Response::from_data(body).with_status_code(status);
+    if let Ok(h) = Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()) {
+        r = r.with_header(h);
+    }
+    if let Ok(h) = Header::from_bytes(&b"Cache-Control"[..], &b"no-store, must-revalidate"[..]) {
+        r = r.with_header(h);
+    }
+    r
+}
+
 fn token_ok(req: &Request, token: &str) -> bool {
     for h in req.headers() {
         if h.field.equiv("X-Vault-Token") && h.value.as_str() == token {
@@ -260,6 +281,12 @@ fn handle(mut req: Request, token: &str) {
     // can fetch it when the user adds the page to their home screen.
     if path == "/icon.svg" {
         let _ = req.respond(resp_text(200, "image/svg+xml", ICON_SVG.into()));
+        return;
+    }
+    // The iOS home-screen raster — token-free like the SVG (just a logo). iOS
+    // Safari fetches THIS for `apple-touch-icon`; the SVG it would ignore.
+    if path == "/icon.png" {
+        let _ = req.respond(resp_bytes(200, "image/png", ICON_PNG.to_vec()));
         return;
     }
     // Service worker + manifest: token-free. They hold no vault data, and the
