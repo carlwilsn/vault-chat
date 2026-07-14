@@ -4748,7 +4748,7 @@ async fn vault_sync_set_remote(vault: String, url: String) -> Result<(), String>
     .map_err(|e| e.to_string())?
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct SyncOpResult {
     ok: bool,
     /// Short summary suitable for the status row. e.g.
@@ -6307,6 +6307,137 @@ mod sync_role_tests {
         // Follower, tolerant of case + surrounding whitespace → follower.
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod reconcile_tests {
+    use super::{reconcile_with_upstream, run_git, run_git_mut};
+
+    // Clone A and B from a shared origin that already carries the managed
+    // .gitattributes (jsonl union merge), mirroring a real vault after
+    // `git_init_if_needed`. Returns (origin_path, a_path, b_path).
+    fn init_pair(base: &std::path::Path) -> (String, String, String) {
+        let origin = base.join("origin.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap().to_string();
+        run_git(&og, &["init", "-q", "--bare", "-b", "master"]).unwrap();
+
+        let seed = base.join("seed");
+        std::fs::create_dir_all(&seed).unwrap();
+        let ss = seed.to_str().unwrap();
+        run_git(ss, &["init", "-q", "-b", "master"]).unwrap();
+        run_git(ss, &["config", "user.email", "t@t"]).unwrap();
+        run_git(ss, &["config", "user.name", "t"]).unwrap();
+        run_git(ss, &["remote", "add", "origin", &og]).unwrap();
+        std::fs::write(seed.join(".gitattributes"), "*.jsonl merge=union\n").unwrap();
+        std::fs::write(seed.join("log.jsonl"), "{\"line\":\"seed\"}\n").unwrap();
+        std::fs::write(seed.join("note.md"), "hello\n").unwrap();
+        run_git_mut(ss, &["add", "-A"]).unwrap();
+        run_git_mut(ss, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(ss, &["push", "-q", "origin", "master"]).unwrap();
+
+        let a = base.join("A");
+        let b = base.join("B");
+        for d in [&a, &b] {
+            let ds = d.to_str().unwrap();
+            run_git(base.to_str().unwrap(), &["clone", "-q", &og, ds]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+        }
+        (og, a.to_str().unwrap().to_string(), b.to_str().unwrap().to_string())
+    }
+
+    // The common case: the remote advanced, this machine didn't. Must
+    // fast-forward cleanly with no merge commit.
+    #[test]
+    fn fast_forwards_when_only_remote_advanced() {
+        let base = std::env::temp_dir().join(format!("vc_reconcile_ff_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (_og, a, b) = init_pair(&base);
+        std::fs::write(std::path::Path::new(&a).join("note.md"), "hello\nfrom A\n").unwrap();
+        run_git_mut(&a, &["add", "-A"]).unwrap();
+        run_git_mut(&a, &["commit", "-q", "-m", "A edits"]).unwrap();
+        run_git_mut(&a, &["push", "-q", "origin", "master"]).unwrap();
+
+        run_git(&b, &["fetch", "-q", "origin", "master"]).unwrap();
+        let outcome = reconcile_with_upstream(&b, "master").expect("no io error");
+        let msg = outcome.expect("no sync error");
+        assert_eq!(msg, "pulled");
+        let note = std::fs::read_to_string(std::path::Path::new(&b).join("note.md")).unwrap();
+        assert!(note.contains("from A"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Both machines diverge on the same append-only jsonl log. `.gitattributes`
+    // declares `merge=union`, so this must resolve automatically with BOTH
+    // sides' lines present and no conflict markers or sidecar.
+    #[test]
+    fn diverged_jsonl_logs_union_merge_without_conflict() {
+        let base = std::env::temp_dir().join(format!("vc_reconcile_union_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (_og, a, b) = init_pair(&base);
+
+        let mut a_log = std::fs::read_to_string(std::path::Path::new(&a).join("log.jsonl")).unwrap();
+        a_log.push_str("{\"line\":\"from A\"}\n");
+        std::fs::write(std::path::Path::new(&a).join("log.jsonl"), &a_log).unwrap();
+        run_git_mut(&a, &["add", "-A"]).unwrap();
+        run_git_mut(&a, &["commit", "-q", "-m", "A appends"]).unwrap();
+        run_git_mut(&a, &["push", "-q", "origin", "master"]).unwrap();
+
+        // B independently appends a DIFFERENT line and commits locally —
+        // diverged from origin, which now carries A's commit.
+        let mut b_log = std::fs::read_to_string(std::path::Path::new(&b).join("log.jsonl")).unwrap();
+        b_log.push_str("{\"line\":\"from B\"}\n");
+        std::fs::write(std::path::Path::new(&b).join("log.jsonl"), &b_log).unwrap();
+        run_git_mut(&b, &["add", "-A"]).unwrap();
+        run_git_mut(&b, &["commit", "-q", "-m", "B appends"]).unwrap();
+
+        run_git(&b, &["fetch", "-q", "origin", "master"]).unwrap();
+        let outcome = reconcile_with_upstream(&b, "master").expect("no io error");
+        let msg = outcome.expect("no sync error");
+        assert!(msg.starts_with("merged"), "expected a merge, got: {msg}");
+
+        let merged = std::fs::read_to_string(std::path::Path::new(&b).join("log.jsonl")).unwrap();
+        assert!(merged.contains("from A"), "union merge must keep A's line");
+        assert!(merged.contains("from B"), "union merge must keep B's line");
+        assert!(!std::path::Path::new(&b).join("log.jsonl.conflict").exists());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Both machines edit the SAME spot in a regular (non-jsonl) file — a
+    // genuine divergent edit git can't auto-union. Must resolve deterministically
+    // (never wedge): origin's version lands in the tracked file, and the local
+    // machine's own edit survives as a `.conflict` sidecar instead of being
+    // silently dropped.
+    #[test]
+    fn diverged_regular_file_edit_resolves_with_conflict_sidecar() {
+        let base = std::env::temp_dir().join(format!("vc_reconcile_sidecar_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (_og, a, b) = init_pair(&base);
+
+        std::fs::write(std::path::Path::new(&a).join("note.md"), "hello\nA's version\n").unwrap();
+        run_git_mut(&a, &["add", "-A"]).unwrap();
+        run_git_mut(&a, &["commit", "-q", "-m", "A edits note"]).unwrap();
+        run_git_mut(&a, &["push", "-q", "origin", "master"]).unwrap();
+
+        std::fs::write(std::path::Path::new(&b).join("note.md"), "hello\nB's version\n").unwrap();
+        run_git_mut(&b, &["add", "-A"]).unwrap();
+        run_git_mut(&b, &["commit", "-q", "-m", "B edits note"]).unwrap();
+
+        run_git(&b, &["fetch", "-q", "origin", "master"]).unwrap();
+        let outcome = reconcile_with_upstream(&b, "master").expect("no io error");
+        let msg = outcome.expect("no sync error");
+        assert!(msg.contains("auto-resolved"), "expected auto-resolved merge, got: {msg}");
+
+        let note = std::fs::read_to_string(std::path::Path::new(&b).join("note.md")).unwrap();
+        assert!(note.contains("A's version"), "tracked file must carry origin's (theirs) content");
+        let sidecar = std::fs::read_to_string(std::path::Path::new(&b).join("note.md.conflict")).unwrap();
+        assert!(sidecar.contains("B's version"), "B's divergent edit must survive as a .conflict sidecar");
 
         let _ = std::fs::remove_dir_all(&base);
     }
