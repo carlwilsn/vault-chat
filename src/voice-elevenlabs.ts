@@ -1829,7 +1829,7 @@ function buildSystemPrompt(
     "",
     "Writing:",
     "- Write creates or overwrites a file. Plain markdown unless the extension implies otherwise. Stay inside the vault.",
-    "- Edit replaces a unique string in an existing file — prefer over Write for small changes to large files.",
+    "- Edit replaces a unique string in an existing file — prefer over Write for small changes to large files. When the user wants a term changed EVERYWHERE / in every case / throughout (e.g. swap one word for another across a note), pass replace_all=true — a plain Edit only touches the FIRST match and silently leaves the rest, which reads to the user as 'you didn't get every case'. After any sweeping change, Read the file back and confirm every occurrence landed before you say it's done.",
     "- NotebookEdit is the only safe way to touch .ipynb files. action='append' adds to a cell's end; 'replace' overwrites a cell; 'insert' adds a new cell at cell_index (-1 = end); 'delete' removes one. 0-based.",
     "",
     "Notes:",
