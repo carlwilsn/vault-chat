@@ -56,7 +56,11 @@ const PHONE_MANIFEST: &str = r##"{
 /// in 8d53889. Vector so it stays crisp at every home-screen / favicon size;
 /// this is what the PWA serves for `apple-touch-icon`, the manifest, and the
 /// favicon, so it must be kept in lockstep with `src-tauri/icons/*`.
-const ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#0b0b0d"/><g fill="none" stroke="#eae7e1" stroke-linecap="round" stroke-linejoin="round"><path d="M348.5 382.2A150 150 0 1 1 348.5 127.8" stroke-width="43"/><path d="M226 195L271 333 312 195" stroke-width="38"/></g></svg>"##;
+// Truly monochrome, keyed to the app's own ink: pure-black ground (--bg is
+// #000000) and pure-white strokes (--white is #ffffff) — no warm cream, no
+// off-black. Same C+V monogram geometry, now the same black-and-white voice as
+// the cockpit internals (note: "match the internals").
+const ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#000000"/><g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round"><path d="M348.5 382.2A150 150 0 1 1 348.5 127.8" stroke-width="43"/><path d="M226 195L271 333 312 195" stroke-width="38"/></g></svg>"##;
 
 /// The live voice context the desktop app pushes in. Everything the server needs
 /// to mint a session + answer "about the vault" tool calls.
