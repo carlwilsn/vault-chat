@@ -798,6 +798,8 @@
       <button class="btn" id="pushTestBtn">Send test notification</button>
       <div class="note">Push needs this page added to your Home Screen (Share → Add to Home Screen) on iOS 16.4+. You won't get a notification for things you're already looking at in the app.</div>
       <div style="flex:1;min-height:18px"></div>
+      <button class="btn" id="feedbackBtn">Report a problem</button>
+      <div class="note">A one-way note to me — what felt broken or wrong, right now. It rides along with what the app just recorded you doing, so I can see it, not just read about it.</div>
       <div class="note" id="boxVer"></div>
       <button class="btn warn" id="killAllBtn">Kill all runs</button>
     </div>
@@ -1623,7 +1625,7 @@ interface MockDB {
     for (const id of next) { convRunning.add(id); convUnseen.delete(id); }
     updateConvDot();
   }
-  let vaultName = "", boxModel = "";
+  let vaultName = "", boxModel = "", boxVersion = "";
   let runCount = 0, unreadN = 0, offlineStreak = 0;
   const msgsEl = $("msgs"), input = $("input"), sendBtn = $("sendBtn");
   // One-tap send with the keyboard up (note 85933e24). A plain onclick needed
@@ -2292,7 +2294,7 @@ interface MockDB {
   // burger badge read "1 activity" during an ordinary conversation and never
   // clear once it idled. Filter to mission/worker so the badge tracks real work.
   function activityRunCount(runs) { return (runs || []).filter((r) => r.source === "mission" || r.source === "worker").length; }
-  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; runCount = activityRunCount(d.runs); for (const r of d.runs || []) { if (r.convId && r.source) convSourceById.set(r.convId, r.source); } applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); return d; } catch { return null; } }
+  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; boxVersion = d.version || boxVersion; runCount = activityRunCount(d.runs); for (const r of d.runs || []) { if (r.convId && r.source) convSourceById.set(r.convId, r.source); } applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); return d; } catch { return null; } }
   async function refreshBadge() { try { const d = await (await api("/notifications")).json(); if (typeof d.unread === "number") { unreadN = d.unread; setHeader(); } } catch {} }
 
   // ---------- activity ----------
@@ -4479,6 +4481,47 @@ interface MockDB {
   }
   $("drawer").addEventListener("click", (e) => { if (e.target === $("drawer")) $("drawer").classList.remove("open"); });
   $("killAllBtn").onclick = async () => { const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null); const d = r ? await r.json().catch(() => ({})) : {}; toast(d.result || "Kill-all sent."); };
+
+  // [feedback] One-way problem report. Deliberately NOT a Claude-in-app loop yet
+  // (the 04:24 note: "just one way complaints for now"). Two writes, both on
+  // proven pipes: the complaint lands as a NOTE (the channel bug reports already
+  // flow through, and one you can see) AND a `feedback` line drops into the
+  // experience-log, so it sits in client-events.jsonl right after the swipes/
+  // taps that provoked it — the report replays its own context instead of
+  // describing it.
+  function openFeedbackSheet() {
+    $("drawer").classList.remove("open");
+    openSheet({
+      intent: "Feedback · one-way", title: "Report a problem", ico: "⚑", cls: "",
+      bodyHtml: '<textarea class="note-edit" id="fbTa" placeholder="What felt broken or wrong, right now? Plain words — I can see what the app just recorded you doing."></textarea>'
+        + '<div class="wbtns"><button class="wbtn" id="fbSend">Send</button></div>',
+      wire: (body) => {
+        const ta = body.querySelector("#fbTa");
+        ta.addEventListener("focus", () => sheetEditFocus(ta));
+        ta.addEventListener("blur", sheetEditBlur);
+        setTimeout(() => { try { ta.focus(); } catch {} }, 60);
+        const send = body.querySelector("#fbSend");
+        send.onclick = async () => {
+          const t = ta.value.trim();
+          if (!t) { toast("Say what went wrong first"); return; }
+          send.disabled = true;
+          // Mark the complaint IN the gesture stream (best-effort, never blocks).
+          logEvent("feedback", { text: t.slice(0, 400), ver: boxVersion || "" });
+          // Durable, visible record via the same note pipe the desktop uses. Tag
+          // it so a bug report is scannable apart from a real research note.
+          const body2 = t + "\n\n— reported from the " + page + " screen" + (boxVersion ? " · v" + boxVersion : "");
+          try {
+            const r = await api("/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: body2 }) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || d.error) throw new Error(d.error || r.status);
+            closeSheet();
+            toast("Thanks — logged. I'll see it with what you were doing.");
+          } catch (e) { toast("Couldn't send — try again"); send.disabled = false; }
+        };
+      },
+    });
+  }
+  $("feedbackBtn").onclick = openFeedbackSheet;
 
   // (Composer Enter-key toggle removed — the phone Return key always inserts a
   // newline; sending is via the send button. enterkeyhint="enter" is set in the
