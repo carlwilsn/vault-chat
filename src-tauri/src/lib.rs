@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // Windows: probe once for Git Bash and reuse the result for every
 // bash_exec call. Picking bash.exe over `cmd /C` makes the Bash tool
@@ -3492,13 +3492,15 @@ fn github_credential_args() -> Vec<String> {
     ]
 }
 
-/// Kill a spawned process AND every descendant. git launches helper processes
+/// Kill a process AND every descendant by pid. git launches helper processes
 /// (git-remote-https, git-credential-manager, ssh) that outlive a kill of the
 /// direct child; on a timeout those orphans keep holding the network/credential
-/// state and accumulate until they contend for resources and wedge every later
-/// sync — observed as `git status` itself timing out at 90s. Best-effort.
-fn kill_process_tree(child: &mut std::process::Child) {
-    let pid = child.id();
+/// state — and, worse, an inherited stdout/stderr pipe write-end — until they
+/// wedge every later sync. Taking a raw pid (not a `&mut Child`) lets the caller
+/// hand the Child off to the drain worker thread while still being able to kill
+/// the tree on timeout. Best-effort. The still-open Child handle keeps the pid
+/// reserved (no reuse) until the worker reaps it, so killing by pid is safe.
+fn kill_tree_by_pid(pid: u32) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -3518,9 +3520,6 @@ fn kill_process_tree(child: &mut std::process::Child) {
             .arg(format!("-{}", pid))
             .output();
     }
-    // Reap the direct child regardless of the tree-kill outcome.
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 /// Like `run_git` but with a caller-chosen timeout. Used for operations that
@@ -3583,46 +3582,58 @@ fn run_git_timeout(
         cmd.process_group(0);
     }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    // Drain both pipes on their own threads so a large stdout can't deadlock
-    // against a full stderr pipe (or vice-versa) while we wait.
-    let so = child.stdout.take();
-    let se = child.stderr.take();
-    let h_out = std::thread::spawn(move || {
-        let mut s = String::new();
-        if let Some(mut o) = so {
-            let _ = o.read_to_string(&mut s);
-        }
-        s
-    });
-    let h_err = std::thread::spawn(move || {
-        let mut s = String::new();
-        if let Some(mut e) = se {
-            let _ = e.read_to_string(&mut s);
-        }
-        s
-    });
-    // Bounded wait: kill a hung git rather than block a worker thread forever.
-    let start = Instant::now();
-    let code = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.code().unwrap_or(-1),
-            Ok(None) => {
-                if start.elapsed() >= Duration::from_secs(timeout_secs) {
-                    kill_process_tree(&mut child);
-                    return Err(format!(
-                        "git timed out after {}s: git {}",
-                        timeout_secs,
-                        args.join(" ")
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(15));
+    let child_pid = child.id();
+    // Wait for the child AND drain both pipes on a worker thread, the whole
+    // thing bounded by a channel recv_timeout. The previous version bounded only
+    // `child.try_wait()`; the pipe-reader `join()`s that followed were UNBOUNDED.
+    // git spawns transport grandchildren (git-remote-https, the credential
+    // helper) that inherit the stdout/stderr pipe write-ends — if one lingers
+    // after the direct git process exits, `read_to_string` never sees EOF,
+    // `join()` blocks forever, `run_git` never returns, and the sync loop's
+    // in-flight guard stays stuck true: every later pull/push is skipped and the
+    // whole loop wedges until an app restart. Bounding the entire wait+drain
+    // guarantees we return within `timeout_secs` no matter what a grandchild
+    // does. Separate threads per pipe so a large stdout can't deadlock against a
+    // full stderr pipe (or vice-versa).
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let so = child.stdout.take();
+        let se = child.stderr.take();
+        let h_out = std::thread::spawn(move || {
+            let mut s = String::new();
+            if let Some(mut o) = so {
+                let _ = o.read_to_string(&mut s);
             }
-            Err(e) => return Err(e.to_string()),
+            s
+        });
+        let h_err = std::thread::spawn(move || {
+            let mut s = String::new();
+            if let Some(mut e) = se {
+                let _ = e.read_to_string(&mut s);
+            }
+            s
+        });
+        let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        let stdout = h_out.join().unwrap_or_default();
+        let stderr = h_err.join().unwrap_or_default();
+        let _ = tx.send((stdout, stderr, code));
+    });
+    match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+        Ok(result) => Ok(result),
+        Err(_) => {
+            // Hung (or the worker panicked and dropped the sender). Kill the
+            // whole tree so the inherited pipe handles close and the abandoned
+            // worker unblocks and reaps the child; then return so the caller's
+            // in-flight guard clears and the sync loop keeps going instead of
+            // freezing forever.
+            kill_tree_by_pid(child_pid);
+            Err(format!(
+                "git timed out after {}s: git {}",
+                timeout_secs,
+                args.join(" ")
+            ))
         }
-    };
-    let stdout = h_out.join().unwrap_or_default();
-    let stderr = h_err.join().unwrap_or_default();
-    Ok((stdout, stderr, code))
+    }
 }
 
 // `.gitattributes` seeded into every vault. Without it, Windows (autocrlf)
