@@ -1516,6 +1516,38 @@ interface MockDB {
     const a = approvedPlans().filter((x) => x !== sig); a.push(sig);
     try { localStorage.setItem(APPROVED_PLANS_KEY, JSON.stringify(a.slice(-100))); } catch {}
   }
+
+  // [feedback-queue] "Report a problem" POSTs to the box, but the cockpit is a
+  // same-origin PWA served BY the box — so off-tailnet (cellular, or Tailscale
+  // asleep) the write has nowhere to land. Dropping a report there is the worst
+  // failure: the user typed it and it evaporated. So a failed send is PERSISTED
+  // locally and auto-delivered the next time the cockpit reaches the box (a
+  // refreshState success, or the `online` event). Never lose a report.
+  const FB_QUEUE_KEY = "vc_feedback_queue";
+  let fbFlushing = false;
+  function fbQueue() { try { return JSON.parse(localStorage.getItem(FB_QUEUE_KEY) || "[]"); } catch { return []; } }
+  function fbSaveQueue(a) { try { localStorage.setItem(FB_QUEUE_KEY, JSON.stringify(a.slice(-50))); } catch {} }
+  function fbEnqueue(text) { const a = fbQueue(); a.push({ text, ts: Date.now() }); fbSaveQueue(a); }
+  function fbQueuedCount() { return fbQueue().length; }
+  async function flushFeedbackQueue() {
+    if (fbFlushing) return;
+    let q = fbQueue(); if (!q.length) return;
+    fbFlushing = true; let delivered = 0;
+    try {
+      while (q.length) {
+        const item = q[0]; let done = false;
+        try {
+          const r = await api("/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: item.text }) });
+          const d = await r.json().catch(() => ({}));
+          if (r.ok && !d.error) { delivered++; done = true; }          // delivered
+          else if (r.status >= 400 && r.status < 500) { done = true; }  // server rejected it — a retry won't help; drop so one bad item can't wedge the queue
+          else break;                                                   // 5xx / transient — keep the rest, try again next contact
+        } catch { break; }                                              // network error — still offline; keep everything for later
+        if (done) { q.shift(); fbSaveQueue(q); } else break;
+      }
+    } finally { fbFlushing = false; }
+    if (delivered) toast(delivered === 1 ? "Delivered a report you saved while offline." : ("Delivered " + delivered + " reports you saved while offline."));
+  }
   function planParse(lines) {
     let title = ""; const tasks = [], desc = [];
     for (const ln of lines) {
@@ -2294,7 +2326,7 @@ interface MockDB {
   // burger badge read "1 activity" during an ordinary conversation and never
   // clear once it idled. Filter to mission/worker so the badge tracks real work.
   function activityRunCount(runs) { return (runs || []).filter((r) => r.source === "mission" || r.source === "worker").length; }
-  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; boxVersion = d.version || boxVersion; runCount = activityRunCount(d.runs); for (const r of d.runs || []) { if (r.convId && r.source) convSourceById.set(r.convId, r.source); } applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); return d; } catch { return null; } }
+  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; boxVersion = d.version || boxVersion; runCount = activityRunCount(d.runs); for (const r of d.runs || []) { if (r.convId && r.source) convSourceById.set(r.convId, r.source); } applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); void flushFeedbackQueue(); return d; } catch { return null; } }
   async function refreshBadge() { try { const d = await (await api("/notifications")).json(); if (typeof d.unread === "number") { unreadN = d.unread; setHeader(); } } catch {} }
 
   // ---------- activity ----------
@@ -4516,7 +4548,15 @@ interface MockDB {
             if (!r.ok || d.error) throw new Error(d.error || r.status);
             closeSheet();
             toast("Thanks — logged. I'll see it with what you were doing.");
-          } catch (e) { toast("Couldn't send — try again"); send.disabled = false; }
+            void flushFeedbackQueue(); // deliver anything stranded from an earlier offline moment too
+          } catch (e) {
+            // Box unreachable (off-tailnet on cellular, Tailscale asleep, or app
+            // restarting). NEVER lose the report: persist it and auto-deliver the
+            // next time the cockpit reaches the box.
+            fbEnqueue(body2);
+            closeSheet();
+            toast("Saved — you're offline. I'll deliver it when your phone reaches the box.");
+          }
         };
       },
     });
@@ -4734,6 +4774,9 @@ interface MockDB {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") { void pollLoop(); void refreshState(); void refreshBadge(); if (page === "activity") softReload(loadActivity); if (page === "alerts") softReload(loadAlerts); }
   });
+  // Connection came back — deliver any report the user saved while offline right
+  // away, rather than waiting for the next 45s status poll.
+  window.addEventListener("online", () => { void flushFeedbackQueue(); });
   // Touching a list at all marks it briefly busy, so a background tick can't
   // rebuild it (scroll → top) while you're reading or reaching for a card.
   ["alScroll", "actScroll", "notesScroll"].forEach((id) => { const s = $(id); if (s) s.addEventListener("touchstart", () => markListBusy(2500), { passive: true }); });
