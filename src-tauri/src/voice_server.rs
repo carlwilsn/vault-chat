@@ -49,7 +49,7 @@ const PHONE_MANIFEST: &str = r##"{
   "background_color": "#1a1a1a",
   "theme_color": "#1a1a1a",
   "icons": [
-    { "src": "/icon.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon.png?v=2", "sizes": "512x512", "type": "image/png" },
     { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
   ]
 }"##;
