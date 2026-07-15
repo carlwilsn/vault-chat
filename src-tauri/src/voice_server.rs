@@ -306,6 +306,53 @@ fn token_ok(req: &Request, token: &str) -> bool {
     false
 }
 
+/// Live "talk to Claude Code" turn: runs a headless Claude Code session in the
+/// vault-chat SOURCE checkout on the box (~/github/vault-chat) so the phone can
+/// chat with the actual coding agent — same auth (the box's Claude login), same
+/// tools, per-thread continuity via `--resume`. Bounded by `timeout` so a hung
+/// turn can't wedge its request thread. Only reachable with the vault token
+/// (this runs inside the token-gated cockpit), tailnet-only.
+fn coder_run(thread: &str, message: &str) -> Value {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let ws = format!("{}/github/vault-chat", home);
+    let claude = format!("{}/.local/bin/claude", home);
+    let nodebin = format!("{}/.nvm/versions/node/v20.20.2/bin", home);
+    let sess_path = format!("{}/vault-chat-fixer/coder-sessions.json", home);
+    let mut sessions: Value = std::fs::read_to_string(&sess_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({}));
+    let sid = sessions.get(thread).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let path = format!("{}/.local/bin:{}:{}", home, nodebin, std::env::var("PATH").unwrap_or_default());
+    let mut cmd = std::process::Command::new("timeout");
+    cmd.arg("900").arg(&claude).arg("-p").arg(message)
+        .arg("--output-format").arg("json").arg("--dangerously-skip-permissions");
+    if let Some(s) = &sid {
+        cmd.arg("--resume").arg(s);
+    }
+    cmd.current_dir(&ws).env("PATH", path);
+    match cmd.output() {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            match serde_json::from_str::<Value>(&stdout) {
+                Ok(j) => {
+                    let reply = j.get("result").and_then(|v| v.as_str()).unwrap_or("(no reply)").to_string();
+                    if let Some(nsid) = j.get("session_id").and_then(|v| v.as_str()) {
+                        sessions[thread] = json!(nsid);
+                        let _ = std::fs::write(&sess_path, sessions.to_string());
+                    }
+                    json!({ "reply": reply, "sessionId": j.get("session_id") })
+                }
+                Err(_) => json!({
+                    "reply": format!("coder: couldn't parse a reply.\n{}", stdout.chars().take(400).collect::<String>()),
+                    "error": true
+                }),
+            }
+        }
+        Err(e) => json!({ "reply": format!("coder run error: {}", e), "error": true }),
+    }
+}
+
 fn handle(mut req: Request, token: &str) {
     let path = req.url().split('?').next().unwrap_or("/").to_string();
     let method = req.method().clone();
@@ -618,6 +665,16 @@ fn handle(mut req: Request, token: &str) {
                 _ => resp_text(503, "application/json", "{\"error\":\"app not answering — is a vault open?\"}".into()),
             };
             let _ = req.respond(body);
+        }
+        (Method::Post, "/coder") => {
+            // Live chat with the box's Claude Code session, in the app source.
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            let thread = payload.get("thread").and_then(|v| v.as_str()).unwrap_or("default");
+            let message = payload.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            let res = coder_run(thread, message);
+            let _ = req.respond(resp_text(200, "application/json", res.to_string()));
         }
         (Method::Post, "/alert-followup") => {
             // [ask redesign] First follow-up message on an INFO alert: the app
