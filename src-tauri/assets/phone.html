@@ -1022,8 +1022,17 @@ interface MockDB {
   let toastT = 0;
   const toast = (m: string) => { toastEl.textContent = m; toastEl.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove("show"), 2600); try { logEvent("toast", { msg: (m || "").slice(0, 160) }); } catch {} };
   if (!TOKEN && !MOCK) {
-    document.body.innerHTML = '<div class="gate"><b style="color:var(--text)">No access token</b><div>Open the phone link from vault-chat Settings once — it carries the token, which is then remembered on this device.</div></div>';
-    return;
+    // No stored/URL token — but the box provisions an httpOnly auth cookie when it
+    // serves this shell (self-heal after iOS evicts storage or a home-screen launch
+    // drops ?token=). So PROCEED and let the cookie authorize the data calls; fall
+    // back to the manual-link gate only if the box actually rejects us. Hard-
+    // blocking here was the "No access token" dead-end that a valid cookie couldn't
+    // rescue. Non-blocking probe, so startup isn't delayed.
+    fetch("/status").then((r) => {
+      if (r.status === 401) {
+        document.body.innerHTML = '<div class="gate"><b style="color:var(--text)">No access token</b><div>Open the phone link from vault-chat Settings once — it carries the token, which is then remembered on this device.</div></div>';
+      }
+    }).catch(() => {});
   }
 
   // ---------- mock box (test mode only) ----------

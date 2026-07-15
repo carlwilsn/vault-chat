@@ -251,10 +251,48 @@ fn resp_bytes(status: u16, mime: &str, body: Vec<u8>) -> Response<std::io::Curso
     r
 }
 
+/// The /phone shell, plus a Set-Cookie that provisions the vault token to the
+/// device as an httpOnly cookie. This is the self-heal: every home-screen launch
+/// loads this shell, so the phone's data calls carry the cookie and authorize
+/// even after iOS evicts the page's stored token, or the launch URL drops
+/// `?token=`, or the token was only ever in Safari's storage (the home-screen
+/// PWA has its own container). httpOnly keeps the raw token out of page JS. The
+/// cookie is re-set on every launch, so ITP's storage caps can't strand it. No
+/// Secure attribute: the phone may reach the box over http (raw Tailscale IP) as
+/// well as the https serve, and WireGuard already encrypts the transport.
+///
+/// SECURITY: this grants auth to any client that can LOAD /phone. That is correct
+/// on the tailnet-only Tailscale *serve* — every peer is one of the user's own
+/// devices, and the token was already the sole gate there. If this box is ever
+/// exposed on a public Tailscale *funnel*, gate this behind a tailnet-origin
+/// check first, or it becomes a public auth bypass.
+fn resp_phone_shell(token: &str) -> Response<std::io::Cursor<Vec<u8>>> {
+    let mut r = resp_text(200, "text/html; charset=utf-8", PHONE_PAGE.to_string());
+    let cookie = format!("vc_token={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=34560000", token);
+    if let Ok(h) = Header::from_bytes(&b"Set-Cookie"[..], cookie.as_bytes()) {
+        r = r.with_header(h);
+    }
+    r
+}
+
 fn token_ok(req: &Request, token: &str) -> bool {
     for h in req.headers() {
         if h.field.equiv("X-Vault-Token") && h.value.as_str() == token {
             return true;
+        }
+        // Self-heal: the /phone shell provisions the token as an httpOnly cookie
+        // (see resp_phone_shell). A home-screen launch that lost its stored token —
+        // iOS evicts PWA localStorage, and the launch URL may not carry ?token= —
+        // still authorizes just from having loaded the shell. httpOnly means the
+        // raw token is never readable by page JS.
+        if h.field.equiv("Cookie") {
+            for c in h.value.as_str().split(';') {
+                if let Some(v) = c.trim().strip_prefix("vc_token=") {
+                    if v == token {
+                        return true;
+                    }
+                }
+            }
         }
     }
     if let Some(q) = req.url().split('?').nth(1) {
@@ -305,7 +343,7 @@ fn handle(mut req: Request, token: &str) {
     // page then uses its stored copy for every data call — which all stay
     // token-gated). Serving 401 JSON as the "page" was the home-screen bug.
     if path == "/phone" && method == Method::Get {
-        let _ = req.respond(resp_text(200, "text/html; charset=utf-8", PHONE_PAGE.to_string()));
+        let _ = req.respond(resp_phone_shell(token));
         return;
     }
     if !token_ok(&req, token) {
