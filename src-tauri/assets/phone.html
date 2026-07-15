@@ -1623,8 +1623,15 @@ interface MockDB {
   const userEngaged = new Set();
   function dotEligible(id) {
     if (!id) return false;
-    if (userEngaged.has(id) || id === convId) return true;
+    // The conversations icon mirrors the drawer, and the drawer shows ONLY your
+    // chats — missions/workers/asks live on Activity or behind their alert cards,
+    // never in this panel (see the source filter in loadConvs). So a steered
+    // mission finishing in the background must NOT light an icon whose panel will
+    // never list it (report afc7971c: "the indicator was up but no conversations
+    // in the panel"). Exclude those sources even when you engaged the thread.
     const s = convSourceById.get(id);
+    if (s === "mission" || s === "worker" || s === "ask") return false;
+    if (userEngaged.has(id) || id === convId) return true;
     return s === "phone" || s === "manual";
   }
   // One-time purge of the old per-conversation "seen" watermark. It used to drive
@@ -2851,7 +2858,11 @@ interface MockDB {
         // dedupes sends that carry a clientMsgId — without one this reply path was
         // the unprotected "my message got sent twice" case on supervisor threads.
         const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
-        userEngaged.add(mc.id); // you steered this mission → the dot may track its reply
+        // Record the source so the conversations-icon eligibility check knows this
+        // is a mission thread (it lives on Activity, not the chats panel) even if
+        // the drawer hasn't populated convSourceById yet this session.
+        convSourceById.set(mc.id, mc.source || "mission");
+        userEngaged.add(mc.id); // you steered this mission → surfaced on Activity, not the chats icon
         await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v, clientMsgId }) }).catch(() => {});
         setTimeout(paint, 900); // pick up the durably-persisted turn quickly
       })();

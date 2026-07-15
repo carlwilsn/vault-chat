@@ -46,11 +46,10 @@ const PHONE_MANIFEST: &str = r##"{
   "name": "vault-chat",
   "short_name": "vault-chat",
   "display": "standalone",
-  "background_color": "#1a1a1a",
-  "theme_color": "#1a1a1a",
+  "background_color": "#000000",
+  "theme_color": "#000000",
   "icons": [
-    { "src": "/apple-touch-icon.png", "sizes": "512x512", "type": "image/png" },
-    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+    { "src": "/apple-touch-icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
   ]
 }"##;
 
