@@ -49,7 +49,7 @@ const PHONE_MANIFEST: &str = r##"{
   "background_color": "#1a1a1a",
   "theme_color": "#1a1a1a",
   "icons": [
-    { "src": "/icon.png?v=2", "sizes": "512x512", "type": "image/png" },
+    { "src": "/apple-touch-icon.png", "sizes": "512x512", "type": "image/png" },
     { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
   ]
 }"##;
@@ -323,7 +323,13 @@ fn handle(mut req: Request, token: &str) {
     }
     // The iOS home-screen raster — token-free like the SVG (just a logo). iOS
     // Safari fetches THIS for `apple-touch-icon`; the SVG it would ignore.
-    if path == "/icon.png" {
+    // Served at BOTH /icon.png (legacy) and /apple-touch-icon.png. The canonical
+    // path is the cache-bust of last resort: iOS caches home-screen web-clip icons
+    // by PATH and ignores query strings (so /icon.png?v=2 still served the stale
+    // gray icon), and that cache survives app-delete + reboot. A path iOS has never
+    // requested has no cache entry, so the re-add must fetch it fresh. It's also
+    // iOS's auto-discovery path, so iOS requests it even absent a <link>.
+    if path == "/icon.png" || path == "/apple-touch-icon.png" || path == "/apple-touch-icon-precomposed.png" {
         let _ = req.respond(resp_bytes(200, "image/png", ICON_PNG.to_vec()));
         return;
     }
