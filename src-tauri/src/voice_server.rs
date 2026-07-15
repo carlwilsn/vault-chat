@@ -312,7 +312,7 @@ fn token_ok(req: &Request, token: &str) -> bool {
 /// tools, per-thread continuity via `--resume`. Bounded by `timeout` so a hung
 /// turn can't wedge its request thread. Only reachable with the vault token
 /// (this runs inside the token-gated cockpit), tailnet-only.
-fn coder_run(thread: &str, message: &str) -> Value {
+fn coder_run(thread: &str, message: &str, model: &str) -> Value {
     let home = std::env::var("HOME").unwrap_or_default();
     let ws = format!("{}/github/vault-chat", home);
     let claude = format!("{}/.local/bin/claude", home);
@@ -327,6 +327,9 @@ fn coder_run(thread: &str, message: &str) -> Value {
     let mut cmd = std::process::Command::new("timeout");
     cmd.arg("900").arg(&claude).arg("-p").arg(message)
         .arg("--output-format").arg("json").arg("--dangerously-skip-permissions");
+    if !model.is_empty() {
+        cmd.arg("--model").arg(model);
+    }
     if let Some(s) = &sid {
         cmd.arg("--resume").arg(s);
     }
@@ -341,7 +344,14 @@ fn coder_run(thread: &str, message: &str) -> Value {
                         sessions[thread] = json!(nsid);
                         let _ = std::fs::write(&sess_path, sessions.to_string());
                     }
-                    json!({ "reply": reply, "sessionId": j.get("session_id") })
+                    let u = j.get("usage").cloned().unwrap_or_else(|| json!({}));
+                    let get = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+                    let ctx_used = get("input_tokens") + get("cache_creation_input_tokens") + get("cache_read_input_tokens");
+                    let (mname, ctx_window) = j.get("modelUsage").and_then(|m| m.as_object())
+                        .and_then(|o| o.iter().next())
+                        .map(|(k, v)| (k.clone(), v.get("contextWindow").and_then(|x| x.as_u64()).unwrap_or(200_000)))
+                        .unwrap_or_else(|| (String::new(), 200_000));
+                    json!({ "reply": reply, "sessionId": j.get("session_id"), "ctxUsed": ctx_used, "ctxWindow": ctx_window, "model": mname, "cost": j.get("total_cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0) })
                 }
                 Err(_) => json!({
                     "reply": format!("coder: couldn't parse a reply.\n{}", stdout.chars().take(400).collect::<String>()),
@@ -673,7 +683,8 @@ fn handle(mut req: Request, token: &str) {
             let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
             let thread = payload.get("thread").and_then(|v| v.as_str()).unwrap_or("default");
             let message = payload.get("message").and_then(|v| v.as_str()).unwrap_or("");
-            let res = coder_run(thread, message);
+            let model = payload.get("model").and_then(|v| v.as_str()).unwrap_or("");
+            let res = coder_run(thread, message, model);
             let _ = req.respond(resp_text(200, "application/json", res.to_string()));
         }
         (Method::Post, "/alert-followup") => {
