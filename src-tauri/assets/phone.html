@@ -4857,7 +4857,19 @@ interface MockDB {
         const r = await api("/coder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread: coderThread, message: msg }) });
         const d = await r.json().catch(() => ({}));
         th.remove(); coderAdd("a", d.reply || "(no reply)"); coderSaveHist();
-      } catch (e) { th.remove(); coderAdd("a", "Couldn't reach the box — is Tailscale on?"); }
+      } catch (e) {
+        th.remove();
+        // The app polls /status continuously (body.offline reflects that truth).
+        // If we're NOT flagged offline, the box is reachable and this was just a
+        // long coder turn whose connection dropped mid-flight (mobile / Tailscale
+        // idle, or the PWA backgrounding) — don't falsely blame Tailscale. The
+        // turn kept running on the box and its session is saved, so re-sending
+        // resumes it. (report fafcd51d — "Said it can't find Tailscale???")
+        const off = document.body.classList.contains("offline");
+        coderAdd("a", off
+          ? "Can't reach the box right now — is it awake and is Tailscale on? I'll pick up where we left off once it's back."
+          : "That reply took too long and the connection dropped — but the box is up and probably still working on it. Give it a moment, then send your message again to pick the thread back up.");
+      }
       updateChatToFb(); // an exchange now exists — surface the chip in general chat
       send.disabled = false;
     };
