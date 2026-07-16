@@ -517,10 +517,14 @@
   .coder-msg.a{align-self:flex-start;background:var(--fill);border:1px solid var(--line);color:var(--text-body);border-bottom-left-radius:5px}
   .coder-msg.t{align-self:flex-start;color:var(--dim);font-style:italic}
   .cl-foot{flex:0 0 auto;border-top:1px solid var(--line);padding:9px 13px 4px}
-  .coder-input{display:flex;gap:8px;align-items:flex-end}
-  .coder-input textarea{flex:1;background:var(--panel);color:var(--text);border:1px solid var(--line-2);border-radius:12px;padding:10px 12px;font:inherit;font-size:14px;resize:none;max-height:120px}
-  .coder-send{width:38px;height:38px;border-radius:11px;background:var(--primary);color:var(--primary-fg);display:flex;align-items:center;justify-content:center;flex:none}
-  .coder-send:disabled{opacity:.4}
+  /* the Claude-screen composer wears the SAME skin as the app's main .composer:
+     a hairline-ring pill (transparent, .5px --line-2, 22px) with the send arrow
+     INSET as a primary circle, and the rest-width→full-width focus effect. */
+  .coder-input{position:relative;display:flex;align-items:flex-end;min-width:0;background:transparent;border:.5px solid var(--line-2);border-radius:22px;max-width:88%;margin:0 auto;transition:max-width .34s var(--ease-out)}
+  .coder-input:focus-within{max-width:100%}
+  .coder-input textarea{flex:1;background:transparent;color:var(--text);border:none;border-radius:21px;padding:10px 50px 10px 15px;font:inherit;font-size:16px;line-height:1.4;resize:none;max-height:120px;outline:none;min-width:0}
+  .coder-send{position:absolute;right:5px;bottom:5px;width:33px;height:33px;border-radius:50%;background:var(--primary);color:var(--primary-fg);display:flex;align-items:center;justify-content:center;flex:none}
+  .coder-send:disabled{opacity:.35}
   .coder-send svg{width:18px;height:18px}
   .cl-gear{border-bottom:1px solid var(--line);padding:10px 13px;display:none;flex-direction:column;gap:10px;flex:0 0 auto}
   .cl-gear.open{display:flex}
@@ -4663,7 +4667,7 @@ interface MockDB {
       clView = "conv";
       $("clQueue").style.display = "none"; $("clBrief").style.display = "none";
       $("clConv").style.display = ""; $("clFoot").style.display = "";
-      coderLoadThread(generalThread(), "Hey — I'm the Claude Code session in your app's source on the box. Ask me anything, or tell me to change something and I'll ship it.");
+      coderLoadThread(generalThread()); // no auto-introduction — the boss types first
     }
   }
   function generalThread() {
@@ -4737,14 +4741,14 @@ interface MockDB {
     $("clBrief").style.display = "";
     $("clBriefText").textContent = it.text || "";
     const meta = $("clBriefMeta"); meta.innerHTML = '<div class="fb-st">' + fbStateLine(it) + "</div>";
-    coderLoadThread("fb-" + it.id, "This report is my brief — ask me anything about it, tell me what I got wrong, or add detail and I'll act on it.");
+    coderLoadThread("fb-" + it.id); // no auto-introduction — the brief above is the context
   }
   // ---- the conversation surface (shared by report threads + the general chat) ----
   let coderThread = "";
   const coderLog = () => $("coderLog");
   function coderAdd(cls, txt) { const d = document.createElement("div"); d.className = "coder-msg " + cls; d.textContent = txt; coderLog().appendChild(d); $("clBody").scrollTop = $("clBody").scrollHeight; return d; }
   function coderSaveHist() { try { const e = [...coderLog().querySelectorAll(".coder-msg")].filter((n) => !n.classList.contains("t")).map((n) => ({ c: n.classList.contains("u") ? "u" : "a", x: n.textContent })); localStorage.setItem("vc_coder_hist_" + coderThread, JSON.stringify(e.slice(-60))); } catch {} }
-  function coderLoadThread(thread, greeting) {
+  function coderLoadThread(thread, greeting?) {
     coderThread = thread;
     const log = coderLog(); log.innerHTML = "";
     let had = false;
@@ -4789,16 +4793,16 @@ interface MockDB {
     }
   };
 
-  // [feedback] One-way problem report. Deliberately NOT a Claude-in-app loop yet
-  // (the 04:24 note: "just one way complaints for now"). Two writes, both on
-  // proven pipes: the complaint lands as a NOTE (the channel bug reports already
-  // flow through, and one you can see) AND a `feedback` line drops into the
-  // experience-log, so it sits in client-events.jsonl right after the swipes/
-  // taps that provoked it — the report replays its own context instead of
-  // describing it.
+  // [feedback] Report a problem — now TWO-WAY (the boss: "no longer one way").
+  // The durable writes are unchanged: the complaint lands as a NOTE (the channel
+  // bug reports already flow through, and one you can see) AND a `feedback` line
+  // drops into the experience-log, so it sits in client-events.jsonl right after
+  // the swipes/taps that provoked it — the report replays its own context. What's
+  // new: on success we drop straight into that report's conversation thread
+  // (clOpenConv), so the boss can add detail / correct me without leaving.
   function openFeedbackSheet() {
     openSheet({
-      intent: "Feedback · one-way", title: "Report a problem", ico: "⚑", cls: "",
+      intent: "Feedback", title: "Report a problem", ico: "⚑", cls: "",
       bodyHtml: '<textarea class="note-edit" id="fbTa" placeholder="What felt broken or wrong, right now? Plain words — I can see what the app just recorded you doing."></textarea>'
         + '<div class="wbtns"><button class="wbtn" id="fbSend">Send</button></div>',
       wire: (body) => {
@@ -4821,9 +4825,19 @@ interface MockDB {
             const d = await r.json().catch(() => ({}));
             if (!r.ok || d.error) throw new Error(d.error || r.status);
             closeSheet();
-            toast("Thanks — logged. I'll see it with what you were doing.");
             void flushFeedbackQueue(); // deliver anything stranded from an earlier offline moment too
-            void loadFeedbackQueue(); // the new report appears in the queue right away
+            // Two-way: drop into the new report's thread so the boss can keep talking.
+            // /notes returns the note id, which IS the feedback item id (/feedback
+            // merges notes.jsonl by id). Pull the fresh queue so we hand clOpenConv
+            // the real item (state/title), falling back to a minimal stand-in.
+            await loadFeedbackQueue();
+            if (d.id) {
+              const it = (fbItems || []).find((x) => x.id === d.id)
+                || { id: d.id, title: t.slice(0, 60), text: body2, state: "open" };
+              clOpenConv(it);
+            } else {
+              toast("Thanks — logged. I'll see it with what you were doing.");
+            }
           } catch (e) {
             // Box unreachable (off-tailnet on cellular, Tailscale asleep, or app
             // restarting). NEVER lose the report: persist it and auto-deliver the
