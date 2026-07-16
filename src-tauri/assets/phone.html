@@ -526,7 +526,13 @@
   .coder-log{display:flex;flex-direction:column;gap:9px}
   .coder-msg{max-width:86%;padding:9px 12px;border-radius:14px;white-space:pre-wrap;line-height:1.45;font-size:13.5px;word-wrap:break-word;overflow-wrap:anywhere}
   .coder-msg.u{align-self:flex-end;background:var(--fill-3);color:var(--text);border-bottom-right-radius:5px}
-  .coder-msg.a{align-self:flex-start;background:var(--fill);border:1px solid var(--line);color:var(--text-body);border-bottom-left-radius:5px}
+  /* The box's replies read like the main chat: bubble-free, full-width rendered
+     markdown — NOT a bordered box of raw text (report c867221d: "render markdown
+     … not be forced into boxes that don't match the app's conversation style").
+     User + "thinking…" keep their treatment, matching how the chat bubbles you
+     but renders the agent full-width. */
+  .coder-msg.a{align-self:stretch;max-width:100%;background:none;border:none;border-radius:0;padding:2px 0;color:var(--text-body);white-space:normal}
+  .coder-msg.a .md{font-size:13.5px;color:var(--text-body);line-height:1.55}
   .coder-msg.t{align-self:flex-start;color:var(--dim);font-style:italic}
   .cl-foot{flex:0 0 auto;border-top:1px solid var(--line);padding:9px 13px 4px;display:flex;align-items:flex-end;gap:8px}
   /* the boss moved "new chat" out of a top button and into a + at the composer's
@@ -4829,8 +4835,17 @@ interface MockDB {
   // ---- the conversation surface (shared by report threads + the general chat) ----
   let coderThread = "";
   const coderLog = () => $("coderLog");
-  function coderAdd(cls, txt) { const d = document.createElement("div"); d.className = "coder-msg " + cls; d.textContent = txt; coderLog().appendChild(d); $("clBody").scrollTop = $("clBody").scrollHeight; return d; }
-  function coderSaveHist() { try { const e = [...coderLog().querySelectorAll(".coder-msg")].filter((n) => !n.classList.contains("t")).map((n) => ({ c: n.classList.contains("u") ? "u" : "a", x: n.textContent })); localStorage.setItem("vc_coder_hist_" + coderThread, JSON.stringify(e.slice(-60))); } catch {} }
+  function coderAdd(cls, txt) {
+    const d = document.createElement("div"); d.className = "coder-msg " + cls;
+    // The box's replies render as markdown, bubble-free — the same conversation
+    // style the main chat uses for agent turns (report c867221d). Keep the RAW
+    // source on the node so coderSaveHist round-trips the markdown, not the
+    // rendered text. User + "thinking…" stay plain.
+    if (cls === "a") { d.dataset.raw = txt; d.innerHTML = '<div class="md">' + md(txt) + "</div>"; typeset(d); }
+    else d.textContent = txt;
+    coderLog().appendChild(d); $("clBody").scrollTop = $("clBody").scrollHeight; return d;
+  }
+  function coderSaveHist() { try { const e = [...coderLog().querySelectorAll(".coder-msg")].filter((n) => !n.classList.contains("t")).map((n) => ({ c: n.classList.contains("u") ? "u" : "a", x: n.dataset.raw != null ? n.dataset.raw : n.textContent })); localStorage.setItem("vc_coder_hist_" + coderThread, JSON.stringify(e.slice(-60))); } catch {} }
   function coderLoadThread(thread, greeting?) {
     coderThread = thread;
     const log = coderLog(); log.innerHTML = "";
