@@ -4788,7 +4788,7 @@ async fn vault_sync_set_remote(vault: String, url: String) -> Result<(), String>
     .map_err(|e| e.to_string())?
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct SyncOpResult {
     ok: bool,
     /// Short summary suitable for the status row. e.g.
@@ -5352,12 +5352,18 @@ fn reconcile_with_upstream(
     // progress and never drops data.
     let (_, mstderr, mut merge_code) =
         run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
+    let mut last_stderr = mstderr;
     // A DIRTY working tree makes `git merge` REFUSE TO START ("your local
     // changes would be overwritten") — a failure with NO unmerged paths, which
     // the conflict-resolution path below misreads as "resolved, commit it" and
     // dies on an empty commit (the "merge commit failed:" loop the sync split's
     // first live migration hit: the app autosaves between the cycle's commit
     // and its pull). Commit the drift the way the auto-sync would, retry once.
+    // Also covers an UNTRACKED collision ("Untracked working tree file '...'
+    // would be overwritten by merge") the same way, since `add -A` stages new
+    // untracked files too — e.g. a vault whose `.gitattributes`/`.gitignore`
+    // were seeded locally (by the always-on local-commit loop) before this
+    // machine ever pulled from the remote for the first time.
     if merge_code != 0 {
         let unmerged_empty = matches!(
             run_git(vault, &["ls-files", "-u"]),
@@ -5369,10 +5375,32 @@ fn reconcile_with_upstream(
         if unmerged_empty && !merge_in_progress {
             let _ = run_git_as(vault, &mn, &me, &["add", "-A"]);
             let _ = run_git_as(vault, &mn, &me, &["commit", "-q", "-m", "vault-chat: auto-sync"]);
-            let (_, _, retry_code) =
+            let (_, retry_stderr, retry_code) =
                 run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
             merge_code = retry_code;
+            last_stderr = retry_stderr;
         }
+    }
+    // A vault whose local history shares no common ancestor with origin's —
+    // both sides independently `git init`ed the same folder, e.g. the
+    // always-on local-commit loop seeded a root commit on this machine before
+    // sync was ever configured on it — can never fast-forward or merge
+    // normally; git's "refusing to merge unrelated histories" guard exists to
+    // stop ACCIDENTALLY combining two different projects, which can't happen
+    // here (the caller already knows this is the same vault, by construction —
+    // the user pointed this checkout's remote at it). Retry once allowing it,
+    // so first-time linking two independently-seeded vaults converges through
+    // the same deterministic conflict resolution as any other divergence,
+    // instead of wedging on every tick forever.
+    if merge_code != 0 && last_stderr.contains("refusing to merge unrelated histories") {
+        let (_, retry_stderr, retry_code) = run_git_as(
+            vault,
+            &mn,
+            &me,
+            &["merge", "--no-edit", "--allow-unrelated-histories", &upstream],
+        )?;
+        merge_code = retry_code;
+        last_stderr = retry_stderr;
     }
     if merge_code == 0 {
         let fixed = fix_regressed_gitlinks(vault);
@@ -5386,7 +5414,17 @@ fn reconcile_with_upstream(
         }
         return Ok(Ok("merged origin".into()));
     }
-    if resolve_merge_conflicts(vault) {
+    // Only treat this as a resolvable index conflict when a merge is ACTUALLY
+    // in progress. Without this check, a merge that never started at all
+    // (an untracked-file collision or unrelated-histories refusal that
+    // survived every retry above) reads as "zero unmerged paths -> already
+    // resolved" and falls into `commit --no-edit`, which fails with git's
+    // "nothing to commit" going to STDOUT (not stderr) — the empty, useless
+    // "merge commit failed: " message that gave no hint of the real cause.
+    let merge_in_progress = run_git(vault, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+        .map(|(_, _, c)| c == 0)
+        .unwrap_or(false);
+    if merge_in_progress && resolve_merge_conflicts(vault) {
         let (_, cstderr, ccode) = run_git_as(vault, &mn, &me, &["commit", "--no-edit"])?;
         if ccode != 0 {
             let _ = run_git_mut(vault, &["merge", "--abort"]);
@@ -5410,13 +5448,25 @@ fn reconcile_with_upstream(
         }
         return Ok(Ok("merged origin (auto-resolved)".into()));
     }
+    if !merge_in_progress {
+        // The merge never actually started — surface the real git error
+        // (untracked collision, unrelated histories, etc.) instead of the
+        // generic conflict message below, so a stuck first sync is
+        // diagnosable from the sync log rather than reading as a blank
+        // failure. No state to abort: the merge never began.
+        return Ok(Err(SyncOpResult {
+            ok: false,
+            message: format!("pull failed: {}", first_line(&last_stderr).trim()),
+            error: true,
+        }));
+    }
     // Should be unreachable — every conflict class has a resolution. If
     // something slips through, abort cleanly so the tree is intact and the next
     // tick retries rather than leaving a half-merge.
     let _ = run_git_mut(vault, &["merge", "--abort"]);
     Ok(Err(SyncOpResult {
         ok: false,
-        message: format!("unresolved conflict: {}", first_line(&mstderr).trim()),
+        message: format!("unresolved conflict: {}", first_line(&last_stderr).trim()),
         error: true,
     }))
 }
@@ -6347,6 +6397,255 @@ mod sync_role_tests {
         // Follower, tolerant of case + surrounding whitespace → follower.
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+// End-to-end coverage for the actual two-machine divergence path
+// (reconcile_with_upstream / resolve_merge_conflicts / choose_submodule_commit).
+// Before this module, none of that logic — the part that runs every time two
+// machines committed since the last sync — had a single test; every proof was
+// manual (the "two-checkout scratch test" mentioned in comments elsewhere).
+#[cfg(test)]
+mod sync_reconcile_tests {
+    use super::{
+        choose_submodule_commit, ensure_vault_gitattributes, reconcile_with_upstream, run_git,
+        run_git_mut,
+    };
+
+    struct Rig {
+        base: std::path::PathBuf,
+        a: String,
+        b: String,
+    }
+
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+
+    // Two clones (A, B) of a shared bare origin, both with the union-merge
+    // .gitattributes a real vault would have (the whole point of the driver is
+    // exercised by the diverging-jsonl test below).
+    fn two_machine_rig(name: &str) -> Rig {
+        let base = std::env::temp_dir().join(format!("vc_reconcile_{}_{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap().to_string();
+        run_git(&og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "main"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git(ds, &["remote", "add", "origin", &og]).unwrap();
+            ensure_vault_gitattributes(ds);
+        }
+        Rig { base, a: a.to_str().unwrap().to_string(), b: b.to_str().unwrap().to_string() }
+    }
+
+    fn commit_all(dir: &str, msg: &str) {
+        run_git_mut(dir, &["add", "-A"]).unwrap();
+        run_git_mut(dir, &["commit", "-q", "-m", msg]).unwrap();
+    }
+
+    // Every "B catches up to A" step below goes through the real reconcile
+    // path (fetch + reconcile_with_upstream), NOT a raw `git pull` — a raw
+    // pull hits the exact same untracked-file / unrelated-histories collision
+    // reconcile_with_upstream now recovers from (each side of the rig ran
+    // `ensure_vault_gitattributes` independently, so B's very first sync is
+    // itself a divergence, matching a real vault whose local-commit loop ran
+    // before sync was ever configured on it).
+    fn first_sync(dir: &str, branch: &str) -> String {
+        run_git(dir, &["fetch", "-q", "origin", branch]).unwrap();
+        reconcile_with_upstream(dir, branch)
+            .unwrap()
+            .unwrap_or_else(|e| panic!("first sync must converge, got: {:?}", e))
+    }
+
+    #[test]
+    fn fast_forward_pull_applies_cleanly() {
+        let rig = two_machine_rig("ff");
+        std::fs::write(std::path::Path::new(&rig.a).join("note.md"), "hello\n").unwrap();
+        commit_all(&rig.a, "seed");
+        run_git_mut(&rig.a, &["push", "-q", "-u", "origin", "main"]).unwrap();
+
+        // B independently seeded its own .gitattributes before ever syncing,
+        // so this first sync is itself a divergence (same-content root, but no
+        // common ancestor) — it must still converge, just not via a bare `ff`.
+        let outcome = first_sync(&rig.b, "main");
+        assert!(outcome == "pulled" || outcome.starts_with("merged origin"), "got: {}", outcome);
+        assert!(std::path::Path::new(&rig.b).join("note.md").exists());
+        assert_eq!(std::fs::read_to_string(std::path::Path::new(&rig.b).join("note.md")).unwrap(), "hello\n");
+    }
+
+    // The core promise of `*.jsonl merge=union`: two machines each append a
+    // distinct line to the same append-only log between syncs. Reconciling must
+    // keep BOTH lines and never wedge on a conflict.
+    #[test]
+    fn diverged_jsonl_logs_union_merge_keeps_both_machines_lines() {
+        let rig = two_machine_rig("union");
+        let log_a = std::path::Path::new(&rig.a).join("log.jsonl");
+        std::fs::write(&log_a, "{\"line\":\"base\"}\n").unwrap();
+        commit_all(&rig.a, "seed");
+        run_git_mut(&rig.a, &["push", "-q", "-u", "origin", "main"]).unwrap();
+        first_sync(&rig.b, "main");
+
+        // A appends and pushes first.
+        let mut a_contents = std::fs::read_to_string(&log_a).unwrap();
+        a_contents.push_str("{\"line\":\"from-a\"}\n");
+        std::fs::write(&log_a, a_contents).unwrap();
+        commit_all(&rig.a, "a appends");
+        run_git_mut(&rig.a, &["push", "-q", "origin", "main"]).unwrap();
+
+        // B, still on the pre-A-append base, appends its own line before pulling.
+        let log_b = std::path::Path::new(&rig.b).join("log.jsonl");
+        let mut b_contents = std::fs::read_to_string(&log_b).unwrap();
+        b_contents.push_str("{\"line\":\"from-b\"}\n");
+        std::fs::write(&log_b, b_contents).unwrap();
+        commit_all(&rig.b, "b appends");
+
+        run_git(&rig.b, &["fetch", "-q", "origin", "main"]).unwrap();
+        let outcome = reconcile_with_upstream(&rig.b, "main").unwrap();
+        assert!(outcome.is_ok(), "union-mergeable divergence must never be reported as a conflict");
+        let merged = std::fs::read_to_string(&log_b).unwrap();
+        assert!(merged.contains("from-a"), "A's line must survive the merge");
+        assert!(merged.contains("from-b"), "B's line must survive the merge");
+
+        // B pushes; the origin (and a subsequent A pull) must carry both lines.
+        run_git_mut(&rig.b, &["push", "-q", "origin", "main"]).unwrap();
+        run_git(&rig.a, &["fetch", "-q", "origin", "main"]).unwrap();
+        let a_outcome = reconcile_with_upstream(&rig.a, "main").unwrap();
+        assert!(a_outcome.is_ok());
+        let a_final = std::fs::read_to_string(&log_a).unwrap();
+        assert!(a_final.contains("from-a") && a_final.contains("from-b"));
+    }
+
+    // A genuine conflicting edit (same line, changed two different ways) on a
+    // non-union file must never be silently dropped: resolve_merge_conflicts
+    // takes "theirs" into the real file and preserves "ours" in a sidecar.
+    #[test]
+    fn diverged_conflicting_edit_preserves_both_sides() {
+        let rig = two_machine_rig("conflict");
+        let note_a = std::path::Path::new(&rig.a).join("note.md");
+        std::fs::write(&note_a, "hello\n").unwrap();
+        commit_all(&rig.a, "seed");
+        run_git_mut(&rig.a, &["push", "-q", "-u", "origin", "main"]).unwrap();
+        first_sync(&rig.b, "main");
+
+        std::fs::write(&note_a, "hello A\n").unwrap();
+        commit_all(&rig.a, "a edits");
+        run_git_mut(&rig.a, &["push", "-q", "origin", "main"]).unwrap();
+
+        let note_b = std::path::Path::new(&rig.b).join("note.md");
+        std::fs::write(&note_b, "hello B\n").unwrap();
+        commit_all(&rig.b, "b edits");
+
+        run_git(&rig.b, &["fetch", "-q", "origin", "main"]).unwrap();
+        let outcome = reconcile_with_upstream(&rig.b, "main").unwrap();
+        let msg = outcome.expect("a real content conflict must auto-resolve, not error out");
+        assert!(msg.contains("auto-resolved"), "got: {}", msg);
+        assert_eq!(std::fs::read_to_string(&note_b).unwrap(), "hello A\n", "theirs wins the real file");
+        let sidecar = std::path::Path::new(&rig.b).join("note.md.conflict");
+        assert!(sidecar.exists(), "ours must be preserved in a sidecar");
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "hello B\n");
+        // The tree must be genuinely clean — no leftover unmerged paths.
+        let (status, _, _) = run_git(&rig.b, &["status", "--porcelain"]).unwrap();
+        assert!(status.trim().is_empty(), "status after resolve: {:?}", status);
+    }
+
+    // Modify/delete: one machine deletes a file, the other edits it before
+    // pulling the deletion. The still-wanted edit must survive, not vanish.
+    #[test]
+    fn modify_delete_conflict_keeps_the_still_wanted_edit() {
+        let rig = two_machine_rig("moddel");
+        let keep_a = std::path::Path::new(&rig.a).join("keep.md");
+        std::fs::write(&keep_a, "v1\n").unwrap();
+        commit_all(&rig.a, "seed");
+        run_git_mut(&rig.a, &["push", "-q", "-u", "origin", "main"]).unwrap();
+        first_sync(&rig.b, "main");
+
+        // A deletes and pushes.
+        run_git_mut(&rig.a, &["rm", "-q", "keep.md"]).unwrap();
+        commit_all(&rig.a, "a deletes");
+        run_git_mut(&rig.a, &["push", "-q", "origin", "main"]).unwrap();
+
+        // B edits its still-local copy before pulling the deletion.
+        let keep_b = std::path::Path::new(&rig.b).join("keep.md");
+        std::fs::write(&keep_b, "v1\nlaptop edit\n").unwrap();
+        commit_all(&rig.b, "b edits");
+
+        run_git(&rig.b, &["fetch", "-q", "origin", "main"]).unwrap();
+        let outcome = reconcile_with_upstream(&rig.b, "main").unwrap();
+        assert!(outcome.is_ok(), "modify/delete must auto-resolve");
+        assert!(keep_b.exists(), "a live edit must never be dropped just because the other side deleted it");
+        assert_eq!(std::fs::read_to_string(&keep_b).unwrap(), "v1\nlaptop edit\n");
+        let (status, _, _) = run_git(&rig.b, &["status", "--porcelain"]).unwrap();
+        assert!(status.trim().is_empty(), "status after resolve: {:?}", status);
+    }
+
+    // Two machines each advance a submodule pointer independently but one
+    // commit contains the other (e.g. B pulled A's sub-repo commit before
+    // making its own on top) — the descendant must win so no sub-repo work is
+    // silently dropped from the gitlink.
+    #[test]
+    fn choose_submodule_commit_prefers_the_descendant() {
+        let base = std::env::temp_dir().join(format!("vc_submodule_choice_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let sub = base.to_str().unwrap().to_string();
+        run_git(&sub, &["init", "-q"]).unwrap();
+        run_git(&sub, &["config", "user.email", "t@t"]).unwrap();
+        run_git(&sub, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(base.join("f.txt"), "1\n").unwrap();
+        commit_all(&sub, "c1");
+        let c1 = run_git(&sub, &["rev-parse", "HEAD"]).unwrap().0.trim().to_string();
+        std::fs::write(base.join("f.txt"), "2\n").unwrap();
+        commit_all(&sub, "c2");
+        let c2 = run_git(&sub, &["rev-parse", "HEAD"]).unwrap().0.trim().to_string();
+
+        // c2 descends from c1 — whichever side is "ours" or "theirs", the
+        // descendant (c2) must be chosen.
+        assert_eq!(choose_submodule_commit(&sub, &c1, &c2).as_deref(), Some(c2.as_str()));
+        assert_eq!(choose_submodule_commit(&sub, &c2, &c1).as_deref(), Some(c2.as_str()));
+        // Identical pointers on both sides: trivially that commit.
+        assert_eq!(choose_submodule_commit(&sub, &c1, &c1).as_deref(), Some(c1.as_str()));
+        // One side empty (newly-added submodule vs. untouched): the non-empty side.
+        assert_eq!(choose_submodule_commit(&sub, "", &c1).as_deref(), Some(c1.as_str()));
+        assert_eq!(choose_submodule_commit(&sub, &c1, "").as_deref(), Some(c1.as_str()));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Genuinely unrelated commits on both sides (neither contains the other) —
+    // the function must not guess; the caller falls back to "theirs" so both
+    // machines converge instead of diverging forever.
+    #[test]
+    fn choose_submodule_commit_returns_none_for_true_divergence() {
+        let base = std::env::temp_dir().join(format!("vc_submodule_diverge_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let sub = base.to_str().unwrap().to_string();
+        run_git(&sub, &["init", "-q"]).unwrap();
+        run_git(&sub, &["config", "user.email", "t@t"]).unwrap();
+        run_git(&sub, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(base.join("f.txt"), "base\n").unwrap();
+        commit_all(&sub, "base");
+        std::fs::write(base.join("f.txt"), "branch-1\n").unwrap();
+        commit_all(&sub, "c-ours");
+        let ours = run_git(&sub, &["rev-parse", "HEAD"]).unwrap().0.trim().to_string();
+        run_git_mut(&sub, &["checkout", "-q", "HEAD~1"]).unwrap();
+        std::fs::write(base.join("f.txt"), "branch-2\n").unwrap();
+        commit_all(&sub, "c-theirs");
+        let theirs = run_git(&sub, &["rev-parse", "HEAD"]).unwrap().0.trim().to_string();
+
+        assert_eq!(choose_submodule_commit(&sub, &ours, &theirs), None);
 
         let _ = std::fs::remove_dir_all(&base);
     }
