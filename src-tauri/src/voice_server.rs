@@ -126,18 +126,13 @@ pub fn set_context(
 /// the box restarted onto the new build (START_MS > T), because the phone's
 /// code is served BY this process.
 static START_MS: OnceLock<u64> = OnceLock::new();
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 /// Start the server on `port`, guarded by `token`. Idempotent for the same
 /// port+token. Binds `0.0.0.0` (the token is the gate; Tailscale is the
 /// perimeter). Returns the bound port.
 pub fn start(port: u16, token: String) -> Result<u16, String> {
-    let _ = START_MS.set(now_ms());
+    // now_ms is this file's existing i64 helper (defined below with the push code).
+    let _ = START_MS.set(now_ms() as u64);
     let mut guard = server_slot().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(r) = guard.as_ref() {
         if r.port == port && r.token == token {
