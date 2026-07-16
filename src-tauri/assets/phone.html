@@ -1835,7 +1835,7 @@ interface MockDB {
   function hiddenMissions() { try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_MISSIONS_KEY) || "[]")); } catch { return new Set(); } }
   function saveHiddenMissions(set) { try { localStorage.setItem(HIDDEN_MISSIONS_KEY, JSON.stringify([...set])); } catch {} }
 
-  const age = (ts) => { const m = Math.floor((Date.now() - ts) / 60000); if (m < 1) return "now"; if (m < 60) return m + "m"; const h = Math.floor(m / 60); if (h < 24) return h + "h"; return Math.floor(h / 24) + "d"; };
+  const age = (ts) => { while (ts >= 1e14) ts = Math.floor(ts / 1000); const m = Math.floor((Date.now() - ts) / 60000); if (m < 1) return "now"; if (m < 60) return m + "m"; const h = Math.floor(m / 60); if (h < 24) return h + "h"; return Math.floor(h / 24) + "d"; };
 
   // ---------- pages ----------
   function setPage(name) {
