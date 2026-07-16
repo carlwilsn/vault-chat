@@ -4966,9 +4966,10 @@ interface MockDB {
   // The durable writes are unchanged: the complaint lands as a NOTE (the channel
   // bug reports already flow through, and one you can see) AND a `feedback` line
   // drops into the experience-log, so it sits in client-events.jsonl right after
-  // the swipes/taps that provoked it — the report replays its own context. What's
-  // new: on success we drop straight into that report's conversation thread
-  // (clOpenConv), so the boss can add detail / correct me without leaving.
+  // the swipes/taps that provoked it — the report replays its own context. On
+  // success we just confirm and refresh the queue — we do NOT auto-open the
+  // report's thread (report d3dedea5: that jump was a regression). The boss taps
+  // the report himself to add detail.
   function openFeedbackSheet() {
     openSheet({
       intent: "Feedback", title: "Report a problem", ico: "⚑", cls: "",
@@ -4995,18 +4996,12 @@ interface MockDB {
             if (!r.ok || d.error) throw new Error(d.error || r.status);
             closeSheet();
             void flushFeedbackQueue(); // deliver anything stranded from an earlier offline moment too
-            // Two-way: drop into the new report's thread so the boss can keep talking.
-            // /notes returns the note id, which IS the feedback item id (/feedback
-            // merges notes.jsonl by id). Pull the fresh queue so we hand clOpenConv
-            // the real item (state/title), falling back to a minimal stand-in.
+            // The boss (report d3dedea5): sending feedback must NOT jump straight
+            // into that report's conversation — a "weird random regression". Just
+            // confirm and refresh the queue so the new report lands in the list;
+            // he taps it himself to open the thread if he wants to add detail.
             await loadFeedbackQueue();
-            if (d.id) {
-              const it = (fbItems || []).find((x) => x.id === d.id)
-                || { id: d.id, title: t.slice(0, 60), text: body2, state: "open" };
-              clOpenConv(it);
-            } else {
-              toast("Thanks — logged. I'll see it with what you were doing.");
-            }
+            toast("Thanks — logged. I'll see it with what you were doing.");
           } catch (e) {
             // Box unreachable (off-tailnet on cellular, Tailscale asleep, or app
             // restarting). NEVER lose the report: persist it and auto-deliver the
