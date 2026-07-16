@@ -3853,6 +3853,14 @@ interface MockDB {
       if (d.error) throw new Error(d.error);
       unreadN = d.unread || 0; setHeader();
       const list = d.notifications || [];
+      // Some fixer-written notifications land with a NANOSECOND ts (the box's
+      // `date +%s%3N` emits ns, not ms — 19 digits, ~1e18). The age() label
+      // already guards against that, but the SORT below and the archive sort
+      // read `ts` RAW, so those cards — actually hours old — pin themselves to
+      // the TOP as if they were the newest alerts ("auto fixes always say now /
+      // as if they're super recent", report 381be0e1→558c993a). Normalize the
+      // stamp down to ms ONCE here so every consumer (sort, label, archive) agrees.
+      for (const n of list) { if (typeof n.ts === "number") { while (n.ts >= 1e14) n.ts = Math.floor(n.ts / 1000); } }
       lastNotifList = list;
       box.innerHTML = "";
       if (!list.length) { box.appendChild(el('<div class="empty">Nothing yet. Worker results, failures that need a call, and your recurring briefings land here — with a push if notifications are on and the app isn’t already open.</div>')); return; }
