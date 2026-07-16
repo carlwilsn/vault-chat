@@ -490,6 +490,12 @@
   .fb-new{display:flex;align-items:center;gap:9px;width:100%;text-align:left;border:1px dashed var(--line-3);border-radius:12px;padding:11px 13px;color:var(--text-secondary);font-size:13.5px;margin-bottom:14px}
   .fb-new svg{width:17px;height:17px;flex:none}
   .fb-lbl{font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--label);margin:2px 2px 9px}
+  /* Done-section header carries a neutral "Clear" so confirmed-fixed reports
+     don't pile up forever (report ca5eb45a). */
+  .fb-done-hd{display:flex;align-items:center;justify-content:space-between}
+  .fb-done-hd .fb-lbl{margin:2px 2px 0}
+  .fb-clear{font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--dim);padding:2px 4px;min-height:30px}
+  .fb-clear:active{color:var(--text)}
   .fb-card{width:100%;text-align:left;display:block;border:1px solid var(--line-2);border-radius:13px;padding:12px 13px;margin-bottom:9px;background:var(--fill)}
   .fb-card:active{background:var(--fill-3)}
   .fb-card .t{font-size:14px;color:var(--text);margin-bottom:8px;line-height:1.35}
@@ -4692,14 +4698,28 @@ interface MockDB {
     return '<span class="fb-dot"></span>open — tap to discuss';
   }
   let fbItems = [];
+  // "Done" reports are confirmed-fixed history — the boss asked for a way to
+  // clear them (report ca5eb45a). Cleared ids live per-device in localStorage;
+  // a report only stays hidden WHILE it's still "done", so one that reopens and
+  // then re-resolves surfaces again instead of vanishing forever.
+  const FB_CLEARED_KEY = "vc_fb_cleared_done";
+  function fbClearedSet() { try { return new Set(JSON.parse(localStorage.getItem(FB_CLEARED_KEY) || "[]")); } catch { return new Set(); } }
+  function fbSaveCleared(set) { try { localStorage.setItem(FB_CLEARED_KEY, JSON.stringify(Array.from(set))); } catch {} }
   async function loadFeedbackQueue() {
     let items = [];
     try { const d = await (await api("/feedback")).json(); items = d.items || []; } catch {}
     fbItems = items;
     if (clTab !== "fb" || !$("drawer").classList.contains("open")) return;
     const list = $("fbList"); list.innerHTML = "";
+    const doneAll = items.filter((x) => x.state === "done");
+    // Prune cleared ids that are no longer "done" (e.g. reopened) so the set
+    // never goes stale and a re-resolved report can reappear.
+    const doneIds = new Set(doneAll.map((x) => x.id));
+    let cleared = fbClearedSet();
+    const pruned = new Set(Array.from(cleared).filter((id) => doneIds.has(id)));
+    if (pruned.size !== cleared.size) { cleared = pruned; fbSaveCleared(cleared); }
     const open = items.filter((x) => x.state !== "done");
-    const done = items.filter((x) => x.state === "done");
+    const done = doneAll.filter((x) => !cleared.has(x.id));
     const addCard = (it) => {
       const b = document.createElement("button");
       b.className = "fb-card" + (it.state === "reopened" ? " reop" : "") + (it.state === "done" ? " dn" : "");
@@ -4727,7 +4747,19 @@ interface MockDB {
       list.appendChild(b);
     };
     if (open.length) { const l = document.createElement("div"); l.className = "fb-lbl"; l.textContent = "Open"; list.appendChild(l); open.forEach(addCard); }
-    if (done.length) { const l = document.createElement("div"); l.className = "fb-lbl"; l.style.marginTop = "14px"; l.textContent = "Done"; list.appendChild(l); done.forEach(addCard); }
+    if (done.length) {
+      const hd = document.createElement("div"); hd.className = "fb-done-hd"; hd.style.marginTop = "14px";
+      const l = document.createElement("div"); l.className = "fb-lbl"; l.textContent = "Done"; hd.appendChild(l);
+      const clr = document.createElement("button"); clr.className = "fb-clear"; clr.textContent = "Clear";
+      clr.addEventListener("click", () => {
+        const n = done.length;
+        const next = fbClearedSet(); doneAll.forEach((x) => next.add(x.id)); fbSaveCleared(next);
+        toast(n === 1 ? "Cleared 1 done report." : ("Cleared " + n + " done reports."));
+        void loadFeedbackQueue();
+      });
+      hd.appendChild(clr); list.appendChild(hd);
+      done.forEach(addCard);
+    }
     if (!open.length && !done.length) { const e = document.createElement("div"); e.className = "fb-lbl"; e.textContent = "No reports yet — anything feel off?"; list.appendChild(e); }
   }
   function clOpenConv(it) {
