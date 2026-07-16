@@ -522,12 +522,16 @@
   .coder-msg.u{align-self:flex-end;background:var(--fill-3);color:var(--text);border-bottom-right-radius:5px}
   .coder-msg.a{align-self:flex-start;background:var(--fill);border:1px solid var(--line);color:var(--text-body);border-bottom-left-radius:5px}
   .coder-msg.t{align-self:flex-start;color:var(--dim);font-style:italic}
-  .cl-foot{flex:0 0 auto;border-top:1px solid var(--line);padding:9px 13px 4px}
+  .cl-foot{flex:0 0 auto;border-top:1px solid var(--line);padding:9px 13px 4px;display:flex;align-items:flex-end;gap:8px}
+  /* the boss moved "new chat" out of a top button and into a + at the composer's
+     left (report 58b93ebc): the pill now fills the space to the RIGHT of the +,
+     so it reads as shortened + right-shifted while the + holds the freed left. */
+  .coder-new{flex:none;width:38px;height:38px;border-radius:50%;border:.5px solid var(--line-2);background:transparent;color:var(--text-secondary);display:flex;align-items:center;justify-content:center;margin-bottom:0}
+  .coder-new svg{width:20px;height:20px}
   /* the Claude-screen composer wears the SAME skin as the app's main .composer:
      a hairline-ring pill (transparent, .5px --line-2, 22px) with the send arrow
-     INSET as a primary circle, and the rest-width→full-width focus effect. */
-  .coder-input{position:relative;display:flex;align-items:flex-end;min-width:0;background:transparent;border:.5px solid var(--line-2);border-radius:22px;max-width:88%;margin:0 auto;transition:max-width .34s var(--ease-out)}
-  .coder-input:focus-within{max-width:100%}
+     INSET as a primary circle. */
+  .coder-input{position:relative;display:flex;align-items:flex-end;flex:1;min-width:0;background:transparent;border:.5px solid var(--line-2);border-radius:22px}
   .coder-input textarea{flex:1;background:transparent;color:var(--text);border:none;border-radius:21px;padding:10px 50px 10px 15px;font:inherit;font-size:16px;line-height:1.4;resize:none;max-height:120px;outline:none;min-width:0}
   .coder-send{position:absolute;right:5px;bottom:5px;width:33px;height:33px;border-radius:50%;background:var(--primary);color:var(--primary-fg);display:flex;align-items:center;justify-content:center;flex:none}
   .coder-send:disabled{opacity:.35}
@@ -890,6 +894,7 @@
         </div>
       </div>
       <div class="cl-foot" id="clFoot" style="display:none">
+        <button class="coder-new" id="coderNewBtn" aria-label="new chat — clear this conversation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
         <div class="coder-input"><textarea id="coderTa" rows="1" placeholder="Reply, or tell it to change something…" enterkeyhint="enter" autocomplete="off"></textarea><button class="coder-send" id="coderSend" aria-label="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div>
       </div>
     </div>
@@ -4668,7 +4673,9 @@ interface MockDB {
     $("clTabFb").classList.toggle("on", tab === "fb");
     $("clTabChat").classList.toggle("on", tab === "chat");
     $("clSeg").style.display = ""; $("clBack").style.display = "none";
-    $("fbNewBtn").style.display = "";
+    // The chat tab no longer carries a top "New chat" button — that action now
+    // lives as the + at the composer's left (report 58b93ebc). Keep it on Feedback.
+    $("fbNewBtn").style.display = tab === "fb" ? "" : "none";
     $("fbNewLbl").textContent = tab === "fb" ? "New feedback — what felt off?" : "New chat — start fresh";
     if (tab === "fb") {
       clView = "queue";
@@ -4678,6 +4685,7 @@ interface MockDB {
       clView = "conv";
       $("clQueue").style.display = "none"; $("clBrief").style.display = "none";
       $("clConv").style.display = ""; $("clFoot").style.display = "";
+      $("coderNewBtn").style.display = ""; // general chat: the + clears/starts fresh
       coderLoadThread(generalThread()); // no auto-introduction — the boss types first
     }
   }
@@ -4775,6 +4783,7 @@ interface MockDB {
     $("clBackTitle").textContent = it.title || "Report";
     $("fbNewBtn").style.display = "none";
     $("clQueue").style.display = "none"; $("clConv").style.display = ""; $("clFoot").style.display = "";
+    $("coderNewBtn").style.display = "none"; // a report thread isn't clearable — hide the +
     $("clBrief").style.display = "";
     $("clBriefText").textContent = it.text || "";
     const meta = $("clBriefMeta"); meta.innerHTML = '<div class="fb-st">' + fbStateLine(it) + "</div>";
@@ -4820,15 +4829,18 @@ interface MockDB {
     ta.addEventListener("focus", () => { document.querySelector("#drawer .panel").classList.add("editing"); setTimeout(() => { $("clBody").scrollTop = $("clBody").scrollHeight; }, 60); });
     ta.addEventListener("blur", () => { document.querySelector("#drawer .panel").classList.remove("editing"); });
   })();
+  // New chat: fresh thread, fresh session — the old one isn't kept around. The
+  // wipe PERSISTS (localStorage), so a reopened app stays on the cleared thread.
+  function coderNewChat() {
+    try { localStorage.removeItem("vc_coder_hist_" + generalThread()); localStorage.setItem("vc_coder_thread", "c" + Date.now()); } catch {}
+    clShowTab("chat");
+  }
   $("fbNewBtn").onclick = () => {
-    if (clTab === "chat") {
-      // New chat: fresh thread, fresh session — the old one isn't kept around.
-      try { localStorage.removeItem("vc_coder_hist_" + generalThread()); localStorage.setItem("vc_coder_thread", "c" + Date.now()); } catch {}
-      clShowTab("chat");
-    } else {
-      openFeedbackSheet();
-    }
+    if (clTab === "chat") coderNewChat(); // (chat tab no longer shows this btn; kept for safety)
+    else openFeedbackSheet();
   };
+  // The + at the composer's left clears the existing general chat and starts fresh.
+  $("coderNewBtn").onclick = () => coderNewChat();
 
   // [feedback] Report a problem — now TWO-WAY (the boss: "no longer one way").
   // The durable writes are unchanged: the complaint lands as a NOTE (the channel
