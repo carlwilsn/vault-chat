@@ -318,6 +318,7 @@ fn coder_run(thread: &str, message: &str, model: &str) -> Value {
     let claude = format!("{}/.local/bin/claude", home);
     let nodebin = format!("{}/.nvm/versions/node/v20.20.2/bin", home);
     let sess_path = format!("{}/vault-chat-fixer/coder-sessions.json", home);
+    let sys_path = format!("{}/vault-chat-fixer/coder-system.md", home);
     let mut sessions: Value = std::fs::read_to_string(&sess_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -327,6 +328,14 @@ fn coder_run(thread: &str, message: &str, model: &str) -> Value {
     let mut cmd = std::process::Command::new("timeout");
     cmd.arg("900").arg(&claude).arg("-p").arg(message)
         .arg("--output-format").arg("json").arg("--dangerously-skip-permissions");
+    // Ground + direct the in-app coder: who it is, the app map, and "be decisive,
+    // ship it" — so it stops over-investigating and actually makes the change.
+    if let Ok(sys) = std::fs::read_to_string(&sys_path) {
+        let sys = sys.trim().to_string();
+        if !sys.is_empty() {
+            cmd.arg("--append-system-prompt").arg(sys);
+        }
+    }
     if !model.is_empty() {
         cmd.arg("--model").arg(model);
     }
