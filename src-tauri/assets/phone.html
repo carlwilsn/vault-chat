@@ -476,37 +476,59 @@
   /* settings drawer (right) */
   #drawer{position:fixed;inset:0;background:var(--scrim-2);display:none;z-index:50}
   #drawer.open{display:block}
-  /* Settings is now a full-screen PAGE (was a right-side panel), so it can host
-     the live "talk to Claude Code" chat. */
-  #drawer .panel{position:absolute;inset:0;width:100%;background:var(--surface);padding:calc(env(safe-area-inset-top) + 12px) 14px calc(env(safe-area-inset-bottom) + 12px);display:flex;flex-direction:column;gap:12px}
-  .drawer-top{display:flex;align-items:center;justify-content:space-between;flex:0 0 auto}
-  .drawer-ttl{font-weight:700;font-size:17px}
-  .coder-wrap{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;gap:8px}
-  .coder-intro{background:var(--panel);border-radius:9px;padding:9px 11px}
-  .coder-intro b{display:block;font-size:13px}
-  .coder-intro small{color:var(--dim)}
-  .coder-log{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:2px 1px}
-  .coder-msg{max-width:88%;padding:9px 12px;border-radius:13px;white-space:pre-wrap;line-height:1.42;font-size:14px;word-wrap:break-word;overflow-wrap:anywhere}
-  .coder-msg.u{align-self:flex-end;background:var(--text);color:var(--surface);border-bottom-right-radius:4px}
-  .coder-msg.a{align-self:flex-start;background:var(--panel);border:1px solid var(--line);border-bottom-left-radius:4px}
+  /* ===== the Claude screen (was Settings) — feedback queue front + per-report
+     conversations. Full-screen page; keyboard handled the sheet way: `.editing`
+     reserves --kb as INSIDE bottom padding so the top never moves and only the
+     pinned composer rides up (see .sheet.editing). ===== */
+  #drawer .panel{position:absolute;inset:0;width:100%;background:var(--surface);padding:calc(env(safe-area-inset-top) + 10px) 0 calc(env(safe-area-inset-bottom) + 8px);display:flex;flex-direction:column}
+  #drawer .panel.editing{padding-bottom:calc(var(--kb,0px) + 8px)}
+  .cl-hd{display:flex;align-items:center;gap:8px;flex:0 0 auto;padding:2px 10px 10px;border-bottom:1px solid var(--line)}
+  .cl-seg{flex:1;display:flex;background:var(--fill);border:1px solid var(--line);border-radius:10px;padding:2px}
+  .cl-seg button{flex:1;text-align:center;font-size:13px;padding:6px 0;border-radius:8px;color:var(--dim)}
+  .cl-seg button.on{background:var(--fill-3);color:var(--text);font-weight:600}
+  .cl-back{display:flex;align-items:center;gap:6px;flex:1;min-width:0}
+  .cl-back .tt{font-size:15px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cl-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:12px 13px;-webkit-overflow-scrolling:touch}
+  .fb-new{display:flex;align-items:center;gap:9px;width:100%;text-align:left;border:1px dashed var(--line-3);border-radius:12px;padding:11px 13px;color:var(--text-secondary);font-size:13.5px;margin-bottom:14px}
+  .fb-new svg{width:17px;height:17px;flex:none}
+  .fb-lbl{font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--label);margin:2px 2px 9px}
+  .fb-card{width:100%;text-align:left;display:block;border:1px solid var(--line-2);border-radius:13px;padding:12px 13px;margin-bottom:9px;background:var(--fill)}
+  .fb-card:active{background:var(--fill-3)}
+  .fb-card .t{font-size:14px;color:var(--text);margin-bottom:8px;line-height:1.35}
+  .fb-card.dn{opacity:.68}
+  .fb-st{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim)}
+  .fb-st svg{width:14px;height:14px;flex:none}
+  .fb-ver{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--faint)}
+  .fb-dot{width:6px;height:6px;border-radius:50%;background:var(--dim);flex:none}
+  .fb-dot.busy{animation:pulse 1.2s ease-in-out infinite}
+  .fb-card.reop{border-color:var(--err-line-2)}
+  .fb-card.reop .fb-st{color:var(--err-text)}
+  .fb-confirm{display:flex;align-items:center;gap:6px;margin-top:9px}
+  .fb-confirm .q{flex:1;font-size:12px;color:var(--text-secondary)}
+  .fb-pill{font-size:12px;border:1px solid var(--line-3);border-radius:8px;padding:5px 13px;color:var(--text)}
+  .fb-pill.p{background:var(--primary);color:var(--primary-fg);border-color:var(--primary);font-weight:600}
+  .cl-brief{border:1px solid var(--line-2);border-radius:13px;background:var(--fill);padding:12px 13px;margin-bottom:14px}
+  .cl-brief .eb{font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--label);margin-bottom:6px}
+  .cl-brief .rep{font-size:13.5px;color:var(--text-body);line-height:1.45;white-space:pre-wrap}
+  .cl-brief .meta{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim);border-top:1px solid var(--line);padding-top:9px;margin-top:9px}
+  .coder-log{display:flex;flex-direction:column;gap:9px}
+  .coder-msg{max-width:86%;padding:9px 12px;border-radius:14px;white-space:pre-wrap;line-height:1.45;font-size:13.5px;word-wrap:break-word;overflow-wrap:anywhere}
+  .coder-msg.u{align-self:flex-end;background:var(--fill-3);color:var(--text);border-bottom-right-radius:5px}
+  .coder-msg.a{align-self:flex-start;background:var(--fill);border:1px solid var(--line);color:var(--text-body);border-bottom-left-radius:5px}
   .coder-msg.t{align-self:flex-start;color:var(--dim);font-style:italic}
-  .coder-input{display:flex;gap:8px;align-items:flex-end;flex:0 0 auto}
-  .coder-input textarea{flex:1;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:11px;padding:10px;font:inherit;resize:none;max-height:120px}
-  .coder-input .btn{width:auto;margin:0;padding:0 16px;min-height:42px}
-  .more-settings{flex:0 0 auto;border-top:1px solid var(--line);padding-top:6px}
-  .more-settings summary{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.4px;padding:3px 0;cursor:pointer;list-style:none}
-  .more-settings[open]{max-height:42vh;overflow-y:auto}
-  /* compact the settings so they don't crowd the chat */
-  .more-settings h3{margin:6px 0 2px}
-  .more-settings .btn{padding:8px;min-height:36px;font-size:13px;margin-top:3px}
-  .more-settings .note{font-size:11px;line-height:1.35;margin:2px 0}
-  /* coder topbar: model switcher + live context meter */
-  .coder-topbar{display:flex;align-items:center;gap:9px;flex:0 0 auto}
-  .coder-model{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:5px 7px;font:inherit;font-size:12px;flex:0 0 auto}
-  .ctx-wrap{flex:1;display:flex;align-items:center;gap:7px;min-width:0}
-  .ctx-bar{flex:1;height:6px;background:var(--panel);border:1px solid var(--line);border-radius:4px;overflow:hidden}
-  .ctx-fill{height:100%;width:0;background:var(--text);transition:width .35s ease}
-  .ctx-label{color:var(--dim);font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .cl-foot{flex:0 0 auto;border-top:1px solid var(--line);padding:9px 13px 4px}
+  .coder-input{display:flex;gap:8px;align-items:flex-end}
+  .coder-input textarea{flex:1;background:var(--panel);color:var(--text);border:1px solid var(--line-2);border-radius:12px;padding:10px 12px;font:inherit;font-size:14px;resize:none;max-height:120px}
+  .coder-send{width:38px;height:38px;border-radius:11px;background:var(--primary);color:var(--primary-fg);display:flex;align-items:center;justify-content:center;flex:none}
+  .coder-send:disabled{opacity:.4}
+  .coder-send svg{width:18px;height:18px}
+  .cl-gear{border-bottom:1px solid var(--line);padding:10px 13px;display:none;flex-direction:column;gap:10px;flex:0 0 auto}
+  .cl-gear.open{display:flex}
+  .cl-gear .grow{display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--text-body)}
+  .sw{width:44px;height:26px;border-radius:13px;background:var(--fill-3);border:1px solid var(--line-2);position:relative;flex:none}
+  .sw i{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:var(--dim);transition:transform .18s ease,background .18s ease}
+  .sw.on{background:var(--primary);border-color:var(--primary)}
+  .sw.on i{transform:translateX(18px);background:var(--primary-fg)}
   #drawer h3{margin:0;font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px}
   #drawer .row{font-size:13px;background:var(--panel);border-radius:9px;padding:9px 11px}
   #drawer .row b{display:block;font-size:13px}
@@ -822,35 +844,44 @@
 
   <div id="drawer">
     <div class="panel">
-      <div class="drawer-top">
-        <span class="drawer-ttl">Settings</span>
+      <div class="cl-hd" id="clHd">
+        <!-- queue header: gear · Feedback|Chats · close -->
+        <button class="icbtn" id="clGearBtn" aria-label="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3.5 14H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 8a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 10 3.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V8a1.6 1.6 0 0 0 1.5 1.5h.5a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.4.9z"/></svg></button>
+        <div class="cl-seg" id="clSeg">
+          <button id="clTabFb" class="on">Feedback</button>
+          <button id="clTabChat">Chat</button>
+        </div>
+        <div class="cl-back" id="clBack" style="display:none">
+          <button class="icbtn" id="clBackBtn" aria-label="back" style="min-width:34px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>
+          <div class="tt" id="clBackTitle"></div>
+        </div>
         <button class="icbtn" id="drawerClose" aria-label="close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
       </div>
-      <div class="coder-wrap">
-        <div class="coder-topbar">
-          <select id="coderModel" class="coder-model" aria-label="model">
-            <option value="claude-opus-4-8">Opus 4.8</option>
-            <option value="claude-sonnet-5">Sonnet 5</option>
-            <option value="claude-haiku-4-5">Haiku 4.5</option>
-            <option value="claude-fable-5">Fable 5</option>
-          </select>
-          <div class="ctx-wrap"><div class="ctx-bar"><div id="ctxFill" class="ctx-fill"></div></div><span id="ctxLabel" class="ctx-label">context —</span></div>
-        </div>
-        <div id="coderLog" class="coder-log"></div>
-        <div class="coder-input"><textarea id="coderTa" rows="1" placeholder="Ask about the app, or tell it to fix something…"></textarea><button class="btn solid" id="coderSend">Send</button></div>
+      <div class="cl-gear" id="clGear">
+        <div class="grow"><span>Notifications</span><button class="sw" id="pushSw" aria-label="notifications"><i></i></button></div>
+        <div class="grow"><span id="pushState" style="font-size:11.5px;color:var(--dim)">Checking…</span><button id="pushTestBtn" style="font-size:11.5px;color:var(--text-secondary);text-decoration:underline">send test</button></div>
+        <div class="grow"><span id="boxVer" style="font-size:11.5px;color:var(--faint)"></span></div>
       </div>
-      <details class="more-settings">
-        <summary>Notifications &amp; more</summary>
-        <h3>Notifications</h3>
-        <div class="note" id="pushState">Checking…</div>
-        <button class="btn solid" id="pushBtn">Enable notifications</button>
-        <button class="btn" id="pushTestBtn">Send test notification</button>
-        <div class="note">Push needs this page added to your Home Screen (Share → Add to Home Screen) on iOS 16.4+. You won't get a notification for things you're already looking at in the app.</div>
-        <button class="btn" id="feedbackBtn">Report a problem</button>
-        <div class="note">A one-way note to me — what felt broken or wrong, right now. It rides along with what the app just recorded you doing, so I can see it, not just read about it.</div>
-        <div class="note" id="boxVer"></div>
-        <button class="btn warn" id="killAllBtn">Kill all runs</button>
-      </details>
+      <div class="cl-body" id="clBody">
+        <!-- one row serves both tabs: "New feedback" on the queue, "New chat" on Chat -->
+        <button class="fb-new" id="fbNewBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span id="fbNewLbl">New feedback — what felt off?</span></button>
+        <!-- queue view (default) -->
+        <div id="clQueue">
+          <div id="fbList"></div>
+        </div>
+        <!-- conversation view (a report thread, or the general chat) -->
+        <div id="clConv" style="display:none">
+          <div class="cl-brief" id="clBrief" style="display:none">
+            <div class="eb">The ask</div>
+            <div class="rep" id="clBriefText"></div>
+            <div class="meta" id="clBriefMeta"></div>
+          </div>
+          <div id="coderLog" class="coder-log"></div>
+        </div>
+      </div>
+      <div class="cl-foot" id="clFoot" style="display:none">
+        <div class="coder-input"><textarea id="coderTa" rows="1" placeholder="Reply, or tell it to change something…" enterkeyhint="enter" autocomplete="off"></textarea><button class="coder-send" id="coderSend" aria-label="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div>
+      </div>
     </div>
   </div>
   <div id="toast"></div>
@@ -1051,6 +1082,8 @@ interface MockDB {
   notes: NoteItem[];
   threads: Record<string, ChatThread>;
   notifClearTs?: number;
+  /** Claude-screen feedback fixtures (one per pipeline state). */
+  feedback?: Array<{ id: string; title: string; text: string; ts: string; state: string; detail: string; confirmable: boolean }>;
 }
 
 (() => {
@@ -1279,6 +1312,26 @@ interface MockDB {
       if (u === "/notes/status") { const n = DB.notes.find((x) => x.id === body.id); if (n) n.status = body.status === "open" ? "open" : "resolved"; return reply({ ok: true }); }
       if (u === "/notes/edit") { const n = DB.notes.find((x) => x.id === body.id); if (!n) return reply({ error: "note not found" }); n.user_draft = body.text; n.title = null; n.last_updated = new Date().toISOString(); return reply({ ok: true, id: n.id }); }
       if (u === "/notes/clear-resolved") { let c = 0; DB.notes.forEach((n) => { if (n.status === "resolved") { n.status = "cleared"; c += 1; } }); return reply({ ok: true, cleared: c }); }
+      // The Claude screen: one fixture per pipeline state, and a live-ish confirm.
+      if (u === "/feedback") {
+        if (!DB.feedback) DB.feedback = [
+          { id: "fb-ship", title: "Home-screen icon still gray", text: "The app icon is still gray, not the flat monochrome one.\n\n— reported from the chat screen · v0.5.90", ts: "2026-07-15T12:15:00Z", state: "shipped", detail: "manifest → PNG-only", confirmable: true },
+          { id: "fb-diag", title: "Overhaul the settings UI", text: "The Claude settings screen has poor design and functionality.\n\n— reported from the notes screen · v0.5.87", ts: "2026-07-15T12:06:00Z", state: "diagnosing", detail: "", confirmable: false },
+          { id: "fb-reop", title: "Voice cut out mid-slide", text: "Voice session ended in the middle of a walkthrough.\n\n— reported from the chat screen · v0.5.85", ts: "2026-07-14T20:00:00Z", state: "reopened", detail: "", confirmable: false },
+          { id: "fb-brief", title: "Old missions suddenly rerunning", text: "A bunch of old missions are rerunning???\n\n— reported from the activity screen · v0.5.87", ts: "2026-07-15T12:27:00Z", state: "briefed", detail: "post-Coconut gate", confirmable: false },
+          { id: "fb-open", title: "Testing report", text: "Testing report\n\n— reported from the notes screen · v0.5.82", ts: "2026-07-14T12:15:00Z", state: "open", detail: "", confirmable: false },
+          { id: "fb-done", title: "Phantom conversations dot", text: "The conversations indicator was up with an empty panel.\n\n— reported from the chat screen · v0.5.87", ts: "2026-07-15T12:06:30Z", state: "done", detail: "", confirmable: false },
+        ];
+        return reply({ items: DB.feedback });
+      }
+      if (u === "/feedback/confirm") {
+        const f = (DB.feedback || []).find((x) => x.id === body.id);
+        if (f) { if (body.fixed) { f.state = "done"; f.confirmable = false; } else { f.state = "reopened"; f.confirmable = false; } }
+        return reply({ ok: true });
+      }
+      if (u === "/coder") {
+        return new Promise((res) => setTimeout(() => res(reply({ reply: "(mock coder) Got it — “" + String(body.message || "").slice(0, 80) + "”. In the real app this is a live Claude Code session in the box's source.", sessionId: "mock" })), 700));
+      }
       if (u === "/poll") {
         // Running workers stream signs of life so the thread's live timeline is
         // real in mock mode — the same "runtime" events (text + growing steps)
@@ -4574,53 +4627,162 @@ interface MockDB {
   }
 
   // ---------- settings drawer ----------
+  // ===== the Claude screen — feedback queue front, per-report conversations. =====
+  // Every report is an object with a LIVE state read from the box's real pipeline
+  // (/feedback merges notes.jsonl + the auto-fixer's audit/log), and tapping one
+  // opens a conversation with the box's Claude Code session scoped to that report.
+  let clTab = "fb";           // "fb" | "chat"
+  let clView = "queue";       // "queue" | "conv"
+  let clCur = null;           // the open feedback item (null = general chat)
   function openDrawer() {
-    $("drawer").classList.add("open"); refreshPushUi();
+    $("drawer").classList.add("open");
+    clShowTab(clTab);
+    refreshPushUi(); void pushAutoOn();
     void refreshState().then((d) => {
-      $("boxVer").textContent = d && d.version ? "box · vault-chat v" + d.version : "";
+      $("boxVer").textContent = d && d.version ? "vault-chat v" + d.version : "";
     });
   }
-  $("drawer").addEventListener("click", (e) => { if (e.target === $("drawer")) $("drawer").classList.remove("open"); });
-  $("drawerClose").onclick = () => $("drawer").classList.remove("open");
-  // [coder] Live chat with the box's Claude Code session, running in the app's own
-  // source. Same-origin POST /coder (token via api()); the box keeps a Claude Code
-  // session per thread so it's a real multi-turn conversation with tools.
-  (function coderChat() {
-    let thread = localStorage.getItem("vc_coder_thread");
-    if (!thread) { thread = "c" + Date.now(); try { localStorage.setItem("vc_coder_thread", thread); } catch {} }
-    const logEl = $("coderLog"), ta = $("coderTa"), send = $("coderSend");
-    if (!logEl || !ta || !send) return;
-    const modelSel = $("coderModel"), ctxFill = $("ctxFill"), ctxLabel = $("ctxLabel");
-    if (modelSel) { try { modelSel.value = localStorage.getItem("vc_coder_model") || "claude-opus-4-8"; } catch {} modelSel.onchange = () => { try { localStorage.setItem("vc_coder_model", modelSel.value); } catch {} }; }
-    let sessCost = 0;
-    const fmtTok = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1000 ? Math.round(n / 1000) + "k" : "" + n);
-    const updateCtx = (d) => {
-      if (!ctxFill || !ctxLabel || !d || !d.ctxWindow) return;
-      const pct = Math.min(100, Math.round(((d.ctxUsed || 0) / d.ctxWindow) * 100));
-      ctxFill.style.width = pct + "%";
-      sessCost += d.cost || 0;
-      ctxLabel.textContent = "ctx " + pct + "% · " + fmtTok(d.ctxUsed || 0) + "/" + fmtTok(d.ctxWindow) + (sessCost ? " · $" + sessCost.toFixed(2) : "");
+  $("drawerClose").onclick = () => { $("drawer").classList.remove("open"); $("clGear").classList.remove("open"); };
+  $("clGearBtn").onclick = () => { $("clGear").classList.toggle("open"); refreshPushUi(); };
+  $("clTabFb").onclick = () => clShowTab("fb");
+  $("clTabChat").onclick = () => clShowTab("chat");
+  $("clBackBtn").onclick = () => clShowTab("fb");
+  function clShowTab(tab) {
+    clTab = tab; clCur = null;
+    $("clTabFb").classList.toggle("on", tab === "fb");
+    $("clTabChat").classList.toggle("on", tab === "chat");
+    $("clSeg").style.display = ""; $("clBack").style.display = "none";
+    $("fbNewBtn").style.display = "";
+    $("fbNewLbl").textContent = tab === "fb" ? "New feedback — what felt off?" : "New chat — start fresh";
+    if (tab === "fb") {
+      clView = "queue";
+      $("clQueue").style.display = ""; $("clConv").style.display = "none"; $("clFoot").style.display = "none";
+      void loadFeedbackQueue();
+    } else {
+      clView = "conv";
+      $("clQueue").style.display = "none"; $("clBrief").style.display = "none";
+      $("clConv").style.display = ""; $("clFoot").style.display = "";
+      coderLoadThread(generalThread(), "Hey — I'm the Claude Code session in your app's source on the box. Ask me anything, or tell me to change something and I'll ship it.");
+    }
+  }
+  function generalThread() {
+    let t = localStorage.getItem("vc_coder_thread");
+    if (!t) { t = "c" + Date.now(); try { localStorage.setItem("vc_coder_thread", t); } catch {} }
+    return t;
+  }
+  // The state line mirrors the REAL pipeline — never invent a stage.
+  const FB_ICONS = {
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+    doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>',
+    alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 8v5M12 16h.01"/><circle cx="12" cy="12" r="9"/></svg>',
+  };
+  function fbStateLine(it) {
+    if (it.state === "done") return FB_ICONS.check + "confirmed fixed";
+    if (it.state === "reopened") return FB_ICONS.alert + "reopened — the fix didn't take";
+    if (it.state === "briefed") return FB_ICONS.doc + "briefed — needs your call";
+    if (it.state === "shipped") return FB_ICONS.check + (it.confirmable ? "fix shipped" : "fix shipped — landing on your phone…");
+    if (it.state === "diagnosing") return '<span class="fb-dot busy"></span>diagnosing now…';
+    return '<span class="fb-dot"></span>queued — the fixer picks it up within ~10 min';
+  }
+  let fbItems = [];
+  async function loadFeedbackQueue() {
+    let items = [];
+    try { const d = await (await api("/feedback")).json(); items = d.items || []; } catch {}
+    fbItems = items;
+    if (clTab !== "fb" || !$("drawer").classList.contains("open")) return;
+    const list = $("fbList"); list.innerHTML = "";
+    const open = items.filter((x) => x.state !== "done");
+    const done = items.filter((x) => x.state === "done");
+    const addCard = (it) => {
+      const b = document.createElement("button");
+      b.className = "fb-card" + (it.state === "reopened" ? " reop" : "") + (it.state === "done" ? " dn" : "");
+      b.innerHTML = '<div class="t"></div><div class="fb-st">' + fbStateLine(it) + "</div>";
+      b.querySelector(".t").textContent = it.title || (it.text || "").slice(0, 60);
+      if (it.state === "shipped" && it.confirmable) {
+        const c = document.createElement("div");
+        c.className = "fb-confirm";
+        c.innerHTML = '<span class="q">Did this fix it?</span><span class="fb-pill p" data-yn="y">Yes</span><span class="fb-pill" data-yn="n">No</span>';
+        c.querySelectorAll(".fb-pill").forEach((p: any) => {
+          p.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const fixed = p.dataset.yn === "y";
+            p.textContent = "…";
+            try {
+              await api("/feedback/confirm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: it.id, fixed, title: it.title || "" }) });
+              toast(fixed ? "Confirmed fixed." : "Reopened — it goes back to the fixer.");
+            } catch { toast("Couldn't send — try again"); }
+            void loadFeedbackQueue();
+          });
+        });
+        b.appendChild(c);
+      }
+      b.addEventListener("click", () => clOpenConv(it));
+      list.appendChild(b);
     };
-    const add = (cls, txt) => { const d = document.createElement("div"); d.className = "coder-msg " + cls; d.textContent = txt; logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight; return d; };
-    const HKEY = "vc_coder_hist_" + thread;
-    try { (JSON.parse(localStorage.getItem(HKEY) || "[]")).forEach((m) => add(m.c, m.x)); } catch {}
-    const saveHist = () => { try { const e = [...logEl.querySelectorAll(".coder-msg")].filter((n) => !n.classList.contains("t")).map((n) => ({ c: n.classList.contains("u") ? "u" : "a", x: n.textContent })); localStorage.setItem(HKEY, JSON.stringify(e.slice(-60))); } catch {} };
-    if (!logEl.children.length) add("a", "Hey — I'm the Claude Code session in your app's source on the box. Ask me anything about vault-chat, or tell me to fix something and I'll make the change and ship it.");
+    if (open.length) { const l = document.createElement("div"); l.className = "fb-lbl"; l.textContent = "Open"; list.appendChild(l); open.forEach(addCard); }
+    if (done.length) { const l = document.createElement("div"); l.className = "fb-lbl"; l.style.marginTop = "14px"; l.textContent = "Done"; list.appendChild(l); done.forEach(addCard); }
+    if (!open.length && !done.length) { const e = document.createElement("div"); e.className = "fb-lbl"; e.textContent = "No reports yet — anything feel off?"; list.appendChild(e); }
+  }
+  function clOpenConv(it) {
+    clCur = it; clView = "conv";
+    $("clSeg").style.display = "none"; $("clBack").style.display = "";
+    $("clBackTitle").textContent = it.title || "Report";
+    $("fbNewBtn").style.display = "none";
+    $("clQueue").style.display = "none"; $("clConv").style.display = ""; $("clFoot").style.display = "";
+    $("clBrief").style.display = "";
+    $("clBriefText").textContent = it.text || "";
+    const meta = $("clBriefMeta"); meta.innerHTML = '<div class="fb-st">' + fbStateLine(it) + "</div>";
+    coderLoadThread("fb-" + it.id, "This report is my brief — ask me anything about it, tell me what I got wrong, or add detail and I'll act on it.");
+  }
+  // ---- the conversation surface (shared by report threads + the general chat) ----
+  let coderThread = "";
+  const coderLog = () => $("coderLog");
+  function coderAdd(cls, txt) { const d = document.createElement("div"); d.className = "coder-msg " + cls; d.textContent = txt; coderLog().appendChild(d); $("clBody").scrollTop = $("clBody").scrollHeight; return d; }
+  function coderSaveHist() { try { const e = [...coderLog().querySelectorAll(".coder-msg")].filter((n) => !n.classList.contains("t")).map((n) => ({ c: n.classList.contains("u") ? "u" : "a", x: n.textContent })); localStorage.setItem("vc_coder_hist_" + coderThread, JSON.stringify(e.slice(-60))); } catch {} }
+  function coderLoadThread(thread, greeting) {
+    coderThread = thread;
+    const log = coderLog(); log.innerHTML = "";
+    let had = false;
+    try { const h = JSON.parse(localStorage.getItem("vc_coder_hist_" + thread) || "[]"); h.forEach((m) => { coderAdd(m.c, m.x); had = true; }); } catch {}
+    if (!had && greeting) coderAdd("a", greeting);
+    setTimeout(() => { $("clBody").scrollTop = $("clBody").scrollHeight; }, 30);
+  }
+  (function coderComposer() {
+    const ta = $("coderTa"), send = $("coderSend");
+    if (!ta || !send) return;
     const submit = async () => {
       const m = ta.value.trim(); if (!m) return;
-      ta.value = ""; ta.style.height = "auto"; add("u", m); saveHist();
-      send.disabled = true; const th = add("t", "thinking…");
+      ta.value = ""; ta.style.height = "auto"; coderAdd("u", m); coderSaveHist();
+      send.disabled = true; const th = coderAdd("t", "thinking…");
+      // First turn of a report thread carries the report itself, so the session
+      // starts from the formalized ask rather than a bare message.
+      let msg = m;
+      if (clCur && coderLog().querySelectorAll(".coder-msg.u").length === 1) {
+        msg = 'FEEDBACK THREAD — the boss opened his report "' + (clCur.title || "") + '" (id ' + clCur.id + ", state: " + clCur.state + ').\nThe report: "' + (clCur.text || "") + '"\n\nHis message: ' + m;
+      }
       try {
-        const r = await api("/coder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread, message: m, model: modelSel ? modelSel.value : "" }) });
+        const r = await api("/coder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread: coderThread, message: msg }) });
         const d = await r.json().catch(() => ({}));
-        th.remove(); add("a", d.reply || "(no reply)"); updateCtx(d); saveHist();
-      } catch (e) { th.remove(); add("a", "Couldn't reach the coder — is the box up and Tailscale on?"); }
+        th.remove(); coderAdd("a", d.reply || "(no reply)"); coderSaveHist();
+      } catch (e) { th.remove(); coderAdd("a", "Couldn't reach the box — is Tailscale on?"); }
       send.disabled = false;
     };
-    send.onclick = submit;
+    send.addEventListener("pointerdown", (e) => { e.preventDefault(); void submit(); }); // one-tap send with the keyboard up
     ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; });
+    // Keyboard: the sheet pattern — reserve --kb as INSIDE padding on the panel so
+    // the top never moves and only the pinned composer rides up.
+    ta.addEventListener("focus", () => { document.querySelector("#drawer .panel").classList.add("editing"); setTimeout(() => { $("clBody").scrollTop = $("clBody").scrollHeight; }, 60); });
+    ta.addEventListener("blur", () => { document.querySelector("#drawer .panel").classList.remove("editing"); });
   })();
-  $("killAllBtn").onclick = async () => { const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null); const d = r ? await r.json().catch(() => ({})) : {}; toast(d.result || "Kill-all sent."); };
+  $("fbNewBtn").onclick = () => {
+    if (clTab === "chat") {
+      // New chat: fresh thread, fresh session — the old one isn't kept around.
+      try { localStorage.removeItem("vc_coder_hist_" + generalThread()); localStorage.setItem("vc_coder_thread", "c" + Date.now()); } catch {}
+      clShowTab("chat");
+    } else {
+      openFeedbackSheet();
+    }
+  };
 
   // [feedback] One-way problem report. Deliberately NOT a Claude-in-app loop yet
   // (the 04:24 note: "just one way complaints for now"). Two writes, both on
@@ -4630,7 +4792,6 @@ interface MockDB {
   // taps that provoked it — the report replays its own context instead of
   // describing it.
   function openFeedbackSheet() {
-    $("drawer").classList.remove("open");
     openSheet({
       intent: "Feedback · one-way", title: "Report a problem", ico: "⚑", cls: "",
       bodyHtml: '<textarea class="note-edit" id="fbTa" placeholder="What felt broken or wrong, right now? Plain words — I can see what the app just recorded you doing."></textarea>'
@@ -4657,6 +4818,7 @@ interface MockDB {
             closeSheet();
             toast("Thanks — logged. I'll see it with what you were doing.");
             void flushFeedbackQueue(); // deliver anything stranded from an earlier offline moment too
+            void loadFeedbackQueue(); // the new report appears in the queue right away
           } catch (e) {
             // Box unreachable (off-tailnet on cellular, Tailscale asleep, or app
             // restarting). NEVER lose the report: persist it and auto-deliver the
@@ -4669,8 +4831,6 @@ interface MockDB {
       },
     });
   }
-  $("feedbackBtn").onclick = openFeedbackSheet;
-
   // (Composer Enter-key toggle removed — the phone Return key always inserts a
   // newline; sending is via the send button. enterkeyhint="enter" is set in the
   // static markup and on the sheet reply input.)
@@ -4679,23 +4839,54 @@ interface MockDB {
   const b64uToBytes = (s) => { const pad = "=".repeat((4 - (s.length % 4)) % 4); const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(raw, (c) => c.charCodeAt(0)); };
   const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window;
   async function currentSub() { if (!pushSupported()) return null; const reg = await navigator.serviceWorker.getRegistration().catch(() => null); return reg ? await reg.pushManager.getSubscription().catch(() => null) : null; }
+  // Notifications are DEFAULT ON: the gear just holds the off-switch. Once
+  // permission is granted (one tap on the switch the first time — iOS requires a
+  // gesture), the app keeps itself subscribed automatically from then on.
   async function refreshPushUi() {
-    if (!pushSupported()) { $("pushState").textContent = navigator.standalone === false ? "Add this page to your Home Screen first — Safari tabs can't receive push." : "Push not supported in this browser."; $("pushBtn").style.display = "none"; $("pushTestBtn").style.display = "none"; return; }
-    const sub = await currentSub(); $("pushState").textContent = sub ? "Notifications are ON for this device." : "Notifications are off."; $("pushBtn").style.display = sub ? "none" : "block"; $("pushTestBtn").style.display = sub ? "block" : "none";
+    if (!pushSupported()) { $("pushState").textContent = navigator.standalone === false ? "Add to your Home Screen first — Safari tabs can't receive push." : "Push not supported here."; $("pushSw").classList.remove("on"); $("pushTestBtn").style.display = "none"; return; }
+    const sub = await currentSub();
+    $("pushSw").classList.toggle("on", !!sub);
+    $("pushState").textContent = sub ? "On for this device." : (Notification.permission === "denied" ? "Blocked in iOS Settings for this app." : "Off — flip the switch once.");
+    $("pushTestBtn").style.display = sub ? "" : "none";
   }
-  $("pushBtn").onclick = async () => {
+  async function pushSubscribe() {
+    const perm = await Notification.requestPermission(); if (perm !== "granted") { toast("Notifications not allowed."); return false; }
+    const reg = await navigator.serviceWorker.register("/phone-sw.js"); await navigator.serviceWorker.ready;
+    const vd = await (await api("/push/vapid")).json(); if (!vd.key) throw new Error(vd.error || "no VAPID key from box");
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(vd.key) });
+    const r = await api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) });
+    if (!r.ok) throw new Error("subscribe store failed");
+    return true;
+  }
+  // Default-ON keeper: whenever permission is already granted but the device has
+  // no live subscription (fresh install, iOS evicted it), re-subscribe silently.
+  async function pushAutoOn() {
+    if (MOCK || !pushSupported()) return;
     try {
-      const perm = await Notification.requestPermission(); if (perm !== "granted") { toast("Notifications not allowed."); return; }
-      const reg = await navigator.serviceWorker.register("/phone-sw.js"); await navigator.serviceWorker.ready;
-      const vd = await (await api("/push/vapid")).json(); if (!vd.key) throw new Error(vd.error || "no VAPID key from box");
-      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(vd.key) });
-      const r = await api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) });
-      if (!r.ok) throw new Error("subscribe store failed");
-      toast("Notifications enabled."); refreshPushUi();
+      if (Notification.permission !== "granted" || localStorage.getItem("vc_push_optout") === "1") return;
+      const sub = await currentSub();
+      if (sub) { api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) }).catch(() => {}); }
+      else { await pushSubscribe(); }
+      refreshPushUi();
+    } catch {}
+  }
+  $("pushSw").onclick = async () => {
+    try {
+      const sub = await currentSub();
+      if (sub) {
+        try { localStorage.setItem("vc_push_optout", "1"); } catch {}
+        await api("/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: sub.endpoint }) }).catch(() => {});
+        await sub.unsubscribe().catch(() => {});
+        toast("Notifications off.");
+      } else {
+        try { localStorage.removeItem("vc_push_optout"); } catch {}
+        if (await pushSubscribe()) toast("Notifications on.");
+      }
     } catch (e) { toast("Push setup failed: " + (e.message || e)); }
+    refreshPushUi();
   };
   $("pushTestBtn").onclick = async () => { const r = await api("/push/test", { method: "POST" }).catch(() => null); const d = r ? await r.json().catch(() => ({})) : {}; toast(d.error ? "Test failed: " + d.error : "Test sent — should arrive in seconds."); };
-  if (!MOCK) (async () => { const sub = await currentSub(); if (sub) api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) }).catch(() => {}); })();
+  if (!MOCK) void pushAutoOn();
 
   // ---------- in-app keyboard (verbatim) ----------
   const KB_SYS_FLAG = "vc_kb_system";

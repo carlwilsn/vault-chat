@@ -121,10 +121,23 @@ pub fn set_context(
     });
 }
 
+/// Epoch-ms when this server (this build of the app) started. The feedback
+/// queue's confirm gate reads it: a fix shipped at T is live on the phone once
+/// the box restarted onto the new build (START_MS > T), because the phone's
+/// code is served BY this process.
+static START_MS: OnceLock<u64> = OnceLock::new();
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Start the server on `port`, guarded by `token`. Idempotent for the same
 /// port+token. Binds `0.0.0.0` (the token is the gate; Tailscale is the
 /// perimeter). Returns the bound port.
 pub fn start(port: u16, token: String) -> Result<u16, String> {
+    let _ = START_MS.set(now_ms());
     let mut guard = server_slot().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(r) = guard.as_ref() {
         if r.port == port && r.token == token {
@@ -336,9 +349,10 @@ fn coder_run(thread: &str, message: &str, model: &str) -> Value {
             cmd.arg("--append-system-prompt").arg(sys);
         }
     }
-    if !model.is_empty() {
-        cmd.arg("--model").arg(model);
-    }
+    // The phone sends no model — default the coder to Opus 4.8 (the boss's call:
+    // no model picker in the UI, just the best model).
+    let model = if model.is_empty() { "claude-opus-4-8" } else { model };
+    cmd.arg("--model").arg(model);
     if let Some(s) = &sid {
         cmd.arg("--resume").arg(s);
     }
@@ -370,6 +384,130 @@ fn coder_run(thread: &str, message: &str, model: &str) -> Value {
         }
         Err(e) => json!({ "reply": format!("coder run error: {}", e), "error": true }),
     }
+}
+
+/// The feedback queue: every in-app report as an object with a LIVE state that
+/// mirrors the real pipeline on this box (nothing invented):
+///   open        — the note exists; the auto-fixer hasn't picked it up yet
+///   diagnosing  — fixer.log shows a session running for it right now
+///   shipped     — fixer audit says action=ship; `confirmable` once the box has
+///                 restarted onto a build newer than the ship (START_MS gate),
+///                 at which point the phone (served by this process) has the fix
+///   briefed     — fixer audit says action=brief (wrote a brief for the boss)
+///   reopened    — a later "REOPENED <id>" note exists (the boss said the fix
+///                 didn't take); the reopen note itself re-enters as open
+///   done        — the note's status is resolved (boss confirmed fixed)
+fn feedback_json(vault: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let notes_path = format!("{}/.vault-chat/notes.jsonl", vault);
+    let audit_path = format!("{}/vault-chat-fixer/state/audit.jsonl", home);
+    let log_path = format!("{}/vault-chat-fixer/state/fixer.log", home);
+
+    // Freshest-wins per id, matching the app's own notes dedupe.
+    let mut notes: Vec<Value> = Vec::new();
+    if let Ok(raw) = std::fs::read_to_string(&notes_path) {
+        let mut by_id: HashMap<String, Value> = HashMap::new();
+        let mut order: Vec<String> = Vec::new();
+        for line in raw.lines() {
+            if let Ok(v) = serde_json::from_str::<Value>(line) {
+                if let Some(id) = v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()) {
+                    if !by_id.contains_key(&id) {
+                        order.push(id.clone());
+                    }
+                    by_id.insert(id, v);
+                }
+            }
+        }
+        for id in order {
+            if let Some(v) = by_id.remove(&id) {
+                notes.push(v);
+            }
+        }
+    }
+
+    // Latest fixer verdict per report id: (action, detail, ts).
+    let mut audit: HashMap<String, (String, String, u64)> = HashMap::new();
+    if let Ok(raw) = std::fs::read_to_string(&audit_path) {
+        for line in raw.lines() {
+            if let Ok(v) = serde_json::from_str::<Value>(line) {
+                if let Some(rid) = v.get("report").and_then(|x| x.as_str()) {
+                    audit.insert(
+                        rid.to_string(),
+                        (
+                            v.get("action").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                            v.get("summary").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                            v.get("ts").and_then(|x| x.as_u64()).unwrap_or(0),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    // A report is "diagnosing" while fixer.log has `processing <id>` with no
+    // later `session <id> done`.
+    let mut diagnosing: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Ok(raw) = std::fs::read_to_string(&log_path) {
+        for line in raw.lines() {
+            if let Some(rest) = line.split(" processing ").nth(1) {
+                if let Some(id) = rest.split_whitespace().next() {
+                    diagnosing.insert(id.to_string());
+                }
+            } else if let Some(rest) = line.split(" session ").nth(1) {
+                if let Some(id) = rest.split_whitespace().next() {
+                    diagnosing.remove(id);
+                }
+            }
+        }
+    }
+
+    let start_ms = *START_MS.get().unwrap_or(&0);
+    // Which ids have a later REOPENED note pointing at them?
+    let mut reopened: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for n in &notes {
+        let d = n.get("user_draft").and_then(|x| x.as_str()).unwrap_or("");
+        if let Some(rest) = d.strip_prefix("REOPENED ") {
+            if let Some(id) = rest.split(':').next() {
+                reopened.insert(id.trim().to_string());
+            }
+        }
+    }
+
+    let mut items: Vec<Value> = Vec::new();
+    for n in notes.iter().rev() {
+        let d = n.get("user_draft").and_then(|x| x.as_str()).unwrap_or("");
+        if !d.contains("reported from") {
+            continue; // only in-app feedback, not research notes
+        }
+        let id = n.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        let resolved = n.get("status").and_then(|x| x.as_str()).unwrap_or("open") != "open";
+        let (state, detail, confirmable) = if resolved {
+            ("done".to_string(), String::new(), false)
+        } else if reopened.contains(id) {
+            ("reopened".to_string(), String::new(), false)
+        } else if let Some((action, summary, ts)) = audit.get(id) {
+            if action == "ship" {
+                let live = *ts < start_ms; // box restarted onto the fixed build
+                ("shipped".to_string(), summary.clone(), live)
+            } else {
+                ("briefed".to_string(), summary.clone(), false)
+            }
+        } else if diagnosing.contains(id) {
+            ("diagnosing".to_string(), String::new(), false)
+        } else {
+            ("open".to_string(), String::new(), false)
+        };
+        items.push(json!({
+            "id": id,
+            "title": n.get("title").and_then(|x| x.as_str()).unwrap_or(""),
+            "text": d,
+            "ts": n.get("timestamp").and_then(|x| x.as_str()).unwrap_or(""),
+            "state": state,
+            "detail": detail,
+            "confirmable": confirmable,
+        }));
+    }
+    json!({ "items": items }).to_string()
 }
 
 fn handle(mut req: Request, token: &str) {
@@ -695,6 +833,45 @@ fn handle(mut req: Request, token: &str) {
             let model = payload.get("model").and_then(|v| v.as_str()).unwrap_or("");
             let res = coder_run(thread, message, model);
             let _ = req.respond(resp_text(200, "application/json", res.to_string()));
+        }
+        (Method::Get, "/feedback") => {
+            // The Claude screen's queue: reports + live pipeline state.
+            let body = match current_vault() {
+                Some(vault) => resp_text(200, "application/json", feedback_json(&vault)),
+                None => resp_text(503, "application/json", "{\"error\":\"no vault open on the box\"}".into()),
+            };
+            let _ = req.respond(body);
+        }
+        (Method::Post, "/feedback/confirm") => {
+            // The confirm half of the fix loop. fixed=true → the note resolves
+            // (card moves to Done). fixed=false → a REOPENED note re-enters the
+            // queue as fresh work the auto-fixer will pick up, and the original
+            // card shows "reopened". Both writes go through the app's own note
+            // relays — never hand-edit the jsonl here.
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let fixed = payload.get("fixed").and_then(|v| v.as_bool()).unwrap_or(false);
+            if id.is_empty() {
+                let _ = req.respond(resp_text(400, "application/json", "{\"error\":\"missing id\"}".into()));
+                return;
+            }
+            let body = if fixed {
+                relay_request("phone:note-status", json!({ "id": id, "status": "resolved" }), Duration::from_secs(10))
+            } else {
+                let title = payload.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                let text = format!(
+                    "REOPENED {}: The shipped fix didn't take — re-diagnose from scratch, don't repeat the same change. Original report: {}\n\n— reported from the Claude screen",
+                    id, title
+                );
+                relay_request("phone:note", json!({ "text": text }), Duration::from_secs(10))
+            };
+            let body = match body {
+                Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
+                _ => resp_text(503, "application/json", "{\"error\":\"app not answering\"}".into()),
+            };
+            let _ = req.respond(body);
         }
         (Method::Post, "/alert-followup") => {
             // [ask redesign] First follow-up message on an INFO alert: the app
