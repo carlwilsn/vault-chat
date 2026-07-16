@@ -392,11 +392,38 @@ fn coder_run(thread: &str, message: &str, model: &str) -> Value {
 ///   reopened    — a later "REOPENED <id>" note exists (the boss said the fix
 ///                 didn't take); the reopen note itself re-enters as open
 ///   done        — the note's status is resolved (boss confirmed fixed)
+/// ISO-8601 UTC ("2026-07-15T12:06:30.684Z") → epoch ms, std-only (no chrono).
+/// Days-from-civil per Howard Hinnant's algorithm. Returns 0 on malformed input.
+fn iso_to_ms(s: &str) -> u64 {
+    if s.len() < 19 {
+        return 0;
+    }
+    let num = |a: usize, l: usize| -> i64 { s.get(a..a + l).and_then(|x| x.parse().ok()).unwrap_or(0) };
+    let (y, m, d) = (num(0, 4), num(5, 2), num(8, 2));
+    let (hh, mm, ss) = (num(11, 2), num(14, 2), num(17, 2));
+    if m < 1 || m > 12 || d < 1 {
+        return 0;
+    }
+    let y2 = if m <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    ((days * 86400 + hh * 3600 + mm * 60 + ss).max(0) * 1000) as u64
+}
+
 fn feedback_json(vault: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let notes_path = format!("{}/.vault-chat/notes.jsonl", vault);
     let audit_path = format!("{}/vault-chat-fixer/state/audit.jsonl", home);
     let log_path = format!("{}/vault-chat-fixer/state/fixer.log", home);
+    // The fixer only processes notes NEWER than its watermark — an older report
+    // with no verdict is not in its queue, and the card must not claim it is.
+    let watermark: u64 = std::fs::read_to_string(format!("{}/vault-chat-fixer/state/watermark", home))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
 
     // Freshest-wins per id, matching the app's own notes dedupe.
     let mut notes: Vec<Value> = Vec::new();
@@ -492,14 +519,19 @@ fn feedback_json(vault: &str) -> String {
         } else {
             ("open".to_string(), String::new(), false)
         };
+        let ts_iso = n.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+        // Honest queue flag: only a report the fixer will actually pick up
+        // (newer than its watermark) may say so on the card.
+        let queued = state == "open" && iso_to_ms(ts_iso) > watermark;
         items.push(json!({
             "id": id,
             "title": n.get("title").and_then(|x| x.as_str()).unwrap_or(""),
             "text": d,
-            "ts": n.get("timestamp").and_then(|x| x.as_str()).unwrap_or(""),
+            "ts": ts_iso,
             "state": state,
             "detail": detail,
             "confirmable": confirmable,
+            "queued": queued,
         }));
     }
     json!({ "items": items }).to_string()

@@ -1083,7 +1083,7 @@ interface MockDB {
   threads: Record<string, ChatThread>;
   notifClearTs?: number;
   /** Claude-screen feedback fixtures (one per pipeline state). */
-  feedback?: Array<{ id: string; title: string; text: string; ts: string; state: string; detail: string; confirmable: boolean }>;
+  feedback?: Array<{ id: string; title: string; text: string; ts: string; state: string; detail: string; confirmable: boolean; queued?: boolean }>;
 }
 
 (() => {
@@ -1319,7 +1319,8 @@ interface MockDB {
           { id: "fb-diag", title: "Overhaul the settings UI", text: "The Claude settings screen has poor design and functionality.\n\n— reported from the notes screen · v0.5.87", ts: "2026-07-15T12:06:00Z", state: "diagnosing", detail: "", confirmable: false },
           { id: "fb-reop", title: "Voice cut out mid-slide", text: "Voice session ended in the middle of a walkthrough.\n\n— reported from the chat screen · v0.5.85", ts: "2026-07-14T20:00:00Z", state: "reopened", detail: "", confirmable: false },
           { id: "fb-brief", title: "Old missions suddenly rerunning", text: "A bunch of old missions are rerunning???\n\n— reported from the activity screen · v0.5.87", ts: "2026-07-15T12:27:00Z", state: "briefed", detail: "post-Coconut gate", confirmable: false },
-          { id: "fb-open", title: "Testing report", text: "Testing report\n\n— reported from the notes screen · v0.5.82", ts: "2026-07-14T12:15:00Z", state: "open", detail: "", confirmable: false },
+          { id: "fb-open", title: "Testing report", text: "Testing report\n\n— reported from the notes screen · v0.5.82", ts: "2026-07-14T12:15:00Z", state: "open", detail: "", confirmable: false, queued: true },
+          { id: "fb-old", title: "Pre-fixer report (older than the watermark)", text: "An old report from before the auto-fixer existed.\n\n— reported from the notes screen · v0.5.80", ts: "2026-07-12T09:00:00Z", state: "open", detail: "", confirmable: false, queued: false },
           { id: "fb-done", title: "Phantom conversations dot", text: "The conversations indicator was up with an empty panel.\n\n— reported from the chat screen · v0.5.87", ts: "2026-07-15T12:06:30Z", state: "done", detail: "", confirmable: false },
         ];
         return reply({ items: DB.feedback });
@@ -4682,7 +4683,11 @@ interface MockDB {
     if (it.state === "briefed") return FB_ICONS.doc + "briefed — needs your call";
     if (it.state === "shipped") return FB_ICONS.check + (it.confirmable ? "fix shipped" : "fix shipped — landing on your phone…");
     if (it.state === "diagnosing") return '<span class="fb-dot busy"></span>diagnosing now…';
-    return '<span class="fb-dot"></span>queued — the fixer picks it up within ~10 min';
+    // `queued` is the backend's honest flag: only reports the fixer will actually
+    // pick up (newer than its watermark) may promise so. Older ones are simply
+    // open — the affordance is the conversation, not a pickup that won't come.
+    if (it.queued) return '<span class="fb-dot"></span>queued — the fixer picks it up within ~10 min';
+    return '<span class="fb-dot"></span>open — tap to discuss';
   }
   let fbItems = [];
   async function loadFeedbackQueue() {
