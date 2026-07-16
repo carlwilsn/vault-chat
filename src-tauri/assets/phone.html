@@ -498,10 +498,16 @@
   .fb-done-hd .fb-lbl{margin:2px 2px 0}
   .fb-clear{font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--dim);padding:2px 4px;min-height:30px}
   .fb-clear:active{color:var(--text)}
-  .fb-card{width:100%;text-align:left;display:block;border:1px solid var(--line-2);border-radius:13px;padding:12px 13px;margin-bottom:9px;background:var(--fill)}
+  .fb-card{position:relative;width:100%;text-align:left;display:block;border:1px solid var(--line-2);border-radius:13px;padding:12px 13px;margin-bottom:9px;background:var(--fill)}
   .fb-card:active{background:var(--fill-3)}
-  .fb-card .t{font-size:14px;color:var(--text);margin-bottom:8px;line-height:1.35}
+  .fb-card .t{font-size:14px;color:var(--text);margin-bottom:8px;line-height:1.35;padding-right:22px}
   .fb-card.dn{opacity:.68}
+  /* Per-card dismiss (report 17197533: "clear those, I didn't make them"). A
+     span (not a button) with stopPropagation, like the confirm pills, so it
+     nests inside the card <button> without an invalid interactive-in-button. */
+  .fb-dismiss{position:absolute;top:8px;right:8px;width:26px;height:26px;display:flex;align-items:center;justify-content:center;color:var(--faint);border-radius:8px}
+  .fb-dismiss svg{width:15px;height:15px}
+  .fb-dismiss:active{color:var(--text);background:var(--fill-3)}
   .fb-st{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim)}
   .fb-st svg{width:14px;height:14px;flex:none}
   .fb-ver{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--faint)}
@@ -4713,13 +4719,19 @@ interface MockDB {
     return '<span class="fb-dot"></span>open — tap to discuss';
   }
   let fbItems = [];
-  // "Done" reports are confirmed-fixed history — the boss asked for a way to
-  // clear them (report ca5eb45a). Cleared ids live per-device in localStorage;
-  // a report only stays hidden WHILE it's still "done", so one that reopens and
-  // then re-resolves surfaces again instead of vanishing forever.
+  // Dismissed reports live per-device in localStorage. Two ways in: the bulk
+  // "Clear" on the Done section (report ca5eb45a) and a per-card × on any card
+  // that doesn't need the boss (report 17197533: "clear those, I didn't make
+  // them, they don't have a place for me"). A dismissed report only stays hidden
+  // WHILE it doesn't need the boss — the moment it flips to a state that wants
+  // his action (shipped+confirmable / reopened / briefed) it resurfaces, so a
+  // dismiss can never swallow a decision or a "did this fix it?".
   const FB_CLEARED_KEY = "vc_fb_cleared_done";
   function fbClearedSet() { try { return new Set(JSON.parse(localStorage.getItem(FB_CLEARED_KEY) || "[]")); } catch { return new Set(); } }
   function fbSaveCleared(set) { try { localStorage.setItem(FB_CLEARED_KEY, JSON.stringify(Array.from(set))); } catch {} }
+  // A report NEEDS the boss when it's waiting on his call or his confirmation —
+  // those are never dismissable and always resurface a prior dismiss.
+  function fbNeedsUser(it) { return it.state === "reopened" || it.state === "briefed" || (it.state === "shipped" && it.confirmable); }
   async function loadFeedbackQueue() {
     let items = [];
     try { const d = await (await api("/feedback")).json(); items = d.items || []; } catch {}
@@ -4727,13 +4739,14 @@ interface MockDB {
     if (clTab !== "fb" || !$("drawer").classList.contains("open")) return;
     const list = $("fbList"); list.innerHTML = "";
     const doneAll = items.filter((x) => x.state === "done");
-    // Prune cleared ids that are no longer "done" (e.g. reopened) so the set
-    // never goes stale and a re-resolved report can reappear.
-    const doneIds = new Set(doneAll.map((x) => x.id));
+    // Prune dismissed ids that are gone or now need the boss, so the set never
+    // goes stale and a report that starts needing action (reopened, briefed,
+    // shipped+confirmable) always resurfaces instead of vanishing forever.
+    const byId = new Map(items.map((x) => [x.id, x]));
     let cleared = fbClearedSet();
-    const pruned = new Set(Array.from(cleared).filter((id) => doneIds.has(id)));
+    const pruned = new Set(Array.from(cleared).filter((id) => { const it = byId.get(id); return it && !fbNeedsUser(it); }));
     if (pruned.size !== cleared.size) { cleared = pruned; fbSaveCleared(cleared); }
-    const open = items.filter((x) => x.state !== "done");
+    const open = items.filter((x) => x.state !== "done" && !cleared.has(x.id));
     const done = doneAll.filter((x) => !cleared.has(x.id));
     const addCard = (it) => {
       const b = document.createElement("button");
@@ -4757,6 +4770,22 @@ interface MockDB {
           });
         });
         b.appendChild(c);
+      }
+      // Per-card dismiss × — but never on a card that needs the boss (its ×
+      // would be a no-op since the prune resurfaces it, and it'd be dishonest
+      // to offer to hide a decision he still owes).
+      if (!fbNeedsUser(it)) {
+        const dz = document.createElement("span");
+        dz.className = "fb-dismiss";
+        dz.setAttribute("aria-label", "Dismiss");
+        dz.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+        dz.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const next = fbClearedSet(); next.add(it.id); fbSaveCleared(next);
+          toast("Dismissed — it comes back only if it needs you.");
+          void loadFeedbackQueue();
+        });
+        b.appendChild(dz);
       }
       b.addEventListener("click", () => clOpenConv(it));
       list.appendChild(b);
