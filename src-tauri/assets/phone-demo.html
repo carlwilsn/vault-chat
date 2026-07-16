@@ -8,7 +8,7 @@
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="vault-chat" />
-<link rel="apple-touch-icon" href="/icon.svg" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 <link rel="icon" type="image/svg+xml" href="/icon.svg" />
 <link rel="manifest" href="/manifest.webmanifest" />
 <title>vault-chat</title>
@@ -119,7 +119,9 @@
   .offbar b{font-weight:600;color:var(--err-text-2)}
 
   /* ☰ page menu */
-  .menu{position:absolute;top:calc(env(safe-area-inset-top) + 54px);right:10px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:6px;z-index:46;min-width:220px;display:none;box-shadow:0 14px 40px var(--scrim)}
+  /* z-index 55 so the nav menu can open ABOVE the settings drawer (z50) — the
+     settings page's top-right control is now this same burger, not a close X. */
+  .menu{position:absolute;top:calc(env(safe-area-inset-top) + 54px);right:10px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:6px;z-index:55;min-width:220px;display:none;box-shadow:0 14px 40px var(--scrim)}
   .menu.on{display:block}
   .mrow{display:flex;align-items:center;gap:11px;padding:12px 13px;border-radius:10px;font-size:14.5px;width:100%;text-align:left}
   .mrow:active{background:var(--raised)}
@@ -356,6 +358,14 @@
      option label made the button UNSHRINKABLE and pushed the row past the card. */
   .needs-qa button{flex:1 1 40%;min-width:0;overflow-wrap:anywhere;border-radius:10px;padding:8px 11px;font-size:13px;font-weight:600;border:1px solid var(--line);background:var(--raised);color:var(--text);font-family:inherit;min-height:36px}
   .needs-qa button:active{opacity:.8}
+  .needs-qa button.prim,.supask-opt.prim{border-color:var(--text);font-weight:700}
+  .card.needsyou.supask{margin:2px 0 4px}
+  .supask-foot{display:flex;align-items:center;gap:10px;margin-top:10px}
+  .supask-defer{border-radius:10px;padding:6px 12px;font-size:12.5px;font-weight:600;border:1px solid var(--line);background:transparent;color:var(--dim);font-family:inherit}
+  .supask-defer:active{opacity:.7}
+  .supask-hint{font-size:11.5px;color:var(--dim)}
+  .needs-defer{border:none;background:transparent;color:var(--dim);font-size:12px;font-weight:600;padding:6px 2px;margin-top:4px;font-family:inherit}
+  .needs-defer:active{opacity:.7}
   /* Freeform answer: the real message composer — send arrow INSET, right-aligned
      inside the field (reusing .rinp/.rsend geometry). */
   .needs-ff{position:relative;display:flex;align-items:center}
@@ -380,6 +390,10 @@
   #delibDecision.deciding{opacity:.55;pointer-events:none;transition:opacity .15s}
   .delib-done{margin-top:12px;font-size:13px;color:var(--dim);overflow-wrap:anywhere}
   .delib-done b{color:var(--text);font-weight:600}
+  /* [ask redesign] option cards the ask agent proposes inside the conversation —
+     same card language as the decision card's options, spaced as a group */
+  .delib-proposed{margin:4px 0 12px}
+  .delib-proposed .delib-opt:first-child{margin-top:6px}
   /* Archived needs-you card: the recorded decision, one quiet line. */
   .needs-decided{font-size:13px;color:var(--dim);margin-top:6px;overflow-wrap:anywhere}
   .needs-decided b{color:var(--text);font-weight:600}
@@ -433,8 +447,6 @@
   .schedrow .info{flex:1;min-width:0}
   .schedrow .info b{font-weight:600;font-size:14px;display:block;overflow-wrap:anywhere}
   .schedrow .info small{color:var(--dim);font-size:11.5px;overflow-wrap:anywhere}
-  .sw{font-size:11.5px;border:1px solid var(--line);border-radius:7px;padding:5px 11px;color:var(--dim);flex:none;min-height:32px}
-  .sw.on{color:var(--primary-fg);background:var(--primary);border-color:var(--primary)}
   .del{color:var(--err);font-size:15px;padding:4px 8px;flex:none}
 
   /* keyboard (verbatim) */
@@ -464,7 +476,83 @@
   /* settings drawer (right) */
   #drawer{position:fixed;inset:0;background:var(--scrim-2);display:none;z-index:50}
   #drawer.open{display:block}
-  #drawer .panel{position:absolute;top:0;right:0;bottom:0;width:min(86vw,360px);background:var(--surface);padding:calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 16px);overflow-y:auto;display:flex;flex-direction:column;gap:14px}
+  /* ===== the Claude screen (was Settings) — feedback queue front + per-report
+     conversations. Full-screen page; keyboard handled the sheet way: `.editing`
+     reserves --kb as INSIDE bottom padding so the top never moves and only the
+     pinned composer rides up (see .sheet.editing). ===== */
+  #drawer .panel{position:absolute;inset:0;width:100%;background:var(--surface);padding:calc(env(safe-area-inset-top) + 10px) 0 calc(env(safe-area-inset-bottom) + 8px);display:flex;flex-direction:column}
+  #drawer .panel.editing{padding-bottom:calc(var(--kb,0px) + 8px)}
+  .cl-hd{display:flex;align-items:center;gap:8px;flex:0 0 auto;padding:2px 10px 10px;border-bottom:1px solid var(--line)}
+  .cl-seg{flex:1;display:flex;background:var(--fill);border:1px solid var(--line);border-radius:10px;padding:2px}
+  .cl-seg button{flex:1;text-align:center;font-size:13px;padding:6px 0;border-radius:8px;color:var(--dim)}
+  .cl-seg button.on{background:var(--fill-3);color:var(--text);font-weight:600}
+  .cl-back{display:flex;align-items:center;gap:6px;flex:1;min-width:0}
+  .cl-back .tt{font-size:15px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cl-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:12px 13px;-webkit-overflow-scrolling:touch}
+  .fb-new{display:flex;align-items:center;gap:9px;width:100%;text-align:left;border:1px dashed var(--line-3);border-radius:12px;padding:11px 13px;color:var(--text-secondary);font-size:13.5px;margin-bottom:14px}
+  .fb-new svg{width:17px;height:17px;flex:none}
+  .fb-lbl{font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--label);margin:2px 2px 9px}
+  /* Done-section header carries a neutral "Clear" so confirmed-fixed reports
+     don't pile up forever (report ca5eb45a). */
+  .fb-done-hd{display:flex;align-items:center;justify-content:space-between}
+  .fb-done-hd .fb-lbl{margin:2px 2px 0}
+  .fb-clear{font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:var(--dim);padding:2px 4px;min-height:30px}
+  .fb-clear:active{color:var(--text)}
+  .fb-card{position:relative;width:100%;text-align:left;display:block;border:1px solid var(--line-2);border-radius:13px;padding:12px 13px;margin-bottom:9px;background:var(--surface)}
+  .fb-card:active{background:var(--fill)}
+  .fb-card .t{font-size:14px;color:var(--text);margin-bottom:8px;line-height:1.35;padding-right:22px}
+  .fb-card.dn{opacity:.68}
+  /* Per-card dismiss (report 17197533: "clear those, I didn't make them"). A
+     span (not a button) with stopPropagation, like the confirm pills, so it
+     nests inside the card <button> without an invalid interactive-in-button. */
+  .fb-dismiss{position:absolute;top:8px;right:8px;width:26px;height:26px;display:flex;align-items:center;justify-content:center;color:var(--faint);border-radius:8px}
+  .fb-dismiss svg{width:15px;height:15px}
+  .fb-dismiss:active{color:var(--text);background:var(--fill-3)}
+  .fb-st{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim)}
+  .fb-st svg{width:14px;height:14px;flex:none}
+  .fb-ver{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--faint)}
+  .fb-dot{width:6px;height:6px;border-radius:50%;background:var(--dim);flex:none}
+  .fb-dot.busy{animation:pulse 1.2s ease-in-out infinite}
+  .fb-card.reop{border-color:var(--err-line-2)}
+  .fb-card.reop .fb-st{color:var(--err-text)}
+  .fb-confirm{display:flex;align-items:center;gap:6px;margin-top:9px}
+  .fb-confirm .q{flex:1;font-size:12px;color:var(--text-secondary)}
+  .fb-pill{font-size:12px;border:1px solid var(--line-3);border-radius:8px;padding:5px 13px;color:var(--text)}
+  .fb-pill.p{background:var(--primary);color:var(--primary-fg);border-color:var(--primary);font-weight:600}
+  .cl-brief{border:1px solid var(--line-2);border-radius:13px;background:var(--fill);padding:12px 13px;margin-bottom:14px}
+  .cl-brief .eb{font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--label);margin-bottom:6px}
+  .cl-brief .rep{font-size:13.5px;color:var(--text-body);line-height:1.45;white-space:pre-wrap}
+  .cl-brief .meta{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim);border-top:1px solid var(--line);padding-top:9px;margin-top:9px}
+  .coder-log{display:flex;flex-direction:column;gap:9px}
+  .coder-msg{max-width:86%;padding:9px 12px;border-radius:14px;white-space:pre-wrap;line-height:1.45;font-size:13.5px;word-wrap:break-word;overflow-wrap:anywhere}
+  .coder-msg.u{align-self:flex-end;background:var(--fill-3);color:var(--text);border-bottom-right-radius:5px}
+  .coder-msg.a{align-self:flex-start;background:var(--fill);border:1px solid var(--line);color:var(--text-body);border-bottom-left-radius:5px}
+  .coder-msg.t{align-self:flex-start;color:var(--dim);font-style:italic}
+  /* [chat→feedback] a subtle centered chip above the composer that turns the
+     current general chat into a task on the Feedback page (report 1fb648bf). */
+  .chat2fb{flex:0 0 auto;align-self:center;display:flex;align-items:center;justify-content:center;gap:7px;margin:6px auto 4px;border:1px solid var(--line-3);border-radius:999px;background:var(--fill);color:var(--text-secondary);font-size:12px;padding:6px 14px}
+  .chat2fb svg{width:14px;height:14px;flex:none}
+  .cl-foot{flex:0 0 auto;border-top:1px solid var(--line);padding:9px 13px 4px;display:flex;align-items:flex-end;gap:8px}
+  /* the boss moved "new chat" out of a top button and into a + at the composer's
+     left (report 58b93ebc): the pill now fills the space to the RIGHT of the +,
+     so it reads as shortened + right-shifted while the + holds the freed left. */
+  .coder-new{flex:none;width:38px;height:38px;border-radius:50%;border:.5px solid var(--line-2);background:transparent;color:var(--text-secondary);display:flex;align-items:center;justify-content:center;margin-bottom:0}
+  .coder-new svg{width:20px;height:20px}
+  /* the Claude-screen composer wears the SAME skin as the app's main .composer:
+     a hairline-ring pill (transparent, .5px --line-2, 22px) with the send arrow
+     INSET as a primary circle. */
+  .coder-input{position:relative;display:flex;align-items:flex-end;flex:1;min-width:0;background:transparent;border:.5px solid var(--line-2);border-radius:22px}
+  .coder-input textarea{flex:1;background:transparent;color:var(--text);border:none;border-radius:21px;padding:10px 50px 10px 15px;font:inherit;font-size:16px;line-height:1.4;resize:none;max-height:120px;outline:none;min-width:0}
+  .coder-send{position:absolute;right:5px;bottom:5px;width:33px;height:33px;border-radius:50%;background:var(--primary);color:var(--primary-fg);display:flex;align-items:center;justify-content:center;flex:none}
+  .coder-send:disabled{opacity:.35}
+  .coder-send svg{width:18px;height:18px}
+  .cl-gear{border-bottom:1px solid var(--line);padding:10px 13px;display:none;flex-direction:column;gap:10px;flex:0 0 auto}
+  .cl-gear.open{display:flex}
+  .cl-gear .grow{display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--text-body)}
+  .sw{width:44px;height:26px;border-radius:13px;background:var(--fill-3);border:1px solid var(--line-2);position:relative;flex:none}
+  .sw i{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:var(--dim);transition:transform .18s ease,background .18s ease}
+  .sw.on{background:var(--primary);border-color:var(--primary)}
+  .sw.on i{transform:translateX(18px);background:var(--primary-fg)}
   #drawer h3{margin:0;font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px}
   #drawer .row{font-size:13px;background:var(--panel);border-radius:9px;padding:9px 11px}
   #drawer .row b{display:block;font-size:13px}
@@ -658,8 +746,14 @@
   #kb button:active{transform:none}
   button:focus-visible{outline:none;box-shadow:0 0 0 2px var(--bg),0 0 0 4px rgba(255,255,255,.4)}
   body{font-variant-numeric:tabular-nums}
-  /* the ONLY gradient fade in the app: the conversation thread's scroll edges */
-  #msgs.can-scroll,.scroll.can-scroll,.clist.can-scroll,.sheet-body.can-scroll{--mask-h:32px;mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent);-webkit-mask-image:linear-gradient(to bottom,transparent,black var(--mask-h),black calc(100% - var(--mask-h)),transparent)}
+  /* the ONLY gradient fade in the app: the conversation thread's scroll edges.
+     Per-edge, gated on SCROLL POSITION — a surface at rest never dims its first
+     line (note 25b7b572: "premature shadow effects make reading the first line
+     unpleasant"); the top edge only dissolves once content is actually scrolled
+     off above, the bottom only while there's more below. */
+  #msgs.fade-top,.scroll.fade-top,.clist.fade-top,.sheet-body.fade-top{--mask-t:32px}
+  #msgs.fade-bot,.scroll.fade-bot,.clist.fade-bot,.sheet-body.fade-bot{--mask-b:32px}
+  #msgs.fade-top,#msgs.fade-bot,.scroll.fade-top,.scroll.fade-bot,.clist.fade-top,.clist.fade-bot,.sheet-body.fade-top,.sheet-body.fade-bot{mask-image:linear-gradient(to bottom,transparent,black var(--mask-t,0px),black calc(100% - var(--mask-b,0px)),transparent);-webkit-mask-image:linear-gradient(to bottom,transparent,black var(--mask-t,0px),black calc(100% - var(--mask-b,0px)),transparent)}
   .sheet{transition:transform .5s var(--ease-sheet)}
   a{text-decoration:underline;text-underline-offset:3px;text-decoration-color:rgba(255,255,255,.35)}
   .title .tx{letter-spacing:-.02em}
@@ -669,8 +763,7 @@
   .send svg{width:19px;height:19px}
   .sheet-x{display:flex;align-items:center;justify-content:center}
   .sheet-x svg{width:20px;height:20px}
-  /* the empty chat is silent — no centered prompt */
-  .hint{display:none}
+  /* the empty chat greets you (note 25b7b572) — the small-bold hint, back on */
   /* composer: a hairline ring on black */
   .composer .field{background:transparent;border:.5px solid var(--line-2);border-radius:22px}
   /* burger menu: compact, with a real entrance rooted at its trigger */
@@ -775,14 +868,47 @@
 
   <div id="drawer">
     <div class="panel">
-      <h3>Notifications</h3>
-      <div class="note" id="pushState">Checking…</div>
-      <button class="btn solid" id="pushBtn">Enable notifications</button>
-      <button class="btn" id="pushTestBtn">Send test notification</button>
-      <div class="note">Push needs this page added to your Home Screen (Share → Add to Home Screen) on iOS 16.4+. You won't get a notification for things you're already looking at in the app.</div>
-      <div style="flex:1;min-height:18px"></div>
-      <div class="note" id="boxVer"></div>
-      <button class="btn warn" id="killAllBtn">Kill all runs</button>
+      <div class="cl-hd" id="clHd">
+        <!-- queue header: gear · Feedback|Chats · close -->
+        <button class="icbtn" id="clGearBtn" aria-label="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+        <div class="cl-seg" id="clSeg">
+          <button id="clTabFb" class="on">Feedback</button>
+          <button id="clTabChat">Chat</button>
+        </div>
+        <div class="cl-back" id="clBack" style="display:none">
+          <button class="icbtn" id="clBackBtn" aria-label="back" style="min-width:34px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>
+          <div class="tt" id="clBackTitle"></div>
+        </div>
+        <button class="icbtn" id="drawerMenuBtn" aria-label="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+      </div>
+      <div class="cl-gear" id="clGear">
+        <div class="grow"><span>Notifications</span><button class="sw" id="pushSw" aria-label="notifications"><i></i></button></div>
+        <div class="grow"><span id="pushState" style="font-size:11.5px;color:var(--dim)">Checking…</span><button id="pushTestBtn" style="font-size:11.5px;color:var(--text-secondary);text-decoration:underline">send test</button></div>
+        <div class="grow"><span id="boxVer" style="font-size:11.5px;color:var(--faint)"></span></div>
+      </div>
+      <div class="cl-body" id="clBody">
+        <!-- one row serves both tabs: "New feedback" on the queue, "New chat" on Chat -->
+        <button class="fb-new" id="fbNewBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span id="fbNewLbl">New feedback — what felt off?</span></button>
+        <!-- queue view (default) -->
+        <div id="clQueue">
+          <div id="fbList"></div>
+        </div>
+        <!-- conversation view (a report thread, or the general chat) -->
+        <div id="clConv" style="display:none">
+          <div class="cl-brief" id="clBrief" style="display:none">
+            <div class="eb">The ask</div>
+            <div class="rep" id="clBriefText"></div>
+            <div class="meta" id="clBriefMeta"></div>
+          </div>
+          <div id="coderLog" class="coder-log"></div>
+        </div>
+      </div>
+      <!-- general chat only: turn this conversation into a Feedback-page task -->
+      <button class="chat2fb" id="chatToFbBtn" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg><span>Turn this into a feedback task</span></button>
+      <div class="cl-foot" id="clFoot" style="display:none">
+        <button class="coder-new" id="coderNewBtn" aria-label="new chat — clear this conversation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
+        <div class="coder-input"><textarea id="coderTa" rows="1" placeholder="Reply, or tell it to change something…" enterkeyhint="enter" autocomplete="off"></textarea><button class="coder-send" id="coderSend" aria-label="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div>
+      </div>
     </div>
   </div>
   <div id="toast"></div>
@@ -799,7 +925,7 @@
   <div id="voice">
     <div class="vtop"><button class="icbtn" id="vMinBtn" aria-label="keep talking while you read"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button></div>
     <div class="vmid"><div class="viz" id="viz"></div><div class="vconn">Connecting…</div><div class="verr" id="verr"></div></div>
-    <div class="vend"><div class="vbtns"><button class="vx" id="vMuteBtn" aria-label="mute mic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="21" x2="12" y2="17"/><line x1="9" y1="21" x2="15" y2="21"/></svg></button><button class="vx" id="vEndBtn" aria-label="end voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><span class="vhint">tap to end</span></div>
+    <div class="vend"><div class="vbtns"><button class="vx" id="vMuteBtn" aria-label="mute mic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="21" x2="12" y2="17"/><line x1="9" y1="21" x2="15" y2="21"/></svg></button><button class="vx" id="vEndBtn" aria-label="end voice"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><span class="vhint" id="vhint"></span></div>
   </div>
 
 <!-- Tailwind Play CDN. Utilities live under the tw- prefix (so no generated
@@ -983,6 +1109,8 @@ interface MockDB {
   notes: NoteItem[];
   threads: Record<string, ChatThread>;
   notifClearTs?: number;
+  /** Claude-screen feedback fixtures (one per pipeline state). */
+  feedback?: Array<{ id: string; title: string; text: string; ts: string; state: string; detail: string; confirmable: boolean; queued?: boolean }>;
 }
 
 (() => {
@@ -1001,10 +1129,19 @@ interface MockDB {
   const $ = (id: string): any => document.getElementById(id);
   const toastEl = $("toast");
   let toastT = 0;
-  const toast = (m: string) => { toastEl.textContent = m; toastEl.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove("show"), 2600); };
+  const toast = (m: string) => { toastEl.textContent = m; toastEl.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove("show"), 2600); try { logEvent("toast", { msg: (m || "").slice(0, 160) }); } catch {} };
   if (!TOKEN && !MOCK) {
-    document.body.innerHTML = '<div class="gate"><b style="color:var(--text)">No access token</b><div>Open the phone link from vault-chat Settings once — it carries the token, which is then remembered on this device.</div></div>';
-    return;
+    // No stored/URL token — but the box provisions an httpOnly auth cookie when it
+    // serves this shell (self-heal after iOS evicts storage or a home-screen launch
+    // drops ?token=). So PROCEED and let the cookie authorize the data calls; fall
+    // back to the manual-link gate only if the box actually rejects us. Hard-
+    // blocking here was the "No access token" dead-end that a valid cookie couldn't
+    // rescue. Non-blocking probe, so startup isn't delayed.
+    fetch("/status").then((r) => {
+      if (r.status === 401) {
+        document.body.innerHTML = '<div class="gate"><b style="color:var(--text)">No access token</b><div>Open the phone link from vault-chat Settings once — it carries the token, which is then remembered on this device.</div></div>';
+      }
+    }).catch(() => {});
   }
 
   // ---------- mock box (test mode only) ----------
@@ -1047,7 +1184,7 @@ interface MockDB {
         // richer "Needs you" card on the feed and the inline-option sheet: a
         // decision + verbose option cards you pick INLINE in the conversation,
         // plus a short sample "talk it through" exchange and a probe input.
-        { id: "nAsk", ts: now - 90000, kind: "ask", title: "Coconut fp32", intention: "Mission needs your call · Coconut fp32", icon: "?", cls: "a", summary: "Raise the cost cap? Spend's at $28 of the $32 cap; accuracy climbing 0.68 → 0.85, ~a few hours to the result.", convId: "m1", read: false,
+        { id: "nAsk", ts: now - 90000, kind: "ask", title: "Coconut fp32", intention: "Mission needs your call · Coconut fp32", icon: "?", cls: "a", summary: "Raise the cost cap? Spend's at $28 of the $32 cap; accuracy climbing 0.68 → 0.85, ~a few hours to the result.", convId: "m1", askConvId: "a1", read: false,
           deliberation: {
             mission: "Coconut fp32",
             ask: "Raise the cost cap? Spend's at $28 of the $32 cap; accuracy climbing 0.68 → 0.85, ~a few hours to the result.",
@@ -1064,7 +1201,10 @@ interface MockDB {
         { id: "n1", ts: now - 120000, kind: "ask", title: "Seed 3 diverged", intention: "Mission needs your call · BitNet 160M MVP", icon: "?", cls: "a", summary: "step 800, +0.05 nat above seed 1 — real effect, or match the LR and rerun?", body: "Seed 3 is **+0.05 nat above seed 1** at step 800 and still drifting.\n\nTwo readings:\n- **Real effect** — seed sensitivity worth reporting.\n- **LR mismatch** — match seed 1's LR and rerun (~9 min).\n\nReply and the mission's supervisor takes it from there.", convId: "m1", read: false },
         { id: "n0", ts: now - 18000000, kind: "info", title: "Morning briefing", intention: "Scheduled worker · summer vault", icon: "≡", cls: "", summary: "3 things moved overnight; today: finish the 3-seed writeup + push.", body: "## Overnight\n- 3-seed BitNet nearly there.\n- Repo sweep clean.\n- Idle box auto-killed (~$0.26).\n\n## Today\n1. Resolve the seed-3 divergence.\n2. Finish the writeup and push.", convId: "cch", read: false },
         { id: "n2", ts: now - 1080000, kind: "info", title: "Worker finished — seed 44", intention: "Worker deliverable · BitNet 160M MVP", icon: "✓", cls: "g", summary: "eval.loss 1.5588, within tolerance; committed under results/.", body: "Seed 44 eval.loss **1.5588** — within the 0.005 nat tolerance. `results/seed44.jsonl` committed.", convId: "w1", read: false },
-        { id: "n3", ts: now - 5400000, kind: "info", title: "Stopped an idle box", intention: "Cost / cleanup · autonomous action", icon: "$", cls: "r", summary: "idle GPU box auto-killed after its job exited; ~$0.26, nothing billing now.", body: "A box sat at zero GPU utilization for 12 minutes after its job exited — killed it. ~$0.26, nothing billing now.", read: true },
+        // readAt DELIBERATELY older than nDone's answeredAt though its ts is
+        // newer — proves the Archive sorts by archive date, not fire date
+        // (note 56e57731): nDone must render ABOVE this one.
+        { id: "n3", ts: now - 5400000, kind: "info", title: "Stopped an idle box", intention: "Cost / cleanup · autonomous action", icon: "$", cls: "r", summary: "idle GPU box auto-killed after its job exited; ~$0.26, nothing billing now.", body: "A box sat at zero GPU utilization for 12 minutes after its job exited — killed it. ~$0.26, nothing billing now.", read: true, readAt: now - 8000000 },
         // A SETTLED ask in the archive: shows the recorded decision on the card
         // (answeredWith) and opens as a dead, read-only deliberation sheet.
         { id: "nDone", ts: now - 7200000, kind: "ask", title: "Budget fork — old run", intention: "Mission needed your call · BitNet 160M MVP", icon: "?", cls: "a", summary: "Spend was at $18 of $20 with seed 2 mid-run — extend or stop?", convId: "m1", read: true, answeredWith: "Extend to $26", answeredAt: now - 7100000,
@@ -1084,6 +1224,18 @@ interface MockDB {
         { id: "nt3", status: "resolved", timestamp: new Date(now - 9200000).toISOString(), last_updated: new Date(now - 9000000).toISOString(), title: "Sheets expand without scrolling to top", user_draft: "When the sheets expand they should not auto scroll to the top of the conversation.", turns: [], anchors: [] },
       ],
       threads: {
+        // [ask redesign] The nAsk notification's OWN conversation — the user ↔
+        // ask-agent deliberation, including an agent-proposed option set
+        // (askOptions render as tappable relay cards that stack).
+        a1: { id: "a1", title: "Coconut fp32", source: "ask", status: "idle", askOf: "m1", askNotifId: "nAsk", messages: [
+          { role: "user", content: "is the 0.85 real, or noise?", direct: true },
+          { role: "assistant", content: "Real — it's climbed 0.68 → 0.71 → 0.78 → 0.85 across the last 4 epochs, exactly the latent-stage ramp. The run that plateaued never cleared 0.83.", direct: true },
+          { role: "user", content: "what if we split the difference on the cap?", direct: true },
+          { role: "assistant", content: "A middle cap is workable — here's how I'd frame it:", direct: true, askOptions: [
+            { answer: "Raise to $36", title: "Raise to $36 — one more latent stage", body: "Covers epochs 26-28 where most of the remaining gain lives; hard-stops $4 earlier than the full ask." , primary: true },
+            { answer: "Hold, re-ask at 0.90", title: "Hold at $32, re-ask if it crosses 0.90", body: "Keeps the cap; the mission fires a fresh ask only if accuracy proves the ramp is still going." },
+          ] },
+        ] },
         m1: { id: "m1", title: "BitNet 160M MVP", source: "mission", status: "idle", messages: [
           { role: "user", content: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP across 3 seeds; commit eval.loss; writeup under docs/. Done = three seeds within 0.005 nat." },
           { role: "assistant", content: "Criterion pinned. Fanning out a worker per seed plus an eval/writeup worker; I'll watch on 15-min wakes and verify before I call it.", tools: ["StartWorker", "StartWorker", "StartWorker", "Schedule"] },
@@ -1096,6 +1248,14 @@ interface MockDB {
           ], reply: "Seeds **42 & 44** landed in tolerance; **seed 3 diverged** at step 800 (+0.05 nat) — I held it and surfaced the call to you. Kicked the eval/writeup worker since 2 of 3 are in." } },
           { role: "user", content: "don't wait on it — spin up a worker to rerun seed 3 at seed 42's LR." },
           { role: "assistant", content: "On it — spawning a worker to rerun seed 3 at seed 42's LR.", tools: ["StartWorker"] },
+          // [unified ask] The supervisor FRONT staging inline option cards on a
+          // reply — the only surface that does (a plain chat just talks). Last
+          // message → cards render live/tappable in the mission sheet.
+          { role: "user", content: "how should seed 3 land in the writeup?", direct: true },
+          { role: "assistant", content: "Two clean ways to fold seed 3 in — your call:", direct: true, askOptions: [
+            { answer: "Report seed 3 as a plumbing incident with the LR-guard fix, keep the headline table to the three clean seeds", title: "Plumbing incident + clean table", body: "Honest about what happened without polluting the headline numbers; the guard note makes it actionable.", primary: true },
+            { answer: "Fold seed 3's rerun into the table as a fourth row and footnote the original divergence", title: "Fourth row + footnote", body: "Everything in one table; slightly muddies the 3-seed protocol the brief promised." },
+          ] },
         ] },
         w2: { id: "w2", title: "seed-2 retry", source: "worker", status: "running", messages: [
           { role: "user", content: "retry seed 2 at seed 1's LR; commit eval.loss" },
@@ -1179,6 +1339,27 @@ interface MockDB {
       if (u === "/notes/status") { const n = DB.notes.find((x) => x.id === body.id); if (n) n.status = body.status === "open" ? "open" : "resolved"; return reply({ ok: true }); }
       if (u === "/notes/edit") { const n = DB.notes.find((x) => x.id === body.id); if (!n) return reply({ error: "note not found" }); n.user_draft = body.text; n.title = null; n.last_updated = new Date().toISOString(); return reply({ ok: true, id: n.id }); }
       if (u === "/notes/clear-resolved") { let c = 0; DB.notes.forEach((n) => { if (n.status === "resolved") { n.status = "cleared"; c += 1; } }); return reply({ ok: true, cleared: c }); }
+      // The Claude screen: one fixture per pipeline state, and a live-ish confirm.
+      if (u === "/feedback") {
+        if (!DB.feedback) DB.feedback = [
+          { id: "fb-ship", title: "Home-screen icon still gray", text: "The app icon is still gray, not the flat monochrome one.\n\n— reported from the chat screen · v0.5.90", ts: "2026-07-15T12:15:00Z", state: "shipped", detail: "manifest → PNG-only", confirmable: true },
+          { id: "fb-diag", title: "Overhaul the settings UI", text: "The Claude settings screen has poor design and functionality.\n\n— reported from the notes screen · v0.5.87", ts: "2026-07-15T12:06:00Z", state: "diagnosing", detail: "", confirmable: false },
+          { id: "fb-reop", title: "Voice cut out mid-slide", text: "Voice session ended in the middle of a walkthrough.\n\n— reported from the chat screen · v0.5.85", ts: "2026-07-14T20:00:00Z", state: "reopened", detail: "", confirmable: false },
+          { id: "fb-brief", title: "Old missions suddenly rerunning", text: "A bunch of old missions are rerunning???\n\n— reported from the activity screen · v0.5.87", ts: "2026-07-15T12:27:00Z", state: "briefed", detail: "post-Coconut gate", confirmable: false },
+          { id: "fb-open", title: "Testing report", text: "Testing report\n\n— reported from the notes screen · v0.5.82", ts: "2026-07-14T12:15:00Z", state: "open", detail: "", confirmable: false, queued: true },
+          { id: "fb-old", title: "Pre-fixer report (older than the watermark)", text: "An old report from before the auto-fixer existed.\n\n— reported from the notes screen · v0.5.80", ts: "2026-07-12T09:00:00Z", state: "open", detail: "", confirmable: false, queued: false },
+          { id: "fb-done", title: "Phantom conversations dot", text: "The conversations indicator was up with an empty panel.\n\n— reported from the chat screen · v0.5.87", ts: "2026-07-15T12:06:30Z", state: "done", detail: "", confirmable: false },
+        ];
+        return reply({ items: DB.feedback });
+      }
+      if (u === "/feedback/confirm") {
+        const f = (DB.feedback || []).find((x) => x.id === body.id);
+        if (f) { if (body.fixed) { f.state = "done"; f.confirmable = false; } else { f.state = "reopened"; f.confirmable = false; } }
+        return reply({ ok: true });
+      }
+      if (u === "/coder") {
+        return new Promise((res) => setTimeout(() => res(reply({ reply: "(mock coder) Got it — “" + String(body.message || "").slice(0, 80) + "”. In the real app this is a live Claude Code session in the box's source.", sessionId: "mock" })), 700));
+      }
       if (u === "/poll") {
         // Running workers stream signs of life so the thread's live timeline is
         // real in mock mode — the same "runtime" events (text + growing steps)
@@ -1244,7 +1425,28 @@ interface MockDB {
         await new Promise((r) => setTimeout(r, 2500));
         return reply({ events: evs, next: String(pollTick) });
       }
-      if (u === "/message") { if (body.mission) return reply({ ok: true, convId: "m_new", mission: body.mission.title }); return reply({ ok: true, convId: body.convId || "new-" + Date.now(), probe: true }); }
+      if (u === "/message") {
+        if (body.mission) return reply({ ok: true, convId: "m_new", mission: body.mission.title });
+        // Append to an existing thread + a canned reply so follow-up threads
+        // (ask / minted fu-) render a real round in the sheet.
+        const th = body.convId && DB.threads[body.convId];
+        if (th) { th.messages.push({ role: "user", content: body.text, direct: true }); setTimeout(() => { th.messages.push({ role: "assistant", content: "Here's the context on that call — happy to dig into any part of it.", direct: true }); }, 350); }
+        return reply({ ok: true, convId: body.convId || "new-" + Date.now(), probe: true });
+      }
+      if (u === "/decision-record") {
+        // Mirror the real box: an inline decision lands in the archive as a
+        // pre-decided ask card (never unread, never pushed).
+        DB.notifs.push({ id: "dec-" + Date.now(), ts: Date.now(), kind: "ask", title: body.title || "Inline decision", intention: "Your call · decided in-conversation", icon: "?", cls: "a", body: body.question || "", convId: body.convId || "", read: true, answeredWith: body.answer, answeredAt: Date.now(), readAt: Date.now() });
+        return reply({ ok: true });
+      }
+      if (u === "/alert-followup") {
+        // Mirror the box: mint an isolated follow-up thread for this notification
+        // (an info alert OR a dec- inline-decision record) and bind it to the card.
+        const fid = "fu-" + Date.now();
+        DB.threads[fid] = { id: fid, title: "Re: " + (body.title || "alert"), source: "ask", status: "idle", askOf: body.convId || "", messages: [ { role: "user", hidden: true, system: true, content: "[CONTEXT] " + (body.title || "") + " — " + (body.body || "") } ] };
+        const nn = DB.notifs.find((x) => x.id === body.notifId); if (nn) nn.followupConvId = fid;
+        return reply({ ok: true, convId: fid });
+      }
       if (u === "/answer") {
         // Mirror the real box: stamp WHICH answer settled the ask (answeredWith)
         // and mark it read, so the decided-card/dead-sheet states are testable.
@@ -1265,6 +1467,33 @@ interface MockDB {
   }
 
   const api = (path: string, opts: RequestInit = {}) => fetch(path, { ...opts, headers: { "X-Vault-Token": TOKEN, ...(opts.headers || {}) } });
+  // [experience-log] Fire-and-forget: stream what the user SEES and TAPS to a
+  // synced client-events.jsonl, so a bug report becomes a replay of the real
+  // session instead of a description ("I need Claude to see what I saw"). Never
+  // throws, never blocks — a missing/failing endpoint just drops the event.
+  let __alertsSig = "";
+  function logEvent(type: string, detail?: Record<string, any>) {
+    try {
+      api("/client-event", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t: Date.now(), type, page, ...(detail || {}) }) }).catch(() => {});
+    } catch {}
+  }
+  // [list-busy] A background refresh (an SSE run/notif tick, or returning to the
+  // foreground) rebuilds a whole list via innerHTML — which resets scrollTop AND
+  // discards per-card closure state, most importantly a clear-all's two-tap
+  // "armed" flag. During an active mission those ticks arrive constantly, so one
+  // landing inside the 3s arm window silently reset the confirm and the button
+  // "did nothing" (the clear-all weirdness), or yanked the archive back to the
+  // top mid-cleanup. Fix: while the user is actively touching a list — or has a
+  // control armed — DEFER the background rebuild until they go idle. Reloads the
+  // user asked for (tab switch, post-swipe reconcile) still run immediately.
+  let listBusyUntil = 0, softReloadT = 0;
+  const markListBusy = (ms = 4000) => { listBusyUntil = Date.now() + ms; };
+  function softReload(fn) {
+    const wait = listBusyUntil - Date.now();
+    if (wait <= 0) { void fn(); return; }
+    clearTimeout(softReloadT);
+    softReloadT = setTimeout(() => softReload(fn), wait + 60);
+  }
   const fileUrl = (p) => "/file?path=" + encodeURIComponent(p) + "&token=" + encodeURIComponent(TOKEN);
   // Pull a worker thread into the recent/Chats list so you can find it again
   // ("view history"). ONLY the thread-open entry points call this — opening a
@@ -1426,6 +1655,38 @@ interface MockDB {
     const a = approvedPlans().filter((x) => x !== sig); a.push(sig);
     try { localStorage.setItem(APPROVED_PLANS_KEY, JSON.stringify(a.slice(-100))); } catch {}
   }
+
+  // [feedback-queue] "Report a problem" POSTs to the box, but the cockpit is a
+  // same-origin PWA served BY the box — so off-tailnet (cellular, or Tailscale
+  // asleep) the write has nowhere to land. Dropping a report there is the worst
+  // failure: the user typed it and it evaporated. So a failed send is PERSISTED
+  // locally and auto-delivered the next time the cockpit reaches the box (a
+  // refreshState success, or the `online` event). Never lose a report.
+  const FB_QUEUE_KEY = "vc_feedback_queue";
+  let fbFlushing = false;
+  function fbQueue() { try { return JSON.parse(localStorage.getItem(FB_QUEUE_KEY) || "[]"); } catch { return []; } }
+  function fbSaveQueue(a) { try { localStorage.setItem(FB_QUEUE_KEY, JSON.stringify(a.slice(-50))); } catch {} }
+  function fbEnqueue(text) { const a = fbQueue(); a.push({ text, ts: Date.now() }); fbSaveQueue(a); }
+  function fbQueuedCount() { return fbQueue().length; }
+  async function flushFeedbackQueue() {
+    if (fbFlushing) return;
+    let q = fbQueue(); if (!q.length) return;
+    fbFlushing = true; let delivered = 0;
+    try {
+      while (q.length) {
+        const item = q[0]; let done = false;
+        try {
+          const r = await api("/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: item.text }) });
+          const d = await r.json().catch(() => ({}));
+          if (r.ok && !d.error) { delivered++; done = true; }          // delivered
+          else if (r.status >= 400 && r.status < 500) { done = true; }  // server rejected it — a retry won't help; drop so one bad item can't wedge the queue
+          else break;                                                   // 5xx / transient — keep the rest, try again next contact
+        } catch { break; }                                              // network error — still offline; keep everything for later
+        if (done) { q.shift(); fbSaveQueue(q); } else break;
+      }
+    } finally { fbFlushing = false; }
+    if (delivered) toast(delivered === 1 ? "Delivered a report you saved while offline." : ("Delivered " + delivered + " reports you saved while offline."));
+  }
   function planParse(lines) {
     let title = ""; const tasks = [], desc = [];
     for (const ln of lines) {
@@ -1482,6 +1743,7 @@ interface MockDB {
   // Opening a thread clears its unseen state.
   const convRunning = new Set();
   const convUnseen = new Set();
+  let __dotState = ""; // last-logged conversations-icon dot state (think/solid/off)
   // The conversations icon tracks YOUR chats only. A mission/worker self-wake
   // ending in the background must never light it (note 8c84fc31 — "the icon is
   // not accurate": CADENCE-FAST's 2-minute wakes kept flipping the dot as each
@@ -1491,8 +1753,15 @@ interface MockDB {
   const userEngaged = new Set();
   function dotEligible(id) {
     if (!id) return false;
-    if (userEngaged.has(id) || id === convId) return true;
+    // The conversations icon mirrors the drawer, and the drawer shows ONLY your
+    // chats — missions/workers/asks live on Activity or behind their alert cards,
+    // never in this panel (see the source filter in loadConvs). So a steered
+    // mission finishing in the background must NOT light an icon whose panel will
+    // never list it (report afc7971c: "the indicator was up but no conversations
+    // in the panel"). Exclude those sources even when you engaged the thread.
     const s = convSourceById.get(id);
+    if (s === "mission" || s === "worker" || s === "ask") return false;
+    if (userEngaged.has(id) || id === convId) return true;
     return s === "phone" || s === "manual";
   }
   // One-time purge of the old per-conversation "seen" watermark. It used to drive
@@ -1515,6 +1784,12 @@ interface MockDB {
     dot.classList.toggle("on", running || unseen);
     dot.classList.toggle("think", running);
     dot.classList.toggle("solid", unseen);
+    // [experience-log] Record every change of the conversations-icon dot with
+    // WHY (which threads are running / unseen, what you're viewing) — the
+    // "unread indicator is out of whack" complaint is unreconstructable without
+    // seeing when it lit and what it was tracking at that moment.
+    const st = running ? "think" : unseen ? "solid" : "off";
+    if (st !== __dotState) { __dotState = st; try { logEvent("convdot", { state: st, running: [...convRunning], unseen: [...convUnseen], viewing: convId || null, sheet: sheetConvId || null }); } catch {} }
   }
   // Reconcile the running set against the heartbeat-backed /status truth. A conv
   // that WAS running and no longer is — and that you weren't looking at — becomes
@@ -1528,9 +1803,22 @@ interface MockDB {
     for (const id of next) { convRunning.add(id); convUnseen.delete(id); }
     updateConvDot();
   }
-  let vaultName = "", boxModel = "";
+  let vaultName = "", boxModel = "", boxVersion = "";
   let runCount = 0, unreadN = 0, offlineStreak = 0;
   const msgsEl = $("msgs"), input = $("input"), sendBtn = $("sendBtn");
+  // One-tap send with the keyboard up (note 85933e24). A plain onclick needed
+  // TWO taps on iOS: the first tap blurred the textarea → the keyboard
+  // collapsed → the layout shifted → the click landed nowhere. preventDefault
+  // on pointerdown keeps focus (and the keyboard) exactly where they are; the
+  // action fires on pointerup, and the trailing synthetic click is swallowed.
+  // The bare click handler stays as the fallback for non-pointer browsers.
+  function wireTap(btn, fn) {
+    if (!btn) return;
+    let tappedAt = 0;
+    btn.addEventListener("pointerdown", (e) => e.preventDefault());
+    btn.addEventListener("pointerup", (e) => { e.preventDefault(); tappedAt = Date.now(); fn(); });
+    btn.addEventListener("click", () => { if (Date.now() - tappedAt < 700) return; fn(); });
+  }
   // composer glyphs are drawn, not typed — one icon voice with the rest of the app
   const SEND_ARROW_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 12l6-6 6 6"/></svg>';
   const SEND_STOP_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>';
@@ -1551,6 +1839,11 @@ interface MockDB {
 
   // ---------- pages ----------
   function setPage(name) {
+    // [experience-log] The spine of a replay: every page the user lands on, in
+    // order. `page` still holds the page we're leaving here — log both so the
+    // path reads "chat → alerts → activity" and a swipe/clear event can be
+    // placed on the page it happened.
+    if (name !== page) { try { logEvent("nav", { to: name, from: page }); } catch {} }
     page = name;
     document.body.classList.remove("page-chat", "page-activity", "page-alerts", "page-notes");
     document.body.classList.add("page-" + name);
@@ -1561,7 +1854,7 @@ interface MockDB {
     if (name === "notes") void loadNotes();
     setHeader();
   }
-  document.querySelectorAll<HTMLElement>(".mrow[data-page]").forEach((r) => (r.onclick = () => { closeMenu(); setPage(r.dataset.page); }));
+  document.querySelectorAll<HTMLElement>(".mrow[data-page]").forEach((r) => (r.onclick = () => { closeMenu(); closeDrawer(); setPage(r.dataset.page); }));
 
   function setHeader() {
     const off = document.body.classList.contains("offline");
@@ -1666,17 +1959,17 @@ interface MockDB {
       const runIds = new Set();
       if (sr && sr.ok) { const sd = await sr.json().catch(() => ({})); for (const x of sd.runs || []) runIds.add(x.convId); }
       const convs = d.conversations || [];
-      // The drawer is YOUR conversations with the assistant — workers and
-      // missions live on Activity and stay out by default. But once you've
-      // VIEWED a worker/mission thread it flips `surfaced` and joins recent, so
-      // you can get back to it here without hunting through Activity. The
-      // cosmetic hidden set (cleared "from this view") is filtered out, except
-      // the chat you're currently in.
+      // The drawer is ONLY your conversations with the assistant (note
+      // 1b0ee05a — the earlier design surfaced viewed mission/worker threads
+      // here via `surfaced`; the user asked for that back OUT). Missions and
+      // workers live on Activity; ask threads live behind their alert cards.
+      // The cosmetic hidden set (cleared "from this view") is filtered out,
+      // except the chat you're currently in.
       const hidden = hiddenChats();
       // Feed the dot's eligibility map — the icon needs sources to tell your
       // chats from harness threads.
       for (const c of convs) convSourceById.set(c.id, c.source);
-      const chats = convs.filter((c) => ((c.source !== "worker" && c.source !== "mission") || c.surfaced) && (!hidden.has(c.id) || c.id === convId));
+      const chats = convs.filter((c) => c.source !== "ask" && c.source !== "worker" && c.source !== "mission" && (!hidden.has(c.id) || c.id === convId));
       // The chat you're in may not be on disk yet (the box persists ~500ms
       // after the first message). Show it anyway so a just-made chat never
       // looks missing.
@@ -1689,6 +1982,13 @@ interface MockDB {
       // it only comes from a run finishing while you were looking elsewhere, so
       // opening the drawer never conjures unread dots on chats you didn't miss.
       applyRunningSet([...runIds]);
+      // Opening the drawer = looking at your conversations. A chat whose reply
+      // finished while you were elsewhere has now been SEEN — clear its unseen
+      // so the icon dot stops claiming "unread" after you've looked (the "still
+      // out of whack" case: I opened my conversations and the dot stayed on).
+      // Scoped to the chats actually shown and only the finished ones — a chat
+      // still generating keeps its think-dot; workers/missions aren't here.
+      if (cdraw.classList.contains("on")) { for (const c of chats) { if (!runIds.has(c.id)) convUnseen.delete(c.id); } }
       updateConvDot();
       box.innerHTML = "";
       if (chats.length) {
@@ -1730,8 +2030,35 @@ interface MockDB {
       '<svg class="scv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button><div class="steps-list">' +
       items + "</div></div>";
   }
+  // [unified ask] Inline option cards riding a reply — the presence-gated ask
+  // (same visual language as the deliberation sheet's cards; the "inline"
+  // class scopes the main-chat tap wiring). live=false renders them inert —
+  // a later message already answered, or they're history.
+  function inlineOptionsHtml(opts, live, chosenAns) {
+    // [truth] Decided → losers say nothing: show ONLY the chosen option, "selected".
+    const shown = chosenAns ? opts.filter((o) => o.answer === chosenAns) : opts;
+    return '<div class="delib-proposed inline">' + shown.map((o) => {
+      const chosen = !!chosenAns && o.answer === chosenAns;
+      return '<div class="delib-opt inline' + (o.primary ? " prim" : "") + (!live || chosen ? " dead" : "") + (chosen ? " chosen" : "") + '" data-ans="' + esc(o.answer) + '" data-q="' + esc((o.body || o.title || o.answer).slice(0, 300)) + '">'
+        + '<div class="ot">' + esc(o.title || o.answer)
+        + (chosen
+          ? '<span class="pick">✓ selected</span>'
+          : (live ? '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>' : ""))
+        + "</div>"
+        + (o.body ? '<div class="ob">' + esc(o.body) + "</div>" : "")
+        + "</div>";
+    }).join("") + "</div>";
+  }
   function bubble(role: string, content: string, tools?: string[], opts: Record<string, any> = {}) {
     const div = document.createElement("div");
+    // A FORMAL decision (a tapped option / committed answer) renders as the
+    // same quiet "Your call" receipt the sheets use — one visual language for
+    // decisions everywhere.
+    if (role === "user" && opts.decision) {
+      div.className = "tdecision";
+      div.innerHTML = '<span class="td-l">Your call</span>' + esc(content);
+      return div;
+    }
     // Agent replies are bubble-free (full-width markdown); user + system keep
     // their bubbles.
     const asst = role !== "user" && !opts.system;
@@ -1740,6 +2067,10 @@ interface MockDB {
     else div.innerHTML = '<div class="md">' + md(content) + "</div>";
     // Finished-turn tool calls collapse to a "Ran N steps" summary at the end.
     if (asst) div.insertAdjacentHTML("beforeend", stepsStr(tools));
+    // [unified ask] Tappable option cards land WITH the reply that argues for
+    // them (a presence-gated AskUser — no push was sent, you're here).
+    if (asst && Array.isArray(opts.askOptions) && opts.askOptions.length)
+      div.insertAdjacentHTML("beforeend", inlineOptionsHtml(opts.askOptions, !!opts.optionsLive, opts.chosenAnswer || ""));
     if (asst) typeset(div);
     return div;
   }
@@ -1807,7 +2138,14 @@ interface MockDB {
     renderRunline(); scrollDown(false);
   }
   function clearThreadUi() { running = false; stopping = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
-  function showHint() { msgsEl.innerHTML = '<div class="hint"><b>What needs doing?</b>quick questions get answers. bigger asks get scoped before anything runs.</div>'; }
+  // A rotating greeting, Claude-style (note 25b7b572) — the same small-bold
+  // slot as the old "What needs doing?", but JUST the greeting: the Ink empty
+  // chat stays quiet, no explainer boilerplate under it.
+  const GREETS = ["Welcome back!", "He returns!", "Ready to work?", "Welcome, sir.", "At your service."];
+  function showHint() {
+    const g = GREETS[Math.floor(Math.random() * GREETS.length)];
+    msgsEl.innerHTML = '<div class="hint"><b>' + g + "</b></div>";
+  }
 
   // The open thread is sticky: reopening the app returns you to the chat you
   // were in, not a blank new one — replies keep landing where you expect.
@@ -1831,7 +2169,27 @@ interface MockDB {
       const live = liveByConv.get(id);
       running = d.status === "running" || convRunning.has(id) || !!(live && live.running);
       if (!d.messages || !d.messages.length) showHint();
-      else for (const m of d.messages) msgsEl.appendChild(bubble(m.role, m.content, m.tools, { system: m.system }));
+      else {
+        // [unified ask] Option sets stay tappable only while they're the live
+        // fork (nothing after them); once a later user message answered —
+        // matched by verbatim option text — they render inert with the pick
+        // marked. Computed from the thread itself: no extra state to sync.
+        const msgs = d.messages;
+        for (let i = 0; i < msgs.length; i++) {
+          const m = msgs[i];
+          const o = { system: m.system, decision: m.decision };
+          if (Array.isArray(m.askOptions) && m.askOptions.length) {
+            o.askOptions = m.askOptions;
+            let chosen = "";
+            for (let j = i + 1; j < msgs.length && !chosen; j++) {
+              if (msgs[j].role === "user" && m.askOptions.some((x) => (x.answer || "") === (msgs[j].content || "").trim())) chosen = (msgs[j].content || "").trim();
+            }
+            o.chosenAnswer = chosen;
+            o.optionsLive = !chosen && i === msgs.length - 1;
+          }
+          msgsEl.appendChild(bubble(m.role, m.content, m.tools, o));
+        }
+      }
       if (running && live) { streamText = live.text || ""; streamTool = live.tool || ""; streamStartedAt = live.startedAt ?? null; }
       renderStream(); renderRunline(); setHeader(); scrollDown(true); rememberConv();
     } catch (e) {
@@ -1847,11 +2205,15 @@ interface MockDB {
   // and the box would spin up a SECOND conversation. This flag closes that
   // window; the clientMsgId below closes the network/service-worker-retry one.
   let sending = false;
-  async function send() {
+  // send() with no argument sends the composer text; send(text) sends a given
+  // string through the SAME pipeline (optimistic bubble, clientMsgId dedupe,
+  // busy flags) — that's how a tapped inline option card becomes your message.
+  async function send(forced) {
     if (sending) return;
-    const text = input.value.trim(); if (!text) return;
+    const text = (forced !== undefined ? String(forced) : input.value).trim(); if (!text) return;
     sending = true;
-    input.value = ""; input.style.height = "auto"; lastSentText = text;
+    if (forced === undefined) { input.value = ""; input.style.height = "auto"; }
+    lastSentText = text;
     // Idempotency key: a flaky network or the PWA service worker can deliver the
     // same POST twice. The box collapses duplicate ids to a single turn (one
     // conversation, one run) — the "my message got sent twice" bug.
@@ -1893,7 +2255,8 @@ interface MockDB {
   }
   // Same predicate as the visual: the tap does what the button SHOWS. (These
   // diverging is how a ↑-looking button could kill a run, or a ■ re-send.)
-  sendBtn.onclick = () => { if (stopMode()) void killCurrent(); else void send(); };
+  // wireTap: one tap works with the keyboard up (note 85933e24).
+  wireTap(sendBtn, () => { if (stopMode()) void killCurrent(); else void send(); });
   // Enter inserts a newline on the phone; sending is via the send button (no Shift+Enter on an iOS keyboard).
   let autosizeRAF = 0;
   function scheduleAutosize() {
@@ -1946,6 +2309,24 @@ interface MockDB {
     if (ap) { void approvePlan(ap.closest(".plancard")); return; }
     const rf = e.target.closest(".pc-refine");
     if (rf) { try { input.focus({ preventScroll: true }); } catch {} showKb(); return; }
+    // [unified ask] Tap an inline option card → it becomes YOUR message (the
+    // same send pipeline as typing it), the set goes inert, and the decision
+    // lands in the Alerts ARCHIVE as a decided card (/decision-record) — the
+    // presence-gated ask leaves the same paper trail as the push kind.
+    const opt = e.target.closest(".delib-opt.inline");
+    if (opt) {
+      if (opt.classList.contains("dead") || opt.classList.contains("chosen") || sending) return;
+      const ans = opt.dataset.ans || "";
+      if (!ans) return;
+      const q = opt.dataset.q || "";
+      const wrap = opt.closest(".delib-proposed");
+      if (wrap) wrap.querySelectorAll(".delib-opt").forEach((x) => { x.classList.add("dead"); const p = x.querySelector(".pick"); if (p) p.remove(); });
+      opt.classList.remove("dead"); opt.classList.add("chosen");
+      const ot = opt.querySelector(".ot"); if (ot) ot.insertAdjacentHTML("beforeend", '<span class="pick">✓ your call</span>');
+      void send(ans);
+      void api("/decision-record", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: ans, title: convTitle || "Inline decision", question: q, convId: convId || "" }) }).catch(() => {});
+      return;
+    }
     const sh = e.target.closest(".steps-h");
     if (sh) { sh.closest(".steps").classList.toggle("open"); }
   });
@@ -1969,6 +2350,13 @@ interface MockDB {
     // folds in its turns the moment they land, so a thread opened mid-run shows
     // the worker working / the supervisor supervising on the fly — not a frozen
     // snapshot. Runs alongside (not instead of) the active-chat handling below.
+    // Chat-lane busy bookkeeping for EVERY conversation (not just the open
+    // sheet) — a closed sheet's generation keeps going on the box; this is how
+    // a reopened sheet knows to show "working…" and block a second send.
+    if (d.type === "chat" && d.convId) {
+      if (d.phase === "start" || d.phase === "stream" || d.phase === "waiting") chatBusy.add(d.convId);
+      else if (d.phase === "end") chatBusy.delete(d.convId);
+    }
     if (sheetConvId && d.convId === sheetConvId) {
       if (d.type === "runtime") {
         // Ignore a live frame that arrives after the box already said this thread
@@ -1995,6 +2383,14 @@ interface MockDB {
           const stale = document.querySelector("#delibX .liveplain");
           if (stale) stale.remove();
           renderChatEdge("");
+        }
+        else if (d.phase === "waiting") {
+          // [presence] The executor is mid-thought; the front is holding a beat
+          // for it to settle before it answers, so it reads live state instead of
+          // a half-formed one. Tell the user we're waiting (not a dead pause).
+          sheetChatActive = true; sheetChatSettling = false; sheetOptimisticWorking = false;
+          const stale = document.querySelector("#delibX .liveplain"); if (stale) stale.remove();
+          renderChatEdge("letting the mission finish this step…");
         }
         else if (d.phase === "stream") { sheetChatText = d.text || sheetChatText; renderChatEdge(sheetChatText); }
         else if (d.phase === "end") {
@@ -2032,13 +2428,22 @@ interface MockDB {
       liveByConv.set(d.convId, { running: true, text: d.text || "", tool: d.tool || "", startedAt: d.startedAt ?? (prev && prev.startedAt) ?? null });
       updateConvDot();
     } else if (d.type === "status" && d.convId) {
+      // The dot sets (convRunning/convUnseen) track YOUR chats only — the
+      // runtime handler above gates on dotEligible, but this status branch used
+      // to add ANY finished conv to convUnseen. So a mission or worker ending in
+      // the background lit the conversations icon with a phantom "unread" you
+      // could never clear (it isn't in the drawer) — the "indicator is out of
+      // whack" bug, and a direct violation of note 8c84fc31. Gate both writes on
+      // dotEligible. liveByConv is NOT gated: the sheet still replays a
+      // mission/worker's live state.
+      const elig = dotEligible(d.convId);
       if (d.status === "running") {
-        convRunning.add(d.convId); convUnseen.delete(d.convId);
+        if (elig) { convRunning.add(d.convId); convUnseen.delete(d.convId); }
         const prev = liveByConv.get(d.convId) || {};
         liveByConv.set(d.convId, { ...prev, running: true });
       } else {
         convRunning.delete(d.convId); liveByConv.delete(d.convId);
-        if (d.convId === convId) markSeen(convId); else convUnseen.add(d.convId);
+        if (d.convId === convId) markSeen(convId); else if (elig) convUnseen.add(d.convId);
       }
       updateConvDot();
     }
@@ -2047,13 +2452,18 @@ interface MockDB {
     else if (d.type === "message" && d.convId === convId) {
       markSeen(convId);
       if (d.role === "user" && lastSentText !== null && d.content === lastSentText) { lastSentText = null; return; }
-      streamText = ""; streamTool = ""; renderStream(); msgsEl.appendChild(bubble(d.role, d.content, d.tools)); scrollDown(false);
+      streamText = ""; streamTool = ""; renderStream();
+      // A landing reply with askOptions retires any older live option set —
+      // the newest fork is the one that counts (latest wins, same as sheets).
+      if (Array.isArray(d.askOptions) && d.askOptions.length)
+        msgsEl.querySelectorAll(".delib-opt.inline:not(.dead)").forEach((x) => x.classList.add("dead"));
+      msgsEl.appendChild(bubble(d.role, d.content, d.tools, { askOptions: d.askOptions, decision: d.decision, optionsLive: !!(d.askOptions && d.askOptions.length) })); scrollDown(false);
     } else if (d.type === "status") {
       if (d.convId === convId) { running = d.status === "running"; stopping = false; if (!running) { streamText = ""; streamTool = ""; streamStartedAt = null; renderStream(); } renderRunline(); }
-      void refreshState(); if (page === "activity") void loadActivity();
+      void refreshState(); if (page === "activity") softReload(loadActivity);
       if (cdraw.classList.contains("on")) void loadConvs();
     } else if (d.type === "title" && d.convId === convId) { convTitle = d.title; setHeader(); }
-    else if (d.type === "notif") { void refreshBadge(); if (page === "alerts") void loadAlerts(); }
+    else if (d.type === "notif") { void refreshBadge(); if (page === "alerts") softReload(loadAlerts); }
   }
 
   // Activity badge counts what's ON the Activity page — missions + their
@@ -2062,7 +2472,7 @@ interface MockDB {
   // burger badge read "1 activity" during an ordinary conversation and never
   // clear once it idled. Filter to mission/worker so the badge tracks real work.
   function activityRunCount(runs) { return (runs || []).filter((r) => r.source === "mission" || r.source === "worker").length; }
-  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; void maybeUpdateCard(d.version); boxModel = d.model || ""; runCount = activityRunCount(d.runs); for (const r of d.runs || []) { if (r.convId && r.source) convSourceById.set(r.convId, r.source); } applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); return d; } catch { return null; } }
+  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; boxVersion = d.version || boxVersion; runCount = activityRunCount(d.runs); for (const r of d.runs || []) { if (r.convId && r.source) convSourceById.set(r.convId, r.source); } applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); void flushFeedbackQueue(); return d; } catch { return null; } }
   async function refreshBadge() { try { const d = await (await api("/notifications")).json(); if (typeof d.unread === "number") { unreadN = d.unread; setHeader(); } } catch {} }
 
   // ---------- activity ----------
@@ -2158,6 +2568,13 @@ interface MockDB {
   // Refresh handle for the live mission view — any new sheet (and closing one)
   // cancels it so a mission's poll never bleeds into another sheet's body.
   let missionPoll = 0;
+  // Per-attach token: every sheet-conversation attach takes ++sheetSeq and its
+  // paints bail when a NEWER attach exists. This is the structural fix for the
+  // cross-sheet bleed class (note 4264e049): the shared sheetConvId guard alone
+  // couldn't catch "closed A, opened B, then A's in-flight fetch resolved while
+  // B shows the same conversation id or a same-named #delibX". A stale token can
+  // never paint, whatever the ids say.
+  let sheetSeq = 0;
   // Live-sheet state: while a worker/mission thread is open AND running, its
   // in-flight words stream into the sheet (sheetLiveText, fed by runtime events),
   // and sheetRepaint folds in finalized turns. Reset whenever a sheet opens/closes.
@@ -2194,6 +2611,27 @@ interface MockDB {
   // we unfreeze and fold the persisted reply in. One thread, two agents, no fight
   // for the view.
   let sheetChatActive = false;
+  // Chat-lane busy state, tracked GLOBALLY (every "chat" broadcast, not just
+  // the open sheet's): closing a sheet mid-answer must not lose the fact that
+  // the agent is still generating — reopening shows the working pulse and the
+  // composer stays blocked until the reply lands (notes b5908f4c + 4bd29abb).
+  // TTL-backed, not a plain Set: if the phone misses a single "end" event
+  // (SSE reconnect, backgrounded PWA), a plain latch would brick the composer
+  // with "Still answering…" until a full reload. Entries auto-expire 180s
+  // after the last chat event; the backend's isRunActive guard stays the hard
+  // stop, so a premature expiry degrades to a server-refused send, never an
+  // interleaved turn.
+  const chatBusyAt = new Map();
+  const chatBusy = {
+    add(id) { chatBusyAt.set(id, Date.now()); },
+    delete(id) { chatBusyAt.delete(id); },
+    has(id) {
+      const t = chatBusyAt.get(id);
+      if (!t) return false;
+      if (Date.now() - t > 180000) { chatBusyAt.delete(id); return false; }
+      return true;
+    },
+  };
   // The conversational front's reply while it SETTLES: after the lane ends we keep
   // the reply text here and hold its edge on screen until the persisted bubble is
   // actually in the fetched thread — closing the ~½s gap where the reply belonged
@@ -2261,11 +2699,13 @@ interface MockDB {
       else be.appendChild(ce);
     }
     const t = (text || "").trim();
-    // While streaming, a pulse + "answering…"; once settled (lane ended, waiting
-    // for the persisted bubble to land) just the reply, no pulse — so the handoff
-    // to the folded-in message is invisible.
+    // While streaming, a pulse + "working…" — the SAME label every lane uses
+    // (note b5908f4c: "answering…" made these threads read like a different
+    // kind of thing). Once settled (lane ended, waiting for the persisted
+    // bubble to land) just the reply, no pulse — so the handoff to the
+    // folded-in message is invisible.
     ce.innerHTML = (t ? '<div class="md">' + md(t) + "</div>" : "")
-      + (settled ? "" : '<div class="thinking"><span class="pulse"></span><span class="tlbl show">answering…</span></div>');
+      + (settled ? "" : '<div class="thinking"><span class="pulse"></span><span class="tlbl show">working…</span></div>');
     if (be.scrollHeight - be.scrollTop - be.clientHeight < 160) be.scrollTop = be.scrollHeight;
   }
   // Measure the top safe-area inset (Dynamic Island / notch) in px — 0 in a browser
@@ -2407,8 +2847,10 @@ interface MockDB {
     ta.addEventListener("input", autosize);
     ta.addEventListener("focus", () => sheetEditFocus(ta));
     ta.addEventListener("blur", sheetEditBlur);
-    const go = () => { const v = ta.value.trim(); if (!v) return; ta.value = ""; autosize(); onSend(v); };
-    foot.querySelector(".rsend").onclick = go;
+    // onSend returning false = blocked (lane busy) — keep the typed text so
+    // nothing is lost; anything else counts as accepted and clears the box.
+    const go = () => { const v = ta.value.trim(); if (!v) return; if (onSend(v) === false) return; ta.value = ""; autosize(); };
+    wireTap(foot.querySelector(".rsend"), go);
     // Enter inserts a newline; sending is via the send button.
     setTimeout(autosize, 0);
   }
@@ -2513,19 +2955,18 @@ interface MockDB {
         live: false,
       })),
     ];
-    openSheet({
-      intent: readonly ? "Mission · complete" : "Mission",
-      title: mc.title, ico: readonly ? "✓" : "◎", cls: readonly ? "g" : "",
-      bodyHtml: '<div class="alsum-load" id="mLoad">loading…</div>',
-      // The reply composer stays even for a COMPLETED mission: the supervisor is
-      // always on, so the user can still discuss the finished work or its workers
-      // (note c0d532eb). Only "Stop" is gated — there's nothing to stop once done.
-      footHtml: '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + (readonly ? "Ask about this mission…" : "Steer, or spawn a worker…") + '" autocomplete="off"></textarea><button class="rsend">' + SEND_ARROW_SVG + '</button></div>',
-      action: readonly ? null : { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
-      // A NORMAL conversation: sending keeps the sheet open, shows the message
-      // right away, and the poll below folds in the supervisor's reply. Not a
-      // one-and-done — send follow-ups without reopening.
-      wire: (body, foot) => wireReply(foot, async (v) => {
+    // Options the user tapped in THIS sheet — survives the poll repaint (which
+    // rebuilds innerHTML) until the persisted thread carries the answer.
+    const pickedFront = new Set();
+    // Send to the mission thread — the ONE path for the composer AND a tapped
+    // inline option card. BLOCK-UNTIL-DONE (note 4bd29abb): while the
+    // conversational FRONT is still answering your last message, a second send
+    // is refused (returns false → the composer keeps your text). The executor
+    // being busy does NOT block — talking to a working mission is the whole
+    // point of the two-lane design.
+    const sendFront = (v) => {
+      if (sheetChatActive || chatBusy.has(mc.id)) { toast("Still answering — wait for the reply to finish."); return false; }
+      void (async () => {
         optimistic.push(v);
         // Show "working…" the INSTANT you send — before the box has even started
         // the turn — so there's never a dead gap (the "no sign of life" the user
@@ -2547,10 +2988,29 @@ interface MockDB {
         // dedupes sends that carry a clientMsgId — without one this reply path was
         // the unprotected "my message got sent twice" case on supervisor threads.
         const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
-        userEngaged.add(mc.id); // you steered this mission → the dot may track its reply
+        // Record the source so the conversations-icon eligibility check knows this
+        // is a mission thread (it lives on Activity, not the chats panel) even if
+        // the drawer hasn't populated convSourceById yet this session.
+        convSourceById.set(mc.id, mc.source || "mission");
+        userEngaged.add(mc.id); // you steered this mission → surfaced on Activity, not the chats icon
         await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v, clientMsgId }) }).catch(() => {});
         setTimeout(paint, 900); // pick up the durably-persisted turn quickly
-      }),
+      })();
+      return true;
+    };
+    openSheet({
+      intent: readonly ? "Mission · complete" : "Mission",
+      title: mc.title, ico: readonly ? "✓" : "◎", cls: readonly ? "g" : "",
+      bodyHtml: '<div class="alsum-load" id="mLoad">loading…</div>',
+      // The reply composer stays even for a COMPLETED mission: the supervisor is
+      // always on, so the user can still discuss the finished work or its workers
+      // (note c0d532eb). Only "Stop" is gated — there's nothing to stop once done.
+      footHtml: '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + (readonly ? "Ask about this mission…" : "Steer, or spawn a worker…") + '" autocomplete="off"></textarea><button class="rsend">' + SEND_ARROW_SVG + '</button></div>',
+      action: readonly ? null : { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
+      // A NORMAL conversation: sending keeps the sheet open, shows the message
+      // right away, and the poll below folds in the supervisor's reply. Not a
+      // one-and-done — send follow-ups without reopening.
+      wire: (body, foot) => wireReply(foot, sendFront),
     });
     async function paint() {
       // Frozen while the conversational front is answering: its reply drives
@@ -2588,13 +3048,34 @@ interface MockDB {
           threadErr = String(e.message || e);
         }
       }
+      // [ask-object] Shared mount: the mission's ONE open ask renders inline in
+      // THIS supervisor sheet too, not only in the Alerts feed — the same object
+      // (one notif id), so answering here or there is one decision. A tap rides
+      // resolveDeliberation → /answer (the tagged relay that clears the wait),
+      // never the sendFront probe path the front's inline cards use. (User note:
+      // the supervisor conversation had no ask card and wasn't stacked onto the
+      // alerts one.) The !read/!answeredWith filter makes the card vanish the
+      // moment the ask is decided, even before this closure's mc goes RUNNING.
+      let pendingAsk = null;
+      if (!readonly && mc.missionState === "AWAITING_USER") {
+        try {
+          const nd = await (await api("/notifications")).json();
+          const nl = nd.notifications || [];
+          lastNotifList = nl;
+          pendingAsk = nl
+            .filter((x) => x.kind === "ask" && x.convId === mc.id && !x.read && !x.answeredWith)
+            .sort((a, b) => (b.ts || 0) - (a.ts || 0))[0] || null;
+        } catch {}
+      }
       // Bleed guard: the fetches above are async. If the sheet was replaced while
       // we awaited (closed + a different conversation/note opened), sheetConvId no
       // longer matches ours — writing now would splash THIS mission's thread into
       // the sheet showing something else (note 4264e049: "a supervisor reply I
       // never asked for bled into the note conversation"). The new sheet owns the
-      // DOM now; bail before any state mutation or write.
-      if (sheetConvId !== mc.id) return;
+      // DOM now; bail before any state mutation or write. The token check closes
+      // the id-collision hole the convId compare can't (same conversation reopened
+      // in a NEW sheet while an old fetch is in flight).
+      if (sheetConvId !== mc.id || sheetSeq !== myTok) return;
       const restPlus = rest.concat(optimistic.map((t) => ({ role: "user", content: t })));
       const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
       // The box's own liveRun is authoritative: if it reports a run, we're live
@@ -2626,7 +3107,7 @@ interface MockDB {
       }
       // Live edge content updates in place via renderSheetLive between polls, so a
       // steady showLive doesn't force a disruptive full repaint here.
-      const sig = JSON.stringify(restPlus.map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + showLive;
+      const sig = JSON.stringify(restPlus.map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + showLive + "|" + (pendingAsk ? pendingAsk.id + ":" + (pendingAsk.answeredWith || "") : "");
       if (sig === lastSig) return; // nothing changed — don't disrupt reading
       lastSig = sig;
       const comps = parseDoneWhen(brief);
@@ -2640,8 +3121,52 @@ interface MockDB {
       } else {
         body += '<div class="md dim">No explicit criteria recorded for this mission.</div>';
       }
+      // [ask-object] The mission's one open ask, pinned near the top of the sheet
+      // as a live decision card — the shared mount (same object as the Alerts
+      // card). Options tap through to /answer; the body opens the deliberation
+      // sheet. "Not now" is the formal defer terminal (Stage 3).
+      if (pendingAsk) {
+        const del = deliberationFromNotif(pendingAsk);
+        let ac = '<div class="lbl">Needs your call</div><div class="card needsyou supask">';
+        ac += '<div class="needs-q">' + esc(del.ask) + "</div>";
+        if (del.options.length) {
+          ac += '<div class="needs-qa">';
+          for (const o of del.options) ac += '<button class="supask-opt' + (o.primary ? " prim" : "") + '" data-ans="' + esc(o.answer) + '">' + esc(o.answer) + "</button>";
+          ac += "</div>";
+        }
+        if (del.onDefer) ac += '<div class="supask-hint" style="margin:8px 0 0">If you don’t answer: ' + esc(del.onDefer) + (del.stakes === "high" ? " · high-stakes, so I’ll hold" : "") + "</div>";
+        ac += '<div class="supask-foot"><button class="supask-defer">Not now</button><span class="supask-hint">tap to talk it through</span></div>';
+        ac += "</div>";
+        body += ac;
+      }
+      // [unified ask] The supervisor front can stage inline option cards on a
+      // reply (an interactive AskUser — the ONLY surface that does; a plain
+      // assistant chat just talks). Build the thread in segments so each option
+      // set lands right under the reply that argues it. Liveness mirrors the
+      // main chat: tappable only while it's the live fork — a later matching
+      // user message (or a tap remembered in pickedFront) renders it settled.
+      let threadBody = "";
+      {
+        let seg = [];
+        const names = { user: "You", assistant: "Supervisor" };
+        const flush = () => { if (seg.length) { threadBody += threadHtml(seg, names); seg = []; } };
+        for (let i = 0; i < restPlus.length; i++) {
+          const m = restPlus[i];
+          seg.push(m);
+          if (m.role === "assistant" && Array.isArray(m.askOptions) && m.askOptions.length) {
+            let chosen = "";
+            for (let j = i + 1; j < restPlus.length && !chosen; j++) {
+              if (restPlus[j].role === "user" && m.askOptions.some((x) => (x.answer || "") === (restPlus[j].content || "").trim())) chosen = (restPlus[j].content || "").trim();
+            }
+            if (!chosen) chosen = m.askOptions.map((x) => x.answer).find((a) => pickedFront.has(a)) || "";
+            flush();
+            threadBody += inlineOptionsHtml(m.askOptions, !chosen && i === restPlus.length - 1, chosen);
+          }
+        }
+        flush();
+      }
       body += '<div class="lbl">Thread</div>' + (restPlus.length
-        ? threadHtml(restPlus, { user: "You", assistant: "Supervisor" }) + (showLive ? liveEdgeHtml() : "")
+        ? threadBody + (showLive ? liveEdgeHtml() : "")
         : (showLive
             ? liveEdgeHtml()
             : (threadErr
@@ -2677,6 +3202,53 @@ interface MockDB {
         if (landed) { sheetChatSettling = false; sheetChatText = ""; }
         else renderChatEdge(sheetChatText, true);
       }
+      // [unified ask] Wire the front's inline option cards: a tap posts the
+      // option as YOUR message to the mission thread (the same sendFront path
+      // as typing it — the executor reads it as a steer) and records the
+      // decision to the Alerts archive.
+      be.querySelectorAll(".delib-opt.inline").forEach((o) => {
+        o.addEventListener("click", () => {
+          if (o.classList.contains("dead") || o.classList.contains("chosen")) return;
+          const ans = o.dataset.ans || "";
+          if (!ans) return;
+          const q = o.dataset.q || "";
+          if (sendFront(ans) === false) return; // lane busy — card stays live
+          pickedFront.add(ans);
+          const set = o.closest(".delib-proposed");
+          if (set) set.querySelectorAll(".delib-opt").forEach((x) => { x.classList.add("dead"); const p = x.querySelector(".pick"); if (p) p.remove(); });
+          o.classList.remove("dead"); o.classList.add("chosen");
+          const ot = o.querySelector(".ot"); if (ot) ot.insertAdjacentHTML("beforeend", '<span class="pick">✓ your call</span>');
+          void api("/decision-record", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: ans, title: mc.title || "Mission decision", question: q, convId: mc.id }) }).catch(() => {});
+        });
+      });
+      // [ask-object] Wire the inline supervisor ask card. An option tap rides
+      // resolveDeliberation (/answer) — the ONLY tap in this sheet that clears
+      // AWAITING_USER and resumes the executor (the front's inline cards above go
+      // through sendFront, a probe that clears nothing). "Not now" is the formal
+      // defer terminal; the card body opens the deliberation sheet to talk it
+      // through. Re-wired each paint (innerHTML wipes handlers).
+      if (pendingAsk) {
+        be.querySelectorAll(".supask-opt").forEach((b) => {
+          b.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if ((b as HTMLButtonElement).disabled) return;
+            be.querySelectorAll(".supask-opt,.supask-defer").forEach((x) => { (x as HTMLButtonElement).disabled = true; });
+            resolveDeliberation(pendingAsk, (b as HTMLElement).dataset.ans || "");
+          });
+        });
+        const df = be.querySelector(".supask-defer");
+        if (df) df.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if ((df as HTMLButtonElement).disabled) return;
+          be.querySelectorAll(".supask-opt,.supask-defer").forEach((x) => { (x as HTMLButtonElement).disabled = true; });
+          deferAsk(pendingAsk);
+        });
+        const supcard = be.querySelector(".supask");
+        if (supcard) supcard.addEventListener("click", (e) => {
+          if ((e.target as HTMLElement).closest("button")) return;
+          openDeliberationSheet(pendingAsk);
+        });
+      }
       // Re-attach worker-row taps each paint (innerHTML wipes handlers). Opening a
       // worker swaps the sheet to its read-only thread; a fresh openMission tap
       // brings you back.
@@ -2702,6 +3274,7 @@ interface MockDB {
     // Stream runtime events + repaint for ANY open mission sheet, including a
     // completed one being discussed — so a reply to a finished mission streams
     // and folds in just like a live one.
+    const myTok = ++sheetSeq;
     sheetConvId = mc.id; sheetRepaint = paint;
     updateConvDot(); // now viewing this thread → drop it from the background dot
     await paint();
@@ -2745,6 +3318,7 @@ interface MockDB {
       bodyHtml: '<div class="lbl">Thread · supervisor ↔ worker</div><div class="alsum-load" id="wkLoad">loading…</div>',
       back: back || null,
     });
+    const myTok = ++sheetSeq;
     sheetConvId = convId;
     updateConvDot(); // now viewing this worker thread → drop it from the background dot
     // Seed running from the live run passed in (a non-null run = it's working);
@@ -2761,7 +3335,7 @@ interface MockDB {
       } catch (e) { err = String(e.message || e); }
       // Bleed guard: awaited fetches above — if the sheet was swapped meanwhile,
       // don't write this worker thread into whatever sheet is showing now.
-      if (sheetConvId !== convId) return;
+      if (sheetConvId !== convId || sheetSeq !== myTok) return;
       const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
       sheetRunning = liveRun || hasLive;
       const showLive = sheetRunning;
@@ -3002,7 +3576,8 @@ interface MockDB {
         const clrM = el('<button class="earlier clearall">Clear archived · ' + archived.length + "</button>");
         let armedM = false, armMT = 0;
         clrM.onclick = async () => {
-          if (!armedM) { armedM = true; clrM.textContent = "Tap again to clear " + archived.length; clrM.classList.add("danger"); clearTimeout(armMT); armMT = setTimeout(() => { armedM = false; clrM.textContent = "Clear archived · " + archived.length; clrM.classList.remove("danger"); }, 3000); return; }
+          if (!armedM) { armedM = true; clrM.textContent = "Tap again to clear " + archived.length; clrM.classList.add("danger"); clearTimeout(armMT); armMT = setTimeout(() => { armedM = false; clrM.textContent = "Clear archived · " + archived.length; clrM.classList.remove("danger"); }, 3000); markListBusy(3500); logEvent("clearall", { kind: "mission", act: "arm", n: archived.length }); return; }
+          logEvent("clearall", { kind: "mission", act: "fire", n: archived.length });
           clrM.disabled = true;
           for (const mc of archived) { if (mc.id) dismissedMissions.add(mc.id); }
           loadActivity(); // drop them from view immediately
@@ -3188,12 +3763,13 @@ interface MockDB {
             const r = await api("/notes/edit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: n.id, text: t }) });
             const d = await r.json().catch(() => ({}));
             if (!r.ok || d.error) throw new Error(d.error || r.status);
-            // Save IN PLACE (note ba0735c9): keep the sheet open with the saved
-            // text — "I might have just saved it and want to read what I saved."
-            // The list refreshes underneath without touching any card's state.
+            // Save COLLAPSES (note 122ec04d, superseding ba0735c9's stay-open):
+            // the sheet closes and the inline card folds shut — the saved note
+            // reads from the refreshed list, not a lingering editor.
             n.user_draft = t;
             toast("Saved.");
-            save.disabled = false;
+            expandedNotes.delete(n.id);
+            closeSheet();
             void loadNotes();
             // The box re-headlines the edited note off the response path — refetch
             // once more so the new title lands without leaving the page.
@@ -3226,7 +3802,8 @@ interface MockDB {
         const clr = el('<button class="earlier clearall">Clear all resolved</button>');
         let armed = false, armTimer = 0;
         clr.onclick = async () => {
-          if (!armed) { armed = true; clr.textContent = "Tap again to clear " + resolved.length; clr.classList.add("danger"); clearTimeout(armTimer); armTimer = setTimeout(() => { armed = false; clr.textContent = "Clear all resolved"; clr.classList.remove("danger"); }, 3000); return; }
+          if (!armed) { armed = true; clr.textContent = "Tap again to clear " + resolved.length; clr.classList.add("danger"); clearTimeout(armTimer); armTimer = setTimeout(() => { armed = false; clr.textContent = "Clear all resolved"; clr.classList.remove("danger"); }, 3000); markListBusy(3500); logEvent("clearall", { kind: "note", act: "arm", n: resolved.length }); return; }
+          logEvent("clearall", { kind: "note", act: "fire", n: resolved.length });
           clr.disabled = true;
           try {
             const r = await api("/notes/clear-resolved", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
@@ -3254,7 +3831,7 @@ interface MockDB {
     if (!ta || !btn) return;
     const autosize = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; };
     ta.addEventListener("input", autosize);
-    btn.onclick = async () => {
+    wireTap(btn, async () => {
       const text = ta.value.trim();
       if (!text) return;
       btn.disabled = true;
@@ -3272,7 +3849,7 @@ interface MockDB {
         setTimeout(() => { if (page === "notes") void loadNotes(); }, 3500);
       } catch (e) { toast("Couldn't save: " + (e.message || e)); }
       finally { btn.disabled = false; }
-    };
+    });
   })();
 
   async function loadAlerts() {
@@ -3282,19 +3859,30 @@ interface MockDB {
       if (d.error) throw new Error(d.error);
       unreadN = d.unread || 0; setHeader();
       const list = d.notifications || [];
-      const un = updateNote();
-      if (un && !un.read) {
-        list.unshift({ id: "local-update-" + un.ver, kind: "info", title: "Updated to v" + un.ver, intention: "vault-chat · auto-update", icon: "✦",
-          summary: ((un.body || "").split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#")) || "release notes").slice(0, 140),
-          body: un.body, ts: un.ts, read: false });
-      }
       lastNotifList = list;
       box.innerHTML = "";
       if (!list.length) { box.appendChild(el('<div class="empty">Nothing yet. Worker results, failures that need a call, and your recurring briefings land here — with a push if notifications are on and the app isn’t already open.</div>')); return; }
+      // Strictly chronological (note 56e57731): the server sorts by ts, but the
+      // local "Updated to vX" card was unshifted ABOVE the list — an old unread
+      // update pinned itself over today's alerts. Re-sort so nothing jumps line.
+      list.sort((a, b) => (b.ts || 0) - (a.ts || 0));
       const unread = list.filter((n) => !n.read);
-      const archived = list.filter((n) => n.read);
+      // The Archive orders by WHEN YOU ARCHIVED (answered/read time — readAt is
+      // the read-marker ts the server now folds in), not by when the alert
+      // originally fired (note 56e57731): the pile reads as "what I put away,
+      // most recently first".
+      const archived = list.filter((n) => n.read)
+        .sort((a, b) => (b.answeredAt || b.readAt || b.ts || 0) - (a.answeredAt || a.readAt || a.ts || 0));
       const actions = unread.filter((n) => n.kind === "ask");
       const infos = unread.filter((n) => n.kind !== "ask");
+      // [experience-log] Snapshot the ask cards actually on screen, but only when
+      // the set CHANGES — so the log shows "you saw these N ask cards" (and would
+      // have caught the 4-duplicate-threads / two-sets-of-options case) without
+      // flooding on every repaint.
+      try {
+        const asig = JSON.stringify(actions.map((n) => [n.id, ((n.deliberation && n.deliberation.options) || []).length]));
+        if (asig !== __alertsSig) { __alertsSig = asig; logEvent("alerts", { asks: actions.map((n) => ({ id: n.id, conv: n.convId, title: (n.title || "").slice(0, 60), opts: ((n.deliberation && n.deliberation.options) || []).length })) }); }
+      } catch {}
       if (actions.length) box.appendChild(el('<div class="sec">Needs a reply</div>'));
       for (const n of actions) box.appendChild(alertCard(n, true));
       if (infos.length) box.appendChild(el('<div class="sec">Heads-up</div>'));
@@ -3309,7 +3897,8 @@ interface MockDB {
         const clrN = el('<button class="earlier clearall">Clear archive · ' + archived.length + "</button>");
         let armedN = false, armNT = 0;
         clrN.onclick = async () => {
-          if (!armedN) { armedN = true; clrN.textContent = "Tap again to clear " + archived.length; clrN.classList.add("danger"); clearTimeout(armNT); armNT = setTimeout(() => { armedN = false; clrN.textContent = "Clear archive · " + archived.length; clrN.classList.remove("danger"); }, 3000); return; }
+          if (!armedN) { armedN = true; clrN.textContent = "Tap again to clear " + archived.length; clrN.classList.add("danger"); clearTimeout(armNT); armNT = setTimeout(() => { armedN = false; clrN.textContent = "Clear archive · " + archived.length; clrN.classList.remove("danger"); }, 3000); markListBusy(3500); logEvent("clearall", { kind: "alert", act: "arm", n: archived.length }); return; }
+          logEvent("clearall", { kind: "alert", act: "fire", n: archived.length });
           clrN.disabled = true;
           try {
             const r = await api("/notifications/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
@@ -3328,39 +3917,11 @@ interface MockDB {
       box.appendChild(el('<div style="height:18px"></div>'));
     } catch (e) { box.innerHTML = '<div class="empty">Alerts unavailable: ' + esc(String(e.message || e)) + "</div>"; }
   }
-  const markRead = (id) => {
-    // the local "box updated" card lives in localStorage, not on the box
-    if (String(id).startsWith("local-update-")) {
-      const u = updateNote();
-      if (u) { u.read = true; try { localStorage.setItem(UPDN_KEY, JSON.stringify(u)); } catch {} }
-      return Promise.resolve();
-    }
-    return api("/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
-  };
-  // ---------- box-update card: WHAT changed, not just that it changed ----------
-  // Desktop shows the release notes in its update banner; the phone now does
-  // the same — when /status reports a new box version, fetch that release's
-  // notes from GitHub and surface them as a local info card in Alerts.
-  const UPDN_KEY = "vc_update_note", VER_KEY = "vc_box_ver";
-  function updateNote() { try { return JSON.parse(localStorage.getItem(UPDN_KEY) || "null"); } catch { return null; } }
-  async function maybeUpdateCard(ver) {
-    if (!ver) return;
-    let prev = "";
-    try { prev = localStorage.getItem(VER_KEY) || ""; } catch {}
-    if (prev === ver) return;
-    try { localStorage.setItem(VER_KEY, ver); } catch {}
-    if (!prev) return; // first sighting on this device — nothing to announce
-    let body = "";
-    try {
-      const r = await fetch("https://api.github.com/repos/carlwilsn/vault-chat/releases/tags/v" + ver);
-      const j: any = await r.json();
-      body = (j && j.body) || "";
-    } catch {}
-    if (!body) body = "The box auto-updated. Full notes: github.com/carlwilsn/vault-chat/releases";
-    try { localStorage.setItem(UPDN_KEY, JSON.stringify({ ver, body, ts: Date.now(), read: false })); } catch {}
-    toast("vault-chat updated to v" + ver);
-    if (page === "alerts") void loadAlerts();
-  }
+  const markRead = (id) => api("/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
+  // The box's auto-update alert is now a single real notification pushed from
+  // the box (UpdateBanner.notifyUpdated) that already carries the release notes
+  // as its body — so there's no separate phone-local "what changed" card to
+  // synthesize here. One update, one notification.
   // The feed as last fetched — so an action on one card (answering an ask) can
   // reason about its siblings (other pending asks on the same conversation).
   let lastNotifList = [];
@@ -3379,6 +3940,10 @@ interface MockDB {
       mission: d.mission || n.title || "",
       ask,
       askLong: d.askLong || d.ask || n.body || n.summary || ask,
+      // [ask-object] The declared fallback + stakes, so every ask surface can
+      // show "if you don't answer, X" and the defer relay can feed X back.
+      stakes: d.stakes || "",
+      onDefer: d.onDefer || "",
       options: Array.isArray(d.options) ? d.options : [],
     };
   }
@@ -3388,8 +3953,11 @@ interface MockDB {
   function alertCard(n, isAction) {
     // EVERY ask (a decision the agent needs from you) is the unified "needs you"
     // card — whether or not it carries structured options. isAction (unread ask)
-    // and any kind:"ask" both route here.
-    if (isAction || n.kind === "ask") return needsYouCard(n);
+    // and any kind:"ask" both route here. So does ANY alert that carries a
+    // recorded decision (answeredWith) — e.g. an info alert whose follow-up
+    // relayed your call to the mission: one visual language for every decision
+    // you made, whatever surface it was made on (note ff31231e).
+    if (isAction || n.kind === "ask" || n.answeredWith) return needsYouCard(n);
     const meta = alertMeta(n);
     const card = el('<div class="card' + (isAction ? " ask" : n.read ? "" : " unread") + '"><div class="crow"><div class="ico"></div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><div class="metabar"></div><p class="cs"></p></div></div></div>');
     const ico = card.querySelector(".ico");
@@ -3427,21 +3995,49 @@ interface MockDB {
   async function openAlertSheet(n, isAction) {
     if (isAction || n.kind === "ask") { openDeliberationSheet(n); return; }
     const meta = alertMeta(n);
-    const canTalk = !!n.convId;
     let probe = null;
+    // [ask redesign] Info alerts are chats too (the user follows up on some) —
+    // but in the alert's OWN thread, created LAZILY on the first message, never
+    // as a lens on the source mission/worker thread (the bleed we removed). The
+    // agent is seeded with the alert + mission context and reads live state for
+    // "how does it stand now" questions; a relay card it proposes can steer the
+    // source mission via the tagged answer path.
+    const followupEmpty = "No follow-up yet — ask below; the agent knows this alert's mission and can check live state.";
+    const attachFollowup = (fid) =>
+      attachSheetConversation(fid, {
+        openAtTop: true,
+        onOption: (ans) => resolveDeliberation(n, ans),
+        answeredWith: n.answeredWith,
+        emptyText: followupEmpty,
+      });
     openSheet({
       intent: n.intention || meta.intention, title: n.title, ico: n.icon || meta.icon, cls: n.cls || meta.cls,
       action: null,
       bodyHtml: '<div class="md">' + md(n.body || "*(no summary)*") + "</div>"
-        + (canTalk ? '<div class="lbl">Conversation</div><div id="delibX"></div>' : ""),
-      footHtml: canTalk ? probeFootHtml("Ask about this…") : "",
-      wire: (body, foot) => { if (canTalk) wireReply(foot, (v) => probe && probe(v)); },
+        + '<div class="lbl">Conversation</div><div id="delibX"></div>',
+      footHtml: probeFootHtml("Ask about this…"),
+      wire: (body, foot) => {
+        wireReply(foot, async (v) => {
+          if (probe) { probe(v); return; }
+          // First follow-up: mint the alert's thread, then send through the
+          // normal message path so the optimistic bubble + stream work as one
+          // code path.
+          try {
+            const r = await api("/alert-followup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notifId: n.id, title: n.title || "", body: n.body || n.summary || "", convId: n.convId || "" }) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || d.error || !d.convId) throw new Error(d.error || r.status);
+            n.followupConvId = d.convId;
+            probe = attachFollowup(d.convId);
+            probe(v);
+          } catch (e) { toast("Couldn't start the follow-up: " + (e.message || e)); }
+        });
+      },
     });
-    // Same design as the ask sheet, minus the decision card: the alert's context
-    // on top, then the REAL conversation — the source thread rendered like a
-    // supervisor thread (wakes as compact notes, timelines, markdown), open at
-    // the alert context first.
-    if (canTalk) probe = attachSheetConversation(n.convId, { openAtTop: true, emptyText: "No turns yet — ask below and the thread’s agent answers with its full context." });
+    if (n.followupConvId) probe = attachFollowup(n.followupConvId);
+    else {
+      const x0 = $("delibX");
+      if (x0) x0.innerHTML = '<div class="md dim">' + esc(followupEmpty) + "</div>";
+    }
   }
   // The feed card for an ask. A neutral card: a subtle near-white "Needs you" dot
   // + label, a top-right chat icon that opens the deliberation sheet ("dig in"),
@@ -3479,6 +4075,15 @@ interface MockDB {
       }
       card.appendChild(qa);
     }
+    // [ask-object] "Not now" — the formal defer terminal, on every live ask card.
+    // It ends the ask AND resumes the parked mission (unlike swipe-archive, which
+    // only hid the card and left the mission stranded AWAITING_USER).
+    if (!decided) {
+      if (del.onDefer) card.appendChild(el('<div class="supask-hint" style="margin-top:8px">If you don’t answer: ' + esc(del.onDefer) + (del.stakes === "high" ? " · high-stakes, so I’ll hold" : "") + "</div>"));
+      const df = el('<button class="needs-defer">Not now</button>');
+      df.onclick = (e) => { e.stopPropagation(); (df as HTMLButtonElement).disabled = true; deferAsk(n); };
+      card.appendChild(df);
+    }
     // Freeform answer lives in the dig-in sheet now, not inline on every feed card —
     // the always-present input made each card ~50px taller so only ~2 fit on screen
     // (user: cards spill over, can't see the recent needs-you). Tap the card / chat
@@ -3509,11 +4114,44 @@ interface MockDB {
   // reply streams via #chatEdge and folds in when persisted. Returns the probe
   // sender (a plain /message — never resolves an ask). This is what replaced
   // the old "Open thread" jump into the raw execution log.
+  // [ask redesign] Render a proposed option set (a message's askOptions) as
+  // tappable cards. Same visual language as the decision card's options; the
+  // "proposed" class scopes the tap wiring. `decided` (a Set of answer
+  // strings) marks the DURABLE record: the card whose answer was committed
+  // renders "✓ your call" and its siblings go dead — so reopening a settled
+  // ask shows WHICH refined card won, not a stack that looks still-live
+  // (the record is the whole deliberation, including what the fork's rounds
+  // offered and what you picked).
+  function askOptionCardsHtml(opts, decided) {
+    const anyChosen = decided && opts.some((o) => decided.has(o.answer));
+    // [truth] Once decided, the losers "say nothing": render ONLY the chosen card
+    // marked "selected" — never a stack of dimmed also-rans (matches the feed
+    // card, which drops the options and shows just the pick).
+    const shown = anyChosen ? opts.filter((o) => decided.has(o.answer)) : opts;
+    return '<div class="delib-proposed">' + shown.map((o) => {
+      const chosen = decided && decided.has(o.answer);
+      return '<div class="delib-opt proposed' + (o.primary ? " prim" : "") + (chosen ? " chosen" : "") + '" data-ans="' + esc(o.answer) + '">'
+        + '<div class="ot">' + esc(o.title || o.answer)
+        + (chosen
+          ? '<span class="pick">✓ selected</span>'
+          : '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>')
+        + "</div>"
+        + (o.body ? '<div class="ob">' + esc(o.body) + "</div>" : "")
+      + "</div>";
+    }).join("") + "</div>";
+  }
   function attachSheetConversation(cid, hooks) {
     hooks = hooks || {};
+    // One live poll per sheet — kill any predecessor so a replaced sheet's
+    // interval doesn't keep firing no-op paints underneath.
+    if (missionPoll) { clearInterval(missionPoll); missionPoll = 0; }
+    const myTok = ++sheetSeq;
     sheetConvId = cid;
     updateConvDot();
     const optimistic = [];
+    // Answers tapped in THIS sheet — survives the 3s repaint (which rebuilds
+    // innerHTML and would otherwise resurrect a live-looking card).
+    const pickedAnswers = new Set();
     let lastSig = "";
     let firstPaint = true;
     let pinBottom = false;
@@ -3527,54 +4165,87 @@ interface MockDB {
         const d = await (await api("/conversation?id=" + encodeURIComponent(cid) + "&n=60")).json();
         if (!d.error) {
           src = d.source || "";
-          // The deliberation exchange ONLY: direct conversational turns (you ↔
-          // the front) plus decision receipts. Wakes, briefs, and executor turns
-          // never render here.
+          // The conversation is the notification's OWN thread now (source "ask"),
+          // scoped by construction — no mission traffic can appear here and no
+          // slicing-by-decision is needed (the positional slice was exactly how
+          // an archived ask showed a DIFFERENT ask's exchange). The filter below
+          // only matters for legacy pre-redesign asks whose convId still points
+          // at a mission thread.
           msgs = (d.messages || []).filter((m) =>
-            (m.role === "assistant" && m.direct) ||
+            (m.role === "assistant" && (m.direct || (m.askOptions && m.askOptions.length))) ||
             (m.role === "user" && (m.direct || m.decision) && !isWakeMsg(m.content || "") && !/^\s*MISSION BRIEF/i.test(m.content || "")));
-          // Scope to the CURRENT deliberation: a decision receipt closes an
-          // exchange. A live ask shows only what came after the last decision —
-          // an old fork's answer rendering under a new ask was the "it was
-          // answered for me" bug. A settled ask shows the exchange that led to
-          // its own receipt, receipt included.
-          let last = -1;
-          for (let i = 0; i < msgs.length; i++) if (msgs[i].decision) last = i;
-          if (hooks.decided) {
-            let prev = -1;
-            for (let i = 0; i < last; i++) if (msgs[i].decision) prev = i;
-            msgs = msgs.slice(prev + 1);
-          } else if (last >= 0) {
-            msgs = msgs.slice(last + 1);
-          }
         }
       } catch {}
       // Bleed guard: /conversation is async. If you closed this ask/note sheet and
-      // opened a DIFFERENT conversation during the fetch, sheetConvId changed — and
-      // since another deliberation sheet also has a #delibX, the null check below
-      // wouldn't stop us writing THIS thread's turns into it. That was the "a reply
-      // I didn't send showed up in the note conversation" bleed (note 4264e049).
-      if (sheetConvId !== cid) return;
+      // opened a DIFFERENT conversation during the fetch, this attach's token is
+      // stale — bail before touching the DOM (note 4264e049; the token also
+      // covers reopening the SAME conversation in a new sheet).
+      if (sheetConvId !== cid || sheetSeq !== myTok) return;
       // Drop optimistic bubbles the persisted thread now contains.
       for (let k = optimistic.length - 1; k >= 0; k--) {
         if (msgs.some((m) => m.role === "user" && (m.content || "").trim() === optimistic[k].trim())) optimistic.splice(k, 1);
       }
-      const shown = msgs.slice(-12).concat(optimistic.map((t) => ({ role: "user", content: t })));
+      const shown = msgs.slice(-16).concat(optimistic.map((t) => ({ role: "user", content: t })));
       // One quiet pulse while a just-sent probe waits for the front's lane to
       // open — the chat edge takes over from "start". The EXECUTOR's runtime
-      // never renders in this surface.
-      const showWorking = sheetOptimisticWorking && !sheetChatActive && !sheetChatSettling;
-      const sig = JSON.stringify(shown.map((m) => [m.role, (m.content || "").length])) + "|" + showWorking;
+      // never renders in this surface. chatBusy covers the REOPEN case: you
+      // closed the sheet mid-answer, the generation kept going on the box, and
+      // coming back should read "working…" — not a dead-looking thread
+      // (note b5908f4c: "they should finish generating if I close them").
+      const showWorking = (sheetOptimisticWorking || chatBusy.has(cid)) && !sheetChatActive && !sheetChatSettling;
+      const sig = JSON.stringify(shown.map((m) => [m.role, (m.content || "").length, m.askOptions ? m.askOptions.length : 0, !!m.decision])) + "|" + showWorking;
       if (sig === lastSig) return; // unchanged — don't disrupt reading/typing
       lastSig = sig;
       const x = $("delibX"); if (!x) return;
       const be = $("sheetBody");
       const prevTop = be ? be.scrollTop : 0;
       const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 90;
+      // Build the thread in segments so decision receipts render as receipts and
+      // a turn's proposed option cards stack right under its prose.
+      // The DURABLE decided set: answers committed in this session (local taps),
+      // decision receipts persisted in the thread, and the notification's own
+      // recorded answer — so a reopened settled ask marks WHICH card won.
+      const decidedAnswers = new Set(pickedAnswers);
+      for (const m of shown) if (m.decision && (m.content || "").trim()) decidedAnswers.add((m.content || "").trim());
+      if (hooks.answeredWith) decidedAnswers.add(String(hooks.answeredWith));
+      let html = "";
+      let seg = [];
+      const names = { user: "You", assistant: src === "mission" ? "Supervisor" : "Assistant" };
+      const flushSeg = () => { if (seg.length) { html += threadHtml(seg, names); seg = []; } };
+      for (const m of shown) {
+        if (m.decision) {
+          flushSeg();
+          html += '<div class="delib-done">✓ Decided — <b>' + esc((m.content || "").slice(0, 200)) + "</b></div>";
+          continue;
+        }
+        seg.push(m);
+        if (m.askOptions && m.askOptions.length) { flushSeg(); html += askOptionCardsHtml(m.askOptions, decidedAnswers); }
+      }
+      flushSeg();
       x.innerHTML = (shown.length
-        ? threadHtml(shown, { user: "You", assistant: src === "mission" ? "Supervisor" : "Assistant" })
+        ? html
         : '<div class="md dim">' + esc(hooks.emptyText || "No conversation yet — ask below; the agent answers with the thread’s full context.") + "</div>")
         + (showWorking ? '<div class="liveplain"><div class="thinking"><span class="pulse"></span><span class="tlbl show">working…</span></div></div>' : "");
+      // Wire the proposed cards: a tap relays that option as the user's formal
+      // answer (hooks.onOption — the deliberation sheet passes
+      // resolveDeliberation). Tapped answers are remembered locally so the 3s
+      // repaint keeps them marked; the lockout is PER SET (this fork is
+      // settled), not sheet-wide — keep-talking means the agent can propose a
+      // fresh set later and it must be tappable (a revision).
+      if (hooks.onOption) {
+        x.querySelectorAll(".delib-opt.proposed").forEach((o) => {
+          const ans = o.dataset.ans || "";
+          if (ans && pickedAnswers.has(ans)) { o.classList.add("dead", "chosen"); return; }
+          o.addEventListener("click", () => {
+            if (o.classList.contains("dead") || o.classList.contains("chosen")) return;
+            const set = o.closest(".delib-proposed");
+            if (set) set.querySelectorAll(".delib-opt").forEach((s) => s.classList.add("dead"));
+            o.classList.remove("dead"); o.classList.add("chosen");
+            if (ans) pickedAnswers.add(ans);
+            hooks.onOption(ans);
+          });
+        });
+      }
       typeset(x);
       // Two-lane fold-in with no gap, same as the mission sheet: hold a settling
       // chat reply on screen until its persisted bubble is in the fetched thread.
@@ -3597,8 +4268,18 @@ interface MockDB {
     }
     // Probe: a plain /message (the box routes it to the conversational front; a
     // pending ask stays pending). Optimistic bubble + "working…" the instant you
-    // send, exactly like a supervisor thread.
-    async function sendProbe(text) {
+    // send, exactly like a supervisor thread. BLOCK-UNTIL-DONE (note 4bd29abb,
+    // the user's call): one message at a time on this lane — a second send while
+    // the agent is mid-answer returns false so the composer keeps the text.
+    function sendProbe(text) {
+      if (sheetChatActive || sheetOptimisticWorking || chatBusy.has(cid)) {
+        toast("Still answering — wait for the reply to finish.");
+        return false;
+      }
+      void sendProbeNow(text);
+      return true;
+    }
+    async function sendProbeNow(text) {
       optimistic.push(text);
       sheetOptimisticWorking = true;
       sheetEnded = false;
@@ -3622,7 +4303,22 @@ interface MockDB {
   }
   async function openDeliberationSheet(n) {
     let del = deliberationFromNotif(n);
-    const cid = n.convId || "";
+    // [ask redesign] The conversation behind an ask is the ask's OWN thread
+    // (askConvId), never the mission thread — the structural spillover fix.
+    // n.convId stays what it always was: the deterministic /answer relay target.
+    // Legacy asks minted before the redesign have no askConvId; they render
+    // their options + decision but attach no conversation (attaching the
+    // mission thread is exactly the bleed we removed).
+    // followupConvId covers a DECIDED INFO alert (an inline relay made from its
+    // follow-up thread) whose card now routes here — same sheet, same thread.
+    let cid = n.askConvId || n.followupConvId || "";
+    // [unified ask] A dec- inline-decision record (an option tapped in a live
+    // conversation) is a standard ask object too: no thread YET, but it mints
+    // an isolated follow-up lazily on the first message, exactly like an info
+    // alert. Only a true pre-redesign ask (no thread, not a dec- record) is a
+    // dead record.
+    const inlineRec = !cid && /^dec-/.test(String(n.id || ""));
+    const legacy = !cid && !inlineRec;
     let probe = null;
     // Decided = read or answered: the decision card renders its recorded outcome,
     // options go inert, and the conversation below is DEAD (no probe foot) — a
@@ -3639,10 +4335,18 @@ interface MockDB {
     // progression and a new fork read as an overwrite of the old one.
     const priorRounds = [];
     for (const s of lastNotifList) {
-      if (s.kind !== "ask" || s.id === n.id || !cid || s.convId !== cid) continue;
+      // Rounds of one deliberation share the MISSION conv (the relay target),
+      // not the per-ask thread — each round has its own askConvId now.
+      if (s.kind !== "ask" || s.id === n.id || !n.convId || s.convId !== n.convId) continue;
       if ((s.ts || 0) > (n.ts || 0)) continue;
+      // Only SUPERSEDED forks are rounds of THIS deliberation — retired (read)
+      // without an answer when the agent tightened the ask. An ANSWERED ask is
+      // its own settled decision (archive material — rendering it inside a
+      // different ask's sheet was the "one ask shows another ask's decision"
+      // confusion, note 9f971aec), and a still-live ask is its own card.
+      if (s.answeredWith || !s.read) continue;
       const sd = deliberationFromNotif(s);
-      priorRounds.push({ ask: sd.askLong || sd.ask || "", options: sd.options || [], answeredWith: s.answeredWith || "", answeredAt: s.answeredAt || 0, ts: s.ts || 0 });
+      priorRounds.push({ ask: sd.askLong || sd.ask || "", options: sd.options || [], answeredWith: "", answeredAt: 0, ts: s.ts || 0 });
     }
     priorRounds.sort((a, b) => (a.ts || 0) - (b.ts || 0));
     // The decision card — rebuilt in place when a newer ask supersedes this one
@@ -3659,12 +4363,14 @@ interface MockDB {
           + "</div>";
       }
       h += '<div class="delib-ask">' + esc(del.askLong || del.ask || "") + "</div>";
-      del.options.forEach((opt, i) => {
+      // [truth] Decided → show only the chosen option ("selected"); losers blank.
+      const shownOpts = decided && n.answeredWith ? del.options.filter((o) => o.answer === n.answeredWith) : del.options;
+      shownOpts.forEach((opt, i) => {
         const chosen = !!n.answeredWith && (opt.answer === n.answeredWith);
-        h += '<div class="delib-opt' + (opt.primary ? " prim" : "") + (decided ? " dead" : "") + (chosen ? " chosen" : "") + '" data-i="' + i + '">'
+        h += '<div class="delib-opt' + (opt.primary ? " prim" : "") + (decided && !chosen ? " dead" : "") + (chosen ? " chosen" : "") + '" data-i="' + i + '">'
           + '<div class="ot">' + esc(opt.title || opt.answer)
           + (chosen
-            ? '<span class="pick">✓ your call</span>'
+            ? '<span class="pick">✓ selected</span>'
             : (decided ? "" : '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>'))
           + "</div>"
           + (opt.body ? '<div class="ob">' + esc(opt.body) + "</div>" : "") + "</div>";
@@ -3698,66 +4404,89 @@ interface MockDB {
       // the composer talks it through; options answer by tap. For an ask with
       // no options, a single labeled commit action under the composer sends the
       // SAME text as the formal answer — no second input (the two-boxes
-      // complaint). A decided ask gets no foot: readable but dead.
-      footHtml: decided
+      // complaint). [unified ask] A DECIDED ask keeps its composer — deciding
+      // records the call, it does not end the conversation (the user keeps
+      // talking after: dig into why, or revise). Only a LEGACY decided ask
+      // (pre-redesign, no thread behind it) is a dead record.
+      footHtml: decided && legacy
         ? ""
-        : probeFootHtml("Ask about this…")
-          + (!del.options.length ? '<button class="ans-commit">✓ Send it as my answer</button>' : ""),
+        : probeFootHtml(decided ? "Keep talking about this…" : "Ask about this…")
+          + (!decided && !del.options.length ? '<button class="ans-commit">✓ Send it as my answer</button>' : ""),
       wire: (body, foot) => {
         wireDecision(body.querySelector("#delibDecision"));
-        // The probe input talks it through — a plain /message, NOT an answer.
-        if (!decided) wireReply(foot, (v) => probe && probe(v));
+        // The composer talks to the ask's own agent (a plain /message to the ask
+        // thread, never an answer). LEGACY asks (pre-redesign, no ask thread)
+        // have nobody to talk to — there the send arrow commits the text as the
+        // formal answer, the old semantics, so the input is never dead UI.
+        if (!(decided && legacy)) wireReply(foot, async (v) => {
+          if (probe) { probe(v); return; }
+          if (legacy) { resolveDeliberation(n, v); return; }
+          // [unified ask] inlineRec (a dec- record) has no thread yet — mint the
+          // isolated follow-up lazily on the first message, then talk to it. Same
+          // path an info alert uses; the thread is seeded with the decision.
+          try {
+            const r = await api("/alert-followup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notifId: n.id, title: n.title || "", body: (n.answeredWith ? "Decided: " + n.answeredWith + "\n\n" : "") + (n.body || n.summary || ""), convId: n.convId || "" }) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || d.error || !d.convId) throw new Error(d.error || r.status);
+            n.followupConvId = d.convId; cid = d.convId;
+            probe = attachSheetConversation(d.convId, { openAtTop: true, decided, answeredWith: n.answeredWith, emptyText: "Follow-up on this decision — the agent has its context.", onOption: (ans) => resolveDeliberation(n, ans) });
+            probe(v);
+          } catch (e) { toast("Couldn't start the follow-up: " + (e.message || e)); }
+        });
         // The commit action formalizes: whatever is typed in the ONE composer
         // becomes the tagged answer via /answer.
         const commit = foot.querySelector(".ans-commit");
-        if (commit) commit.onclick = () => {
+        if (commit) wireTap(commit, () => {
           const ta = foot.querySelector(".rinp");
           const v = (ta && ta.value.trim()) || "";
           if (!v) { toast("Type your answer above first."); return; }
           commit.disabled = true;
           resolveDeliberation(n, v);
-        };
+        });
       },
     });
-    // Mock/legacy ask with no thread behind it: render any baked sample exchange
-    // statically and stop — there's nothing live to wire.
+    // Mock/legacy ask with no per-ask thread behind it: render any baked sample
+    // exchange statically and stop — attaching the MISSION thread here is
+    // exactly the spillover we removed, so a legacy ask gets no conversation.
     if (!cid) {
       const baked = Array.isArray(n.deliberation && n.deliberation.exchange) ? n.deliberation.exchange : [];
       const x0 = $("delibX");
       if (x0) x0.innerHTML = baked.length
         ? threadHtml(baked.map((m) => ({ role: m.role, content: m.text || "" })), { user: "You", assistant: "Supervisor" })
-        : '<div class="md dim">No conversation behind this ask.</div>';
+        : '<div class="md dim">' + (inlineRec ? "Decided in the conversation. Ask below to open an isolated follow-up on this call." : legacy && !decided ? "This ask predates per-ask conversations — the options above still work." : "No conversation behind this ask.") + "</div>";
       return;
     }
-    // Latest wins, for real: while the sheet is open, each poll tick checks for a
-    // NEWER pending ask on this thread (the agent deliberating can surface fresh
-    // options mid-conversation — a new AskUser supersedes this one on the box).
-    // Swap the decision card in place so the buttons you see are always the live
-    // fork, not a stale one.
+    // Latest wins: while the sheet is open, each poll tick checks for a NEWER
+    // pending ask on the same MISSION (the executor can tighten the fork with a
+    // fresh AskUser). A superseding ask is a NEW card with its OWN thread now —
+    // reopen the sheet on it so the decision card, the conversation, and the
+    // relay target swap together (an in-place card swap over the OLD thread
+    // would mix two asks' surfaces).
     const checkNewerAsk = async () => {
       if (decided) return;
       try {
         const d = await (await api("/notifications")).json();
         const list = d.notifications || [];
         lastNotifList = list;
-        const newest = list.find((s) => s.kind === "ask" && !s.read && s.convId === cid);
-        if (newest && newest.id !== n.id) {
-          // Stack the round being replaced, then swap in the new fork.
-          priorRounds.push({ ask: del.askLong || del.ask || "", options: del.options || [], answeredWith: "", answeredAt: 0, ts: n.ts || 0 });
-          n = newest; del = deliberationFromNotif(n);
-          const box = $("delibDecision");
-          if (box && !box.classList.contains("deciding")) { box.innerHTML = decisionHtml(); wireDecision(box); }
-        }
+        const newest = list.find((s) => s.kind === "ask" && !s.read && s.convId === n.convId);
+        if (newest && newest.id !== n.id) openDeliberationSheet(newest);
       } catch {}
     };
-    // [ask-conversation] Talk-it-through is a REAL conversation — the shared
-    // plumbing streams the front's reply and folds it in, styled like a
-    // supervisor thread but scoped to THIS deliberation's exchange.
+    // [ask-conversation] The conversation is the ask's OWN thread — the
+    // dedicated ask agent answers here (with live ground-truth reads), and any
+    // option set it proposes renders as tappable relay cards (onOption).
     probe = attachSheetConversation(cid, {
       openAtTop: true,
       onTick: checkNewerAsk,
       decided,
-      emptyText: "No conversation yet — talk it through below; the agent has the mission’s full context.",
+      // Stays wired after a decision — a fresh option set the agent proposes
+      // mid-follow-up relays as a REVISED answer (the mission treats a tagged
+      // answer to a non-waiting thread as a normal steer).
+      onOption: (ans) => resolveDeliberation(n, ans),
+      answeredWith: n.answeredWith,
+      emptyText: decided
+        ? "Decided — but not closed. Ask below if you want to dig into it or revise."
+        : "No conversation yet — talk it through below; the agent knows the mission and can check live state.",
     });
   }
   // Resolve an ask: the TAGGED answer path (a tapped option OR a committed
@@ -3766,19 +4495,24 @@ interface MockDB {
   // the alert read + closes the sheet.
   const resolvingAsks = new Set();
   function resolveDeliberation(n, answer) {
-    // One decision per ask, deterministically: repeat taps are locked out here,
-    // and the clientMsgId is DERIVED FROM THE ASK ID (not minted fresh per tap),
-    // so even a repeat that slips through — a double-fired handler, a PWA retry —
-    // collapses to ONE answer turn on the box (note 6693e931: double-tapping an
-    // option sent it twice and the thread went out of whack).
-    if (resolvingAsks.has(n.id)) return;
-    resolvingAsks.add(n.id);
-    setTimeout(() => resolvingAsks.delete(n.id), 60_000);
-    const clientMsgId = "answer-" + n.id;
+    try { logEvent("decide", { ask: n.id, conv: n.convId, answer: (answer || "").slice(0, 120) }); } catch {}
+    // One decision per (ask, answer), deterministically: repeat taps of the
+    // SAME option are locked out here, and the clientMsgId is DERIVED from the
+    // ask id + answer (not minted fresh per tap), so even a repeat that slips
+    // through — a double-fired handler, a PWA retry — collapses to ONE answer
+    // turn on the box (note 6693e931). Keyed per ANSWER, not per ask: a
+    // decided-but-open conversation can send a REVISED call later.
+    const rkey = n.id + " " + answer;
+    if (resolvingAsks.has(rkey)) return;
+    resolvingAsks.add(rkey);
+    setTimeout(() => resolvingAsks.delete(rkey), 60_000);
+    const clientMsgId = "answer-" + n.id + "-" + encodeURIComponent(answer).slice(0, 32);
     if (n.convId) {
       // notifId lets the box durably stamp WHICH answer settled this ask
       // (answeredWith), so the Archive shows the decision that was made.
-      api("/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: answer, clientMsgId, notifId: n.id }) }).catch(() => {});
+      // askConvId pins the decision receipt into the ask's own thread (the
+      // thread stays TALKABLE after — deciding records, it doesn't close).
+      api("/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: answer, clientMsgId, notifId: n.id, ...(n.kind === "ask" && n.askConvId ? { askConvId: n.askConvId } : {}) }) }).catch(() => {});
     }
     // One answer settles the DECISION, not just this card: retire every live ask
     // card pointing at the same conversation. The deadlocked self-test stacked 3
@@ -3788,13 +4522,48 @@ interface MockDB {
       if (s.kind === "ask" && !s.read && s.id !== n.id && s.convId && n.convId && s.convId === n.convId) markRead(s.id);
     }
     markRead(n.id);
-    if ($("sheet").classList.contains("on")) closeSheet();
+    // [unified ask] Deciding does NOT slam the sheet shut — the conversation
+    // keeps going (keep-talking). Re-render the ask sheet in its decided-but-
+    // live form; an info sheet just stays as it is (its tapped card is already
+    // marked by the sheet's own wiring).
+    n.answeredWith = answer; n.answeredAt = Date.now(); n.read = true;
+    if (n.kind === "ask" && $("sheet").classList.contains("on")) openDeliberationSheet(n);
     void loadAlerts();
   }
+  // [ask-object] "Not now" — the ask's terminal that ends it WITHOUT choosing an
+  // option and RESUMES the parked mission (the box injects the fallback
+  // instruction and clears AWAITING_USER; a swiped-away card used to strand the
+  // mission forever). Mirrors resolveDeliberation's /answer relay but tags
+  // defer:true and records "Not now" as the decision on the card + archive.
+  function deferAsk(n) {
+    try { logEvent("defer", { ask: n.id, conv: n.convId }); } catch {}
+    const rkey = n.id + " __defer__";
+    if (resolvingAsks.has(rkey)) return;
+    resolvingAsks.add(rkey);
+    setTimeout(() => resolvingAsks.delete(rkey), 60_000);
+    const del = deliberationFromNotif(n);
+    if (n.convId) {
+      api("/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: "Not now", clientMsgId: "defer-" + n.id, notifId: n.id, defer: true, ...(del.onDefer ? { onDefer: del.onDefer } : {}), ...(n.kind === "ask" && n.askConvId ? { askConvId: n.askConvId } : {}) }) }).catch(() => {});
+    }
+    // One terminal settles the DECISION: retire every live ask card for the same
+    // conversation, same as answering (a mission has ONE open ask).
+    for (const s of lastNotifList) {
+      if (s.kind === "ask" && !s.read && s.id !== n.id && s.convId && n.convId && s.convId === n.convId) markRead(s.id);
+    }
+    markRead(n.id);
+    n.answeredWith = "Not now"; n.answeredAt = Date.now(); n.read = true;
+    if (n.kind === "ask" && $("sheet").classList.contains("on")) openDeliberationSheet(n);
+    void loadAlerts();
+  }
+  // [swipe-kind] Which list a swiped card lives in, for the experience-log — so a
+  // replay says "note swipe cancelled" not just "a card moved". Derived from the
+  // scroller it sits in; no call-site change needed.
+  const SWIPE_KIND = { alScroll: "alert", actScroll: "mission", notesScroll: "note" };
   function attachSwipeArchive(card: any, action: any, reload?: any, rightAction?: any) {
     reload = reload || loadAlerts;
-    let x0 = 0, y0 = 0, dx = 0, mode = null;
-    const start = (x, y) => { x0 = x; y0 = y; dx = 0; mode = null; card.style.transition = "none"; };
+    let x0 = 0, y0 = 0, dx = 0, mode = null, t0 = 0;
+    const kindOf = () => { const s = card.closest("#alScroll,#actScroll,#notesScroll"); return (s && SWIPE_KIND[s.id]) || "card"; };
+    const start = (x, y) => { x0 = x; y0 = y; dx = 0; mode = null; t0 = Date.now(); markListBusy(); card.style.transition = "none"; };
     const move = (x, y) => {
       if (mode === "v") return false;
       const ndx = x - x0, ndy = y - y0;
@@ -3820,13 +4589,20 @@ interface MockDB {
       card.dataset.swiped = "1";
       setTimeout(() => { card.dataset.swiped = ""; }, 400);
       mode = null;
+      // [experience-log] Record the OUTCOME of every committed horizontal
+      // gesture — commit vs cancel, distance, duration — so a replay shows the
+      // swipes that didn't take (dx never reached threshold) next to the ones
+      // that did. This is the signal for "swiping was out of whack".
+      const logSwipe = (act) => { try { logEvent("swipe", { kind: kindOf(), act, dx: Math.round(dx), ms: Date.now() - t0 }); } catch {} };
       card.style.transition = "transform .18s ease, opacity .18s ease";
       if (rightAction && dx > 60) {
         // Right-swipe: snap back and hand off (an edit opens a sheet — the card
         // itself stays in place).
+        logSwipe("edit");
         card.style.transform = "";
         rightAction();
       } else if (dx < -70) {
+        logSwipe("archive");
         // Remember WHERE in the list you were, so the reload below doesn't yank you
         // to the top. loadAlerts/loadActivity/loadNotes rebuild innerHTML (scrollTop
         // → 0), so swiping a card DOWN in the archive scrolled you back up to the
@@ -3854,11 +4630,22 @@ interface MockDB {
           if (scroller) scroller.scrollTop = Math.min(prevTop, Math.max(0, scroller.scrollHeight - scroller.clientHeight));
         }, 240);
       } else {
+        // Started a horizontal drag but released short of the archive threshold
+        // — snaps back. Logged so a run of these reads as "I kept trying to
+        // swipe and nothing happened".
+        logSwipe("cancel");
         card.style.transform = "";
       }
     };
     card.addEventListener("touchstart", (e) => start(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
-    card.addEventListener("touchmove", (e) => move(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+    // [axis-lock] touchmove is NON-passive so that once the gesture is locked
+    // horizontal (move() returns true) we preventDefault and the list stops
+    // scrolling underneath the finger. Without this the card followed the
+    // finger while the scroller ALSO scrolled — the two fought, the swipe
+    // distance never reached threshold, and archiving felt "state-dependent"
+    // and "all over the place". Mirrors the drawer swipe-open handler, which
+    // has always locked its axis this way.
+    card.addEventListener("touchmove", (e) => { if (move(e.touches[0].clientX, e.touches[0].clientY)) e.preventDefault(); }, { passive: false });
     card.addEventListener("touchend", end);
     card.addEventListener("touchcancel", end);
     let mouseDown = false;
@@ -3868,15 +4655,365 @@ interface MockDB {
   }
 
   // ---------- settings drawer ----------
+  // ===== the Claude screen — feedback queue front, per-report conversations. =====
+  // Every report is an object with a LIVE state read from the box's real pipeline
+  // (/feedback merges notes.jsonl + the auto-fixer's audit/log), and tapping one
+  // opens a conversation with the box's Claude Code session scoped to that report.
+  let clTab = "fb";           // "fb" | "chat"
+  let clView = "queue";       // "queue" | "conv"
+  let clCur = null;           // the open feedback item (null = general chat)
   function openDrawer() {
-    $("drawer").classList.add("open"); refreshPushUi();
+    $("drawer").classList.add("open");
+    clShowTab(clTab);
+    refreshPushUi(); void pushAutoOn();
     void refreshState().then((d) => {
-      $("boxVer").textContent = d && d.version ? "box · vault-chat v" + d.version : "";
+      $("boxVer").textContent = d && d.version ? "vault-chat v" + d.version : "";
     });
   }
-  $("drawer").addEventListener("click", (e) => { if (e.target === $("drawer")) $("drawer").classList.remove("open"); });
-  $("killAllBtn").onclick = async () => { const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null); const d = r ? await r.json().catch(() => ({})) : {}; toast(d.result || "Kill-all sent."); };
+  function closeDrawer() { $("drawer").classList.remove("open"); $("clGear").classList.remove("open"); }
+  // The settings page's top-right is now the normal nav burger (report bddae07e):
+  // it opens the same menu, so any destination navigates away and dismisses the
+  // drawer — no dedicated close X. stopPropagation so the document click-to-close
+  // doesn't immediately re-close the menu we just opened.
+  $("drawerMenuBtn").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("on"); };
+  $("clGearBtn").onclick = () => { $("clGear").classList.toggle("open"); refreshPushUi(); };
+  $("clTabFb").onclick = () => clShowTab("fb");
+  $("clTabChat").onclick = () => clShowTab("chat");
+  $("clBackBtn").onclick = () => clShowTab("fb");
+  function clShowTab(tab) {
+    clTab = tab; clCur = null;
+    $("clTabFb").classList.toggle("on", tab === "fb");
+    $("clTabChat").classList.toggle("on", tab === "chat");
+    $("clSeg").style.display = ""; $("clBack").style.display = "none";
+    // The chat tab no longer carries a top "New chat" button — that action now
+    // lives as the + at the composer's left (report 58b93ebc). Keep it on Feedback.
+    $("fbNewBtn").style.display = tab === "fb" ? "" : "none";
+    $("fbNewLbl").textContent = tab === "fb" ? "New feedback — what felt off?" : "New chat — start fresh";
+    if (tab === "fb") {
+      clView = "queue";
+      $("clQueue").style.display = ""; $("clConv").style.display = "none"; $("clFoot").style.display = "none";
+      void loadFeedbackQueue();
+    } else {
+      clView = "conv";
+      $("clQueue").style.display = "none"; $("clBrief").style.display = "none";
+      $("clConv").style.display = ""; $("clFoot").style.display = "";
+      $("coderNewBtn").style.display = ""; // general chat: the + clears/starts fresh
+      coderLoadThread(generalThread()); // no auto-introduction — the boss types first
+    }
+    updateChatToFb();
+  }
+  function generalThread() {
+    let t = localStorage.getItem("vc_coder_thread");
+    if (!t) { t = "c" + Date.now(); try { localStorage.setItem("vc_coder_thread", t); } catch {} }
+    return t;
+  }
+  // The state line mirrors the REAL pipeline — never invent a stage.
+  const FB_ICONS = {
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+    doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>',
+    alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 8v5M12 16h.01"/><circle cx="12" cy="12" r="9"/></svg>',
+  };
+  function fbStateLine(it) {
+    if (it.state === "done") return FB_ICONS.check + "confirmed fixed";
+    if (it.state === "reopened") return FB_ICONS.alert + "reopened — the fix didn't take";
+    if (it.state === "briefed") return FB_ICONS.doc + "briefed — needs your call";
+    if (it.state === "shipped") return FB_ICONS.check + (it.confirmable ? "fix shipped" : "fix shipped — landing on your phone…");
+    if (it.state === "diagnosing") return '<span class="fb-dot busy"></span>diagnosing now…';
+    // `queued` is the backend's honest flag: only reports the fixer will actually
+    // pick up (newer than its watermark) may promise so. Older ones are simply
+    // open — the affordance is the conversation, not a pickup that won't come.
+    if (it.queued) return '<span class="fb-dot"></span>queued — the fixer picks it up within ~10 min';
+    return '<span class="fb-dot"></span>open — tap to discuss';
+  }
+  let fbItems = [];
+  // Dismissed reports live per-device in localStorage. Two ways in: the bulk
+  // "Clear" on the Done section (report ca5eb45a) and a per-card × on any card
+  // that doesn't need the boss (report 17197533: "clear those, I didn't make
+  // them, they don't have a place for me"). A dismissed report only stays hidden
+  // WHILE it doesn't need the boss — the moment it flips to a state that wants
+  // his action (shipped+confirmable / reopened / briefed) it resurfaces, so a
+  // dismiss can never swallow a decision or a "did this fix it?".
+  const FB_CLEARED_KEY = "vc_fb_cleared_done";
+  function fbClearedSet() { try { return new Set(JSON.parse(localStorage.getItem(FB_CLEARED_KEY) || "[]")); } catch { return new Set(); } }
+  function fbSaveCleared(set) { try { localStorage.setItem(FB_CLEARED_KEY, JSON.stringify(Array.from(set))); } catch {} }
+  // A report NEEDS the boss when it's waiting on his call or his confirmation —
+  // those are never dismissable and always resurface a prior dismiss.
+  function fbNeedsUser(it) { return it.state === "reopened" || it.state === "briefed" || (it.state === "shipped" && it.confirmable); }
+  async function loadFeedbackQueue() {
+    let items = [];
+    try { const d = await (await api("/feedback")).json(); items = d.items || []; } catch {}
+    fbItems = items;
+    if (clTab !== "fb" || !$("drawer").classList.contains("open")) return;
+    const list = $("fbList"); list.innerHTML = "";
+    const doneAll = items.filter((x) => x.state === "done");
+    // Prune dismissed ids that are gone or now need the boss, so the set never
+    // goes stale and a report that starts needing action (reopened, briefed,
+    // shipped+confirmable) always resurfaces instead of vanishing forever.
+    const byId = new Map(items.map((x) => [x.id, x]));
+    let cleared = fbClearedSet();
+    const pruned = new Set(Array.from(cleared).filter((id) => { const it = byId.get(id); return it && !fbNeedsUser(it); }));
+    if (pruned.size !== cleared.size) { cleared = pruned; fbSaveCleared(cleared); }
+    const open = items.filter((x) => x.state !== "done" && !cleared.has(x.id));
+    const done = doneAll.filter((x) => !cleared.has(x.id));
+    const addCard = (it) => {
+      const b = document.createElement("button");
+      b.className = "fb-card" + (it.state === "reopened" ? " reop" : "") + (it.state === "done" ? " dn" : "");
+      b.innerHTML = '<div class="t"></div><div class="fb-st">' + fbStateLine(it) + "</div>";
+      b.querySelector(".t").textContent = it.title || (it.text || "").slice(0, 60);
+      if (it.state === "shipped" && it.confirmable) {
+        const c = document.createElement("div");
+        c.className = "fb-confirm";
+        c.innerHTML = '<span class="q">Did this fix it?</span><span class="fb-pill p" data-yn="y">Yes</span><span class="fb-pill" data-yn="n">No</span>';
+        c.querySelectorAll(".fb-pill").forEach((p: any) => {
+          p.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const fixed = p.dataset.yn === "y";
+            p.textContent = "…";
+            try {
+              await api("/feedback/confirm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: it.id, fixed, title: it.title || "" }) });
+              toast(fixed ? "Confirmed fixed." : "Reopened — it goes back to the fixer.");
+            } catch { toast("Couldn't send — try again"); }
+            void loadFeedbackQueue();
+          });
+        });
+        b.appendChild(c);
+      }
+      // Per-card dismiss × — but never on a card that needs the boss (its ×
+      // would be a no-op since the prune resurfaces it, and it'd be dishonest
+      // to offer to hide a decision he still owes).
+      if (!fbNeedsUser(it)) {
+        const dz = document.createElement("span");
+        dz.className = "fb-dismiss";
+        dz.setAttribute("aria-label", "Dismiss");
+        dz.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+        dz.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const next = fbClearedSet(); next.add(it.id); fbSaveCleared(next);
+          toast("Dismissed — it comes back only if it needs you.");
+          void loadFeedbackQueue();
+        });
+        b.appendChild(dz);
+      }
+      b.addEventListener("click", () => clOpenConv(it));
+      list.appendChild(b);
+    };
+    if (open.length) { const l = document.createElement("div"); l.className = "fb-lbl"; l.textContent = "Open"; list.appendChild(l); open.forEach(addCard); }
+    if (done.length) {
+      const hd = document.createElement("div"); hd.className = "fb-done-hd"; hd.style.marginTop = "14px";
+      const l = document.createElement("div"); l.className = "fb-lbl"; l.textContent = "Done"; hd.appendChild(l);
+      const clr = document.createElement("button"); clr.className = "fb-clear"; clr.textContent = "Clear";
+      clr.addEventListener("click", () => {
+        const n = done.length;
+        const next = fbClearedSet(); doneAll.forEach((x) => next.add(x.id)); fbSaveCleared(next);
+        toast(n === 1 ? "Cleared 1 done report." : ("Cleared " + n + " done reports."));
+        void loadFeedbackQueue();
+      });
+      hd.appendChild(clr); list.appendChild(hd);
+      done.forEach(addCard);
+    }
+    if (!open.length && !done.length) { const e = document.createElement("div"); e.className = "fb-lbl"; e.textContent = "No reports yet — anything feel off?"; list.appendChild(e); }
+  }
+  function clOpenConv(it) {
+    clCur = it; clView = "conv";
+    $("clSeg").style.display = "none"; $("clBack").style.display = "";
+    $("clBackTitle").textContent = it.title || "Report";
+    $("fbNewBtn").style.display = "none";
+    $("clQueue").style.display = "none"; $("clConv").style.display = ""; $("clFoot").style.display = "";
+    $("coderNewBtn").style.display = "none"; // a report thread isn't clearable — hide the +
+    $("clBrief").style.display = "";
+    $("clBriefText").textContent = it.text || "";
+    const meta = $("clBriefMeta"); meta.innerHTML = '<div class="fb-st">' + fbStateLine(it) + "</div>";
+    coderLoadThread("fb-" + it.id); // no auto-introduction — the brief above is the context
+    updateChatToFb(); // report thread — never the chat→feedback chip
+  }
+  // ---- the conversation surface (shared by report threads + the general chat) ----
+  let coderThread = "";
+  const coderLog = () => $("coderLog");
+  function coderAdd(cls, txt) { const d = document.createElement("div"); d.className = "coder-msg " + cls; d.textContent = txt; coderLog().appendChild(d); $("clBody").scrollTop = $("clBody").scrollHeight; return d; }
+  function coderSaveHist() { try { const e = [...coderLog().querySelectorAll(".coder-msg")].filter((n) => !n.classList.contains("t")).map((n) => ({ c: n.classList.contains("u") ? "u" : "a", x: n.textContent })); localStorage.setItem("vc_coder_hist_" + coderThread, JSON.stringify(e.slice(-60))); } catch {} }
+  function coderLoadThread(thread, greeting?) {
+    coderThread = thread;
+    const log = coderLog(); log.innerHTML = "";
+    let had = false;
+    try { const h = JSON.parse(localStorage.getItem("vc_coder_hist_" + thread) || "[]"); h.forEach((m) => { coderAdd(m.c, m.x); had = true; }); } catch {}
+    if (!had && greeting) coderAdd("a", greeting);
+    updateChatToFb();
+    setTimeout(() => { $("clBody").scrollTop = $("clBody").scrollHeight; }, 30);
+  }
+  (function coderComposer() {
+    const ta = $("coderTa"), send = $("coderSend");
+    if (!ta || !send) return;
+    const submit = async () => {
+      const m = ta.value.trim(); if (!m) return;
+      ta.value = ""; ta.style.height = "auto"; coderAdd("u", m); coderSaveHist();
+      send.disabled = true; const th = coderAdd("t", "thinking…");
+      // First turn of a report thread carries the report itself, so the session
+      // starts from the formalized ask rather than a bare message.
+      let msg = m;
+      if (clCur && coderLog().querySelectorAll(".coder-msg.u").length === 1) {
+        msg = 'FEEDBACK THREAD — the boss opened his report "' + (clCur.title || "") + '" (id ' + clCur.id + ", state: " + clCur.state + ').\nThe report: "' + (clCur.text || "") + '"\n\nHis message: ' + m;
+      }
+      try {
+        const r = await api("/coder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread: coderThread, message: msg }) });
+        const d = await r.json().catch(() => ({}));
+        th.remove(); coderAdd("a", d.reply || "(no reply)"); coderSaveHist();
+      } catch (e) {
+        th.remove();
+        // The app polls /status continuously (body.offline reflects that truth).
+        // If we're NOT flagged offline, the box is reachable and this was just a
+        // long coder turn whose connection dropped mid-flight (mobile / Tailscale
+        // idle, or the PWA backgrounding) — don't falsely blame Tailscale. The
+        // turn kept running on the box and its session is saved, so re-sending
+        // resumes it. (report fafcd51d — "Said it can't find Tailscale???")
+        const off = document.body.classList.contains("offline");
+        coderAdd("a", off
+          ? "Can't reach the box right now — is it awake and is Tailscale on? I'll pick up where we left off once it's back."
+          : "That reply took too long and the connection dropped — but the box is up and probably still working on it. Give it a moment, then send your message again to pick the thread back up.");
+      }
+      updateChatToFb(); // an exchange now exists — surface the chip in general chat
+      send.disabled = false;
+    };
+    send.addEventListener("pointerdown", (e) => { e.preventDefault(); void submit(); }); // one-tap send with the keyboard up
+    ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; });
+    // Keyboard: the sheet pattern — reserve --kb as INSIDE padding on the panel so
+    // the top never moves and only the pinned composer rides up.
+    ta.addEventListener("focus", () => { document.querySelector("#drawer .panel").classList.add("editing"); setTimeout(() => { $("clBody").scrollTop = $("clBody").scrollHeight; }, 60); });
+    ta.addEventListener("blur", () => { document.querySelector("#drawer .panel").classList.remove("editing"); });
+  })();
+  // New chat: fresh thread, fresh session — the old one isn't kept around. The
+  // wipe PERSISTS (localStorage), so a reopened app stays on the cleared thread.
+  function coderNewChat() {
+    try { localStorage.removeItem("vc_coder_hist_" + generalThread()); localStorage.setItem("vc_coder_thread", "c" + Date.now()); } catch {}
+    clShowTab("chat");
+  }
+  $("fbNewBtn").onclick = () => {
+    if (clTab === "chat") coderNewChat(); // (chat tab no longer shows this btn; kept for safety)
+    else openFeedbackSheet();
+  };
+  // The + at the composer's left clears the existing general chat and starts fresh.
+  $("coderNewBtn").onclick = () => coderNewChat();
 
+  // [chat→feedback] The boss (report 1fb648bf): "I wish a conversation with Claude
+  // from that chat page can be turned into a feedback task that ends up on the
+  // feedback page if the conversation leads to that." It's MANUAL — he decides
+  // when a chat has become a real ask — and reuses the exact /notes pipe every
+  // report already flows through, so the new task merges into /feedback by id and
+  // behaves like any other feedback item (fixer pickup, confirm, dismiss). We
+  // don't auto-mint: an unprompted task is the orphaned-feedback noise he asked us
+  // to stop (report 17197533). The chip only shows in the GENERAL chat once a real
+  // exchange exists — never on a report thread or an empty chat.
+  function chatToFbEligible() { return clTab === "chat" && !clCur; }
+  function updateChatToFb() {
+    const btn = $("chatToFbBtn"); if (!btn) return;
+    const hasU = coderLog().querySelectorAll(".coder-msg.u").length > 0;
+    const hasA = coderLog().querySelectorAll(".coder-msg.a").length > 0;
+    btn.style.display = (chatToFbEligible() && hasU && hasA) ? "" : "none";
+  }
+  function chatTranscript() {
+    return [...coderLog().querySelectorAll(".coder-msg")]
+      .filter((n) => !n.classList.contains("t"))
+      .map((n) => (n.classList.contains("u") ? "Me: " : "Claude: ") + n.textContent)
+      .join("\n\n");
+  }
+  function openChatToFbSheet() {
+    const firstUser = ([...coderLog().querySelectorAll(".coder-msg.u")].map((n) => n.textContent).find(Boolean) || "").slice(0, 240);
+    openSheet({
+      intent: "Feedback", title: "Make this a feedback task", ico: "⚑", cls: "",
+      bodyHtml: '<div style="font-size:12px;color:var(--dim);margin-bottom:8px">This turns the chat above into a task on your Feedback page. Edit the ask in your words — the full conversation rides along as context.</div>'
+        + '<textarea class="note-edit" id="c2fTa" placeholder="What should this task be?"></textarea>'
+        + '<div class="wbtns"><button class="wbtn" id="c2fSend">Add to Feedback</button></div>',
+      wire: (body) => {
+        const ta = body.querySelector("#c2fTa"); ta.value = firstUser;
+        ta.addEventListener("focus", () => sheetEditFocus(ta));
+        ta.addEventListener("blur", sheetEditBlur);
+        setTimeout(() => { try { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } catch {} }, 60);
+        const send = body.querySelector("#c2fSend");
+        send.onclick = async () => {
+          const t = ta.value.trim();
+          if (!t) { toast("Say what the task is first"); return; }
+          send.disabled = true;
+          logEvent("feedback", { text: t.slice(0, 400), ver: boxVersion || "", from: "chat" });
+          const body2 = t + "\n\n— turned into a task from a Claude chat" + (boxVersion ? " · v" + boxVersion : "")
+            + "\n\nThe conversation:\n" + chatTranscript();
+          try {
+            const r = await api("/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: body2 }) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || d.error) throw new Error(d.error || r.status);
+            closeSheet();
+            void flushFeedbackQueue();
+            // Land the boss ON the Feedback page, inside the new task's thread — the
+            // same drop-in a fresh report gets (openFeedbackSheet), so the bridge is
+            // visible: he sees it arrive where he asked.
+            await loadFeedbackQueue();
+            if (d.id) {
+              const it = (fbItems || []).find((x) => x.id === d.id)
+                || { id: d.id, title: t.slice(0, 60), text: body2, state: "open" };
+              clShowTab("fb"); clOpenConv(it);
+            } else {
+              clShowTab("fb"); toast("Added to your Feedback page.");
+            }
+          } catch (e) {
+            fbEnqueue(body2); closeSheet();
+            toast("Saved — you're offline. I'll add it when your phone reaches the box.");
+          }
+        };
+      },
+    });
+  }
+  $("chatToFbBtn").onclick = () => openChatToFbSheet();
+
+  // [feedback] Report a problem — now TWO-WAY (the boss: "no longer one way").
+  // The durable writes are unchanged: the complaint lands as a NOTE (the channel
+  // bug reports already flow through, and one you can see) AND a `feedback` line
+  // drops into the experience-log, so it sits in client-events.jsonl right after
+  // the swipes/taps that provoked it — the report replays its own context. On
+  // success we just confirm and refresh the queue — we do NOT auto-open the
+  // report's thread (report d3dedea5: that jump was a regression). The boss taps
+  // the report himself to add detail.
+  function openFeedbackSheet() {
+    openSheet({
+      intent: "Feedback", title: "Report a problem", ico: "⚑", cls: "",
+      bodyHtml: '<textarea class="note-edit" id="fbTa" placeholder="What felt broken or wrong, right now? Plain words — I can see what the app just recorded you doing."></textarea>'
+        + '<div class="wbtns"><button class="wbtn" id="fbSend">Send</button></div>',
+      wire: (body) => {
+        const ta = body.querySelector("#fbTa");
+        ta.addEventListener("focus", () => sheetEditFocus(ta));
+        ta.addEventListener("blur", sheetEditBlur);
+        setTimeout(() => { try { ta.focus(); } catch {} }, 60);
+        const send = body.querySelector("#fbSend");
+        send.onclick = async () => {
+          const t = ta.value.trim();
+          if (!t) { toast("Say what went wrong first"); return; }
+          send.disabled = true;
+          // Mark the complaint IN the gesture stream (best-effort, never blocks).
+          logEvent("feedback", { text: t.slice(0, 400), ver: boxVersion || "" });
+          // Durable, visible record via the same note pipe the desktop uses. Tag
+          // it so a bug report is scannable apart from a real research note.
+          const body2 = t + "\n\n— reported from the " + page + " screen" + (boxVersion ? " · v" + boxVersion : "");
+          try {
+            const r = await api("/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: body2 }) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || d.error) throw new Error(d.error || r.status);
+            closeSheet();
+            void flushFeedbackQueue(); // deliver anything stranded from an earlier offline moment too
+            // The boss (report d3dedea5): sending feedback must NOT jump straight
+            // into that report's conversation — a "weird random regression". Just
+            // confirm and refresh the queue so the new report lands in the list;
+            // he taps it himself to open the thread if he wants to add detail.
+            await loadFeedbackQueue();
+            toast("Thanks — logged. I'll see it with what you were doing.");
+          } catch (e) {
+            // Box unreachable (off-tailnet on cellular, Tailscale asleep, or app
+            // restarting). NEVER lose the report: persist it and auto-deliver the
+            // next time the cockpit reaches the box.
+            fbEnqueue(body2);
+            closeSheet();
+            toast("Saved — you're offline. I'll deliver it when your phone reaches the box.");
+          }
+        };
+      },
+    });
+  }
   // (Composer Enter-key toggle removed — the phone Return key always inserts a
   // newline; sending is via the send button. enterkeyhint="enter" is set in the
   // static markup and on the sheet reply input.)
@@ -3885,23 +5022,54 @@ interface MockDB {
   const b64uToBytes = (s) => { const pad = "=".repeat((4 - (s.length % 4)) % 4); const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(raw, (c) => c.charCodeAt(0)); };
   const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window;
   async function currentSub() { if (!pushSupported()) return null; const reg = await navigator.serviceWorker.getRegistration().catch(() => null); return reg ? await reg.pushManager.getSubscription().catch(() => null) : null; }
+  // Notifications are DEFAULT ON: the gear just holds the off-switch. Once
+  // permission is granted (one tap on the switch the first time — iOS requires a
+  // gesture), the app keeps itself subscribed automatically from then on.
   async function refreshPushUi() {
-    if (!pushSupported()) { $("pushState").textContent = navigator.standalone === false ? "Add this page to your Home Screen first — Safari tabs can't receive push." : "Push not supported in this browser."; $("pushBtn").style.display = "none"; $("pushTestBtn").style.display = "none"; return; }
-    const sub = await currentSub(); $("pushState").textContent = sub ? "Notifications are ON for this device." : "Notifications are off."; $("pushBtn").style.display = sub ? "none" : "block"; $("pushTestBtn").style.display = sub ? "block" : "none";
+    if (!pushSupported()) { $("pushState").textContent = navigator.standalone === false ? "Add to your Home Screen first — Safari tabs can't receive push." : "Push not supported here."; $("pushSw").classList.remove("on"); $("pushTestBtn").style.display = "none"; return; }
+    const sub = await currentSub();
+    $("pushSw").classList.toggle("on", !!sub);
+    $("pushState").textContent = sub ? "On for this device." : (Notification.permission === "denied" ? "Blocked in iOS Settings for this app." : "Off — flip the switch once.");
+    $("pushTestBtn").style.display = sub ? "" : "none";
   }
-  $("pushBtn").onclick = async () => {
+  async function pushSubscribe() {
+    const perm = await Notification.requestPermission(); if (perm !== "granted") { toast("Notifications not allowed."); return false; }
+    const reg = await navigator.serviceWorker.register("/phone-sw.js"); await navigator.serviceWorker.ready;
+    const vd = await (await api("/push/vapid")).json(); if (!vd.key) throw new Error(vd.error || "no VAPID key from box");
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(vd.key) });
+    const r = await api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) });
+    if (!r.ok) throw new Error("subscribe store failed");
+    return true;
+  }
+  // Default-ON keeper: whenever permission is already granted but the device has
+  // no live subscription (fresh install, iOS evicted it), re-subscribe silently.
+  async function pushAutoOn() {
+    if (MOCK || !pushSupported()) return;
     try {
-      const perm = await Notification.requestPermission(); if (perm !== "granted") { toast("Notifications not allowed."); return; }
-      const reg = await navigator.serviceWorker.register("/phone-sw.js"); await navigator.serviceWorker.ready;
-      const vd = await (await api("/push/vapid")).json(); if (!vd.key) throw new Error(vd.error || "no VAPID key from box");
-      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(vd.key) });
-      const r = await api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) });
-      if (!r.ok) throw new Error("subscribe store failed");
-      toast("Notifications enabled."); refreshPushUi();
+      if (Notification.permission !== "granted" || localStorage.getItem("vc_push_optout") === "1") return;
+      const sub = await currentSub();
+      if (sub) { api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) }).catch(() => {}); }
+      else { await pushSubscribe(); }
+      refreshPushUi();
+    } catch {}
+  }
+  $("pushSw").onclick = async () => {
+    try {
+      const sub = await currentSub();
+      if (sub) {
+        try { localStorage.setItem("vc_push_optout", "1"); } catch {}
+        await api("/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: sub.endpoint }) }).catch(() => {});
+        await sub.unsubscribe().catch(() => {});
+        toast("Notifications off.");
+      } else {
+        try { localStorage.removeItem("vc_push_optout"); } catch {}
+        if (await pushSubscribe()) toast("Notifications on.");
+      }
     } catch (e) { toast("Push setup failed: " + (e.message || e)); }
+    refreshPushUi();
   };
   $("pushTestBtn").onclick = async () => { const r = await api("/push/test", { method: "POST" }).catch(() => null); const d = r ? await r.json().catch(() => ({})) : {}; toast(d.error ? "Test failed: " + d.error : "Test sent — should arrive in seconds."); };
-  if (!MOCK) (async () => { const sub = await currentSub(); if (sub) api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) }).catch(() => {}); })();
+  if (!MOCK) void pushAutoOn();
 
   // ---------- in-app keyboard (verbatim) ----------
   const KB_SYS_FLAG = "vc_kb_system";
@@ -4018,6 +5186,11 @@ interface MockDB {
     if (!vLive) return;
     const speaking = vAgentSpeaking; let raw;
     try { if (speaking) { const lvl = vAgentEnvLevel(); raw = []; for (let i = 0; i < NUM_BARS; i++) { const shape = 0.55 + 0.45 * Math.sin((i / (NUM_BARS - 1)) * Math.PI); raw.push(lvl * shape); } } else if (vMicAnalyser) { vMicAnalyser.getByteFrequencyData(vMicBuf); raw = vBin(vMicBuf, NUM_BARS); } else { raw = vBin(vConv && vConv.getInputByteFrequencyData && vConv.getInputByteFrequencyData(), NUM_BARS); } } catch { raw = new Array(NUM_BARS).fill(0); }
+    // [truth] Muted + not the agent's turn → flat bars. The local mic analyser is
+    // a SEPARATE getUserMedia stream that vConv.setMicMuted() never touches, so
+    // without this the waves keep dancing to your voice while you're muted — the
+    // UI saying "you're being heard" when you aren't. (Mirrors voice.html:249.)
+    if (vMuted && !speaking) raw = new Array(NUM_BARS).fill(0);
     for (let i = 0; i < NUM_BARS; i++) { const decayed = vSmoothed[i] * DECAY; vSmoothed[i] = raw[i] > decayed ? raw[i] : decayed; const h = 0.16 + Math.min(1, vSmoothed[i]) * 0.84; vBars[i].style.transform = `scaleY(${h.toFixed(3)})`; }
     vRafId = requestAnimationFrame(vMeter);
   }
@@ -4065,7 +5238,7 @@ interface MockDB {
       setVErr(String((e && e.message) || e));
     }
   }
-  function vTeardown() { vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vAgentSpeaking = false; vAgentEnvReset(); vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; vConv = null; vConnecting = false; }
+  function vTeardown() { vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vAgentSpeaking = false; vAgentEnvReset(); vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; { const vh = $("vhint"); if (vh) vh.textContent = ""; } vConv = null; vConnecting = false; }
   async function vStop() { try { if (vConv) await vConv.endSession(); } catch {} vTeardown(); }
   $("voiceRow").onclick = () => {
     closeMenu();
@@ -4073,7 +5246,7 @@ interface MockDB {
     try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext!)(); if (vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {}); const b = vMicCtx.createBuffer(1, 1, 22050); const s = vMicCtx.createBufferSource(); s.buffer = b; s.connect(vMicCtx.destination); s.start(0); } catch {}
     hideKb(); document.body.classList.add("voice"); document.body.classList.remove("voicemin"); vStart();
   };
-  function vSetMute(m) { vMuted = m; document.body.classList.toggle("vmicmuted", m); if (vConv) try { vConv.setMicMuted(m); } catch {} }
+  function vSetMute(m) { vMuted = m; document.body.classList.toggle("vmicmuted", m); const vh = $("vhint"); if (vh) vh.textContent = m ? "Muted" : ""; if (vConv) try { vConv.setMicMuted(m); } catch {} }
   $("vMuteBtn").onclick = () => vSetMute(!vMuted);
   $("vEndBtn").onclick = vStop;
   $("vMinBtn").onclick = () => { if (vLive || vConnecting) { document.body.classList.add("voicemin"); document.body.classList.remove("voice"); } else vStop(); };
@@ -4081,8 +5254,14 @@ interface MockDB {
 
   // ---------- lifecycle ----------
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") { void pollLoop(); void refreshState(); void refreshBadge(); if (page === "activity") void loadActivity(); if (page === "alerts") void loadAlerts(); }
+    if (document.visibilityState === "visible") { void pollLoop(); void refreshState(); void refreshBadge(); if (page === "activity") softReload(loadActivity); if (page === "alerts") softReload(loadAlerts); }
   });
+  // Connection came back — deliver any report the user saved while offline right
+  // away, rather than waiting for the next 45s status poll.
+  window.addEventListener("online", () => { void flushFeedbackQueue(); });
+  // Touching a list at all marks it briefly busy, so a background tick can't
+  // rebuild it (scroll → top) while you're reading or reaching for a card.
+  ["alScroll", "actScroll", "notesScroll"].forEach((id) => { const s = $(id); if (s) s.addEventListener("touchstart", () => markListBusy(2500), { passive: true }); });
   if (window.visualViewport) {
     const vv = window.visualViewport;
     // Keyboard handling. --kb is the height the composer must rise to sit on top of
@@ -4128,20 +5307,46 @@ interface MockDB {
       const d = (e && e.data) || {};
       if (d.type !== "deeplink" || !d.url) return;
       try {
-        const cid = new URLSearchParams(String(d.url).split("?")[1] || "").get("conv");
+        const p = new URLSearchParams(String(d.url).split("?")[1] || "");
+        // [ask redesign] An ask push deep-links to the ask surface (?ask=), not
+        // to the mission thread — the main composer must never get silently
+        // re-bound to a mission by a notification tap (spillover vector B3).
+        const aid = p.get("ask");
+        if (aid) { void openAskById(aid); return; }
+        const cid = p.get("conv");
         if (cid) void openThread(cid);
       } catch {}
     });
   }
 
-  // The scroll fade is a scrolling AFFORDANCE — a list that fits gets no fade.
+  // [ask redesign] Open an ask's deliberation sheet by notification id — the
+  // push deep-link target. Lands on the Alerts page with the sheet up; never
+  // touches the main chat's bound conversation.
+  async function openAskById(nid) {
+    try {
+      const d = await (await api("/notifications")).json();
+      lastNotifList = d.notifications || [];
+      setPage("alerts");
+      void loadAlerts();
+      const n = lastNotifList.find((x) => x.id === nid);
+      if (n) openDeliberationSheet(n);
+    } catch {}
+  }
+
+  // The scroll fade is a scrolling AFFORDANCE — per edge, and only when content
+  // is actually cut off on that edge. At rest (scrollTop 0) the first line is
+  // fully readable; the top fade appears only once you scroll down.
   const fadeWatch = () => {
     document.querySelectorAll("#msgs,.scroll,.clist,.sheet-body").forEach((sc) => {
-      sc.classList.toggle("can-scroll", sc.scrollHeight > sc.clientHeight + 4);
+      const can = sc.scrollHeight > sc.clientHeight + 4;
+      sc.classList.toggle("fade-top", can && sc.scrollTop > 4);
+      sc.classList.toggle("fade-bot", can && sc.scrollTop + sc.clientHeight < sc.scrollHeight - 4);
     });
   };
   new MutationObserver(fadeWatch).observe(document.body, { childList: true, subtree: true });
   window.addEventListener("resize", fadeWatch);
+  // scroll doesn't bubble — capture phase catches every scrollable surface.
+  document.addEventListener("scroll", fadeWatch, true);
   setInterval(fadeWatch, 1200);
   fadeWatch();
 
@@ -4151,8 +5356,13 @@ interface MockDB {
   // (from the push url, when the app was launched cold). It MUST win over the
   // sticky last-thread restore below — otherwise the tap lands you on whatever
   // chat you had open last, not the one waiting on your call.
+  const bootAsk = qs.get("ask");
   const bootConv = qs.get("conv");
-  if (bootConv) {
+  if (bootAsk) {
+    // [ask redesign] Cold-launch from an ask push: open the ask surface, never
+    // a thread — the main composer keeps whatever chat it had.
+    void openAskById(bootAsk);
+  } else if (bootConv) {
     void openThread(bootConv);
   } else {
     // Return to the thread you were in last session (404 falls back to a fresh chat).
