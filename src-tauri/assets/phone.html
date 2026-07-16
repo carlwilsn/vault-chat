@@ -528,10 +528,6 @@
   .coder-msg.u{align-self:flex-end;background:var(--fill-3);color:var(--text);border-bottom-right-radius:5px}
   .coder-msg.a{align-self:flex-start;background:var(--fill);border:1px solid var(--line);color:var(--text-body);border-bottom-left-radius:5px}
   .coder-msg.t{align-self:flex-start;color:var(--dim);font-style:italic}
-  /* [chat→feedback] a subtle centered chip above the composer that turns the
-     current general chat into a task on the Feedback page (report 1fb648bf). */
-  .chat2fb{flex:0 0 auto;align-self:center;display:flex;align-items:center;justify-content:center;gap:7px;margin:6px auto 4px;border:1px solid var(--line-3);border-radius:999px;background:var(--fill);color:var(--text-secondary);font-size:12px;padding:6px 14px}
-  .chat2fb svg{width:14px;height:14px;flex:none}
   .cl-foot{flex:0 0 auto;border-top:1px solid var(--line);padding:9px 13px 4px;display:flex;align-items:flex-end;gap:8px}
   /* the boss moved "new chat" out of a top button and into a + at the composer's
      left (report 58b93ebc): the pill now fills the space to the RIGHT of the +,
@@ -903,8 +899,6 @@
           <div id="coderLog" class="coder-log"></div>
         </div>
       </div>
-      <!-- general chat only: turn this conversation into a Feedback-page task -->
-      <button class="chat2fb" id="chatToFbBtn" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg><span>Turn this into a feedback task</span></button>
       <div class="cl-foot" id="clFoot" style="display:none">
         <button class="coder-new" id="coderNewBtn" aria-label="new chat — clear this conversation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
         <div class="coder-input"><textarea id="coderTa" rows="1" placeholder="Reply, or tell it to change something…" enterkeyhint="enter" autocomplete="off"></textarea><button class="coder-send" id="coderSend" aria-label="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div>
@@ -4700,7 +4694,6 @@ interface MockDB {
       $("coderNewBtn").style.display = ""; // general chat: the + clears/starts fresh
       coderLoadThread(generalThread()); // no auto-introduction — the boss types first
     }
-    updateChatToFb();
   }
   function generalThread() {
     let t = localStorage.getItem("vc_coder_thread");
@@ -4824,7 +4817,6 @@ interface MockDB {
     $("clBriefText").textContent = it.text || "";
     const meta = $("clBriefMeta"); meta.innerHTML = '<div class="fb-st">' + fbStateLine(it) + "</div>";
     coderLoadThread("fb-" + it.id); // no auto-introduction — the brief above is the context
-    updateChatToFb(); // report thread — never the chat→feedback chip
   }
   // ---- the conversation surface (shared by report threads + the general chat) ----
   let coderThread = "";
@@ -4837,7 +4829,6 @@ interface MockDB {
     let had = false;
     try { const h = JSON.parse(localStorage.getItem("vc_coder_hist_" + thread) || "[]"); h.forEach((m) => { coderAdd(m.c, m.x); had = true; }); } catch {}
     if (!had && greeting) coderAdd("a", greeting);
-    updateChatToFb();
     setTimeout(() => { $("clBody").scrollTop = $("clBody").scrollHeight; }, 30);
   }
   (function coderComposer() {
@@ -4870,7 +4861,6 @@ interface MockDB {
           ? "Can't reach the box right now — is it awake and is Tailscale on? I'll pick up where we left off once it's back."
           : "That reply took too long and the connection dropped — but the box is up and probably still working on it. Give it a moment, then send your message again to pick the thread back up.");
       }
-      updateChatToFb(); // an exchange now exists — surface the chip in general chat
       send.disabled = false;
     };
     send.addEventListener("pointerdown", (e) => { e.preventDefault(); void submit(); }); // one-tap send with the keyboard up
@@ -4893,74 +4883,14 @@ interface MockDB {
   // The + at the composer's left clears the existing general chat and starts fresh.
   $("coderNewBtn").onclick = () => coderNewChat();
 
-  // [chat→feedback] The boss (report 1fb648bf): "I wish a conversation with Claude
-  // from that chat page can be turned into a feedback task that ends up on the
-  // feedback page if the conversation leads to that." It's MANUAL — he decides
-  // when a chat has become a real ask — and reuses the exact /notes pipe every
-  // report already flows through, so the new task merges into /feedback by id and
-  // behaves like any other feedback item (fixer pickup, confirm, dismiss). We
-  // don't auto-mint: an unprompted task is the orphaned-feedback noise he asked us
-  // to stop (report 17197533). The chip only shows in the GENERAL chat once a real
-  // exchange exists — never on a report thread or an empty chat.
-  function chatToFbEligible() { return clTab === "chat" && !clCur; }
-  function updateChatToFb() {
-    const btn = $("chatToFbBtn"); if (!btn) return;
-    const hasU = coderLog().querySelectorAll(".coder-msg.u").length > 0;
-    const hasA = coderLog().querySelectorAll(".coder-msg.a").length > 0;
-    btn.style.display = (chatToFbEligible() && hasU && hasA) ? "" : "none";
-  }
-  function chatTranscript() {
-    return [...coderLog().querySelectorAll(".coder-msg")]
-      .filter((n) => !n.classList.contains("t"))
-      .map((n) => (n.classList.contains("u") ? "Me: " : "Claude: ") + n.textContent)
-      .join("\n\n");
-  }
-  function openChatToFbSheet() {
-    const firstUser = ([...coderLog().querySelectorAll(".coder-msg.u")].map((n) => n.textContent).find(Boolean) || "").slice(0, 240);
-    openSheet({
-      intent: "Feedback", title: "Make this a feedback task", ico: "⚑", cls: "",
-      bodyHtml: '<div style="font-size:12px;color:var(--dim);margin-bottom:8px">This turns the chat above into a task on your Feedback page. Edit the ask in your words — the full conversation rides along as context.</div>'
-        + '<textarea class="note-edit" id="c2fTa" placeholder="What should this task be?"></textarea>'
-        + '<div class="wbtns"><button class="wbtn" id="c2fSend">Add to Feedback</button></div>',
-      wire: (body) => {
-        const ta = body.querySelector("#c2fTa"); ta.value = firstUser;
-        ta.addEventListener("focus", () => sheetEditFocus(ta));
-        ta.addEventListener("blur", sheetEditBlur);
-        setTimeout(() => { try { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } catch {} }, 60);
-        const send = body.querySelector("#c2fSend");
-        send.onclick = async () => {
-          const t = ta.value.trim();
-          if (!t) { toast("Say what the task is first"); return; }
-          send.disabled = true;
-          logEvent("feedback", { text: t.slice(0, 400), ver: boxVersion || "", from: "chat" });
-          const body2 = t + "\n\n— turned into a task from a Claude chat" + (boxVersion ? " · v" + boxVersion : "")
-            + "\n\nThe conversation:\n" + chatTranscript();
-          try {
-            const r = await api("/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: body2 }) });
-            const d = await r.json().catch(() => ({}));
-            if (!r.ok || d.error) throw new Error(d.error || r.status);
-            closeSheet();
-            void flushFeedbackQueue();
-            // Land the boss ON the Feedback page, inside the new task's thread — the
-            // same drop-in a fresh report gets (openFeedbackSheet), so the bridge is
-            // visible: he sees it arrive where he asked.
-            await loadFeedbackQueue();
-            if (d.id) {
-              const it = (fbItems || []).find((x) => x.id === d.id)
-                || { id: d.id, title: t.slice(0, 60), text: body2, state: "open" };
-              clShowTab("fb"); clOpenConv(it);
-            } else {
-              clShowTab("fb"); toast("Added to your Feedback page.");
-            }
-          } catch (e) {
-            fbEnqueue(body2); closeSheet();
-            toast("Saved — you're offline. I'll add it when your phone reaches the box.");
-          }
-        };
-      },
-    });
-  }
-  $("chatToFbBtn").onclick = () => openChatToFbSheet();
+  // [chat→feedback] There is no "turn this chat into a task" button any more
+  // (report 5f32d394 reopened 1fb648bf). The boss: "have a feedback skill, not a
+  // button that turns my message into a thing of feedback — feedback is kind of a
+  // task, it's 2 in one." So the CODER AGENT itself files the task when a chat
+  // lands on a concrete ask (see ~/vault-chat-fixer/coder-system.md → "File
+  // feedback as a task"): it writes through the exact same /notes pipe a report
+  // uses, so the item shows on the Feedback page and behaves like any other one.
+  // Nothing for the phone to render — the conversation IS the task.
 
   // [feedback] Report a problem — now TWO-WAY (the boss: "no longer one way").
   // The durable writes are unchanged: the complaint lands as a NOTE (the channel
