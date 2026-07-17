@@ -4733,19 +4733,37 @@ interface MockDB {
     return '<span class="fb-dot"></span>open — tap to discuss';
   }
   let fbItems = [];
-  // Dismissed reports live per-device in localStorage. Two ways in: the bulk
-  // "Clear" on the Done section (report ca5eb45a) and a per-card × on any card
-  // that doesn't need the boss (report 17197533: "clear those, I didn't make
-  // them, they don't have a place for me"). A dismissed report only stays hidden
-  // WHILE it doesn't need the boss — the moment it flips to a state that wants
-  // his action (shipped+confirmable / reopened / briefed) it resurfaces, so a
-  // dismiss can never swallow a decision or a "did this fix it?".
-  const FB_CLEARED_KEY = "vc_fb_cleared_done";
-  function fbClearedSet() { try { return new Set(JSON.parse(localStorage.getItem(FB_CLEARED_KEY) || "[]")); } catch { return new Set(); } }
-  function fbSaveCleared(set) { try { localStorage.setItem(FB_CLEARED_KEY, JSON.stringify(Array.from(set))); } catch {} }
-  // A report NEEDS the boss when it's waiting on his call or his confirmation —
-  // those are never dismissable and always resurface a prior dismiss.
-  function fbNeedsUser(it) { return it.state === "reopened" || it.state === "briefed" || (it.state === "shipped" && it.confirmable); }
+  // Dismissed reports live per-device in localStorage, keyed by a SIGNATURE of
+  // the card's current state (state + confirmable). A dismiss hides the card AS
+  // IT IS, but never swallows a genuinely new development: the instant the fixer
+  // moves it on (open→diagnosing→briefed, briefed→shipped, shipped→confirmable,
+  // →reopened) the signature changes and the card resurfaces on its own.
+  //   Report 17197533 ("clear those, I didn't make them, they don't have a place
+  //   for me") REOPENED as ab2c86bb: the earlier fix offered the × on every card
+  //   EXCEPT briefed/reopened/shipped+confirmable — which were exactly the cards
+  //   cluttering his queue ("feedback ticket things asking me for a brief"), so
+  //   he couldn't clear them and it "didn't take". Now the × is on every card
+  //   except shipped+confirmable, which owns the Yes/No "Did this fix it?" pills
+  //   (the one action a stray × must not hide).
+  const FB_DISMISS_KEY = "vc_fb_dismissed";      // { id: signature }
+  const FB_CLEARED_KEY = "vc_fb_cleared_done";   // legacy id-array, migrated once
+  function fbSig(it) { return it.state + "|" + (it.confirmable ? 1 : 0); }
+  function fbDismissMap() {
+    try { const raw = localStorage.getItem(FB_DISMISS_KEY); if (raw) return new Map(Object.entries(JSON.parse(raw))); } catch {}
+    return new Map();
+  }
+  function fbSaveDismiss(map) { try { localStorage.setItem(FB_DISMISS_KEY, JSON.stringify(Object.fromEntries(map))); } catch {} }
+  function fbDismissed(it, map) { return map.get(it.id) === fbSig(it); }
+  // One-time migration: the old per-device store held bare ids. Preserve those
+  // dismissals by re-keying each still-present id at its current signature so the
+  // boss's already-cleared cards don't all pop back on this update.
+  function fbMigrateCleared(byId, map) {
+    if (map.size || !localStorage.getItem(FB_CLEARED_KEY)) return map;
+    try { for (const id of JSON.parse(localStorage.getItem(FB_CLEARED_KEY) || "[]")) { const it = byId.get(id); if (it) map.set(id, fbSig(it)); } } catch {}
+    try { localStorage.removeItem(FB_CLEARED_KEY); } catch {}
+    fbSaveDismiss(map);
+    return map;
+  }
   async function loadFeedbackQueue() {
     let items = [];
     try { const d = await (await api("/feedback")).json(); items = d.items || []; } catch {}
@@ -4757,11 +4775,13 @@ interface MockDB {
     // goes stale and a report that starts needing action (reopened, briefed,
     // shipped+confirmable) always resurfaces instead of vanishing forever.
     const byId = new Map(items.map((x) => [x.id, x]));
-    let cleared = fbClearedSet();
-    const pruned = new Set(Array.from(cleared).filter((id) => { const it = byId.get(id); return it && !fbNeedsUser(it); }));
-    if (pruned.size !== cleared.size) { cleared = pruned; fbSaveCleared(cleared); }
-    const open = items.filter((x) => x.state !== "done" && !cleared.has(x.id));
-    const done = doneAll.filter((x) => !cleared.has(x.id));
+    const dismissed = fbMigrateCleared(byId, fbDismissMap());
+    // Drop entries whose id no longer exists so the map never goes stale.
+    let staleDrop = false;
+    for (const id of Array.from(dismissed.keys())) { if (!byId.has(id)) { dismissed.delete(id); staleDrop = true; } }
+    if (staleDrop) fbSaveDismiss(dismissed);
+    const open = items.filter((x) => x.state !== "done" && !fbDismissed(x, dismissed));
+    const done = doneAll.filter((x) => !fbDismissed(x, dismissed));
     const addCard = (it) => {
       const b = document.createElement("button");
       b.className = "fb-card" + (it.state === "reopened" ? " reop" : "") + (it.state === "done" ? " dn" : "");
@@ -4785,18 +4805,20 @@ interface MockDB {
         });
         b.appendChild(c);
       }
-      // Per-card dismiss × — but never on a card that needs the boss (its ×
-      // would be a no-op since the prune resurfaces it, and it'd be dishonest
-      // to offer to hide a decision he still owes).
-      if (!fbNeedsUser(it)) {
+      // Per-card dismiss × on every card except a shipped+confirmable one (that
+      // card owns the Yes/No "Did this fix it?" pills). The dismiss records the
+      // card's current signature; the prune above resurfaces it the instant the
+      // fixer moves it on, so clearing clutter can never swallow a new brief,
+      // ship, or reopen.
+      if (!(it.state === "shipped" && it.confirmable)) {
         const dz = document.createElement("span");
         dz.className = "fb-dismiss";
         dz.setAttribute("aria-label", "Dismiss");
         dz.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
         dz.addEventListener("click", (e) => {
           e.stopPropagation();
-          const next = fbClearedSet(); next.add(it.id); fbSaveCleared(next);
-          toast("Dismissed — it comes back only if it needs you.");
+          const next = fbDismissMap(); next.set(it.id, fbSig(it)); fbSaveDismiss(next);
+          toast("Dismissed — it comes back only if there's an update.");
           void loadFeedbackQueue();
         });
         b.appendChild(dz);
@@ -4811,7 +4833,7 @@ interface MockDB {
       const clr = document.createElement("button"); clr.className = "fb-clear"; clr.textContent = "Clear";
       clr.addEventListener("click", () => {
         const n = done.length;
-        const next = fbClearedSet(); doneAll.forEach((x) => next.add(x.id)); fbSaveCleared(next);
+        const next = fbDismissMap(); doneAll.forEach((x) => next.set(x.id, fbSig(x))); fbSaveDismiss(next);
         toast(n === 1 ? "Cleared 1 done report." : ("Cleared " + n + " done reports."));
         void loadFeedbackQueue();
       });
