@@ -4677,6 +4677,42 @@ struct SyncStatus {
     nested_repos: Vec<String>,
 }
 
+/// Count local commits not yet confirmed on the remote. `@{upstream}` is only
+/// set once a `git push -u` has SUCCEEDED at least once — so a vault whose
+/// very first push failed (repo not created yet on the host, a transient
+/// auth/network error) has no upstream tracking ref at all. Reading that as
+/// "0 ahead" was a real bug: `tickPull`'s stranded-commit flush
+/// (`ahead > 0 → push`) never fires, the working tree is clean so the
+/// dirty-watch push trigger never fires either, and the commit sits unpushed
+/// indefinitely until the user happens to make another local edit. Fall back
+/// through `origin/<branch>` (set by a fetch even without `-u` tracking) and,
+/// failing that — no remote-tracking ref at all — treat every commit on HEAD
+/// as unconfirmed, since there's no evidence any of them ever reached the
+/// remote whose URL is configured.
+fn compute_ahead(vault: &str, remote: Option<&str>) -> Result<u32, String> {
+    let (out, _, code) = run_git(vault, &["rev-list", "--count", "@{upstream}..HEAD"])?;
+    if code == 0 {
+        return Ok(out.trim().parse::<u32>().unwrap_or(0));
+    }
+    let branch = run_git(vault, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .ok()
+        .and_then(|(b, _, c)| if c == 0 { Some(b.trim().to_string()) } else { None })
+        .filter(|b| !b.is_empty() && b != "HEAD");
+    let Some(b) = branch else { return Ok(0) }; // detached HEAD — leave as before
+    let remote_ref = format!("origin/{}..HEAD", b);
+    let (out2, _, code2) = run_git(vault, &["rev-list", "--count", &remote_ref])?;
+    if code2 == 0 {
+        return Ok(out2.trim().parse::<u32>().unwrap_or(0));
+    }
+    if remote.is_some() {
+        let (out3, _, code3) = run_git(vault, &["rev-list", "--count", "HEAD"])?;
+        if code3 == 0 {
+            return Ok(out3.trim().parse::<u32>().unwrap_or(0));
+        }
+    }
+    Ok(0)
+}
+
 #[tauri::command]
 async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -4708,17 +4744,7 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
         let (status_out, _, _) =
             run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])?;
         let has_changes = !status_out.trim().is_empty();
-        // Count local commits not yet on the upstream. Errors (no upstream,
-        // detached HEAD) are treated as "nothing ahead".
-        let ahead = {
-            let (out, _, code) =
-                run_git(&vault, &["rev-list", "--count", "@{upstream}..HEAD"])?;
-            if code == 0 {
-                out.trim().parse::<u32>().unwrap_or(0)
-            } else {
-                0
-            }
-        };
+        let ahead = compute_ahead(&vault, remote.as_deref())?;
         let nested_repos = find_nested_repos(&root);
         Ok(SyncStatus {
             has_repo,
@@ -4788,7 +4814,7 @@ async fn vault_sync_set_remote(vault: String, url: String) -> Result<(), String>
     .map_err(|e| e.to_string())?
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct SyncOpResult {
     ok: bool,
     /// Short summary suitable for the status row. e.g.
@@ -5484,7 +5510,21 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         if !st.trim().is_empty() {
             let (hn, he) = human_identity(&vault);
             let _ = run_git_as(&vault, &hn, &he, &["add", "-A"]);
-            let _ = run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: auto-sync submodule pointers"]);
+            // Same hold as vault_sync_commit_local: sync_nested_repos may have
+            // committed a sub-repo locally without its push landing (network,
+            // race with another machine). Without this, the pull path would
+            // publish a gitlink to a sub-commit the sub-repo's own remote
+            // doesn't have yet — the exact "not our ref" stranding this
+            // invariant exists to prevent, just reached from pull instead of
+            // the local-commit loop.
+            let held = hold_unpushed_submodule_gitlinks(&vault);
+            let nothing_staged = matches!(
+                run_git(&vault, &["diff", "--cached", "--quiet"]),
+                Ok((_, _, 0))
+            );
+            if !(held > 0 && nothing_staged) {
+                let _ = run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: auto-sync submodule pointers"]);
+            }
         }
         Ok(SyncOpResult {
             ok: true,
@@ -6232,7 +6272,103 @@ mod conversation_storage_tests {
 
 #[cfg(test)]
 mod sync_role_tests {
-    use super::{conv_is_mission_zone, is_sync_follower, run_git, run_git_mut, sanitize_mission_zone};
+    use super::{
+        conv_is_mission_zone, is_sync_follower, reconcile_with_upstream, run_git, run_git_mut,
+        sanitize_mission_zone,
+    };
+
+    // The core cross-machine scenario: two checkouts of the same vault commit
+    // independently (a real box + an intermittent laptop), one pushes first,
+    // the other reconciles via `reconcile_with_upstream` — the exact function
+    // both `vault_sync_pull` and `vault_sync_push`'s rejection path call.
+    // Verifies the documented guarantees hold on real repos: an append-only
+    // `*.jsonl` log unions both machines' lines (via `.gitattributes`
+    // `merge=union`) with nothing lost or duplicated-away, a genuinely
+    // divergent plain-text edit resolves to "theirs" in the tree with "ours"
+    // preserved as a `.conflict` sidecar (never silently dropped), and the
+    // repo ends with zero unresolved paths so the caller's follow-up commit
+    // never fails on leftover conflict markers.
+    #[test]
+    fn two_machines_diverge_and_reconcile_cleanly() {
+        let base = std::env::temp_dir().join(format!("vc_reconcile_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "master"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "master"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git(ds, &["remote", "add", "origin", og]).unwrap();
+        }
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+
+        // Seed from A: an append-only jsonl log (union-merged per
+        // .gitattributes) and a plain doc both machines will later diverge on.
+        std::fs::write(&a.join(".gitattributes"), "*.jsonl merge=union\n").unwrap();
+        std::fs::write(a.join("log.jsonl"), "{\"line\":1}\n").unwrap();
+        std::fs::write(a.join("note.md"), "original\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+
+        // A (the box) appends a log line AND edits note.md, then pushes first.
+        let mut log = std::fs::read_to_string(a.join("log.jsonl")).unwrap();
+        log.push_str("{\"line\":2,\"from\":\"box\"}\n");
+        std::fs::write(a.join("log.jsonl"), log).unwrap();
+        std::fs::write(a.join("note.md"), "box edit\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "box turn"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        // B (the laptop) independently appends its own log line AND edits
+        // note.md to something DIFFERENT — both sides touched it since the
+        // merge base, so it's a genuine conflict, not something a 3-way
+        // merge can resolve on its own — then reconciles.
+        log = std::fs::read_to_string(b.join("log.jsonl")).unwrap();
+        log.push_str("{\"line\":2,\"from\":\"laptop\"}\n");
+        std::fs::write(b.join("log.jsonl"), log).unwrap();
+        std::fs::write(b.join("note.md"), "laptop edit\n").unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "laptop turn"]).unwrap();
+
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+        let outcome = reconcile_with_upstream(bs, "master").expect("reconcile must not error");
+        let msg = outcome.expect("divergence must auto-resolve, never surface as a hard error");
+        assert!(msg.contains("merged") || msg.contains("auto-resolved"), "got: {}", msg);
+
+        // Union merge: BOTH machines' log lines survive, none lost or duped.
+        let merged_log = std::fs::read_to_string(b.join("log.jsonl")).unwrap();
+        assert!(merged_log.contains("\"from\":\"box\""), "box's log line must survive the union merge");
+        assert!(merged_log.contains("\"from\":\"laptop\""), "laptop's own log line must survive");
+        assert_eq!(merged_log.matches("\"line\":2").count(), 2, "no line dropped or duplicated");
+
+        // Genuine divergent edit: theirs (origin/box edit) lands in the
+        // tree, ours (laptop edit) is preserved as a sidecar — never
+        // silently dropped.
+        let note = std::fs::read_to_string(b.join("note.md")).unwrap();
+        assert_eq!(note, "box edit\n", "theirs must land in the working tree, not silently overwritten");
+        let sidecar = std::fs::read_to_string(b.join("note.md.conflict")).unwrap();
+        assert_eq!(sidecar, "laptop edit\n", "ours must be preserved as a .conflict sidecar, not dropped");
+
+        // Nothing left unmerged — the caller's follow-up commit must not fail.
+        let (unmerged, _, _) = run_git(bs, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+        assert!(unmerged.trim().is_empty(), "reconcile must leave zero unresolved paths");
+
+        // B can now push its reconciled history back without rejection —
+        // reconcile_with_upstream already created the merge commit above.
+        let (_, _, push_code) = run_git(bs, &["push", "-q", "origin", "master"]).unwrap();
+        assert_eq!(push_code, 0, "reconciled history must push cleanly");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     // The follower sanitize pass, end to end on real repos: a diverged
     // follower's mission-zone files reset to origin's version (stale mission
@@ -6304,6 +6440,61 @@ mod sync_role_tests {
         assert!(chat.contains("laptop chat line"), "own chat content must survive");
         let note = std::fs::read_to_string(b.join("note.md")).unwrap();
         assert!(note.contains("laptop edit"), "doc content must survive");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // A vault whose first push never succeeded (no `@{upstream}` tracking
+    // ref yet) must still report ahead > 0 so the pull-tick flush keeps
+    // retrying it — the bug this guards against left such a commit stranded
+    // forever, since the working tree goes clean right after the commit and
+    // nothing else ever re-triggers a push.
+    #[test]
+    fn compute_ahead_falls_back_without_upstream_tracking() {
+        use super::compute_ahead;
+        let base = std::env::temp_dir().join(format!("vc_ahead_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let work = base.join("work");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(origin.to_str().unwrap(), &["init", "-q", "--bare", "-b", "master"]).unwrap();
+        std::fs::create_dir_all(&work).unwrap();
+        let ws = work.to_str().unwrap();
+        run_git(ws, &["init", "-q", "-b", "master"]).unwrap();
+        run_git(ws, &["config", "user.email", "t@t"]).unwrap();
+        run_git(ws, &["config", "user.name", "t"]).unwrap();
+        run_git(ws, &["remote", "add", "origin", origin.to_str().unwrap()]).unwrap();
+
+        // Case 1: remote configured, nothing ever pushed or fetched — no
+        // `@{upstream}`, no `origin/master` ref at all. Every local commit
+        // is unconfirmed, so ahead must count all of them, not read 0.
+        std::fs::write(work.join("a.md"), "one\n").unwrap();
+        run_git_mut(ws, &["add", "-A"]).unwrap();
+        run_git_mut(ws, &["commit", "-q", "-m", "first"]).unwrap();
+        let remote = run_git(ws, &["remote", "get-url", "origin"]).ok().map(|(u, _, _)| u.trim().to_string());
+        assert_eq!(
+            compute_ahead(ws, remote.as_deref()).unwrap(),
+            1,
+            "unconfirmed commit with no remote-tracking ref at all must count as ahead"
+        );
+
+        // Case 2: a plain `git push` (no `-u`) lands the commit and creates
+        // `origin/master`, but still sets no upstream tracking config. A
+        // second local commit must show ahead == 1 (just the new one), via
+        // the `origin/<branch>..HEAD` fallback — not 0, and not 2.
+        run_git_mut(ws, &["push", "-q", "origin", "master"]).unwrap();
+        assert!(
+            run_git(ws, &["rev-parse", "--verify", "--quiet", "@{upstream}"]).map(|(_, _, c)| c != 0).unwrap_or(true),
+            "sanity: plain push must not have set upstream tracking"
+        );
+        std::fs::write(work.join("b.md"), "two\n").unwrap();
+        run_git_mut(ws, &["add", "-A"]).unwrap();
+        run_git_mut(ws, &["commit", "-q", "-m", "second"]).unwrap();
+        assert_eq!(
+            compute_ahead(ws, remote.as_deref()).unwrap(),
+            1,
+            "must fall back to origin/<branch>..HEAD when only the tracking ref, not the config, exists"
+        );
+
         let _ = std::fs::remove_dir_all(&base);
     }
 
