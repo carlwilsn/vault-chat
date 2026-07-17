@@ -227,8 +227,16 @@
   .md ul,.md ol{margin:.35em 0;padding-left:1.4em}
   .md a{color:var(--link);text-decoration:none;word-break:break-all}
   .md img{max-width:100%;border-radius:8px;margin:.3em 0}
-  .md table{border-collapse:collapse;margin:.4em 0;font-size:13px;display:block;overflow-x:auto}
-  .md th,.md td{border:1px solid var(--line);padding:3px 8px;text-align:left}
+  /* Tables live inside their OWN horizontal scroller (.tablewrap). #msgs sets
+     overflow-wrap:anywhere, which was inheriting into cells and shattering words
+     mid-character ("progres|s") as a display:block table squished to fit the
+     viewport; the scroller lets a genuinely-wide table scroll instead of squish,
+     and cells wrap only at word boundaries. */
+  .md .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:.5em 0;max-width:100%}
+  .md table{border-collapse:collapse;font-size:12.5px;line-height:1.4;width:auto;max-width:none}
+  .md th,.md td{border:1px solid var(--line);padding:5px 9px;text-align:left;vertical-align:top;overflow-wrap:normal;word-break:normal;hyphens:none}
+  .md th{font-weight:600;background:var(--fill);white-space:nowrap}
+  .md tbody tr:nth-child(even) td{background:rgba(255,255,255,.02)}
   .md hr{border:none;border-top:1px solid var(--line);margin:.7em 0}
 
   /* North Star proposal card (```plan block) */
@@ -1596,10 +1604,10 @@ interface MockDB {
       if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
         flushP();
         const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(c.trim()));
-        html += "<table><thead><tr>" + cells(l).map((c) => "<th>" + c + "</th>").join("") + "</tr></thead><tbody>";
+        html += '<div class="tablewrap"><table><thead><tr>' + cells(l).map((c) => "<th>" + c + "</th>").join("") + "</tr></thead><tbody>";
         i += 2;
         while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) html += "<tr>" + cells(lines[i++]).map((c) => "<td>" + c + "</td>").join("") + "</tr>";
-        html += "</tbody></table>"; continue;
+        html += "</tbody></table></div>"; continue;
       }
       pbuf.push(l); i++;
     }

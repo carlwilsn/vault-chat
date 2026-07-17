@@ -227,8 +227,16 @@
   .md ul,.md ol{margin:.35em 0;padding-left:1.4em}
   .md a{color:var(--link);text-decoration:none;word-break:break-all}
   .md img{max-width:100%;border-radius:8px;margin:.3em 0}
-  .md table{border-collapse:collapse;margin:.4em 0;font-size:13px;display:block;overflow-x:auto}
-  .md th,.md td{border:1px solid var(--line);padding:3px 8px;text-align:left}
+  /* Tables live inside their OWN horizontal scroller (.tablewrap). #msgs sets
+     overflow-wrap:anywhere, which was inheriting into cells and shattering words
+     mid-character ("progres|s") as a display:block table squished to fit the
+     viewport; the scroller lets a genuinely-wide table scroll instead of squish,
+     and cells wrap only at word boundaries. */
+  .md .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:.5em 0;max-width:100%}
+  .md table{border-collapse:collapse;font-size:12.5px;line-height:1.4;width:auto;max-width:none}
+  .md th,.md td{border:1px solid var(--line);padding:5px 9px;text-align:left;vertical-align:top;overflow-wrap:normal;word-break:normal;hyphens:none}
+  .md th{font-weight:600;background:var(--fill);white-space:nowrap}
+  .md tbody tr:nth-child(even) td{background:rgba(255,255,255,.02)}
   .md hr{border:none;border-top:1px solid var(--line);margin:.7em 0}
 
   /* North Star proposal card (```plan block) */
@@ -522,16 +530,22 @@
   .cl-brief{border:1px solid var(--line-2);border-radius:13px;background:var(--fill);padding:12px 13px;margin-bottom:14px}
   .cl-brief .eb{font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--label);margin-bottom:6px}
   .cl-brief .rep{font-size:13.5px;color:var(--text-body);line-height:1.45;white-space:pre-wrap}
+  .cl-brief .diag{border-top:1px solid var(--line);padding-top:9px;margin-top:9px}
+  .cl-brief .diag .eb{color:var(--text-body)}
+  .cl-brief .diag .rep{color:var(--text-body)}
+  .cl-brief .diag .nudge{font-size:12px;color:var(--dim);margin-top:6px}
   .cl-brief .meta{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim);border-top:1px solid var(--line);padding-top:9px;margin-top:9px}
   .coder-log{display:flex;flex-direction:column;gap:9px}
   .coder-msg{max-width:86%;padding:9px 12px;border-radius:14px;white-space:pre-wrap;line-height:1.45;font-size:13.5px;word-wrap:break-word;overflow-wrap:anywhere}
   .coder-msg.u{align-self:flex-end;background:var(--fill-3);color:var(--text);border-bottom-right-radius:5px}
-  .coder-msg.a{align-self:flex-start;background:var(--fill);border:1px solid var(--line);color:var(--text-body);border-bottom-left-radius:5px}
+  /* The box's replies read like the main chat: bubble-free, full-width rendered
+     markdown — NOT a bordered box of raw text (report c867221d: "render markdown
+     … not be forced into boxes that don't match the app's conversation style").
+     User + "thinking…" keep their treatment, matching how the chat bubbles you
+     but renders the agent full-width. */
+  .coder-msg.a{align-self:stretch;max-width:100%;background:none;border:none;border-radius:0;padding:2px 0;color:var(--text-body);white-space:normal}
+  .coder-msg.a .md{font-size:13.5px;color:var(--text-body);line-height:1.55}
   .coder-msg.t{align-self:flex-start;color:var(--dim);font-style:italic}
-  /* [chat→feedback] a subtle centered chip above the composer that turns the
-     current general chat into a task on the Feedback page (report 1fb648bf). */
-  .chat2fb{flex:0 0 auto;align-self:center;display:flex;align-items:center;justify-content:center;gap:7px;margin:6px auto 4px;border:1px solid var(--line-3);border-radius:999px;background:var(--fill);color:var(--text-secondary);font-size:12px;padding:6px 14px}
-  .chat2fb svg{width:14px;height:14px;flex:none}
   .cl-foot{flex:0 0 auto;border-top:1px solid var(--line);padding:9px 13px 4px;display:flex;align-items:flex-end;gap:8px}
   /* the boss moved "new chat" out of a top button and into a + at the composer's
      left (report 58b93ebc): the pill now fills the space to the RIGHT of the +,
@@ -898,13 +912,16 @@
           <div class="cl-brief" id="clBrief" style="display:none">
             <div class="eb">The ask</div>
             <div class="rep" id="clBriefText"></div>
+            <div class="diag" id="clBriefDiag" style="display:none">
+              <div class="eb" id="clBriefDiagLbl">Claude looked into this</div>
+              <div class="rep" id="clBriefDiagText"></div>
+              <div class="nudge" id="clBriefDiagNudge" style="display:none">Reply below and I’ll pick it up from here.</div>
+            </div>
             <div class="meta" id="clBriefMeta"></div>
           </div>
           <div id="coderLog" class="coder-log"></div>
         </div>
       </div>
-      <!-- general chat only: turn this conversation into a Feedback-page task -->
-      <button class="chat2fb" id="chatToFbBtn" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg><span>Turn this into a feedback task</span></button>
       <div class="cl-foot" id="clFoot" style="display:none">
         <button class="coder-new" id="coderNewBtn" aria-label="new chat — clear this conversation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
         <div class="coder-input"><textarea id="coderTa" rows="1" placeholder="Reply, or ask for a change…" enterkeyhint="enter" autocomplete="off"></textarea><button class="coder-send" id="coderSend" aria-label="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div>
@@ -1587,10 +1604,10 @@ interface MockDB {
       if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
         flushP();
         const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(c.trim()));
-        html += "<table><thead><tr>" + cells(l).map((c) => "<th>" + c + "</th>").join("") + "</tr></thead><tbody>";
+        html += '<div class="tablewrap"><table><thead><tr>' + cells(l).map((c) => "<th>" + c + "</th>").join("") + "</tr></thead><tbody>";
         i += 2;
         while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) html += "<tr>" + cells(lines[i++]).map((c) => "<td>" + c + "</td>").join("") + "</tr>";
-        html += "</tbody></table>"; continue;
+        html += "</tbody></table></div>"; continue;
       }
       pbuf.push(l); i++;
     }
@@ -1835,7 +1852,7 @@ interface MockDB {
   function hiddenMissions() { try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_MISSIONS_KEY) || "[]")); } catch { return new Set(); } }
   function saveHiddenMissions(set) { try { localStorage.setItem(HIDDEN_MISSIONS_KEY, JSON.stringify([...set])); } catch {} }
 
-  const age = (ts) => { const m = Math.floor((Date.now() - ts) / 60000); if (m < 1) return "now"; if (m < 60) return m + "m"; const h = Math.floor(m / 60); if (h < 24) return h + "h"; return Math.floor(h / 24) + "d"; };
+  const age = (ts) => { while (ts >= 1e14) ts = Math.floor(ts / 1000); const m = Math.floor((Date.now() - ts) / 60000); if (m < 1) return "now"; if (m < 60) return m + "m"; const h = Math.floor(m / 60); if (h < 24) return h + "h"; return Math.floor(h / 24) + "d"; };
 
   // ---------- pages ----------
   function setPage(name) {
@@ -3859,6 +3876,14 @@ interface MockDB {
       if (d.error) throw new Error(d.error);
       unreadN = d.unread || 0; setHeader();
       const list = d.notifications || [];
+      // Some fixer-written notifications land with a NANOSECOND ts (the box's
+      // `date +%s%3N` emits ns, not ms — 19 digits, ~1e18). The age() label
+      // already guards against that, but the SORT below and the archive sort
+      // read `ts` RAW, so those cards — actually hours old — pin themselves to
+      // the TOP as if they were the newest alerts ("auto fixes always say now /
+      // as if they're super recent", report 381be0e1→558c993a). Normalize the
+      // stamp down to ms ONCE here so every consumer (sort, label, archive) agrees.
+      for (const n of list) { if (typeof n.ts === "number") { while (n.ts >= 1e14) n.ts = Math.floor(n.ts / 1000); } }
       lastNotifList = list;
       box.innerHTML = "";
       if (!list.length) { box.appendChild(el('<div class="empty">Nothing yet. Worker results, failures that need a call, and your recurring briefings land here — with a push if notifications are on and the app isn’t already open.</div>')); return; }
@@ -4700,7 +4725,6 @@ interface MockDB {
       $("coderNewBtn").style.display = ""; // general chat: the + clears/starts fresh
       coderLoadThread(generalThread()); // no auto-introduction — the boss types first
     }
-    updateChatToFb();
   }
   function generalThread() {
     let t = localStorage.getItem("vc_coder_thread");
@@ -4726,19 +4750,37 @@ interface MockDB {
     return '<span class="fb-dot"></span>open — tap to discuss';
   }
   let fbItems = [];
-  // Dismissed reports live per-device in localStorage. Two ways in: the bulk
-  // "Clear" on the Done section (report ca5eb45a) and a per-card × on any card
-  // that doesn't need the boss (report 17197533: "clear those, I didn't make
-  // them, they don't have a place for me"). A dismissed report only stays hidden
-  // WHILE it doesn't need the boss — the moment it flips to a state that wants
-  // his action (shipped+confirmable / reopened / briefed) it resurfaces, so a
-  // dismiss can never swallow a decision or a "did this fix it?".
-  const FB_CLEARED_KEY = "vc_fb_cleared_done";
-  function fbClearedSet() { try { return new Set(JSON.parse(localStorage.getItem(FB_CLEARED_KEY) || "[]")); } catch { return new Set(); } }
-  function fbSaveCleared(set) { try { localStorage.setItem(FB_CLEARED_KEY, JSON.stringify(Array.from(set))); } catch {} }
-  // A report NEEDS the boss when it's waiting on his call or his confirmation —
-  // those are never dismissable and always resurface a prior dismiss.
-  function fbNeedsUser(it) { return it.state === "reopened" || it.state === "briefed" || (it.state === "shipped" && it.confirmable); }
+  // Dismissed reports live per-device in localStorage, keyed by a SIGNATURE of
+  // the card's current state (state + confirmable). A dismiss hides the card AS
+  // IT IS, but never swallows a genuinely new development: the instant the fixer
+  // moves it on (open→diagnosing→briefed, briefed→shipped, shipped→confirmable,
+  // →reopened) the signature changes and the card resurfaces on its own.
+  //   Report 17197533 ("clear those, I didn't make them, they don't have a place
+  //   for me") REOPENED as ab2c86bb: the earlier fix offered the × on every card
+  //   EXCEPT briefed/reopened/shipped+confirmable — which were exactly the cards
+  //   cluttering his queue ("feedback ticket things asking me for a brief"), so
+  //   he couldn't clear them and it "didn't take". Now the × is on every card
+  //   except shipped+confirmable, which owns the Yes/No "Did this fix it?" pills
+  //   (the one action a stray × must not hide).
+  const FB_DISMISS_KEY = "vc_fb_dismissed";      // { id: signature }
+  const FB_CLEARED_KEY = "vc_fb_cleared_done";   // legacy id-array, migrated once
+  function fbSig(it) { return it.state + "|" + (it.confirmable ? 1 : 0); }
+  function fbDismissMap() {
+    try { const raw = localStorage.getItem(FB_DISMISS_KEY); if (raw) return new Map(Object.entries(JSON.parse(raw))); } catch {}
+    return new Map();
+  }
+  function fbSaveDismiss(map) { try { localStorage.setItem(FB_DISMISS_KEY, JSON.stringify(Object.fromEntries(map))); } catch {} }
+  function fbDismissed(it, map) { return map.get(it.id) === fbSig(it); }
+  // One-time migration: the old per-device store held bare ids. Preserve those
+  // dismissals by re-keying each still-present id at its current signature so the
+  // boss's already-cleared cards don't all pop back on this update.
+  function fbMigrateCleared(byId, map) {
+    if (map.size || !localStorage.getItem(FB_CLEARED_KEY)) return map;
+    try { for (const id of JSON.parse(localStorage.getItem(FB_CLEARED_KEY) || "[]")) { const it = byId.get(id); if (it) map.set(id, fbSig(it)); } } catch {}
+    try { localStorage.removeItem(FB_CLEARED_KEY); } catch {}
+    fbSaveDismiss(map);
+    return map;
+  }
   async function loadFeedbackQueue() {
     let items = [];
     try { const d = await (await api("/feedback")).json(); items = d.items || []; } catch {}
@@ -4750,11 +4792,13 @@ interface MockDB {
     // goes stale and a report that starts needing action (reopened, briefed,
     // shipped+confirmable) always resurfaces instead of vanishing forever.
     const byId = new Map(items.map((x) => [x.id, x]));
-    let cleared = fbClearedSet();
-    const pruned = new Set(Array.from(cleared).filter((id) => { const it = byId.get(id); return it && !fbNeedsUser(it); }));
-    if (pruned.size !== cleared.size) { cleared = pruned; fbSaveCleared(cleared); }
-    const open = items.filter((x) => x.state !== "done" && !cleared.has(x.id));
-    const done = doneAll.filter((x) => !cleared.has(x.id));
+    const dismissed = fbMigrateCleared(byId, fbDismissMap());
+    // Drop entries whose id no longer exists so the map never goes stale.
+    let staleDrop = false;
+    for (const id of Array.from(dismissed.keys())) { if (!byId.has(id)) { dismissed.delete(id); staleDrop = true; } }
+    if (staleDrop) fbSaveDismiss(dismissed);
+    const open = items.filter((x) => x.state !== "done" && !fbDismissed(x, dismissed));
+    const done = doneAll.filter((x) => !fbDismissed(x, dismissed));
     const addCard = (it) => {
       const b = document.createElement("button");
       b.className = "fb-card" + (it.state === "reopened" ? " reop" : "") + (it.state === "done" ? " dn" : "");
@@ -4778,18 +4822,20 @@ interface MockDB {
         });
         b.appendChild(c);
       }
-      // Per-card dismiss × — but never on a card that needs the boss (its ×
-      // would be a no-op since the prune resurfaces it, and it'd be dishonest
-      // to offer to hide a decision he still owes).
-      if (!fbNeedsUser(it)) {
+      // Per-card dismiss × on every card except a shipped+confirmable one (that
+      // card owns the Yes/No "Did this fix it?" pills). The dismiss records the
+      // card's current signature; the prune above resurfaces it the instant the
+      // fixer moves it on, so clearing clutter can never swallow a new brief,
+      // ship, or reopen.
+      if (!(it.state === "shipped" && it.confirmable)) {
         const dz = document.createElement("span");
         dz.className = "fb-dismiss";
         dz.setAttribute("aria-label", "Dismiss");
         dz.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
         dz.addEventListener("click", (e) => {
           e.stopPropagation();
-          const next = fbClearedSet(); next.add(it.id); fbSaveCleared(next);
-          toast("Dismissed — it comes back only if it needs you.");
+          const next = fbDismissMap(); next.set(it.id, fbSig(it)); fbSaveDismiss(next);
+          toast("Dismissed — it comes back only if there's an update.");
           void loadFeedbackQueue();
         });
         b.appendChild(dz);
@@ -4804,7 +4850,7 @@ interface MockDB {
       const clr = document.createElement("button"); clr.className = "fb-clear"; clr.textContent = "Clear";
       clr.addEventListener("click", () => {
         const n = done.length;
-        const next = fbClearedSet(); doneAll.forEach((x) => next.add(x.id)); fbSaveCleared(next);
+        const next = fbDismissMap(); doneAll.forEach((x) => next.set(x.id, fbSig(x))); fbSaveDismiss(next);
         toast(n === 1 ? "Cleared 1 done report." : ("Cleared " + n + " done reports."));
         void loadFeedbackQueue();
       });
@@ -4822,22 +4868,44 @@ interface MockDB {
     $("coderNewBtn").style.display = "none"; // a report thread isn't clearable — hide the +
     $("clBrief").style.display = "";
     $("clBriefText").textContent = it.text || "";
+    // Surface Claude's own diagnosis in the ticket. The backend already sends it
+    // as `it.detail` (voice_server.rs feedback_json → the fixer's audit summary),
+    // but it was never shown, so a "briefed — needs your call" ticket opened to
+    // just the original ask and an empty thread ("all I see is my original ask,
+    // not anything of Claude asking me to say anything" — report 66c5b8f6). Show
+    // it, and for a brief that's waiting on the boss, invite the reply outright.
+    const diag = $("clBriefDiag");
+    if (it.detail) {
+      diag.style.display = "";
+      $("clBriefDiagLbl").textContent = it.state === "briefed" || it.state === "reopened" ? "Claude needs your call" : "Claude looked into this";
+      $("clBriefDiagText").textContent = it.detail;
+      $("clBriefDiagNudge").style.display = (it.state === "briefed" || it.state === "reopened") ? "" : "none";
+    } else {
+      diag.style.display = "none";
+    }
     const meta = $("clBriefMeta"); meta.innerHTML = '<div class="fb-st">' + fbStateLine(it) + "</div>";
     coderLoadThread("fb-" + it.id); // no auto-introduction — the brief above is the context
-    updateChatToFb(); // report thread — never the chat→feedback chip
   }
   // ---- the conversation surface (shared by report threads + the general chat) ----
   let coderThread = "";
   const coderLog = () => $("coderLog");
-  function coderAdd(cls, txt) { const d = document.createElement("div"); d.className = "coder-msg " + cls; d.textContent = txt; coderLog().appendChild(d); $("clBody").scrollTop = $("clBody").scrollHeight; return d; }
-  function coderSaveHist() { try { const e = [...coderLog().querySelectorAll(".coder-msg")].filter((n) => !n.classList.contains("t")).map((n) => ({ c: n.classList.contains("u") ? "u" : "a", x: n.textContent })); localStorage.setItem("vc_coder_hist_" + coderThread, JSON.stringify(e.slice(-60))); } catch {} }
+  function coderAdd(cls, txt) {
+    const d = document.createElement("div"); d.className = "coder-msg " + cls;
+    // The box's replies render as markdown, bubble-free — the same conversation
+    // style the main chat uses for agent turns (report c867221d). Keep the RAW
+    // source on the node so coderSaveHist round-trips the markdown, not the
+    // rendered text. User + "thinking…" stay plain.
+    if (cls === "a") { d.dataset.raw = txt; d.innerHTML = '<div class="md">' + md(txt) + "</div>"; typeset(d); }
+    else d.textContent = txt;
+    coderLog().appendChild(d); $("clBody").scrollTop = $("clBody").scrollHeight; return d;
+  }
+  function coderSaveHist() { try { const e = [...coderLog().querySelectorAll(".coder-msg")].filter((n) => !n.classList.contains("t")).map((n) => ({ c: n.classList.contains("u") ? "u" : "a", x: n.dataset.raw != null ? n.dataset.raw : n.textContent })); localStorage.setItem("vc_coder_hist_" + coderThread, JSON.stringify(e.slice(-60))); } catch {} }
   function coderLoadThread(thread, greeting?) {
     coderThread = thread;
     const log = coderLog(); log.innerHTML = "";
     let had = false;
     try { const h = JSON.parse(localStorage.getItem("vc_coder_hist_" + thread) || "[]"); h.forEach((m) => { coderAdd(m.c, m.x); had = true; }); } catch {}
     if (!had && greeting) coderAdd("a", greeting);
-    updateChatToFb();
     setTimeout(() => { $("clBody").scrollTop = $("clBody").scrollHeight; }, 30);
   }
   (function coderComposer() {
@@ -4870,7 +4938,6 @@ interface MockDB {
           ? "Can't reach the box right now — is it awake and is Tailscale on? I'll pick up where we left off once it's back."
           : "That reply took too long and the connection dropped — but the box is up and probably still working on it. Give it a moment, then send your message again to pick the thread back up.");
       }
-      updateChatToFb(); // an exchange now exists — surface the chip in general chat
       send.disabled = false;
     };
     send.addEventListener("pointerdown", (e) => { e.preventDefault(); void submit(); }); // one-tap send with the keyboard up
@@ -4893,74 +4960,14 @@ interface MockDB {
   // The + at the composer's left clears the existing general chat and starts fresh.
   $("coderNewBtn").onclick = () => coderNewChat();
 
-  // [chat→feedback] The boss (report 1fb648bf): "I wish a conversation with Claude
-  // from that chat page can be turned into a feedback task that ends up on the
-  // feedback page if the conversation leads to that." It's MANUAL — he decides
-  // when a chat has become a real ask — and reuses the exact /notes pipe every
-  // report already flows through, so the new task merges into /feedback by id and
-  // behaves like any other feedback item (fixer pickup, confirm, dismiss). We
-  // don't auto-mint: an unprompted task is the orphaned-feedback noise he asked us
-  // to stop (report 17197533). The chip only shows in the GENERAL chat once a real
-  // exchange exists — never on a report thread or an empty chat.
-  function chatToFbEligible() { return clTab === "chat" && !clCur; }
-  function updateChatToFb() {
-    const btn = $("chatToFbBtn"); if (!btn) return;
-    const hasU = coderLog().querySelectorAll(".coder-msg.u").length > 0;
-    const hasA = coderLog().querySelectorAll(".coder-msg.a").length > 0;
-    btn.style.display = (chatToFbEligible() && hasU && hasA) ? "" : "none";
-  }
-  function chatTranscript() {
-    return [...coderLog().querySelectorAll(".coder-msg")]
-      .filter((n) => !n.classList.contains("t"))
-      .map((n) => (n.classList.contains("u") ? "Me: " : "Claude: ") + n.textContent)
-      .join("\n\n");
-  }
-  function openChatToFbSheet() {
-    const firstUser = ([...coderLog().querySelectorAll(".coder-msg.u")].map((n) => n.textContent).find(Boolean) || "").slice(0, 240);
-    openSheet({
-      intent: "Feedback", title: "Make this a feedback task", ico: "⚑", cls: "",
-      bodyHtml: '<div style="font-size:12px;color:var(--dim);margin-bottom:8px">This turns the chat above into a task on your Feedback page. Edit the ask in your words — the full conversation rides along as context.</div>'
-        + '<textarea class="note-edit" id="c2fTa" placeholder="What should this task be?"></textarea>'
-        + '<div class="wbtns"><button class="wbtn" id="c2fSend">Add to Feedback</button></div>',
-      wire: (body) => {
-        const ta = body.querySelector("#c2fTa"); ta.value = firstUser;
-        ta.addEventListener("focus", () => sheetEditFocus(ta));
-        ta.addEventListener("blur", sheetEditBlur);
-        setTimeout(() => { try { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } catch {} }, 60);
-        const send = body.querySelector("#c2fSend");
-        send.onclick = async () => {
-          const t = ta.value.trim();
-          if (!t) { toast("Say what the task is first"); return; }
-          send.disabled = true;
-          logEvent("feedback", { text: t.slice(0, 400), ver: boxVersion || "", from: "chat" });
-          const body2 = t + "\n\n— turned into a task from a Claude chat" + (boxVersion ? " · v" + boxVersion : "")
-            + "\n\nThe conversation:\n" + chatTranscript();
-          try {
-            const r = await api("/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: body2 }) });
-            const d = await r.json().catch(() => ({}));
-            if (!r.ok || d.error) throw new Error(d.error || r.status);
-            closeSheet();
-            void flushFeedbackQueue();
-            // Land the boss ON the Feedback page, inside the new task's thread — the
-            // same drop-in a fresh report gets (openFeedbackSheet), so the bridge is
-            // visible: he sees it arrive where he asked.
-            await loadFeedbackQueue();
-            if (d.id) {
-              const it = (fbItems || []).find((x) => x.id === d.id)
-                || { id: d.id, title: t.slice(0, 60), text: body2, state: "open" };
-              clShowTab("fb"); clOpenConv(it);
-            } else {
-              clShowTab("fb"); toast("Added to your Feedback page.");
-            }
-          } catch (e) {
-            fbEnqueue(body2); closeSheet();
-            toast("Saved — you're offline. I'll add it when your phone reaches the box.");
-          }
-        };
-      },
-    });
-  }
-  $("chatToFbBtn").onclick = () => openChatToFbSheet();
+  // [chat→feedback] There is no "turn this chat into a task" button any more
+  // (report 5f32d394 reopened 1fb648bf). The boss: "have a feedback skill, not a
+  // button that turns my message into a thing of feedback — feedback is kind of a
+  // task, it's 2 in one." So the CODER AGENT itself files the task when a chat
+  // lands on a concrete ask (see ~/vault-chat-fixer/coder-system.md → "File
+  // feedback as a task"): it writes through the exact same /notes pipe a report
+  // uses, so the item shows on the Feedback page and behaves like any other one.
+  // Nothing for the phone to render — the conversation IS the task.
 
   // [feedback] Report a problem — now TWO-WAY (the boss: "no longer one way").
   // The durable writes are unchanged: the complaint lands as a NOTE (the channel
