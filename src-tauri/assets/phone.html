@@ -522,6 +522,10 @@
   .cl-brief{border:1px solid var(--line-2);border-radius:13px;background:var(--fill);padding:12px 13px;margin-bottom:14px}
   .cl-brief .eb{font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--label);margin-bottom:6px}
   .cl-brief .rep{font-size:13.5px;color:var(--text-body);line-height:1.45;white-space:pre-wrap}
+  .cl-brief .diag{border-top:1px solid var(--line);padding-top:9px;margin-top:9px}
+  .cl-brief .diag .eb{color:var(--text-body)}
+  .cl-brief .diag .rep{color:var(--text-body)}
+  .cl-brief .diag .nudge{font-size:12px;color:var(--dim);margin-top:6px}
   .cl-brief .meta{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim);border-top:1px solid var(--line);padding-top:9px;margin-top:9px}
   .coder-log{display:flex;flex-direction:column;gap:9px}
   .coder-msg{max-width:86%;padding:9px 12px;border-radius:14px;white-space:pre-wrap;line-height:1.45;font-size:13.5px;word-wrap:break-word;overflow-wrap:anywhere}
@@ -900,6 +904,11 @@
           <div class="cl-brief" id="clBrief" style="display:none">
             <div class="eb">The ask</div>
             <div class="rep" id="clBriefText"></div>
+            <div class="diag" id="clBriefDiag" style="display:none">
+              <div class="eb" id="clBriefDiagLbl">Claude looked into this</div>
+              <div class="rep" id="clBriefDiagText"></div>
+              <div class="nudge" id="clBriefDiagNudge" style="display:none">Reply below and I’ll pick it up from here.</div>
+            </div>
             <div class="meta" id="clBriefMeta"></div>
           </div>
           <div id="coderLog" class="coder-log"></div>
@@ -4851,6 +4860,21 @@ interface MockDB {
     $("coderNewBtn").style.display = "none"; // a report thread isn't clearable — hide the +
     $("clBrief").style.display = "";
     $("clBriefText").textContent = it.text || "";
+    // Surface Claude's own diagnosis in the ticket. The backend already sends it
+    // as `it.detail` (voice_server.rs feedback_json → the fixer's audit summary),
+    // but it was never shown, so a "briefed — needs your call" ticket opened to
+    // just the original ask and an empty thread ("all I see is my original ask,
+    // not anything of Claude asking me to say anything" — report 66c5b8f6). Show
+    // it, and for a brief that's waiting on the boss, invite the reply outright.
+    const diag = $("clBriefDiag");
+    if (it.detail) {
+      diag.style.display = "";
+      $("clBriefDiagLbl").textContent = it.state === "briefed" || it.state === "reopened" ? "Claude needs your call" : "Claude looked into this";
+      $("clBriefDiagText").textContent = it.detail;
+      $("clBriefDiagNudge").style.display = (it.state === "briefed" || it.state === "reopened") ? "" : "none";
+    } else {
+      diag.style.display = "none";
+    }
     const meta = $("clBriefMeta"); meta.innerHTML = '<div class="fb-st">' + fbStateLine(it) + "</div>";
     coderLoadThread("fb-" + it.id); // no auto-introduction — the brief above is the context
   }
