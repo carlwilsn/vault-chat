@@ -547,6 +547,7 @@
   .coder-msg.a .md{font-size:13.5px;color:var(--text-body);line-height:1.55}
   .coder-msg.t{align-self:flex-start;color:var(--dim);font-style:italic}
   .cl-foot{flex:0 0 auto;border-top:1px solid var(--line);padding:9px 13px 4px;display:flex;align-items:flex-end;gap:8px}
+  .cl-foot.nb{border-top-color:transparent}/* chat tab: no divider line above the composer (report ba0ba077) */
   /* the boss moved "new chat" out of a top button and into a + at the composer's
      left (report 58b93ebc): the pill now fills the space to the RIGHT of the +,
      so it reads as shortened + right-shifted while the + holds the freed left. */
@@ -4717,11 +4718,13 @@ interface MockDB {
     if (tab === "fb") {
       clView = "queue";
       $("clQueue").style.display = ""; $("clConv").style.display = "none"; $("clFoot").style.display = "none";
+      $("clFoot").classList.remove("nb"); // report threads keep the composer divider
       void loadFeedbackQueue();
     } else {
       clView = "conv";
       $("clQueue").style.display = "none"; $("clBrief").style.display = "none";
       $("clConv").style.display = ""; $("clFoot").style.display = "";
+      $("clFoot").classList.add("nb"); // chat side: drop the line above the composer (report ba0ba077)
       $("coderNewBtn").style.display = ""; // general chat: the + clears/starts fresh
       coderLoadThread(generalThread()); // no auto-introduction — the boss types first
     }
@@ -4865,6 +4868,7 @@ interface MockDB {
     $("clBackTitle").textContent = it.title || "Report";
     $("fbNewBtn").style.display = "none";
     $("clQueue").style.display = "none"; $("clConv").style.display = ""; $("clFoot").style.display = "";
+    $("clFoot").classList.remove("nb"); // report threads keep the composer divider (only the chat tab drops it)
     $("coderNewBtn").style.display = "none"; // a report thread isn't clearable — hide the +
     $("clBrief").style.display = "";
     $("clBriefText").textContent = it.text || "";
