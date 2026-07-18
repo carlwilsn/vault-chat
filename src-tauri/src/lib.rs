@@ -3181,21 +3181,41 @@ fn sync_one_repo(
                 run_git(sub, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
                 Ok((_, _, 0))
             );
-            let ahead = if has_upstream {
-                match run_git(sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
-                    Ok((c, _, 0)) => c.trim().parse::<u64>().unwrap_or(0),
-                    _ => 0,
+            if !has_upstream {
+                // No tracking branch configured — e.g. a nested repo `git init`'d
+                // by hand with `origin` added but never pushed. `on_branch` was
+                // already true (this repo never went through attach_detached_to_
+                // branch / recover_to_configured_branch, which are the only other
+                // places that set up tracking), so without this the repo is stuck:
+                // `ahead` reads 0 forever, nothing ever pushes, and the *local*
+                // commit above still clears its "uncommitted changes" dot — making
+                // it look synced while it silently never reaches the remote.
+                // Establish tracking with an explicit first push instead.
+                if let Ok((b, _, 0)) = run_git(sub, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+                    let branch = b.trim();
+                    if !branch.is_empty() {
+                        match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
+                            Ok((_, perr, pc)) if pc != 0 => {
+                                eprintln!("[sync] repo '{}' initial push skipped: {}", rel, first_line(&perr).trim())
+                            }
+                            Err(e) => eprintln!("[sync] repo '{}' initial push error: {}", rel, e),
+                            _ => {}
+                        }
+                    }
                 }
             } else {
-                0
-            };
-            if ahead > 0 {
-                match run_git_timeout(sub, &["push"], 300) {
-                    Ok((_, perr, pc)) if pc != 0 => {
-                        eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                let ahead = match run_git(sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
+                    Ok((c, _, 0)) => c.trim().parse::<u64>().unwrap_or(0),
+                    _ => 0,
+                };
+                if ahead > 0 {
+                    match run_git_timeout(sub, &["push"], 300) {
+                        Ok((_, perr, pc)) if pc != 0 => {
+                            eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                        }
+                        Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
+                        _ => {}
                     }
-                    Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
-                    _ => {}
                 }
             }
         }
