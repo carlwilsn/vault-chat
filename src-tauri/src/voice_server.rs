@@ -381,6 +381,260 @@ fn coder_run(thread: &str, message: &str, model: &str) -> Value {
     }
 }
 
+// ---- in-app coder: streaming run buffers (dedicated long-poll channel) ----
+//
+// The coder turn ("Talk to Claude Code") used to be ONE blocking POST: the
+// phone held an idle socket for up to 900s with zero bytes, then got the whole
+// reply at once. So a long tool-using turn read as "thinking…" (frozen) then a
+// dump, and mobile/Tailscale routinely killed the idle connection mid-flight
+// ("that reply took too long and the connection dropped"). `/coder/start` now
+// runs the turn in a background thread that streams Claude Code's stream-json
+// into a per-run buffer, and the phone long-polls `/coder/poll` for it — the
+// same proxy-proof shape the main chat uses (a seq ring + 25s holds, NOT SSE,
+// which dies in `tailscale serve`/iOS Safari buffers — see the /poll note), so
+// progress shows live and a dropped socket just resumes from its cursor. The
+// old blocking `/coder` stays put, so a stale cached PWA keeps working.
+
+struct CoderRun {
+    events: Vec<(u64, String)>,
+    seq: u64,
+    done: bool,
+    updated: Instant,
+}
+
+static CODER_RUNS: OnceLock<Mutex<HashMap<String, CoderRun>>> = OnceLock::new();
+static CODER_RUN_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn coder_runs() -> &'static Mutex<HashMap<String, CoderRun>> {
+    CODER_RUNS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Register a fresh run, first sweeping finished/stale ones so the map can't
+/// grow without bound (a phone that never reads the tail still frees on TTL).
+fn coder_register(run_id: &str) {
+    let mut runs = coder_runs().lock().unwrap_or_else(|e| e.into_inner());
+    runs.retain(|_, r| {
+        let age = r.updated.elapsed();
+        if r.done { age < Duration::from_secs(1800) } else { age < Duration::from_secs(3600) }
+    });
+    runs.insert(
+        run_id.to_string(),
+        CoderRun { events: Vec::new(), seq: 0, done: false, updated: Instant::now() },
+    );
+}
+
+/// Push one already-shaped event object onto a run's buffer.
+fn coder_push(run_id: &str, ev: Value) {
+    let mut runs = coder_runs().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(run) = runs.get_mut(run_id) {
+        run.seq += 1;
+        let seq = run.seq;
+        run.events.push((seq, ev.to_string()));
+        run.updated = Instant::now();
+        if run.events.len() > 4000 {
+            let drop = run.events.len() - 4000;
+            run.events.drain(0..drop);
+        }
+    }
+}
+
+fn coder_mark_done(run_id: &str) {
+    let mut runs = coder_runs().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(run) = runs.get_mut(run_id) {
+        run.done = true;
+        run.updated = Instant::now();
+    }
+}
+
+/// Events strictly after `after`, plus the new cursor and the done flag. None
+/// when the run id is unknown (evicted or never existed).
+fn coder_events_after(run_id: &str, after: u64) -> Option<(Vec<String>, u64, bool)> {
+    let runs = coder_runs().lock().unwrap_or_else(|e| e.into_inner());
+    let run = runs.get(run_id)?;
+    let mut out = Vec::new();
+    let mut next = after;
+    for (seq, line) in run.events.iter() {
+        if *seq > after {
+            out.push(line.clone());
+            next = next.max(*seq);
+        }
+    }
+    Some((out, next.max(after), run.done))
+}
+
+/// Friendly one-line label for a tool call — the live "what it's doing now"
+/// line under the streaming reply.
+fn coder_tool_label(name: &str, input: &Value) -> String {
+    let base = |key: &str| {
+        input
+            .get(key)
+            .and_then(|x| x.as_str())
+            .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+            .unwrap_or_default()
+    };
+    match name {
+        "Read" => format!("Reading {}", base("file_path")),
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => format!("Editing {}", base("file_path")),
+        "Bash" => {
+            let c: String = input
+                .get("command")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .chars()
+                .take(52)
+                .collect();
+            format!("Running: {}", c.trim())
+        }
+        "Grep" => format!("Searching {}", input.get("pattern").and_then(|x| x.as_str()).unwrap_or("")),
+        "Glob" => format!("Finding {}", input.get("pattern").and_then(|x| x.as_str()).unwrap_or("")),
+        "Task" | "Agent" => "Spawning a subagent…".to_string(),
+        "TodoWrite" => "Updating the plan…".to_string(),
+        "WebFetch" | "WebSearch" => "Searching the web…".to_string(),
+        other => format!("{}…", other),
+    }
+}
+
+/// Background half of a streaming coder turn: run Claude Code with stream-json
+/// output and forward its events into the run buffer as they arrive. Mirrors
+/// `coder_run`'s grounding (same session file + system prompt, model default,
+/// 900s cap, --resume) but streams instead of blocking.
+fn coder_run_streaming(run_id: String, thread: String, message: String, model: String) {
+    use std::io::BufRead;
+    let home = std::env::var("HOME").unwrap_or_default();
+    let ws = format!("{}/github/vault-chat", home);
+    let claude = format!("{}/.local/bin/claude", home);
+    let nodebin = format!("{}/.nvm/versions/node/v20.20.2/bin", home);
+    let sess_path = format!("{}/vault-chat-fixer/coder-sessions.json", home);
+    let sys_path = format!("{}/vault-chat-fixer/coder-system.md", home);
+    let mut sessions: Value = std::fs::read_to_string(&sess_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({}));
+    let sid = sessions.get(thread.as_str()).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let path = format!("{}/.local/bin:{}:{}", home, nodebin, std::env::var("PATH").unwrap_or_default());
+    let model = if model.is_empty() { "claude-opus-4-8".to_string() } else { model };
+
+    let mut cmd = std::process::Command::new("timeout");
+    cmd.arg("900")
+        .arg(&claude)
+        .arg("-p")
+        .arg(&message)
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose")
+        .arg("--dangerously-skip-permissions");
+    if let Ok(sys) = std::fs::read_to_string(&sys_path) {
+        let sys = sys.trim().to_string();
+        if !sys.is_empty() {
+            cmd.arg("--append-system-prompt").arg(sys);
+        }
+    }
+    cmd.arg("--model").arg(&model);
+    if let Some(s) = &sid {
+        cmd.arg("--resume").arg(s);
+    }
+    cmd.current_dir(&ws)
+        .env("PATH", path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            coder_push(&run_id, json!({ "t": "done", "reply": format!("coder run error: {}", e), "error": true }));
+            coder_mark_done(&run_id);
+            return;
+        }
+    };
+
+    let mut new_sid: Option<String> = sid.clone();
+    let mut final_reply: Option<String> = None;
+    let mut any_text = false;
+
+    if let Some(out) = child.stdout.take() {
+        let reader = std::io::BufReader::new(out);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let v: Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if let Some(s) = v.get("session_id").and_then(|x| x.as_str()) {
+                new_sid = Some(s.to_string());
+            }
+            match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                "assistant" => {
+                    if let Some(content) =
+                        v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array())
+                    {
+                        for block in content {
+                            match block.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                                "text" => {
+                                    if let Some(t) = block.get("text").and_then(|x| x.as_str()) {
+                                        if !t.is_empty() {
+                                            any_text = true;
+                                            coder_push(&run_id, json!({ "t": "text", "x": t }));
+                                        }
+                                    }
+                                }
+                                "tool_use" => {
+                                    let name = block.get("name").and_then(|x| x.as_str()).unwrap_or("tool");
+                                    let label = coder_tool_label(name, block.get("input").unwrap_or(&Value::Null));
+                                    coder_push(&run_id, json!({ "t": "act", "x": label }));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                // Forward-compat: token-level deltas when --include-partial-messages
+                // is enabled. Harmless (never emitted) without the flag.
+                "stream_event" => {
+                    if let Some(delta) = v.get("event").and_then(|e| e.get("delta")) {
+                        if delta.get("type").and_then(|t| t.as_str()) == Some("text_delta") {
+                            if let Some(t) = delta.get("text").and_then(|x| x.as_str()) {
+                                if !t.is_empty() {
+                                    any_text = true;
+                                    coder_push(&run_id, json!({ "t": "text", "x": t }));
+                                }
+                            }
+                        }
+                    }
+                }
+                "result" => {
+                    final_reply = v.get("result").and_then(|x| x.as_str()).map(|s| s.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    let _ = child.wait();
+
+    // Persist the resumable session id so the next turn continues the thread
+    // (exactly as the blocking coder_run does).
+    if let Some(s) = &new_sid {
+        sessions[thread.as_str()] = json!(s);
+        let _ = std::fs::write(&sess_path, sessions.to_string());
+    }
+
+    let reply = final_reply.unwrap_or_else(|| {
+        if any_text {
+            String::new()
+        } else {
+            "(the turn ended without output)".to_string()
+        }
+    });
+    coder_push(&run_id, json!({ "t": "done", "reply": reply, "sessionId": new_sid }));
+    coder_mark_done(&run_id);
+}
+
 /// The feedback queue: every in-app report as an object with a LIVE state that
 /// mirrors the real pipeline on this box (nothing invented):
 ///   open        — the note exists; the auto-fixer hasn't picked it up yet
@@ -860,6 +1114,57 @@ fn handle(mut req: Request, token: &str) {
             let model = payload.get("model").and_then(|v| v.as_str()).unwrap_or("");
             let res = coder_run(thread, message, model);
             let _ = req.respond(resp_text(200, "application/json", res.to_string()));
+        }
+        (Method::Post, "/coder/start") => {
+            // Streaming coder turn: kick the run off in the background and hand
+            // the phone a runId to long-poll (see /coder/poll). Returns instantly,
+            // so the socket never sits idle waiting on a 900s turn — that idle
+            // wait was the "reply took too long and dropped" bug.
+            let mut raw = String::new();
+            let _ = req.as_reader().read_to_string(&mut raw);
+            let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
+            let thread = payload.get("thread").and_then(|v| v.as_str()).unwrap_or("default").to_string();
+            let message = payload.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let model = payload.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let run_id = format!("r{}", CODER_RUN_SEQ.fetch_add(1, Ordering::Relaxed));
+            coder_register(&run_id);
+            let rid = run_id.clone();
+            let _ = std::thread::Builder::new()
+                .name("coder-run".into())
+                .spawn(move || coder_run_streaming(rid, thread, message, model));
+            let body = format!("{{\"runId\":\"{}\",\"streaming\":true}}", run_id);
+            let _ = req.respond(resp_text(200, "application/json", body));
+        }
+        (Method::Get, "/coder/poll") => {
+            // Long-poll a coder run: hold up to 25s for events after `after`, the
+            // same proxy-proof shape as /poll. An unknown runId (evicted, or the
+            // run finished and was swept) reports done so the phone stops cleanly
+            // instead of spinning.
+            let run_id = query_param(req.url(), "runId").unwrap_or_default();
+            let after: u64 = query_param(req.url(), "after").unwrap_or_default().parse().unwrap_or(0);
+            let deadline = Instant::now() + Duration::from_secs(25);
+            loop {
+                match coder_events_after(&run_id, after) {
+                    None => {
+                        let body = format!("{{\"next\":{},\"events\":[],\"done\":true,\"gone\":true}}", after);
+                        let _ = req.respond(resp_text(200, "application/json", body));
+                        return;
+                    }
+                    Some((events, next, done)) => {
+                        if !events.is_empty() || done || Instant::now() >= deadline {
+                            let body = format!(
+                                "{{\"next\":{},\"events\":[{}],\"done\":{}}}",
+                                next,
+                                events.join(","),
+                                done
+                            );
+                            let _ = req.respond(resp_text(200, "application/json", body));
+                            return;
+                        }
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
         }
         (Method::Get, "/feedback") => {
             // The Claude screen's queue: reports + live pipeline state.

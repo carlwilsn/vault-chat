@@ -549,6 +549,9 @@
      pulsing dot + dim mono label, not an italic bubble. */
   .coder-msg.t{align-self:flex-start;display:flex;align-items:center;gap:11px;padding:11px 0 6px;background:none;border-radius:0;color:var(--dim);font-size:12px}
   .coder-msg.t .tlbl{color:var(--dim);font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;opacity:.7;white-space:nowrap}
+  /* live "what it's doing now" line under a streaming coder reply */
+  .coder-act{display:flex;align-items:center;gap:9px;margin-top:8px;color:var(--dim);font-size:12px;opacity:.85}
+  .coder-act .acttxt{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .cl-foot{flex:0 0 auto;border-top:1px solid var(--line);padding:9px 13px 4px;display:flex;align-items:flex-end;gap:8px}
   .cl-foot.nb{border-top-color:transparent}/* chat tab: no divider line above the composer (report ba0ba077) */
   /* the boss moved "new chat" out of a top button and into a + at the composer's
@@ -1343,7 +1346,7 @@ interface MockDB {
       },
     };
     const reply = (obj) => new Response(JSON.stringify(obj), { status: 200, headers: { "Content-Type": "application/json" } });
-    let pollWaited = false, pollTick = 0;
+    let pollWaited = false, pollTick = 0, coderMockMsg = "";
     window.fetch = async (url, opts) => {
       const u = String(url).split("?")[0];
       const q = new URLSearchParams(String(url).split("?")[1] || "");
@@ -1380,6 +1383,21 @@ interface MockDB {
       }
       if (u === "/coder") {
         return new Promise((res) => setTimeout(() => res(reply({ reply: "(mock coder) Got it — “" + String(body.message || "").slice(0, 80) + "”. In the real app this is a live Claude Code session in the box's source.", sessionId: "mock" })), 700));
+      }
+      if (u === "/coder/start") { coderMockMsg = String(body.message || ""); return reply({ runId: "mock", streaming: true }); }
+      if (u === "/coder/poll") {
+        // Stream a scripted turn so demo mode shows the same live activity + text
+        // the real box streams: an activity line, a couple of text chunks, done.
+        const after = parseInt(q.get("after") || "0", 10) || 0;
+        const script = [
+          { t: "act", x: "Reading voice_server.rs" },
+          { t: "text", x: "(mock coder) Got it — “" + coderMockMsg.slice(0, 60) + "”. " },
+          { t: "act", x: "Editing phone.html" },
+          { t: "text", x: "In the real app this streams live from the box as it works." },
+          { t: "done", reply: "(mock coder) Got it — “" + coderMockMsg.slice(0, 60) + "”. In the real app this streams live from the box.", sessionId: "mock" },
+        ];
+        if (after >= script.length) return reply({ next: after, events: [], done: true });
+        return new Promise((res) => setTimeout(() => res(reply({ next: after + 1, events: [script[after]], done: after + 1 >= script.length })), 350));
       }
       if (u === "/poll") {
         // Running workers stream signs of life so the thread's live timeline is
@@ -4916,6 +4934,69 @@ interface MockDB {
     if (!had && greeting) coderAdd("a", greeting);
     setTimeout(() => { $("clBody").scrollTop = $("clBody").scrollHeight; }, 30);
   }
+  // Consume a streaming coder run: long-poll /coder/poll and render the reply as
+  // it's produced — a live activity line ("Reading …", "Editing …", "Running …")
+  // plus text as each turn lands — so a long turn shows it WORKING instead of a
+  // frozen "thinking…" then a dump (reports 4926d3bf / b486191e / 84a270a7). The
+  // run executes on the box regardless, so a dropped socket just re-attaches from
+  // the cursor; only a genuine offline stretch surfaces the "resend" note.
+  async function coderStream(runId, thinkingNode) {
+    let after = 0, node = null, actEl = null, actTxt = null, text = "";
+    const scroll = () => { $("clBody").scrollTop = $("clBody").scrollHeight; };
+    const ensureNode = () => {
+      if (node) return;
+      if (thinkingNode) thinkingNode.remove();
+      node = document.createElement("div"); node.className = "coder-msg a";
+      node.innerHTML = '<div class="md"></div><div class="coder-act"><span class="pulse"></span><span class="acttxt"></span></div>';
+      actEl = node.querySelector(".coder-act"); actTxt = node.querySelector(".acttxt");
+      coderLog().appendChild(node);
+    };
+    const renderText = () => { node.dataset.raw = text; node.querySelector(".md").innerHTML = md(text); typeset(node); scroll(); };
+    const setAct = (label) => { ensureNode(); if (actTxt) actTxt.textContent = label || ""; if (actEl) actEl.style.display = label ? "" : "none"; scroll(); };
+    let done = false, offStreak = 0;
+    while (!done) {
+      let d;
+      try {
+        const r = await api("/coder/poll?runId=" + encodeURIComponent(runId) + "&after=" + after);
+        if (!r.ok) throw new Error("poll " + r.status);
+        d = await r.json(); offStreak = 0;
+        if (document.body.classList.contains("offline")) setOffline(false);
+      } catch (e) {
+        // The run keeps executing on the box; keep re-attaching across a blip.
+        offStreak++;
+        if (document.body.classList.contains("offline") && offStreak >= 3) {
+          if (node) {
+            // Partial reply already on screen — finalize it with a soft note
+            // rather than a second bubble; the thread resumes on the next send.
+            if (actEl) actEl.remove();
+            text += (text ? "\n\n" : "") + "_(connection dropped mid-reply — the box is still working; send again to pick it back up.)_";
+            renderText(); coderSaveHist();
+            return;
+          }
+          throw e; // nothing streamed yet — let the caller show the offline note
+        }
+        await new Promise((res) => setTimeout(res, 1500));
+        continue;
+      }
+      if (d.next != null) after = d.next;
+      for (const ev of d.events || []) {
+        if (ev.t === "text") { ensureNode(); if (actEl) actEl.style.display = "none"; text += ev.x || ""; renderText(); }
+        else if (ev.t === "act") { setAct(ev.x || ""); }
+        else if (ev.t === "done") {
+          ensureNode();
+          if (!text && ev.reply) text = ev.reply;
+          if (actEl) actEl.remove();
+          if (text) renderText(); else { node.remove(); node = null; }
+          if (!node) coderAdd("a", ev.reply || "(no reply)");
+          done = true; break;
+        }
+      }
+      if (!done && d.done) done = true; // safety: run ended without a done event
+    }
+    if (node) { const stray = node.querySelector(".coder-act"); if (stray) stray.remove(); }
+    if (!node && !text) coderAdd("a", "(the turn ended without output)");
+    coderSaveHist();
+  }
   (function coderComposer() {
     const ta = $("coderTa"), send = $("coderSend");
     if (!ta || !send) return;
@@ -4930,9 +5011,10 @@ interface MockDB {
         msg = 'FEEDBACK THREAD — the boss opened his report "' + (clCur.title || "") + '" (id ' + clCur.id + ", state: " + clCur.state + ').\nThe report: "' + (clCur.text || "") + '"\n\nHis message: ' + m;
       }
       try {
-        const r = await api("/coder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread: coderThread, message: msg }) });
+        const r = await api("/coder/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread: coderThread, message: msg }) });
         const d = await r.json().catch(() => ({}));
-        th.remove(); coderAdd("a", d.reply || "(no reply)"); coderSaveHist();
+        if (!d || !d.runId) throw new Error("no runId");
+        await coderStream(d.runId, th); // consumes the live stream; removes `th`, renders as it works
       } catch (e) {
         th.remove();
         // The app polls /status continuously (body.offline reflects that truth).
