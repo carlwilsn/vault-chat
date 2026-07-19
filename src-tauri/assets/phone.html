@@ -4868,7 +4868,29 @@ interface MockDB {
       b.addEventListener("click", () => clOpenConv(it));
       list.appendChild(b);
     };
-    if (open.length) { const l = document.createElement("div"); l.className = "fb-lbl"; l.textContent = "Open"; list.appendChild(l); open.forEach(addCard); }
+    if (open.length) {
+      const hd = document.createElement("div"); hd.className = "fb-done-hd";
+      const l = document.createElement("div"); l.className = "fb-lbl"; l.textContent = "Open"; hd.appendChild(l);
+      // Bulk clear for open clutter (report 17197533: system-generated items that
+      // "showed up when the big Settings update shipped — I didn't make them").
+      // Dismisses every open card that owns a × (i.e. every card except a
+      // shipped+confirmable one, whose Yes/No Verify pills a bulk clear must not
+      // swallow). Records each card's signature, so anything that later gets a new
+      // verdict resurfaces on its own — clearing clutter never buries live work.
+      const clearable = open.filter((x) => !(x.state === "shipped" && x.confirmable));
+      if (clearable.length) {
+        const clr = document.createElement("button"); clr.className = "fb-clear"; clr.textContent = "Clear";
+        clr.addEventListener("click", () => {
+          const n = clearable.length;
+          const next = fbDismissMap(); clearable.forEach((x) => next.set(x.id, fbSig(x))); fbSaveDismiss(next);
+          toast(n === 1 ? "Cleared 1 open report." : ("Cleared " + n + " open reports."));
+          void loadFeedbackQueue();
+        });
+        hd.appendChild(clr);
+      }
+      list.appendChild(hd);
+      open.forEach(addCard);
+    }
     if (done.length) {
       const hd = document.createElement("div"); hd.className = "fb-done-hd"; hd.style.marginTop = "14px";
       const l = document.createElement("div"); l.className = "fb-lbl"; l.textContent = "Done"; hd.appendChild(l);

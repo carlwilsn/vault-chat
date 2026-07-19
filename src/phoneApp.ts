@@ -1498,6 +1498,74 @@ export async function startPhoneAppHost(): Promise<void> {
     }
   });
 
+  // Reopen a shipped feedback ticket IN PLACE when the boss says the fix didn't
+  // take (report 8dabd9b1). Older builds minted a SECOND "REOPENED <id>" note —
+  // a dead duplicate — while the original card sat as a permanent red dead-end.
+  // Now we re-open the SAME note (same id): stamp `reopened_at` so the feedback
+  // queue treats the prior fixer verdict as stale, and bump `timestamp` +
+  // `last_updated` to now so the ticket clears the fixer's watermark and re-enters
+  // the queue as fresh, actionable work. Same freshest-on-disk contract as the
+  // other note relays. A [reopened] marker is appended to the body so the fixer
+  // (and the ticket's brief) know to re-diagnose from scratch.
+  await listen<{ reqId: string; id?: string }>("phone:note-reopen", async (event) => {
+    const { reqId, id } = event.payload;
+    try {
+      const s = useStore.getState();
+      if (!s.vaultPath) {
+        respond(reqId, { error: "no vault open" });
+        return;
+      }
+      const noteId = (id ?? "").trim();
+      if (!noteId) {
+        respond(reqId, { error: "missing note id" });
+        return;
+      }
+      const { readNotes, writeAllNotes } = await import("./notes");
+      const disk = await readNotes(s.vaultPath);
+      const now = new Date().toISOString();
+      const marker =
+        "\n\n[reopened] The shipped fix didn't take — re-diagnose from scratch, don't repeat the same change.";
+      let found = false;
+      const updated = disk.map((n) => {
+        if (n.id !== noteId) return n;
+        found = true;
+        const draft = n.user_draft ?? "";
+        const body = draft.includes("[reopened]") ? draft : draft + marker;
+        return {
+          ...n,
+          status: "open" as const,
+          user_draft: body,
+          reopened_at: now,
+          timestamp: now,
+          last_updated: now,
+        };
+      });
+      if (!found) {
+        respond(reqId, { error: "note not found" });
+        return;
+      }
+      await writeAllNotes(s.vaultPath, updated);
+      if (s.notesLoaded) {
+        useStore.setState((st) => ({
+          notes: st.notes.map((n) =>
+            n.id === noteId
+              ? {
+                  ...n,
+                  status: "open" as const,
+                  reopened_at: now,
+                  timestamp: now,
+                  last_updated: now,
+                }
+              : n,
+          ),
+        }));
+      }
+      respond(reqId, { ok: true, id: noteId });
+    } catch (e) {
+      respond(reqId, { error: String(e) });
+    }
+  });
+
   // Empty the resolved pile from the phone (the "Clear all" in Resolved Notes).
   // Flip every resolved note to the terminal `cleared` status against the
   // FRESHEST on-disk notes — never a filter-and-rewrite, which would drop the

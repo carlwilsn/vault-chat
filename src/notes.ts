@@ -49,6 +49,11 @@ export type Note = {
    *  list of notes is scannable instead of every row repeating its first line.
    *  Generated lazily on the box and persisted. */
   title?: string | null;
+  /** ISO stamp set when the boss says a shipped fix on THIS report didn't take.
+   *  Reopen-in-place: the same note re-enters the fix queue instead of minting a
+   *  second card (report 8dabd9b1). The feedback queue treats any fixer verdict
+   *  older than this stamp as stale, so the ticket becomes actionable again. */
+  reopened_at?: string;
 };
 
 /** The text we'd hand a model to write a title from — empty when there's

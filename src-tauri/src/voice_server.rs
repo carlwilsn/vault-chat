@@ -603,6 +603,27 @@ fn iso_to_ms(s: &str) -> u64 {
     ((days * 86400 + hh * 3600 + mm * 60 + ss).max(0) * 1000) as u64
 }
 
+/// Fold a fixer timestamp to epoch-MS regardless of the unit it was written in.
+/// The box's `date +%s%3N` silently ignores `%3N` on some builds and emits
+/// NANOSECONDS, so an audit `ts` could be ~1.7e18 while START_MS is ~1.7e12 —
+/// the raw `ts < START_MS` confirm gate was then never true and a genuinely
+/// shipped, live-on-your-phone fix never offered its Verify pills (report
+/// b105956e). Normalize seconds (10 digits) up and nanoseconds (≥16 digits)
+/// down so the comparison is always ms-vs-ms.
+fn norm_ms(ts: u64) -> u64 {
+    if ts == 0 {
+        0
+    } else if ts >= 1_000_000_000_000_000 {
+        ts / 1_000_000 // nanoseconds → ms
+    } else if ts >= 1_000_000_000_000 {
+        ts // already ms
+    } else if ts >= 1_000_000_000 {
+        ts * 1_000 // seconds → ms
+    } else {
+        ts
+    }
+}
+
 fn feedback_json(vault: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let notes_path = format!("{}/.vault-chat/notes.jsonl", vault);
@@ -674,7 +695,11 @@ fn feedback_json(vault: &str) -> String {
     }
 
     let start_ms = *START_MS.get().unwrap_or(&0);
-    // Which ids have a later REOPENED note pointing at them?
+    // LEGACY reopen signal: older builds minted a *separate* "REOPENED <id>" note
+    // when the boss said a fix didn't take (that second card was the dead-duplicate
+    // of report 8dabd9b1). We no longer mint those, but existing ones on disk still
+    // mark their target so its card becomes actionable again instead of a red
+    // dead-end. Reopen-in-place now writes `reopened_at` onto the SAME note.
     let mut reopened: std::collections::HashSet<String> = std::collections::HashSet::new();
     for n in &notes {
         let d = n.get("user_draft").and_then(|x| x.as_str()).unwrap_or("");
@@ -691,19 +716,41 @@ fn feedback_json(vault: &str) -> String {
         if !d.contains("reported from") {
             continue; // only in-app feedback, not research notes
         }
+        // The legacy separate "REOPENED <id>" cards are now redundant with
+        // reopen-in-place — hide them so the boss's queue shows ONE card per
+        // report, not a dead duplicate (report 8dabd9b1).
+        if d.starts_with("REOPENED ") {
+            continue;
+        }
         let id = n.get("id").and_then(|x| x.as_str()).unwrap_or("");
         let resolved = n.get("status").and_then(|x| x.as_str()).unwrap_or("open") != "open";
+        // Reopen-in-place: the SAME note carries a `reopened_at` when the boss says
+        // a shipped fix didn't take. It supersedes any fixer verdict it post-dates
+        // (legacy scan has no timestamp, so it always supersedes) and routes the
+        // ticket back to fresh, actionable work — never a permanent red dead-end.
+        let reopened_at_ms = n
+            .get("reopened_at")
+            .and_then(|x| x.as_str())
+            .map(iso_to_ms)
+            .unwrap_or(0);
+        let is_reopened = reopened_at_ms > 0 || reopened.contains(id);
         let (state, detail, confirmable) = if resolved {
             ("done".to_string(), String::new(), false)
-        } else if reopened.contains(id) {
-            ("reopened".to_string(), String::new(), false)
-        } else if let Some((action, summary, ts)) = audit.get(id) {
+        } else if let Some((action, summary, ts)) = audit.get(id).filter(|(_, _, ts)| {
+            // Honor the verdict only if it POST-DATES the reopen (a genuine re-fix);
+            // a stale pre-reopen verdict must not resurrect the shipped/verify state.
+            !is_reopened || (reopened_at_ms > 0 && reopened_at_ms < norm_ms(*ts))
+        }) {
             if action == "ship" {
-                let live = *ts < start_ms; // box restarted onto the fixed build
+                let live = norm_ms(*ts) < start_ms; // box restarted onto the fixed build
                 ("shipped".to_string(), summary.clone(), live)
             } else {
                 ("briefed".to_string(), summary.clone(), false)
             }
+        } else if is_reopened {
+            // Reopened with no superseding verdict yet — back in the fix queue as
+            // ordinary open work (the `queued` flag below promises pickup honestly).
+            ("open".to_string(), String::new(), false)
         } else if diagnosing.contains(id) {
             ("diagnosing".to_string(), String::new(), false)
         } else {
@@ -711,8 +758,10 @@ fn feedback_json(vault: &str) -> String {
         };
         let ts_iso = n.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
         // Honest queue flag: only a report the fixer will actually pick up
-        // (newer than its watermark) may say so on the card.
-        let queued = state == "open" && iso_to_ms(ts_iso) > watermark;
+        // (newer than its watermark) may say so on the card. A reopen bumps the
+        // note's timestamp, so a reopened ticket clears the watermark and reads
+        // "queued" rather than sitting idle.
+        let queued = state == "open" && iso_to_ms(ts_iso).max(reopened_at_ms) > watermark;
         items.push(json!({
             "id": id,
             "title": n.get("title").and_then(|x| x.as_str()).unwrap_or(""),
@@ -1068,10 +1117,11 @@ fn handle(mut req: Request, token: &str) {
         }
         (Method::Post, "/feedback/confirm") => {
             // The confirm half of the fix loop. fixed=true → the note resolves
-            // (card moves to Done). fixed=false → a REOPENED note re-enters the
-            // queue as fresh work the auto-fixer will pick up, and the original
-            // card shows "reopened". Both writes go through the app's own note
-            // relays — never hand-edit the jsonl here.
+            // (card moves to Done). fixed=false → REOPEN IN PLACE: the SAME note
+            // (same id) is re-opened, stamped `reopened_at`, and its timestamp is
+            // bumped so it re-enters the fixer queue as fresh work — NO second card
+            // and no permanent red dead-end (report 8dabd9b1). Both writes go
+            // through the app's own note relays — never hand-edit the jsonl here.
             let mut raw = String::new();
             let _ = req.as_reader().read_to_string(&mut raw);
             let payload: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
@@ -1084,12 +1134,7 @@ fn handle(mut req: Request, token: &str) {
             let body = if fixed {
                 relay_request("phone:note-status", json!({ "id": id, "status": "resolved" }), Duration::from_secs(10))
             } else {
-                let title = payload.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                let text = format!(
-                    "REOPENED {}: The shipped fix didn't take — re-diagnose from scratch, don't repeat the same change. Original report: {}\n\n— reported from the Claude screen",
-                    id, title
-                );
-                relay_request("phone:note", json!({ "text": text }), Duration::from_secs(10))
+                relay_request("phone:note-reopen", json!({ "id": id }), Duration::from_secs(10))
             };
             let body = match body {
                 Some(j) if !j.is_empty() => resp_text(200, "application/json", j),
