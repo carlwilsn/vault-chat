@@ -314,12 +314,91 @@ fn token_ok(req: &Request, token: &str) -> bool {
     false
 }
 
+/// Per-thread state for the in-app coder so a phone that left the chat view — or
+/// was suspended by iOS mid-turn, which kills its blocking `/coder` fetch — can
+/// reattach on return: the run keeps going here on the box, and its final reply
+/// is latched for `/coder-latest`. Tuple is `(running, turn, last_result)`;
+/// `turn` bumps once per completed turn so the phone can tell "a new reply
+/// landed while I was gone" from "same reply I already have".
+static CODER_RUNS: OnceLock<Mutex<HashMap<String, (bool, u64, Value)>>> = OnceLock::new();
+fn coder_runs() -> &'static Mutex<HashMap<String, (bool, u64, Value)>> {
+    CODER_RUNS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn coder_set_running(thread: &str) {
+    let mut m = coder_runs().lock().unwrap_or_else(|e| e.into_inner());
+    m.entry(thread.to_string()).or_insert((false, 0, Value::Null)).0 = true;
+}
+fn coder_finish(thread: &str, result: &Value) {
+    let mut m = coder_runs().lock().unwrap_or_else(|e| e.into_inner());
+    let e = m.entry(thread.to_string()).or_insert((false, 0, Value::Null));
+    e.0 = false;
+    e.1 += 1;
+    e.2 = result.clone();
+}
+/// Snapshot for `/coder-latest`: is a turn in flight, which turn is latched, and
+/// the last completed result (so the phone can append a reply that finished
+/// while it was backgrounded).
+fn coder_latest(thread: &str) -> Value {
+    let m = coder_runs().lock().unwrap_or_else(|e| e.into_inner());
+    match m.get(thread) {
+        Some((running, turn, result)) => json!({ "running": running, "turn": turn, "result": result }),
+        None => json!({ "running": false, "turn": 0, "result": Value::Null }),
+    }
+}
+
+/// Fan one live coder frame onto the long-poll ring (same transport the main
+/// mission chat streams over). `phase` is start | stream | activity | end.
+fn coder_broadcast(thread: &str, phase: &str, fields: &[(&str, Value)]) {
+    let mut e = serde_json::Map::new();
+    e.insert("type".into(), json!("coder"));
+    e.insert("thread".into(), json!(thread));
+    e.insert("phase".into(), json!(phase));
+    for (k, v) in fields {
+        e.insert((*k).to_string(), v.clone());
+    }
+    broadcast_event(Value::Object(e).to_string());
+}
+
+/// A short human label for a tool-use activity pill (basename for file tools,
+/// the command for Bash, the pattern for search) — kept tiny on purpose.
+fn coder_tool_label(name: &str, input: Option<&Value>) -> String {
+    let input = match input {
+        Some(v) => v,
+        None => return String::new(),
+    };
+    let short = |s: &str| -> String { s.trim().replace('\n', " ").chars().take(56).collect() };
+    match name {
+        "Read" | "Edit" | "Write" | "NotebookEdit" | "MultiEdit" => input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+            .unwrap_or_default(),
+        "Bash" => input.get("command").and_then(|v| v.as_str()).map(short).unwrap_or_default(),
+        "Grep" | "Glob" => input.get("pattern").and_then(|v| v.as_str()).map(short).unwrap_or_default(),
+        _ => input
+            .get("description")
+            .or_else(|| input.get("file_path"))
+            .or_else(|| input.get("pattern"))
+            .or_else(|| input.get("command"))
+            .and_then(|v| v.as_str())
+            .map(short)
+            .unwrap_or_default(),
+    }
+}
+
 /// Live "talk to Claude Code" turn: runs a headless Claude Code session in the
 /// vault-chat SOURCE checkout on the box (~/github/vault-chat) so the phone can
 /// chat with the actual coding agent — same auth (the box's Claude login), same
 /// tools, per-thread continuity via `--resume`. Bounded by `timeout` so a hung
 /// turn can't wedge its request thread. Only reachable with the vault token
 /// (this runs inside the token-gated cockpit), tailnet-only.
+///
+/// Streams live: it drives `--output-format stream-json` and fans token deltas +
+/// tool-use activity onto the `/poll` ring as `type:"coder"` events, so the
+/// phone paints the reply as it generates (mirroring the mission chat) instead
+/// of one blocking pop. The final reply is STILL returned from this call — the
+/// blocking contract is unchanged, so if streaming produces nothing the client
+/// receives the full reply exactly as before.
 fn coder_run(thread: &str, message: &str, model: &str) -> Value {
     let home = std::env::var("HOME").unwrap_or_default();
     let ws = format!("{}/github/vault-chat", home);
@@ -335,7 +414,13 @@ fn coder_run(thread: &str, message: &str, model: &str) -> Value {
     let path = format!("{}/.local/bin:{}:{}", home, nodebin, std::env::var("PATH").unwrap_or_default());
     let mut cmd = std::process::Command::new("timeout");
     cmd.arg("900").arg(&claude).arg("-p").arg(message)
-        .arg("--output-format").arg("json").arg("--dangerously-skip-permissions");
+        // stream-json (+ --verbose, which it requires with -p) lets us read the
+        // turn line by line and stream it live; --include-partial-messages gives
+        // real token deltas, not just per-block flushes.
+        .arg("--output-format").arg("stream-json")
+        .arg("--verbose")
+        .arg("--include-partial-messages")
+        .arg("--dangerously-skip-permissions");
     // Ground + direct the in-app coder: who it is, the app map, and "be decisive,
     // ship it" — so it stops over-investigating and actually makes the change.
     if let Ok(sys) = std::fs::read_to_string(&sys_path) {
@@ -352,33 +437,138 @@ fn coder_run(thread: &str, message: &str, model: &str) -> Value {
         cmd.arg("--resume").arg(s);
     }
     cmd.current_dir(&ws).env("PATH", path);
-    match cmd.output() {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            match serde_json::from_str::<Value>(&stdout) {
-                Ok(j) => {
-                    let reply = j.get("result").and_then(|v| v.as_str()).unwrap_or("(no reply)").to_string();
-                    if let Some(nsid) = j.get("session_id").and_then(|v| v.as_str()) {
-                        sessions[thread] = json!(nsid);
-                        let _ = std::fs::write(&sess_path, sessions.to_string());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::null());
+
+    coder_set_running(thread);
+    coder_broadcast(thread, "start", &[]);
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let r = json!({ "reply": format!("coder run error: {}", e), "error": true });
+            coder_broadcast(thread, "end", &[("text", r["reply"].clone()), ("error", json!(true))]);
+            coder_finish(thread, &r);
+            return r;
+        }
+    };
+
+    let mut acc = String::new();
+    let mut final_result: Option<Value> = None;
+    let mut new_sid: Option<String> = None;
+    // Coalesce token frames so a fast stream can't flood the 300-slot ring (which
+    // would evict other events): emit at most ~every 90ms, plus on every block /
+    // tool boundary and at the end.
+    let mut last_emit = Instant::now()
+        .checked_sub(Duration::from_millis(500))
+        .unwrap_or_else(Instant::now);
+    if let Some(out) = child.stdout.take() {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(out);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            let ev: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            match ev.get("type").and_then(|v| v.as_str()) {
+                Some("stream_event") => {
+                    let inner = match ev.get("event") {
+                        Some(v) => v,
+                        None => continue,
+                    };
+                    if inner.get("type").and_then(|v| v.as_str()) == Some("content_block_delta") {
+                        if let Some(delta) = inner.get("delta") {
+                            if delta.get("type").and_then(|v| v.as_str()) == Some("text_delta") {
+                                if let Some(t) = delta.get("text").and_then(|v| v.as_str()) {
+                                    acc.push_str(t);
+                                    if last_emit.elapsed() >= Duration::from_millis(90) {
+                                        coder_broadcast(thread, "stream", &[("text", json!(acc))]);
+                                        last_emit = Instant::now();
+                                    }
+                                }
+                            }
+                        }
                     }
-                    let u = j.get("usage").cloned().unwrap_or_else(|| json!({}));
+                }
+                Some("assistant") => {
+                    // Block boundary: surface any tool_use as an activity pill and
+                    // flush the current text so it's never more than a block stale.
+                    if let Some(content) = ev.pointer("/message/content").and_then(|v| v.as_array()) {
+                        for block in content {
+                            if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                                let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                                let label = coder_tool_label(name, block.get("input"));
+                                coder_broadcast(
+                                    thread,
+                                    "activity",
+                                    &[("tool", json!(name)), ("label", json!(label))],
+                                );
+                            }
+                        }
+                    }
+                    if !acc.is_empty() {
+                        coder_broadcast(thread, "stream", &[("text", json!(acc))]);
+                        last_emit = Instant::now();
+                    }
+                }
+                Some("result") => {
+                    new_sid = ev.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let reply = ev.get("result").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let reply = if reply.trim().is_empty() { acc.clone() } else { reply };
+                    let u = ev.get("usage").cloned().unwrap_or_else(|| json!({}));
                     let get = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
                     let ctx_used = get("input_tokens") + get("cache_creation_input_tokens") + get("cache_read_input_tokens");
-                    let (mname, ctx_window) = j.get("modelUsage").and_then(|m| m.as_object())
+                    let (mname, ctx_window) = ev
+                        .get("modelUsage")
+                        .and_then(|m| m.as_object())
                         .and_then(|o| o.iter().next())
                         .map(|(k, v)| (k.clone(), v.get("contextWindow").and_then(|x| x.as_u64()).unwrap_or(200_000)))
                         .unwrap_or_else(|| (String::new(), 200_000));
-                    json!({ "reply": reply, "sessionId": j.get("session_id"), "ctxUsed": ctx_used, "ctxWindow": ctx_window, "model": mname, "cost": j.get("total_cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0) })
+                    final_result = Some(json!({
+                        "reply": reply,
+                        "sessionId": new_sid,
+                        "ctxUsed": ctx_used,
+                        "ctxWindow": ctx_window,
+                        "model": mname,
+                        "cost": ev.get("total_cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0)
+                    }));
                 }
-                Err(_) => json!({
-                    "reply": format!("coder: couldn't parse a reply.\n{}", stdout.chars().take(400).collect::<String>()),
-                    "error": true
-                }),
+                _ => {}
             }
         }
-        Err(e) => json!({ "reply": format!("coder run error: {}", e), "error": true }),
     }
+    let _ = child.wait();
+
+    if let Some(nsid) = &new_sid {
+        sessions[thread] = json!(nsid);
+        let _ = std::fs::write(&sess_path, sessions.to_string());
+    }
+    let result = final_result.unwrap_or_else(|| {
+        // No result line (parse failure / killed): fall back to whatever text we
+        // streamed so the client still gets the reply, exactly like before.
+        if acc.trim().is_empty() {
+            json!({ "reply": "coder: couldn't parse a reply.", "error": true })
+        } else {
+            json!({ "reply": acc.clone(), "error": false })
+        }
+    });
+    coder_broadcast(
+        thread,
+        "end",
+        &[
+            ("text", result.get("reply").cloned().unwrap_or_else(|| json!(""))),
+            ("result", result.clone()),
+        ],
+    );
+    coder_finish(thread, &result);
+    result
 }
 
 /// The feedback queue: every in-app report as an object with a LIVE state that
@@ -860,6 +1050,13 @@ fn handle(mut req: Request, token: &str) {
             let model = payload.get("model").and_then(|v| v.as_str()).unwrap_or("");
             let res = coder_run(thread, message, model);
             let _ = req.respond(resp_text(200, "application/json", res.to_string()));
+        }
+        (Method::Get, "/coder-latest") => {
+            // Reattach probe: on returning to the Talk-to-Claude view the phone
+            // asks whether a turn is still in flight (resume the live pills) or a
+            // reply landed while it was backgrounded (append it). Read-only.
+            let thread = query_param(req.url(), "thread").unwrap_or_default();
+            let _ = req.respond(resp_text(200, "application/json", coder_latest(&thread).to_string()));
         }
         (Method::Get, "/feedback") => {
             // The Claude screen's queue: reports + live pipeline state.

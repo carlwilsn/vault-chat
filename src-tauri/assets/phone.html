@@ -549,6 +549,16 @@
      pulsing dot + dim mono label, not an italic bubble. */
   .coder-msg.t{align-self:flex-start;display:flex;align-items:center;gap:11px;padding:11px 0 6px;background:none;border-radius:0;color:var(--dim);font-size:12px}
   .coder-msg.t .tlbl{color:var(--dim);font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;opacity:.7;white-space:nowrap}
+  /* live activity while the coder works: ONE lightweight pill for the current
+     step (tool + short target) that updates in place, then collapses into the
+     same "N steps" chip the main chat uses once the turn lands. No bloat. */
+  .coder-live{display:flex;flex-direction:column}
+  .coder-acts{display:flex;flex-direction:column;margin:9px 0 4px;min-height:0}
+  .coder-acts:empty{display:none}
+  .coder-act{display:inline-flex;align-items:center;gap:10px;min-width:0;font-size:12px;color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .coder-act .at{color:var(--text-secondary);flex:none}
+  .coder-act .al{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.8}
+  .coder-steps{margin:9px 0 4px}
   .cl-foot{flex:0 0 auto;border-top:1px solid var(--line);padding:9px 13px 4px;display:flex;align-items:flex-end;gap:8px}
   .cl-foot.nb{border-top-color:transparent}/* chat tab: no divider line above the composer (report ba0ba077) */
   /* the boss moved "new chat" out of a top button and into a + at the composer's
@@ -1109,8 +1119,14 @@ interface PollEvent {
   tool?: string;
   steps?: TimelineStep[];
   status?: string;
-  /** two-lane chat lifecycle: start | stream | end */
+  /** two-lane chat lifecycle: start | stream | end (coder: + activity) */
   phase?: string;
+  /** coder live turn: which Talk-to-Claude thread this frame belongs to */
+  thread?: string;
+  /** coder activity pill: short label for the tool target */
+  label?: string;
+  /** coder end frame: the full result object (reply, ctx, cost, …) */
+  result?: { reply?: string; [k: string]: unknown };
   startedAt?: number;
   /** message events carry the persisted turn inline */
   role?: string;
@@ -2367,6 +2383,9 @@ interface MockDB {
     }
   }
   function handleEvent(d: PollEvent) {
+    // The in-app coder streams over this same ring — token deltas + tool-use
+    // activity for the open Talk-to-Claude thread. Its own view, own state.
+    if (d.type === "coder") { coderOnEvent(d); return; }
     // Live sheet: an open worker/mission thread streams its in-flight words and
     // folds in its turns the moment they land, so a thread opened mid-run shows
     // the worker working / the supervisor supervising on the fly — not a frozen
@@ -4910,19 +4929,140 @@ interface MockDB {
   function coderSaveHist() { try { const e = [...coderLog().querySelectorAll(".coder-msg")].filter((n) => !n.classList.contains("t")).map((n) => ({ c: n.classList.contains("u") ? "u" : "a", x: n.dataset.raw != null ? n.dataset.raw : n.textContent })); localStorage.setItem("vc_coder_hist_" + coderThread, JSON.stringify(e.slice(-60))); } catch {} }
   function coderLoadThread(thread, greeting?) {
     coderThread = thread;
+    // The DOM is about to be wiped — drop any live-turn refs pointing into it.
+    // coderReattach re-establishes the live view if a turn is still in flight.
+    coderTurnActive = false; coderLiveWrap = null; coderThinkEl = null; coderActs = [];
     const log = coderLog(); log.innerHTML = "";
     let had = false;
     try { const h = JSON.parse(localStorage.getItem("vc_coder_hist_" + thread) || "[]"); h.forEach((m) => { coderAdd(m.c, m.x); had = true; }); } catch {}
     if (!had && greeting) coderAdd("a", greeting);
     setTimeout(() => { $("clBody").scrollTop = $("clBody").scrollHeight; }, 30);
+    void coderReattach(thread);
   }
+
+  // ---- coder live turn: stream tokens + activity pills over /poll (same
+  //      transport the mission chat streams over), with the blocking POST as the
+  //      always-there fallback. A turn keeps running on the box if the phone
+  //      leaves/backgrounds; coderReattach lands its reply on return. ----
+  let coderTurnActive = false;  // a turn is in flight for the OPEN thread
+  let coderThinkEl = null;      // the "thinking…" pulse, dropped on first sign of life
+  let coderLiveWrap = null;     // wrapper: activity row + the streaming bubble
+  let coderActs = [];           // {tool,label} steps for the in-flight turn
+
+  function coderEnsureLive() {
+    if (coderLiveWrap && coderLiveWrap.isConnected) return coderLiveWrap;
+    if (coderThinkEl) { coderThinkEl.remove(); coderThinkEl = null; }
+    const w = document.createElement("div"); w.className = "coder-live";
+    w.innerHTML = '<div class="coder-acts"></div><div class="coder-msg a live"><div class="md"></div></div>';
+    coderLog().appendChild(w); coderLiveWrap = w;
+    return w;
+  }
+  function coderSetStream(text) {
+    const w = coderEnsureLive();
+    const bubble = w.querySelector(".coder-msg");
+    bubble.dataset.raw = text;
+    const el = bubble.querySelector(".md"); el.innerHTML = md(text); typeset(bubble);
+    $("clBody").scrollTop = $("clBody").scrollHeight;
+  }
+  function coderPushAct(tool, label) {
+    const w = coderEnsureLive();
+    coderActs.push({ tool: tool || "tool", label: label || "" });
+    const row = w.querySelector(".coder-acts");
+    row.innerHTML = '<div class="coder-act"><span class="pulse"></span><span class="at">' + esc(tool || "tool") + "</span>" +
+      ((label || "").trim() ? '<span class="al">' + esc(label.trim()) + "</span>" : "") + "</div>";
+    $("clBody").scrollTop = $("clBody").scrollHeight;
+  }
+  function coderCollapseActs() {
+    if (!coderLiveWrap) return;
+    const row = coderLiveWrap.querySelector(".coder-acts");
+    if (!row) return;
+    if (!coderActs.length) { row.remove(); return; }
+    const items = coderActs.map((a) => '<div class="step">' + esc((a.tool || "") + (a.label ? "  " + a.label : "")) + "</div>").join("");
+    row.className = "coder-steps";
+    row.innerHTML = '<div class="steps"><button class="steps-h"><svg class="sck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7"/></svg>' +
+      coderActs.length + " step" + (coderActs.length === 1 ? "" : "s") +
+      '<svg class="scv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button><div class="steps-list">' + items + "</div></div>";
+  }
+  // Land the final reply exactly once — the POST result, the `end` stream event,
+  // and reattach can all race to call this; the coderTurnActive guard makes it
+  // idempotent so a turn can never double-append.
+  function coderFinalize(reply, thread) {
+    if (thread && thread !== coderThread) return;
+    if (!coderTurnActive) return;
+    coderTurnActive = false;
+    const send = $("coderSend"); if (send) send.disabled = false;
+    const txt = reply || "(no reply)";
+    coderCollapseActs();
+    if (coderLiveWrap && coderLiveWrap.isConnected) {
+      const bubble = coderLiveWrap.querySelector(".coder-msg");
+      bubble.classList.remove("live");
+      bubble.dataset.raw = txt;
+      const el = bubble.querySelector(".md"); el.innerHTML = md(txt); typeset(bubble);
+    } else {
+      if (coderThinkEl) { coderThinkEl.remove(); coderThinkEl = null; }
+      coderAdd("a", txt);
+    }
+    coderLiveWrap = null; coderActs = []; coderThinkEl = null;
+    coderSaveHist();
+    $("clBody").scrollTop = $("clBody").scrollHeight;
+  }
+  function coderOnEvent(d) {
+    if (!d.thread || d.thread !== coderThread) return;
+    if (d.phase === "start") {
+      coderTurnActive = true;
+      const send = $("coderSend"); if (send) send.disabled = true;
+    } else if (d.phase === "stream") {
+      coderTurnActive = true; coderSetStream(d.text || "");
+    } else if (d.phase === "activity") {
+      coderTurnActive = true; coderPushAct(d.tool, d.label);
+    } else if (d.phase === "end") {
+      coderFinalize((d.result && d.result.reply) || d.text || "", d.thread);
+    }
+  }
+  // On (re)opening a thread — or returning to the foreground — ask the box
+  // whether a turn is still generating (reattach the live view) or a reply
+  // landed while we were gone (append it, deduped against what's on screen).
+  async function coderReattach(thread) {
+    if (MOCK || !thread) return;
+    try {
+      const r = await api("/coder-latest?thread=" + encodeURIComponent(thread));
+      if (!r.ok) return;
+      const d = await r.json().catch(() => null);
+      if (!d || thread !== coderThread) return; // the user moved on
+      if (d.running) {
+        if (!coderTurnActive) {
+          coderTurnActive = true;
+          const send = $("coderSend"); if (send) send.disabled = true;
+          if (!coderLiveWrap && !coderThinkEl) coderThinkEl = coderAdd("t", "thinking…");
+        }
+        return;
+      }
+      const reply = d.result && d.result.reply;
+      if (!reply) return;
+      const last = [...coderLog().querySelectorAll(".coder-msg.a")].pop();
+      const lastRaw = last ? (last.dataset.raw != null ? last.dataset.raw : last.textContent) : "";
+      if (coderTurnActive) { coderFinalize(reply, thread); }
+      else if (String(lastRaw).trim() !== String(reply).trim()) { coderAdd("a", reply); coderSaveHist(); }
+    } catch {}
+  }
+  // Expand/collapse the "N steps" chip on a finished coder turn.
+  coderLog().addEventListener("click", (e) => {
+    const sh = e.target.closest(".steps-h");
+    if (sh && coderLog().contains(sh)) sh.closest(".steps").classList.toggle("open");
+  });
   (function coderComposer() {
     const ta = $("coderTa"), send = $("coderSend");
     if (!ta || !send) return;
     const submit = async () => {
       const m = ta.value.trim(); if (!m) return;
       ta.value = ""; ta.style.height = "auto"; coderAdd("u", m); coderSaveHist();
-      send.disabled = true; const th = coderAdd("t", "thinking…");
+      send.disabled = true;
+      // Live: the turn now streams over /poll (coderOnEvent paints tokens +
+      // activity pills into a live bubble, replacing this "thinking…"). The POST
+      // still blocks for the full reply as the always-there fallback.
+      coderTurnActive = true;
+      const turnThread = coderThread;
+      coderThinkEl = coderAdd("t", "thinking…");
       // First turn of a report thread carries the report itself, so the session
       // starts from the formalized ask rather than a bare message.
       let msg = m;
@@ -4932,21 +5072,23 @@ interface MockDB {
       try {
         const r = await api("/coder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread: coderThread, message: msg }) });
         const d = await r.json().catch(() => ({}));
-        th.remove(); coderAdd("a", d.reply || "(no reply)"); coderSaveHist();
+        // Authoritative reply — finalize (no-op if the `end` stream event already did).
+        coderFinalize(d.reply || "(no reply)", turnThread);
       } catch (e) {
-        th.remove();
         // The app polls /status continuously (body.offline reflects that truth).
         // If we're NOT flagged offline, the box is reachable and this was just a
-        // long coder turn whose connection dropped mid-flight (mobile / Tailscale
-        // idle, or the PWA backgrounding) — don't falsely blame Tailscale. The
-        // turn kept running on the box and its session is saved, so re-sending
-        // resumes it. (report fafcd51d — "Said it can't find Tailscale???")
+        // long coder turn whose blocking fetch dropped mid-flight (mobile /
+        // Tailscale idle, or the PWA backgrounding) — don't falsely blame
+        // Tailscale. The turn kept running on the box and streams over /poll;
+        // reattach lands the reply. (report fafcd51d — "can't find Tailscale???")
         const off = document.body.classList.contains("offline");
-        coderAdd("a", off
-          ? "Can't reach the box right now — is it awake and is Tailscale on? I'll pick up where we left off once it's back."
-          : "That reply took too long and the connection dropped — but the box is up and probably still working on it. Give it a moment, then send your message again to pick the thread back up.");
+        if (off) {
+          coderFinalize("Can't reach the box right now — is it awake and is Tailscale on? I'll pick up where we left off once it's back.", turnThread);
+        } else {
+          // Keep the turn live — /poll + reattach will land the real reply.
+          void coderReattach(turnThread);
+        }
       }
-      send.disabled = false;
     };
     send.addEventListener("pointerdown", (e) => { e.preventDefault(); void submit(); }); // one-tap send with the keyboard up
     ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; });
@@ -5269,7 +5411,7 @@ interface MockDB {
 
   // ---------- lifecycle ----------
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") { void pollLoop(); void refreshState(); void refreshBadge(); if (page === "activity") softReload(loadActivity); if (page === "alerts") softReload(loadAlerts); }
+    if (document.visibilityState === "visible") { void pollLoop(); void refreshState(); void refreshBadge(); if (page === "activity") softReload(loadActivity); if (page === "alerts") softReload(loadAlerts); if (clTab === "chat" && $("drawer").classList.contains("open") && coderThread) void coderReattach(coderThread); }
   });
   // Connection came back — deliver any report the user saved while offline right
   // away, rather than waiting for the next 45s status poll.
