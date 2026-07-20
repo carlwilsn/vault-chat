@@ -5429,22 +5429,31 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         // start a new one — otherwise `rebase` errors with "rebase in
         // progress" and the vault stays wedged.
         abort_stuck_merge_or_rebase(&vault);
-        // Detect the local branch — most repos default to main, but a
-        // pre-existing vault may be on master or something else.
+        // Detect the local branch via the symbolic ref, not `rev-parse
+        // --abbrev-ref HEAD`: the latter needs HEAD to already resolve to a
+        // commit, so it fails with "no current branch" on a freshly
+        // `git init`-ed repo that hasn't been committed to yet (an unborn
+        // HEAD) — reachable if git_init_if_needed's initial commit ever races
+        // with, or fails ahead of, the sync loop starting, permanently
+        // wedging the vault with no self-heal path. `symbolic-ref` reads the
+        // ref itself rather than resolving it to a commit, so it succeeds on
+        // an unborn branch (a real `git merge --ff-only` from there still
+        // works fine) and still correctly fails on a detached HEAD (which
+        // isn't a symbolic ref at all) — one check replaces two.
         let (branch_out, _, branch_code) =
-            run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+            run_git(&vault, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
         if branch_code != 0 {
             return Ok(SyncOpResult {
                 ok: false,
-                message: "no current branch".into(),
+                message: "detached HEAD".into(),
                 error: true,
             });
         }
         let branch = branch_out.trim();
-        if branch.is_empty() || branch == "HEAD" {
+        if branch.is_empty() {
             return Ok(SyncOpResult {
                 ok: false,
-                message: "detached HEAD".into(),
+                message: "no current branch".into(),
                 error: true,
             });
         }
@@ -5637,9 +5646,13 @@ async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
                 }
             }
         }
+        // See the matching comment in vault_sync_pull: `symbolic-ref` (not
+        // `rev-parse --abbrev-ref HEAD`) so a repo with zero commits yet
+        // (unborn HEAD) can still push its first commit instead of dying with
+        // "no current branch" forever.
         let (branch_out, _, branch_code) =
-            run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-        if branch_code != 0 || branch_out.trim() == "HEAD" {
+            run_git(&vault, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+        if branch_code != 0 || branch_out.trim().is_empty() {
             return Ok(SyncOpResult {
                 ok: false,
                 message: "no current branch".into(),
@@ -6232,7 +6245,105 @@ mod conversation_storage_tests {
 
 #[cfg(test)]
 mod sync_role_tests {
-    use super::{conv_is_mission_zone, is_sync_follower, run_git, run_git_mut, sanitize_mission_zone};
+    use super::{
+        conv_is_mission_zone, is_sync_follower, run_git, run_git_mut, sanitize_mission_zone,
+        vault_sync_pull, vault_sync_push,
+    };
+
+    // End-to-end two-machine simulation through the REAL tauri commands (not the
+    // internal helpers) — two independent checkouts of the same origin, taking
+    // turns diverging and reconciling exactly like an always-on box + an
+    // intermittent laptop. Proves vault_sync_push / vault_sync_pull actually
+    // converge: a concurrent edit on each side survives, and both checkouts end
+    // up byte-identical to origin's tip.
+    #[tokio::test]
+    async fn two_checkouts_diverge_and_converge_via_real_pull_push() {
+        let base = std::env::temp_dir().join(format!("vc_two_machine_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "main"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git(ds, &["remote", "add", "origin", og]).unwrap();
+        }
+        let asr = a.to_str().unwrap().to_string();
+        let bs = b.to_str().unwrap().to_string();
+
+        // A: first commit, first push (an empty bare origin — the "new machine,
+        // first sync" case).
+        std::fs::write(a.join("fileA.md"), "hello from A\n").unwrap();
+        run_git_mut(&asr, &["add", "-A"]).unwrap();
+        run_git_mut(&asr, &["commit", "-q", "-m", "seed from A"]).unwrap();
+        let r = vault_sync_push(asr.clone()).await.unwrap();
+        assert!(r.ok, "A's first push must succeed: {}", r.message);
+
+        // B: fresh checkout, pulls A's seed down.
+        let r = vault_sync_pull(bs.clone()).await.unwrap();
+        assert!(r.ok, "B's first pull must succeed: {}", r.message);
+        assert_eq!(
+            std::fs::read_to_string(b.join("fileA.md")).unwrap(),
+            "hello from A\n"
+        );
+
+        // B commits its own new file and pushes — a clean fast-forward.
+        std::fs::write(b.join("fileB.md"), "hello from B\n").unwrap();
+        run_git_mut(&bs, &["add", "-A"]).unwrap();
+        run_git_mut(&bs, &["commit", "-q", "-m", "seed from B"]).unwrap();
+        let r = vault_sync_push(bs.clone()).await.unwrap();
+        assert!(r.ok, "B's push must succeed: {}", r.message);
+
+        // A, meanwhile, edits its own file WITHOUT having pulled B's push yet —
+        // the concurrent-edit case: both machines committed before either saw
+        // the other's work. A's next pull must fetch, discover the divergence,
+        // and auto-merge (no conflict — disjoint files) rather than fail or wedge.
+        std::fs::write(a.join("fileA.md"), "hello from A v2\n").unwrap();
+        run_git_mut(&asr, &["add", "-A"]).unwrap();
+        run_git_mut(&asr, &["commit", "-q", "-m", "A edits while diverged"]).unwrap();
+        let r = vault_sync_pull(asr.clone()).await.unwrap();
+        assert!(r.ok, "A's divergent pull must reconcile, not fail: {}", r.message);
+        assert!(
+            r.message.contains("merged"),
+            "expected an auto-merge, got: {}",
+            r.message
+        );
+        assert_eq!(
+            std::fs::read_to_string(a.join("fileA.md")).unwrap(),
+            "hello from A v2\n",
+            "A's own concurrent edit must survive the merge"
+        );
+        assert_eq!(
+            std::fs::read_to_string(a.join("fileB.md")).unwrap(),
+            "hello from B\n",
+            "B's file must be pulled in by the merge"
+        );
+
+        // A pushes the merge commit.
+        let r = vault_sync_push(asr.clone()).await.unwrap();
+        assert!(r.ok, "A's post-merge push must succeed: {}", r.message);
+
+        // B pulls once more and must converge on the same state as A.
+        let r = vault_sync_pull(bs.clone()).await.unwrap();
+        assert!(r.ok, "B's final pull must succeed: {}", r.message);
+        assert_eq!(
+            std::fs::read_to_string(b.join("fileA.md")).unwrap(),
+            "hello from A v2\n",
+            "B must see A's concurrent edit after converging"
+        );
+
+        let (a_head, _, _) = run_git(&asr, &["rev-parse", "HEAD"]).unwrap();
+        let (b_head, _, _) = run_git(&bs, &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(a_head.trim(), b_head.trim(), "both checkouts must converge on the same commit");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     // The follower sanitize pass, end to end on real repos: a diverged
     // follower's mission-zone files reset to origin's version (stale mission
