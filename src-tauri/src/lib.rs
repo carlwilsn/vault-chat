@@ -3168,13 +3168,9 @@ fn sync_one_repo(
     match (&shared_branch, class) {
         // Shared → push only the dedicated branch, with -u so it exists on the
         // remote and tracks. Never the team's default branch.
-        (Some(branch), _) => match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
-            Ok((_, perr, pc)) if pc != 0 => {
-                eprintln!("[sync] shared repo '{}' push skipped: {}", rel, first_line(&perr).trim())
-            }
-            Err(e) => eprintln!("[sync] shared repo '{}' push error: {}", rel, e),
-            _ => {}
-        },
+        (Some(branch), _) => {
+            push_sub_repo_with_reconcile(sub, rel, branch, "shared", &["push", "-u", "origin", branch]);
+        }
         // Mine → push the tracking branch when it's ahead. Needs an upstream.
         (None, RepoClass::Mine) => {
             let has_upstream = matches!(
@@ -3190,12 +3186,26 @@ fn sync_one_repo(
                 0
             };
             if ahead > 0 {
-                match run_git_timeout(sub, &["push"], 300) {
-                    Ok((_, perr, pc)) if pc != 0 => {
-                        eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                let branch = run_git(sub, &["rev-parse", "--abbrev-ref", "HEAD"])
+                    .ok()
+                    .and_then(|(b, _, c)| {
+                        let b = b.trim().to_string();
+                        if c == 0 && !b.is_empty() && b != "HEAD" { Some(b) } else { None }
+                    });
+                match branch {
+                    Some(branch) => {
+                        push_sub_repo_with_reconcile(sub, rel, &branch, "owned", &["push"]);
                     }
-                    Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
-                    _ => {}
+                    // Detached / unnamed HEAD (shouldn't happen — attach_detached_to_branch
+                    // or recover_to_configured_branch already ran above) — no branch to
+                    // fetch/reconcile against, so fall back to a single best-effort push.
+                    None => match run_git_timeout(sub, &["push"], 300) {
+                        Ok((_, perr, pc)) if pc != 0 => {
+                            eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                        }
+                        Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
+                        _ => {}
+                    },
                 }
             }
         }
@@ -3204,6 +3214,62 @@ fn sync_one_repo(
     }
 
     maybe_compact_git(sub);
+}
+
+/// Push `branch` in nested repo `sub`; on rejection, reconcile and retry once —
+/// the same self-healing `vault_sync_push` already gives the vault root.
+///
+/// Without this, a nested repo synced from two machines under the SAME
+/// tracking branch (the normal "owned" case, and the whole point of a
+/// per-user `vault-chat/<me>` shared branch) permanently fails to push once
+/// it diverges: the old code just logged "push skipped" and moved on, every
+/// cycle, forever — nothing here ever fetched or merged, so the two machines'
+/// histories never converged. `reconcile_with_upstream` already does exactly
+/// this reconciliation (fast-forward, or a real merge with deterministic
+/// conflict resolution) and is generic over any repo path, so it's reused
+/// as-is rather than duplicated.
+fn push_sub_repo_with_reconcile(
+    sub: &str,
+    rel: &str,
+    branch: &str,
+    label: &str,
+    push_args: &[&str],
+) {
+    match run_git_timeout(sub, push_args, 300) {
+        Ok((_, perr, pc)) if pc != 0 => {
+            let (_, ferr, fcode) = match run_git(sub, &["fetch", "origin", branch]) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[sync] {} repo '{}' push skipped ({}); fetch error: {}", label, rel, first_line(&perr).trim(), e);
+                    return;
+                }
+            };
+            if fcode != 0 {
+                eprintln!(
+                    "[sync] {} repo '{}' push skipped ({}); fetch also failed: {}",
+                    label, rel, first_line(&perr).trim(), first_line(&ferr).trim()
+                );
+                return;
+            }
+            match reconcile_with_upstream(sub, branch) {
+                Ok(Ok(msg)) => match run_git_timeout(sub, push_args, 300) {
+                    Ok((_, perr2, pc2)) if pc2 != 0 => {
+                        eprintln!("[sync] {} repo '{}' push failed after {}: {}", label, rel, msg, first_line(&perr2).trim());
+                    }
+                    Err(e) => eprintln!("[sync] {} repo '{}' push error after {}: {}", label, rel, msg, e),
+                    _ => eprintln!("[sync] {} repo '{}' {} + pushed", label, rel, msg),
+                },
+                Ok(Err(r)) => {
+                    eprintln!("[sync] {} repo '{}' reconcile failed: {}", label, rel, r.message);
+                }
+                Err(e) => {
+                    eprintln!("[sync] {} repo '{}' reconcile error: {}", label, rel, e);
+                }
+            }
+        }
+        Err(e) => eprintln!("[sync] {} repo '{}' push error: {}", label, rel, e),
+        _ => {}
+    }
 }
 
 /// Walk the vault for every nested git repo (a dir containing `.git`) at any
