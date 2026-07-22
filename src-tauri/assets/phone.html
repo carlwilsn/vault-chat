@@ -898,10 +898,11 @@
     <div class="panel">
       <div class="cl-hd" id="clHd">
         <!-- queue header: gear · Feedback|Chats · burger nav -->
-        <!-- Settings gear: a clean, light 8-spoke cog (center ring + radial ticks)
-             in the app's simple 2px-stroke monochrome voice — the old Feather cog
-             read muddy/heavy at 21px next to the burger and + (report 80e30662). -->
-        <button class="icbtn" id="clGearBtn" aria-label="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.15 2.15M16.95 16.95l2.15 2.15M19.1 4.9l-2.15 2.15M7.05 16.95l-2.15 2.15"/></svg></button>
+        <!-- Settings gear: the classic Feather cog. A "cleaner" 8-spoke variant
+             (center ring + radial ticks) read as a STAR, not a gear — the boss
+             reported it (b1900639). A recognizable settings icon beats a lighter
+             one that's ambiguous, so we keep the toothed cog. -->
+        <button class="icbtn" id="clGearBtn" aria-label="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
         <div class="cl-seg" id="clSeg">
           <button id="clTabFb" class="on">Feedback</button>
           <button id="clTabChat">Chat</button>
