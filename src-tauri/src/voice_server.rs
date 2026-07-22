@@ -1976,7 +1976,7 @@ fn notifications_json(vault: &str) -> String {
     let mut followups: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for line in raw.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(mut v) = serde_json::from_str::<Value>(line) else { continue };
         match v.get("type").and_then(|x| x.as_str()) {
             Some("read") => {
                 if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
@@ -2017,6 +2017,19 @@ fn notifications_json(vault: &str) -> String {
             }
             _ => {
                 if v.get("id").and_then(|x| x.as_str()).is_some() {
+                    // Fixer-written notifications can carry a NANOSECOND `ts` (the
+                    // box's `date +%s%3N` emits ns on some builds, ~1e18). Fold to
+                    // ms on ingest so every consumer here — the clear/retain
+                    // compare, the sort, and the phone's relative-time label —
+                    // agrees on units and an hours-old auto-fix never reads as
+                    // "now" or pins itself to the top (report 381be0e1).
+                    if let Some(obj) = v.as_object_mut() {
+                        if let Some(ts) = obj.get("ts").and_then(|x| x.as_i64()) {
+                            if ts > 0 {
+                                obj.insert("ts".into(), json!(norm_ms(ts as u64) as i64));
+                            }
+                        }
+                    }
                     items.push(v);
                 }
             }

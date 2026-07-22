@@ -897,8 +897,11 @@
   <div id="drawer">
     <div class="panel">
       <div class="cl-hd" id="clHd">
-        <!-- queue header: gear · Feedback|Chats · close -->
-        <button class="icbtn" id="clGearBtn" aria-label="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+        <!-- queue header: gear · Feedback|Chats · burger nav -->
+        <!-- Settings gear: a clean, light 8-spoke cog (center ring + radial ticks)
+             in the app's simple 2px-stroke monochrome voice — the old Feather cog
+             read muddy/heavy at 21px next to the burger and + (report 80e30662). -->
+        <button class="icbtn" id="clGearBtn" aria-label="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.15 2.15M16.95 16.95l2.15 2.15M19.1 4.9l-2.15 2.15M7.05 16.95l-2.15 2.15"/></svg></button>
         <div class="cl-seg" id="clSeg">
           <button id="clTabFb" class="on">Feedback</button>
           <button id="clTabChat">Chat</button>
@@ -938,7 +941,7 @@
       </div>
       <div class="cl-foot" id="clFoot" style="display:none">
         <button class="coder-new" id="coderNewBtn" aria-label="new chat — clear this conversation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
-        <div class="coder-input"><textarea id="coderTa" rows="1" placeholder="Reply, or ask for a change…" enterkeyhint="enter" autocomplete="off"></textarea><button class="coder-send" id="coderSend" aria-label="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button></div>
+        <div class="coder-input"><textarea id="coderTa" rows="1" placeholder="Message…" enterkeyhint="enter" autocomplete="off"></textarea><button class="coder-send" id="coderSend" aria-label="send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 12l6-6 6 6"/></svg></button></div>
       </div>
     </div>
   </div>
@@ -4710,6 +4713,7 @@ interface MockDB {
   let clTab = "fb";           // "fb" | "chat"
   let clView = "queue";       // "queue" | "conv"
   let clCur = null;           // the open feedback item (null = general chat)
+  let fbDismissing = false;   // latch so one dismiss tap fires one toast, not a burst
   function openDrawer() {
     $("drawer").classList.add("open");
     clShowTab(clTab);
@@ -4859,9 +4863,16 @@ interface MockDB {
         dz.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
         dz.addEventListener("click", (e) => {
           e.stopPropagation();
+          // Latch the dismiss: a single tap was firing the handler in a burst
+          // (~20×) — the toast re-triggered and the queue re-rendered over and
+          // over (report: "Dismissed" toast loop). `fbDismissing` collapses any
+          // repeat within the render window to exactly ONE toast + one reload;
+          // the signature map still resurfaces the card only on a genuine update.
+          if (fbDismissing) return;
+          fbDismissing = true;
           const next = fbDismissMap(); next.set(it.id, fbSig(it)); fbSaveDismiss(next);
           toast("Dismissed — it comes back only if there's an update.");
-          void loadFeedbackQueue();
+          void loadFeedbackQueue().finally(() => { setTimeout(() => { fbDismissing = false; }, 500); });
         });
         b.appendChild(dz);
       }
