@@ -3080,6 +3080,57 @@ fn ensure_on_branch(sub: &str, branch: &str) -> bool {
         || matches!(run_git_mut(sub, &["switch", branch]), Ok((_, _, 0)))
 }
 
+/// Push `branch` in a nested repo (submodule or embedded repo), reconciling
+/// ONCE on rejection instead of just logging and giving up. Mirrors
+/// `vault_sync_push`'s own rejection handling for the root vault: a nested
+/// repo can diverge exactly like the root can (two machines both committed
+/// into the same sub-project), and without this it retried the identical
+/// rejected push every ~30s cycle forever — a silent, permanent partial sync
+/// for that one nested repo, with nothing but an eprintln to show for it. If
+/// the rejection isn't a divergence (auth/network), the fetch or the retry
+/// fails too and that's what gets logged.
+fn push_nested_branch(sub: &str, rel: &str, branch: &str, label: &str) {
+    match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
+        Ok((_, perr, pc)) if pc != 0 => {
+            let (_, ferr, fcode) = match run_git(sub, &["fetch", "origin", branch]) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[sync] {} '{}' push error: {}", label, rel, e);
+                    return;
+                }
+            };
+            if fcode != 0 {
+                eprintln!(
+                    "[sync] {} '{}' push skipped: {} (fetch also failed: {})",
+                    label,
+                    rel,
+                    first_line(&perr).trim(),
+                    first_line(&ferr).trim()
+                );
+                return;
+            }
+            match reconcile_with_upstream(sub, branch) {
+                Ok(Ok(_)) => match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
+                    Ok((_, perr2, pc2)) if pc2 != 0 => eprintln!(
+                        "[sync] {} '{}' push failed after merge: {}",
+                        label,
+                        rel,
+                        first_line(&perr2).trim()
+                    ),
+                    Err(e) => eprintln!("[sync] {} '{}' push error after merge: {}", label, rel, e),
+                    _ => {}
+                },
+                Ok(Err(r)) => {
+                    eprintln!("[sync] {} '{}' reconcile failed: {}", label, rel, r.message)
+                }
+                Err(e) => eprintln!("[sync] {} '{}' reconcile error: {}", label, rel, e),
+            }
+        }
+        Err(e) => eprintln!("[sync] {} '{}' push error: {}", label, rel, e),
+        _ => {}
+    }
+}
+
 /// Sync ONE nested repo per its class. Best-effort throughout — any step that
 /// fails is logged and skipped, never fatal to the vault's own sync.
 /// `cfg_branch` is the `.gitmodules`-declared tracking branch when this repo is
@@ -3168,15 +3219,13 @@ fn sync_one_repo(
     match (&shared_branch, class) {
         // Shared → push only the dedicated branch, with -u so it exists on the
         // remote and tracks. Never the team's default branch.
-        (Some(branch), _) => match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
-            Ok((_, perr, pc)) if pc != 0 => {
-                eprintln!("[sync] shared repo '{}' push skipped: {}", rel, first_line(&perr).trim())
-            }
-            Err(e) => eprintln!("[sync] shared repo '{}' push error: {}", rel, e),
-            _ => {}
-        },
+        (Some(branch), _) => push_nested_branch(sub, rel, branch, "shared repo"),
         // Mine → push the tracking branch when it's ahead. Needs an upstream.
         (None, RepoClass::Mine) => {
+            let branch = run_git(sub, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+                .ok()
+                .and_then(|(b, _, c)| if c == 0 { Some(b.trim().to_string()) } else { None });
+            let Some(branch) = branch else { return };
             let has_upstream = matches!(
                 run_git(sub, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
                 Ok((_, _, 0))
@@ -3190,13 +3239,7 @@ fn sync_one_repo(
                 0
             };
             if ahead > 0 {
-                match run_git_timeout(sub, &["push"], 300) {
-                    Ok((_, perr, pc)) if pc != 0 => {
-                        eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
-                    }
-                    Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
-                    _ => {}
-                }
+                push_nested_branch(sub, rel, &branch, "repo");
             }
         }
         // Internal → no remote; the local commit above is the version history.
@@ -5484,7 +5527,20 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         if !st.trim().is_empty() {
             let (hn, he) = human_identity(&vault);
             let _ = run_git_as(&vault, &hn, &he, &["add", "-A"]);
-            let _ = run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: auto-sync submodule pointers"]);
+            // Same guard vault_sync_commit_local applies before its own gitlink
+            // commit: never publish a superproject pointer at a sub-repo commit
+            // that hasn't reached ITS remote yet. This pull-triggered commit was
+            // the one path that skipped it — sync_nested_repos above can still
+            // leave a nested repo's push unresolved (a genuine auth/network
+            // failure even after push_nested_branch's retry), and without this
+            // guard that gitlink would still get published here and strand a
+            // follower on a lost ref.
+            let held = hold_unpushed_submodule_gitlinks(&vault);
+            let nothing_staged = held > 0
+                && matches!(run_git(&vault, &["diff", "--cached", "--quiet"]), Ok((_, _, 0)));
+            if !nothing_staged {
+                let _ = run_git_as(&vault, &hn, &he, &["commit", "-q", "-m", "vault-chat: auto-sync submodule pointers"]);
+            }
         }
         Ok(SyncOpResult {
             ok: true,
@@ -6347,6 +6403,144 @@ mod sync_role_tests {
         // Follower, tolerant of case + surrounding whitespace → follower.
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod nested_repo_sync_tests {
+    use super::{hold_unpushed_submodule_gitlinks, push_nested_branch, run_git, run_git_mut};
+
+    // Two machines (A, B) each have their own checkout of a nested repo pointed
+    // at the same origin. A pushes first; B, unaware, commits independently and
+    // its push is a real non-fast-forward rejection. Before this fix,
+    // `sync_one_repo`'s push step just eprintln'd "push skipped" and gave up —
+    // B's nested repo would retry the identical rejected push every ~30s cycle
+    // forever and never converge (a permanent, silent partial sync for that one
+    // nested repo). `push_nested_branch` must fetch, reconcile, and retry the
+    // push once so B's push succeeds and both machines' work survives.
+    #[test]
+    fn diverged_nested_push_reconciles_instead_of_wedging() {
+        let base = std::env::temp_dir().join(format!("vc_nested_push_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("sub-origin.git");
+        let a = base.join("A-sub");
+        let b = base.join("B-sub");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "main"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git_mut(ds, &["remote", "add", "origin", og]).unwrap();
+        }
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+        std::fs::write(a.join("README.md"), "seed\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "-u", "origin", "main"]).unwrap();
+        run_git_mut(bs, &["pull", "-q", "origin", "main"]).unwrap();
+
+        // A commits + pushes first.
+        std::fs::write(a.join("README.md"), "seed\nA's change\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "A change"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "main"]).unwrap();
+
+        // B, unaware, commits its own independent change to a different file —
+        // isolates the reconcile-and-retry control flow being tested here from
+        // conflict resolution, which is already covered elsewhere.
+        std::fs::write(b.join("notes.md"), "B's own note\n").unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "B change"]).unwrap();
+
+        // Sanity: B's naive push is a real rejection right now.
+        let (_, _, rejected_code) = run_git(bs, &["push", "origin", "main"]).unwrap();
+        assert_ne!(rejected_code, 0, "setup sanity: B's naive push must be rejected");
+
+        push_nested_branch(bs, "sub", "main", "repo");
+
+        let (out, _, code) = run_git(og, &["log", "--oneline", "main"]).unwrap();
+        assert_eq!(code, 0);
+        assert!(out.contains("B change"), "B's commit must have reached the remote:\n{}", out);
+        assert!(out.contains("A change"), "A's commit must still be on the remote:\n{}", out);
+        let readme = std::fs::read_to_string(b.join("README.md")).unwrap();
+        assert!(readme.contains("A's change"), "B must have merged A's content");
+        assert!(b.join("notes.md").exists(), "B's own new file must survive the reconcile");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // `hold_unpushed_submodule_gitlinks` must hold back a gitlink whose newly
+    // staged commit hasn't reached the sub-repo's own remote — the guard
+    // `vault_sync_commit_local` already applied. This proves it also holds when
+    // called the way `vault_sync_pull`'s post-`sync_nested_repos` commit now
+    // does (the path that used to skip it and could still publish a pointer to
+    // a commit no other machine could ever fetch).
+    #[test]
+    fn hold_guard_blocks_gitlink_to_unpushed_sub_commit() {
+        let base = std::env::temp_dir().join(format!("vc_hold_guard_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sub_origin = base.join("sub-origin.git");
+        let vault = base.join("vault");
+        let sub = vault.join("sub");
+        std::fs::create_dir_all(&sub_origin).unwrap();
+        let sog = sub_origin.to_str().unwrap();
+        run_git(sog, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        std::fs::create_dir_all(&sub).unwrap();
+        let vs = vault.to_str().unwrap();
+        let ss = sub.to_str().unwrap();
+        run_git(vs, &["init", "-q", "-b", "main"]).unwrap();
+        run_git_mut(vs, &["config", "user.email", "t@t"]).unwrap();
+        run_git_mut(vs, &["config", "user.name", "t"]).unwrap();
+        run_git(ss, &["init", "-q", "-b", "main"]).unwrap();
+        run_git_mut(ss, &["config", "user.email", "t@t"]).unwrap();
+        run_git_mut(ss, &["config", "user.name", "t"]).unwrap();
+        run_git_mut(ss, &["remote", "add", "origin", sog]).unwrap();
+        std::fs::write(sub.join("f.txt"), "v1\n").unwrap();
+        run_git_mut(ss, &["add", "-A"]).unwrap();
+        run_git_mut(ss, &["commit", "-q", "-m", "v1"]).unwrap();
+        run_git_mut(ss, &["push", "-q", "-u", "origin", "main"]).unwrap();
+
+        // Register `sub` as a real gitmodule so hold_unpushed_submodule_gitlinks
+        // can resolve its tracking branch, and seed the superproject at v1.
+        std::fs::write(
+            vault.join(".gitmodules"),
+            format!("[submodule \"sub\"]\n\tpath = sub\n\turl = {}\n\tbranch = main\n", sog),
+        )
+        .unwrap();
+        run_git_mut(vs, &["add", ".gitmodules"]).unwrap();
+        let v1 = run_git(ss, &["rev-parse", "HEAD"]).unwrap().0.trim().to_string();
+        run_git_mut(vs, &["update-index", "--add", "--cacheinfo", "160000", &v1, "sub"]).unwrap();
+        run_git_mut(vs, &["commit", "-q", "-m", "seed with submodule pointer"]).unwrap();
+
+        // Advance the sub-repo LOCALLY without pushing — simulating
+        // sync_nested_repos having committed (or reconciled) sub's work this
+        // cycle but its own push to origin failing.
+        std::fs::write(sub.join("f.txt"), "v2 not yet pushed\n").unwrap();
+        run_git_mut(ss, &["add", "-A"]).unwrap();
+        run_git_mut(ss, &["commit", "-q", "-m", "v2 unpushed"]).unwrap();
+        // Fetch so origin/main is known — hold_unpushed_submodule_gitlinks needs it.
+        run_git(ss, &["fetch", "-q", "origin", "main"]).unwrap();
+
+        // Stage the gitlink bump the way vault_sync_pull's tail does (`add -A`
+        // over the whole vault picks up the moved submodule pointer).
+        run_git_mut(vs, &["add", "-A"]).unwrap();
+        let sub_v2 = run_git(ss, &["rev-parse", "HEAD"]).unwrap().0.trim().to_string();
+        let staged_before = run_git(vs, &["rev-parse", ":sub"]).unwrap().0.trim().to_string();
+        assert_eq!(staged_before, sub_v2, "setup sanity: add -A must have staged the unpushed v2 pointer");
+
+        let held = hold_unpushed_submodule_gitlinks(vs);
+        assert_eq!(held, 1, "the unpushed pointer must be held");
+
+        let staged_after = run_git(vs, &["rev-parse", ":sub"]).unwrap().0.trim().to_string();
+        assert_eq!(staged_after, v1, "held pointer must fall back to the last-pushed (committed) value");
+        assert_ne!(staged_after, sub_v2, "must NOT stage the unpushed commit's pointer");
 
         let _ = std::fs::remove_dir_all(&base);
     }
