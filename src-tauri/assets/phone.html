@@ -4971,6 +4971,13 @@ interface MockDB {
     // The DOM is about to be wiped — drop any live-turn refs pointing into it.
     // coderReattach re-establishes the live view if a turn is still in flight.
     coderTurnActive = false; coderLiveWrap = null; coderThinkEl = null; coderActs = [];
+    // Re-enable send for the freshly-opened thread. A disabled (greyed) button
+    // can otherwise persist from a prior thread's turn — coderFinalize (the only
+    // place that clears it) early-returns once you've switched threads, and
+    // coderReattach only ever RE-disables. Symptom: "send button greyed out even
+    // when it works" (report 61d14ea6) — pointerdown still fired submit(). The
+    // coderReattach() below re-disables this if THIS thread is actually running.
+    { const s = $("coderSend"); if (s) s.disabled = false; }
     const log = coderLog(); log.innerHTML = "";
     let had = false;
     try { const h = JSON.parse(localStorage.getItem("vc_coder_hist_" + thread) || "[]"); h.forEach((m) => { coderAdd(m.c, m.x); had = true; }); } catch {}
