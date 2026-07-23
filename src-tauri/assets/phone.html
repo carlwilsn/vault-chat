@@ -819,7 +819,12 @@
   /* batch 2026-07-10b: header up + smaller, fully white icons, unified text
      boxes with a rest width that expands on focus, drawn chevrons, clear-chats
      lower */
-  .hdr{padding:calc(env(safe-area-inset-top) * .6 + 2px) 12px 6px}
+  /* header top spacing: an in-between of the old tight pull-up (.6*inset+2px)
+     and the roomy settings/drawer panel (full inset+10px). The tight value rode
+     the very top edge on every page (report f43cc237 — "too close to the edge");
+     the settings page felt right, so split the difference and apply it to ALL
+     pages uniformly rather than a chat-only patch. */
+  .hdr{padding:calc(env(safe-area-inset-top) * .8 + 6px) 12px 6px}
   .icbtn{min-width:36px;min-height:36px}
   .icbtn{color:var(--white)}
   .mrow svg{color:var(--white)}
