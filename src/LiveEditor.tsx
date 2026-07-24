@@ -257,6 +257,83 @@ function resolveImageSrc(baseFile: string, rel: string): string {
   return baseParts.join(sep);
 }
 
+// Persist an image blob pasted from the clipboard (a print-screen grab
+// or a general copy) into the vault and return the src to embed. When
+// the editor knows its file, the image lands in an `assets/` folder
+// next to that file and we return a relative `assets/foo.png` ref, so
+// the doc stays portable and the ImageWidget above resolves it off
+// disk. For an unsaved buffer we fall back to the vault-wide captures
+// dir and embed the absolute path (resolveImageSrc passes those
+// through). Mirrors ChatPane's saveCaptureToDisk naming.
+async function savePastedImageToDisk(
+  blob: Blob,
+  baseFile: string | null,
+  vault: string | null,
+): Promise<string | null> {
+  try {
+    const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
+    const rawExt = (blob.type.split("/")[1] || "png").toLowerCase();
+    const ext =
+      rawExt === "jpeg" ? "jpg" : rawExt.replace(/[^a-z0-9]/g, "") || "png";
+    const ts = new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-")
+      .replace(/T/, "_")
+      .slice(0, 19);
+    const suffix = Math.random().toString(36).slice(2, 7);
+    const name = `pasted-${ts}-${suffix}.${ext}`;
+    if (baseFile) {
+      const norm = baseFile.replace(/\\/g, "/");
+      const fileDir = norm.slice(0, norm.lastIndexOf("/"));
+      const dir = `${fileDir}/assets`;
+      const abs = await invoke<string>("write_binary_file_unique", {
+        dir,
+        name,
+        bytes,
+      });
+      // write_binary_file_unique returns a forward-slash absolute path.
+      return abs.startsWith(fileDir + "/") ? abs.slice(fileDir.length + 1) : abs;
+    }
+    if (vault) {
+      return await invoke<string>("write_binary_file_unique", {
+        dir: `${vault}/.vault-chat/captures`,
+        name,
+        bytes,
+      });
+    }
+    return null;
+  } catch (err) {
+    console.warn("[live-editor] pasted image save failed:", err);
+    return null;
+  }
+}
+
+// Handle a clipboard paste that carries image bytes: save each image
+// and splice `![](src)` markdown in at the paste point. Runs async (the
+// disk write), so we capture the insertion offset up front and clamp it
+// against the live doc length when the writes resolve.
+async function insertPastedImages(
+  view: EditorView,
+  at: number,
+  blobs: Blob[],
+  baseFile: string | null,
+  vault: string | null,
+): Promise<void> {
+  const srcs: string[] = [];
+  for (const b of blobs) {
+    const src = await savePastedImageToDisk(b, baseFile, vault);
+    if (src) srcs.push(src);
+  }
+  if (srcs.length === 0) return;
+  const md = srcs.map((s) => `![](${s})`).join("\n") + "\n";
+  const pos = Math.min(at, view.state.doc.length);
+  view.dispatch({
+    changes: { from: pos, insert: md },
+    selection: { anchor: pos + md.length },
+  });
+  view.focus();
+}
+
 const IMAGE_EXT_MIME: Record<string, string> = {
   svg: "image/svg+xml",
   jpg: "image/jpeg",
@@ -908,6 +985,14 @@ export function LiveEditor({
   const isHumanizedRef = useRef(isHumanized);
   isHumanizedRef.current = isHumanized;
 
+  // Refs so the once-built paste handler (extensions useMemo has empty
+  // deps) always sees the current file/vault without rebuilding the view.
+  const vaultPath = useStore((s) => s.vaultPath);
+  const fileRef = useRef(file);
+  fileRef.current = file;
+  const vaultRef = useRef(vaultPath);
+  vaultRef.current = vaultPath;
+
   const extensions = useMemo<Extension[]>(
     () => [
       history(),
@@ -955,6 +1040,27 @@ export function LiveEditor({
           const el = view.scrollDOM;
           const max = el.scrollHeight - el.clientHeight;
           cb(max > 0 ? el.scrollTop / max : 0);
+        },
+        // Paste a clipboard image (print-screen grab or general copy)
+        // straight into the doc as an embedded `![](…)`. Non-image
+        // pastes fall through to CodeMirror's default text handling.
+        paste: (e, view) => {
+          const dt = e.clipboardData;
+          if (!dt) return false;
+          const blobs: File[] = [];
+          for (const item of Array.from(dt.items)) {
+            if (!item.type.startsWith("image/")) continue;
+            const f = item.getAsFile();
+            if (f) blobs.push(f);
+          }
+          if (blobs.length === 0) return false;
+          const baseFile = fileRef.current ?? null;
+          const vault = vaultRef.current ?? null;
+          if (!baseFile && !vault) return false;
+          e.preventDefault();
+          const at = view.state.selection.main.from;
+          void insertPastedImages(view, at, blobs, baseFile, vault);
+          return true;
         },
       }),
     ],
