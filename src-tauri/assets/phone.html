@@ -17,6 +17,10 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
 <style>
   :root{
+    /* The chat composer's tuned resting bottom inset (batch 2026-07-10c). The
+       box/settings composer references the SAME token so the two text boxes rest
+       at the identical height and can't drift apart again (report 6993c0db). */
+    --composer-rest:calc(env(safe-area-inset-bottom) * .45 + 1px);
     /* ===== surfaces: void black; "fills" are breath-thin white washes ===== */
     --bg:#000000;             /* pure-black root */
     --panel:#000000;          /* deep panels: menus, sheets, drawers, code, keyboard */
@@ -488,13 +492,12 @@
      conversations. Full-screen page; keyboard handled the sheet way: `.editing`
      reserves --kb as INSIDE bottom padding so the top never moves and only the
      pinned composer rides up (see .sheet.editing). ===== */
-  /* resting bottom inset for the box/settings composer (report 6993c0db). The old
-     value (inset+12) floated it ~30px too HIGH; matching the chat composer exactly
-     (inset*.45+1) landed it too LOW — the bordered .cl-foot bar reads as jammed at
-     the very bottom where the borderless chat composer looks airy at the same pixel.
-     Split the difference (inset*.7+6) so the bar keeps a little breathing room.
+  /* resting bottom inset MATCHES the chat composer exactly (--composer-rest), so the
+     box/settings text box sits at the same height as the normal chat page — the boss
+     asked for "the same as the normal chat page," not a tuned-higher variant (report
+     6993c0db; an earlier inset*.7+6 aesthetic tweak re-raised it and was reverted).
      Keyboard-up is handled by .editing. */
-  #drawer .panel{position:absolute;inset:0;width:100%;background:var(--surface);padding:calc(env(safe-area-inset-top) + 12px) 0 calc(env(safe-area-inset-bottom) * .7 + 6px);display:flex;flex-direction:column}
+  #drawer .panel{position:absolute;inset:0;width:100%;background:var(--surface);padding:calc(env(safe-area-inset-top) + 12px) 0 var(--composer-rest);display:flex;flex-direction:column}
   #drawer .panel.editing{padding-bottom:calc(var(--kb,0px) + 8px)}
   .cl-hd{display:flex;align-items:center;gap:8px;flex:0 0 auto;padding:2px 10px 10px;border-bottom:1px solid var(--line)}
   .cl-seg{flex:1;display:flex;background:var(--fill);border:1px solid var(--line);border-radius:10px;padding:2px}
@@ -864,7 +867,7 @@
   .composer .field{margin-left:auto;margin-right:auto}
   .reply{margin-left:auto;margin-right:auto}
   .sheet-foot .reply{transition:none}
-  .composer{padding-bottom:calc(env(safe-area-inset-bottom) * .45 + 1px)}
+  .composer{padding-bottom:var(--composer-rest)}
   .cclear{width:62%;margin-left:auto;margin-right:auto}
   .pc-approve{background:var(--white);color:#000}
   .reply-cta{background:var(--white);color:#000}
