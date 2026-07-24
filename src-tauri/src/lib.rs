@@ -3116,6 +3116,7 @@ fn sync_one_repo(
     //  - Mine / Internal: the repo's own branch. A freshly-materialized
     //    submodule lands detached, so attach it to its branch tip (or recover
     //    onto its .gitmodules-declared branch), exactly as before.
+    let working_branch: Option<String>;
     let shared_branch = if class == RepoClass::Shared {
         let Some(m) = me else { return };
         let b = format!("vault-chat/{}", m);
@@ -3123,24 +3124,31 @@ fn sync_one_repo(
             eprintln!("[sync] shared repo '{}' — couldn't switch to '{}'; skipping", rel, b);
             return;
         }
+        working_branch = Some(b.clone());
         Some(b)
     } else {
-        let on_branch = matches!(
-            run_git(sub, &["symbolic-ref", "--quiet", "--short", "HEAD"]),
-            Ok((ref b, _, 0)) if !b.trim().is_empty()
-        );
-        if !on_branch {
-            match attach_detached_to_branch(sub) {
-                Some(b) => eprintln!("[sync] repo '{}' attached to branch '{}'", rel, b),
+        let cur = run_git(sub, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .ok()
+            .and_then(|(b, _, c)| if c == 0 && !b.trim().is_empty() { Some(b.trim().to_string()) } else { None });
+        working_branch = match cur {
+            Some(b) => Some(b),
+            None => match attach_detached_to_branch(sub) {
+                Some(b) => {
+                    eprintln!("[sync] repo '{}' attached to branch '{}'", rel, b);
+                    Some(b)
+                }
                 None => match recover_to_configured_branch(sub, cfg_branch) {
-                    Some(b) => eprintln!(
-                        "[sync] repo '{}' recovered onto tracking branch '{}' (was detached at a stale pin)",
-                        rel, b
-                    ),
+                    Some(b) => {
+                        eprintln!(
+                            "[sync] repo '{}' recovered onto tracking branch '{}' (was detached at a stale pin)",
+                            rel, b
+                        );
+                        Some(b)
+                    }
                     None => return, // deliberate detached pin — respect it
                 },
-            }
-        }
+            },
+        };
         None
     };
 
@@ -3161,6 +3169,30 @@ fn sync_one_repo(
                 msg.push_str(&format!("\n\nCo-authored-by: {} <{}>", hn, he));
             }
             let _ = run_git_as(sub, &cn, &ce, &["commit", "-q", "-m", &msg]);
+        }
+    }
+
+    // Catch up on any remote-only advance before pushing. Once a nested repo
+    // settles onto its working branch, every cycle before this one went
+    // straight from "commit local dirt" to "push" with no fetch in between —
+    // so a machine whose local ref just happened to be stale (the OTHER
+    // machine, or the user's own CLI, pushed since) got its push rejected and
+    // just logged it and moved on, every cycle, forever, with no recovery
+    // (the "partial sync" the vault-root path solved with reconcile_with_upstream
+    // but this per-nested-repo path never did). Fetch + fast-forward-only
+    // covers the safe, common case (remote strictly ahead, no local
+    // divergence) for free; genuine divergence still just fails the push
+    // below exactly as before — auto-merging someone's arbitrary code, unlike
+    // the vault's own markdown, isn't a call this loop should make for them.
+    if let Some(branch) = &working_branch {
+        let has_remote = matches!(run_git(sub, &["remote", "get-url", "origin"]), Ok((_, _, 0)));
+        if has_remote {
+            if matches!(
+                run_git_timeout(sub, &["fetch", "origin", branch], 60),
+                Ok((_, _, 0))
+            ) {
+                let _ = run_git_mut(sub, &["merge", "--ff-only", &format!("origin/{}", branch)]);
+            }
         }
     }
 
@@ -5429,6 +5461,12 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         // start a new one — otherwise `rebase` errors with "rebase in
         // progress" and the vault stays wedged.
         abort_stuck_merge_or_rebase(&vault);
+        // Self-heal the ignore/attributes set before we potentially commit below
+        // (gitlink-bump / regression-fix commits) — mirrors the other two commit
+        // paths (vault_commit_local, vault_sync_commit_local) so a checkout that
+        // has never run those still gets a conflict-safe, ephemeral-free commit
+        // here instead of tracking a stray machine-local file.
+        prepare_vault_repo(&vault);
         // Detect the local branch — most repos default to main, but a
         // pre-existing vault may be on master or something else.
         let (branch_out, _, branch_code) =
@@ -5478,6 +5516,14 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         // advance them to their configured branch tip. This runs on every
         // pull cycle (~30s) so self-healing no longer requires a local edit.
         sync_nested_repos(&vault, false);
+        // A follower is a content writer: this `add -A` stages the WHOLE tree,
+        // not just the gitlink bumps sync_nested_repos produced, so it must not
+        // be allowed to sweep in a mission-zone diff any more than
+        // vault_sync_commit_local's own commit can (same clobber this gate
+        // exists for — see is_sync_follower). Reset the zone to origin first.
+        if is_sync_follower(&vault) {
+            sanitize_mission_zone(&vault, branch);
+        }
         // Commit any gitlink pointer bumps that sync_nested_repos produced.
         let (st, _, _) = run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])
             .unwrap_or_default();
@@ -6347,6 +6393,159 @@ mod sync_role_tests {
         // Follower, tolerant of case + surrounding whitespace → follower.
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod sync_pull_tests {
+    use super::{run_git, run_git_mut, vault_sync_commit_local, vault_sync_pull, vault_sync_push};
+
+    // Regression test for the gap this session closed: vault_sync_pull's
+    // post-reconcile step commits any gitlink pointer bumps with a plain
+    // `add -A`, which (unlike vault_sync_commit_local) never sanitized the
+    // mission zone first — so any dirty mission-zone file sitting in a
+    // follower's working tree at pull time rode along into that commit
+    // uncaught. Reproduces exactly that: a follower with a locally-dirty
+    // (uncommitted) supervisor file that the box never wrote, and asserts
+    // the pull leaves the follower's copy matching origin, not the stray
+    // local edit.
+    #[tokio::test]
+    async fn pull_sanitizes_stray_mission_zone_dirt_on_a_follower() {
+        let base = std::env::temp_dir().join(format!("vc_pull_sanitize_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "master"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "master"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git(ds, &["remote", "add", "origin", og]).unwrap();
+        }
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+
+        // The box seeds real mission-zone state and pushes it.
+        std::fs::create_dir_all(a.join(".vault-chat/supervisor")).unwrap();
+        std::fs::write(a.join(".vault-chat/supervisor/mind.md"), "epoch 5\n").unwrap();
+        std::fs::write(a.join("note.md"), "hello\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        // B is a follower, already at the same commit as origin (nothing new
+        // to pull) — but has a stray, UNCOMMITTED edit to a mission-zone
+        // file, e.g. left by a crashed/partial write. This is the state that
+        // used to sneak into the "auto-sync submodule pointers" commit.
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+        let git_dir = run_git(bs, &["rev-parse", "--absolute-git-dir"]).unwrap().0.trim().to_string();
+        std::fs::write(format!("{}/vault-chat-sync-role", git_dir), "follower\n").unwrap();
+        std::fs::write(b.join(".vault-chat/supervisor/mind.md"), "epoch 3 STALE\n").unwrap();
+
+        let result = vault_sync_pull(bs.to_string()).await.expect("pull should not error");
+        assert!(result.ok, "pull should succeed: {}", result.message);
+
+        let mind = std::fs::read_to_string(b.join(".vault-chat/supervisor/mind.md")).unwrap();
+        assert_eq!(mind, "epoch 5\n", "follower's stray mission-zone edit must not survive the pull");
+
+        // And nothing else got clobbered: the commit, if any, must not have
+        // carried the stale content into history either.
+        let (log, _, _) = run_git(bs, &["log", "--oneline", "-5"]).unwrap();
+        assert!(!log.to_lowercase().contains("stale"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // End-to-end "two machines, concurrent work" proof using the real
+    // vault_sync_commit_local / vault_sync_push / vault_sync_pull commands (not
+    // the raw git plumbing), covering the scenario this whole review is about:
+    // both machines edit a doc AND append to the same append-only conversation
+    // log in the same cycle, before either has seen the other's push. Asserts
+    // every op reports ok:true (the durable sync-log's failure/recovery
+    // bookkeeping keys off exactly that flag) and that both machines converge
+    // on the union of all edits — nothing dropped, nothing wedged.
+    #[tokio::test]
+    async fn two_machines_converge_after_concurrent_edits() {
+        let base = std::env::temp_dir().join(format!("vc_two_machine_sync_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "master"]).unwrap();
+        std::fs::create_dir_all(&a).unwrap();
+        let asr = a.to_str().unwrap();
+        run_git(asr, &["init", "-q", "-b", "master"]).unwrap();
+        run_git(asr, &["config", "user.email", "t@t"]).unwrap();
+        run_git(asr, &["config", "user.name", "t"]).unwrap();
+        run_git(asr, &["remote", "add", "origin", og]).unwrap();
+
+        // A seeds the vault (own commit path, not raw git, so .gitattributes /
+        // .gitignore are seeded exactly as a real vault would get them) and
+        // pushes; B is then a real clone of A's history (a fresh `git init` with
+        // no shared history would make every later merge fail as "unrelated
+        // histories" — not the scenario under test) with a normal pull to prove
+        // out the pull path itself.
+        std::fs::write(a.join("shared.jsonl"), "{\"line\":\"a1\"}\n").unwrap();
+        let seed = vault_sync_commit_local(asr.to_string()).await.unwrap();
+        assert!(seed.ok, "seed commit: {}", seed.message);
+        let push = vault_sync_push(asr.to_string()).await.unwrap();
+        assert!(push.ok, "seed push: {}", push.message);
+
+        let (_, cerr, ccode) = run_git(base.to_str().unwrap(), &["clone", "-q", og, "B"]).unwrap();
+        assert_eq!(ccode, 0, "clone B: {}", cerr);
+        let bs = b.to_str().unwrap();
+        run_git(bs, &["config", "user.email", "t@t"]).unwrap();
+        run_git(bs, &["config", "user.name", "t"]).unwrap();
+        let pull = vault_sync_pull(bs.to_string()).await.unwrap();
+        assert!(pull.ok, "B initial pull: {}", pull.message);
+
+        // Now both machines work BEFORE either has seen the other's next
+        // change: A edits its own doc and appends to the shared log; B does
+        // the same to a different doc and the same shared log.
+        std::fs::write(a.join("doc-a.md"), "from A\n").unwrap();
+        let mut shared_a = std::fs::read_to_string(a.join("shared.jsonl")).unwrap();
+        shared_a.push_str("{\"line\":\"a2\"}\n");
+        std::fs::write(a.join("shared.jsonl"), shared_a).unwrap();
+        let ca = vault_sync_commit_local(asr.to_string()).await.unwrap();
+        assert!(ca.ok, "A commit: {}", ca.message);
+
+        std::fs::write(b.join("doc-b.md"), "from B\n").unwrap();
+        let mut shared_b = std::fs::read_to_string(b.join("shared.jsonl")).unwrap();
+        shared_b.push_str("{\"line\":\"b1\"}\n");
+        std::fs::write(b.join("shared.jsonl"), shared_b).unwrap();
+        let cb = vault_sync_commit_local(bs.to_string()).await.unwrap();
+        assert!(cb.ok, "B commit: {}", cb.message);
+
+        // A pushes first (lands cleanly)...
+        let pa = vault_sync_push(asr.to_string()).await.unwrap();
+        assert!(pa.ok, "A push: {}", pa.message);
+        // ...then B pushes, gets rejected (remote moved under it), and must
+        // self-heal via the fetch+reconcile+retry path inside vault_sync_push.
+        let pb = vault_sync_push(bs.to_string()).await.unwrap();
+        assert!(pb.ok, "B push (should self-heal via reconcile): {}", pb.message);
+
+        // A pulls B's reconciled push.
+        let pull_a = vault_sync_pull(asr.to_string()).await.unwrap();
+        assert!(pull_a.ok, "A final pull: {}", pull_a.message);
+
+        // Converge: both machines see both docs and the union of the log.
+        for (dir, label) in [(&a, "A"), (&b, "B")] {
+            assert!(dir.join("doc-a.md").is_file(), "{label} missing doc-a.md");
+            assert!(dir.join("doc-b.md").is_file(), "{label} missing doc-b.md");
+            let shared = std::fs::read_to_string(dir.join("shared.jsonl")).unwrap();
+            for line in ["a1", "a2", "b1"] {
+                assert!(shared.contains(line), "{label}'s shared.jsonl missing line '{line}': {shared}");
+            }
+        }
 
         let _ = std::fs::remove_dir_all(&base);
     }
