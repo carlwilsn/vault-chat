@@ -854,6 +854,13 @@
   .digin{color:var(--white)}
   .composer .field{max-width:88%;transition:max-width .34s var(--ease-out)}
   .composer .field:focus-within{max-width:100%}
+  /* The feedback/coder composer wears the same skin AND the same width as the
+     main chat composer (report e1838675 — "test box too wide, inconsistent with
+     the chat page"): rest at 88% centered, expand to full width on focus. In a
+     report thread the "+" is hidden, so this centers the pill exactly like chat;
+     in the general-chat tab the "+" sits left and the pill fills the rest. */
+  .coder-input{max-width:88%;margin-left:auto;margin-right:auto;transition:max-width .34s var(--ease-out)}
+  .coder-input:focus-within{max-width:100%}
   .reply{max-width:88%;transition:max-width .34s var(--ease-out)}
   .reply:focus-within{max-width:100%}
   .rinp{background:transparent;border:.5px solid var(--line-2);border-radius:22px}
