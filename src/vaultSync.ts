@@ -484,7 +484,7 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       } else {
         setStatus({ lastMessage: result.message, running: false });
       }
-      const st = await rawStatus();
+      await rawStatus();
       // Flush commits that were made but never pushed. The dirty-tree push
       // trigger only fires while the working tree has uncommitted changes;
       // a commit landed when the remote had advanced (or made out-of-band)
@@ -492,14 +492,18 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       // while the status still reads "synced". Pulling first, then pushing
       // any remaining `ahead`, closes that gap each cycle.
       //
-      // Critically, attempt the flush when `ahead > 0` OR when status is
-      // UNKNOWN (st === null, e.g. a slow `git status`): the old `st && ...`
-      // guard meant a single failed status silently skipped the flush, so a
-      // stranded commit waited indefinitely for a clean status that a wedged
-      // repo never produced. vault_sync_push is a cheap no-op ("Everything
-      // up-to-date") when there's actually nothing ahead, so over-attempting
-      // is safe; under-attempting is what strands work.
-      if ((st === null || st.ahead > 0) && !cancelled) {
+      // Unconditional, not gated on `ahead`: `ahead` comes from
+      // `@{upstream}..HEAD`, which errors (read as 0) whenever there's no
+      // upstream tracking ref yet — exactly the case of a vault whose remote
+      // was just typed into settings (or points at a pre-existing repo) and
+      // has never been pushed FROM THIS MACHINE. That vault's entire local
+      // history read `ahead: 0` forever and never got flushed, stranding it
+      // silently until the user happened to make a new edit. A failed status
+      // query must not skip the flush either, for the same reason.
+      // vault_sync_push is a cheap no-op ("Everything up-to-date") when
+      // there's actually nothing to push, so over-attempting is safe;
+      // under-attempting is what strands work.
+      if (!cancelled) {
         const flush = await vaultPush(vault).catch(() => null);
         if (flush) recordResult("push-flush", flush);
         if (flush?.ok) {

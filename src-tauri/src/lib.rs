@@ -5456,7 +5456,15 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
                 error: false,
             });
         }
-        let (_, stderr, fetch_code) = run_git(&vault, &["fetch", "origin", branch])?;
+        // 300s, not the 90s default: this fetches the vault ROOT — the user's
+        // notes, conversation history, and pasted images/captures — which can
+        // be far larger than a typical git fetch, especially the first sync of
+        // an existing vault or one with lots of image attachments. Every other
+        // network git op in this file (nested-repo push/fetch, submodule init)
+        // already gets a generous timeout for the same reason; the root vault's
+        // own fetch had been left at the tightest timeout in the file despite
+        // carrying the primary sync payload.
+        let (_, stderr, fetch_code) = run_git_timeout(&vault, &["fetch", "origin", branch], 300)?;
         if fetch_code != 0 {
             return Ok(SyncOpResult {
                 ok: false,
@@ -5655,8 +5663,11 @@ async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
                 error: false,
             });
         }
+        // 300s: see the matching comment on the root fetch in vault_sync_pull —
+        // this pushes the same large, primary payload and shouldn't be killed
+        // by a timeout tighter than the one nested-repo pushes already get.
         let (_, stderr, push_code) =
-            run_git(&vault, &["push", "-u", "origin", &branch])?;
+            run_git_timeout(&vault, &["push", "-u", "origin", &branch], 300)?;
         if push_code != 0 {
             // The push was rejected — almost always because the remote advanced
             // under us (the always-on box committed while this follower was
@@ -5667,7 +5678,7 @@ async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
             // cross-machine sync). If the rejection isn't a divergence
             // (auth/network), the fetch or the retry fails and we surface the
             // original error.
-            let (_, _, fcode) = run_git(&vault, &["fetch", "origin", &branch])?;
+            let (_, _, fcode) = run_git_timeout(&vault, &["fetch", "origin", &branch], 300)?;
             if fcode != 0 {
                 return Ok(SyncOpResult {
                     ok: false,
@@ -5679,7 +5690,7 @@ async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
                 Ok(_) => {
                     maybe_update_submodules(&vault);
                     let (_, stderr2, push_code2) =
-                        run_git(&vault, &["push", "-u", "origin", &branch])?;
+                        run_git_timeout(&vault, &["push", "-u", "origin", &branch], 300)?;
                     if push_code2 != 0 {
                         return Ok(SyncOpResult {
                             ok: false,
