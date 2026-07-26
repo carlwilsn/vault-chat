@@ -5087,6 +5087,29 @@ fn fix_regressed_gitlinks(vault: &str) -> Vec<String> {
         if !regressed {
             continue;
         }
+        // A dirty sub-repo working tree makes `checkout --detach` refuse to
+        // move — but the index cacheinfo write below would still succeed,
+        // leaving the superproject's recorded gitlink at `tip` while the
+        // working tree stays at `current`. That divergence would then go
+        // undetected forever: the next scan reads `current` back from
+        // `HEAD:{rel}`, which already says `tip`, so `current == tip` short-
+        // circuits above and this repo is never reconsidered. Skip for now —
+        // sync_nested_repos commits this same repo's local edits later in the
+        // same pull cycle, so the next regression scan finds a clean tree and
+        // can actually complete the move.
+        let sub_dirty = matches!(
+            run_git(&sub, &["status", "--porcelain", "--ignore-submodules=dirty"]),
+            Ok((ref s, _, 0)) if !s.trim().is_empty()
+        );
+        if sub_dirty {
+            eprintln!(
+                "[sync] gitlink regression in '{}' ({} → {}) deferred: sub-repo working tree is dirty",
+                rel,
+                &current[..8.min(current.len())],
+                &tip[..8.min(tip.len())],
+            );
+            continue;
+        }
         eprintln!(
             "[sync] gitlink regression in '{}': {} → {} (branch {}); advancing",
             rel,
@@ -5094,13 +5117,16 @@ fn fix_regressed_gitlinks(vault: &str) -> Vec<String> {
             &tip[..8.min(tip.len())],
             branch
         );
-        if matches!(
-            run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &tip, rel]),
-            Ok((_, _, 0))
-        ) {
-            // Move the sub-repo's working tree to the tip so it matches the new gitlink.
-            let _ = run_git_mut(&sub, &["checkout", "--detach", &tip]);
-            fixed.push(rel.to_string());
+        if matches!(run_git_mut(&sub, &["checkout", "--detach", &tip]), Ok((_, _, 0))) {
+            // Only record the gitlink once the working tree has actually
+            // moved — never publish a pointer the checkout, above, didn't
+            // reach.
+            if matches!(
+                run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &tip, rel]),
+                Ok((_, _, 0))
+            ) {
+                fixed.push(rel.to_string());
+            }
         }
     }
     fixed
@@ -5367,6 +5393,17 @@ fn reconcile_with_upstream(
             .map(|(_, _, c)| c == 0)
             .unwrap_or(false);
         if unmerged_empty && !merge_in_progress {
+            // Same follower gate as vault_sync_commit_local: this is a second,
+            // independent path that can create a commit out of whatever is
+            // dirty on disk. Without sanitizing first, a follower whose
+            // schedules.jsonl/notifications.jsonl/jobs.jsonl drifted from
+            // origin (those writers aren't role-gated the way conversations
+            // are) would commit that drift here and this same tick's push
+            // would carry it upstream — exactly the stale-follower mission-
+            // state clobber this whole subsystem exists to prevent.
+            if is_sync_follower(vault) {
+                sanitize_mission_zone(vault, branch);
+            }
             let _ = run_git_as(vault, &mn, &me, &["add", "-A"]);
             let _ = run_git_as(vault, &mn, &me, &["commit", "-q", "-m", "vault-chat: auto-sync"]);
             let (_, _, retry_code) =
