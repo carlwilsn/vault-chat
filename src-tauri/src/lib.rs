@@ -1675,39 +1675,117 @@ fn machine_host() -> String {
 /// perturb the sync it's measuring. Size-capped: once it grows past CAP_BYTES it
 /// is trimmed to the last KEEP_LINES before appending, so a long-running box
 /// can't let it balloon. Trimming is purely local and never touches history.
-#[tauri::command]
-async fn append_sync_log(vault_path: String, line: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        const CAP_BYTES: u64 = 512 * 1024;
-        const KEEP_LINES: usize = 1500;
-        let dir = std::path::Path::new(&vault_path).join(".vault-chat");
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let path = dir.join("sync-log.jsonl");
-        // Trim when oversized so the local log can't grow without bound.
-        if let Ok(meta) = std::fs::metadata(&path) {
-            if meta.len() > CAP_BYTES {
-                if let Ok(existing) = std::fs::read_to_string(&path) {
-                    let mut kept: Vec<&str> =
-                        existing.lines().rev().take(KEEP_LINES).collect();
-                    kept.reverse();
-                    let _ = std::fs::write(&path, kept.join("\n") + "\n");
-                }
+/// Synchronous body shared by the `append_sync_log` command (called from the
+/// TS vault-root sync loop) and the Rust-side nested-repo sync path, which has
+/// no event loop round-trip to make and can just call this directly.
+fn append_sync_log_sync(vault_path: &str, line: String) -> Result<(), String> {
+    const CAP_BYTES: u64 = 512 * 1024;
+    const KEEP_LINES: usize = 1500;
+    let dir = std::path::Path::new(vault_path).join(".vault-chat");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("sync-log.jsonl");
+    // Trim when oversized so the local log can't grow without bound.
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > CAP_BYTES {
+            if let Ok(existing) = std::fs::read_to_string(&path) {
+                let mut kept: Vec<&str> =
+                    existing.lines().rev().take(KEEP_LINES).collect();
+                kept.reverse();
+                let _ = std::fs::write(&path, kept.join("\n") + "\n");
             }
         }
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|e| e.to_string())?;
-        let mut s = line;
-        if !s.ends_with('\n') {
-            s.push('\n');
+    }
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    let mut s = line;
+    if !s.ends_with('\n') {
+        s.push('\n');
+    }
+    f.write_all(s.as_bytes()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn append_sync_log(vault_path: String, line: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || append_sync_log_sync(&vault_path, line))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// JSON-escape a string for embedding as a JSONL field value (between the
+/// surrounding quotes). Minimal: covers what error/repo strings actually
+/// contain (quotes, backslashes, control chars) without pulling in a JSON
+/// crate for one call site.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
         }
-        f.write_all(s.as_bytes()).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    }
+    out
+}
+
+/// Minimal dependency-free UTC ISO-8601 timestamp (`YYYY-MM-DDTHH:MM:SS.mmmZ`),
+/// matching the format the TS side emits via `Date.toISOString()` so lines from
+/// both producers read and sort the same way in `sync-log.jsonl`. No chrono
+/// dependency for one log line — civil-date conversion is the standard
+/// days-since-epoch algorithm (Howard Hinnant's `civil_from_days`).
+fn now_iso() -> String {
+    let dur = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let millis = dur.as_millis();
+    let secs = (millis / 1000) as i64;
+    let ms = (millis % 1000) as u32;
+    let days = secs.div_euclid(86400);
+    let secs_of_day = secs.rem_euclid(86400);
+    let (y, m, d) = civil_from_days(days);
+    let hh = secs_of_day / 3600;
+    let mm = (secs_of_day % 3600) / 60;
+    let ss = secs_of_day % 60;
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", y, m, d, hh, mm, ss, ms)
+}
+
+/// Days-since-epoch (1970-01-01) → (year, month, day) in the proleptic
+/// Gregorian calendar. https://howardhinnant.github.io/date_algorithms.html
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 }.div_euclid(146097);
+    let doe = (z - era * 146097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32; // [1, 12]
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// Record a nested-repo sync failure to the same durable, machine-local
+/// `sync-log.jsonl` the vault-root loop writes — so "why does cross-machine
+/// sync fail, and is there a pattern" covers submodules and embedded repos
+/// too, not just the vault root. Best-effort: logging must never itself fail
+/// the sync it's recording.
+fn log_nested_sync_failure(vault: &str, rel: &str, op: &str, message: &str) {
+    let line = format!(
+        "{{\"t\":\"{}\",\"host\":\"{}\",\"level\":\"error\",\"op\":\"{}\",\"repo\":\"{}\",\"message\":\"{}\"}}",
+        now_iso(),
+        json_escape(&machine_host_name()),
+        json_escape(op),
+        json_escape(rel),
+        json_escape(message),
+    );
+    let _ = append_sync_log_sync(vault, line);
 }
 
 /// Prune the `<vault>/.vault-chat/captures/` folder of files whose
@@ -3168,15 +3246,18 @@ fn sync_one_repo(
     match (&shared_branch, class) {
         // Shared → push only the dedicated branch, with -u so it exists on the
         // remote and tracks. Never the team's default branch.
-        (Some(branch), _) => match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
-            Ok((_, perr, pc)) if pc != 0 => {
-                eprintln!("[sync] shared repo '{}' push skipped: {}", rel, first_line(&perr).trim())
-            }
-            Err(e) => eprintln!("[sync] shared repo '{}' push error: {}", rel, e),
-            _ => {}
-        },
+        (Some(branch), _) => {
+            // Refresh the remote-tracking ref first: this repo's own @{upstream}
+            // may not have been fetched since it was last attached, cycles ago, so
+            // a rejection below could be genuine cross-machine divergence rather
+            // than a fluke. Best-effort — offline just leaves the push to fail on
+            // its own.
+            let _ = run_git_timeout(sub, &["fetch", "origin", branch], 120);
+            push_with_reconcile(vault, sub, rel, branch, &["push", "-u", "origin", branch]);
+        }
         // Mine → push the tracking branch when it's ahead. Needs an upstream.
         (None, RepoClass::Mine) => {
+            let _ = run_git_timeout(sub, &["fetch"], 120);
             let has_upstream = matches!(
                 run_git(sub, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
                 Ok((_, _, 0))
@@ -3190,12 +3271,11 @@ fn sync_one_repo(
                 0
             };
             if ahead > 0 {
-                match run_git_timeout(sub, &["push"], 300) {
-                    Ok((_, perr, pc)) if pc != 0 => {
-                        eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                if let Ok((b, _, 0)) = run_git(sub, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+                    let branch = b.trim().to_string();
+                    if !branch.is_empty() && branch != "HEAD" {
+                        push_with_reconcile(vault, sub, rel, &branch, &["push"]);
                     }
-                    Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
-                    _ => {}
                 }
             }
         }
@@ -3204,6 +3284,61 @@ fn sync_one_repo(
     }
 
     maybe_compact_git(sub);
+}
+
+/// Push a nested repo, and on rejection reconcile against the freshly-fetched
+/// upstream (fast-forward or a deterministic merge, same as the vault root) and
+/// retry once — instead of just logging and abandoning the local commits. Without
+/// this, a nested "Mine"/"Shared" repo edited from two machines silently stalls:
+/// each cycle re-attempts the same doomed push and drops the same rejection, so
+/// the gitlink pointer that depends on this push never advances. Best-effort
+/// throughout — a genuine auth/network failure still just logs and the next
+/// cycle retries from scratch. Every surviving failure is also appended to
+/// `sync-log.jsonl` (see `log_nested_sync_failure`) so it shows up next to the
+/// vault-root failures when hunting for a cross-machine pattern, not just on
+/// stderr where nothing reads it in production.
+fn push_with_reconcile(vault: &str, sub: &str, rel: &str, branch: &str, push_args: &[&str]) {
+    match run_git_timeout(sub, push_args, 300) {
+        Ok((_, perr, pc)) if pc != 0 => {
+            match reconcile_with_upstream(sub, branch) {
+                Ok(Ok(_)) => match run_git_timeout(sub, push_args, 300) {
+                    Ok((_, perr2, pc2)) if pc2 != 0 => {
+                        let msg = format!("push failed after merge: {}", first_line(&perr2).trim());
+                        eprintln!("[sync] repo '{}' {}", rel, msg);
+                        log_nested_sync_failure(vault, rel, "nested-push", &msg);
+                    }
+                    Err(e) => {
+                        let msg = format!("push error after merge: {}", e);
+                        eprintln!("[sync] repo '{}' {}", rel, msg);
+                        log_nested_sync_failure(vault, rel, "nested-push", &msg);
+                    }
+                    _ => {}
+                },
+                Ok(Err(res)) => {
+                    let msg = format!(
+                        "push rejected, reconcile failed: {} ({})",
+                        res.message, first_line(&perr).trim()
+                    );
+                    eprintln!("[sync] repo '{}' {}", rel, msg);
+                    log_nested_sync_failure(vault, rel, "nested-push", &msg);
+                }
+                Err(e) => {
+                    let msg = format!(
+                        "push rejected, reconcile error: {} ({})",
+                        e, first_line(&perr).trim()
+                    );
+                    eprintln!("[sync] repo '{}' {}", rel, msg);
+                    log_nested_sync_failure(vault, rel, "nested-push", &msg);
+                }
+            }
+        }
+        Err(e) => {
+            let msg = format!("push error: {}", e);
+            eprintln!("[sync] repo '{}' {}", rel, msg);
+            log_nested_sync_failure(vault, rel, "nested-push", &msg);
+        }
+        _ => {}
+    }
 }
 
 /// Walk the vault for every nested git repo (a dir containing `.git`) at any
@@ -6227,6 +6362,108 @@ mod conversation_storage_tests {
         assert!(!conversation_file_stem("a/b\\c").contains('\\'));
         assert_eq!(conversation_file_stem(""), "conversation");
         assert_eq!(conversation_file_stem("///"), "conversation");
+    }
+}
+
+#[cfg(test)]
+mod nested_repo_push_tests {
+    use super::{push_with_reconcile, run_git, run_git_mut};
+
+    // Reproduces the bug: two machines each commit to the SAME nested repo
+    // between sync cycles (a submodule/embedded work repo, not the vault
+    // root). Before this fix, `sync_one_repo` pushed with no fetch/reconcile
+    // on rejection — a plain `git push` — so machine B's rejected push was
+    // just logged and dropped forever; B's commit (and the file it added)
+    // never reached origin, and the next cycle repeated the exact same
+    // doomed push. `push_with_reconcile` must fetch-merge-retry so both
+    // machines' work survives.
+    #[test]
+    fn diverged_nested_repo_push_reconciles_instead_of_dropping_work() {
+        let base = std::env::temp_dir().join(format!("vc_nested_push_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        // A: seed the repo and push the initial commit.
+        std::fs::create_dir_all(&a).unwrap();
+        let asr = a.to_str().unwrap();
+        run_git(asr, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(asr, &["config", "user.email", "a@t"]).unwrap();
+        run_git(asr, &["config", "user.name", "A"]).unwrap();
+        run_git(asr, &["remote", "add", "origin", og]).unwrap();
+        std::fs::write(a.join("seed.txt"), "seed\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "-u", "origin", "main"]).unwrap();
+
+        // B: clone at the seed, so its @{upstream} is the seed commit.
+        run_git(&base.to_string_lossy(), &["clone", "-q", og, "B"]).unwrap();
+        let bs = b.to_str().unwrap();
+        run_git(bs, &["config", "user.email", "b@t"]).unwrap();
+        run_git(bs, &["config", "user.name", "B"]).unwrap();
+
+        // A advances the remote past what B has fetched — simulates the
+        // always-on box committing to the sub-repo between B's sync cycles.
+        std::fs::write(a.join("from-a.txt"), "a\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "a's work"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "main"]).unwrap();
+
+        // B independently commits its own work, unaware A has moved on —
+        // B's @{upstream} is still the stale seed ref.
+        std::fs::write(b.join("from-b.txt"), "b\n").unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "b's work"]).unwrap();
+
+        // Mirrors sync_one_repo: fetch to refresh the tracking ref, then a
+        // plain push — which MUST be rejected (non-fast-forward) — handed to
+        // push_with_reconcile instead of being logged and abandoned.
+        run_git(bs, &["fetch", "-q", "origin", "main"]).unwrap();
+        let rejected = run_git(bs, &["push", "origin", "main"]).unwrap().2 != 0;
+        assert!(rejected, "test setup must reproduce a rejected push");
+
+        push_with_reconcile(bs, bs, "sub", "main", &["push", "origin", "main"]);
+
+        // Origin must now carry BOTH machines' commits — B's push must have
+        // landed after reconciling, not silently dropped.
+        let (log, _, _) = run_git(og, &["log", "--format=%s", "main"]).unwrap();
+        assert!(log.contains("a's work"), "A's commit must survive on origin");
+        assert!(log.contains("b's work"), "B's commit must survive on origin, not be dropped");
+        assert!(
+            std::fs::metadata(base.join("origin.git")).is_ok(),
+            "sanity: origin still exists"
+        );
+
+        // A fresh clone must see both files — confirms the merge didn't just
+        // succeed locally in B but actually reached the shared remote.
+        run_git(&base.to_string_lossy(), &["clone", "-q", og, "C"]).unwrap();
+        let c = base.join("C");
+        assert!(c.join("from-a.txt").exists(), "A's file must be on origin");
+        assert!(c.join("from-b.txt").exists(), "B's file must be on origin");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod sync_log_time_tests {
+    use super::civil_from_days;
+
+    // Known dates, including the epoch and a leap-day, to catch an off-by-one
+    // in the days-since-epoch conversion before it ships into every logged
+    // sync-failure timestamp.
+    #[test]
+    fn known_dates_round_trip() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(1), (1970, 1, 2));
+        assert_eq!(civil_from_days(-1), (1969, 12, 31));
+        assert_eq!(civil_from_days(19782), (2024, 2, 29)); // leap day
+        assert_eq!(civil_from_days(19783), (2024, 3, 1));
+        assert_eq!(civil_from_days(10957), (2000, 1, 1));
     }
 }
 
