@@ -3340,6 +3340,41 @@ pub(crate) fn run_git(
     run_git_timeout(cwd, args, GIT_TIMEOUT_SECS)
 }
 
+/// Like `run_git`, but returns stdout as raw bytes instead of a UTF-8 `String`.
+/// `run_git`'s pipe-reader thread does `read_to_string`, which on invalid UTF-8
+/// silently swallows the error and yields an EMPTY string — there is no
+/// fallback and no error surfaces to the caller. For a `git show <rev>:<path>`
+/// on a binary blob (an image, a PDF — the vault's own `.gitattributes` marks
+/// several extensions `binary`) that means the "content" a caller reads back is
+/// just "", indistinguishable from a genuinely empty file. Needed anywhere the
+/// blob's actual bytes must survive intact, notably the merge-conflict sidecar
+/// in `resolve_merge_conflicts`, which exists specifically to NOT lose a user's
+/// conflicting edit — for a binary file the old path preserved an empty sidecar
+/// instead, silently discarding the very content it promised to keep. Local,
+/// read-only, no timeout needed (git show never blocks on the network).
+fn run_git_show_bytes(cwd: &str, spec: &str) -> Option<Vec<u8>> {
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new("git");
+        c.creation_flags(0x08000000);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = Command::new("git");
+    cmd.current_dir(cwd);
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::null());
+    cmd.args(["show", spec]);
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(out.stdout)
+}
+
 // Absolute path to the `gh` CLI, resolved once.
 static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
@@ -5276,9 +5311,9 @@ fn resolve_merge_conflicts(vault: &str) -> bool {
             continue;
         }
         // Regular file: preserve OURS as a sidecar, take THEIRS into the tree.
-        let ours_content = run_git(vault, &["show", &format!(":2:{}", path)])
-            .ok()
-            .and_then(|(c, _, code)| if code == 0 { Some(c) } else { None });
+        // Raw bytes, not `run_git`'s lossy String capture — a binary conflict
+        // (an image, a PDF) must not have its "preserved" copy silently emptied.
+        let ours_content = run_git_show_bytes(vault, &format!(":2:{}", path));
         let took_theirs = matches!(run_git_mut(vault, &["checkout", "--theirs", "--", path]), Ok((_, _, 0)));
         if !took_theirs {
             // Theirs deleted the file — keep ours so a live edit isn't lost.
@@ -6347,6 +6382,87 @@ mod sync_role_tests {
         // Follower, tolerant of case + surrounding whitespace → follower.
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod merge_conflict_tests {
+    use super::{resolve_merge_conflicts, run_git, run_git_mut};
+
+    // Regression: `resolve_merge_conflicts` preserves a genuinely-conflicting
+    // "ours" edit as a `<path>.conflict` sidecar before taking "theirs" into the
+    // tree — the safety net that stops a real divergent edit from being
+    // silently dropped. For a BINARY file (invalid UTF-8 bytes — an image, a
+    // PDF, anything `.gitattributes` marks `binary`), the sidecar used to be
+    // read via `run_git`'s String-capture path, which swallows a UTF-8
+    // validation failure and returns "" with no error — so the "preserved"
+    // sidecar silently came out empty instead of holding B's actual bytes.
+    #[test]
+    fn binary_conflict_sidecar_preserves_ours_bytes_exactly() {
+        let base = std::env::temp_dir().join(format!("vc_bin_conflict_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "master"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "master"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git(ds, &["remote", "add", "origin", og]).unwrap();
+        }
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+
+        // Original content: a NUL byte forces git's binary detection (a hard
+        // content conflict, not a line-merge) regardless of .gitattributes; the
+        // leading 0x89 is also not valid as a UTF-8 lead byte, mirroring a real
+        // PNG signature.
+        let original: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01];
+        std::fs::write(a.join("img.png"), &original).unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+
+        // A pushes one binary edit.
+        let mut content_a = original.clone();
+        content_a.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
+        std::fs::write(a.join("img.png"), &content_a).unwrap();
+        run_git_mut(asr, &["commit", "-aq", "-m", "A edits image"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        // B independently commits a DIFFERENT binary edit — invalid UTF-8 bytes
+        // that would previously vanish through the lossy String capture.
+        let mut content_b = original.clone();
+        content_b.extend_from_slice(&[0xFF, 0x11, 0x22, 0x00, 0x33]);
+        std::fs::write(b.join("img.png"), &content_b).unwrap();
+        run_git_mut(bs, &["commit", "-aq", "-m", "B edits image"]).unwrap();
+
+        // Fetch + merge: same path changed both sides with binary content ->
+        // a real (non-textual) conflict, exactly what resolve_merge_conflicts
+        // exists to clean up.
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+        let (_, _, merge_code) = run_git_mut(bs, &["merge", "--no-edit", "origin/master"]).unwrap();
+        assert_ne!(merge_code, 0, "expected a real conflict on img.png");
+
+        let resolved = resolve_merge_conflicts(bs);
+        assert!(resolved, "every conflicted path must be resolved");
+
+        // Working tree took "theirs" (A's pushed version).
+        let tree_now = std::fs::read(b.join("img.png")).unwrap();
+        assert_eq!(tree_now, content_a, "working tree must land on theirs (origin's version)");
+
+        // The sidecar must hold B's ORIGINAL bytes byte-for-byte — not empty,
+        // not truncated at the first invalid UTF-8 byte.
+        let sidecar = std::fs::read(b.join("img.png.conflict")).unwrap();
+        assert_eq!(sidecar, content_b, "conflict sidecar must preserve ours exactly, not silently empty it");
 
         let _ = std::fs::remove_dir_all(&base);
     }
