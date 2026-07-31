@@ -5350,15 +5350,46 @@ fn reconcile_with_upstream(
     // abort-and-loop. Whatever the union can't handle (submodule pointers, a
     // genuinely divergent file edit) is auto-resolved so sync always makes
     // progress and never drops data.
-    let (_, mstderr, mut merge_code) =
+    let (_, mut mstderr, mut merge_code) =
         run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
+    // Two vaults that were each independently `git_init_if_needed`-seeded
+    // (e.g. a second machine opened this vault folder and started writing
+    // before its remote was ever pointed at the first machine's history)
+    // share NO common ancestor at all. Git's default safety net refuses that
+    // merge outright — and unlike every other divergence this app reconciles,
+    // retrying the identical command produces the identical fatal error every
+    // time, permanently wedging that vault's sync. This app already
+    // reconciles ordinary divergence deterministically (union jsonl,
+    // descendant/theirs gitlinks, `.conflict` sidecars for real edits); an
+    // unrelated history is just a divergence with no shared base, so fold it
+    // into the same machinery via `--allow-unrelated-histories` instead of
+    // leaving the vault stuck forever.
+    if merge_code != 0 && mstderr.contains("refusing to merge unrelated histories") {
+        let (_, stderr2, retry_code) = run_git_as(
+            vault,
+            &mn,
+            &me,
+            &["merge", "--no-edit", "--allow-unrelated-histories", &upstream],
+        )?;
+        merge_code = retry_code;
+        mstderr = stderr2;
+    }
     // A DIRTY working tree makes `git merge` REFUSE TO START ("your local
     // changes would be overwritten") — a failure with NO unmerged paths, which
-    // the conflict-resolution path below misreads as "resolved, commit it" and
-    // dies on an empty commit (the "merge commit failed:" loop the sync split's
-    // first live migration hit: the app autosaves between the cycle's commit
-    // and its pull). Commit the drift the way the auto-sync would, retry once.
-    if merge_code != 0 {
+    // the conflict-resolution path below would misread as "resolved, commit
+    // it" and die on an empty commit (the "merge commit failed:" loop the sync
+    // split's first live migration hit: the app autosaves between the cycle's
+    // commit and its pull). Commit the drift the way the auto-sync would and
+    // retry — in a small bounded loop, not just once: a foreign write (the
+    // user's own git CLI, an editor, a second app instance) can re-dirty the
+    // tree in the same narrow window, and a single retry silently mis-surfaces
+    // that as a "merge commit failed" error instead of just trying again.
+    const DIRTY_RETRY_ATTEMPTS: u32 = 3;
+    let mut dirty_no_conflict = false;
+    for attempt in 0..DIRTY_RETRY_ATTEMPTS {
+        if merge_code == 0 {
+            break;
+        }
         let unmerged_empty = matches!(
             run_git(vault, &["ls-files", "-u"]),
             Ok((ref o, _, 0)) if o.trim().is_empty()
@@ -5366,13 +5397,36 @@ fn reconcile_with_upstream(
         let merge_in_progress = run_git(vault, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])
             .map(|(_, _, c)| c == 0)
             .unwrap_or(false);
-        if unmerged_empty && !merge_in_progress {
-            let _ = run_git_as(vault, &mn, &me, &["add", "-A"]);
-            let _ = run_git_as(vault, &mn, &me, &["commit", "-q", "-m", "vault-chat: auto-sync"]);
-            let (_, _, retry_code) =
-                run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
-            merge_code = retry_code;
+        dirty_no_conflict = unmerged_empty && !merge_in_progress;
+        if !dirty_no_conflict {
+            // A real conflict (or a real in-progress merge) — nothing more to
+            // retry here, fall through to conflict resolution below.
+            break;
         }
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(200 * attempt as u64));
+        }
+        let _ = run_git_as(vault, &mn, &me, &["add", "-A"]);
+        let _ = run_git_as(vault, &mn, &me, &["commit", "-q", "-m", "vault-chat: auto-sync"]);
+        let (_, stderr2, retry_code) =
+            run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
+        merge_code = retry_code;
+        mstderr = stderr2;
+    }
+    if merge_code != 0 && dirty_no_conflict {
+        // Exhausted every retry and it's still just a re-dirtying working
+        // tree, never an actual conflict. Report plainly instead of falling
+        // into resolve_merge_conflicts, which would see zero unmerged paths,
+        // trivially report "resolved", and then fail confusingly on
+        // `git commit --no-edit` finding nothing staged to commit.
+        return Ok(Err(SyncOpResult {
+            ok: false,
+            message: format!(
+                "could not start merge, working tree kept changing: {}",
+                first_line(&mstderr).trim()
+            ),
+            error: true,
+        }));
     }
     if merge_code == 0 {
         let fixed = fix_regressed_gitlinks(vault);
@@ -6347,6 +6401,211 @@ mod sync_role_tests {
         // Follower, tolerant of case + surrounding whitespace → follower.
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+// End-to-end simulations of the actual sync commands (vault_sync_commit_local /
+// vault_sync_pull / vault_sync_push) across two independent checkouts sharing a
+// bare "origin" — exercising the real reconcile/merge/push-retry path instead of
+// a single helper in isolation. Deliberately never touches a real vault; every
+// "machine" here is a throwaway temp dir.
+#[cfg(test)]
+mod vault_sync_e2e_tests {
+    use super::{run_git, vault_sync_commit_local, vault_sync_pull, vault_sync_push, vault_sync_status};
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tauri::async_runtime::block_on(f)
+    }
+
+    // Mirrors what `git_init_if_needed` always does on real vault open: init,
+    // then an immediate `--allow-empty` commit so HEAD is never left unborn
+    // before the sync loop's first tick. A raw `git init` with no commit is
+    // NOT a state any real vault reaches sync in — every open runs
+    // `git_init_if_needed` first — so tests must seed the same way or they'd
+    // be exercising a branch the product never hits.
+    fn init_machine(dir: &std::path::Path, origin: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let d = dir.to_str().unwrap();
+        run_git(d, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(d, &["config", "user.email", "t@t"]).unwrap();
+        run_git(d, &["config", "user.name", "t"]).unwrap();
+        run_git(d, &["remote", "add", "origin", origin]).unwrap();
+        run_git(d, &["commit", "-q", "--allow-empty", "-m", "vault-chat: pre-existing vault state"]).unwrap();
+    }
+
+    // Two machines edit independently between syncs (the always-on-box +
+    // intermittent-laptop shape this loop is built for). Push-on-rejection must
+    // self-heal via fetch+reconcile+retry rather than stranding either side
+    // `ahead`, and both machines must converge to an identical tree with no
+    // commit dropped.
+    #[test]
+    fn two_machine_round_trip_converges_without_data_loss() {
+        let base = std::env::temp_dir().join(format!("vc_e2e_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(origin.to_str().unwrap(), &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        init_machine(&a, origin.to_str().unwrap());
+        init_machine(&b, origin.to_str().unwrap());
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+
+        std::fs::write(a.join("note.md"), "hello from A\n").unwrap();
+        assert!(block_on(vault_sync_commit_local(asr.to_string())).unwrap().ok);
+        assert!(block_on(vault_sync_push(asr.to_string())).unwrap().ok);
+
+        let r = block_on(vault_sync_pull(bs.to_string())).unwrap();
+        assert!(r.ok, "{}", r.message);
+        assert!(b.join("note.md").exists(), "B must have A's pushed file");
+
+        std::fs::write(b.join("from-b.md"), "hi from B\n").unwrap();
+        assert!(block_on(vault_sync_commit_local(bs.to_string())).unwrap().ok);
+        assert!(block_on(vault_sync_push(bs.to_string())).unwrap().ok);
+
+        // A edits BEFORE pulling B's push — its next push will be rejected and
+        // must self-heal inline (fetch, reconcile, retry) rather than requiring
+        // a separate successful pull tick first.
+        std::fs::write(a.join("from-a2.md"), "second A file\n").unwrap();
+        assert!(block_on(vault_sync_commit_local(asr.to_string())).unwrap().ok);
+        let r = block_on(vault_sync_push(asr.to_string())).unwrap();
+        assert!(r.ok, "push must self-heal on rejection: {}", r.message);
+        assert!(a.join("from-b.md").exists(), "A must have adopted B's file via reconcile");
+
+        let r = block_on(vault_sync_pull(bs.to_string())).unwrap();
+        assert!(r.ok, "{}", r.message);
+        assert!(b.join("from-a2.md").exists(), "B must have A's second file after pull");
+
+        let sa = block_on(vault_sync_status(asr.to_string())).unwrap();
+        let sb = block_on(vault_sync_status(bs.to_string())).unwrap();
+        assert_eq!(sa.ahead, 0, "A must not be stranded ahead of origin");
+        assert_eq!(sb.ahead, 0, "B must not be stranded ahead of origin");
+        assert!(!sa.has_changes && !sb.has_changes, "both trees must be clean after convergence");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Two machines append to the SAME conversation .jsonl while offline from
+    // each other (e.g. a reply typed on the phone while the box is also
+    // running). `.gitattributes` sets `*.jsonl merge=union` specifically so
+    // this can never wedge or drop a line the way a plain merge conflict would.
+    #[test]
+    fn concurrent_jsonl_appends_union_merge_not_clobber() {
+        let base = std::env::temp_dir().join(format!("vc_e2e_jsonl_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(origin.to_str().unwrap(), &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        init_machine(&a, origin.to_str().unwrap());
+        init_machine(&b, origin.to_str().unwrap());
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+
+        std::fs::create_dir_all(a.join(".vault-chat/conversations")).unwrap();
+        std::fs::write(
+            a.join(".vault-chat/conversations/chat1.jsonl"),
+            "{\"id\":\"chat1\",\"source\":\"phone\"}\n{\"role\":\"user\",\"content\":\"line1\"}\n",
+        )
+        .unwrap();
+        assert!(block_on(vault_sync_commit_local(asr.to_string())).unwrap().ok);
+        assert!(block_on(vault_sync_push(asr.to_string())).unwrap().ok);
+        let r0 = block_on(vault_sync_pull(bs.to_string())).unwrap();
+        assert!(r0.ok, "initial pull failed: {}", r0.message);
+
+        let mut ca = std::fs::read_to_string(a.join(".vault-chat/conversations/chat1.jsonl")).unwrap();
+        ca.push_str("{\"role\":\"assistant\",\"content\":\"from A\"}\n");
+        std::fs::write(a.join(".vault-chat/conversations/chat1.jsonl"), ca).unwrap();
+        assert!(block_on(vault_sync_commit_local(asr.to_string())).unwrap().ok);
+        assert!(block_on(vault_sync_push(asr.to_string())).unwrap().ok);
+
+        let mut cb = std::fs::read_to_string(b.join(".vault-chat/conversations/chat1.jsonl")).unwrap();
+        cb.push_str("{\"role\":\"user\",\"content\":\"from B\"}\n");
+        std::fs::write(b.join(".vault-chat/conversations/chat1.jsonl"), cb).unwrap();
+        assert!(block_on(vault_sync_commit_local(bs.to_string())).unwrap().ok);
+        let r = block_on(vault_sync_push(bs.to_string())).unwrap();
+        assert!(r.ok, "{}", r.message);
+
+        let merged_b = std::fs::read_to_string(b.join(".vault-chat/conversations/chat1.jsonl")).unwrap();
+        assert!(merged_b.contains("from A"), "B's reconcile must keep A's line");
+        assert!(merged_b.contains("from B"), "and B's own line");
+
+        assert!(block_on(vault_sync_pull(asr.to_string())).unwrap().ok);
+        let merged_a = std::fs::read_to_string(a.join(".vault-chat/conversations/chat1.jsonl")).unwrap();
+        assert!(
+            merged_a.contains("from A") && merged_a.contains("from B"),
+            "A must converge to the same union after pulling"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // A genuine divergent edit — both machines change the SAME LINE of a
+    // regular (non-jsonl) note while offline — is the one class `merge=union`
+    // can't help with. `resolve_merge_conflicts` must still make sync progress
+    // (never wedge in a stuck merge) by taking "theirs" into the tracked file
+    // and preserving "ours" as a `<path>.conflict` sidecar, so neither
+    // machine's edit is silently dropped.
+    #[test]
+    fn genuine_file_conflict_resolves_with_conflict_sidecar_not_wedge() {
+        let base = std::env::temp_dir().join(format!("vc_e2e_conflict_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(origin.to_str().unwrap(), &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        init_machine(&a, origin.to_str().unwrap());
+        init_machine(&b, origin.to_str().unwrap());
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+
+        std::fs::write(a.join("shared.md"), "line one\n").unwrap();
+        assert!(block_on(vault_sync_commit_local(asr.to_string())).unwrap().ok);
+        assert!(block_on(vault_sync_push(asr.to_string())).unwrap().ok);
+        assert!(block_on(vault_sync_pull(bs.to_string())).unwrap().ok);
+
+        // Both machines edit the SAME line differently while offline.
+        std::fs::write(a.join("shared.md"), "line one from A\n").unwrap();
+        assert!(block_on(vault_sync_commit_local(asr.to_string())).unwrap().ok);
+        assert!(block_on(vault_sync_push(asr.to_string())).unwrap().ok);
+
+        std::fs::write(b.join("shared.md"), "line one from B\n").unwrap();
+        assert!(block_on(vault_sync_commit_local(bs.to_string())).unwrap().ok);
+        let r = block_on(vault_sync_push(bs.to_string())).unwrap();
+        assert!(r.ok, "conflicted push must still resolve and succeed: {}", r.message);
+
+        // Sync must make progress either way: the tracked file holds one
+        // side's content, and the OTHER side is preserved in a sidecar so
+        // B's own edit isn't silently discarded.
+        let tracked = std::fs::read_to_string(b.join("shared.md")).unwrap();
+        let sidecar = std::fs::read_to_string(b.join("shared.md.conflict"));
+        assert!(
+            tracked.contains("from A") || tracked.contains("from B"),
+            "tracked file must hold a real side's content, not be corrupted"
+        );
+        assert!(
+            sidecar.is_ok(),
+            "the side that lost the tracked slot must survive as a .conflict sidecar"
+        );
+
+        // The repo must be left CLEAN — no lingering conflict markers, no
+        // in-progress merge — so the next tick isn't wedged.
+        let (unmerged, _, _) = run_git(bs, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+        assert!(unmerged.trim().is_empty(), "no unresolved paths must remain");
+        let sb = block_on(vault_sync_status(bs.to_string())).unwrap();
+        assert!(!sb.has_changes, "B's tree must be clean after the conflict auto-resolves");
+
+        // A must converge cleanly too, and see B's sidecar.
+        assert!(block_on(vault_sync_pull(asr.to_string())).unwrap().ok);
+        assert!(
+            a.join("shared.md.conflict").exists() || std::fs::read_to_string(a.join("shared.md")).unwrap().contains("from B"),
+            "A must converge to the same resolved state"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
