@@ -4709,14 +4709,39 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
             run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])?;
         let has_changes = !status_out.trim().is_empty();
         // Count local commits not yet on the upstream. Errors (no upstream,
-        // detached HEAD) are treated as "nothing ahead".
+        // detached HEAD) are treated as "nothing ahead" — EXCEPT that "no
+        // upstream" gets a fallback below, because it's a real, common case:
+        // a vault's remote can be set/repointed to a repo with pre-existing
+        // history without `push -u` ever having run (e.g. `setVaultRemote`
+        // on an already-populated repo, or a fast-forward/already-ahead
+        // reconcile in `vault_sync_pull` that never pushes). With a clean
+        // working tree, `tickPush` (dirty-tree triggered) never fires and the
+        // periodic-pull flush in `vaultSync.ts` gates on `ahead > 0` — so
+        // reading 0 here would strand real unpushed commits indefinitely
+        // while the UI still reports "synced". Fall back to comparing
+        // directly against `origin/<branch>`, the ref `fetch` already
+        // populated, so ahead reflects reality even before any upstream
+        // tracking config exists.
         let ahead = {
             let (out, _, code) =
                 run_git(&vault, &["rev-list", "--count", "@{upstream}..HEAD"])?;
             if code == 0 {
                 out.trim().parse::<u32>().unwrap_or(0)
             } else {
-                0
+                let (branch_out, _, bcode) =
+                    run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+                let branch = branch_out.trim();
+                if bcode == 0 && !branch.is_empty() && branch != "HEAD" {
+                    let range = format!("origin/{}..HEAD", branch);
+                    let (out2, _, code2) = run_git(&vault, &["rev-list", "--count", &range])?;
+                    if code2 == 0 {
+                        out2.trim().parse::<u32>().unwrap_or(0)
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
             }
         };
         let nested_repos = find_nested_repos(&root);
