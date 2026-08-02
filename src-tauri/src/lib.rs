@@ -5065,11 +5065,31 @@ fn fix_regressed_gitlinks(vault: &str) -> Vec<String> {
             _ => continue,
         };
         let sub = format!("{}/{}", vault, rel);
+        if !PathBuf::from(&sub).join(".git").exists() {
+            continue; // not materialized on this machine
+        }
         // Current gitlink in HEAD
         let current = match run_git(vault, &["rev-parse", &format!("HEAD:{}", rel)]) {
             Ok((s, _, 0)) if !s.trim().is_empty() => s.trim().to_string(),
             _ => continue,
         };
+        // Refresh the sub-repo's remote-tracking branch before reading it.
+        // `ensure_no_submodule_recurse` (in `prepare_vault_repo`, run every
+        // cycle — see its doc comment) turns off on-demand submodule
+        // recursion, so once a submodule is normally attached, NOTHING else in
+        // the pull path ever re-fetches it: `maybe_update_submodules`'s
+        // `submodule update` only fetches the exact SHA it needs (a no-op once
+        // that SHA is already local, which it always is here — the "old" side
+        // of a regression was, by definition, checked out at some point) and
+        // that targeted fetch does not update `refs/remotes/origin/<branch>`.
+        // Left alone, `origin/<branch>` freezes at whatever it was the last
+        // time something did a real branch fetch (initial clone, or the
+        // detached-pin recovery path in `recover_to_configured_branch`) —
+        // not a one-cycle staleness window but a PERMANENT one for any
+        // submodule that stays attached, silently neutering this whole
+        // regression-fix mechanism. Best-effort + bounded: offline still
+        // falls back to whatever's cached, same as before this fetch existed.
+        let _ = run_git_timeout(&sub, &["fetch", "origin", &branch], 60);
         // Sub-repo's remote branch tip
         let remote_ref = format!("origin/{}", branch);
         let tip = match run_git(&sub, &["rev-parse", &remote_ref]) {
@@ -6347,6 +6367,130 @@ mod sync_role_tests {
         // Follower, tolerant of case + surrounding whitespace → follower.
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+// `prepare_vault_repo` (run at the top of every commit cycle, so effectively
+// always active) calls `ensure_no_submodule_recurse`, which sets
+// `fetch.recurseSubmodules=false` / `submodule.recurse=false` on every managed
+// vault — deliberately, to stop a follower's plain `git fetch` from recursing
+// into a submodule for a gitlink commit that was never pushed (an
+// `upload-pack: not our ref` abort). But `fix_regressed_gitlinks` identifies a
+// regressed gitlink by comparing the superproject's `HEAD:<rel>` against the
+// SUBMODULE's OWN `origin/<branch>` remote-tracking ref. With on-demand
+// recursion off, nothing else in the steady-state pull path (`git fetch` at
+// the vault root, then `submodule update --init`, which only fetches the exact
+// SHA it needs, never the branch) refreshed that ref for a normally-attached
+// submodule — so the ref froze at whatever it was at the submodule's last real
+// fetch (its initial clone): not a one-cycle staleness window that a later
+// tick closes, but a permanent one for any submodule that stays attached,
+// silently neutering the whole regression-fix mechanism. Fixed by an explicit,
+// bounded `git fetch origin <branch>` inside `fix_regressed_gitlinks` itself
+// before it reads the tip (see the fetch added there) — refreshing only the
+// one ref this check needs, without re-enabling the on-demand recursion that
+// caused the original follower-abort incident.
+#[cfg(test)]
+mod submodule_regression_staleness_tests {
+    use super::{fix_regressed_gitlinks, prepare_vault_repo, run_git, run_git_mut};
+
+    #[test]
+    fn regression_is_still_caught_after_recurse_is_disabled() {
+        let base = std::env::temp_dir().join(format!("vc_subregress_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sub_origin = base.join("sub-origin.git");
+        let super_origin = base.join("super-origin.git");
+        let subwork = base.join("subwork");
+        let superwork = base.join("superwork");
+        let checkout = base.join("checkout");
+        std::fs::create_dir_all(&sub_origin).unwrap();
+        std::fs::create_dir_all(&super_origin).unwrap();
+
+        let sog = sub_origin.to_str().unwrap();
+        let seg = super_origin.to_str().unwrap();
+        run_git(sog, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        run_git(seg, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        // Seed the submodule's own remote with an initial commit (C1).
+        std::fs::create_dir_all(&subwork).unwrap();
+        let sw = subwork.to_str().unwrap();
+        run_git(sw, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(sw, &["config", "user.email", "t@t"]).unwrap();
+        run_git(sw, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(subwork.join("f.txt"), "c1\n").unwrap();
+        run_git_mut(sw, &["add", "-A"]).unwrap();
+        run_git_mut(sw, &["commit", "-q", "-m", "c1"]).unwrap();
+        run_git_mut(sw, &["remote", "add", "origin", sog]).unwrap();
+        run_git_mut(sw, &["push", "-q", "-u", "origin", "main"]).unwrap();
+
+        // Build the superproject with the submodule pinned at C1, `.gitmodules`
+        // declaring the tracked branch (required by `fix_regressed_gitlinks`).
+        std::fs::create_dir_all(&superwork).unwrap();
+        let sup = superwork.to_str().unwrap();
+        run_git(sup, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(sup, &["config", "user.email", "t@t"]).unwrap();
+        run_git(sup, &["config", "user.name", "t"]).unwrap();
+        run_git_mut(
+            sup,
+            &["-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", sog, "sub"],
+        )
+        .unwrap();
+        run_git_mut(sup, &["add", "-A"]).unwrap();
+        run_git_mut(sup, &["commit", "-q", "-m", "init with sub at C1"]).unwrap();
+        run_git_mut(sup, &["remote", "add", "origin", seg]).unwrap();
+        run_git_mut(sup, &["push", "-q", "-u", "origin", "main"]).unwrap();
+
+        // Clone fresh — this is our test subject "machine". A fresh clone's
+        // submodule init does a real fetch, so its `origin/main` starts correct.
+        run_git(
+            base.to_str().unwrap(),
+            &["-c", "protocol.file.allow=always", "clone", "-q", "--recurse-submodules", seg, "checkout"],
+        )
+        .unwrap();
+        let co = checkout.to_str().unwrap();
+        run_git(co, &["config", "user.email", "t@t"]).unwrap();
+        run_git(co, &["config", "user.name", "t"]).unwrap();
+
+        // Every commit cycle runs this — it's what disables on-demand submodule
+        // recursion on the checkout, the precondition for the staleness bug.
+        prepare_vault_repo(co);
+        assert_eq!(
+            run_git(co, &["config", "--get", "fetch.recurseSubmodules"]).unwrap().0.trim(),
+            "false"
+        );
+
+        // The submodule's remote now advances to C2 — entirely independent of
+        // the superproject (e.g. another machine pushed directly to the
+        // sub-repo, or its own sync path pushed it). The superproject's HEAD
+        // gitlink is untouched, still pointing at C1 — now a strict ancestor of
+        // the sub-repo's true tip, i.e. a genuine regression by
+        // `fix_regressed_gitlinks`'s own definition.
+        std::fs::write(subwork.join("f.txt"), "c1\nc2\n").unwrap();
+        run_git_mut(sw, &["commit", "-am", "c2"]).unwrap();
+        run_git_mut(sw, &["push", "-q", "origin", "main"]).unwrap();
+        let true_tip = run_git(sw, &["rev-parse", "HEAD"]).unwrap().0.trim().to_string();
+        let current = run_git(co, &["rev-parse", "HEAD:sub"]).unwrap().0.trim().to_string();
+        assert_ne!(current, true_tip, "test setup: gitlink must be behind the true tip");
+
+        // No manual fetch inside the submodule anywhere in this test — with the
+        // fix, `fix_regressed_gitlinks` refreshes `origin/main` itself before
+        // comparing, so it must catch this on the very first call despite
+        // `ensure_no_submodule_recurse` having disabled on-demand recursion.
+        let fixed = fix_regressed_gitlinks(co);
+        assert_eq!(
+            fixed,
+            vec!["sub".to_string()],
+            "fix_regressed_gitlinks must still catch a real regression even with \
+             on-demand submodule recursion disabled — it must refresh the \
+             submodule's own origin/<branch> ref itself rather than relying on \
+             something else in the pull path to have done it"
+        );
+        assert_eq!(
+            run_git(co, &["rev-parse", ":sub"]).unwrap().0.trim(),
+            true_tip,
+            "staged gitlink should now be at the true tip"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
