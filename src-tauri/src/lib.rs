@@ -2559,12 +2559,37 @@ fn repo_lock_for(vault: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-/// Remove `.git/index.lock` only if it's older than STALE_LOCK_SECS — old
-/// enough that no live git could still hold it (a normal commit holds it for
+/// Resolve the real git directory for `repo`. For a normal (non-submodule)
+/// repo that's just `<repo>/.git`. For a submodule, `<repo>/.git` is a FILE
+/// containing `gitdir: <path-to-real-gitdir>` (typically
+/// `<superproject>/.git/modules/<name>`) — treating it as a directory, as the
+/// naive `<repo>/.git` join used to, silently misses every submodule: the
+/// joined path never exists, so lock-clearing and stuck-rebase detection
+/// below were quietly no-ops for every nested repo. Handles both a relative
+/// and an absolute `gitdir:` target.
+fn resolve_git_dir(repo: &str) -> Option<PathBuf> {
+    let dot_git = PathBuf::from(repo).join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let contents = std::fs::read_to_string(&dot_git).ok()?;
+    let target = contents.trim().strip_prefix("gitdir:")?.trim();
+    let target_path = PathBuf::from(target);
+    if target_path.is_absolute() {
+        Some(target_path)
+    } else {
+        Some(PathBuf::from(repo).join(target_path))
+    }
+}
+
+/// Remove `.git/index.lock` (resolved via `resolve_git_dir`, so this also
+/// covers submodules) only if it's older than STALE_LOCK_SECS — old enough
+/// that no live git could still hold it (a normal commit holds it for
 /// milliseconds). Called while we already own the per-repo lock, so any lock
 /// seen here is necessarily external or orphaned by a crash.
 fn clear_stale_index_lock(vault: &str) {
-    let lock = PathBuf::from(vault).join(".git").join("index.lock");
+    let Some(git_dir) = resolve_git_dir(vault) else { return };
+    let lock = git_dir.join("index.lock");
     if let Ok(meta) = std::fs::metadata(&lock) {
         let stale = meta
             .modified()
@@ -2583,9 +2608,13 @@ fn clear_stale_index_lock(vault: &str) {
 /// state and every later commit silently no-ops — the "wedged vault." This
 /// app owns its vaults' git (no human runs rebases by hand here), so a
 /// leftover is always our own failed attempt: abort it so the next op starts
-/// from a clean HEAD.
+/// from a clean HEAD. Uses `resolve_git_dir` so this also self-heals a
+/// submodule stuck mid-rebase/merge (previously undetectable: the naive
+/// `<repo>/.git` join doesn't exist for a submodule, so the state dirs were
+/// never found and a wedged nested repo sat there forever, silently skipped
+/// by every later `on_branch` check since a rebase leaves HEAD detached).
 fn abort_stuck_merge_or_rebase(vault: &str) {
-    let git = PathBuf::from(vault).join(".git");
+    let Some(git) = resolve_git_dir(vault) else { return };
     if git.join("rebase-merge").is_dir() || git.join("rebase-apply").is_dir() {
         let _ = run_git(vault, &["rebase", "--abort"]);
     }
@@ -3092,6 +3121,12 @@ fn sync_one_repo(
     me: Option<&str>,
     cfg_branch: Option<&str>,
 ) {
+    // Self-heal a sub-repo left mid-rebase/merge by a prior crashed sync cycle
+    // (e.g. the app was killed between `sync_one_repo`'s add/commit and the
+    // next tick's pull). Without this a detached-HEAD rebase state is
+    // permanent: every later cycle's on_branch check below just skips it,
+    // with no error surfaced anywhere.
+    abort_stuck_merge_or_rebase(sub);
     let mut class = classify_repo(sub, me);
 
     // Foreign → fork to the user's account and repoint origin at the fork, then
@@ -4833,6 +4868,11 @@ fn commit_nested_repos_local(vault: &str, agent: bool) -> u32 {
         if !PathBuf::from(&sub).join(".git").exists() {
             continue;
         }
+        // Self-heal a sub-repo left mid-rebase/merge by a prior crashed sync —
+        // otherwise it sits there forever: a rebase leaves HEAD detached, and
+        // the on_branch check right below would skip it every cycle with no
+        // error, silently accumulating uncommitted work.
+        abort_stuck_merge_or_rebase(&sub);
         // Only commit when on a branch — never create a dangling commit on a
         // detached HEAD (re-attaching a detached submodule is the sync path's
         // job, and needs a remote it doesn't have here).
@@ -6347,6 +6387,78 @@ mod sync_role_tests {
         // Follower, tolerant of case + surrounding whitespace → follower.
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod nested_repo_lock_tests {
+    use super::{abort_stuck_merge_or_rebase, resolve_git_dir, run_git};
+
+    // A submodule's `.git` is a FILE (`gitdir: ../.git/modules/<name>`), not a
+    // directory. The old code joined `.git/index.lock` / `.git/rebase-merge`
+    // straight onto the submodule path — a path that can never exist — so
+    // stale-lock clearing and stuck-rebase recovery silently no-op'd for every
+    // nested repo. Prove `resolve_git_dir` finds the real gitdir instead.
+    #[test]
+    fn resolves_the_real_gitdir_for_a_submodule() {
+        let base = std::env::temp_dir().join(format!("vc_subgitdir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sub_origin = base.join("sub-origin.git");
+        let parent = base.join("parent");
+        std::fs::create_dir_all(&sub_origin).unwrap();
+        std::fs::create_dir_all(&parent).unwrap();
+        let so = sub_origin.to_str().unwrap();
+        let ps = parent.to_str().unwrap();
+        run_git(so, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        // Seed the sub's origin with one commit so the submodule add has
+        // something to check out.
+        let seed = base.join("seed");
+        std::fs::create_dir_all(&seed).unwrap();
+        let ss = seed.to_str().unwrap();
+        run_git(ss, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(ss, &["config", "user.email", "t@t"]).unwrap();
+        run_git(ss, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(seed.join("f.txt"), "hi\n").unwrap();
+        run_git(ss, &["add", "-A"]).unwrap();
+        run_git(ss, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git(ss, &["push", "-q", so, "main"]).unwrap();
+
+        run_git(ps, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(ps, &["config", "user.email", "t@t"]).unwrap();
+        run_git(ps, &["config", "user.name", "t"]).unwrap();
+        run_git(ps, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", so, "sub"])
+            .expect("submodule add");
+        run_git(ps, &["add", "-A"]).unwrap();
+        run_git(ps, &["commit", "-q", "-m", "add submodule"]).unwrap();
+
+        let sub_path = parent.join("sub");
+        let subs = sub_path.to_str().unwrap();
+        // The naive `<sub>/.git` join must NOT be a real directory — that's
+        // exactly the bug: it silently made lock-clearing / rebase-recovery
+        // no-ops for every submodule.
+        assert!(
+            !sub_path.join(".git").is_dir(),
+            "a submodule's .git must be a file, not a dir — this is the case the old code missed"
+        );
+        let resolved = resolve_git_dir(subs).expect("must resolve a submodule's real gitdir");
+        assert!(resolved.is_dir(), "resolved gitdir must be a real directory");
+        assert!(
+            resolved.join("HEAD").is_file(),
+            "resolved gitdir must be the actual git dir (has a HEAD file)"
+        );
+
+        // Simulate a crash mid-rebase inside the submodule and confirm the
+        // self-heal now finds and clears it — this used to be permanently
+        // invisible (HEAD stays detached forever, and every later on_branch
+        // check silently skips the sub-repo with no error surfaced anywhere).
+        std::fs::create_dir_all(resolved.join("rebase-merge")).unwrap();
+        abort_stuck_merge_or_rebase(subs);
+        assert!(
+            !resolved.join("rebase-merge").exists(),
+            "abort_stuck_merge_or_rebase must clear a wedged submodule rebase"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
