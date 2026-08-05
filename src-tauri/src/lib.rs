@@ -3168,13 +3168,7 @@ fn sync_one_repo(
     match (&shared_branch, class) {
         // Shared → push only the dedicated branch, with -u so it exists on the
         // remote and tracks. Never the team's default branch.
-        (Some(branch), _) => match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
-            Ok((_, perr, pc)) if pc != 0 => {
-                eprintln!("[sync] shared repo '{}' push skipped: {}", rel, first_line(&perr).trim())
-            }
-            Err(e) => eprintln!("[sync] shared repo '{}' push error: {}", rel, e),
-            _ => {}
-        },
+        (Some(branch), _) => push_nested_repo_with_reconcile(rel, sub, branch),
         // Mine → push the tracking branch when it's ahead. Needs an upstream.
         (None, RepoClass::Mine) => {
             let has_upstream = matches!(
@@ -3190,12 +3184,13 @@ fn sync_one_repo(
                 0
             };
             if ahead > 0 {
-                match run_git_timeout(sub, &["push"], 300) {
-                    Ok((_, perr, pc)) if pc != 0 => {
-                        eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                // No branch name passed in `.gitmodules` form here — resolve HEAD's
+                // own branch so a rejection has something to reconcile against.
+                if let Ok((b, _, 0)) = run_git(sub, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+                    let b = b.trim();
+                    if b != "HEAD" {
+                        push_nested_repo_with_reconcile(rel, sub, b);
                     }
-                    Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
-                    _ => {}
                 }
             }
         }
@@ -3204,6 +3199,62 @@ fn sync_one_repo(
     }
 
     maybe_compact_git(sub);
+}
+
+/// Push a nested repo's `branch` and, on rejection, fetch + reconcile with its
+/// upstream and retry once — the same fetch→reconcile→retry-once shape
+/// `vault_sync_push` uses for the root vault (added there specifically to stop
+/// "the wedge that froze cross-machine sync"). Previously a rejected nested-
+/// repo push was only `eprintln!`'d and never retried: nothing re-fetched that
+/// sub-repo's `origin/<branch>` afterward, so `@{upstream}` (and therefore the
+/// `ahead` count `sync_one_repo` computes) stayed stale forever and the exact
+/// same push was rejected every cycle indefinitely — silently stranding a
+/// machine's commits to a nested repo two machines both advanced. Best-effort
+/// throughout; failures are logged, never fatal to the outer vault sync.
+fn push_nested_repo_with_reconcile(rel: &str, sub: &str, branch: &str) {
+    let (_, perr, pc) = match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[sync] repo '{}' push error: {}", rel, e);
+            return;
+        }
+    };
+    if pc == 0 {
+        return;
+    }
+    // Rejected — almost always the remote advanced under us (another machine
+    // pushed to this same nested repo). Fetch and reconcile exactly like the
+    // root vault does, then retry the push once.
+    let (_, _, fcode) = match run_git(sub, &["fetch", "origin", branch]) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "[sync] repo '{}' push rejected and fetch errored: {} (push: {})",
+                rel, e, first_line(&perr).trim()
+            );
+            return;
+        }
+    };
+    if fcode != 0 {
+        eprintln!(
+            "[sync] repo '{}' push rejected and fetch failed (push: {})",
+            rel, first_line(&perr).trim()
+        );
+        return;
+    }
+    match reconcile_with_upstream(sub, branch) {
+        Ok(Ok(_)) => match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
+            Ok((_, perr2, pc2)) if pc2 != 0 => eprintln!(
+                "[sync] repo '{}' push failed after reconcile: {}",
+                rel,
+                first_line(&perr2).trim()
+            ),
+            Err(e) => eprintln!("[sync] repo '{}' push error after reconcile: {}", rel, e),
+            _ => {}
+        },
+        Ok(Err(e)) => eprintln!("[sync] repo '{}' reconcile failed: {}", rel, e.message),
+        Err(e) => eprintln!("[sync] repo '{}' reconcile error: {}", rel, e),
+    }
 }
 
 /// Walk the vault for every nested git repo (a dir containing `.git`) at any
@@ -4941,8 +4992,17 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         if is_sync_follower(&vault) {
             if let Ok((b, _, 0)) = run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"]) {
                 let b = b.trim().to_string();
-                if b != "HEAD" {
-                    sanitize_mission_zone(&vault, &b);
+                if b != "HEAD" && !sanitize_mission_zone(&vault, &b) {
+                    // Sanitization couldn't be verified (a git spawn/timeout
+                    // failure) — committing now risks carrying stale mission
+                    // state into the commit, exactly what this gate exists to
+                    // prevent. Skip this cycle without error; the next tick
+                    // retries against a (hopefully) healthier git.
+                    return Ok(SyncOpResult {
+                        ok: true,
+                        message: "skipped (mission-zone sanitize unavailable, retrying)".into(),
+                        error: false,
+                    });
                 }
             }
         }
@@ -5577,13 +5637,32 @@ fn conv_is_mission_zone(head_line: &str) -> bool {
 /// migration case). Uses the last-fetched origin ref — no network; the pull
 /// loop keeps it fresh. Local-only files (present here, absent on origin) are
 /// left alone: with no origin counterpart they can't clobber anything.
-fn sanitize_mission_zone(vault: &str, branch: &str) {
+///
+/// Returns false if sanitization could not be VERIFIED to have completed (a
+/// `run_git` spawn failure or the documented 90s-timeout `Err` case) — as
+/// opposed to a legitimate "nothing to sanitize" (no origin ref yet, or
+/// origin has no conversations dir yet), which returns true. `run_git`
+/// returning `Err` is distinct from `Ok((_, _, nonzero))`; `unwrap_or_default`
+/// used to collapse both into a fake `Ok((_, _, 0))`, which made a timed-out
+/// `ls-tree` look like "origin has zero conversation files" and silently
+/// skipped conversation-zone sanitization — the caller must not commit on a
+/// false negative here, since that's exactly the stale-follower-clobbers-
+/// mission-state failure this gate exists to prevent.
+fn sanitize_mission_zone(vault: &str, branch: &str) -> bool {
     let origin = format!("origin/{}", branch);
     // Origin must exist (a vault with no remote / never-fetched ref: nothing to
-    // sanitize against — and nothing to push to either).
-    let (_, _, c) = run_git(vault, &["rev-parse", "--verify", "--quiet", &origin]).unwrap_or_default();
+    // sanitize against — and nothing to push to either). A genuine git failure
+    // here (not just a nonzero "ref doesn't exist" exit) means we can't even
+    // tell, so don't claim success.
+    let (_, _, c) = match run_git(vault, &["rev-parse", "--verify", "--quiet", &origin]) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[sync] mission-zone sanitize: rev-parse origin failed: {}", e);
+            return false;
+        }
+    };
     if c != 0 {
-        return;
+        return true;
     }
     for p in MISSION_ZONE_PATHS {
         // Only paths origin knows; checkout fails harmlessly otherwise.
@@ -5592,9 +5671,18 @@ fn sanitize_mission_zone(vault: &str, branch: &str) {
     // Conversations: classify by the meta line, local version first, origin's
     // as fallback (a file deleted locally still needs restoring if origin says
     // it's a mission thread).
-    let (ls, _, lc) = run_git(vault, &["ls-tree", "-r", "--name-only", &origin, ".vault-chat/conversations"]).unwrap_or_default();
+    let (ls, _, lc) = match run_git(
+        vault,
+        &["ls-tree", "-r", "--name-only", &origin, ".vault-chat/conversations"],
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[sync] mission-zone sanitize: ls-tree failed: {}", e);
+            return false;
+        }
+    };
     if lc != 0 {
-        return;
+        return true;
     }
     for path in ls.lines().map(str::trim).filter(|l| l.ends_with(".jsonl")) {
         let local_head = std::fs::File::open(format!("{}/{}", vault, path))
@@ -5616,6 +5704,7 @@ fn sanitize_mission_zone(vault: &str, branch: &str) {
             let _ = run_git_mut(vault, &["checkout", &origin, "--", path]);
         }
     }
+    true
 }
 
 #[tauri::command]
@@ -6347,6 +6436,110 @@ mod sync_role_tests {
         // Follower, tolerant of case + surrounding whitespace → follower.
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // A genuine git failure (not just "ref doesn't exist") during sanitize
+    // must be reported as false, not silently swallowed into a fake success —
+    // regression test for the bug where `.unwrap_or_default()` turned a
+    // `run_git` `Err` (spawn failure / the documented 90s timeout) into an
+    // `Ok((_, _, 0))`, which made a timed-out `ls-tree` look like "origin has
+    // no conversation files" and skipped conversation-zone sanitization
+    // without the caller ever knowing. A nonexistent cwd is a reliable,
+    // deterministic way to force `Command::spawn` to fail, standing in for
+    // the timeout case without an actual 90s wait.
+    #[test]
+    fn sanitize_reports_failure_instead_of_a_false_clean_result() {
+        let nonexistent = std::env::temp_dir().join(format!(
+            "vc_sanitize_missing_{}_does_not_exist",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&nonexistent);
+        assert!(!sanitize_mission_zone(nonexistent.to_str().unwrap(), "master"));
+    }
+}
+
+#[cfg(test)]
+mod nested_repo_push_tests {
+    use super::{push_nested_repo_with_reconcile, run_git, run_git_mut};
+
+    // A nested repo pushed from two machines: B's push is rejected (A pushed
+    // in between), and push_nested_repo_with_reconcile must fetch, reconcile
+    // (merge), and retry — not just log-and-abandon the way the old code did.
+    // Regression test for the bug where a rejected nested-repo push was only
+    // `eprintln!`'d: nothing ever re-fetched afterward, so `@{upstream}` —
+    // and therefore `ahead` — stayed stale forever and the identical push was
+    // rejected every single cycle, silently stranding the commit.
+    #[test]
+    fn rejected_push_reconciles_and_retries_instead_of_stranding_commits() {
+        let base = std::env::temp_dir().join(format!("vc_nested_push_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "main"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git(ds, &["remote", "add", "origin", og]).unwrap();
+        }
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+
+        // A seeds and pushes first.
+        std::fs::write(a.join("a.txt"), "a1\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "a1"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "-u", "origin", "main"]).unwrap();
+
+        // B fetches, tracks, then diverges independently of A.
+        run_git(bs, &["fetch", "-q", "origin", "main"]).unwrap();
+        run_git_mut(bs, &["switch", "-c", "main", "--track", "origin/main"]).unwrap();
+        std::fs::write(b.join("b.txt"), "b1\n").unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "b1"]).unwrap();
+
+        // A advances the remote again, out from under B.
+        std::fs::write(a.join("a.txt"), "a2\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "a2"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "main"]).unwrap();
+
+        // B's naive push would now be rejected. Reconcile-and-retry must
+        // recover instead of stranding B's commit.
+        push_nested_repo_with_reconcile("rel", bs, "main");
+
+        // B's local tree now carries both A's advance and its own commit.
+        assert_eq!(
+            std::fs::read_to_string(b.join("a.txt")).unwrap(),
+            "a2\n",
+            "B must have merged A's advance"
+        );
+        assert_eq!(
+            std::fs::read_to_string(b.join("b.txt")).unwrap(),
+            "b1\n",
+            "B's own commit must survive the reconcile"
+        );
+
+        // And it must have actually reached the remote — @{upstream} caught
+        // up, not left stale. This is the core of the bug: without a
+        // reconcile-and-retry, the push is rejected every cycle forever and
+        // origin never sees B's commit at all.
+        let (ahead, _, code) = run_git(bs, &["rev-list", "--count", "@{upstream}..HEAD"]).unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(ahead.trim(), "0", "B's commit must be pushed, not stranded ahead of upstream");
+
+        // A fresh clone of origin sees both machines' work, merged.
+        let check = base.join("check");
+        run_git(base.to_str().unwrap(), &["clone", "-q", og, check.to_str().unwrap()]).unwrap();
+        assert_eq!(std::fs::read_to_string(check.join("a.txt")).unwrap(), "a2\n");
+        assert_eq!(std::fs::read_to_string(check.join("b.txt")).unwrap(), "b1\n");
 
         let _ = std::fs::remove_dir_all(&base);
     }

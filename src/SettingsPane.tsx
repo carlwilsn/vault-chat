@@ -33,7 +33,6 @@ import {
   vaultGhCreateRepo,
   subscribeSyncStatus,
   startVaultSyncLoop,
-  stopVaultSyncLoop,
   DEFAULT_SYNC_CONFIG,
   type VaultSyncConfig,
 } from "./vaultSync";
@@ -1013,11 +1012,14 @@ function VaultSyncSection() {
   const toggleEnabled = async (next: boolean) => {
     const updated = await writeVaultSyncConfig(vaultPath, { enabled: next });
     setConfig(updated);
-    if (next) {
-      await startVaultSyncLoop(vaultPath);
-    } else {
-      stopVaultSyncLoop(vaultPath);
-    }
+    // Always restart (never bare-stop): doStartVaultSyncLoop reads the fresh
+    // config and, when `enabled` is now false, starts the always-on
+    // local-commit-only fallback loop rather than leaving the vault with no
+    // loop at all. A bare stopVaultSyncLoop() here used to kill the loop
+    // outright on disable, silently stopping even local version history and
+    // nested-repo dirty-dot clearing until the user switched vaults or
+    // restarted the app.
+    await startVaultSyncLoop(vaultPath);
   };
 
   const saveRemote = async () => {
