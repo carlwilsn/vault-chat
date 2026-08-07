@@ -6352,6 +6352,166 @@ mod sync_role_tests {
     }
 }
 
+// End-to-end coverage of the actual two-machine reconcile path
+// (`reconcile_with_upstream` / `resolve_merge_conflicts`) — the code
+// `vault_sync_pull`/`vault_sync_push` share once a fetch has landed. Nothing
+// here exercises the real "summer" box; every repo is a throwaway tmp dir,
+// matching the existing `sync_role_tests` pattern (see harness-loop skill:
+// multi-machine sync is proven on scratch checkouts, never on the real vault).
+#[cfg(test)]
+mod sync_reconcile_tests {
+    use super::{reconcile_with_upstream, run_git, run_git_mut};
+
+    fn init_pair(tag: &str) -> (std::path::PathBuf, String, std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!("vc_reconcile_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "master"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "master"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git(ds, &["remote", "add", "origin", og]).unwrap();
+        }
+        // Same `.gitattributes` every real vault carries, so the append-only
+        // jsonl union behavior under test matches production exactly. Seeded
+        // only on A (the writer that commits+pushes first) and picked up by B
+        // through its pull, mirroring the real onboarding path — `git_init_if_
+        // needed` always commits `.gitattributes` before any pull can run, so
+        // a second checkout never has it sitting untracked on disk the way a
+        // naive test fixture would.
+        std::fs::write(a.join(".gitattributes"), "*.jsonl merge=union\n").unwrap();
+        (base, og.to_string(), a, b)
+    }
+
+    // The common case a two-machine setup hits constantly: both the box and the
+    // laptop appended to the same conversation log and edited their own separate
+    // doc while offline from each other. Neither side's work may be dropped, and
+    // the reconcile must leave a clean tree (no lingering conflict) so the next
+    // sync tick isn't wedged.
+    #[test]
+    fn diverged_jsonl_and_disjoint_docs_merge_cleanly_both_directions() {
+        let (base, _og, a, b) = init_pair("basic");
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+
+        std::fs::write(a.join("log.jsonl"), "{\"id\":\"c1\"}\n{\"role\":\"user\",\"content\":\"seed\"}\n").unwrap();
+        std::fs::write(a.join("shared.md"), "shared\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        let (_, perr, pcode) = run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+        assert_eq!(pcode, 0, "B's initial pull must succeed: {}", perr);
+
+        // A appends a line + writes its own doc.
+        let mut log = std::fs::read_to_string(a.join("log.jsonl")).unwrap();
+        log.push_str("{\"role\":\"assistant\",\"content\":\"from-A\"}\n");
+        std::fs::write(a.join("log.jsonl"), log).unwrap();
+        std::fs::write(a.join("a-note.md"), "A's note\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "A diverges"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        // B independently appends a DIFFERENT line + writes its own doc, before
+        // ever seeing A's push — the real "both offline, both edited" race.
+        let mut log_b = std::fs::read_to_string(b.join("log.jsonl")).unwrap();
+        log_b.push_str("{\"role\":\"assistant\",\"content\":\"from-B\"}\n");
+        std::fs::write(b.join("log.jsonl"), log_b).unwrap();
+        std::fs::write(b.join("b-note.md"), "B's note\n").unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "B diverges"]).unwrap();
+
+        // B fetches A's push and reconciles — the exact sequence vault_sync_pull
+        // runs after `git fetch`.
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+        let outcome = reconcile_with_upstream(bs, "master")
+            .expect("no io error")
+            .unwrap_or_else(|e| panic!("merge must succeed, not error: {}", e.message));
+        assert!(outcome.contains("merged"), "diverged history must merge, got: {}", outcome);
+
+        // Nothing left unmerged — a clean tree so the next tick isn't wedged.
+        let (unmerged, _, _) = run_git(bs, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+        assert!(unmerged.trim().is_empty(), "reconcile must leave no unresolved paths: {:?}", unmerged);
+
+        // Both machines' jsonl lines survived the union — neither dropped.
+        let merged_log = std::fs::read_to_string(b.join("log.jsonl")).unwrap();
+        assert!(merged_log.contains("from-A"), "A's line must survive the union");
+        assert!(merged_log.contains("from-B"), "B's line must survive the union");
+
+        // Disjoint docs both present, untouched.
+        assert!(b.join("a-note.md").exists(), "A's doc must come through the merge");
+        assert_eq!(std::fs::read_to_string(b.join("b-note.md")).unwrap(), "B's note\n");
+
+        // B pushes the merge forward, then A pulls it back — the other half of
+        // the cycle. A's fetch+reconcile should now be a clean fast-forward.
+        run_git_mut(bs, &["push", "-q", "origin", "master"]).unwrap();
+        run_git(asr, &["fetch", "-q", "origin", "master"]).unwrap();
+        let a_outcome = reconcile_with_upstream(asr, "master")
+            .expect("no io error")
+            .unwrap_or_else(|e| panic!("A's ff must succeed: {}", e.message));
+        assert_eq!(a_outcome, "pulled", "A should fast-forward onto B's already-merged tip");
+        let a_log = std::fs::read_to_string(a.join("log.jsonl")).unwrap();
+        assert!(a_log.contains("from-A") && a_log.contains("from-B"), "A converges on the full union too");
+        assert!(a.join("b-note.md").exists(), "A picks up B's doc on the fast-forward");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // A genuine divergent edit to the SAME non-jsonl file (not an append-only
+    // log) can't be unioned — `resolve_merge_conflicts` must take "theirs" into
+    // the tree and preserve "ours" as a `.conflict` sidecar, so the losing side's
+    // edit is never silently discarded.
+    #[test]
+    fn same_file_conflict_preserves_the_losing_edit_as_a_sidecar() {
+        let (base, _og, a, b) = init_pair("conflict");
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+
+        std::fs::write(a.join("note.md"), "base\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+        let (_, perr, pcode) = run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+        assert_eq!(pcode, 0, "B's initial pull must succeed: {}", perr);
+
+        // A edits and pushes first.
+        std::fs::write(a.join("note.md"), "base\nA's edit\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "A edits note"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        // B edits the SAME line offline, before seeing A's push.
+        std::fs::write(b.join("note.md"), "base\nB's edit\n").unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "B edits note"]).unwrap();
+
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+        let outcome = reconcile_with_upstream(bs, "master")
+            .expect("no io error")
+            .unwrap_or_else(|e| panic!("conflict must auto-resolve, not error: {}", e.message));
+        assert!(outcome.contains("auto-resolved"), "a same-file conflict must be reported as auto-resolved: {}", outcome);
+
+        let (unmerged, _, _) = run_git(bs, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+        assert!(unmerged.trim().is_empty(), "conflict resolution must leave no unresolved paths");
+
+        // Tree converges on "theirs" (A, already on origin)...
+        let note = std::fs::read_to_string(b.join("note.md")).unwrap();
+        assert!(note.contains("A's edit"), "the merged file must carry the remote (theirs) side");
+        // ...and B's own conflicting edit is preserved, not dropped.
+        let sidecar = std::fs::read_to_string(b.join("note.md.conflict")).unwrap();
+        assert!(sidecar.contains("B's edit"), "the losing side must survive in a .conflict sidecar: {:?}", sidecar);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
 #[cfg(test)]
 mod conversation_jsonl_tests {
     use super::reconstruct_conversation;
