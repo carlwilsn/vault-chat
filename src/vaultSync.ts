@@ -338,8 +338,6 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
   let cancelled = false;
   let pullTimer: number | null = null;
   let pushTimer: number | null = null;
-  let lastChangeAt = 0;
-  let lastChangeSig = "";
 
   const setStatus = (patch: Partial<SyncSnapshot>) => {
     snapshots.set(vault, { ...snapOf(vault), ...patch });
@@ -556,32 +554,26 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
     }
   };
 
-  // Watch for local changes via cheap polling (every 2s). When the
-  // working tree signature changes, mark the time; if the user goes
-  // quiet for `pushDebounceSec`, fire a push.
+  // Watch for local changes via cheap polling (every 2s). The moment the
+  // working tree is seen dirty with no push already armed, start a one-shot
+  // timer that fires a push after `pushDebounceSec`. Deliberately NOT reset
+  // on every dirty tick: continuous edits (an agent run, a long typing
+  // session) would otherwise keep pushing the timer out and starve the sync
+  // indefinitely, so once armed the timer always fires `pushDebounceSec`
+  // after the FIRST tick that saw a change, even if the tree is still dirty
+  // when it does. `vaultPush` is a harmless no-op when there's nothing to
+  // push, and the flush-on-`ahead` step in `tickPull` catches anything left
+  // uncommitted by the time this fires — so an early push is fine; a
+  // starved one is what this guards against.
   const watchInterval = window.setInterval(async () => {
     if (cancelled) return;
     const st = await refreshStatus();
     if (!st) return;
-    const sig = `${st.has_changes ? 1 : 0}`;
-    if (st.has_changes) {
-      if (sig !== lastChangeSig) {
-        lastChangeSig = sig;
-        lastChangeAt = Date.now();
-      } else {
-        // Even with same sig, treat ongoing dirty as a heartbeat — but
-        // only update the timer if there were no recent edits. We use
-        // a separate detection: if push is already scheduled, leave it.
-        if (pushTimer === null) lastChangeAt = Date.now();
-      }
-      if (pushTimer === null) {
-        const delay = Math.max(1000, config.pushDebounceSec * 1000);
-        pushTimer = window.setTimeout(() => {
-          void tickPush();
-        }, delay);
-      }
-    } else {
-      lastChangeSig = sig;
+    if (st.has_changes && pushTimer === null) {
+      const delay = Math.max(1000, config.pushDebounceSec * 1000);
+      pushTimer = window.setTimeout(() => {
+        void tickPush();
+      }, delay);
     }
   }, 2000);
 
@@ -606,10 +598,6 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       window.clearInterval(watchInterval);
     },
   });
-
-  // Silence the unused warning — lastChangeAt is set above and could
-  // be used by future "idle since" UI.
-  void lastChangeAt;
 }
 
 // Stop one vault's loop, or ALL of them when called with no argument (app
