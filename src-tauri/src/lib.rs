@@ -5270,6 +5270,28 @@ fn resolve_merge_conflicts(vault: &str) -> bool {
                 .or(if ours.is_empty() { None } else { Some(ours.clone()) });
             if let Some(sha) = sha {
                 let _ = run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &sha, path]);
+                // Move the sub-repo's own working tree to the resolved commit too —
+                // mirrors fix_regressed_gitlinks. Without this the sub-repo stays
+                // checked out at its PRE-merge HEAD, so the superproject sees this
+                // path as permanently modified (checked-out commit != index
+                // pointer, and `--ignore-submodules=dirty` does NOT hide a pointer
+                // mismatch, only uncommitted work). The next auto-commit's `git add
+                // -A` then re-stages that stale HEAD, SILENTLY REVERTING this
+                // resolution — confirmed via a scratch two-machine repro — which
+                // re-diverges the gitlink on the very next sync cycle and loops
+                // forever. `maybe_update_submodules` fixes this for a *registered*
+                // submodule but is a no-op without `.gitmodules`, which leaves an
+                // embedded-but-unregistered nested repo (a case this file's own
+                // sync_nested_repos doc claims to support) permanently reverting.
+                // Best-effort + fetch-if-missing: `sha` came from the superproject's
+                // conflict markers, not necessarily an object this sub-repo's local
+                // clone has fetched yet.
+                if PathBuf::from(&sub).join(".git").exists() {
+                    if !matches!(run_git(&sub, &["cat-file", "-e", &sha]), Ok((_, _, 0))) {
+                        let _ = run_git(&sub, &["fetch", "origin"]);
+                    }
+                    let _ = run_git_mut(&sub, &["checkout", "--detach", &sha]);
+                }
             } else {
                 let _ = run_git_mut(vault, &["rm", "--cached", "--", path]);
             }
@@ -6347,6 +6369,142 @@ mod sync_role_tests {
         // Follower, tolerant of case + surrounding whitespace → follower.
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod submodule_conflict_tests {
+    use super::{resolve_merge_conflicts, run_git, run_git_mut};
+
+    // A submodule/embedded-repo gitlink conflict must leave the sub-repo's own
+    // WORKING TREE checked out at the resolved commit, not just the
+    // superproject's index — otherwise the very next autosave's `git add -A`
+    // silently re-stages the sub-repo's stale pre-merge HEAD, reverting the
+    // resolution and re-diverging the gitlink on the next sync cycle (found via
+    // a two-machine scratch repro). Covers the embedded-but-unregistered case
+    // (no `.gitmodules`), which `maybe_update_submodules` can't fix since it's
+    // gated on `.gitmodules` existing — sync_nested_repos' own doc comment
+    // claims this case ("an embedded repo never registered as a submodule") is
+    // supported.
+    #[test]
+    fn resolves_submodule_conflict_and_updates_the_subrepo_worktree() {
+        let base =
+            std::env::temp_dir().join(format!("vc_submodule_conflict_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let subrepo = base.join("subrepo.git");
+        let seed = base.join("seed");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        std::fs::create_dir_all(&subrepo).unwrap();
+        let og = origin.to_str().unwrap();
+        let sg = subrepo.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        run_git(sg, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        // Seed the nested repo's own remote with a base commit.
+        std::fs::create_dir_all(&seed).unwrap();
+        let sds = seed.to_str().unwrap();
+        run_git(sds, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(sds, &["config", "user.email", "t@t"]).unwrap();
+        run_git(sds, &["config", "user.name", "t"]).unwrap();
+        run_git(sds, &["remote", "add", "origin", sg]).unwrap();
+        std::fs::write(seed.join("f.txt"), "base\n").unwrap();
+        run_git_mut(sds, &["add", "-A"]).unwrap();
+        run_git_mut(sds, &["commit", "-q", "-m", "base"]).unwrap();
+        run_git(sds, &["push", "-q", "-u", "origin", "main"]).unwrap();
+
+        // A: superproject with the nested repo embedded WITHOUT `.gitmodules` —
+        // a plain clone that happens to sit inside the tree.
+        std::fs::create_dir_all(&a).unwrap();
+        let asr = a.to_str().unwrap();
+        run_git(asr, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(asr, &["config", "user.email", "a@a"]).unwrap();
+        run_git(asr, &["config", "user.name", "A"]).unwrap();
+        run_git(asr, &["remote", "add", "origin", og]).unwrap();
+        let a_embedded = a.join("embedded");
+        run_git(asr, &["clone", "-q", sg, a_embedded.to_str().unwrap()]).unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "embed nested repo"]).unwrap();
+        run_git(asr, &["push", "-q", "-u", "origin", "main"]).unwrap();
+
+        // B: an independent checkout of the same superproject + the same
+        // nested repo, materialized separately — mirrors a second machine.
+        let bs = b.to_str().unwrap();
+        run_git(base.to_str().unwrap(), &["clone", "-q", og, bs]).unwrap();
+        run_git(bs, &["config", "user.email", "bb@bb"]).unwrap();
+        run_git(bs, &["config", "user.name", "B"]).unwrap();
+        let b_embedded = b.join("embedded");
+        let _ = std::fs::remove_dir_all(&b_embedded);
+        run_git(bs, &["clone", "-q", sg, b_embedded.to_str().unwrap()]).unwrap();
+
+        // A advances the nested repo and bumps its pointer.
+        let aes = a_embedded.to_str().unwrap();
+        run_git(aes, &["config", "user.email", "a@a"]).unwrap();
+        run_git(aes, &["config", "user.name", "A"]).unwrap();
+        std::fs::write(a_embedded.join("f.txt"), "base\nA-change\n").unwrap();
+        run_git_mut(aes, &["add", "-A"]).unwrap();
+        run_git_mut(aes, &["commit", "-q", "-m", "A embedded change"]).unwrap();
+        run_git(aes, &["push", "-q", "origin", "main"]).unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "A bumps pointer"]).unwrap();
+        run_git(asr, &["push", "-q", "origin", "main"]).unwrap();
+
+        // B independently advances the nested repo too (its own local clone
+        // diverges; never pushed to the nested repo's remote), then bumps its
+        // own pointer locally — never pushed to origin — so a later
+        // fetch+merge sees a genuine gitlink conflict.
+        let bes = b_embedded.to_str().unwrap();
+        run_git(bes, &["config", "user.email", "bb@bb"]).unwrap();
+        run_git(bes, &["config", "user.name", "B"]).unwrap();
+        std::fs::write(b_embedded.join("f.txt"), "base\nB-change\n").unwrap();
+        run_git_mut(bes, &["add", "-A"]).unwrap();
+        run_git_mut(bes, &["commit", "-q", "-m", "B embedded change"]).unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "B bumps pointer"]).unwrap();
+
+        // B fetches + merges: the gitlink conflicts (both sides advanced it,
+        // and B's local clone of the nested repo doesn't even have A's
+        // commit object yet).
+        run_git(bs, &["fetch", "-q", "origin", "main"]).unwrap();
+        let (_, _, merge_code) = run_git_mut(bs, &["merge", "--no-edit", "origin/main"]).unwrap();
+        assert_ne!(merge_code, 0, "gitlink must conflict — both sides advanced it");
+        let (unmerged, _, _) = run_git(bs, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+        assert_eq!(unmerged.trim(), "embedded");
+
+        // Resolve — must fully clear the conflict AND move the sub-repo's own
+        // working tree to match the resolved pointer.
+        assert!(
+            resolve_merge_conflicts(bs),
+            "every conflict class must resolve"
+        );
+        let (still_unmerged, _, _) =
+            run_git(bs, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+        assert!(still_unmerged.trim().is_empty());
+
+        let (staged_ptr, _, _) = run_git(bs, &["rev-parse", ":embedded"]).unwrap();
+        let (worktree_head, _, _) = run_git(bes, &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(
+            staged_ptr.trim(),
+            worktree_head.trim(),
+            "sub-repo working tree must match the resolved gitlink, not be left at its pre-merge HEAD"
+        );
+
+        // Finish the merge commit, then simulate the very next autosave
+        // cycle's `git add -A` — it must find nothing to re-stage. Before the
+        // fix this silently reverted the resolution back to B's stale
+        // pointer, re-diverging the gitlink.
+        run_git_mut(bs, &["commit", "-q", "--no-edit"]).unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        let (restaged, _, _) = run_git(bs, &["diff", "--cached", "--name-only"]).unwrap();
+        assert!(
+            restaged.trim().is_empty(),
+            "resolved gitlink must not be re-reverted by the next autosave: {:?}",
+            restaged
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
