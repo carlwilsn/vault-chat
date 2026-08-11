@@ -3164,38 +3164,40 @@ fn sync_one_repo(
         }
     }
 
-    // Push.
+    // Push. On rejection — the remote advanced under us, the normal outcome
+    // when the SAME nested repo is edited from two machines — fetch and
+    // reconcile once before retrying, exactly like the root vault's own push
+    // (`vault_sync_push`). Without this a nested repo wedges permanently: the
+    // losing machine's push fails every single cycle forever and nothing ever
+    // pulls the winner's commits in, silently stranding that machine's work
+    // and diverging the two checkouts for good.
     match (&shared_branch, class) {
         // Shared → push only the dedicated branch, with -u so it exists on the
         // remote and tracks. Never the team's default branch.
-        (Some(branch), _) => match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
-            Ok((_, perr, pc)) if pc != 0 => {
-                eprintln!("[sync] shared repo '{}' push skipped: {}", rel, first_line(&perr).trim())
-            }
-            Err(e) => eprintln!("[sync] shared repo '{}' push error: {}", rel, e),
-            _ => {}
-        },
+        (Some(branch), _) => push_nested_with_reconcile(sub, rel, branch, "shared repo"),
         // Mine → push the tracking branch when it's ahead. Needs an upstream.
         (None, RepoClass::Mine) => {
-            let has_upstream = matches!(
-                run_git(sub, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
-                Ok((_, _, 0))
-            );
-            let ahead = if has_upstream {
-                match run_git(sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
-                    Ok((c, _, 0)) => c.trim().parse::<u64>().unwrap_or(0),
-                    _ => 0,
-                }
-            } else {
-                0
-            };
-            if ahead > 0 {
-                match run_git_timeout(sub, &["push"], 300) {
-                    Ok((_, perr, pc)) if pc != 0 => {
-                        eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+            let branch = run_git(sub, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .ok()
+                .and_then(|(b, _, c)| {
+                    let b = b.trim().to_string();
+                    if c == 0 && !b.is_empty() && b != "HEAD" { Some(b) } else { None }
+                });
+            if let Some(branch) = branch {
+                let has_upstream = matches!(
+                    run_git(sub, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
+                    Ok((_, _, 0))
+                );
+                let ahead = if has_upstream {
+                    match run_git(sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
+                        Ok((c, _, 0)) => c.trim().parse::<u64>().unwrap_or(0),
+                        _ => 0,
                     }
-                    Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
-                    _ => {}
+                } else {
+                    0
+                };
+                if ahead > 0 {
+                    push_nested_with_reconcile(sub, rel, &branch, "repo");
                 }
             }
         }
@@ -3204,6 +3206,54 @@ fn sync_one_repo(
     }
 
     maybe_compact_git(sub);
+}
+
+/// Push `sub`'s `branch` to its own `origin`. If the push is rejected, fetch
+/// and reconcile once (fast-forward when possible, else a real merge with the
+/// same deterministic conflict resolution the root vault uses — union for
+/// `*.jsonl`, descendant/theirs for submodule pointers, a `.conflict` sidecar
+/// for a genuine divergent edit) and retry the push. This is what
+/// `vault_sync_push` already does for the root vault; nested repos need it
+/// just as much — a shared work repo, or the user's own repo cloned onto two
+/// machines, is exactly as likely to diverge as the vault root is. Best-effort
+/// and silent on failure: a nested repo that still can't reconcile doesn't
+/// block the vault's own sync, and the next cycle retries from scratch.
+fn push_nested_with_reconcile(sub: &str, rel: &str, branch: &str, label: &str) {
+    match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
+        Ok((_, _, 0)) => {}
+        Ok((_, perr, _)) => {
+            eprintln!(
+                "[sync] {} '{}' push rejected, reconciling: {}",
+                label,
+                rel,
+                first_line(&perr).trim()
+            );
+            let fetch_ok = matches!(run_git(sub, &["fetch", "origin", branch]), Ok((_, _, 0)));
+            if !fetch_ok {
+                eprintln!("[sync] {} '{}' push skipped: fetch failed", label, rel);
+                return;
+            }
+            match reconcile_with_upstream(sub, branch) {
+                Ok(Ok(_)) => match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
+                    Ok((_, _, 0)) => eprintln!("[sync] {} '{}' merged + pushed", label, rel),
+                    Ok((_, perr2, _)) => eprintln!(
+                        "[sync] {} '{}' push failed after merge: {}",
+                        label,
+                        rel,
+                        first_line(&perr2).trim()
+                    ),
+                    Err(e) => {
+                        eprintln!("[sync] {} '{}' push error after merge: {}", label, rel, e)
+                    }
+                },
+                Ok(Err(e)) => {
+                    eprintln!("[sync] {} '{}' reconcile failed: {}", label, rel, e.message)
+                }
+                Err(e) => eprintln!("[sync] {} '{}' reconcile error: {}", label, rel, e),
+            }
+        }
+        Err(e) => eprintln!("[sync] {} '{}' push error: {}", label, rel, e),
+    }
 }
 
 /// Walk the vault for every nested git repo (a dir containing `.git`) at any
@@ -3250,15 +3300,16 @@ fn find_all_nested_repos(root: &std::path::Path) -> Vec<String> {
     found
 }
 
-/// Commit + sync every nested git repo in the vault, each on its own merits —
-/// classified by *its own* remote and the user's relationship to it (see
-/// `RepoClass`). Replaces the old submodule-only, vault-remote-gated path: a
-/// nested repo now syncs even when the vault root has no remote, and an embedded
-/// repo never registered as a submodule is handled too. This is what clears the
-/// per-repo "uncommitted changes" dots. Best-effort; never fatal to vault sync.
-fn sync_nested_repos(vault: &str, agent: bool) {
-    // Build the work list: registered submodules (carry a .gitmodules tracking
-    // branch we use for stale-pin recovery) ∪ embedded repos found on disk.
+/// The vault's nested-repo work list: registered submodules (`.gitmodules`,
+/// carrying the declared tracking branch we use for stale-pin recovery) ∪
+/// embedded repos found on disk that were never registered. Every pass that
+/// walks nested repos (sync, gitlink-regression fix, unpushed-gitlink hold)
+/// shares this so they never disagree on what "the vault's nested repos" are —
+/// previously only `sync_nested_repos` used the union while the two gitlink
+/// guards below walked `.gitmodules` alone, silently leaving every embedded
+/// (unregistered) nested repo unprotected against the exact stranded-follower
+/// and reverted-pointer bugs those guards exist to prevent.
+fn nested_repo_list(vault: &str) -> Vec<(String, Option<String>)> {
     let mut repos: Vec<(String, Option<String>)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -3299,6 +3350,40 @@ fn sync_nested_repos(vault: &str, agent: bool) {
             repos.push((rel, None));
         }
     }
+    repos
+}
+
+/// The branch to compare a nested repo's gitlink against: its `.gitmodules`
+/// declared tracking branch when it has one, else whatever branch it's
+/// actually checked out to right now. The fallback is what extends gitlink
+/// protection to embedded repos that were never registered as a submodule (no
+/// `.gitmodules` entry to read a branch from) — `sync_nested_repos` already
+/// commits/pushes those identically to a registered submodule, so the gitlink
+/// guards need to recognize them too. None for a detached/unparseable HEAD —
+/// callers then leave that repo's pointer alone, same as a deliberate pin.
+fn nested_repo_compare_branch(sub: &str, cfg_branch: Option<&str>) -> Option<String> {
+    if let Some(b) = cfg_branch {
+        let b = b.trim();
+        if !b.is_empty() {
+            return Some(b.to_string());
+        }
+    }
+    run_git(sub, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .and_then(|(b, _, c)| {
+            let b = b.trim().to_string();
+            if c == 0 && !b.is_empty() { Some(b) } else { None }
+        })
+}
+
+/// Commit + sync every nested git repo in the vault, each on its own merits —
+/// classified by *its own* remote and the user's relationship to it (see
+/// `RepoClass`). Replaces the old submodule-only, vault-remote-gated path: a
+/// nested repo now syncs even when the vault root has no remote, and an embedded
+/// repo never registered as a submodule is handled too. This is what clears the
+/// per-repo "uncommitted changes" dots. Best-effort; never fatal to vault sync.
+fn sync_nested_repos(vault: &str, agent: bool) {
+    let repos = nested_repo_list(vault);
     if repos.is_empty() {
         return;
     }
@@ -5024,47 +5109,26 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
     .map_err(|e| e.to_string())?
 }
 
-/// After any successful merge (fast-forward or diverged), scan every submodule
-/// gitlink in HEAD and advance any that regressed — i.e., the merge resolved the
-/// pointer to a commit that is a strict ancestor of the sub-repo's
+/// After any successful merge (fast-forward or diverged), scan every nested
+/// repo's gitlink in HEAD and advance any that regressed — i.e., the merge
+/// resolved the pointer to a commit that is a strict ancestor of the sub-repo's
 /// `origin/<branch>` tip. This catches the silent auto-resolution case where git
 /// sees "remote changed the gitlink, local didn't → take theirs" and picks a
-/// stale box-pushed pointer without ever creating a conflict marker. Returns the
-/// relative paths of submodules that were advanced and staged; callers must
-/// create a follow-up commit if the list is non-empty.
+/// stale box-pushed pointer without ever creating a conflict marker. Walks
+/// `nested_repo_list` (registered submodules ∪ embedded repos), not just
+/// `.gitmodules`, so an embedded repo never registered as a submodule gets the
+/// same protection. Returns the relative paths of repos that were advanced and
+/// staged; callers must create a follow-up commit if the list is non-empty.
 fn fix_regressed_gitlinks(vault: &str) -> Vec<String> {
-    let (out, _, c) = match run_git(
-        vault,
-        &["config", "-f", ".gitmodules", "--get-regexp", "submodule\\..*\\.path"],
-    ) {
-        Ok(r) => r,
-        Err(_) => return vec![],
-    };
-    if c != 0 {
-        return vec![];
-    }
     let mut fixed: Vec<String> = Vec::new();
-    for line in out.lines() {
-        let mut it = line.splitn(2, char::is_whitespace);
-        let key = it.next().unwrap_or("");
-        let rel = it.next().unwrap_or("").trim();
-        if rel.is_empty() {
-            continue;
-        }
-        // submodule.<name>.path → name
-        let name = key
-            .strip_prefix("submodule.")
-            .and_then(|s| s.strip_suffix(".path"))
-            .unwrap_or("");
-        if name.is_empty() {
-            continue;
-        }
-        let branch_key = format!("submodule.{}.branch", name);
-        let branch = match run_git(vault, &["config", "-f", ".gitmodules", "--get", &branch_key]) {
-            Ok((b, _, 0)) if !b.trim().is_empty() => b.trim().to_string(),
-            _ => continue,
-        };
+    for (rel, cfg_branch) in nested_repo_list(vault) {
         let sub = format!("{}/{}", vault, rel);
+        if !PathBuf::from(&sub).join(".git").exists() {
+            continue; // not materialized on this machine
+        }
+        let Some(branch) = nested_repo_compare_branch(&sub, cfg_branch.as_deref()) else {
+            continue; // detached at a deliberate pin — can't resolve a branch
+        };
         // Current gitlink in HEAD
         let current = match run_git(vault, &["rev-parse", &format!("HEAD:{}", rel)]) {
             Ok((s, _, 0)) if !s.trim().is_empty() => s.trim().to_string(),
@@ -5095,12 +5159,12 @@ fn fix_regressed_gitlinks(vault: &str) -> Vec<String> {
             branch
         );
         if matches!(
-            run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &tip, rel]),
+            run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &tip, &rel]),
             Ok((_, _, 0))
         ) {
             // Move the sub-repo's working tree to the tip so it matches the new gitlink.
             let _ = run_git_mut(&sub, &["checkout", "--detach", &tip]);
-            fixed.push(rel.to_string());
+            fixed.push(rel.clone());
         }
     }
     fixed
@@ -5117,47 +5181,25 @@ fn fix_regressed_gitlinks(vault: &str) -> Vec<String> {
 /// the staged INDEX gitlink, never the sub-repo's working tree.
 ///
 /// "On the remote" is tested against the sub-repo's `origin/<branch>` ref
-/// (branch from `.gitmodules`), NOT `@{upstream}` — submodules are normally
-/// checked out DETACHED and so have no upstream, which would skip the very repos
-/// this guards. A submodule with no tracking branch or no `origin/<branch>` ref
-/// is left alone (we can't prove a remote either way). Returns how many pointers
-/// were held.
+/// (branch from `.gitmodules` when registered, else whatever branch the repo
+/// is actually checked out to — see `nested_repo_compare_branch`), NOT
+/// `@{upstream}` — submodules are normally checked out DETACHED and so have no
+/// upstream, which would skip the very repos this guards. Walks
+/// `nested_repo_list` (registered submodules ∪ embedded repos), not just
+/// `.gitmodules`, so an embedded repo never registered as a submodule gets the
+/// same protection — it can strand a follower exactly the same way. A repo
+/// with no resolvable branch or no `origin/<branch>` ref is left alone (we
+/// can't prove a remote either way). Returns how many pointers were held.
 fn hold_unpushed_submodule_gitlinks(vault: &str) -> usize {
-    let (out, _, c) = match run_git(
-        vault,
-        &["config", "-f", ".gitmodules", "--get-regexp", "submodule\\..*\\.path"],
-    ) {
-        Ok(r) => r,
-        Err(_) => return 0,
-    };
-    if c != 0 {
-        return 0;
-    }
     let mut held = 0usize;
-    for line in out.lines() {
-        let mut it = line.splitn(2, char::is_whitespace);
-        let key = it.next().unwrap_or("");
-        let rel = it.next().unwrap_or("").trim();
-        if rel.is_empty() {
-            continue;
-        }
-        // submodule.<name>.path → the configured tracking branch, which is how we
-        // resolve the sub-repo's remote tip (same source as fix_regressed_gitlinks).
-        let name = match key.strip_prefix("submodule.").and_then(|s| s.strip_suffix(".path")) {
-            Some(n) if !n.is_empty() => n,
-            _ => continue,
-        };
-        let branch = match run_git(
-            vault,
-            &["config", "-f", ".gitmodules", "--get", &format!("submodule.{}.branch", name)],
-        ) {
-            Ok((b, _, 0)) if !b.trim().is_empty() => b.trim().to_string(),
-            _ => continue, // no tracking branch → can't resolve a remote ref
-        };
+    for (rel, cfg_branch) in nested_repo_list(vault) {
         let sub = format!("{}/{}", vault, rel);
         if !PathBuf::from(&sub).join(".git").exists() {
             continue; // not materialized on this machine
         }
+        let Some(branch) = nested_repo_compare_branch(&sub, cfg_branch.as_deref()) else {
+            continue; // can't resolve a branch → can't resolve a remote ref
+        };
         // What `add -A` just staged for this gitlink (the sub's working HEAD).
         let staged = match run_git(vault, &["rev-parse", &format!(":{}", rel)]) {
             Ok((s, _, 0)) if !s.trim().is_empty() => s.trim().to_string(),
@@ -5192,7 +5234,7 @@ fn hold_unpushed_submodule_gitlinks(vault: &str) -> usize {
         }
         // Hold the parent pointer at the last-pushed commit.
         if matches!(
-            run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &committed, rel]),
+            run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &committed, &rel]),
             Ok((_, _, 0))
         ) {
             held += 1;
@@ -6464,6 +6506,157 @@ mod conversation_jsonl_tests {
         assert_eq!(deduped_line_count(disk_full), 4);
         assert_eq!(deduped_line_count(truncated), 3);
         assert!(deduped_line_count(truncated) < deduped_line_count(disk_full));
+    }
+}
+
+#[cfg(test)]
+mod nested_repo_sync_tests {
+    use super::{
+        hold_unpushed_submodule_gitlinks, nested_repo_compare_branch, push_nested_with_reconcile,
+        run_git, run_git_mut,
+    };
+
+    fn init_repo(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        let d = dir.to_str().unwrap();
+        run_git(d, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(d, &["config", "user.email", "t@t"]).unwrap();
+        run_git(d, &["config", "user.name", "t"]).unwrap();
+    }
+
+    // The bug: a nested repo (submodule or embedded) edited on two machines
+    // used to wedge FOREVER once its push was rejected — the old code just
+    // logged and gave up, with nothing ever fetching or merging the winner's
+    // commit in. `push_nested_with_reconcile` is the fix: on rejection it
+    // fetches, reconciles (same machinery the root vault's own push uses),
+    // and retries once. Proven end to end on real repos with a local bare
+    // remote standing in for GitHub.
+    #[test]
+    fn nested_repo_push_reconciles_after_two_machine_divergence() {
+        let base = std::env::temp_dir().join(format!("vc_nested_reconcile_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("sub_origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        // Seed from A: one shared commit both machines start from.
+        init_repo(&a);
+        let asr = a.to_str().unwrap();
+        run_git_mut(asr, &["remote", "add", "origin", og]).unwrap();
+        std::fs::write(a.join("shared.md"), "base\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        push_nested_with_reconcile(asr, "rel", "main", "repo");
+        let (tip_after_seed, _, _) = run_git(og, &["rev-parse", "main"]).unwrap();
+        assert_eq!(tip_after_seed.trim(), {
+            let (h, _, _) = run_git(asr, &["rev-parse", "HEAD"]).unwrap();
+            h.trim().to_string()
+        });
+
+        // B clones the seeded origin, then diverges independently of A.
+        run_git(base.to_str().unwrap(), &["clone", "-q", og, "B"]).unwrap();
+        let bs = b.to_str().unwrap();
+        run_git(bs, &["config", "user.email", "t@t"]).unwrap();
+        run_git(bs, &["config", "user.name", "t"]).unwrap();
+
+        // A advances and pushes first — this is what makes B's later push a
+        // rejection (non-fast-forward) rather than a clean fast-forward.
+        std::fs::write(a.join("from-a.md"), "a's work\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "a's commit"]).unwrap();
+        push_nested_with_reconcile(asr, "rel", "main", "repo");
+
+        // B, unaware A already pushed, commits its own independent work and
+        // tries to push — this MUST be rejected (both commits share the same
+        // parent), and reconciliation must recover it rather than wedging.
+        std::fs::write(b.join("from-b.md"), "b's work\n").unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "b's commit"]).unwrap();
+        push_nested_with_reconcile(bs, "rel", "main", "repo");
+
+        // B's local tree now carries both sides' work (the merge).
+        assert!(b.join("from-a.md").exists(), "B must have pulled A's file in via the merge");
+        assert!(b.join("from-b.md").exists(), "B must still have its own file");
+
+        // And critically: the remote actually received B's reconciled push —
+        // this is the crux of the bug. A stuck-forever repo would leave the
+        // remote frozen at A's commit with B's work never landing.
+        let (remote_tip, _, _) = run_git(og, &["rev-parse", "main"]).unwrap();
+        let (b_head, _, _) = run_git(bs, &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(remote_tip.trim(), b_head.trim(), "the remote must carry B's reconciled merge, not be stuck at A's commit");
+        let (parents, _, _) = run_git(og, &["log", "-1", "--format=%P", "main"]).unwrap();
+        assert_eq!(parents.trim().split(' ').count(), 2, "the pushed tip must be a real two-parent merge");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // The bug: `hold_unpushed_submodule_gitlinks` and `fix_regressed_gitlinks`
+    // only ever walked `.gitmodules` — an embedded nested repo (found on disk,
+    // never registered as a submodule; `sync_nested_repos` already commits and
+    // pushes these identically to a real submodule) got NONE of the
+    // stranded-follower protection. `nested_repo_list` + `nested_repo_compare_branch`
+    // close that gap by falling back to the repo's own checked-out branch when
+    // there's no `.gitmodules` entry to read one from.
+    #[test]
+    fn hold_unpushed_gitlink_protects_unregistered_embedded_repo() {
+        let base = std::env::temp_dir().join(format!("vc_hold_embedded_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sub_origin = base.join("sub_origin.git");
+        let vault = base.join("vault");
+        std::fs::create_dir_all(&sub_origin).unwrap();
+        let sog = sub_origin.to_str().unwrap();
+        run_git(sog, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        // The vault root is itself a git repo (as every real vault is).
+        init_repo(&vault);
+        let vs = vault.to_str().unwrap();
+
+        // An embedded repo, cloned in-place from its own remote — plain `git
+        // clone`, NEVER registered via `git submodule add` / `.gitmodules`.
+        run_git(vs, &["clone", "-q", sog, "embedded"]).unwrap();
+        let embedded = vault.join("embedded");
+        let es = embedded.to_str().unwrap();
+        run_git(es, &["config", "user.email", "t@t"]).unwrap();
+        run_git(es, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(embedded.join("f.md"), "v0\n").unwrap();
+        run_git_mut(es, &["add", "-A"]).unwrap();
+        run_git_mut(es, &["commit", "-q", "-m", "v0"]).unwrap();
+        run_git_mut(es, &["push", "-q", "-u", "origin", "main"]).unwrap();
+
+        // No `.gitmodules` anywhere — confirm the fallback actually resolves a
+        // branch for this repo from its own checkout, not from config.
+        assert_eq!(
+            nested_repo_compare_branch(es, None).as_deref(),
+            Some("main"),
+            "must fall back to the repo's own checked-out branch with no .gitmodules entry"
+        );
+
+        // Commit the vault with the embedded repo's gitlink at the pushed v0.
+        run_git_mut(vs, &["add", "-A"]).unwrap();
+        run_git_mut(vs, &["commit", "-q", "-m", "vault: add embedded repo"]).unwrap();
+
+        // Now the embedded repo advances LOCALLY, unpushed — the exact
+        // moment `vault_sync_commit_local` calls `hold_unpushed_submodule_gitlinks`
+        // right after staging the vault's `add -A`.
+        std::fs::write(embedded.join("f.md"), "v1 unpushed\n").unwrap();
+        run_git_mut(es, &["add", "-A"]).unwrap();
+        run_git_mut(es, &["commit", "-q", "-m", "v1 (not yet pushed)"]).unwrap();
+        run_git_mut(vs, &["add", "-A"]).unwrap(); // stages the advanced gitlink
+
+        let (pushed_sha, _, _) = run_git(sog, &["rev-parse", "main"]).unwrap();
+        let held = hold_unpushed_submodule_gitlinks(vs);
+        assert_eq!(held, 1, "the unpushed embedded-repo gitlink must be held");
+        let (staged_gitlink, _, _) = run_git(vs, &["rev-parse", ":embedded"]).unwrap();
+        assert_eq!(
+            staged_gitlink.trim(),
+            pushed_sha.trim(),
+            "the staged gitlink must be rolled back to the last-PUSHED commit, not the unpushed local one"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
 
