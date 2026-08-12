@@ -3170,7 +3170,12 @@ fn sync_one_repo(
         // remote and tracks. Never the team's default branch.
         (Some(branch), _) => match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
             Ok((_, perr, pc)) if pc != 0 => {
-                eprintln!("[sync] shared repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                eprintln!(
+                    "[sync] shared repo '{}' push rejected, retrying after fetch+merge: {}",
+                    rel,
+                    first_line(&perr).trim()
+                );
+                retry_nested_push_after_fetch(sub, rel, branch, &cn, &ce);
             }
             Err(e) => eprintln!("[sync] shared repo '{}' push error: {}", rel, e),
             _ => {}
@@ -3192,7 +3197,22 @@ fn sync_one_repo(
             if ahead > 0 {
                 match run_git_timeout(sub, &["push"], 300) {
                     Ok((_, perr, pc)) if pc != 0 => {
-                        eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                        eprintln!(
+                            "[sync] repo '{}' push rejected, retrying after fetch+merge: {}",
+                            rel,
+                            first_line(&perr).trim()
+                        );
+                        // `push` above had no explicit branch/remote (it rode
+                        // the configured upstream) — resolve the current branch
+                        // name for the retry's fetch/merge/push.
+                        if let Ok((b, _, 0)) =
+                            run_git(sub, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+                        {
+                            let b = b.trim();
+                            if !b.is_empty() {
+                                retry_nested_push_after_fetch(sub, rel, b, &cn, &ce);
+                            }
+                        }
                     }
                     Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
                     _ => {}
@@ -3204,6 +3224,81 @@ fn sync_one_repo(
     }
 
     maybe_compact_git(sub);
+}
+
+/// After a nested repo's push is rejected (the remote advanced under us — the
+/// normal outcome when two machines both committed to the same nested repo
+/// between sync cycles), fetch and try to reconcile so the push isn't just
+/// silently dropped every cycle forever (previously: `eprintln` and move on,
+/// with nothing to ever un-stick it short of a human running `git pull` inside
+/// the sub-repo by hand).
+///
+/// Deliberately conservative, unlike the vault root's `reconcile_with_upstream`:
+/// a nested repo is the user's OWN project (arbitrary source, not vault-chat's
+/// managed content), so this never auto-resolves a real conflict — taking
+/// "theirs" on e.g. a source file could silently corrupt work the user is about
+/// to build or run. Only a clean, conflict-free merge is committed and retried;
+/// a real conflict aborts the merge (leaving the working tree exactly as it
+/// was, local commit intact) and logs plainly so it's visible instead of
+/// repeating identically every cycle. Returns true if the retried push landed.
+fn retry_nested_push_after_fetch(sub: &str, rel: &str, branch: &str, cn: &str, ce: &str) -> bool {
+    let (_, ferr, fcode) = match run_git_timeout(sub, &["fetch", "origin", branch], 120) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[sync] repo '{}' fetch (push retry) failed: {}", rel, e);
+            return false;
+        }
+    };
+    if fcode != 0 {
+        eprintln!(
+            "[sync] repo '{}' fetch (push retry) failed: {}",
+            rel,
+            first_line(&ferr).trim()
+        );
+        return false;
+    }
+    let remote = format!("origin/{}", branch);
+    let (_, merr, mcode) = match run_git_as(sub, cn, ce, &["merge", "--no-edit", &remote]) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[sync] repo '{}' merge (push retry) failed: {}", rel, e);
+            return false;
+        }
+    };
+    if mcode != 0 {
+        let _ = run_git_mut(sub, &["merge", "--abort"]);
+        eprintln!(
+            "[sync] repo '{}' diverged from '{}' and could not auto-merge (real conflict) — \
+             push held for the next cycle; resolve by hand with `git -C {} merge {}`: {}",
+            rel,
+            remote,
+            sub,
+            remote,
+            first_line(&merr).trim()
+        );
+        return false;
+    }
+    match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
+        Ok((_, perr, pc)) if pc != 0 => {
+            eprintln!(
+                "[sync] repo '{}' push still failing after clean merge: {}",
+                rel,
+                first_line(&perr).trim()
+            );
+            false
+        }
+        Err(e) => {
+            eprintln!("[sync] repo '{}' push error after clean merge: {}", rel, e);
+            false
+        }
+        Ok(_) => {
+            eprintln!(
+                "[sync] repo '{}' diverged from '{}'; merged cleanly and pushed",
+                rel, remote
+            );
+            true
+        }
+    }
 }
 
 /// Walk the vault for every nested git repo (a dir containing `.git`) at any
@@ -6347,6 +6442,129 @@ mod sync_role_tests {
         // Follower, tolerant of case + surrounding whitespace → follower.
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod nested_repo_push_retry_tests {
+    use super::{retry_nested_push_after_fetch, run_git, run_git_mut};
+
+    fn init_clone(origin: &str, dir: &std::path::Path) -> String {
+        std::fs::create_dir_all(dir).unwrap();
+        let d = dir.to_str().unwrap().to_string();
+        run_git(&d, &["clone", "-q", origin, "."]).unwrap();
+        run_git_mut(&d, &["config", "user.email", "t@t"]).unwrap();
+        run_git_mut(&d, &["config", "user.name", "t"]).unwrap();
+        d
+    }
+
+    // Two machines both committed to the SAME nested repo since the last sync:
+    // A pushed first, so B's push is rejected as non-fast-forward. The two
+    // edits touch different files, so the reconciliation is conflict-free.
+    // Before this fix, sync_one_repo just logged "push skipped" and dropped
+    // B's commit on the floor every cycle with nothing to ever un-stick it.
+    #[test]
+    fn clean_divergence_merges_and_retries_push() {
+        let base = std::env::temp_dir().join(format!("vc_nested_push_clean_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "master"]).unwrap();
+
+        let seed = base.join("seed");
+        let ss = init_clone(og, &seed);
+        std::fs::write(seed.join("base.txt"), "base\n").unwrap();
+        run_git_mut(&ss, &["add", "-A"]).unwrap();
+        run_git_mut(&ss, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(&ss, &["push", "-q", "origin", "master"]).unwrap();
+
+        let a = base.join("A");
+        let asr = init_clone(og, &a);
+        let b = base.join("B");
+        let bs = init_clone(og, &b);
+
+        // A commits + pushes first.
+        std::fs::write(a.join("from_a.txt"), "a\n").unwrap();
+        run_git_mut(&asr, &["add", "-A"]).unwrap();
+        run_git_mut(&asr, &["commit", "-q", "-m", "from A"]).unwrap();
+        run_git_mut(&asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        // B, still on the old base, commits a non-conflicting file and its
+        // push is rejected (remote moved under it).
+        std::fs::write(b.join("from_b.txt"), "b\n").unwrap();
+        run_git_mut(&bs, &["add", "-A"]).unwrap();
+        run_git_mut(&bs, &["commit", "-q", "-m", "from B"]).unwrap();
+        let (_, _, rejected_code) = run_git_mut(&bs, &["push", "origin", "master"]).unwrap();
+        assert_ne!(rejected_code, 0, "push must be rejected by the diverged remote");
+
+        let ok = retry_nested_push_after_fetch(&bs, "rel", "master", "t", "t@t");
+        assert!(ok, "a conflict-free divergence must merge and push successfully");
+
+        // Both machines' work landed on the remote.
+        let verify = base.join("verify");
+        let vs = init_clone(og, &verify);
+        assert!(verify.join("from_a.txt").is_file(), "A's file must be on origin");
+        assert!(verify.join("from_b.txt").is_file(), "B's file must be on origin");
+        let _ = vs;
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Same setup, but both machines edit the SAME line of the SAME file — a
+    // real conflict. The retry must never silently resolve it (this is the
+    // user's own project, not vault-chat-managed content): it aborts the
+    // merge, leaves B's local commit and working tree exactly as they were,
+    // and reports failure instead of corrupting or dropping either side.
+    #[test]
+    fn real_conflict_aborts_cleanly_and_preserves_local_commit() {
+        let base = std::env::temp_dir().join(format!("vc_nested_push_conflict_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "master"]).unwrap();
+
+        let seed = base.join("seed");
+        let ss = init_clone(og, &seed);
+        std::fs::write(seed.join("shared.txt"), "original\n").unwrap();
+        run_git_mut(&ss, &["add", "-A"]).unwrap();
+        run_git_mut(&ss, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(&ss, &["push", "-q", "origin", "master"]).unwrap();
+
+        let a = base.join("A");
+        let asr = init_clone(og, &a);
+        let b = base.join("B");
+        let bs = init_clone(og, &b);
+
+        std::fs::write(a.join("shared.txt"), "from A\n").unwrap();
+        run_git_mut(&asr, &["add", "-A"]).unwrap();
+        run_git_mut(&asr, &["commit", "-q", "-m", "from A"]).unwrap();
+        run_git_mut(&asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        std::fs::write(b.join("shared.txt"), "from B\n").unwrap();
+        run_git_mut(&bs, &["add", "-A"]).unwrap();
+        run_git_mut(&bs, &["commit", "-q", "-m", "from B"]).unwrap();
+        let b_head_before = run_git(&bs, &["rev-parse", "HEAD"]).unwrap().0;
+        let (_, _, rejected_code) = run_git_mut(&bs, &["push", "origin", "master"]).unwrap();
+        assert_ne!(rejected_code, 0, "push must be rejected by the diverged remote");
+
+        let ok = retry_nested_push_after_fetch(&bs, "rel", "master", "t", "t@t");
+        assert!(!ok, "a real conflict must never be auto-resolved");
+
+        // No half-finished merge left behind.
+        let (_, _, merge_head_code) = run_git(&bs, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).unwrap();
+        assert_ne!(merge_head_code, 0, "merge must be fully aborted, not left in progress");
+        // B's own commit is untouched, still sitting there for the next cycle.
+        let b_head_after = run_git(&bs, &["rev-parse", "HEAD"]).unwrap().0;
+        assert_eq!(b_head_before, b_head_after, "B's local commit must survive the aborted merge");
+        assert_eq!(
+            std::fs::read_to_string(b.join("shared.txt")).unwrap(),
+            "from B\n",
+            "B's working tree must be untouched by the aborted merge"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
