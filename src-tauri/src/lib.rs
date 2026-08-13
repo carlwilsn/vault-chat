@@ -3343,23 +3343,78 @@ pub(crate) fn run_git(
 // Absolute path to the `gh` CLI, resolved once.
 static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-// GitHub token from `gh auth token`, cached for the app's lifetime.
-// Token lifetime is ~8h for gh OAuth; within a single app session this is fine.
-static GH_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+// GitHub token from `gh auth token`, cached with a TTL rather than for the app's
+// lifetime. Previously this was a plain `OnceLock<Option<String>>` — fetched once
+// and reused forever. gh OAuth / GitHub App installation tokens last ~8h; on a
+// short-lived desktop session that's invisible, but the always-on sync box is
+// exactly the case that lives past it. Once the cached token expired, every git
+// fetch/push over HTTPS started failing auth — and kept failing, silently,
+// forever, since nothing ever invalidated the cache. The sync loop's own
+// error-dedup logging (`recordResult` in vaultSync.ts) would log the failure
+// once and then go quiet, so from the outside it just looked like sync had
+// stopped working with no further signal — exactly a multi-day-uptime bug that
+// a short test run would never reproduce. Fixed two ways: (1) re-fetch on a TTL
+// comfortably inside the token's real lifetime, so a healthy box refreshes
+// before expiry ever bites; (2) `invalidate_gh_token`, called by `run_git_timeout`
+// when a command's stderr looks like an auth failure, forces the *next* call to
+// re-fetch immediately rather than waiting out the rest of the TTL.
+static GH_TOKEN: OnceLock<Mutex<Option<(String, std::time::Instant)>>> = OnceLock::new();
+const GH_TOKEN_TTL_SECS: u64 = 3 * 60 * 60; // 3h — safely inside the ~8h token lifetime
 
-/// Call `gh auth token` directly in Rust (no shell, no quoting), cache result.
+fn gh_token_cell() -> &'static Mutex<Option<(String, std::time::Instant)>> {
+    GH_TOKEN.get_or_init(|| Mutex::new(None))
+}
+
+/// Call `gh auth token` directly in Rust (no shell, no quoting).
+fn fetch_gh_token() -> Option<String> {
+    let gh = find_gh()?;
+    let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if token.is_empty() { None } else { Some(token) }
+}
+
+/// Cached `gh auth token`, refreshed once the cache entry is older than
+/// `GH_TOKEN_TTL_SECS` or has been explicitly invalidated. See the static's doc
+/// comment for why this can't just be fetch-once.
 fn get_gh_token() -> Option<String> {
-    GH_TOKEN
-        .get_or_init(|| {
-            let gh = find_gh()?;
-            let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if token.is_empty() { None } else { Some(token) }
-        })
-        .clone()
+    let cell = gh_token_cell();
+    let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((tok, at)) = guard.as_ref() {
+        if at.elapsed().as_secs() < GH_TOKEN_TTL_SECS {
+            return Some(tok.clone());
+        }
+    }
+    let fresh = fetch_gh_token();
+    *guard = fresh.clone().map(|t| (t, std::time::Instant::now()));
+    fresh
+}
+
+/// Force the next `get_gh_token()` call to re-fetch rather than serve a cached
+/// (possibly just-expired-early, e.g. revoked/rotated) token. Called when a git
+/// command's failure looks like an auth rejection, so the very next sync tick
+/// self-heals instead of hammering the remote with the same stale token until
+/// the TTL naturally elapses.
+fn invalidate_gh_token() {
+    if let Some(cell) = GH_TOKEN.get() {
+        let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = None;
+    }
+}
+
+/// Does this git stderr look like a GitHub auth rejection rather than some other
+/// failure (network down, merge conflict, etc.)? Deliberately conservative —
+/// only the phrases git/GitHub actually emit for bad/expired credentials —
+/// so a normal offline or content failure never triggers a needless refetch.
+fn looks_like_auth_failure(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("authentication failed")
+        || s.contains("bad credentials")
+        || s.contains("could not read username")
+        || s.contains("http basic: access denied")
+        || (s.contains("403") && s.contains("github.com"))
 }
 
 fn find_gh() -> Option<PathBuf> {
@@ -3619,7 +3674,18 @@ fn run_git_timeout(
         let _ = tx.send((stdout, stderr, code));
     });
     match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
-        Ok(result) => Ok(result),
+        Ok(result) => {
+            // A rejected/expired gh token surfaces here as a normal non-zero exit
+            // with an auth-flavored stderr, not a Rust error — so this is the one
+            // place that sees every git invocation's outcome and can catch it.
+            // Invalidate now so the *next* git call (often only seconds away, via
+            // an existing retry-on-rejection path) fetches a fresh token instead
+            // of repeating the same failure until the TTL happens to elapse.
+            if result.2 != 0 && looks_like_auth_failure(&result.1) {
+                invalidate_gh_token();
+            }
+            Ok(result)
+        }
         Err(_) => {
             // Hung (or the worker panicked and dropped the sender). Kill the
             // whole tree so the inherited pipe handles close and the abandoned
@@ -5350,8 +5416,32 @@ fn reconcile_with_upstream(
     // abort-and-loop. Whatever the union can't handle (submodule pointers, a
     // genuinely divergent file edit) is auto-resolved so sync always makes
     // progress and never drops data.
-    let (_, mstderr, mut merge_code) =
-        run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
+    //
+    // `--allow-unrelated-histories`: without it, git flatly refuses to merge
+    // ("refusing to merge unrelated histories") whenever the two tips share no
+    // common ancestor — which happens whenever a NEW machine's vault gets its
+    // own local root commit (every vault open runs `git_init_if_needed`, which
+    // commits immediately) before the user points it at an existing remote
+    // that already has history. That's not a rare setup mistake; it's the
+    // ordinary "add this vault on my second machine" flow whenever the remote
+    // is configured after the first open. Before this flag, that first pull
+    // failed with NO unmerged paths and no MERGE_HEAD — which the dirty-tree
+    // retry below misreads as "clean, just commit it", so it retried the exact
+    // same doomed merge, then fell into `resolve_merge_conflicts` (nothing to
+    // resolve — there was never a conflict) and finally `git commit --no-edit`
+    // with no merge in progress, which itself fails ("nothing to commit").
+    // The visible symptom was a permanent "merge commit failed: nothing to
+    // commit, working tree clean" on every single sync tick thereafter, with
+    // no retry path that could ever fix it — this machine's sync was wedged
+    // until someone manually ran `git pull --allow-unrelated-histories` by
+    // hand. Safe to pass unconditionally: it's a no-op whenever the histories
+    // DO share an ancestor, which is the common case.
+    let (_, mut mstderr, mut merge_code) = run_git_as(
+        vault,
+        &mn,
+        &me,
+        &["merge", "--no-edit", "--allow-unrelated-histories", &upstream],
+    )?;
     // A DIRTY working tree makes `git merge` REFUSE TO START ("your local
     // changes would be overwritten") — a failure with NO unmerged paths, which
     // the conflict-resolution path below misreads as "resolved, commit it" and
@@ -5369,9 +5459,42 @@ fn reconcile_with_upstream(
         if unmerged_empty && !merge_in_progress {
             let _ = run_git_as(vault, &mn, &me, &["add", "-A"]);
             let _ = run_git_as(vault, &mn, &me, &["commit", "-q", "-m", "vault-chat: auto-sync"]);
-            let (_, _, retry_code) =
-                run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
+            let (_, retry_stderr, retry_code) = run_git_as(
+                vault,
+                &mn,
+                &me,
+                &["merge", "--no-edit", "--allow-unrelated-histories", &upstream],
+            )?;
             merge_code = retry_code;
+            mstderr = retry_stderr;
+        }
+        // If the merge still failed AND git never actually entered a merge
+        // (no MERGE_HEAD, nothing unmerged), it was rejected outright — not
+        // left with conflicts to resolve. Surface that real failure now
+        // instead of falling into `resolve_merge_conflicts` (which finds
+        // nothing to resolve and reports success) followed by
+        // `commit --no-edit` with no merge in progress, which itself fails
+        // with the misleading "nothing to commit, working tree clean" —
+        // masking whatever actually rejected the merge. This is the general
+        // form of the unrelated-histories wedge above: any future git
+        // refusal with this same signature (rejected before touching the
+        // index) now reports its own honest message instead of that one.
+        if merge_code != 0 {
+            let still_unmerged_empty = matches!(
+                run_git(vault, &["ls-files", "-u"]),
+                Ok((ref o, _, 0)) if o.trim().is_empty()
+            );
+            let still_no_merge_head =
+                run_git(vault, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+                    .map(|(_, _, c)| c != 0)
+                    .unwrap_or(true);
+            if still_unmerged_empty && still_no_merge_head {
+                return Ok(Err(SyncOpResult {
+                    ok: false,
+                    message: format!("merge rejected: {}", first_line(&mstderr).trim()),
+                    error: true,
+                }));
+            }
         }
     }
     if merge_code == 0 {
@@ -6347,6 +6470,173 @@ mod sync_role_tests {
         // Follower, tolerant of case + surrounding whitespace → follower.
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod gh_token_cache_tests {
+    use super::{get_gh_token, gh_token_cell, invalidate_gh_token, looks_like_auth_failure};
+
+    // Only the real phrasing git/GitHub emit for a rejected/expired credential
+    // should trigger a re-fetch — a network hiccup or an unrelated failure must
+    // not, or every ordinary offline tick would burn a `gh auth token` call.
+    #[test]
+    fn auth_failure_detection_is_specific() {
+        assert!(looks_like_auth_failure("remote: Authentication failed for 'https://github.com/x/y.git'"));
+        assert!(looks_like_auth_failure("fatal: could not read Username for 'https://github.com': terminal prompts disabled"));
+        assert!(looks_like_auth_failure("remote: Bad credentials"));
+        assert!(looks_like_auth_failure("remote: HTTP Basic: Access denied"));
+        assert!(looks_like_auth_failure("The requested URL returned error: 403 for https://github.com/x/y.git/info/refs"));
+        assert!(!looks_like_auth_failure("fatal: unable to access 'https://github.com/x/y.git': Could not resolve host"));
+        assert!(!looks_like_auth_failure("CONFLICT (content): Merge conflict in note.md"));
+        assert!(!looks_like_auth_failure(""));
+    }
+
+    // A cached token within its TTL must be served as-is, with no re-fetch — the
+    // regression this guards is the old forever-cache silently going stale on a
+    // long-lived process; the fix must not overcorrect into fetching on every
+    // call either. Serialized against the other test in this module since both
+    // touch the same process-global cell.
+    #[test]
+    fn fresh_cache_entry_is_served_without_refetch() {
+        let cell = gh_token_cell();
+        {
+            let mut guard = cell.lock().unwrap();
+            *guard = Some(("cached-token-value".to_string(), std::time::Instant::now()));
+        }
+        // Within TTL: get_gh_token must return the cached value, not attempt a
+        // real `gh auth token` call (which would return None in a test sandbox
+        // with no `gh` installed, proving a mismatch either way).
+        assert_eq!(get_gh_token().as_deref(), Some("cached-token-value"));
+        // Invalidate → the next call must NOT reuse the stale value. (It may
+        // legitimately come back None here since this sandbox has no `gh`
+        // binary — the point is it's no longer the old cached string.)
+        invalidate_gh_token();
+        assert_ne!(get_gh_token().as_deref(), Some("cached-token-value"));
+        // Leave the cell clean for any other test that might run in-process.
+        let mut guard = cell.lock().unwrap();
+        *guard = None;
+    }
+}
+
+// End-to-end cross-machine sync, exercised through the real tauri commands
+// (not just their inner helpers) against a local bare repo standing in for
+// GitHub — the same commands the JS sync loop in vaultSync.ts drives every
+// cycle. Two checkouts (A, B) simulate two machines: sequential edits +
+// push/pull, then a genuine concurrent divergence (both machines commit
+// before either has seen the other's work) that must reconcile via
+// `vault_sync_push`'s fetch-reconcile-retry path, not wedge or drop data.
+#[cfg(test)]
+mod cross_machine_sync_tests {
+    use super::{vault_sync_commit_local, vault_sync_pull, vault_sync_push, run_git, run_git_mut};
+
+    // Mirrors `git_init_if_needed`'s real invariant: every vault gets an
+    // initial commit the moment it's opened, BEFORE the user necessarily has
+    // a remote configured yet. Two checkouts built this way independently —
+    // exactly "open vault-chat fresh on a second machine, then point it at
+    // the first machine's existing remote" — end up with unrelated root
+    // commits, which is deliberately what exercises the divergence path below.
+    fn init_checkout(dir: &std::path::Path, origin: &str, machine_marker: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let d = dir.to_str().unwrap();
+        run_git(d, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(d, &["config", "user.email", "t@t"]).unwrap();
+        run_git(d, &["config", "user.name", "t"]).unwrap();
+        // A machine-unique marker file, not `--allow-empty`, so the two
+        // checkouts' root commits get genuinely distinct trees — real machines
+        // opened at different real-world times naturally get distinct commit
+        // hashes for this same "pre-existing vault state" root commit even
+        // with byte-identical content (timestamps differ), but nailing that
+        // down with content too makes the divergence deterministic here
+        // regardless of how fast the two init calls happen to run back to back.
+        std::fs::write(dir.join(".init-marker"), machine_marker).unwrap();
+        run_git_mut(d, &["add", "-A"]).unwrap();
+        run_git_mut(d, &["commit", "-q", "-m", "vault-chat: pre-existing vault state"]).unwrap();
+        run_git(d, &["remote", "add", "origin", origin]).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_machines_converge_through_sequential_and_concurrent_edits() {
+        let base = std::env::temp_dir().join(format!("vc_e2e_sync_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(origin.to_str().unwrap(), &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        let og = origin.to_str().unwrap().to_string();
+        init_checkout(&a, &og, "machine-a");
+        init_checkout(&b, &og, "machine-b");
+        let asr = a.to_str().unwrap().to_string();
+        let bs = b.to_str().unwrap().to_string();
+
+        // --- Sequential: A writes, commits, pushes; B pulls and must see it. ---
+        std::fs::write(a.join("note.md"), "from A\n").unwrap();
+        let c1 = vault_sync_commit_local(asr.clone()).await.unwrap();
+        assert!(c1.ok, "A's commit should succeed: {}", c1.message);
+        let p1 = vault_sync_push(asr.clone()).await.unwrap();
+        assert!(p1.ok && !p1.error, "A's first push should succeed: {}", p1.message);
+
+        let pull1 = vault_sync_pull(bs.clone()).await.unwrap();
+        assert!(pull1.ok && !pull1.error, "B's pull should succeed: {}", pull1.message);
+        assert_eq!(
+            std::fs::read_to_string(b.join("note.md")).unwrap(),
+            "from A\n",
+            "B must see A's pushed content"
+        );
+
+        // --- Concurrent divergence: A and B each commit BEFORE either has seen
+        // the other's new commit, then both try to push. The second pusher's
+        // push is rejected and must self-heal via the fetch+reconcile+retry
+        // path in vault_sync_push, converging both machines on the union of
+        // their edits (distinct files → no real conflict, but exercises the
+        // exact non-fast-forward-rejection path that strands a naive push).
+        std::fs::write(a.join("from-a.md"), "a's concurrent edit\n").unwrap();
+        let ca = vault_sync_commit_local(asr.clone()).await.unwrap();
+        assert!(ca.ok, "A's concurrent commit should succeed: {}", ca.message);
+
+        std::fs::write(b.join("from-b.md"), "b's concurrent edit\n").unwrap();
+        let cb = vault_sync_commit_local(bs.clone()).await.unwrap();
+        assert!(cb.ok, "B's concurrent commit should succeed: {}", cb.message);
+
+        let pa = vault_sync_push(asr.clone()).await.unwrap();
+        assert!(pa.ok && !pa.error, "A's push should succeed (first mover): {}", pa.message);
+
+        // B's push races against A's already-landed commit — must reconcile
+        // and retry, not fail outright.
+        let pb = vault_sync_push(bs.clone()).await.unwrap();
+        assert!(
+            pb.ok && !pb.error,
+            "B's push must self-heal via reconcile-and-retry, not fail: {}",
+            pb.message
+        );
+
+        // A pulls B's now-pushed, reconciled work.
+        let pull2 = vault_sync_pull(asr.clone()).await.unwrap();
+        assert!(pull2.ok && !pull2.error, "A's follow-up pull should succeed: {}", pull2.message);
+
+        // Both machines must now agree on BOTH files — no data dropped on
+        // either side of the divergence.
+        for (dir, label) in [(&a, "A"), (&b, "B")] {
+            assert_eq!(
+                std::fs::read_to_string(dir.join("from-a.md")).unwrap(),
+                "a's concurrent edit\n",
+                "{label} must carry A's concurrent edit after convergence"
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.join("from-b.md")).unwrap(),
+                "b's concurrent edit\n",
+                "{label} must carry B's concurrent edit after convergence"
+            );
+        }
+
+        // And the repos must actually be at the same commit — "both have the
+        // files" isn't enough if their histories silently forked.
+        let head_a = run_git(&asr, &["rev-parse", "HEAD"]).unwrap().0.trim().to_string();
+        let head_b = run_git_mut(&bs, &["rev-parse", "HEAD"]).unwrap().0.trim().to_string();
+        assert_eq!(head_a, head_b, "A and B must converge on the same commit, not silently fork");
 
         let _ = std::fs::remove_dir_all(&base);
     }
