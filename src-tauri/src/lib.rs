@@ -4788,7 +4788,7 @@ async fn vault_sync_set_remote(vault: String, url: String) -> Result<(), String>
     .map_err(|e| e.to_string())?
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct SyncOpResult {
     ok: bool,
     /// Short summary suitable for the status row. e.g.
@@ -6464,6 +6464,127 @@ mod conversation_jsonl_tests {
         assert_eq!(deduped_line_count(disk_full), 4);
         assert_eq!(deduped_line_count(truncated), 3);
         assert!(deduped_line_count(truncated) < deduped_line_count(disk_full));
+    }
+}
+
+// The divergence-reconciliation path (`reconcile_with_upstream` +
+// `resolve_merge_conflicts`) was previously exercised only implicitly through
+// `sync_role_tests`, which never drives a genuine file-content conflict — it
+// only covers the mission-zone sanitize pass. This is the code every
+// two-machine sync (box + laptop both committing while offline from each
+// other) actually runs on every divergent cycle, so it gets its own coverage
+// here: a real bare "origin" plus two working checkouts standing in for two
+// machines, driven through the exact functions `vault_sync_pull` calls.
+#[cfg(test)]
+mod reconcile_tests {
+    use super::{reconcile_with_upstream, run_git, run_git_mut};
+
+    fn two_machine_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!("vc_reconcile_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(origin.to_str().unwrap(), &["init", "-q", "--bare", "-b", "master"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "master"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git(ds, &["remote", "add", "origin", origin.to_str().unwrap()]).unwrap();
+        }
+        (base, a, b)
+    }
+
+    // Both machines commit to DIFFERENT files while offline from each other —
+    // the ordinary "box kept working while the laptop was closed" case. A pull
+    // on the diverged follower must merge cleanly with no conflicts at all, so
+    // sync always makes progress on the common case instead of just the
+    // fast-forward one.
+    #[test]
+    fn divergent_non_conflicting_edits_merge_cleanly() {
+        let (base, a, b) = two_machine_fixture("clean");
+        let (asr, bs) = (a.to_str().unwrap(), b.to_str().unwrap());
+
+        std::fs::write(a.join("shared-base.md"), "base\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+
+        // A advances and pushes.
+        std::fs::write(a.join("from-a.md"), "written on A\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "A's turn"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        // B, unaware, advances independently → diverged history.
+        std::fs::write(b.join("from-b.md"), "written on B\n").unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "B's turn"]).unwrap();
+
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+        let outcome = reconcile_with_upstream(bs, "master").expect("reconcile ok");
+        let msg = outcome.expect("no unresolved conflict");
+        assert!(msg.contains("merged"), "expected a real merge, got: {}", msg);
+
+        // Both machines' work must survive the merge, and there must be no
+        // dangling conflict markers or unmerged paths left behind.
+        assert!(b.join("from-a.md").is_file(), "A's file must be pulled in");
+        assert!(b.join("from-b.md").is_file(), "B's own file must survive");
+        let (unmerged, _, _) = run_git(bs, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+        assert!(unmerged.trim().is_empty(), "no path should remain unmerged");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Both machines edit the SAME line of the SAME file while diverged — the
+    // one case a union/auto-merge genuinely can't resolve. Sync must still
+    // make progress (never wedge waiting on a human): it converges both
+    // machines on "theirs" in the tracked file, and preserves "ours" in a
+    // `.conflict` sidecar so the local edit isn't silently dropped.
+    #[test]
+    fn genuine_conflict_converges_on_theirs_and_preserves_ours() {
+        let (base, a, b) = two_machine_fixture("conflict");
+        let (asr, bs) = (a.to_str().unwrap(), b.to_str().unwrap());
+
+        std::fs::write(a.join("note.md"), "base\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+
+        // A rewrites the line and pushes.
+        std::fs::write(a.join("note.md"), "base\nA's edit\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "A edits note"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        // B rewrites the SAME line differently, offline from A.
+        std::fs::write(b.join("note.md"), "base\nB's conflicting edit\n").unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "B edits note"]).unwrap();
+
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+        let outcome = reconcile_with_upstream(bs, "master").expect("reconcile ok");
+        let msg = outcome.expect("must auto-resolve, never surface an unresolved-conflict error");
+        assert!(msg.contains("auto-resolved"), "expected auto-resolution, got: {}", msg);
+
+        let note = std::fs::read_to_string(b.join("note.md")).unwrap();
+        assert_eq!(note, "base\nA's edit\n", "tracked file must converge on theirs");
+        let sidecar = std::fs::read_to_string(b.join("note.md.conflict")).unwrap();
+        assert!(sidecar.contains("B's conflicting edit"), "ours must survive in the sidecar");
+
+        // No unmerged paths and a clean, committed tree — the next push
+        // must have something to send, not fail on a half-finished merge.
+        let (unmerged, _, _) = run_git(bs, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+        assert!(unmerged.trim().is_empty());
+        let (status, _, _) = run_git(bs, &["status", "--porcelain"]).unwrap();
+        assert!(status.trim().is_empty(), "merge commit must leave a clean working tree");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
 
