@@ -2720,12 +2720,28 @@ fn attach_detached_to_branch(sub: &str) -> Option<String> {
     let branch = pick.splitn(2, '/').nth(1).unwrap_or(&pick).to_string();
     // HEAD already equals this tip, so the checkout changes no files. Create the
     // local tracking branch, or switch to it if it already exists.
-    let ok = matches!(
+    let created = matches!(
         run_git_mut(sub, &["switch", "-c", &branch, "--track", &pick]),
         Ok((_, _, 0))
-    ) || matches!(run_git_mut(sub, &["switch", &branch]), Ok((_, _, 0)));
-    if !ok {
-        return None;
+    );
+    if !created {
+        // The local branch already exists — this is the common repeat-cycle case:
+        // a prior sync already attached this submodule to `branch`, and a later
+        // `submodule update` re-detached HEAD to advance it to a NEWER pinned
+        // commit. Plain `switch branch` would silently walk the working tree back
+        // to the EXISTING branch's old tip, discarding the advance we're supposed
+        // to be attaching — which then reads as a submodule content regression to
+        // the vault's own status check, gets captured as the gitlink, and reverts
+        // the other machine's push on the very next commit cycle (fixed downstream
+        // by `fix_regressed_gitlinks`, but only after a churny round trip and with
+        // this machine's working tree stuck on stale content in the meantime). So
+        // switch to the branch, then fast-forward it up to the commit we were just
+        // detached at (`pick`) — safe because that's a fast-forward by
+        // construction (`pick` is exactly where HEAD already was).
+        let switched = matches!(run_git_mut(sub, &["switch", &branch]), Ok((_, _, 0)));
+        if !switched || !matches!(run_git_mut(sub, &["merge", "--ff-only", &pick]), Ok((_, _, 0))) {
+            return None;
+        }
     }
     // Ensure upstream is set (the `switch` fallback for a pre-existing branch may
     // not have configured tracking).
@@ -6232,7 +6248,77 @@ mod conversation_storage_tests {
 
 #[cfg(test)]
 mod sync_role_tests {
-    use super::{conv_is_mission_zone, is_sync_follower, run_git, run_git_mut, sanitize_mission_zone};
+    use super::{
+        attach_detached_to_branch, conv_is_mission_zone, is_sync_follower, run_git, run_git_mut,
+        sanitize_mission_zone,
+    };
+
+    // Repeat-cycle reattach must carry the nested repo's working tree FORWARD to
+    // the newly-advanced pinned commit, not silently walk it back to wherever the
+    // local branch was left after the FIRST attach. `submodule update` detaches
+    // HEAD to the recorded gitlink on every cycle (even when a commit was already
+    // attached once before), so `attach_detached_to_branch` runs its "branch
+    // already exists locally" fallback on every subsequent advance — the
+    // plain-`switch` version of that fallback regresses the working tree, which
+    // then reads as a submodule content regression to the vault's own status
+    // check and reverts the other machine's push on the next commit cycle.
+    #[test]
+    fn reattach_fast_forwards_existing_local_branch_to_new_pin() {
+        let base = std::env::temp_dir().join(format!("vc_reattach_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "main"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git(ds, &["remote", "add", "origin", og]).unwrap();
+        }
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+
+        // Machine A: first commit + push.
+        std::fs::write(a.join("f.txt"), "v1\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "c1"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "-u", "origin", "main"]).unwrap();
+
+        // Machine B: fetch + detach at origin/main (stand-in for what
+        // `submodule update` does), then attach — the first attach, always via
+        // the fresh-branch path.
+        run_git(bs, &["fetch", "-q", "origin"]).unwrap();
+        run_git_mut(bs, &["checkout", "-q", "--detach", "origin/main"]).unwrap();
+        let attached1 = attach_detached_to_branch(bs);
+        assert_eq!(attached1.as_deref(), Some("main"), "first attach must succeed");
+        assert_eq!(std::fs::read_to_string(b.join("f.txt")).unwrap(), "v1\n");
+
+        // Machine A: a second commit + push (another machine advancing the
+        // nested repo after B already has a local `main` branch from cycle 1).
+        std::fs::write(a.join("f.txt"), "v2\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "c2"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "main"]).unwrap();
+
+        // Machine B: fetch the advance, detach again, reattach — this time
+        // `main` already exists locally, so this exercises the fallback path.
+        run_git(bs, &["fetch", "-q", "origin"]).unwrap();
+        run_git_mut(bs, &["checkout", "-q", "--detach", "origin/main"]).unwrap();
+        let attached2 = attach_detached_to_branch(bs);
+        assert_eq!(attached2.as_deref(), Some("main"), "repeat attach must succeed");
+        assert_eq!(
+            std::fs::read_to_string(b.join("f.txt")).unwrap(),
+            "v2\n",
+            "working tree must carry the newly-advanced commit, not revert to the stale local branch tip"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     // The follower sanitize pass, end to end on real repos: a diverged
     // follower's mission-zone files reset to origin's version (stale mission
