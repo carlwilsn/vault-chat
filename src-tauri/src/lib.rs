@@ -6467,6 +6467,190 @@ mod conversation_jsonl_tests {
     }
 }
 
+// ----- cross-machine sync race tests -----
+//
+// Exercises the exact functions `vault_sync_pull`/`vault_sync_push` call
+// (`reconcile_with_upstream`, `resolve_merge_conflicts`, `run_git_mut`) against
+// two real working trees + a real bare "origin", simulating an always-on box and
+// an intermittent second machine racing each other over many rounds. This is the
+// closest a single local process can get to reproducing the real cross-machine
+// wedge/data-loss classes without two live installs against a network remote.
+#[cfg(test)]
+mod sync_cross_machine_tests {
+    use super::{abort_stuck_merge_or_rebase, reconcile_with_upstream, run_git, run_git_mut};
+    use std::fs;
+    use std::io::Write;
+
+    fn init_repo(dir: &str) {
+        run_git(dir, &["init", "-q", "-b", "master"]).unwrap();
+        run_git(dir, &["config", "user.email", "t@t"]).unwrap();
+        run_git(dir, &["config", "user.name", "t"]).unwrap();
+    }
+
+    fn append_line(path: &std::path::Path, line: &str) {
+        let mut f = fs::OpenOptions::new().append(true).create(true).open(path).unwrap();
+        writeln!(f, "{}", line).unwrap();
+    }
+
+    /// Both machines append distinct lines to the SAME append-only JSONL
+    /// conversation log every round, racing to push first, over many rounds.
+    /// Every round must converge (no wedge, no unresolved conflict) and the
+    /// final log must contain every line either machine ever wrote — the union
+    /// merge driver must never drop a concurrently-written message.
+    #[test]
+    fn interleaved_jsonl_appends_converge_with_no_data_loss() {
+        let base = std::env::temp_dir().join(format!("vc_race_jsonl_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A"); // always-on box
+        let b = base.join("B"); // intermittent second machine
+
+        fs::create_dir_all(&origin).unwrap();
+        run_git(origin.to_str().unwrap(), &["init", "-q", "--bare", "-b", "master"]).unwrap();
+        for d in [&a, &b] {
+            fs::create_dir_all(d).unwrap();
+            init_repo(d.to_str().unwrap());
+            run_git(d.to_str().unwrap(), &["remote", "add", "origin", origin.to_str().unwrap()])
+                .unwrap();
+        }
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+
+        fs::write(a.join(".gitattributes"), "*.jsonl merge=union\n").unwrap();
+        fs::create_dir_all(a.join(".vault-chat/conversations")).unwrap();
+        fs::write(a.join(".vault-chat/conversations/chat1.jsonl"), "{\"id\":\"chat1\"}\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+
+        const ROUNDS: usize = 15;
+        for round in 0..ROUNDS {
+            append_line(
+                &a.join(".vault-chat/conversations/chat1.jsonl"),
+                &format!("{{\"role\":\"assistant\",\"content\":\"from-A-{}\"}}", round),
+            );
+            append_line(
+                &b.join(".vault-chat/conversations/chat1.jsonl"),
+                &format!("{{\"role\":\"user\",\"content\":\"from-B-{}\"}}", round),
+            );
+            run_git_mut(asr, &["add", "-A"]).unwrap();
+            run_git_mut(asr, &["commit", "-q", "-m", &format!("A round {}", round)]).unwrap();
+            run_git_mut(bs, &["add", "-A"]).unwrap();
+            run_git_mut(bs, &["commit", "-q", "-m", &format!("B round {}", round)]).unwrap();
+
+            // A (the box) wins the race every round.
+            let pa = run_git_mut(asr, &["push", "-q", "origin", "master"]);
+            assert!(matches!(pa, Ok((_, _, 0))), "round {}: A push failed: {:?}", round, pa);
+
+            // B reconciles exactly as vault_sync_push does on rejection.
+            run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+            let outcome = reconcile_with_upstream(bs, "master")
+                .unwrap_or_else(|e| panic!("round {}: B reconcile errored: {}", round, e));
+            let msg = outcome.unwrap_or_else(|r| {
+                panic!("round {}: B reconcile surfaced unresolved: {}", round, r.message)
+            });
+            assert!(!msg.contains("unresolved"), "round {}: {}", round, msg);
+            let (unmerged, _, _) = run_git(bs, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+            assert!(unmerged.trim().is_empty(), "round {}: B left unmerged paths: {}", round, unmerged);
+            abort_stuck_merge_or_rebase(bs); // must be a no-op on an already-clean tree
+
+            let pb = run_git_mut(bs, &["push", "-q", "origin", "master"]);
+            assert!(matches!(pb, Ok((_, _, 0))), "round {}: B push failed: {:?}", round, pb);
+
+            run_git(asr, &["fetch", "-q", "origin", "master"]).unwrap();
+            let a_outcome = reconcile_with_upstream(asr, "master")
+                .unwrap_or_else(|e| panic!("round {}: A reconcile errored: {}", round, e));
+            a_outcome.unwrap_or_else(|r| {
+                panic!("round {}: A reconcile surfaced unresolved: {}", round, r.message)
+            });
+        }
+
+        run_git(asr, &["fetch", "-q", "origin", "master"]).unwrap();
+        let a_tip = run_git(asr, &["rev-parse", "master"]).unwrap().0.trim().to_string();
+        let b_tip = run_git(bs, &["rev-parse", "master"]).unwrap().0.trim().to_string();
+        let origin_tip = run_git(origin.to_str().unwrap(), &["rev-parse", "master"])
+            .unwrap()
+            .0
+            .trim()
+            .to_string();
+        assert_eq!(a_tip, origin_tip, "A must converge with origin");
+        assert_eq!(b_tip, origin_tip, "B must converge with origin");
+
+        let final_log = fs::read_to_string(a.join(".vault-chat/conversations/chat1.jsonl")).unwrap();
+        for round in 0..ROUNDS {
+            assert!(final_log.contains(&format!("from-A-{}", round)), "lost A's round {} message", round);
+            assert!(final_log.contains(&format!("from-B-{}", round)), "lost B's round {} message", round);
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Both machines edit the SAME line of a plain (non-JSONL) doc concurrently —
+    /// a genuine, non-mergeable conflict. Must never wedge: `resolve_merge_conflicts`
+    /// takes "theirs" into the tracked file and preserves "ours" as a `.conflict`
+    /// sidecar, every round, across repeated re-divergence (the sidecar itself must
+    /// not become a fresh conflict source on the next round).
+    #[test]
+    fn genuine_conflicting_edits_never_wedge_and_preserve_both_sides() {
+        let base = std::env::temp_dir().join(format!("vc_race_conflict_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+
+        fs::create_dir_all(&origin).unwrap();
+        run_git(origin.to_str().unwrap(), &["init", "-q", "--bare", "-b", "master"]).unwrap();
+        for d in [&a, &b] {
+            fs::create_dir_all(d).unwrap();
+            init_repo(d.to_str().unwrap());
+            run_git(d.to_str().unwrap(), &["remote", "add", "origin", origin.to_str().unwrap()])
+                .unwrap();
+        }
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+
+        fs::write(a.join("note.md"), "line one\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+
+        for round in 0..5 {
+            fs::write(a.join("note.md"), format!("line one — box edit {}\n", round)).unwrap();
+            fs::write(b.join("note.md"), format!("line one — laptop edit {}\n", round)).unwrap();
+            run_git_mut(asr, &["add", "-A"]).unwrap();
+            run_git_mut(asr, &["commit", "-q", "-m", &format!("A round {}", round)]).unwrap();
+            run_git_mut(bs, &["add", "-A"]).unwrap();
+            run_git_mut(bs, &["commit", "-q", "-m", &format!("B round {}", round)]).unwrap();
+
+            run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+            run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+            let outcome = reconcile_with_upstream(bs, "master")
+                .unwrap_or_else(|e| panic!("round {}: reconcile errored: {}", round, e));
+            let msg = outcome.unwrap_or_else(|r| {
+                panic!("round {}: reconcile surfaced unresolved: {}", round, r.message)
+            });
+            assert!(msg.contains("auto-resolved"), "round {}: expected an auto-resolved merge, got: {}", round, msg);
+            let (unmerged, _, _) = run_git(bs, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+            assert!(unmerged.trim().is_empty(), "round {}: left unmerged paths", round);
+
+            // Theirs (the box) wins the tracked file; ours (the laptop) survives as a sidecar.
+            let note = fs::read_to_string(b.join("note.md")).unwrap();
+            assert!(note.contains(&format!("box edit {}", round)), "round {}: tracked file must take theirs", round);
+            let sidecar = fs::read_to_string(b.join("note.md.conflict")).unwrap();
+            assert!(sidecar.contains(&format!("laptop edit {}", round)), "round {}: sidecar must preserve ours", round);
+
+            run_git_mut(bs, &["push", "-q", "origin", "master"]).unwrap();
+            run_git(asr, &["fetch", "-q", "origin", "master"]).unwrap();
+            let a_outcome = reconcile_with_upstream(asr, "master")
+                .unwrap_or_else(|e| panic!("round {}: A pull errored: {}", round, e));
+            a_outcome.unwrap_or_else(|r| panic!("round {}: A pull unresolved: {}", round, r.message));
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+}
+
 // ----- .git/ guard -----
 //
 // The git auto-commit / history / restore system is our only undo
