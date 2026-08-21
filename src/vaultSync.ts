@@ -104,13 +104,31 @@ export async function writeVaultConfig(
   await invoke("write_text_file", { path, contents });
 }
 
+// Coerce to a finite, positive number or fall back. Guards the on-disk config
+// read path against a corrupted/hand-edited config.json: an interval that
+// isn't a real number (NaN, 0, a stray string) flows straight into
+// `setInterval`/`setTimeout` in doStartVaultSyncLoop, where a NaN/0 delay
+// fires as fast as the event loop allows — a busy-loop hammering git/disk on
+// every tick, not a graceful no-op. The Settings UI already guards its own
+// inputs (SettingsPane.tsx); this is the equivalent guard for the loop's own
+// startup read, which bypasses that UI entirely.
+function finitePositive(n: unknown, fallback: number): number {
+  const v = typeof n === "number" ? n : Number(n);
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
 export async function readVaultSyncConfig(
   vault: string,
 ): Promise<VaultSyncConfig> {
   const cfg = await readVaultConfig(vault);
-  return {
+  const merged: VaultSyncConfig = {
     ...DEFAULT_SYNC_CONFIG,
     ...(cfg.sync ?? {}),
+  };
+  return {
+    ...merged,
+    pullIntervalSec: finitePositive(merged.pullIntervalSec, DEFAULT_SYNC_CONFIG.pullIntervalSec),
+    pushDebounceSec: finitePositive(merged.pushDebounceSec, DEFAULT_SYNC_CONFIG.pushDebounceSec),
   };
 }
 
