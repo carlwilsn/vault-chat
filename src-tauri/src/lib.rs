@@ -6467,6 +6467,297 @@ mod conversation_jsonl_tests {
     }
 }
 
+/// End-to-end coverage of the actual cross-machine flow — two real working
+/// trees ("machines") pointed at a shared local bare "origin", driven through
+/// the exact `#[tauri::command]` entry points the app calls (not the internal
+/// helpers directly), under the conditions that have historically wedged
+/// sync: both sides committing before either sees the other's push, a push
+/// that loses the race and must self-reconcile, several such rounds back to
+/// back ("load"), and a leftover merge state from a simulated crash.
+#[cfg(test)]
+mod cross_machine_sync_tests {
+    use super::{
+        run_git, run_git_mut, vault_sync_commit_local, vault_sync_pull, vault_sync_push,
+    };
+    use std::path::Path;
+
+    fn unique_base(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        std::env::temp_dir().join(format!(
+            "vc_crosssync_{}_{}_{}",
+            tag,
+            std::process::id(),
+            nanos
+        ))
+    }
+
+    /// Seed a bare "origin" plus two working checkouts (A, B) both tracking
+    /// it, A committed+pushed first and B cloned from that seed — the
+    /// starting state for any two-machine vault. Both are default "writer"
+    /// role (no follower marker), the common case for a vault with no
+    /// mission host configured.
+    fn seed_two_machines(base: &Path) -> (String, String) {
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap().to_string();
+        run_git(&og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        std::fs::create_dir_all(&a).unwrap();
+        let asr = a.to_str().unwrap().to_string();
+        run_git(&asr, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(&asr, &["config", "user.email", "a@t"]).unwrap();
+        run_git(&asr, &["config", "user.name", "machine-a"]).unwrap();
+        run_git(&asr, &["remote", "add", "origin", &og]).unwrap();
+        std::fs::create_dir_all(a.join(".vault-chat/conversations")).unwrap();
+        std::fs::write(
+            a.join(".vault-chat/conversations/chat1.jsonl"),
+            "{\"id\":\"chat1\",\"source\":\"manual\"}\n{\"role\":\"user\",\"content\":\"hello\"}\n",
+        )
+        .unwrap();
+        std::fs::write(a.join("notes.md"), "seed\n").unwrap();
+        run_git_mut(&asr, &["add", "-A"]).unwrap();
+        run_git_mut(&asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(&asr, &["push", "-q", "-u", "origin", "main"]).unwrap();
+
+        // B clones from origin — a fresh machine picking up the vault.
+        run_git(base.to_str().unwrap(), &["clone", "-q", &og, "B"]).unwrap();
+        let bs = base.join("B").to_str().unwrap().to_string();
+        run_git(&bs, &["config", "user.email", "b@t"]).unwrap();
+        run_git(&bs, &["config", "user.name", "machine-b"]).unwrap();
+
+        (asr, bs)
+    }
+
+    fn assert_no_wedge(dir: &str) {
+        let git = Path::new(dir).join(".git");
+        assert!(!git.join("MERGE_HEAD").exists(), "{}: left MERGE_HEAD behind", dir);
+        assert!(!git.join("rebase-merge").is_dir(), "{}: left rebase-merge behind", dir);
+        assert!(!git.join("rebase-apply").is_dir(), "{}: left rebase-apply behind", dir);
+        assert!(!git.join("index.lock").exists(), "{}: left index.lock behind", dir);
+    }
+
+    // The core race: both machines edit — including the SAME append-only chat
+    // log — before either sees the other's commit. Whichever pushes second
+    // must self-reconcile inline on that same push (the fix for "the wedge
+    // that froze cross-machine sync") rather than fail and wait for a
+    // separate pull tick. Nothing either side wrote may be lost.
+    #[tokio::test]
+    async fn two_writers_converge_after_concurrent_pushes() {
+        let base = unique_base("converge");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let (a, b) = seed_two_machines(&base);
+
+        let r = vault_sync_pull(b.clone()).await.unwrap();
+        assert!(r.ok, "B initial pull: {}", r.message);
+
+        std::fs::write(Path::new(&a).join("from-a.md"), "machine A wrote this\n").unwrap();
+        let chat_path_a = Path::new(&a).join(".vault-chat/conversations/chat1.jsonl");
+        let mut chat_a = std::fs::read_to_string(&chat_path_a).unwrap();
+        chat_a.push_str("{\"role\":\"assistant\",\"content\":\"from A\"}\n");
+        std::fs::write(&chat_path_a, chat_a).unwrap();
+
+        std::fs::write(Path::new(&b).join("from-b.md"), "machine B wrote this\n").unwrap();
+        let chat_path_b = Path::new(&b).join(".vault-chat/conversations/chat1.jsonl");
+        let mut chat_b = std::fs::read_to_string(&chat_path_b).unwrap();
+        chat_b.push_str("{\"role\":\"user\",\"content\":\"from B\"}\n");
+        std::fs::write(&chat_path_b, chat_b).unwrap();
+
+        // A wins the race.
+        let ca = vault_sync_commit_local(a.clone()).await.unwrap();
+        assert!(ca.ok, "A commit: {}", ca.message);
+        let pa = vault_sync_push(a.clone()).await.unwrap();
+        assert!(pa.ok, "A push: {}", pa.message);
+
+        // B's push is now rejected (origin advanced under it) and must
+        // self-reconcile on this same call.
+        let cb = vault_sync_commit_local(b.clone()).await.unwrap();
+        assert!(cb.ok, "B commit: {}", cb.message);
+        let pb = vault_sync_push(b.clone()).await.unwrap();
+        assert!(pb.ok, "B push should self-reconcile, not fail: {}", pb.message);
+        assert!(
+            pb.message.contains("merged"),
+            "B push should report a merge, got: {}",
+            pb.message
+        );
+
+        let pull_a = vault_sync_pull(a.clone()).await.unwrap();
+        assert!(pull_a.ok, "A pull after B's merge: {}", pull_a.message);
+
+        for dir in [a.as_str(), b.as_str()] {
+            let p = Path::new(dir);
+            assert!(p.join("from-a.md").exists(), "{}: from-a.md missing", dir);
+            assert!(p.join("from-b.md").exists(), "{}: from-b.md missing", dir);
+            let chat = std::fs::read_to_string(p.join(".vault-chat/conversations/chat1.jsonl")).unwrap();
+            assert!(chat.contains("from A"), "{}: lost A's chat line", dir);
+            assert!(chat.contains("from B"), "{}: lost B's chat line", dir);
+        }
+        let (ha, _, _) = run_git(&a, &["rev-parse", "HEAD"]).unwrap();
+        let (hb, _, _) = run_git(&b, &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(ha.trim(), hb.trim(), "A and B must converge on the same commit");
+        assert_no_wedge(&a);
+        assert_no_wedge(&b);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Simulates sustained back-and-forth load: several rounds of both
+    // machines editing and syncing, alternating who pushes first each round
+    // (so both reconcile directions get exercised). Nothing may be lost and
+    // nothing may wedge across the whole run.
+    #[tokio::test]
+    async fn many_alternating_sync_rounds_never_lose_data_or_wedge() {
+        let base = unique_base("stress");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let (a, b) = seed_two_machines(&base);
+        vault_sync_pull(b.clone()).await.unwrap();
+
+        let rounds = 6;
+        for i in 0..rounds {
+            let (first, second) = if i % 2 == 0 { (&a, &b) } else { (&b, &a) };
+            std::fs::write(Path::new(first).join(format!("r{}-first.md", i)), "x").unwrap();
+            std::fs::write(Path::new(second).join(format!("r{}-second.md", i)), "x").unwrap();
+
+            let c1 = vault_sync_commit_local(first.clone()).await.unwrap();
+            assert!(c1.ok, "round {} first commit: {}", i, c1.message);
+            let p1 = vault_sync_push(first.clone()).await.unwrap();
+            assert!(p1.ok, "round {} first push: {}", i, p1.message);
+
+            let c2 = vault_sync_commit_local(second.clone()).await.unwrap();
+            assert!(c2.ok, "round {} second commit: {}", i, c2.message);
+            let p2 = vault_sync_push(second.clone()).await.unwrap();
+            assert!(p2.ok, "round {} second push (must self-reconcile): {}", i, p2.message);
+
+            let pull_first = vault_sync_pull(first.clone()).await.unwrap();
+            assert!(pull_first.ok, "round {} first pull: {}", i, pull_first.message);
+
+            assert_no_wedge(first);
+            assert_no_wedge(second);
+        }
+
+        for i in 0..rounds {
+            for suffix in ["first", "second"] {
+                let name = format!("r{}-{}.md", i, suffix);
+                assert!(Path::new(&a).join(&name).exists(), "A missing {}", name);
+                assert!(Path::new(&b).join(&name).exists(), "B missing {}", name);
+            }
+        }
+        let (ha, _, _) = run_git(&a, &["rev-parse", "HEAD"]).unwrap();
+        let (hb, _, _) = run_git(&b, &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(ha.trim(), hb.trim(), "A and B must converge after all rounds");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // A prior run "crashed" mid-merge and left MERGE_HEAD behind — the exact
+    // state a killed app process leaves. Every later auto-sync commit would
+    // silently no-op under this until it's cleared; the next commit must
+    // self-heal instead (`abort_stuck_merge_or_rebase`).
+    #[tokio::test]
+    async fn self_heals_a_leftover_merge_state_from_a_simulated_crash() {
+        let base = unique_base("selfheal");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let (a, b) = seed_two_machines(&base);
+        vault_sync_pull(b.clone()).await.unwrap();
+
+        std::fs::write(Path::new(&a).join("a2.md"), "a again\n").unwrap();
+        vault_sync_commit_local(a.clone()).await.unwrap();
+        vault_sync_push(a.clone()).await.unwrap();
+
+        std::fs::write(Path::new(&b).join("b2.md"), "b again\n").unwrap();
+        vault_sync_commit_local(b.clone()).await.unwrap();
+
+        // Fetch A's advance and start (but never finish) a merge.
+        run_git(&b, &["fetch", "-q", "origin", "main"]).unwrap();
+        let _ = run_git_mut(&b, &["merge", "--no-commit", "--no-ff", "origin/main"]);
+        assert!(
+            Path::new(&b).join(".git/MERGE_HEAD").exists(),
+            "test setup: expected a merge in progress"
+        );
+
+        std::fs::write(Path::new(&b).join("b3.md"), "b after crash\n").unwrap();
+        let r = vault_sync_commit_local(b.clone()).await.unwrap();
+        assert!(r.ok, "commit after simulated crash must self-heal: {}", r.message);
+        assert_no_wedge(&b);
+        assert!(Path::new(&b).join("b3.md").exists(), "b3.md must survive the self-heal");
+
+        let pr = vault_sync_push(b.clone()).await.unwrap();
+        assert!(pr.ok, "push after self-heal: {}", pr.message);
+
+        let pull_a = vault_sync_pull(a.clone()).await.unwrap();
+        assert!(pull_a.ok, "A pull after B's self-heal: {}", pull_a.message);
+        for name in ["a2.md", "b2.md", "b3.md"] {
+            assert!(Path::new(&a).join(name).exists(), "A missing {} after pull", name);
+        }
+        assert_no_wedge(&a);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // A genuine divergent edit — both machines change the SAME line of the
+    // SAME plain (non-JSONL) file to different content, so union merging
+    // can't apply and git would normally raise a conflict. Sync must still
+    // never wedge: resolve_merge_conflicts takes "theirs" into the tree and
+    // preserves "ours" as a `.conflict` sidecar, so nothing is silently
+    // dropped and both machines converge.
+    #[tokio::test]
+    async fn genuine_file_conflict_resolves_to_sidecar_without_wedging() {
+        let base = unique_base("conflict");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let (a, b) = seed_two_machines(&base);
+        vault_sync_pull(b.clone()).await.unwrap();
+
+        // Both edit the pre-existing notes.md's only line differently.
+        std::fs::write(Path::new(&a).join("notes.md"), "seed, edited by A\n").unwrap();
+        std::fs::write(Path::new(&b).join("notes.md"), "seed, edited by B\n").unwrap();
+
+        let ca = vault_sync_commit_local(a.clone()).await.unwrap();
+        assert!(ca.ok, "A commit: {}", ca.message);
+        let pa = vault_sync_push(a.clone()).await.unwrap();
+        assert!(pa.ok, "A push: {}", pa.message);
+
+        let cb = vault_sync_commit_local(b.clone()).await.unwrap();
+        assert!(cb.ok, "B commit: {}", cb.message);
+        let pb = vault_sync_push(b.clone()).await.unwrap();
+        assert!(
+            pb.ok,
+            "a genuine conflict must still resolve, never fail the sync: {}",
+            pb.message
+        );
+        assert_no_wedge(&b);
+
+        let pull_a = vault_sync_pull(a.clone()).await.unwrap();
+        assert!(pull_a.ok, "A pull after B's resolved conflict: {}", pull_a.message);
+        assert_no_wedge(&a);
+
+        for dir in [a.as_str(), b.as_str()] {
+            let p = Path::new(dir);
+            // B is the one reconciling (merging origin into its own commit), so
+            // "theirs" = origin's content = A's edit (A pushed first) lands in
+            // the tree; "ours" = B's own edit is preserved as a sidecar.
+            let notes = std::fs::read_to_string(p.join("notes.md")).unwrap();
+            assert!(notes.contains("edited by A"), "{}: notes.md should carry A's edit", dir);
+            // Ours (B's edit) must not be silently dropped — it survives as a sidecar.
+            let sidecar = p.join("notes.md.conflict");
+            assert!(sidecar.exists(), "{}: B's edit must survive as notes.md.conflict", dir);
+            let sidecar_content = std::fs::read_to_string(&sidecar).unwrap();
+            assert!(sidecar_content.contains("edited by B"));
+        }
+        let (ha, _, _) = run_git(&a, &["rev-parse", "HEAD"]).unwrap();
+        let (hb, _, _) = run_git(&b, &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(ha.trim(), hb.trim(), "A and B must converge on the same commit");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
 // ----- .git/ guard -----
 //
 // The git auto-commit / history / restore system is our only undo
