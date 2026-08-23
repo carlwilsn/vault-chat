@@ -3175,22 +3175,23 @@ fn sync_one_repo(
             Err(e) => eprintln!("[sync] shared repo '{}' push error: {}", rel, e),
             _ => {}
         },
-        // Mine → push the tracking branch when it's ahead. Needs an upstream.
+        // Mine → push the current branch, with -u. Previously this gated on
+        // `@{upstream}..HEAD` being ahead, and skipped the push entirely (not
+        // just deferred it) when no upstream was configured — so a Mine repo
+        // whose branch never had a successful first push (a network blip, or a
+        // branch newly attached without `--track`) stayed permanently unpushed:
+        // nothing ever re-armed the check, since `ahead` read 0 forever with no
+        // upstream to compare against. `push -u` both fixes that (it always
+        // attempts, establishing tracking on success) and is idempotent — a
+        // cheap "Everything up-to-date" no-op when there's genuinely nothing
+        // new, same as the Shared branch above.
         (None, RepoClass::Mine) => {
-            let has_upstream = matches!(
-                run_git(sub, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
-                Ok((_, _, 0))
-            );
-            let ahead = if has_upstream {
-                match run_git(sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
-                    Ok((c, _, 0)) => c.trim().parse::<u64>().unwrap_or(0),
-                    _ => 0,
-                }
-            } else {
-                0
-            };
-            if ahead > 0 {
-                match run_git_timeout(sub, &["push"], 300) {
+            let branch = run_git(sub, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+                .ok()
+                .and_then(|(b, _, c)| if c == 0 { Some(b.trim().to_string()) } else { None })
+                .filter(|b| !b.is_empty());
+            if let Some(branch) = branch {
+                match run_git_timeout(sub, &["push", "-u", "origin", &branch], 300) {
                     Ok((_, perr, pc)) if pc != 0 => {
                         eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
                     }
@@ -4708,15 +4709,51 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
         let (status_out, _, _) =
             run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])?;
         let has_changes = !status_out.trim().is_empty();
-        // Count local commits not yet on the upstream. Errors (no upstream,
-        // detached HEAD) are treated as "nothing ahead".
+        // Count local commits not yet on the remote. Prefer the real upstream
+        // tracking ref (`@{upstream}`); it's unset only when this branch has
+        // never had a successful `push -u` — e.g. the very first push after
+        // configuring a remote failed on a network blip, or the remote URL was
+        // repointed without re-establishing tracking. Without a fallback that
+        // reads as "nothing ahead" FOREVER: `ahead` silently pins to 0, which
+        // both hides the stranded commit from the status row and defeats the
+        // tickPull flush-retry below (gated on `ahead > 0`), since a clean
+        // working tree never re-dirties to trigger another push attempt. Fall
+        // back to `origin/<branch>` (updated by the last fetch, even without
+        // tracking) and finally, if we have a remote but no remote-tracking ref
+        // at all yet (never fetched), count all of HEAD — over-reporting
+        // "ahead" briefly is safe; silently under-reporting is what strands
+        // work (same principle as the flush-retry's own null-status handling).
         let ahead = {
             let (out, _, code) =
                 run_git(&vault, &["rev-list", "--count", "@{upstream}..HEAD"])?;
             if code == 0 {
                 out.trim().parse::<u32>().unwrap_or(0)
             } else {
-                0
+                let (branch_out, _, branch_code) =
+                    run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+                let branch = (branch_code == 0).then(|| branch_out.trim().to_string())
+                    .filter(|b| !b.is_empty() && b.as_str() != "HEAD");
+                match branch {
+                    Some(b) => {
+                        let remote_ref = format!("origin/{}", b);
+                        let (out, _, code) = run_git(
+                            &vault,
+                            &["rev-list", "--count", &format!("{}..HEAD", remote_ref)],
+                        )?;
+                        if code == 0 {
+                            out.trim().parse::<u32>().unwrap_or(0)
+                        } else if remote.is_some() {
+                            // Remote configured but its tracking ref doesn't exist
+                            // locally yet (never fetched) — can't prove anything is
+                            // already on it, so treat all of HEAD as unpushed.
+                            let (out, _, code) = run_git(&vault, &["rev-list", "--count", "HEAD"])?;
+                            if code == 0 { out.trim().parse::<u32>().unwrap_or(0) } else { 0 }
+                        } else {
+                            0
+                        }
+                    }
+                    None => 0, // detached HEAD — no branch to compare
+                }
             }
         };
         let nested_repos = find_nested_repos(&root);
