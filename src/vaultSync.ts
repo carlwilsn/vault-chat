@@ -352,6 +352,11 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
   // reads as a timeline of distinct incidents — not per-tick noise. `null` =
   // currently healthy; otherwise the `op|message` signature of the last failure.
   let lastFailSig: string | null = null;
+  // Same dedup, but for a nested-repo divergence note riding an otherwise-`ok`
+  // result (see sync_one_repo's "needs attention" note in lib.rs) — orthogonal
+  // to lastFailSig so a stuck nested repo doesn't mask, or get masked by, the
+  // root vault's own pull/push health.
+  let lastNestedNoteSig: string | null = null;
 
   const recordResult = (op: string, r: SyncOpResult) => {
     if (!r.ok && r.error) {
@@ -368,6 +373,19 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       // precede a push race, so it's the other half of any pattern.
       if (r.message.includes("merged")) {
         appendSyncLog(vault, "merge", op, r.message);
+      }
+      // A nested repo stuck needing a manual merge is still `ok` at the vault
+      // level (the root sync proceeded fine) but is exactly the kind of silent
+      // stranding this log exists to catch — without this it never reaches
+      // sync-log.jsonl at all, only a stderr line nobody sees on a packaged app.
+      if (r.message.includes("nested repo needs attention")) {
+        const sig = `${op}|${r.message}`;
+        if (sig !== lastNestedNoteSig) {
+          lastNestedNoteSig = sig;
+          appendSyncLog(vault, "error", `${op}-nested`, r.message);
+        }
+      } else if (lastNestedNoteSig !== null) {
+        lastNestedNoteSig = null;
       }
       if (lastFailSig !== null) {
         appendSyncLog(vault, "recovered", op, r.message, { from: lastFailSig });
