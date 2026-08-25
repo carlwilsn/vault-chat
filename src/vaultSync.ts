@@ -298,18 +298,28 @@ export function focusVaultSync(): void {
   emitOpen();
 }
 
-// Per-vault start serialization. Without it, two concurrent starts for the same
-// vault (e.g. the launch effect and the open-vault effect both firing on mount)
-// could each pass the `loops.has` check during the `await readVaultSyncConfig`
-// gap and leave TWO live loops for one vault — the resource race the old
-// single-loop design existed to prevent. Every start/ensure for a vault runs to
-// completion before the next begins (mirrors git.ts's commit chain).
-const startChains = new Map<string, Promise<void>>();
+// Per-vault operation serialization. Without it, two concurrent starts for the
+// same vault (e.g. the launch effect and the open-vault effect both firing on
+// mount) could each pass the `loops.has` check during the `await
+// readVaultSyncConfig` gap and leave TWO live loops for one vault — the
+// resource race the old single-loop design existed to prevent. Every
+// start/stop/ensure for a vault runs to completion before the next begins
+// (mirrors git.ts's commit chain).
+//
+// Stop is chained through here too, not just start: `stopVaultSyncLoop` used
+// to only cancel whatever was in `loops` *right now*, so a stop issued while a
+// start was mid-flight (past its `loops.has` check, still awaiting
+// `readVaultSyncConfig`, before its `loops.set`) found nothing to cancel and
+// was silently lost — the in-flight start would go on to register and run a
+// loop the user had just turned off (e.g. toggling sync off in Settings the
+// instant after opening a vault). Queuing the stop behind the in-flight start
+// guarantees it runs (and actually cancels) after that start registers.
+const vaultOpChains = new Map<string, Promise<void>>();
 
-function serializeStart(vault: string, fn: () => Promise<void>): Promise<void> {
-  const prev = startChains.get(vault) ?? Promise.resolve();
+function serializeVaultOp(vault: string, fn: () => Promise<void>): Promise<void> {
+  const prev = vaultOpChains.get(vault) ?? Promise.resolve();
   const next = prev.then(fn, fn);
-  startChains.set(
+  vaultOpChains.set(
     vault,
     next.catch(() => {}),
   );
@@ -319,7 +329,7 @@ function serializeStart(vault: string, fn: () => Promise<void>): Promise<void> {
 // Idempotent: start a loop for `vault` only if one isn't already running.
 // Used on launch (every tracked sync-enabled vault) and on vault open.
 export function ensureVaultSyncLoop(vault: string): Promise<void> {
-  return serializeStart(vault, async () => {
+  return serializeVaultOp(vault, async () => {
     if (loops.has(vault)) return;
     await doStartVaultSyncLoop(vault);
   });
@@ -328,11 +338,17 @@ export function ensureVaultSyncLoop(vault: string): Promise<void> {
 // Start (or restart) the loop for `vault`. Restart semantics so a config change
 // (enable/disable, remote, intervals) takes effect immediately.
 export function startVaultSyncLoop(vault: string): Promise<void> {
-  return serializeStart(vault, () => doStartVaultSyncLoop(vault));
+  return serializeVaultOp(vault, () => doStartVaultSyncLoop(vault));
 }
 
 async function doStartVaultSyncLoop(vault: string): Promise<void> {
-  stopVaultSyncLoop(vault);
+  // Unchained, immediate teardown of this vault's prior loop (restart
+  // semantics). Must NOT go through the public stopVaultSyncLoop: that also
+  // queues onto vaultOpChains, which — since this function is itself already
+  // running as a queued chain entry — would schedule the stop to run again
+  // right after this start completes, immediately cancelling the loop it just
+  // registered.
+  cancelLoopNow(vault);
   const config = await readVaultSyncConfig(vault);
 
   let cancelled = false;
@@ -612,6 +628,21 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
   void lastChangeAt;
 }
 
+// Cancel whatever loop is registered for `vault` right now, if any. Internal,
+// unchained — safe to call from inside doStartVaultSyncLoop's own
+// restart-teardown without touching vaultOpChains (routing that self-teardown
+// through the public stop below would queue it to run again *after* the very
+// start it's part of finishes, immediately killing the loop it just created).
+function cancelLoopNow(vault: string): void {
+  const l = loops.get(vault);
+  if (l) {
+    l.cancel();
+    loops.delete(vault);
+  }
+  snapshots.delete(vault);
+  if (openVault() === vault) emitOpen();
+}
+
 // Stop one vault's loop, or ALL of them when called with no argument (app
 // unmount). Stopping a vault clears its snapshot; if it was the open vault, the
 // UI status row clears too.
@@ -623,13 +654,19 @@ export function stopVaultSyncLoop(vault?: string): void {
     emitOpen();
     return;
   }
-  const l = loops.get(vault);
-  if (l) {
-    l.cancel();
-    loops.delete(vault);
-  }
-  snapshots.delete(vault);
-  if (openVault() === vault) emitOpen();
+  // Immediate: cancel whatever's registered right now, for instant UI feedback
+  // (e.g. flipping the Settings toggle off) in the common case nothing else is
+  // mid-start.
+  cancelLoopNow(vault);
+  // Serialized: also queue behind any start/ensure currently in flight for
+  // this vault, so a stop that arrives while a start is still mid-setup (past
+  // its `loops.has` check, before it reaches `loops.set`) isn't lost to the
+  // race — it cancels the loop the moment that start finishes registering it,
+  // rather than leaving a just-disabled sync loop running until some later,
+  // unrelated toggle happens to catch it.
+  void serializeVaultOp(vault, async () => {
+    cancelLoopNow(vault);
+  });
 }
 
 // Vaults with a live sync loop right now.
