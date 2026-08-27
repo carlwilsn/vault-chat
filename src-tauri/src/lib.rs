@@ -2462,6 +2462,11 @@ struct GitCommit {
 //     hung fetch/push on the headless server fails fast, not forever.
 
 const GIT_TIMEOUT_SECS: u64 = 90;
+// `gh api`/`gh repo fork` calls are plain REST round-trips — far cheaper than a
+// git fetch/push — but on a network stall they can hang exactly like one. See
+// `run_gh`'s doc comment for why that hang is actually worse than a `run_git`
+// timeout would be.
+const GH_TIMEOUT_SECS: u64 = 45;
 const STALE_LOCK_SECS: u64 = 10;
 
 // Git identity model. Authorship follows *who actually did the work*:
@@ -2774,8 +2779,28 @@ fn recover_to_configured_branch(sub: &str, branch: Option<&str>) -> Option<Strin
 
 /// Run the `gh` CLI in `cwd`, returning (stdout, stderr, exit code). GitHub auth
 /// is entirely delegated to `gh` (the app holds no token), mirroring the platform
-/// handling in `vault_sync_gh_create_repo`. Err only if `gh` can't be spawned.
+/// handling in `vault_sync_gh_create_repo`. Bounded by a hard timeout, exactly
+/// like `run_git_timeout`.
+///
+/// This used to be a plain blocking `cmd.output()` with no bound at all — worse
+/// than the git-hang problem `run_git_timeout` exists to solve, because every
+/// caller here (`gh_login`, `can_push_to`, `adopt_unowned_subrepo`'s fork call)
+/// runs from inside `sync_one_repo`/`classify_repo`, which `sync_nested_repos`
+/// invokes from *within* `vault_sync_pull`/`vault_sync_commit_local` while they
+/// hold the per-vault `with_repo_lock`. A `gh api` call stuck on a network
+/// stall (DNS hang, a dead TLS handshake) never returned, the blocking thread
+/// never freed the lock, and every later pull/push/commit for that vault queued
+/// behind it forever — a permanent wedge indistinguishable from the git one
+/// that `run_git_timeout` was built to prevent, just reached through `gh`
+/// instead of `git`. Same fix: bound the wait, drain both pipes off-thread, and
+/// kill the whole process tree (gh can shell out to a browser/credential
+/// helper) if the deadline passes.
 fn run_gh(cwd: &str, args: &[&str]) -> Result<(String, String, i32), String> {
+    run_gh_timeout(cwd, args, GH_TIMEOUT_SECS)
+}
+
+fn run_gh_timeout(cwd: &str, args: &[&str], timeout_secs: u64) -> Result<(String, String, i32), String> {
+    use std::io::Read;
     #[cfg(windows)]
     let mut cmd = {
         use std::os::windows::process::CommandExt;
@@ -2787,14 +2812,48 @@ fn run_gh(cwd: &str, args: &[&str]) -> Result<(String, String, i32), String> {
     let mut cmd = Command::new("gh");
     cmd.current_dir(cwd);
     cmd.args(args);
+    cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    let out = cmd.output().map_err(|e| e.to_string())?;
-    Ok((
-        String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr).to_string(),
-        out.status.code().unwrap_or(-1),
-    ))
+    // Own process group (Unix) so a timeout kill reaches any helper gh spawns,
+    // not just the direct child — mirrors run_git_timeout.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let child_pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let so = child.stdout.take();
+        let se = child.stderr.take();
+        let h_out = std::thread::spawn(move || {
+            let mut s = String::new();
+            if let Some(mut o) = so {
+                let _ = o.read_to_string(&mut s);
+            }
+            s
+        });
+        let h_err = std::thread::spawn(move || {
+            let mut s = String::new();
+            if let Some(mut e) = se {
+                let _ = e.read_to_string(&mut s);
+            }
+            s
+        });
+        let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        let stdout = h_out.join().unwrap_or_default();
+        let stderr = h_err.join().unwrap_or_default();
+        let _ = tx.send((stdout, stderr, code));
+    });
+    match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+        Ok(result) => Ok(result),
+        Err(_) => {
+            kill_tree_by_pid(child_pid);
+            Err(format!("gh timed out after {}s: gh {}", timeout_secs, args.join(" ")))
+        }
+    }
 }
 
 /// Map a submodule's working-tree path back to its `.gitmodules` section name
@@ -2957,19 +3016,37 @@ enum RepoClass {
     Skip,
 }
 
-/// The GitHub login vault-chat is authenticated as (lowercased), resolved once
-/// per process — telling the user's own repos from other people's needs it, and
-/// it never changes within a run. None if `gh` is missing/unauthenticated.
+/// The GitHub login vault-chat is authenticated as (lowercased) — telling the
+/// user's own repos from other people's needs it, and it never changes within
+/// a run once resolved. None if `gh` is missing/unauthenticated.
+///
+/// Only a *successful* resolution is cached, and permanently — a real login
+/// truly never changes mid-run. A failure is deliberately NOT cached: this used
+/// to be a `OnceLock<Option<String>>` that memoized `None` forever on the first
+/// call, so one transient hiccup at the very first sync tick (`gh` not finished
+/// warming up yet, a DNS blip, the network stall `run_gh_timeout` now bounds
+/// instead of hanging) permanently blinded `classify_repo` for the rest of the
+/// process — every nested repo, including the user's own, falls to `Skip`
+/// forever once `me` reads `None`. Retrying on every failure costs one cheap
+/// `gh api user` call per sync cycle until it succeeds, which is nothing next
+/// to silently disabling nested-repo sync for the process's whole lifetime.
 fn gh_login(cwd: &str) -> Option<String> {
-    static CACHE: OnceLock<Option<String>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            run_gh(cwd, &["api", "user", "-q", ".login"])
-                .ok()
-                .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_lowercase()) } else { None })
-                .filter(|s| !s.is_empty())
-        })
-        .clone()
+    static CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    {
+        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_some() {
+            return guard.clone();
+        }
+    }
+    let resolved = run_gh(cwd, &["api", "user", "-q", ".login"])
+        .ok()
+        .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_lowercase()) } else { None })
+        .filter(|s| !s.is_empty());
+    if let Some(login) = resolved.clone() {
+        *cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(login);
+    }
+    resolved
 }
 
 /// "https://github.com/owner/Repo.git" → "Repo" (repo name, case preserved).
@@ -2986,9 +3063,21 @@ fn repo_name(url: &str) -> Option<String> {
 /// Does the authenticated user have push access to `owner/repo`? Asks GitHub
 /// directly (`gh api repos/{owner}/{repo} .permissions.push`): a collaborator
 /// gets `true`, a stranger `false`/404. This is the probe that splits "shared"
-/// (commit to my own branch on the real repo) from "foreign" (fork it). Cached
-/// per `owner/repo` for the process — permissions don't flip mid-session, and
-/// it keeps a fast sync loop from hitting the API every cycle.
+/// (commit to my own branch on the real repo) from "foreign" (fork it). A
+/// definitive answer is cached per `owner/repo` for the process — permissions
+/// don't flip mid-session, and it keeps a fast sync loop from hitting the API
+/// every cycle.
+///
+/// Only a definitive answer is cached. `run_gh` now returns `Err` only on a
+/// real timeout/spawn failure (it used to hang instead — see `run_gh_timeout`);
+/// an `Ok` result, even a non-zero exit, means gh actually reached GitHub and
+/// got a real HTTP response (404/403 → genuinely no access), so it's safe to
+/// remember. Folding `Err` into the same cached `false` used to mean one
+/// network stall during the classification of a repo the user actually
+/// collaborates on would freeze that repo as "Foreign" for the rest of the
+/// process — and `sync_one_repo` forks a `Foreign` repo to the user's own
+/// account and repoints `origin` at the fork, which is exactly the wrong,
+/// hard-to-undo outcome for a repo they had push access to all along.
 fn can_push_to(cwd: &str, owner: &str, repo: &str) -> bool {
     static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
     let key = format!("{}/{}", owner.to_lowercase(), repo.to_lowercase());
@@ -2996,7 +3085,7 @@ fn can_push_to(cwd: &str, owner: &str, repo: &str) -> bool {
     if let Some(v) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return *v;
     }
-    let allowed = run_gh(
+    let result = run_gh(
         cwd,
         &[
             "api",
@@ -3004,10 +3093,13 @@ fn can_push_to(cwd: &str, owner: &str, repo: &str) -> bool {
             "--jq",
             ".permissions.push",
         ],
-    )
-    .ok()
-    .map(|(o, _, c)| c == 0 && o.trim() == "true")
-    .unwrap_or(false);
+    );
+    let Ok((out, _, code)) = result else {
+        // Timed out or couldn't even spawn gh — unknown, not "no access".
+        // Leave uncached so the next cycle gets a fresh, real answer.
+        return false;
+    };
+    let allowed = code == 0 && out.trim() == "true";
     cache
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -4788,7 +4880,7 @@ async fn vault_sync_set_remote(vault: String, url: String) -> Result<(), String>
     .map_err(|e| e.to_string())?
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct SyncOpResult {
     ok: bool,
     /// Short summary suitable for the status row. e.g.
@@ -5350,7 +5442,7 @@ fn reconcile_with_upstream(
     // abort-and-loop. Whatever the union can't handle (submodule pointers, a
     // genuinely divergent file edit) is auto-resolved so sync always makes
     // progress and never drops data.
-    let (_, mstderr, mut merge_code) =
+    let (_, mut mstderr, mut merge_code) =
         run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
     // A DIRTY working tree makes `git merge` REFUSE TO START ("your local
     // changes would be overwritten") — a failure with NO unmerged paths, which
@@ -5369,9 +5461,14 @@ fn reconcile_with_upstream(
         if unmerged_empty && !merge_in_progress {
             let _ = run_git_as(vault, &mn, &me, &["add", "-A"]);
             let _ = run_git_as(vault, &mn, &me, &["commit", "-q", "-m", "vault-chat: auto-sync"]);
-            let (_, _, retry_code) =
+            let (_, retry_stderr, retry_code) =
                 run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
             merge_code = retry_code;
+            // The retry's failure (if any) is what a caller actually needs to see —
+            // the first attempt's "local changes would be overwritten" message is
+            // stale and misleading once we've committed past it. Without this the
+            // rare "should be unreachable" branch below reports the wrong cause.
+            mstderr = retry_stderr;
         }
     }
     if merge_code == 0 {
@@ -6349,6 +6446,192 @@ mod sync_role_tests {
         assert!(is_sync_follower(d), "follower marker must gate the push");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+// End-to-end coverage for the actual two-machine reconciliation path
+// (`reconcile_with_upstream` + `resolve_merge_conflicts`), against real git
+// repos. Before this the algorithm this whole file's comments describe at
+// length (fast-forward, union-merge the jsonl logs, take-theirs-plus-sidecar
+// for a real conflict, commit-drift-then-retry on a dirty tree) had zero
+// automated coverage — every one of those behaviors was verified by hand or
+// on the box. These pin the exact contract so a future edit here can't
+// silently regress cross-machine sync again.
+#[cfg(test)]
+mod sync_reconcile_tests {
+    use super::{reconcile_with_upstream, run_git, run_git_mut};
+
+    // origin.git (bare) + two independent checkouts (A, B) each remoted at it —
+    // mirrors sync_role_tests' setup, not a real `git clone`, so neither
+    // checkout picks up tracking config we don't explicitly want.
+    fn make_trio(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!("vc_reconcile_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(origin.to_str().unwrap(), &["init", "-q", "--bare", "-b", "master"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "master"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git(ds, &["remote", "add", "origin", origin.to_str().unwrap()]).unwrap();
+        }
+        (origin, a, b)
+    }
+
+    // A fetched-ahead-but-not-diverged remote is the common case (the box
+    // committed, the laptop hasn't touched anything) — must fast-forward with
+    // no merge commit.
+    #[test]
+    fn fast_forward_pulls_cleanly_with_no_merge_commit() {
+        let (_origin, a, b) = make_trio("ff");
+        let (asr, bs) = (a.to_str().unwrap(), b.to_str().unwrap());
+        std::fs::write(a.join("note.md"), "base\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "base"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "-u", "origin", "master"]).unwrap();
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+
+        std::fs::write(a.join("note.md"), "base\nA-line\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "A advances"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+        let before_head = run_git(bs, &["rev-parse", "HEAD"]).unwrap().0;
+        let outcome = reconcile_with_upstream(bs, "master").expect("reconcile must not error");
+        let msg = outcome.expect("must succeed, not need caller error handling");
+        assert_eq!(msg, "pulled", "a clean fast-forward must report 'pulled'");
+        let after_head = run_git(bs, &["rev-parse", "HEAD"]).unwrap().0;
+        assert_ne!(before_head, after_head, "HEAD must actually advance");
+        let content = std::fs::read_to_string(b.join("note.md")).unwrap();
+        assert_eq!(content, "base\nA-line\n");
+        let _ = std::fs::remove_dir_all(a.parent().unwrap());
+    }
+
+    // Two machines committed independently to the SAME append-only jsonl file.
+    // `.gitattributes`' `merge=union` (seeded into every real vault) must
+    // reconcile that without ever hitting the conflict-resolution path at all.
+    #[test]
+    fn diverged_jsonl_logs_union_merge_without_conflict() {
+        let (_origin, a, b) = make_trio("union");
+        let (asr, bs) = (a.to_str().unwrap(), b.to_str().unwrap());
+        std::fs::write(a.join(".gitattributes"), "*.jsonl merge=union\n").unwrap();
+        std::fs::write(a.join("log.jsonl"), "{\"line\":1}\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "base"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "-u", "origin", "master"]).unwrap();
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+
+        // A appends, then pushes.
+        let mut a_log = std::fs::read_to_string(a.join("log.jsonl")).unwrap();
+        a_log.push_str("{\"line\":2,\"from\":\"A\"}\n");
+        std::fs::write(a.join("log.jsonl"), a_log).unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "A appends"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        // B independently appends its own line before ever seeing A's push.
+        let mut b_log = std::fs::read_to_string(b.join("log.jsonl")).unwrap();
+        b_log.push_str("{\"line\":2,\"from\":\"B\"}\n");
+        std::fs::write(b.join("log.jsonl"), b_log).unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "B appends"]).unwrap();
+
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+        let outcome = reconcile_with_upstream(bs, "master").expect("reconcile must not error");
+        let msg = outcome.expect("union-mergeable divergence must succeed");
+        assert_eq!(msg, "merged origin", "a clean union merge needs no conflict resolution");
+        let merged = std::fs::read_to_string(b.join("log.jsonl")).unwrap();
+        assert!(merged.contains("\"from\":\"A\""), "A's line must survive the union");
+        assert!(merged.contains("\"from\":\"B\""), "B's line must survive the union");
+        let unmerged = run_git(bs, &["diff", "--name-only", "--diff-filter=U"]).unwrap().0;
+        assert!(unmerged.trim().is_empty(), "union merge must leave nothing unresolved");
+        let _ = std::fs::remove_dir_all(a.parent().unwrap());
+    }
+
+    // Two machines edit the SAME line of the SAME plain file — a genuine
+    // divergent edit git can't auto-merge. `resolve_merge_conflicts` must
+    // still make progress (never leave the repo mid-merge): take theirs into
+    // the tree, and preserve ours in a `<path>.conflict` sidecar so nothing is
+    // silently dropped.
+    #[test]
+    fn diverged_real_conflict_takes_theirs_and_preserves_ours_in_sidecar() {
+        let (_origin, a, b) = make_trio("conflict");
+        let (asr, bs) = (a.to_str().unwrap(), b.to_str().unwrap());
+        std::fs::write(a.join("note.md"), "base\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "base"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "-u", "origin", "master"]).unwrap();
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+
+        std::fs::write(a.join("note.md"), "base\nA wrote this\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "A edits"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        std::fs::write(b.join("note.md"), "base\nB wrote this instead\n").unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "B edits"]).unwrap();
+
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+        let outcome = reconcile_with_upstream(bs, "master").expect("reconcile must not error");
+        let msg = outcome.expect("a real conflict must still resolve, not surface as a caller error");
+        assert_eq!(msg, "merged origin (auto-resolved)");
+        let resolved = std::fs::read_to_string(b.join("note.md")).unwrap();
+        assert_eq!(resolved, "base\nA wrote this\n", "theirs must win in the tree");
+        let sidecar = std::fs::read_to_string(b.join("note.md.conflict")).unwrap();
+        assert_eq!(sidecar, "base\nB wrote this instead\n", "ours must survive in the sidecar");
+        let unmerged = run_git(bs, &["diff", "--name-only", "--diff-filter=U"]).unwrap().0;
+        assert!(unmerged.trim().is_empty(), "conflict resolution must leave nothing unresolved");
+        let _ = std::fs::remove_dir_all(a.parent().unwrap());
+    }
+
+    // The dirty-working-tree case `reconcile_with_upstream` specifically
+    // guards against: B never committed its edit, so it isn't "ahead" of
+    // origin at all, but the SAME file also moved on origin — `git merge`
+    // (and `--ff-only`) both refuse to even start ("local changes would be
+    // overwritten"), which has no unmerged paths and no MERGE_HEAD. That must
+    // be read as "commit the drift and retry", not misread as an empty
+    // successful merge to commit.
+    #[test]
+    fn dirty_tree_on_incoming_path_is_committed_and_retried() {
+        let (_origin, a, b) = make_trio("dirty");
+        let (asr, bs) = (a.to_str().unwrap(), b.to_str().unwrap());
+        std::fs::write(a.join("note.md"), "base\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "base"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "-u", "origin", "master"]).unwrap();
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+
+        // A advances past the shared base.
+        std::fs::write(a.join("note.md"), "base\nA wrote this\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "A edits"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        // B never commits — this is a dirty working tree, not a local commit.
+        std::fs::write(b.join("note.md"), "base\nB wrote this instead\n").unwrap();
+
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+        let outcome = reconcile_with_upstream(bs, "master").expect("reconcile must not error");
+        let msg = outcome.expect("dirty-tree drift must be committed and reconciled, not bubbled up as an error");
+        assert_eq!(
+            msg, "merged origin (auto-resolved)",
+            "the committed drift now genuinely conflicts with A's edit and must auto-resolve"
+        );
+        let resolved = std::fs::read_to_string(b.join("note.md")).unwrap();
+        assert_eq!(resolved, "base\nA wrote this\n");
+        let sidecar = std::fs::read_to_string(b.join("note.md.conflict")).unwrap();
+        assert_eq!(sidecar, "base\nB wrote this instead\n");
+        // No leftover merge state — the repo must be immediately usable again.
+        let merge_head = run_git(bs, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+        assert!(!matches!(merge_head, Ok((_, _, 0))), "must not leave a merge in progress");
+        let _ = std::fs::remove_dir_all(a.parent().unwrap());
     }
 }
 
