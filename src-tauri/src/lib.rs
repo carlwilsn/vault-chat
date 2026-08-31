@@ -2594,6 +2594,35 @@ fn abort_stuck_merge_or_rebase(vault: &str) {
     }
 }
 
+/// The repo's current branch name — robust to an UNBORN branch. A freshly
+/// `git init`'d repo with zero commits has HEAD symbolically pointing at a
+/// real branch name (e.g. "main") that just hasn't been committed to yet;
+/// `git rev-parse --abbrev-ref HEAD` (the naive way to read "current branch")
+/// FAILS there with "ambiguous argument HEAD: unknown revision", because it
+/// tries to resolve HEAD to a commit. `symbolic-ref` reads the symbolic name
+/// itself and never needs a commit to exist, so it succeeds in both the
+/// normal and the unborn case, and returns None only for a genuinely detached
+/// HEAD (or a corrupt/non-repo, which callers have already ruled out).
+///
+/// Without this, a second machine that `git init`s an empty folder, adds a
+/// remote pointing at an existing vault, and enables sync BEFORE its own
+/// first local commit could never pull that history down: `vault_sync_pull`
+/// would bail out on "no current branch" on every tick, forever, even though
+/// a plain `git fetch` + `git merge --ff-only` works perfectly fine on an
+/// unborn HEAD.
+fn current_branch(vault: &str) -> Option<String> {
+    let (out, _, code) = run_git(vault, &["symbolic-ref", "--short", "-q", "HEAD"]).ok()?;
+    if code != 0 {
+        return None;
+    }
+    let b = out.trim().to_string();
+    if b.is_empty() {
+        None
+    } else {
+        Some(b)
+    }
+}
+
 /// Run a mutating git sequence under the repo lock, after clearing any stale
 /// lock. Serializes against every other in-process git writer for this repo.
 fn with_repo_lock<T>(vault: &str, f: impl FnOnce() -> T) -> T {
@@ -4939,11 +4968,8 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         // mission-state change — the surgical replacement for the old
         // pull-only gate. See is_sync_follower / sanitize_mission_zone.
         if is_sync_follower(&vault) {
-            if let Ok((b, _, 0)) = run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"]) {
-                let b = b.trim().to_string();
-                if b != "HEAD" {
-                    sanitize_mission_zone(&vault, &b);
-                }
+            if let Some(b) = current_branch(&vault) {
+                sanitize_mission_zone(&vault, &b);
             }
         }
         // Sync every nested repo first — each by its own remote and the user's
@@ -5430,24 +5456,20 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         // progress" and the vault stays wedged.
         abort_stuck_merge_or_rebase(&vault);
         // Detect the local branch — most repos default to main, but a
-        // pre-existing vault may be on master or something else.
-        let (branch_out, _, branch_code) =
-            run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-        if branch_code != 0 {
-            return Ok(SyncOpResult {
-                ok: false,
-                message: "no current branch".into(),
-                error: true,
-            });
-        }
-        let branch = branch_out.trim();
-        if branch.is_empty() || branch == "HEAD" {
-            return Ok(SyncOpResult {
-                ok: false,
-                message: "detached HEAD".into(),
-                error: true,
-            });
-        }
+        // pre-existing vault may be on master or something else. Robust to an
+        // unborn HEAD (a freshly-init'd vault on its first-ever pull): see
+        // `current_branch`.
+        let branch = match current_branch(&vault) {
+            Some(b) => b,
+            None => {
+                return Ok(SyncOpResult {
+                    ok: false,
+                    message: "detached HEAD".into(),
+                    error: true,
+                });
+            }
+        };
+        let branch = branch.as_str();
         let (_, _, code) = run_git(&vault, &["remote", "get-url", "origin"])?;
         if code != 0 {
             return Ok(SyncOpResult {
@@ -5464,9 +5486,11 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
                 error: true,
             });
         }
-        // Reconcile with the freshly-fetched upstream: fast-forward when we can,
-        // otherwise a real merge. Shared with push-on-rejection so both paths
-        // resolve a divergence identically.
+        // Reconcile with the freshly-fetched upstream: fast-forward when we can
+        // (this is also what brings an unborn HEAD's working tree up to date —
+        // `merge --ff-only` happily populates a branch that has zero commits of
+        // its own yet), otherwise a real merge. Shared with push-on-rejection so
+        // both paths resolve a divergence identically.
         let pulled_msg = match reconcile_with_upstream(&vault, branch)? {
             Ok(msg) => msg,
             Err(e) => return Ok(e),
@@ -5637,16 +5661,16 @@ async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
                 }
             }
         }
-        let (branch_out, _, branch_code) =
-            run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-        if branch_code != 0 || branch_out.trim() == "HEAD" {
-            return Ok(SyncOpResult {
-                ok: false,
-                message: "no current branch".into(),
-                error: true,
-            });
-        }
-        let branch = branch_out.trim().to_string();
+        let branch = match current_branch(&vault) {
+            Some(b) => b,
+            None => {
+                return Ok(SyncOpResult {
+                    ok: false,
+                    message: "detached HEAD".into(),
+                    error: true,
+                });
+            }
+        };
         let (_, _, code) = run_git(&vault, &["remote", "get-url", "origin"])?;
         if code != 0 {
             return Ok(SyncOpResult {
@@ -6464,6 +6488,247 @@ mod conversation_jsonl_tests {
         assert_eq!(deduped_line_count(disk_full), 4);
         assert_eq!(deduped_line_count(truncated), 3);
         assert!(deduped_line_count(truncated) < deduped_line_count(disk_full));
+    }
+}
+
+// End-to-end tests for the cross-machine sync loop itself (commit/pull/push +
+// the repo lock), as opposed to the JSONL reconciliation helpers above. These
+// call the same #[tauri::command] functions the frontend invokes, against real
+// on-disk git repos and a bare "origin", so they exercise the exact code path
+// two real machines hit — including the failure modes that have actually wedged
+// sync in the field (concurrent divergent pushes, the repo-lock race, and
+// `status` contending with a writer's index.lock).
+#[cfg(test)]
+mod vault_sync_integration_tests {
+    use super::{run_git, run_git_mut, vault_sync_commit_local, vault_sync_pull, vault_sync_push, vault_sync_status, SyncOpResult};
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("vc_sync_it_{}_{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn init_checkout(dir: &std::path::Path, origin: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let d = dir.to_str().unwrap();
+        run_git(d, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(d, &["config", "user.email", "t@t"]).unwrap();
+        run_git(d, &["config", "user.name", "t"]).unwrap();
+        run_git(d, &["remote", "add", "origin", origin]).unwrap();
+    }
+
+    // Regression test for the unborn-HEAD bug: a second machine that
+    // `git init`s an empty folder, adds a remote pointing at an existing
+    // vault, and pulls BEFORE ever making a local commit must still pull the
+    // existing history down — not fail forever on "no current branch". This
+    // is the exact state a fresh vault-chat checkout is in for the brief
+    // window between `git init` and its first `--allow-empty` seed commit,
+    // and the state any manually `git init`'d + `remote add`'d folder is in
+    // indefinitely until this fix.
+    #[tokio::test]
+    async fn pull_recovers_from_unborn_head() {
+        let base = scratch("unborn");
+        let origin_dir = base.join("origin.git");
+        std::fs::create_dir_all(&origin_dir).unwrap();
+        let og = origin_dir.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        let seed = base.join("seed");
+        init_checkout(&seed, og);
+        std::fs::write(seed.join("existing.md"), "already on the box\n").unwrap();
+        let ss = seed.to_str().unwrap().to_string();
+        let r = vault_sync_commit_local(ss.clone()).await.unwrap();
+        assert!(r.ok, "seed commit: {}", r.message);
+        let r = vault_sync_push(ss).await.unwrap();
+        assert!(r.ok, "seed push: {}", r.message);
+
+        // The new machine: `git init` + `remote add`, ZERO commits — an unborn
+        // HEAD, exactly like a brand-new vault-chat checkout before its first
+        // autosave, or a folder a user set up by hand.
+        let laptop = base.join("laptop");
+        init_checkout(&laptop, og);
+        let ls = laptop.to_str().unwrap().to_string();
+
+        let r = vault_sync_pull(ls.clone()).await.unwrap();
+        assert!(r.ok, "pull on unborn HEAD must succeed, got: {}", r.message);
+        assert!(
+            laptop.join("existing.md").exists(),
+            "pull on unborn HEAD must populate the working tree from origin"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Two machines (the always-on box + an intermittent laptop) sharing one bare
+    // origin, each committing a DIFFERENT file with no coordination — the
+    // everyday concurrent-edit case a real cross-machine setup hits constantly.
+    // Exercises the full commit -> push -> (rejected) -> reconcile -> push loop
+    // end to end and asserts BOTH machines converge on BOTH files with no data
+    // loss and no lingering error.
+    #[tokio::test]
+    async fn concurrent_divergent_pushes_converge_without_loss() {
+        let base = scratch("divergent");
+        let origin_dir = base.join("origin.git");
+        std::fs::create_dir_all(&origin_dir).unwrap();
+        let og = origin_dir.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        let a = base.join("A");
+        let b = base.join("B");
+        init_checkout(&a, og);
+        init_checkout(&b, og);
+        let asr = a.to_str().unwrap().to_string();
+        let bs = b.to_str().unwrap().to_string();
+
+        // Seed origin from A so both sides have a common base to track.
+        std::fs::write(a.join("seed.md"), "seed\n").unwrap();
+        let r = vault_sync_commit_local(asr.clone()).await.unwrap();
+        assert!(r.ok, "seed commit: {}", r.message);
+        let r = vault_sync_push(asr.clone()).await.unwrap();
+        assert!(r.ok, "seed push: {}", r.message);
+        let r = vault_sync_pull(bs.clone()).await.unwrap();
+        assert!(r.ok, "B seed pull: {}", r.message);
+
+        // Now A and B each write + commit a DIFFERENT file without coordinating.
+        std::fs::write(a.join("from-a.md"), "a's note\n").unwrap();
+        std::fs::write(b.join("from-b.md"), "b's note\n").unwrap();
+        let ra = vault_sync_commit_local(asr.clone()).await.unwrap();
+        assert!(ra.ok, "A commit: {}", ra.message);
+        let rb = vault_sync_commit_local(bs.clone()).await.unwrap();
+        assert!(rb.ok, "B commit: {}", rb.message);
+
+        // A pushes first and wins the race.
+        let pa = vault_sync_push(asr.clone()).await.unwrap();
+        assert!(pa.ok, "A push: {}", pa.message);
+
+        // B's push is now rejected (remote advanced under it) — the code must
+        // reconcile inline and retry, not just surface the raw rejection.
+        let pb = vault_sync_push(bs.clone()).await.unwrap();
+        assert!(pb.ok, "B push should self-heal via reconcile+retry: {}", pb.message);
+        assert!(
+            pb.message.contains("merged") || pb.message.contains("pushed"),
+            "unexpected push outcome: {}",
+            pb.message
+        );
+
+        // A pulls the merge back down.
+        let fa = vault_sync_pull(asr.clone()).await.unwrap();
+        assert!(fa.ok, "A pull: {}", fa.message);
+
+        // Both machines must now see BOTH files — no data loss.
+        for dir in [&a, &b] {
+            assert!(dir.join("from-a.md").exists(), "{:?} missing from-a.md", dir);
+            assert!(dir.join("from-b.md").exists(), "{:?} missing from-b.md", dir);
+        }
+
+        // And both must read as fully synced: no uncommitted changes, nothing
+        // stranded ahead of the remote.
+        for checkout in [asr, bs] {
+            let st = vault_sync_status(checkout.clone()).await.unwrap();
+            assert!(!st.has_changes, "{}: dirty after sync", checkout);
+            assert_eq!(st.ahead, 0, "{}: commits stranded unpushed", checkout);
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // The in-process repo lock must actually serialize concurrent sync ops on
+    // the SAME vault — the failure mode that wedged the summer box (a 2s status
+    // tick piling up behind a slow commit until both hit the 90s timeout). Fire
+    // a burst of concurrent commit_local / status calls at one vault from
+    // multiple tokio tasks and require every one to return promptly with no
+    // error and no corrupted repo state.
+    #[tokio::test]
+    async fn concurrent_syncs_on_same_vault_never_wedge() {
+        let base = scratch("lockrace");
+        let origin_dir = base.join("origin.git");
+        std::fs::create_dir_all(&origin_dir).unwrap();
+        let og = origin_dir.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        let a = base.join("A");
+        init_checkout(&a, og);
+        let asr = a.to_str().unwrap().to_string();
+        std::fs::write(a.join("seed.md"), "seed\n").unwrap();
+        vault_sync_commit_local(asr.clone()).await.unwrap();
+        vault_sync_push(asr.clone()).await.unwrap();
+
+        // 8 concurrent tasks: half writing+committing, half just polling status —
+        // mirrors the real loop's watch-tick-vs-commit race.
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let dir = asr.clone();
+            handles.push(tokio::spawn(async move {
+                if i % 2 == 0 {
+                    let _ = std::fs::write(
+                        PathBuf::from(&dir).join(format!("f{}.md", i)),
+                        format!("{}\n", i),
+                    );
+                    vault_sync_commit_local(dir).await
+                } else {
+                    vault_sync_status(dir).await.map(|_| SyncOpResult {
+                        ok: true,
+                        message: "status".into(),
+                        error: false,
+                    })
+                }
+            }));
+        }
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        for h in handles {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let res = tokio::time::timeout(remaining, h)
+                .await
+                .expect("a concurrent sync op hung — the repo lock wedged")
+                .expect("task panicked")
+                .expect("sync op returned an error");
+            assert!(res.ok, "op reported failure: {}", res.message);
+        }
+
+        // Repo must be left in a clean, non-corrupted state: no leftover lock,
+        // no in-progress merge/rebase, `git status` succeeds.
+        assert!(!a.join(".git/index.lock").exists(), "stale index.lock left behind");
+        let st = vault_sync_status(asr.clone()).await.unwrap();
+        assert!(st.has_repo);
+        assert!(!st.has_changes, "commits should have absorbed every writer's file");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // `git status`/`rev-list` must never block behind a writer's index.lock —
+    // that contention is exactly what pushed `status` past the 90s timeout on
+    // the summer box. Hold a real ("live") index.lock and confirm status still
+    // returns immediately rather than waiting on it (GIT_OPTIONAL_LOCKS=0).
+    #[tokio::test]
+    async fn status_does_not_block_on_a_live_index_lock() {
+        let base = scratch("optlocks");
+        let a = base.join("A");
+        std::fs::create_dir_all(&a).unwrap();
+        let d = a.to_str().unwrap().to_string();
+        run_git(&d, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(&d, &["config", "user.email", "t@t"]).unwrap();
+        run_git(&d, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(a.join("f.md"), "x\n").unwrap();
+        run_git_mut(&d, &["add", "-A"]).unwrap();
+        run_git_mut(&d, &["commit", "-q", "-m", "seed"]).unwrap();
+
+        // Simulate a writer mid-commit: a live index.lock that must NOT be
+        // treated as stale (that's a separate recovery path) — status must
+        // still not contend for it at all.
+        std::fs::write(a.join(".git/index.lock"), b"").unwrap();
+
+        let started = std::time::Instant::now();
+        let res = tokio::time::timeout(std::time::Duration::from_secs(5), vault_sync_status(d.clone()))
+            .await
+            .expect("status blocked on a live index.lock")
+            .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(res.has_repo);
+
+        let _ = std::fs::remove_file(a.join(".git/index.lock"));
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
 
