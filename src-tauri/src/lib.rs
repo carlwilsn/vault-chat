@@ -2961,15 +2961,17 @@ enum RepoClass {
 /// per process — telling the user's own repos from other people's needs it, and
 /// it never changes within a run. None if `gh` is missing/unauthenticated.
 fn gh_login(cwd: &str) -> Option<String> {
-    static CACHE: OnceLock<Option<String>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            run_gh(cwd, &["api", "user", "-q", ".login"])
-                .ok()
-                .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_lowercase()) } else { None })
-                .filter(|s| !s.is_empty())
-        })
-        .clone()
+    // TTL, not a permanent OnceLock — same self-heal reasoning as GH_TOKEN
+    // above: a transient `gh api` failure (network blip, gh not authenticated
+    // yet at boot) must not permanently strand nested-repo classification as
+    // `Skip` for the rest of the process's life.
+    static CACHE: TtlCache<Option<String>> = TtlCache::new(Duration::from_secs(600));
+    CACHE.get_or_refresh(|| {
+        run_gh(cwd, &["api", "user", "-q", ".login"])
+            .ok()
+            .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_lowercase()) } else { None })
+            .filter(|s| !s.is_empty())
+    })
 }
 
 /// "https://github.com/owner/Repo.git" → "Repo" (repo name, case preserved).
@@ -2990,11 +2992,21 @@ fn repo_name(url: &str) -> Option<String> {
 /// per `owner/repo` for the process — permissions don't flip mid-session, and
 /// it keeps a fast sync loop from hitting the API every cycle.
 fn can_push_to(cwd: &str, owner: &str, repo: &str) -> bool {
-    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    // TTL per key, not a permanent cache: a transient `gh api` failure (rate
+    // limit, network blip) falls through to `unwrap_or(false)` — permanently
+    // caching that would misclassify a repo the user actually has push
+    // access to as `Foreign` for the rest of the process's life, triggering
+    // an unwanted one-time fork the very next time this repo is seen fresh.
+    // 10 minutes is enough to ride out a blip while still not hammering the
+    // API on every nested-repo sync pass.
+    static CACHE: OnceLock<Mutex<HashMap<String, (bool, std::time::Instant)>>> = OnceLock::new();
+    const TTL: Duration = Duration::from_secs(600);
     let key = format!("{}/{}", owner.to_lowercase(), repo.to_lowercase());
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(v) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return *v;
+    if let Some((v, at)) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        if at.elapsed() < TTL {
+            return *v;
+        }
     }
     let allowed = run_gh(
         cwd,
@@ -3011,7 +3023,7 @@ fn can_push_to(cwd: &str, owner: &str, repo: &str) -> bool {
     cache
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(key, allowed);
+        .insert(key, (allowed, std::time::Instant::now()));
     allowed
 }
 
@@ -3340,99 +3352,128 @@ pub(crate) fn run_git(
     run_git_timeout(cwd, args, GIT_TIMEOUT_SECS)
 }
 
-// Absolute path to the `gh` CLI, resolved once.
-static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+// Absolute path to the `gh` CLI and the current `gh auth token`, both behind a
+// short TTL cache rather than a permanent OnceLock. The always-on box
+// autostarts vault-chat on boot, before the network (or a not-yet-finished
+// `gh auth login`) is necessarily up — a OnceLock that caches the FIRST
+// lookup forever meant a transient failure at that moment (gh not yet on
+// PATH, DNS not up, token endpoint unreachable) permanently disabled
+// GitHub-authenticated git for the rest of that run: every push/fetch over
+// HTTPS would fail with "could not read Username" until the app was
+// restarted by hand. A short TTL lets both self-heal on the next sync tick
+// once the box catches up, at the cost of a re-check every few minutes
+// (cheap: a few stat calls or one `gh` subprocess) instead of once per
+// process lifetime.
+struct TtlCache<T> {
+    slot: Mutex<Option<(T, std::time::Instant)>>,
+    ttl: Duration,
+}
 
-// GitHub token from `gh auth token`, cached for the app's lifetime.
-// Token lifetime is ~8h for gh OAuth; within a single app session this is fine.
-static GH_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+impl<T: Clone> TtlCache<T> {
+    const fn new(ttl: Duration) -> Self {
+        Self { slot: Mutex::new(None), ttl }
+    }
 
-/// Call `gh auth token` directly in Rust (no shell, no quoting), cache result.
-fn get_gh_token() -> Option<String> {
-    GH_TOKEN
-        .get_or_init(|| {
-            let gh = find_gh()?;
-            let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
-            if !out.status.success() {
-                return None;
+    fn get_or_refresh(&self, compute: impl FnOnce() -> T) -> T {
+        let mut guard = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((v, at)) = guard.as_ref() {
+            if at.elapsed() < self.ttl {
+                return v.clone();
             }
-            let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if token.is_empty() { None } else { Some(token) }
-        })
-        .clone()
+        }
+        let v = compute();
+        *guard = Some((v.clone(), std::time::Instant::now()));
+        v
+    }
+}
+
+static GH_PATH: TtlCache<Option<PathBuf>> = TtlCache::new(Duration::from_secs(600));
+static GH_TOKEN: TtlCache<Option<String>> = TtlCache::new(Duration::from_secs(300));
+
+/// Call `gh auth token` directly in Rust (no shell, no quoting), cache result
+/// for a few minutes (see `TtlCache` doc above) rather than for the process
+/// lifetime.
+fn get_gh_token() -> Option<String> {
+    GH_TOKEN.get_or_refresh(|| {
+        let gh = find_gh()?;
+        let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if token.is_empty() { None } else { Some(token) }
+    })
 }
 
 fn find_gh() -> Option<PathBuf> {
-    GH_PATH
-        .get_or_init(|| {
-            #[cfg(windows)]
-            {
-                let candidates = [
-                    std::env::var("ProgramFiles")
-                        .ok()
-                        .map(|p| PathBuf::from(p).join("GitHub CLI").join("gh.exe")),
-                    std::env::var("ProgramFiles(x86)")
-                        .ok()
-                        .map(|p| PathBuf::from(p).join("GitHub CLI").join("gh.exe")),
-                    std::env::var("LocalAppData").ok().map(|p| {
-                        PathBuf::from(p)
-                            .join("Programs")
-                            .join("GitHub CLI")
-                            .join("gh.exe")
-                    }),
-                ];
-                for c in candidates.into_iter().flatten() {
-                    if c.is_file() {
-                        return Some(c);
-                    }
+    GH_PATH.get_or_refresh(|| {
+        #[cfg(windows)]
+        {
+            let candidates = [
+                std::env::var("ProgramFiles")
+                    .ok()
+                    .map(|p| PathBuf::from(p).join("GitHub CLI").join("gh.exe")),
+                std::env::var("ProgramFiles(x86)")
+                    .ok()
+                    .map(|p| PathBuf::from(p).join("GitHub CLI").join("gh.exe")),
+                std::env::var("LocalAppData").ok().map(|p| {
+                    PathBuf::from(p)
+                        .join("Programs")
+                        .join("GitHub CLI")
+                        .join("gh.exe")
+                }),
+            ];
+            for c in candidates.into_iter().flatten() {
+                if c.is_file() {
+                    return Some(c);
                 }
-                use std::os::windows::process::CommandExt;
-                let out = Command::new("where")
-                    .arg("gh")
-                    .creation_flags(0x08000000)
-                    .output()
-                    .ok()?;
-                if !out.status.success() {
-                    return None;
-                }
-                let first = String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .map(str::trim)
-                    .find(|l| !l.is_empty())?
-                    .to_string();
-                let p = PathBuf::from(first);
-                if p.is_file() { Some(p) } else { None }
             }
-            #[cfg(not(windows))]
-            {
-                // Common install locations first (apt/dnf, Homebrew on Intel and
-                // Apple Silicon, Linuxbrew), then a PATH lookup via `command -v`.
-                let candidates = [
-                    "/usr/bin/gh",
-                    "/usr/local/bin/gh",
-                    "/opt/homebrew/bin/gh",
-                    "/home/linuxbrew/.linuxbrew/bin/gh",
-                ];
-                for c in candidates {
-                    let p = PathBuf::from(c);
-                    if p.is_file() {
-                        return Some(p);
-                    }
-                }
-                let out = Command::new("sh").arg("-c").arg("command -v gh").output().ok()?;
-                if !out.status.success() {
-                    return None;
-                }
-                let first = String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .map(str::trim)
-                    .find(|l| !l.is_empty())?
-                    .to_string();
-                let p = PathBuf::from(first);
-                if p.is_file() { Some(p) } else { None }
+            use std::os::windows::process::CommandExt;
+            let out = Command::new("where")
+                .arg("gh")
+                .creation_flags(0x08000000)
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
             }
-        })
-        .clone()
+            let first = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())?
+                .to_string();
+            let p = PathBuf::from(first);
+            if p.is_file() { Some(p) } else { None }
+        }
+        #[cfg(not(windows))]
+        {
+            // Common install locations first (apt/dnf, Homebrew on Intel and
+            // Apple Silicon, Linuxbrew), then a PATH lookup via `command -v`.
+            let candidates = [
+                "/usr/bin/gh",
+                "/usr/local/bin/gh",
+                "/opt/homebrew/bin/gh",
+                "/home/linuxbrew/.linuxbrew/bin/gh",
+            ];
+            for c in candidates {
+                let p = PathBuf::from(c);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+            let out = Command::new("sh").arg("-c").arg("command -v gh").output().ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let first = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())?
+                .to_string();
+            let p = PathBuf::from(first);
+            if p.is_file() { Some(p) } else { None }
+        }
+    })
 }
 
 /// The `-c credential.https://github.com.helper=…` arg that makes git
