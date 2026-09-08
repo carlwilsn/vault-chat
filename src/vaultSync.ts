@@ -189,7 +189,7 @@ async function syncLogHost(): Promise<string> {
   return hostCache;
 }
 
-type SyncLogLevel = "error" | "recovered" | "merge";
+type SyncLogLevel = "error" | "recovered" | "merge" | "held";
 
 // Fire-and-forget: logging must never throw into or stall the sync loop.
 function appendSyncLog(
@@ -357,6 +357,12 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
   // to lastFailSig so a stuck nested repo doesn't mask, or get masked by, the
   // root vault's own pull/push health.
   let lastNestedNoteSig: string | null = null;
+  // Same dedup, for a held-back submodule gitlink: a sub-repo that can't push
+  // for a while (no permission, network, a big first push) holds every cycle —
+  // log the start of that run once, not on every commit tick, so a genuine
+  // pattern ("this repo never catches up") is visible without drowning it in
+  // per-tick repeats. `null` = nothing currently held.
+  let lastHeldSig: string | null = null;
 
   const recordResult = (op: string, r: SyncOpResult) => {
     if (!r.ok && r.error) {
@@ -386,6 +392,23 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
         }
       } else if (lastNestedNoteSig !== null) {
         lastNestedNoteSig = null;
+      }
+      // Scoped to the "commit" op specifically (the only one that ever
+      // produces a "held" message) — checking held-ness against an unrelated
+      // op's result (e.g. "pull") would flip-flop held→recovered→held every
+      // cycle instead of tracking one continuous incident.
+      if (op === "commit") {
+        const heldNow = r.message.includes("held");
+        if (heldNow) {
+          const sig = r.message;
+          if (sig !== lastHeldSig) {
+            lastHeldSig = sig;
+            appendSyncLog(vault, "held", op, r.message);
+          }
+        } else if (lastHeldSig !== null) {
+          appendSyncLog(vault, "recovered", op, "submodule pointer no longer held", { from: lastHeldSig });
+          lastHeldSig = null;
+        }
       }
       if (lastFailSig !== null) {
         appendSyncLog(vault, "recovered", op, r.message, { from: lastFailSig });

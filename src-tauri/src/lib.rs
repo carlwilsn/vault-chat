@@ -3360,19 +3360,19 @@ fn find_all_nested_repos(root: &std::path::Path) -> Vec<String> {
     found
 }
 
-/// Commit + sync every nested git repo in the vault, each on its own merits —
-/// classified by *its own* remote and the user's relationship to it (see
-/// `RepoClass`). Replaces the old submodule-only, vault-remote-gated path: a
-/// nested repo now syncs even when the vault root has no remote, and an embedded
-/// repo never registered as a submodule is handled too. This is what clears the
-/// per-repo "uncommitted changes" dots. Best-effort; never fatal to vault sync.
-/// Returns one note per nested repo that needs the user's attention (currently:
-/// an unresolved cross-machine divergence) so the caller can fold it into the
-/// SyncOpResult message — otherwise the only record is a stderr line nobody
-/// sees on a packaged, windowless app.
-fn sync_nested_repos(vault: &str, agent: bool) -> Vec<String> {
-    // Build the work list: registered submodules (carry a .gitmodules tracking
-    // branch we use for stale-pin recovery) ∪ embedded repos found on disk.
+/// Every nested repo this vault's sync should consider: registered submodules
+/// (from `.gitmodules`, carrying their declared tracking branch) unioned with
+/// any embedded repo found on disk that was never registered as one. One
+/// shared enumeration so every sync step — commit, push, gitlink hold,
+/// regression fix — sees the exact same set. Previously
+/// `hold_unpushed_submodule_gitlinks` and `fix_regressed_gitlinks` each walked
+/// only `.gitmodules` directly, so an embedded repo added later (never
+/// `git submodule add`-ed — just a folder with its own `.git`, which
+/// `sync_nested_repos`/`commit_nested_repos_local` already commit and push)
+/// got none of the un-pushed-pointer protection: its local-only commit could
+/// be captured as a superproject gitlink and pushed, stranding that pointer on
+/// a commit no other machine can ever fetch.
+fn nested_repo_worklist(vault: &str) -> Vec<(String, Option<String>)> {
     let mut repos: Vec<(String, Option<String>)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -3413,6 +3413,21 @@ fn sync_nested_repos(vault: &str, agent: bool) -> Vec<String> {
             repos.push((rel, None));
         }
     }
+    repos
+}
+
+/// Commit + sync every nested git repo in the vault, each on its own merits —
+/// classified by *its own* remote and the user's relationship to it (see
+/// `RepoClass`). Replaces the old submodule-only, vault-remote-gated path: a
+/// nested repo now syncs even when the vault root has no remote, and an embedded
+/// repo never registered as a submodule is handled too. This is what clears the
+/// per-repo "uncommitted changes" dots. Best-effort; never fatal to vault sync.
+/// Returns one note per nested repo that needs the user's attention (currently:
+/// an unresolved cross-machine divergence) so the caller can fold it into the
+/// SyncOpResult message — otherwise the only record is a stderr line nobody
+/// sees on a packaged, windowless app.
+fn sync_nested_repos(vault: &str, agent: bool) -> Vec<String> {
+    let repos = nested_repo_worklist(vault);
     if repos.is_empty() {
         return Vec::new();
     }
@@ -4991,27 +5006,8 @@ struct SyncOpResult {
 /// by class) is the separate `sync_nested_repos`, gated on opt-in remote sync.
 /// Returns how many nested repos it committed. Best-effort throughout.
 fn commit_nested_repos_local(vault: &str, agent: bool) -> u32 {
-    let mut repos: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if PathBuf::from(vault).join(".gitmodules").is_file() {
-        if let Ok((out, _, 0)) =
-            run_git(vault, &["config", "-f", ".gitmodules", "--get-regexp", "\\.path$"])
-        {
-            for line in out.lines() {
-                if let Some((_, rel)) = line.split_once(char::is_whitespace) {
-                    let rel = rel.trim();
-                    if !rel.is_empty() {
-                        repos.insert(rel.to_string());
-                    }
-                }
-            }
-        }
-    }
-    for rel in find_all_nested_repos(std::path::Path::new(vault)) {
-        repos.insert(rel);
-    }
-
     let mut committed = 0u32;
-    for rel in repos {
+    for (rel, _) in nested_repo_worklist(vault) {
         let sub = format!("{}/{}", vault, rel);
         if !PathBuf::from(&sub).join(".git").exists() {
             continue;
@@ -5206,65 +5202,78 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         // Repack if the append-only-log churn has piled up loose objects, so the
         // vault's .git doesn't balloon (362 MiB loose → ~tens packed observed).
         maybe_compact_git(&vault);
-        Ok(SyncOpResult {
-            ok: true,
-            message: with_notes("committed local changes".into()),
-            error: false,
-        })
+        // Surface a held-back pointer in the RETURNED message too (not just the
+        // eprintln! in hold_unpushed_submodule_gitlinks), since this message is
+        // what the frontend writes to the durable sync-log.jsonl — the record
+        // used to spot cross-machine patterns. Held pointers self-heal on a
+        // later cycle, but a run of them (e.g. a sub-repo that can never push)
+        // should be visible in that log, not just local app-log.txt.
+        let message = if held > 0 {
+            format!(
+                "committed local changes (held {} unpushed submodule pointer{})",
+                held,
+                if held == 1 { "" } else { "s" }
+            )
+        } else {
+            "committed local changes".into()
+        };
+        Ok(SyncOpResult { ok: true, message: with_notes(message), error: false })
         })
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
+/// Resolve the remote-tracking ref that represents "pushed" for a nested repo.
+/// Prefers the branch the sub-repo is ACTUALLY on: that's what `sync_one_repo`
+/// pushes to (its own branch for Mine/Internal, or a dedicated
+/// `vault-chat/<user>` branch for Shared — NOT necessarily the
+/// `.gitmodules`-declared branch, which used to be the only ref
+/// `fix_regressed_gitlinks`/`hold_unpushed_submodule_gitlinks` checked against.
+/// A registered Shared-class submodule's real pushes landed on
+/// `vault-chat/<user>`, so checking `origin/<cfg_branch>` (the team's default
+/// branch) against it almost never resolved a matching ref — silently
+/// disabling the un-pushed-pointer protection for exactly the class of repo
+/// most likely to hit push friction. Falls back to the `.gitmodules`-declared
+/// branch only when the sub-repo is detached (not yet attached by
+/// `sync_one_repo`) and so has no branch of its own to resolve from. Also the
+/// only ref an UNREGISTERED embedded repo (no `cfg_branch`) can resolve.
+fn submodule_remote_ref(sub: &str, cfg_branch: Option<&str>) -> Option<String> {
+    let head_branch = run_git(sub, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .and_then(|(b, _, c)| if c == 0 { Some(b.trim().to_string()) } else { None })
+        .filter(|b| !b.is_empty());
+    let branch = head_branch.or_else(|| {
+        cfg_branch.map(str::trim).filter(|b| !b.is_empty()).map(str::to_string)
+    })?;
+    Some(format!("origin/{}", branch))
+}
+
 /// After any successful merge (fast-forward or diverged), scan every submodule
 /// gitlink in HEAD and advance any that regressed — i.e., the merge resolved the
-/// pointer to a commit that is a strict ancestor of the sub-repo's
-/// `origin/<branch>` tip. This catches the silent auto-resolution case where git
-/// sees "remote changed the gitlink, local didn't → take theirs" and picks a
-/// stale box-pushed pointer without ever creating a conflict marker. Returns the
-/// relative paths of submodules that were advanced and staged; callers must
-/// create a follow-up commit if the list is non-empty.
+/// pointer to a commit that is a strict ancestor of the sub-repo's remote tip.
+/// This catches the silent auto-resolution case where git sees "remote changed
+/// the gitlink, local didn't → take theirs" and picks a stale box-pushed
+/// pointer without ever creating a conflict marker. Returns the relative paths
+/// of submodules that were advanced and staged; callers must create a
+/// follow-up commit if the list is non-empty.
 fn fix_regressed_gitlinks(vault: &str) -> Vec<String> {
-    let (out, _, c) = match run_git(
-        vault,
-        &["config", "-f", ".gitmodules", "--get-regexp", "submodule\\..*\\.path"],
-    ) {
-        Ok(r) => r,
-        Err(_) => return vec![],
-    };
-    if c != 0 {
-        return vec![];
-    }
     let mut fixed: Vec<String> = Vec::new();
-    for line in out.lines() {
-        let mut it = line.splitn(2, char::is_whitespace);
-        let key = it.next().unwrap_or("");
-        let rel = it.next().unwrap_or("").trim();
-        if rel.is_empty() {
-            continue;
-        }
-        // submodule.<name>.path → name
-        let name = key
-            .strip_prefix("submodule.")
-            .and_then(|s| s.strip_suffix(".path"))
-            .unwrap_or("");
-        if name.is_empty() {
-            continue;
-        }
-        let branch_key = format!("submodule.{}.branch", name);
-        let branch = match run_git(vault, &["config", "-f", ".gitmodules", "--get", &branch_key]) {
-            Ok((b, _, 0)) if !b.trim().is_empty() => b.trim().to_string(),
-            _ => continue,
-        };
+    for (rel, cfg_branch) in nested_repo_worklist(vault) {
         let sub = format!("{}/{}", vault, rel);
+        if !PathBuf::from(&sub).join(".git").exists() {
+            continue; // not materialized on this machine
+        }
+        let remote_ref = match submodule_remote_ref(&sub, cfg_branch.as_deref()) {
+            Some(r) => r,
+            None => continue, // detached with no declared branch — can't resolve a tip
+        };
         // Current gitlink in HEAD
         let current = match run_git(vault, &["rev-parse", &format!("HEAD:{}", rel)]) {
             Ok((s, _, 0)) if !s.trim().is_empty() => s.trim().to_string(),
             _ => continue,
         };
         // Sub-repo's remote branch tip
-        let remote_ref = format!("origin/{}", branch);
         let tip = match run_git(&sub, &["rev-parse", &remote_ref]) {
             Ok((s, _, 0)) if !s.trim().is_empty() => s.trim().to_string(),
             _ => continue,
@@ -5281,19 +5290,19 @@ fn fix_regressed_gitlinks(vault: &str) -> Vec<String> {
             continue;
         }
         eprintln!(
-            "[sync] gitlink regression in '{}': {} → {} (branch {}); advancing",
+            "[sync] gitlink regression in '{}': {} → {} (ref {}); advancing",
             rel,
             &current[..8.min(current.len())],
             &tip[..8.min(tip.len())],
-            branch
+            remote_ref
         );
         if matches!(
-            run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &tip, rel]),
+            run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &tip, &rel]),
             Ok((_, _, 0))
         ) {
             // Move the sub-repo's working tree to the tip so it matches the new gitlink.
             let _ = run_git_mut(&sub, &["checkout", "--detach", &tip]);
-            fixed.push(rel.to_string());
+            fixed.push(rel.clone());
         }
     }
     fixed
@@ -5316,41 +5325,21 @@ fn fix_regressed_gitlinks(vault: &str) -> Vec<String> {
 /// is left alone (we can't prove a remote either way). Returns how many pointers
 /// were held.
 fn hold_unpushed_submodule_gitlinks(vault: &str) -> usize {
-    let (out, _, c) = match run_git(
-        vault,
-        &["config", "-f", ".gitmodules", "--get-regexp", "submodule\\..*\\.path"],
-    ) {
-        Ok(r) => r,
-        Err(_) => return 0,
-    };
-    if c != 0 {
-        return 0;
-    }
     let mut held = 0usize;
-    for line in out.lines() {
-        let mut it = line.splitn(2, char::is_whitespace);
-        let key = it.next().unwrap_or("");
-        let rel = it.next().unwrap_or("").trim();
-        if rel.is_empty() {
-            continue;
-        }
-        // submodule.<name>.path → the configured tracking branch, which is how we
-        // resolve the sub-repo's remote tip (same source as fix_regressed_gitlinks).
-        let name = match key.strip_prefix("submodule.").and_then(|s| s.strip_suffix(".path")) {
-            Some(n) if !n.is_empty() => n,
-            _ => continue,
-        };
-        let branch = match run_git(
-            vault,
-            &["config", "-f", ".gitmodules", "--get", &format!("submodule.{}.branch", name)],
-        ) {
-            Ok((b, _, 0)) if !b.trim().is_empty() => b.trim().to_string(),
-            _ => continue, // no tracking branch → can't resolve a remote ref
-        };
+    for (rel, cfg_branch) in nested_repo_worklist(vault) {
         let sub = format!("{}/{}", vault, rel);
         if !PathBuf::from(&sub).join(".git").exists() {
             continue; // not materialized on this machine
         }
+        // Resolve the sub-repo's remote tip, which is how we tell "pushed" from
+        // "not yet" (same source as fix_regressed_gitlinks — see its doc comment
+        // for why this must be the sub-repo's ACTUAL branch, not necessarily the
+        // `.gitmodules`-declared one, and why an unregistered embedded repo needs
+        // this too).
+        let remote_ref = match submodule_remote_ref(&sub, cfg_branch.as_deref()) {
+            Some(r) => r,
+            None => continue, // detached with no declared branch → can't resolve a remote ref
+        };
         // What `add -A` just staged for this gitlink (the sub's working HEAD).
         let staged = match run_git(vault, &["rev-parse", &format!(":{}", rel)]) {
             Ok((s, _, 0)) if !s.trim().is_empty() => s.trim().to_string(),
@@ -5365,10 +5354,9 @@ fn hold_unpushed_submodule_gitlinks(vault: &str) -> usize {
             continue; // pointer didn't move this cycle
         }
         // Is the staged sub-commit on the sub-repo's remote yet? Containment in
-        // `origin/<branch>` — the remote-tracking ref, advanced only by a
-        // successful fetch/push — is the honest "did this reach the remote" test.
-        // Missing ref (never fetched) → can't prove it, leave the bump alone.
-        let remote_ref = format!("origin/{}", branch);
+        // the remote-tracking ref — advanced only by a successful fetch/push — is
+        // the honest "did this reach the remote" test. Missing ref (never
+        // fetched, or no remote at all) → can't prove it, leave the bump alone.
         let have_ref = matches!(
             run_git(&sub, &["rev-parse", "--verify", "--quiet", &remote_ref]),
             Ok((_, _, 0))
@@ -5385,7 +5373,7 @@ fn hold_unpushed_submodule_gitlinks(vault: &str) -> usize {
         }
         // Hold the parent pointer at the last-pushed commit.
         if matches!(
-            run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &committed, rel]),
+            run_git_mut(vault, &["update-index", "--cacheinfo", "160000", &committed, &rel]),
             Ok((_, _, 0))
         ) {
             held += 1;
@@ -7618,6 +7606,495 @@ fn git_guard(path: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
+mod sync_gitlink_tests {
+    use super::{
+        fix_regressed_gitlinks, hold_unpushed_submodule_gitlinks, run_git, run_git_mut,
+    };
+
+    fn init_repo(dir: &std::path::Path, branch: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let d = dir.to_str().unwrap();
+        run_git(d, &["init", "-q", "-b", branch]).unwrap();
+        run_git(d, &["config", "user.email", "t@t"]).unwrap();
+        run_git(d, &["config", "user.name", "t"]).unwrap();
+    }
+
+    fn commit_all(dir: &std::path::Path, msg: &str) {
+        let d = dir.to_str().unwrap();
+        run_git_mut(d, &["add", "-A"]).unwrap();
+        run_git_mut(d, &["commit", "-q", "-m", msg]).unwrap();
+    }
+
+    fn head(dir: &std::path::Path) -> String {
+        run_git(dir.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap().0.trim().to_string()
+    }
+
+    // Regression proof: an EMBEDDED nested repo that was never registered as a
+    // `.gitmodules` submodule (just a folder with its own `.git` — the case
+    // `sync_nested_repos`/`commit_nested_repos_local` already commit and push)
+    // must still get the "don't publish an un-pushed pointer" protection.
+    // Before this fix, `hold_unpushed_submodule_gitlinks` only ever walked
+    // `.gitmodules`, so this exact repo shape sailed straight through and got
+    // its un-pushed commit captured as a superproject gitlink.
+    #[test]
+    fn unregistered_embedded_repo_unpushed_pointer_is_held() {
+        let base = std::env::temp_dir().join(format!("vc_hold_unreg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let vault = base.join("vault");
+        let sub = vault.join("work");
+        let sub_origin = base.join("work-origin.git");
+
+        init_repo(&vault, "main");
+        std::fs::create_dir_all(&sub_origin).unwrap();
+        run_git(sub_origin.to_str().unwrap(), &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        init_repo(&sub, "main");
+        run_git_mut(sub.to_str().unwrap(), &["remote", "add", "origin", sub_origin.to_str().unwrap()]).unwrap();
+        std::fs::write(sub.join("a.txt"), "v1\n").unwrap();
+        commit_all(&sub, "sub v1");
+        run_git_mut(sub.to_str().unwrap(), &["push", "-q", "-u", "origin", "main"]).unwrap();
+        run_git(sub.to_str().unwrap(), &["fetch", "-q", "origin"]).unwrap();
+
+        // Vault's first commit captures the sub at its PUSHED v1 commit.
+        std::fs::write(vault.join("note.md"), "hi\n").unwrap();
+        commit_all(&vault, "seed (sub at v1)");
+        let v1 = head(&sub);
+
+        // The sub-repo advances LOCALLY — never pushed (network down, or just
+        // not yet synced). This is the exact shape `add -A` will pick up as a
+        // gitlink pointing at an unreachable-from-origin commit.
+        std::fs::write(sub.join("a.txt"), "v2\n").unwrap();
+        commit_all(&sub, "sub v2 (unpushed)");
+        let v2 = head(&sub);
+        assert_ne!(v1, v2);
+
+        // Stage the vault root the way vault_sync_commit_local does, then run
+        // the protection under test.
+        run_git_mut(vault.to_str().unwrap(), &["add", "-A"]).unwrap();
+        let held = hold_unpushed_submodule_gitlinks(vault.to_str().unwrap());
+        assert_eq!(held, 1, "the unregistered nested repo's unpushed bump must be held");
+
+        let staged_gitlink = run_git(vault.to_str().unwrap(), &["rev-parse", ":work"])
+            .unwrap()
+            .0
+            .trim()
+            .to_string();
+        assert_eq!(staged_gitlink, v1, "gitlink must stay at the last PUSHED sub-commit, not the unpushed one");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Regression proof: a REGISTERED submodule whose sub-repo is actually
+    // checked out on a branch other than the `.gitmodules`-declared one (the
+    // real shape of a Shared-class repo, which `sync_one_repo` pushes to a
+    // dedicated `vault-chat/<user>` branch, never the team's declared
+    // default). Before this fix, the hold/fix-regression checks resolved
+    // `origin/<cfg_branch>` — a ref the sub-repo's actual work never reaches —
+    // so `have_ref` was false and the un-pushed pointer sailed through
+    // unprotected.
+    #[test]
+    fn submodule_on_non_declared_branch_unpushed_pointer_is_held() {
+        let base = std::env::temp_dir().join(format!("vc_hold_shared_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let vault = base.join("vault");
+        let sub = vault.join("libs/team-repo");
+        let sub_origin = base.join("team-origin.git");
+
+        init_repo(&vault, "main");
+        std::fs::create_dir_all(&sub_origin).unwrap();
+        run_git(sub_origin.to_str().unwrap(), &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        init_repo(&sub, "main");
+        run_git_mut(sub.to_str().unwrap(), &["remote", "add", "origin", sub_origin.to_str().unwrap()]).unwrap();
+        std::fs::write(sub.join("a.txt"), "v1\n").unwrap();
+        commit_all(&sub, "sub v1");
+        run_git_mut(sub.to_str().unwrap(), &["push", "-q", "-u", "origin", "main"]).unwrap();
+
+        // Register it in .gitmodules with the team's declared branch "main" —
+        // but the actual work (as sync_one_repo does for a Shared-class repo)
+        // happens on a dedicated branch instead.
+        std::fs::write(
+            vault.join(".gitmodules"),
+            "[submodule \"team-repo\"]\n\tpath = libs/team-repo\n\turl = ../team-origin.git\n\tbranch = main\n",
+        )
+        .unwrap();
+        commit_all(&vault, "seed (sub at v1, .gitmodules declares main)");
+        let v1 = head(&sub);
+
+        // The dedicated branch is pushed once (establishing its remote-tracking
+        // ref, exactly like sync_one_repo's first `push -u`), then advances
+        // again locally WITHOUT a second push — the realistic "unpushed bump"
+        // shape. (A branch never pushed even once has no local
+        // refs/remotes/origin/<branch> at all, which the hold check can't
+        // distinguish from "haven't fetched yet" and — by design — leaves
+        // alone rather than false-positive holding forever.)
+        run_git_mut(sub.to_str().unwrap(), &["switch", "-c", "vault-chat/alice"]).unwrap();
+        run_git_mut(sub.to_str().unwrap(), &["push", "-q", "-u", "origin", "vault-chat/alice"]).unwrap();
+        std::fs::write(sub.join("a.txt"), "v2\n").unwrap();
+        commit_all(&sub, "sub v2 on dedicated branch (unpushed)");
+        let v2 = head(&sub);
+        assert_ne!(v1, v2);
+
+        run_git_mut(vault.to_str().unwrap(), &["add", "-A"]).unwrap();
+        let held = hold_unpushed_submodule_gitlinks(vault.to_str().unwrap());
+        assert_eq!(held, 1, "an unpushed pointer on the sub's REAL branch must be held even though .gitmodules declares a different branch");
+
+        let staged_gitlink = run_git(vault.to_str().unwrap(), &["rev-parse", ":libs/team-repo"])
+            .unwrap()
+            .0
+            .trim()
+            .to_string();
+        assert_eq!(staged_gitlink, v1);
+
+        // Once the dedicated branch is actually pushed, the same pointer must
+        // NOT be held (a regression here would silently wedge every future
+        // gitlink bump for this repo).
+        run_git_mut(sub.to_str().unwrap(), &["push", "-q", "-u", "origin", "vault-chat/alice"]).unwrap();
+        run_git_mut(vault.to_str().unwrap(), &["add", "-A"]).unwrap();
+        let held_after_push = hold_unpushed_submodule_gitlinks(vault.to_str().unwrap());
+        assert_eq!(held_after_push, 0, "a now-pushed pointer must not be held");
+        let staged_after = run_git(vault.to_str().unwrap(), &["rev-parse", ":libs/team-repo"])
+            .unwrap()
+            .0
+            .trim()
+            .to_string();
+        assert_eq!(staged_after, v2);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // fix_regressed_gitlinks must advance a stale pointer using the sub-repo's
+    // ACTUAL branch tip, including for an unregistered embedded repo.
+    #[test]
+    fn regression_fix_advances_unregistered_repo_to_real_branch_tip() {
+        let base = std::env::temp_dir().join(format!("vc_fixreg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let vault = base.join("vault");
+        let sub = vault.join("work");
+        let sub_origin = base.join("work-origin.git");
+
+        init_repo(&vault, "main");
+        std::fs::create_dir_all(&sub_origin).unwrap();
+        run_git(sub_origin.to_str().unwrap(), &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        init_repo(&sub, "main");
+        run_git_mut(sub.to_str().unwrap(), &["remote", "add", "origin", sub_origin.to_str().unwrap()]).unwrap();
+        std::fs::write(sub.join("a.txt"), "v1\n").unwrap();
+        commit_all(&sub, "sub v1");
+        run_git_mut(sub.to_str().unwrap(), &["push", "-q", "-u", "origin", "main"]).unwrap();
+        let v1 = head(&sub);
+        std::fs::write(vault.join("note.md"), "hi\n").unwrap();
+        commit_all(&vault, "seed (sub at v1)");
+
+        // Sub advances AND pushes — the remote (and the sub's local branch) is
+        // now ahead of the superproject's recorded pointer, simulating a stale
+        // gitlink left by a merge that picked the older side.
+        std::fs::write(sub.join("a.txt"), "v2\n").unwrap();
+        commit_all(&sub, "sub v2");
+        run_git_mut(sub.to_str().unwrap(), &["push", "-q", "origin", "main"]).unwrap();
+        run_git(sub.to_str().unwrap(), &["fetch", "-q", "origin"]).unwrap();
+        let v2 = head(&sub);
+        assert_ne!(v1, v2);
+
+        let fixed = fix_regressed_gitlinks(vault.to_str().unwrap());
+        assert_eq!(fixed, vec!["work".to_string()]);
+        // fix_regressed_gitlinks only stages the fix (via update-index); the
+        // caller (reconcile_with_upstream) is responsible for committing it.
+        let now = run_git(vault.to_str().unwrap(), &["rev-parse", ":work"]).unwrap().0.trim().to_string();
+        assert_eq!(now, v2, "the stale pointer must advance to the sub's real remote tip");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+// End-to-end multi-machine sync tests, driving the exact Tauri commands the
+// frontend loop calls (vault_sync_commit_local / vault_sync_pull /
+// vault_sync_push) against real git repos: a bare "origin" plus two working
+// checkouts standing in for two machines. This is the local substitute for a
+// genuine two-box test — see harness-loop's local-setup.md — and is what
+// actually exercises the retry/reconcile/union-merge machinery end to end,
+// not just its internal helpers in isolation.
+#[cfg(test)]
+mod sync_two_machine_tests {
+    use super::{
+        run_git, run_git_mut, vault_commit_local, vault_sync_commit_local, vault_sync_pull,
+        vault_sync_push,
+    };
+
+    fn bare_origin(base: &std::path::Path) -> String {
+        let origin = base.join("origin.git");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap().to_string();
+        run_git(&og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+        og
+    }
+
+    // The FIRST machine to set up a vault: git_init_if_needed inits + makes an
+    // initial commit before a remote ever exists (mirrored here — a real vault
+    // is never left with an unborn HEAD; `git rev-parse --abbrev-ref HEAD`
+    // errors on one, which vault_sync_pull/push read as "no current branch").
+    fn genesis_machine(base: &std::path::Path, name: &str, origin: &str) -> String {
+        let m = base.join(name);
+        std::fs::create_dir_all(&m).unwrap();
+        let d = m.to_str().unwrap().to_string();
+        run_git(&d, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(&d, &["config", "user.email", &format!("{}@t", name)]).unwrap();
+        run_git(&d, &["config", "user.name", name]).unwrap();
+        run_git_mut(&d, &["commit", "-q", "--allow-empty", "-m", "vault-chat: init"]).unwrap();
+        run_git_mut(&d, &["remote", "add", "origin", origin]).unwrap();
+        d
+    }
+
+    // Every OTHER machine: vault-chat has no "clone this vault" command, so in
+    // real usage a second machine's checkout is either a manual `git clone` of
+    // the existing remote or a copy of the first machine's folder — either way
+    // it SHARES history with the genesis machine, never an independent
+    // `git init`. (An independent init on every machine, each with its own
+    // unrelated root commit, is not a shape vault-chat sync is built to
+    // reconcile — `git merge` refuses unrelated histories by default — and
+    // isn't how a real second machine gets set up, so tests must not
+    // manufacture it.)
+    fn clone_machine(base: &std::path::Path, name: &str, origin: &str) -> String {
+        let m = base.join(name);
+        let d = m.to_str().unwrap().to_string();
+        run_git(base.to_str().unwrap(), &["clone", "-q", origin, name]).unwrap();
+        run_git(&d, &["config", "user.email", &format!("{}@t", name)]).unwrap();
+        run_git(&d, &["config", "user.name", name]).unwrap();
+        d
+    }
+
+    // The base case this whole app exists for: machine A writes and pushes,
+    // machine B pulls and sees it — through the real commit→push / pull
+    // commands, not a hand-rolled git sequence.
+    #[tokio::test]
+    async fn a_pushes_b_pulls_full_roundtrip() {
+        let base = std::env::temp_dir().join(format!("vc_2m_basic_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = bare_origin(&base);
+        let a = genesis_machine(&base, "A", &origin);
+
+        std::fs::write(format!("{}/note.md", a), "hello from A\n").unwrap();
+        assert!(vault_sync_commit_local(a.clone()).await.unwrap().ok);
+        assert!(vault_sync_push(a.clone()).await.unwrap().ok);
+
+        // B joins afterward — a real second machine, cloned from the remote.
+        let b = clone_machine(&base, "B", &origin);
+        assert_eq!(std::fs::read_to_string(format!("{}/note.md", b)).unwrap(), "hello from A\n");
+
+        // A publishes MORE content; B must pick it up via a plain pull.
+        std::fs::write(format!("{}/note2.md", a), "more from A\n").unwrap();
+        assert!(vault_sync_commit_local(a.clone()).await.unwrap().ok);
+        assert!(vault_sync_push(a.clone()).await.unwrap().ok);
+
+        let pull = vault_sync_pull(b.clone()).await.unwrap();
+        assert!(pull.ok, "{}", pull.message);
+        let content = std::fs::read_to_string(format!("{}/note2.md", b)).unwrap();
+        assert_eq!(content, "more from A\n");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Concurrent edits to DIFFERENT files on both machines: neither side's
+    // work may be lost, regardless of which one reaches the remote first.
+    #[tokio::test]
+    async fn concurrent_edits_to_different_files_both_survive() {
+        let base = std::env::temp_dir().join(format!("vc_2m_diff_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = bare_origin(&base);
+        let a = genesis_machine(&base, "A", &origin);
+
+        // Seed both machines from a common base.
+        std::fs::write(format!("{}/seed.md", a), "seed\n").unwrap();
+        assert!(vault_sync_commit_local(a.clone()).await.unwrap().ok);
+        assert!(vault_sync_push(a.clone()).await.unwrap().ok);
+        let b = clone_machine(&base, "B", &origin);
+
+        // A and B each write their OWN new file, offline from each other.
+        std::fs::write(format!("{}/from_a.md", a), "A's work\n").unwrap();
+        std::fs::write(format!("{}/from_b.md", b), "B's work\n").unwrap();
+        assert!(vault_sync_commit_local(a.clone()).await.unwrap().ok);
+        assert!(vault_sync_commit_local(b.clone()).await.unwrap().ok);
+
+        // A pushes first.
+        assert!(vault_sync_push(a.clone()).await.unwrap().ok);
+        // B's push is rejected (remote advanced) and must reconcile+retry
+        // inline, per vault_sync_push's doc comment — not require a caller to
+        // pull separately.
+        let push_b = vault_sync_push(b.clone()).await.unwrap();
+        assert!(push_b.ok, "{}", push_b.message);
+
+        // A pulls the merged result back.
+        assert!(vault_sync_pull(a.clone()).await.unwrap().ok);
+
+        for (dir, label) in [(&a, "A"), (&b, "B")] {
+            assert!(
+                std::path::Path::new(&format!("{}/from_a.md", dir)).exists(),
+                "{} must have A's file after converging",
+                label
+            );
+            assert!(
+                std::path::Path::new(&format!("{}/from_b.md", dir)).exists(),
+                "{} must have B's file after converging",
+                label
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // The append-only-log case the whole `.gitattributes merge=union` design
+    // exists for: both machines append DIFFERENT lines to the SAME .jsonl
+    // conversation file concurrently. Neither side's line may be dropped.
+    #[tokio::test]
+    async fn concurrent_jsonl_appends_union_merge_keeps_both_lines() {
+        let base = std::env::temp_dir().join(format!("vc_2m_jsonl_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = bare_origin(&base);
+        let a = genesis_machine(&base, "A", &origin);
+
+        std::fs::create_dir_all(format!("{}/.vault-chat/conversations", a)).unwrap();
+        std::fs::write(
+            format!("{}/.vault-chat/conversations/c1.jsonl", a),
+            "{\"id\":\"c1\",\"source\":\"phone\"}\n",
+        )
+        .unwrap();
+        assert!(vault_sync_commit_local(a.clone()).await.unwrap().ok);
+        assert!(vault_sync_push(a.clone()).await.unwrap().ok);
+        let b = clone_machine(&base, "B", &origin);
+
+        // Both machines append a distinct line to the SAME file, offline.
+        let path = ".vault-chat/conversations/c1.jsonl";
+        let mut a_content = std::fs::read_to_string(format!("{}/{}", a, path)).unwrap();
+        a_content.push_str("{\"role\":\"user\",\"content\":\"from A\"}\n");
+        std::fs::write(format!("{}/{}", a, path), a_content).unwrap();
+        let mut b_content = std::fs::read_to_string(format!("{}/{}", b, path)).unwrap();
+        b_content.push_str("{\"role\":\"user\",\"content\":\"from B\"}\n");
+        std::fs::write(format!("{}/{}", b, path), b_content).unwrap();
+
+        assert!(vault_sync_commit_local(a.clone()).await.unwrap().ok);
+        assert!(vault_sync_commit_local(b.clone()).await.unwrap().ok);
+        assert!(vault_sync_push(a.clone()).await.unwrap().ok);
+        let push_b = vault_sync_push(b.clone()).await.unwrap();
+        assert!(push_b.ok, "{}", push_b.message);
+        assert!(vault_sync_pull(a.clone()).await.unwrap().ok);
+
+        for (dir, label) in [(&a, "A"), (&b, "B")] {
+            let merged = std::fs::read_to_string(format!("{}/{}", dir, path)).unwrap();
+            assert!(merged.contains("from A"), "{}: A's line must survive the union merge", label);
+            assert!(merged.contains("from B"), "{}: B's line must survive the union merge", label);
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // A genuine conflicting edit — both machines change the SAME line of the
+    // SAME non-append-only file — must never wedge the sync loop. The merge
+    // takes "theirs" and preserves "ours" as a `.conflict` sidecar so nothing
+    // is silently lost, per resolve_merge_conflicts. "theirs" means whatever
+    // is already on origin at reconcile time — i.e. whichever machine's push
+    // WON THE RACE and landed first (A, here), not whichever edited last.
+    #[tokio::test]
+    async fn conflicting_same_line_edit_resolves_without_wedging() {
+        let base = std::env::temp_dir().join(format!("vc_2m_conflict_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = bare_origin(&base);
+        let a = genesis_machine(&base, "A", &origin);
+
+        std::fs::write(format!("{}/note.md", a), "original\n").unwrap();
+        assert!(vault_sync_commit_local(a.clone()).await.unwrap().ok);
+        assert!(vault_sync_push(a.clone()).await.unwrap().ok);
+        let b = clone_machine(&base, "B", &origin);
+
+        std::fs::write(format!("{}/note.md", a), "A's version\n").unwrap();
+        std::fs::write(format!("{}/note.md", b), "B's version\n").unwrap();
+        assert!(vault_sync_commit_local(a.clone()).await.unwrap().ok);
+        assert!(vault_sync_commit_local(b.clone()).await.unwrap().ok);
+        assert!(vault_sync_push(a.clone()).await.unwrap().ok);
+
+        // B's push hits the conflict and must reconcile automatically —
+        // never return an unresolved-merge error and never leave the repo
+        // mid-merge (which would wedge every later sync).
+        let push_b = vault_sync_push(b.clone()).await.unwrap();
+        assert!(push_b.ok, "sync must never wedge on a real conflict: {}", push_b.message);
+        assert!(
+            !std::path::Path::new(&format!("{}/.git/MERGE_HEAD", b)).exists(),
+            "no merge may be left in progress"
+        );
+
+        assert!(vault_sync_pull(a.clone()).await.unwrap().ok);
+
+        for (dir, label) in [(&a, "A"), (&b, "B")] {
+            let note = std::fs::read_to_string(format!("{}/note.md", dir)).unwrap();
+            assert_eq!(note, "A's version\n", "{}: theirs (A, whose push landed first) wins the file", label);
+            let sidecar = std::fs::read_to_string(format!("{}/note.md.conflict", dir)).unwrap();
+            assert_eq!(sidecar, "B's version\n", "{}: ours (B) must survive as a sidecar, never silently dropped", label);
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // A stale `.git/index.lock` left behind (a crashed prior process, or a
+    // foreign git briefly holding it) must self-heal rather than wedge every
+    // later sync — the exact failure mode described at run_git_mut's and
+    // clear_stale_index_lock's doc comments ("the summer wedge").
+    #[tokio::test]
+    async fn stale_index_lock_self_heals() {
+        let base = std::env::temp_dir().join(format!("vc_2m_lock_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = bare_origin(&base);
+        let a = genesis_machine(&base, "A", &origin);
+
+        std::fs::write(format!("{}/note.md", a), "v1\n").unwrap();
+        let lock_path = format!("{}/.git/index.lock", a);
+        std::fs::write(&lock_path, b"stale").unwrap();
+        // Backdate it well past STALE_LOCK_SECS so clear_stale_index_lock
+        // treats it as abandoned, not a live writer. std has no portable
+        // "set mtime" without an extra crate dep, so shell out to `touch`.
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_sub(60);
+        let _ = std::process::Command::new("touch")
+            .arg("-d")
+            .arg(format!("@{}", secs))
+            .arg(&lock_path)
+            .status();
+
+        let commit = vault_sync_commit_local(a.clone()).await.unwrap();
+        assert!(commit.ok, "a stale lock must not permanently wedge sync: {}", commit.message);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // vault_commit_local (the always-on, remote-free path used when sync is
+    // OFF) must never touch the network and must still work with no origin
+    // configured at all.
+    #[tokio::test]
+    async fn commit_local_only_works_without_a_remote() {
+        let base = std::env::temp_dir().join(format!("vc_2m_localonly_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let v = base.join("solo");
+        std::fs::create_dir_all(&v).unwrap();
+        let d = v.to_str().unwrap().to_string();
+        run_git(&d, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(&d, &["config", "user.email", "t@t"]).unwrap();
+        run_git(&d, &["config", "user.name", "t"]).unwrap();
+
+        std::fs::write(format!("{}/note.md", d), "solo work\n").unwrap();
+        let r = vault_commit_local(d.clone()).await.unwrap();
+        assert!(r.ok, "{}", r.message);
+        assert!(r.message.contains("committed") || r.message.contains("no local changes"));
+
+        // Second call with nothing new must be a clean no-op, not an error.
+        let r2 = vault_commit_local(d.clone()).await.unwrap();
+        assert!(r2.ok);
+        assert_eq!(r2.message, "no local changes");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
 // ----- meta vault -----
 //
 // The meta vault is an app-level folder (OS app-data) that holds the
