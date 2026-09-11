@@ -4939,9 +4939,12 @@ async fn vault_sync_commit_local(vault: String) -> Result<SyncOpResult, String> 
         // mission-state change — the surgical replacement for the old
         // pull-only gate. See is_sync_follower / sanitize_mission_zone.
         if is_sync_follower(&vault) {
-            if let Ok((b, _, 0)) = run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+            // symbolic-ref, not rev-parse --abbrev-ref: the latter fails on an
+            // unborn branch (a follower that hasn't pulled anything yet),
+            // which would silently skip sanitizing on its very first commit.
+            if let Ok((b, _, 0)) = run_git(&vault, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
                 let b = b.trim().to_string();
-                if b != "HEAD" {
+                if !b.is_empty() {
                     sanitize_mission_zone(&vault, &b);
                 }
             }
@@ -5430,18 +5433,20 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         // progress" and the vault stays wedged.
         abort_stuck_merge_or_rebase(&vault);
         // Detect the local branch — most repos default to main, but a
-        // pre-existing vault may be on master or something else.
+        // pre-existing vault may be on master or something else. Use
+        // `symbolic-ref`, NOT `rev-parse --abbrev-ref HEAD`: the latter is a
+        // REVISION lookup and fails with "unknown revision" on an unborn
+        // branch (a freshly `git init`'d vault with zero commits — exactly a
+        // brand-new machine's first sync before anything has been
+        // committed), which permanently reported "no current branch" and
+        // blocked that machine from ever pulling down the vault's existing
+        // remote history. `symbolic-ref` reads the ref HEAD points at
+        // regardless of whether it resolves to a commit yet, so it succeeds
+        // on an unborn branch and fails only when HEAD is genuinely detached.
         let (branch_out, _, branch_code) =
-            run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-        if branch_code != 0 {
-            return Ok(SyncOpResult {
-                ok: false,
-                message: "no current branch".into(),
-                error: true,
-            });
-        }
+            run_git(&vault, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
         let branch = branch_out.trim();
-        if branch.is_empty() || branch == "HEAD" {
+        if branch_code != 0 || branch.is_empty() {
             return Ok(SyncOpResult {
                 ok: false,
                 message: "detached HEAD".into(),
@@ -5637,16 +5642,19 @@ async fn vault_sync_push(vault: String) -> Result<SyncOpResult, String> {
                 }
             }
         }
+        // See vault_sync_pull: symbolic-ref (not rev-parse --abbrev-ref),
+        // so an unborn branch (a fresh vault with zero local commits) still
+        // resolves to its branch name instead of failing "no current branch".
         let (branch_out, _, branch_code) =
-            run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-        if branch_code != 0 || branch_out.trim() == "HEAD" {
+            run_git(&vault, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+        let branch = branch_out.trim().to_string();
+        if branch_code != 0 || branch.is_empty() {
             return Ok(SyncOpResult {
                 ok: false,
-                message: "no current branch".into(),
+                message: "detached HEAD".into(),
                 error: true,
             });
         }
-        let branch = branch_out.trim().to_string();
         let (_, _, code) = run_git(&vault, &["remote", "get-url", "origin"])?;
         if code != 0 {
             return Ok(SyncOpResult {
@@ -7216,6 +7224,212 @@ fn apply_titlebar_color(window: &tauri::WebviewWindow) {
             &border as *const _ as *const _,
             std::mem::size_of::<u32>() as u32,
         );
+    }
+}
+
+#[cfg(test)]
+mod cross_machine_sync_tests {
+    // End-to-end coverage for the actual pull/push/reconcile path — previously
+    // the only sync coverage was of pure helpers (mission-zone sanitize, role
+    // marker parsing); the reconcile/conflict/self-heal machinery that a real
+    // two-machine sync exercises had zero tests. These spin up a real bare
+    // "origin" and two real machine checkouts and drive them through
+    // vault_sync_commit_local / vault_sync_push / vault_sync_pull exactly as
+    // the app's sync loop does, so a regression here shows up in CI instead of
+    // only in the field.
+    use super::{run_git, run_git_mut, vault_sync_commit_local, vault_sync_pull, vault_sync_push};
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "vc_xsync_{}_{}_{}",
+            name,
+            std::process::id(),
+            // Salted so parallel test threads (cargo test runs them
+            // concurrently by default) never collide on the same tempdir.
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn init_bare_origin(name: &str) -> PathBuf {
+        let dir = scratch(name);
+        run_git(dir.to_str().unwrap(), &["init", "-q", "--bare", "-b", "master"]).expect("init bare");
+        dir
+    }
+
+    /// Init a machine checkout and wire it to `origin`.
+    fn init_machine(name: &str, origin: &PathBuf, who: &str) -> PathBuf {
+        let dir = scratch(name);
+        let s = dir.to_str().unwrap();
+        run_git(s, &["init", "-q", "-b", "master"]).expect("init");
+        run_git(s, &["config", "user.name", who]).unwrap();
+        run_git(s, &["config", "user.email", &format!("{who}@t")]).unwrap();
+        run_git(s, &["remote", "add", "origin", origin.to_str().unwrap()]).unwrap();
+        dir
+    }
+
+    fn write(dir: &PathBuf, rel: &str, contents: &str) {
+        let p = dir.join(rel);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(p, contents).unwrap();
+    }
+
+    fn read(dir: &PathBuf, rel: &str) -> String {
+        std::fs::read_to_string(dir.join(rel)).unwrap_or_default()
+    }
+
+    fn no_unmerged(dir: &PathBuf) -> bool {
+        matches!(
+            run_git(dir.to_str().unwrap(), &["diff", "--name-only", "--diff-filter=U"]),
+            Ok((ref out, _, 0)) if out.trim().is_empty()
+        )
+    }
+
+    fn clean_no_merge_state(dir: &PathBuf) -> bool {
+        let git = dir.join(".git");
+        !git.join("MERGE_HEAD").exists()
+            && !git.join("rebase-merge").is_dir()
+            && !git.join("rebase-apply").is_dir()
+            && no_unmerged(dir)
+    }
+
+    #[tokio::test]
+    async fn fresh_machine_pulls_full_history_from_origin() {
+        let origin = init_bare_origin("fresh_origin");
+        let a = init_machine("fresh_a", &origin, "alice");
+        write(&a, "note.md", "hello from A\n");
+        vault_sync_commit_local(a.to_str().unwrap().into()).await.unwrap();
+        run_git_mut(a.to_str().unwrap(), &["push", "-q", "-u", "origin", "master"]).unwrap();
+
+        // B is a brand-new checkout: `git init` done, remote wired, but zero
+        // commits — exactly how a freshly created vault looks before its first
+        // sync. Pulling into an unborn branch must fast-forward cleanly.
+        let b = init_machine("fresh_b", &origin, "bob");
+        let r = vault_sync_pull(b.to_str().unwrap().into()).await.unwrap();
+        assert!(r.ok, "pull into a fresh checkout should succeed: {}", r.message);
+        assert_eq!(read(&b, "note.md"), "hello from A\n");
+        assert!(clean_no_merge_state(&b));
+    }
+
+    #[tokio::test]
+    async fn concurrent_edits_to_different_files_converge_both_ways() {
+        let origin = init_bare_origin("divergent_origin");
+        let a = init_machine("divergent_a", &origin, "alice");
+        write(&a, "shared.md", "seed\n");
+        vault_sync_commit_local(a.to_str().unwrap().into()).await.unwrap();
+        let push = vault_sync_push(a.to_str().unwrap().into()).await.unwrap();
+        assert!(push.ok, "seed push: {}", push.message);
+
+        let b = init_machine("divergent_b", &origin, "bob");
+        let pull = vault_sync_pull(b.to_str().unwrap().into()).await.unwrap();
+        assert!(pull.ok, "b's initial pull: {}", pull.message);
+
+        // A commits+pushes its own file first (B hasn't pulled it yet).
+        write(&a, "from-a.md", "a's file\n");
+        vault_sync_commit_local(a.to_str().unwrap().into()).await.unwrap();
+        let push_a = vault_sync_push(a.to_str().unwrap().into()).await.unwrap();
+        assert!(push_a.ok, "a's push: {}", push_a.message);
+
+        // B, still unaware of A's push, commits its own distinct file and
+        // pushes. The push must be rejected (remote advanced), reconciled
+        // inline (fetch + merge — clean since the files don't conflict), and
+        // retried — all within this single vault_sync_push call.
+        write(&b, "from-b.md", "b's file\n");
+        vault_sync_commit_local(b.to_str().unwrap().into()).await.unwrap();
+        let push_b = vault_sync_push(b.to_str().unwrap().into()).await.unwrap();
+        assert!(push_b.ok, "b's push should self-reconcile: {}", push_b.message);
+        assert!(clean_no_merge_state(&b));
+        assert_eq!(read(&b, "from-a.md"), "a's file\n", "b must have merged in a's file");
+
+        // A pulls and should now see B's file too, with no leftover conflict state.
+        let pull_a = vault_sync_pull(a.to_str().unwrap().into()).await.unwrap();
+        assert!(pull_a.ok, "a's final pull: {}", pull_a.message);
+        assert_eq!(read(&a, "from-b.md"), "b's file\n");
+        assert!(clean_no_merge_state(&a));
+    }
+
+    #[tokio::test]
+    async fn same_file_conflicting_edits_resolve_to_sidecar_without_wedging() {
+        let origin = init_bare_origin("conflict_origin");
+        let a = init_machine("conflict_a", &origin, "alice");
+        write(&a, "note.md", "original\n");
+        vault_sync_commit_local(a.to_str().unwrap().into()).await.unwrap();
+        assert!(vault_sync_push(a.to_str().unwrap().into()).await.unwrap().ok);
+
+        let b = init_machine("conflict_b", &origin, "bob");
+        assert!(vault_sync_pull(b.to_str().unwrap().into()).await.unwrap().ok);
+
+        // Both machines edit the SAME line of the SAME file before either syncs
+        // again — a genuine divergent edit, not something a union merge can
+        // combine.
+        write(&a, "note.md", "original\nA's edit\n");
+        vault_sync_commit_local(a.to_str().unwrap().into()).await.unwrap();
+        assert!(vault_sync_push(a.to_str().unwrap().into()).await.unwrap().ok);
+
+        write(&b, "note.md", "original\nB's edit\n");
+        vault_sync_commit_local(b.to_str().unwrap().into()).await.unwrap();
+        let push_b = vault_sync_push(b.to_str().unwrap().into()).await.unwrap();
+        assert!(push_b.ok, "conflicting push must auto-resolve, never wedge: {}", push_b.message);
+        assert!(clean_no_merge_state(&b), "no leftover MERGE_HEAD/unmerged paths after auto-resolve");
+
+        // Deterministic outcome: theirs (A, already on origin) wins the tracked
+        // file; B's divergent version survives as a sidecar so it isn't
+        // silently dropped.
+        assert_eq!(read(&b, "note.md"), "original\nA's edit\n");
+        assert_eq!(read(&b, "note.md.conflict"), "original\nB's edit\n");
+
+        // A pulls and sees the same resolution — both machines converge.
+        let pull_a = vault_sync_pull(a.to_str().unwrap().into()).await.unwrap();
+        assert!(pull_a.ok, "a's pull after b's resolved push: {}", pull_a.message);
+        assert!(clean_no_merge_state(&a));
+        assert_eq!(read(&a, "note.md"), "original\nA's edit\n");
+        assert_eq!(read(&a, "note.md.conflict"), "original\nB's edit\n");
+    }
+
+    #[tokio::test]
+    async fn crashed_prior_merge_self_heals_on_next_pull() {
+        // Simulates the app crashing mid-merge (or mid-rebase) on a prior sync
+        // cycle: MERGE_HEAD is left behind, which makes every later git command
+        // in that repo (including the next commit) silently no-op until
+        // something clears it. The next pull must self-heal instead of erroring.
+        let origin = init_bare_origin("wedge_origin");
+        let a = init_machine("wedge_a", &origin, "alice");
+        write(&a, "note.md", "seed\n");
+        vault_sync_commit_local(a.to_str().unwrap().into()).await.unwrap();
+        assert!(vault_sync_push(a.to_str().unwrap().into()).await.unwrap().ok);
+
+        let b = init_machine("wedge_b", &origin, "bob");
+        assert!(vault_sync_pull(b.to_str().unwrap().into()).await.unwrap().ok);
+        write(&a, "note.md", "seed\nnew line\n");
+        vault_sync_commit_local(a.to_str().unwrap().into()).await.unwrap();
+        assert!(vault_sync_push(a.to_str().unwrap().into()).await.unwrap().ok);
+
+        // Fabricate the crash: B has a divergent local commit, fetches, starts a
+        // real merge that conflicts, but "crashes" before resolving/committing
+        // it — leaving MERGE_HEAD and unmerged paths in place.
+        write(&b, "note.md", "seed\nb's line\n");
+        run_git_mut(b.to_str().unwrap(), &["add", "-A"]).unwrap();
+        run_git_mut(b.to_str().unwrap(), &["commit", "-q", "-m", "b divergence"]).unwrap();
+        run_git(b.to_str().unwrap(), &["fetch", "-q", "origin", "master"]).unwrap();
+        let _ = run_git_mut(b.to_str().unwrap(), &["merge", "--no-edit", "origin/master"]);
+        assert!(
+            b.join(".git").join("MERGE_HEAD").exists(),
+            "test setup: expected a real conflicted merge in progress"
+        );
+
+        // The next pull must clear the stuck merge and make progress, not
+        // error out or leave the repo wedged.
+        let r = vault_sync_pull(b.to_str().unwrap().into()).await.unwrap();
+        assert!(r.ok, "pull must self-heal a crashed merge: {}", r.message);
+        assert!(clean_no_merge_state(&b));
     }
 }
 
