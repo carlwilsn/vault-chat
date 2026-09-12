@@ -5350,8 +5350,29 @@ fn reconcile_with_upstream(
     // abort-and-loop. Whatever the union can't handle (submodule pointers, a
     // genuinely divergent file edit) is auto-resolved so sync always makes
     // progress and never drops data.
-    let (_, mstderr, mut merge_code) =
-        run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
+    //
+    // `--allow-unrelated-histories`: a second machine whose vault folder was
+    // NOT cloned from the remote — restored from a backup, synced by some
+    // other tool, or just a fresh folder vault-chat auto-`git init`'d before
+    // a remote was ever configured — has a root commit that shares no
+    // ancestor with origin's. Plain `git merge` refuses that outright
+    // ("refusing to merge unrelated histories"), which is NOT a conflict (no
+    // unmerged paths, no MERGE_HEAD) — the retry heuristic just below used to
+    // misread it as a dirty-tree refusal, retry the identical merge, fail the
+    // identical way, then hand `resolve_merge_conflicts` an empty conflict
+    // list (vacuously "resolved") and die on `commit --no-edit` finding
+    // nothing staged. That looped the same "merge commit failed: nothing to
+    // commit" error forever and permanently wedged that machine's sync. Since
+    // every conflict class below already has a deterministic resolution
+    // (union for jsonl, descendant/theirs for gitlinks, theirs+`.conflict`
+    // sidecar for a real divergent file), allowing unrelated histories just
+    // routes this case through the same safe machinery instead of aborting.
+    let (_, mstderr, mut merge_code) = run_git_as(
+        vault,
+        &mn,
+        &me,
+        &["merge", "--no-edit", "--allow-unrelated-histories", &upstream],
+    )?;
     // A DIRTY working tree makes `git merge` REFUSE TO START ("your local
     // changes would be overwritten") — a failure with NO unmerged paths, which
     // the conflict-resolution path below misreads as "resolved, commit it" and
@@ -5369,8 +5390,12 @@ fn reconcile_with_upstream(
         if unmerged_empty && !merge_in_progress {
             let _ = run_git_as(vault, &mn, &me, &["add", "-A"]);
             let _ = run_git_as(vault, &mn, &me, &["commit", "-q", "-m", "vault-chat: auto-sync"]);
-            let (_, _, retry_code) =
-                run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
+            let (_, _, retry_code) = run_git_as(
+                vault,
+                &mn,
+                &me,
+                &["merge", "--no-edit", "--allow-unrelated-histories", &upstream],
+            )?;
             merge_code = retry_code;
         }
     }
@@ -6232,7 +6257,85 @@ mod conversation_storage_tests {
 
 #[cfg(test)]
 mod sync_role_tests {
-    use super::{conv_is_mission_zone, is_sync_follower, run_git, run_git_mut, sanitize_mission_zone};
+    use super::{
+        conv_is_mission_zone, is_sync_follower, reconcile_with_upstream, run_git, run_git_mut,
+        sanitize_mission_zone,
+    };
+
+    // A second machine whose vault folder was never cloned from the remote
+    // (restored from a backup, copied by hand, or auto-`git init`'d by
+    // `git_init_if_needed` before a remote existed) has a root commit with no
+    // common ancestor with origin's. Before this fix, `reconcile_with_upstream`
+    // fed that straight into a plain `git merge`, which refuses outright
+    // ("refusing to merge unrelated histories") — not a conflict (no unmerged
+    // paths, no MERGE_HEAD), so the dirty-tree retry heuristic misdiagnosed it,
+    // retried the identical merge, failed the identical way, and then handed
+    // `resolve_merge_conflicts` an empty conflict list (vacuously "resolved"),
+    // dying on `commit --no-edit` finding nothing staged. That permanently
+    // wedged the second machine's sync on the same "merge commit failed:
+    // nothing to commit" error forever. Assert it now actually reconciles.
+    #[test]
+    fn reconcile_merges_unrelated_histories_instead_of_wedging() {
+        let base = std::env::temp_dir().join(format!("vc_unrelated_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "master"]).unwrap();
+
+        // Seed origin from a throwaway checkout — A's history.
+        let a = base.join("A");
+        std::fs::create_dir_all(&a).unwrap();
+        let asr = a.to_str().unwrap();
+        run_git(asr, &["init", "-q", "-b", "master"]).unwrap();
+        run_git(asr, &["config", "user.email", "t@t"]).unwrap();
+        run_git(asr, &["config", "user.name", "t"]).unwrap();
+        run_git(asr, &["remote", "add", "origin", og]).unwrap();
+        std::fs::write(a.join("shared.md"), "from A\n").unwrap();
+        std::fs::write(a.join("only-on-origin.md"), "origin only\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "A seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+
+        // B: an entirely independent history — never cloned from origin, no
+        // common ancestor — then pointed at the same remote after the fact.
+        std::fs::create_dir_all(&b).unwrap();
+        let bs = b.to_str().unwrap();
+        run_git(bs, &["init", "-q", "-b", "master"]).unwrap();
+        run_git(bs, &["config", "user.email", "t@t"]).unwrap();
+        run_git(bs, &["config", "user.name", "t"]).unwrap();
+        run_git(bs, &["remote", "add", "origin", og]).unwrap();
+        std::fs::write(b.join("shared.md"), "from B\n").unwrap();
+        std::fs::write(b.join("only-on-laptop.md"), "laptop only\n").unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "B seed (independent root)"]).unwrap();
+
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+        // Confirm the premise: no common ancestor between B's HEAD and origin.
+        let has_common_ancestor = matches!(
+            run_git(bs, &["merge-base", "HEAD", "origin/master"]),
+            Ok((_, _, 0))
+        );
+        assert!(!has_common_ancestor, "test setup must produce genuinely unrelated histories");
+
+        let result = reconcile_with_upstream(bs, "master").expect("reconcile must not error");
+        if let Err(ref e) = result {
+            panic!("unrelated histories must reconcile, not wedge with an error: {}", e.message);
+        }
+
+        // Both sides' unique files survive.
+        assert!(b.join("only-on-origin.md").is_file(), "origin-only file must be pulled in");
+        assert!(b.join("only-on-laptop.md").is_file(), "laptop-only file must survive");
+        // The colliding file took theirs (origin) with ours preserved as a sidecar
+        // — the same deterministic resolution any other divergent-edit conflict gets.
+        let shared = std::fs::read_to_string(b.join("shared.md")).unwrap();
+        assert_eq!(shared, "from A\n", "colliding file takes theirs");
+        let sidecar = std::fs::read_to_string(b.join("shared.md.conflict")).unwrap();
+        assert_eq!(sidecar, "from B\n", "ours preserved in the sidecar, not dropped");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     // The follower sanitize pass, end to end on real repos: a diverged
     // follower's mission-zone files reset to origin's version (stale mission

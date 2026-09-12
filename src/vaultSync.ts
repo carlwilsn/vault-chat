@@ -5,16 +5,35 @@ import { useStore, type FileEntry } from "./store";
 // should reflect new/renamed/deleted files without a manual refresh. We
 // re-list on each successful pull but only push to the store when the
 // file set actually changed, so an unchanged 30s pull doesn't re-render.
+//
+// The signature MUST include git_dirty_count: a sync-enabled vault's own
+// tickPush commits + pushes nested repos (sync_nested_repos / vaultCommitLocal
+// in vault_sync_commit_local) without ever calling forceRefreshFileTree — the
+// nested-repo dirty dot is only force-cleared on the sync-DISABLED
+// local-commit-only path. So the enabled-sync loop relies entirely on this
+// signature check to notice the change; when it only tracked path/is_dir/
+// hidden, a nested repo going from dirty to clean (or vice versa) left the
+// file SET unchanged, the signature identical, setFiles never called, and
+// the dot stuck showing stale state indefinitely — even though the commit
+// and push both actually succeeded. Including the count here is what makes
+// a routine pull tick actually clear it.
 let lastFileTreeSig = "";
+
+function fileTreeSig(listed: FileEntry[]): string {
+  return listed
+    .map(
+      (f) =>
+        `${f.path} ${f.is_dir ? 1 : 0} ${f.hidden ? 1 : 0} ${f.git_dirty_count ?? 0}`,
+    )
+    .join("\n");
+}
 
 async function refreshFileTreeIfChanged(vault: string): Promise<void> {
   // Only touch the tree for the vault that's actually open.
   if (useStore.getState().vaultPath !== vault) return;
   try {
     const listed = await invoke<FileEntry[]>("list_markdown_files", { vault });
-    const sig = listed
-      .map((f) => `${f.path} ${f.is_dir ? 1 : 0} ${f.hidden ? 1 : 0}`)
-      .join("\n");
+    const sig = fileTreeSig(listed);
     if (sig !== lastFileTreeSig) {
       lastFileTreeSig = sig;
       useStore.getState().setFiles(listed);
@@ -24,18 +43,15 @@ async function refreshFileTreeIfChanged(vault: string): Promise<void> {
   }
 }
 
-// Force a file-tree re-list and push to the store unconditionally. The
-// signature check in refreshFileTreeIfChanged only tracks the file SET, not
-// per-repo git dirty counts — so after a local commit clears a nested repo's
-// changes, the dot won't disappear until something forces a fresh list. Used
-// right after a successful local commit.
+// Force a file-tree re-list and push to the store unconditionally, bypassing
+// the signature check entirely. Used right after a successful local commit
+// (or push) so the caller doesn't have to wait for some later tick's
+// signature to happen to differ.
 async function forceRefreshFileTree(vault: string): Promise<void> {
   if (useStore.getState().vaultPath !== vault) return;
   try {
     const listed = await invoke<FileEntry[]>("list_markdown_files", { vault });
-    lastFileTreeSig = listed
-      .map((f) => `${f.path} ${f.is_dir ? 1 : 0} ${f.hidden ? 1 : 0}`)
-      .join("\n");
+    lastFileTreeSig = fileTreeSig(listed);
     useStore.getState().setFiles(listed);
   } catch (e) {
     console.warn("[vault-sync] force file-tree refresh failed:", e);
@@ -530,6 +546,12 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       if (!commit.ok && commit.error) {
         setStatus({ lastError: commit.message, running: false });
         return;
+      }
+      if (commit.ok && commit.message !== "no local changes") {
+        // vaultCommitLocal just committed root + nested repos — clear their
+        // now-stale dirty dots immediately rather than waiting on the next
+        // pull tick's (up to pullIntervalSec away) signature check.
+        await forceRefreshFileTree(vault);
       }
       const push = await vaultPush(vault).catch((e) => ({
         ok: false,
