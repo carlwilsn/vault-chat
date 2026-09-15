@@ -5358,6 +5358,11 @@ fn reconcile_with_upstream(
     // dies on an empty commit (the "merge commit failed:" loop the sync split's
     // first live migration hit: the app autosaves between the cycle's commit
     // and its pull). Commit the drift the way the auto-sync would, retry once.
+    // Tracked so the returned message can flag it — this path bypasses the
+    // normal commit function, so it's exactly the kind of event the durable
+    // sync log needs to be able to pin down later.
+    let mut dirty_commit_sanitized = false;
+    let mut dirty_commit_retried = false;
     if merge_code != 0 {
         let unmerged_empty = matches!(
             run_git(vault, &["ls-files", "-u"]),
@@ -5367,6 +5372,24 @@ fn reconcile_with_upstream(
             .map(|(_, _, c)| c == 0)
             .unwrap_or(false);
         if unmerged_empty && !merge_in_progress {
+            dirty_commit_retried = true;
+            // This is a second, independent commit path outside
+            // `vault_sync_commit_local` (reached from a plain pull tick, or from
+            // push-on-rejection) — it did NOT go through that function's
+            // sanitize-before-stage step. On a follower, a dirty tree can be
+            // dirty in a mission-zone path (e.g. the scheduler misfiring
+            // locally, or any other stray local write to supervisor/schedule/
+            // notification/job/mission-conversation state); committing that
+            // as-is and merging it back in is exactly the stale-follower
+            // mission-state clobber `sanitize_mission_zone` exists to prevent
+            // — `*.jsonl merge=union` means the rogue lines don't even get
+            // cleanly overwritten by a later sanitize, they get UNIONED in
+            // forever. Apply the same guard here so this fallback commit can
+            // never carry mission-state drift either.
+            if is_sync_follower(vault) {
+                sanitize_mission_zone(vault, branch);
+                dirty_commit_sanitized = true;
+            }
             let _ = run_git_as(vault, &mn, &me, &["add", "-A"]);
             let _ = run_git_as(vault, &mn, &me, &["commit", "-q", "-m", "vault-chat: auto-sync"]);
             let (_, _, retry_code) =
@@ -5374,6 +5397,13 @@ fn reconcile_with_upstream(
             merge_code = retry_code;
         }
     }
+    let dirty_note = if dirty_commit_sanitized {
+        " [dirty-tree commit, mission zone sanitized]"
+    } else if dirty_commit_retried {
+        " [dirty-tree commit]"
+    } else {
+        ""
+    };
     if merge_code == 0 {
         let fixed = fix_regressed_gitlinks(vault);
         if !fixed.is_empty() {
@@ -5382,9 +5412,13 @@ fn reconcile_with_upstream(
                 fixed.join(", ")
             );
             let _ = run_git_as(vault, &mn, &me, &["commit", "-m", &fix_msg]);
-            return Ok(Ok(format!("merged origin (regression fixed: {})", fixed.join(", "))));
+            return Ok(Ok(format!(
+                "merged origin (regression fixed: {}){}",
+                fixed.join(", "),
+                dirty_note
+            )));
         }
-        return Ok(Ok("merged origin".into()));
+        return Ok(Ok(format!("merged origin{}", dirty_note)));
     }
     if resolve_merge_conflicts(vault) {
         let (_, cstderr, ccode) = run_git_as(vault, &mn, &me, &["commit", "--no-edit"])?;
@@ -5404,11 +5438,12 @@ fn reconcile_with_upstream(
             );
             let _ = run_git_as(vault, &mn, &me, &["commit", "-m", &fix_msg]);
             return Ok(Ok(format!(
-                "merged origin (auto-resolved, regression fixed: {})",
-                fixed.join(", ")
+                "merged origin (auto-resolved, regression fixed: {}){}",
+                fixed.join(", "),
+                dirty_note
             )));
         }
-        return Ok(Ok("merged origin (auto-resolved)".into()));
+        return Ok(Ok(format!("merged origin (auto-resolved){}", dirty_note)));
     }
     // Should be unreachable — every conflict class has a resolution. If
     // something slips through, abort cleanly so the tree is intact and the next
@@ -6348,6 +6383,100 @@ mod sync_role_tests {
         std::fs::write(&marker, "  Follower \n").unwrap();
         assert!(is_sync_follower(d), "follower marker must gate the push");
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // The gap this fixes: `sanitize_mission_zone` only ran inside
+    // `vault_sync_commit_local`'s normal staging path. But `reconcile_with_upstream`
+    // has its OWN, independent commit — the "dirty working tree blocked the
+    // merge" fallback, hit on a plain pull tick whenever a follower's working
+    // tree has uncommitted changes that overlap the incoming fast-forward (e.g.
+    // a scheduler misfire or any stray local write landing in a mission-zone
+    // path before the next commit-local cycle sanitizes it). Before this fix
+    // that fallback committed the dirty tree as-is with no sanitize step; with
+    // `*.jsonl merge=union` in play, a rogue mission-zone line doesn't even
+    // conflict — it silently UNIONS into the file forever. This test proves
+    // the fallback now sanitizes too: the rogue line never survives, while the
+    // follower's genuine content (a new file) does.
+    #[test]
+    fn reconcile_sanitizes_mission_zone_on_dirty_tree_fallback() {
+        let base = std::env::temp_dir().join(format!("vc_reconcile_dirty_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "master"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "master"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git(ds, &["remote", "add", "origin", og]).unwrap();
+        }
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+        // Seed v1 from A (the box), WITH the real app's jsonl union attribute —
+        // the mechanism that turns an unsanitized rogue commit into a permanent
+        // leak instead of a plain conflict.
+        std::fs::write(a.join(".gitattributes"), "*.jsonl merge=union\n").unwrap();
+        std::fs::create_dir_all(a.join(".vault-chat/conversations")).unwrap();
+        std::fs::write(
+            a.join(".vault-chat/conversations/m1.jsonl"),
+            "{\"id\":\"m1\",\"source\":\"mission\",\"missionState\":\"RUNNING\"}\n{\"role\":\"assistant\",\"content\":\"box turn 1\"}\n",
+        )
+        .unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed v1"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+        // B pulls v1 and is marked a follower (the role marker lives in the
+        // non-synced .git dir, per-checkout).
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+        let git_dir = run_git(bs, &["rev-parse", "--absolute-git-dir"]).unwrap().0.trim().to_string();
+        std::fs::write(format!("{}/vault-chat-sync-role", git_dir), "follower\n").unwrap();
+        // The box advances to v2 (mission completes) and pushes — B hasn't
+        // fetched it yet.
+        std::fs::write(
+            a.join(".vault-chat/conversations/m1.jsonl"),
+            "{\"id\":\"m1\",\"source\":\"mission\",\"missionState\":\"DONE\"}\n{\"role\":\"assistant\",\"content\":\"box turn 1\"}\n{\"role\":\"assistant\",\"content\":\"box turn 2\"}\n",
+        )
+        .unwrap();
+        run_git_mut(asr, &["commit", "-a", "-q", "-m", "box: mission DONE"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+        // Meanwhile B goes dirty WITHOUT committing: a rogue mission-zone write
+        // (the bug this closes) plus a genuine new file (content that must
+        // survive).
+        std::fs::write(
+            b.join(".vault-chat/conversations/m1.jsonl"),
+            "{\"id\":\"m1\",\"source\":\"mission\",\"missionState\":\"RUNNING\",\"stray\":\"laptop-scheduler-misfire\"}\n{\"role\":\"assistant\",\"content\":\"box turn 1\"}\n",
+        )
+        .unwrap();
+        std::fs::write(b.join("laptop-note.md"), "hello from laptop\n").unwrap();
+        // Fetch v2 (not yet reconciled) — mirrors what `vault_sync_pull` does
+        // right before calling `reconcile_with_upstream`.
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+        let outcome = match super::reconcile_with_upstream(bs, "master")
+            .expect("reconcile_with_upstream should not hard-error")
+        {
+            Ok(msg) => msg,
+            Err(r) => panic!(
+                "dirty-tree fallback must still converge, not surface a SyncOpResult error: {}",
+                r.message
+            ),
+        };
+        assert!(
+            outcome.contains("mission zone sanitized"),
+            "outcome message should flag the sanitize, got: {}",
+            outcome
+        );
+        let m1 = std::fs::read_to_string(b.join(".vault-chat/conversations/m1.jsonl")).unwrap();
+        assert!(m1.contains("\"missionState\":\"DONE\""), "must land on origin's mission state, got: {}", m1);
+        assert!(!m1.contains("stray"), "the rogue follower line must never survive, got: {}", m1);
+        assert!(!m1.contains("laptop-scheduler-misfire"), "the rogue follower line must never survive, got: {}", m1);
+        let laptop_note = std::fs::read_to_string(b.join("laptop-note.md")).unwrap();
+        assert!(laptop_note.contains("hello from laptop"), "genuine follower content must still survive");
         let _ = std::fs::remove_dir_all(&base);
     }
 }
