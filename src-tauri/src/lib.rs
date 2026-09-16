@@ -3181,21 +3181,61 @@ fn sync_one_repo(
                 run_git(sub, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
                 Ok((_, _, 0))
             );
-            let ahead = if has_upstream {
-                match run_git(sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
+            if has_upstream {
+                // Refresh the remote-tracking ref first. Unlike the root vault,
+                // nothing else fetches an embedded "Mine" repo's origin — so
+                // without this, `ahead` is computed against whatever
+                // origin/<branch> happened to be last time anything touched it
+                // (possibly never), and a push rejected by another machine's
+                // more recent push has nowhere to reconcile against. Best-effort:
+                // offline just falls back to the last-known ref, as before.
+                let _ = run_git_timeout(sub, &["fetch", "origin"], 120);
+                let ahead = match run_git(sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
                     Ok((c, _, 0)) => c.trim().parse::<u64>().unwrap_or(0),
                     _ => 0,
-                }
-            } else {
-                0
-            };
-            if ahead > 0 {
-                match run_git_timeout(sub, &["push"], 300) {
-                    Ok((_, perr, pc)) if pc != 0 => {
-                        eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                };
+                if ahead > 0 {
+                    match run_git_timeout(sub, &["push"], 300) {
+                        Ok((_, perr, pc)) if pc != 0 => {
+                            // Almost always a non-fast-forward: another machine
+                            // pushed to this same owned repo since our last
+                            // fetch. Reconcile exactly like the root vault does
+                            // (merge, deterministic conflict resolution) and
+                            // retry once, so a diverged nested repo self-heals
+                            // instead of sitting unpushed forever (the root-level
+                            // fix for this same race never covered nested repos).
+                            let branch = run_git(
+                                sub,
+                                &["symbolic-ref", "--quiet", "--short", "HEAD"],
+                            )
+                            .ok()
+                            .and_then(|(b, _, c)| if c == 0 { Some(b.trim().to_string()) } else { None });
+                            let recon = branch
+                                .as_deref()
+                                .map(|b| reconcile_with_upstream(sub, b));
+                            match recon {
+                                Some(Ok(Ok(_))) => match run_git_timeout(sub, &["push"], 300) {
+                                    Ok((_, perr2, pc2)) if pc2 != 0 => eprintln!(
+                                        "[sync] repo '{}' push failed after merge: {}",
+                                        rel,
+                                        first_line(&perr2).trim()
+                                    ),
+                                    Err(e) => eprintln!(
+                                        "[sync] repo '{}' push error after merge: {}",
+                                        rel, e
+                                    ),
+                                    _ => {}
+                                },
+                                _ => eprintln!(
+                                    "[sync] repo '{}' push skipped: {}",
+                                    rel,
+                                    first_line(&perr).trim()
+                                ),
+                            }
+                        }
+                        Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
+                        _ => {}
                     }
-                    Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
-                    _ => {}
                 }
             }
         }
