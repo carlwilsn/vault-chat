@@ -2960,16 +2960,26 @@ enum RepoClass {
 /// The GitHub login vault-chat is authenticated as (lowercased), resolved once
 /// per process — telling the user's own repos from other people's needs it, and
 /// it never changes within a run. None if `gh` is missing/unauthenticated.
+/// Retries on failure rather than caching `None` forever: `gh_login` runs on
+/// every nested-repo sync pass, and an unauthenticated/offline result at the
+/// FIRST call (gh not yet logged in on a fresh box, a network blip while the
+/// app starts) would otherwise wedge every nested repo into unclassifiable
+/// `None` for the rest of the process's life — on the "always-on box" that's
+/// potentially days, not just until the next call succeeds.
 fn gh_login(cwd: &str) -> Option<String> {
-    static CACHE: OnceLock<Option<String>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            run_gh(cwd, &["api", "user", "-q", ".login"])
-                .ok()
-                .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_lowercase()) } else { None })
-                .filter(|s| !s.is_empty())
-        })
-        .clone()
+    static CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Some(v) = cache.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        return Some(v.clone());
+    }
+    let resolved = run_gh(cwd, &["api", "user", "-q", ".login"])
+        .ok()
+        .and_then(|(o, _, c)| if c == 0 { Some(o.trim().to_lowercase()) } else { None })
+        .filter(|s| !s.is_empty());
+    if let Some(ref v) = resolved {
+        *cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(v.clone());
+    }
+    resolved
 }
 
 /// "https://github.com/owner/Repo.git" → "Repo" (repo name, case preserved).
@@ -3343,23 +3353,40 @@ pub(crate) fn run_git(
 // Absolute path to the `gh` CLI, resolved once.
 static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-// GitHub token from `gh auth token`, cached for the app's lifetime.
-// Token lifetime is ~8h for gh OAuth; within a single app session this is fine.
-static GH_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+// GitHub token from `gh auth token`, cached with a TTL well under gh OAuth's
+// ~8h token lifetime. A bare OnceLock (cache-for-process-lifetime) is wrong
+// here: the sync loop's own comments describe an "always-on box" that runs
+// for days between restarts (see reconcile_with_upstream / vault_sync_push),
+// so a token cached once at startup goes stale mid-session — every push/pull
+// over HTTPS then fails auth silently (it surfaces only as an opaque "push
+// failed" in the sync log) until someone thinks to restart the app. Re-run
+// `gh auth token` (a fast local read of gh's own cached credentials, not a
+// network round trip) periodically instead.
+const GH_TOKEN_TTL_SECS: u64 = 20 * 60;
+static GH_TOKEN: OnceLock<Mutex<Option<(Option<String>, std::time::Instant)>>> = OnceLock::new();
 
-/// Call `gh auth token` directly in Rust (no shell, no quoting), cache result.
+/// Call `gh auth token` directly in Rust (no shell, no quoting), cache result
+/// for `GH_TOKEN_TTL_SECS` so a long-running process re-checks before the
+/// token can have expired.
 fn get_gh_token() -> Option<String> {
-    GH_TOKEN
-        .get_or_init(|| {
-            let gh = find_gh()?;
-            let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if token.is_empty() { None } else { Some(token) }
-        })
-        .clone()
+    let cell = GH_TOKEN.get_or_init(|| Mutex::new(None));
+    let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((tok, at)) = guard.as_ref() {
+        if at.elapsed().as_secs() < GH_TOKEN_TTL_SECS {
+            return tok.clone();
+        }
+    }
+    let fresh = (|| {
+        let gh = find_gh()?;
+        let out = Command::new(&gh).arg("auth").arg("token").output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if token.is_empty() { None } else { Some(token) }
+    })();
+    *guard = Some((fresh.clone(), std::time::Instant::now()));
+    fresh
 }
 
 fn find_gh() -> Option<PathBuf> {
