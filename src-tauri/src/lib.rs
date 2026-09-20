@@ -4708,11 +4708,40 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
         let (status_out, _, _) =
             run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])?;
         let has_changes = !status_out.trim().is_empty();
-        // Count local commits not yet on the upstream. Errors (no upstream,
-        // detached HEAD) are treated as "nothing ahead".
+        // Count local commits not yet on the upstream. Prefer `origin/<branch>`
+        // directly over `@{upstream}`: a vault's repo is always `git init`'d
+        // locally (never cloned — see git_init_if_needed), so on a freshly
+        // connected remote (`vault_sync_set_remote` just does `remote add`, no
+        // `-u`) no upstream tracking ref exists until the first successful
+        // `push -u` — which itself only happens from a DIRTY working tree
+        // (tickPush) or from this very `ahead` count being nonzero (the
+        // tickPull flush). With a clean tree and no upstream yet, `@{upstream}`
+        // always errored and `ahead` silently read 0 forever, so pre-existing
+        // local history (accrued by the always-on local-commit loop before
+        // sync was ever turned on — the normal "connect vault to a shared repo
+        // on a second machine" path) never got flushed to the remote without a
+        // manual "Sync now" click. `origin/<branch>` is populated by the pull
+        // loop's `fetch` every cycle regardless of tracking config, so this
+        // stays accurate from the very first fetch.
         let ahead = {
-            let (out, _, code) =
-                run_git(&vault, &["rev-list", "--count", "@{upstream}..HEAD"])?;
+            let (branch_out, _, branch_code) =
+                run_git(&vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+            let range = if branch_code == 0 && !branch_out.trim().is_empty() && branch_out.trim() != "HEAD" {
+                let origin_ref = format!("refs/remotes/origin/{}", branch_out.trim());
+                let has_origin_ref = matches!(
+                    run_git(&vault, &["rev-parse", "--verify", "--quiet", &origin_ref])?,
+                    (_, _, 0)
+                );
+                if has_origin_ref {
+                    Some(format!("origin/{}..HEAD", branch_out.trim()))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let range = range.unwrap_or_else(|| "@{upstream}..HEAD".to_string());
+            let (out, _, code) = run_git(&vault, &["rev-list", "--count", &range])?;
             if code == 0 {
                 out.trim().parse::<u32>().unwrap_or(0)
             } else {
@@ -5350,8 +5379,19 @@ fn reconcile_with_upstream(
     // abort-and-loop. Whatever the union can't handle (submodule pointers, a
     // genuinely divergent file edit) is auto-resolved so sync always makes
     // progress and never drops data.
+    //
+    // `--allow-unrelated-histories`: every vault repo is `git init`'d locally
+    // (git_init_if_needed), never cloned. Connecting an existing local vault to
+    // an already-populated remote — the normal "set up sync on a second
+    // machine" path via `vault_sync_set_remote` — merges two histories with no
+    // common ancestor. Without this flag git refuses outright ("fatal: refusing
+    // to merge unrelated histories"), which looked like a content conflict to
+    // the code below (no unmerged paths → misread as "resolved") and produced a
+    // permanently-wedged "merge commit failed: no merge in progress" retried
+    // every cycle forever. With the flag, this is just another divergence that
+    // resolve_merge_conflicts's union/theirs/sidecar rules already handle.
     let (_, mstderr, mut merge_code) =
-        run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
+        run_git_as(vault, &mn, &me, &["merge", "--no-edit", "--allow-unrelated-histories", &upstream])?;
     // A DIRTY working tree makes `git merge` REFUSE TO START ("your local
     // changes would be overwritten") — a failure with NO unmerged paths, which
     // the conflict-resolution path below misreads as "resolved, commit it" and
@@ -5369,8 +5409,12 @@ fn reconcile_with_upstream(
         if unmerged_empty && !merge_in_progress {
             let _ = run_git_as(vault, &mn, &me, &["add", "-A"]);
             let _ = run_git_as(vault, &mn, &me, &["commit", "-q", "-m", "vault-chat: auto-sync"]);
-            let (_, _, retry_code) =
-                run_git_as(vault, &mn, &me, &["merge", "--no-edit", &upstream])?;
+            let (_, _, retry_code) = run_git_as(
+                vault,
+                &mn,
+                &me,
+                &["merge", "--no-edit", "--allow-unrelated-histories", &upstream],
+            )?;
             merge_code = retry_code;
         }
     }
@@ -5385,6 +5429,25 @@ fn reconcile_with_upstream(
             return Ok(Ok(format!("merged origin (regression fixed: {})", fixed.join(", "))));
         }
         return Ok(Ok("merged origin".into()));
+    }
+    // The merge failed to even start (e.g. still dirty after the retry above,
+    // or some other precondition `git merge` refused on) — there is nothing to
+    // resolve or commit. Surface the real reason instead of falling into
+    // resolve_merge_conflicts, which sees zero unmerged paths in this case and
+    // misreads "never started" as "already resolved," then dies on a
+    // `commit --no-edit` with no merge in progress. This was the permanent-wedge
+    // failure mode for any refusal class resolve_merge_conflicts doesn't
+    // actually address (unrelated histories, remaining dirt, etc.) — now it
+    // reports plainly and the caller's normal retry-next-cycle logic applies.
+    let merge_in_progress = run_git(vault, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+        .map(|(_, _, c)| c == 0)
+        .unwrap_or(false);
+    if !merge_in_progress {
+        return Ok(Err(SyncOpResult {
+            ok: false,
+            message: format!("merge did not start: {}", first_line(&mstderr).trim()),
+            error: true,
+        }));
     }
     if resolve_merge_conflicts(vault) {
         let (_, cstderr, ccode) = run_git_as(vault, &mn, &me, &["commit", "--no-edit"])?;
