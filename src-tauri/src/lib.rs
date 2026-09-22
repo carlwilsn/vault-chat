@@ -3144,6 +3144,21 @@ fn sync_one_repo(
         None
     };
 
+    // For a non-Shared repo, resolve the branch it landed on once so the push
+    // step below can fetch + reconcile against the matching remote branch.
+    // Without this, an embedded (non-submodule) nested repo only ever PUSHES —
+    // it never learns about commits another machine made to the same repo, so a
+    // diverged push is rejected and silently skipped every cycle forever
+    // instead of self-healing the way the root vault's sync does.
+    let own_branch: Option<String> = if class != RepoClass::Shared {
+        run_git(sub, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .ok()
+            .and_then(|(b, _, c)| if c == 0 { Some(b.trim().to_string()) } else { None })
+            .filter(|b| !b.is_empty())
+    } else {
+        None
+    };
+
     // Commit any uncommitted edits, authored by who did the work. In a shared
     // repo an agent commit is co-signed by the user, so a teammate reading the
     // history sees a real human standing behind it.
@@ -3175,27 +3190,54 @@ fn sync_one_repo(
             Err(e) => eprintln!("[sync] shared repo '{}' push error: {}", rel, e),
             _ => {}
         },
-        // Mine → push the tracking branch when it's ahead. Needs an upstream.
+        // Mine → fetch + reconcile with the remote FIRST (fast-forward, or a
+        // real merge via the same `reconcile_with_upstream` the root vault uses
+        // on pull and on push-rejection), so this machine actually picks up
+        // whatever another machine already pushed before we try to push our own
+        // commits. Then push whenever we're ahead. Always with `-u`: unlike the
+        // root vault (which always pushes via `push -u`), the old code here used
+        // a bare `push` gated on `@{upstream}` already being set — a nested repo
+        // that never had upstream configured (e.g. a personal repo the user
+        // `git init`'d by hand inside the vault) had no way to ever get one, so
+        // it silently never synced. `-u` establishes it on the first push and is
+        // a harmless no-op on every push after.
         (None, RepoClass::Mine) => {
-            let has_upstream = matches!(
-                run_git(sub, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
-                Ok((_, _, 0))
-            );
-            let ahead = if has_upstream {
-                match run_git(sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
-                    Ok((c, _, 0)) => c.trim().parse::<u64>().unwrap_or(0),
-                    _ => 0,
-                }
-            } else {
-                0
-            };
-            if ahead > 0 {
-                match run_git_timeout(sub, &["push"], 300) {
-                    Ok((_, perr, pc)) if pc != 0 => {
-                        eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+            if let Some(branch) = own_branch.as_deref() {
+                let _ = run_git_timeout(sub, &["fetch", "origin", branch], 120);
+                let remote_ref = format!("origin/{}", branch);
+                let remote_exists = matches!(
+                    run_git(sub, &["rev-parse", "--verify", "--quiet", &remote_ref]),
+                    Ok((_, _, 0))
+                );
+                if remote_exists {
+                    match reconcile_with_upstream(sub, branch) {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => eprintln!(
+                            "[sync] repo '{}' reconcile failed: {}",
+                            rel, e.message
+                        ),
+                        Err(e) => eprintln!("[sync] repo '{}' reconcile error: {}", rel, e),
                     }
-                    Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
-                    _ => {}
+                }
+                let ahead = if remote_exists {
+                    match run_git(sub, &["rev-list", "--count", &format!("{}..HEAD", remote_ref)]) {
+                        Ok((c, _, 0)) => c.trim().parse::<u64>().unwrap_or(0),
+                        _ => 0,
+                    }
+                } else {
+                    // No remote branch yet — this is the would-be first push;
+                    // go if HEAD has any commit at all.
+                    matches!(run_git(sub, &["rev-parse", "--verify", "--quiet", "HEAD"]), Ok((_, _, 0)))
+                        as u64
+                };
+                if ahead > 0 {
+                    match run_git_timeout(sub, &["push", "-u", "origin", branch], 300) {
+                        Ok((_, perr, pc)) if pc != 0 => {
+                            eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                        }
+                        Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
+                        _ => {}
+                    }
                 }
             }
         }
