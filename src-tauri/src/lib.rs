@@ -4677,6 +4677,48 @@ struct SyncStatus {
     nested_repos: Vec<String>,
 }
 
+/// Count local commits not yet on the remote. Prefer `@{upstream}`, but fall
+/// back to the last-fetched `origin/<branch>` ref when no upstream is
+/// configured yet (e.g. a remote just attached to a vault that already had
+/// local history, or a fresh vault before its first push ever set `-u`).
+/// Without this fallback, `ahead` reads 0 forever in that case; with a clean
+/// working tree (nothing dirty to trigger the debounced push either) the
+/// whole backlog of local commits would silently never reach the remote
+/// until the user manually forced a push.
+///
+/// A THIRD case: `origin/<branch>` itself may not exist even after a fetch —
+/// a brand-new remote (an empty GitHub repo just attached, or one whose fetch
+/// has so far only failed with "couldn't find remote ref") has no tracking
+/// ref for this branch at all. When a remote is configured but has never been
+/// observed to carry this branch, everything on HEAD is unpushed by
+/// definition, so fall back to a full count of HEAD.
+pub(crate) fn ahead_of_remote(vault: &str) -> Result<u32, String> {
+    let (out, _, code) = run_git(vault, &["rev-list", "--count", "@{upstream}..HEAD"])?;
+    if code == 0 {
+        return Ok(out.trim().parse::<u32>().unwrap_or(0));
+    }
+    let (branch_out, _, bc) = run_git(vault, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = branch_out.trim();
+    if bc != 0 || branch.is_empty() || branch == "HEAD" {
+        return Ok(0);
+    }
+    let remote_ref = format!("origin/{}..HEAD", branch);
+    let (out2, _, code2) = run_git(vault, &["rev-list", "--count", &remote_ref])?;
+    if code2 == 0 {
+        return Ok(out2.trim().parse::<u32>().unwrap_or(0));
+    }
+    let (_, _, has_origin) = run_git(vault, &["remote", "get-url", "origin"])?;
+    if has_origin != 0 {
+        return Ok(0); // no remote at all — nothing to report as "ahead"
+    }
+    let (out3, _, code3) = run_git(vault, &["rev-list", "--count", "HEAD"])?;
+    Ok(if code3 == 0 {
+        out3.trim().parse::<u32>().unwrap_or(0)
+    } else {
+        0
+    })
+}
+
 #[tauri::command]
 async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -4708,17 +4750,7 @@ async fn vault_sync_status(vault: String) -> Result<SyncStatus, String> {
         let (status_out, _, _) =
             run_git(&vault, &["status", "--porcelain", "--ignore-submodules=dirty"])?;
         let has_changes = !status_out.trim().is_empty();
-        // Count local commits not yet on the upstream. Errors (no upstream,
-        // detached HEAD) are treated as "nothing ahead".
-        let ahead = {
-            let (out, _, code) =
-                run_git(&vault, &["rev-list", "--count", "@{upstream}..HEAD"])?;
-            if code == 0 {
-                out.trim().parse::<u32>().unwrap_or(0)
-            } else {
-                0
-            }
-        };
+        let ahead = ahead_of_remote(&vault)?;
         let nested_repos = find_nested_repos(&root);
         Ok(SyncStatus {
             has_repo,
@@ -5458,6 +5490,25 @@ async fn vault_sync_pull(vault: String) -> Result<SyncOpResult, String> {
         }
         let (_, stderr, fetch_code) = run_git(&vault, &["fetch", "origin", branch])?;
         if fetch_code != 0 {
+            // A brand-new remote (freshly attached to a vault that already had
+            // local history, or a repo created empty on GitHub) has no ref for
+            // this branch yet — git reports this as a fetch failure ("couldn't
+            // find remote ref <branch>"), not a network/auth problem. Treating
+            // it as a hard error here left it stuck: `reconcile_with_upstream`
+            // never ran, no `origin/<branch>` tracking ref was ever created,
+            // and — since the working tree is clean, not dirty — nothing else
+            // in the sync loop would trigger the first push either. Recognize
+            // this specific case and fall through with nothing to reconcile so
+            // the caller's `ahead` count (which now also falls back to "count
+            // everything" when the remote has never seen this branch) can push
+            // the vault's existing history for the first time.
+            if stderr.contains("couldn't find remote ref") {
+                return Ok(SyncOpResult {
+                    ok: true,
+                    message: "remote has no matching branch yet".into(),
+                    error: false,
+                });
+            }
             return Ok(SyncOpResult {
                 ok: false,
                 message: format!("fetch failed: {}", stderr.trim()),
@@ -6464,6 +6515,170 @@ mod conversation_jsonl_tests {
         assert_eq!(deduped_line_count(disk_full), 4);
         assert_eq!(deduped_line_count(truncated), 3);
         assert!(deduped_line_count(truncated) < deduped_line_count(disk_full));
+    }
+}
+
+#[cfg(test)]
+mod sync_status_tests {
+    use super::{ahead_of_remote, run_git};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Real temp dirs + real git, mirroring how the sync loop actually talks to
+    // git — no mocking layer exists for this code, so this is the only way to
+    // exercise the `ahead` calculation truthfully.
+    fn temp_dir(tag: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "vault-chat-sync-test-{}-{}-{}",
+            std::process::id(),
+            tag,
+            n
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir temp dir");
+        dir
+    }
+
+    fn init_repo(dir: &PathBuf) {
+        let d = dir.to_string_lossy().to_string();
+        assert_eq!(run_git(&d, &["init", "-q", "-b", "main"]).unwrap().2, 0);
+        assert_eq!(
+            run_git(&d, &["config", "user.email", "test@example.com"]).unwrap().2,
+            0
+        );
+        assert_eq!(run_git(&d, &["config", "user.name", "Test"]).unwrap().2, 0);
+    }
+
+    fn commit_file(dir: &PathBuf, name: &str, contents: &str) {
+        std::fs::write(dir.join(name), contents).unwrap();
+        let d = dir.to_string_lossy().to_string();
+        assert_eq!(run_git(&d, &["add", "-A"]).unwrap().2, 0);
+        assert_eq!(
+            run_git(&d, &["commit", "-q", "-m", &format!("add {}", name)])
+                .unwrap()
+                .2,
+            0
+        );
+    }
+
+    // Second tier of the fix: a remote that already has SOME history (so
+    // `origin/<branch>` genuinely exists after a fetch) but no upstream
+    // tracking configured locally yet (`@{upstream}` unset — e.g. a vault
+    // whose remote was set by hand rather than via `push -u`).
+    #[test]
+    fn ahead_falls_back_to_origin_branch_without_upstream_tracking() {
+        let remote = temp_dir("remote");
+        let vault = temp_dir("vault");
+        let vault2 = temp_dir("vault2");
+        let remote_s = remote.to_string_lossy().to_string();
+        let vault_s = vault.to_string_lossy().to_string();
+
+        // Seed the "remote" with one real commit (pushed from a stand-in
+        // second machine) so its `main` ref actually exists.
+        assert_eq!(run_git(&remote_s, &["init", "-q", "--bare", "-b", "main"]).unwrap().2, 0);
+        init_repo(&vault2);
+        commit_file(&vault2, "note.md", "from other machine");
+        let vault2_s = vault2.to_string_lossy().to_string();
+        assert_eq!(run_git(&vault2_s, &["remote", "add", "origin", &remote_s]).unwrap().2, 0);
+        assert_eq!(run_git(&vault2_s, &["push", "origin", "main"]).unwrap().2, 0);
+
+        // This vault clones history from the remote via a manual fetch (not
+        // `git clone`, which would auto-configure tracking) and adds its own
+        // unpushed commits on top.
+        init_repo(&vault);
+        commit_file(&vault, "note.md", "from other machine");
+        assert_eq!(run_git(&vault_s, &["remote", "add", "origin", &remote_s]).unwrap().2, 0);
+        assert_eq!(run_git(&vault_s, &["fetch", "origin"]).unwrap().2, 0);
+        commit_file(&vault, "note.md", "local edit 1");
+        commit_file(&vault, "note.md", "local edit 2");
+
+        // No upstream configured: `@{upstream}..HEAD` must fail.
+        assert_ne!(
+            run_git(&vault_s, &["rev-list", "--count", "@{upstream}..HEAD"])
+                .unwrap()
+                .2,
+            0
+        );
+        // But `origin/main` DOES exist (we just fetched it).
+        assert_eq!(
+            run_git(&vault_s, &["rev-parse", "--verify", "--quiet", "origin/main"])
+                .unwrap()
+                .2,
+            0
+        );
+
+        // The fallback must see exactly the 2 unpushed local commits, not the
+        // 1 shared ancestor commit.
+        assert_eq!(ahead_of_remote(&vault_s).unwrap(), 2);
+
+        // Once a real push sets up tracking, the fast `@{upstream}` path
+        // takes over and reports the same count.
+        assert_eq!(
+            run_git(&vault_s, &["push", "-u", "origin", "main"]).unwrap().2,
+            0
+        );
+        assert_eq!(ahead_of_remote(&vault_s).unwrap(), 0);
+        commit_file(&vault, "note.md", "local edit 3");
+        assert_eq!(ahead_of_remote(&vault_s).unwrap(), 1);
+
+        let _ = std::fs::remove_dir_all(&remote);
+        let _ = std::fs::remove_dir_all(&vault);
+        let _ = std::fs::remove_dir_all(&vault2);
+    }
+
+    // Third tier of the fix, and the deeper form of the bug: a remote that has
+    // NEVER seen this branch at all (a freshly created empty GitHub repo, or
+    // one `fetch` has so far only failed to find — see the
+    // "couldn't find remote ref" handling in `vault_sync_pull`). Here even
+    // `origin/<branch>` doesn't exist, so the only honest answer is "every
+    // commit on HEAD is unpushed."
+    #[test]
+    fn ahead_falls_back_to_full_head_count_when_remote_has_never_seen_the_branch() {
+        let remote = temp_dir("remote-empty");
+        let vault = temp_dir("vault-empty-remote");
+        let remote_s = remote.to_string_lossy().to_string();
+        let vault_s = vault.to_string_lossy().to_string();
+
+        // A genuinely empty bare remote — no commits, no `main` ref at all.
+        assert_eq!(run_git(&remote_s, &["init", "-q", "--bare", "-b", "main"]).unwrap().2, 0);
+
+        init_repo(&vault);
+        commit_file(&vault, "note.md", "first");
+        commit_file(&vault, "note.md", "second");
+        commit_file(&vault, "note.md", "third");
+        assert_eq!(run_git(&vault_s, &["remote", "add", "origin", &remote_s]).unwrap().2, 0);
+
+        // Exactly what `vault_sync_pull` runs: fetching this specific branch
+        // fails outright because the remote has never had it.
+        let (_, stderr, code) = run_git(&vault_s, &["fetch", "origin", "main"]).unwrap();
+        assert_ne!(code, 0);
+        assert!(stderr.contains("couldn't find remote ref"));
+
+        // No `origin/main` ref was ever created.
+        assert_ne!(
+            run_git(&vault_s, &["rev-parse", "--verify", "--quiet", "origin/main"])
+                .unwrap()
+                .2,
+            0
+        );
+
+        // The deepest fallback must still report all 3 commits as unpushed,
+        // not silently read 0 forever.
+        assert_eq!(ahead_of_remote(&vault_s).unwrap(), 3);
+
+        let _ = std::fs::remove_dir_all(&remote);
+        let _ = std::fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn ahead_is_zero_for_a_brand_new_repo_with_no_remote() {
+        let vault = temp_dir("no-remote");
+        init_repo(&vault);
+        commit_file(&vault, "note.md", "hello");
+        let vault_s = vault.to_string_lossy().to_string();
+        assert_eq!(ahead_of_remote(&vault_s).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&vault);
     }
 }
 
@@ -7628,4 +7843,64 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod e2e_first_sync_tests {
+    use super::{run_git, vault_sync_pull, vault_sync_push};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "vault-chat-e2e-{}-{}-{}",
+            std::process::id(),
+            tag,
+            n
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    // End-to-end regression test for the "first sync to a fresh remote" bug:
+    // driving the REAL `vault_sync_pull` + `vault_sync_push` commands (not just
+    // `ahead_of_remote` in isolation) the same way the JS sync loop's first tick
+    // does — pull, then push — against a vault with pre-existing local history
+    // and a brand-new empty remote. Before the fix, `vault_sync_pull` hard-errored
+    // on "couldn't find remote ref", and even after that was tolerated, `ahead`
+    // read 0 forever with a clean tree, so the push never happened and the
+    // pre-existing history was stranded on this machine indefinitely.
+    #[tokio::test]
+    async fn first_sync_pushes_preexisting_history_to_empty_remote() {
+        let remote = temp_dir("remote");
+        let vault = temp_dir("vault");
+        let remote_s = remote.to_string_lossy().to_string();
+        let vault_s = vault.to_string_lossy().to_string();
+
+        assert_eq!(run_git(&remote_s, &["init", "-q", "--bare", "-b", "main"]).unwrap().2, 0);
+        assert_eq!(run_git(&vault_s, &["init", "-q", "-b", "main"]).unwrap().2, 0);
+        run_git(&vault_s, &["config", "user.email", "test@example.com"]).unwrap();
+        run_git(&vault_s, &["config", "user.name", "Test"]).unwrap();
+        std::fs::write(vault.join("note.md"), "hello").unwrap();
+        run_git(&vault_s, &["add", "-A"]).unwrap();
+        run_git(&vault_s, &["commit", "-q", "-m", "pre-existing history"]).unwrap();
+        run_git(&vault_s, &["remote", "add", "origin", &remote_s]).unwrap();
+
+        // What the JS sync loop does on its very first tick: pull, then push.
+        let pull = vault_sync_pull(vault_s.clone()).await.unwrap();
+        assert!(pull.ok, "pull should not hard-error on an empty remote: {}", pull.message);
+
+        let push = vault_sync_push(vault_s.clone()).await.unwrap();
+        assert!(push.ok, "push should succeed: {}", push.message);
+
+        // Verify the remote actually received the commit.
+        let (log, _, code) = run_git(&remote_s, &["log", "--oneline", "main"]).unwrap();
+        assert_eq!(code, 0);
+        assert!(log.contains("pre-existing history"), "remote log: {}", log);
+
+        let _ = std::fs::remove_dir_all(&remote);
+        let _ = std::fs::remove_dir_all(&vault);
+    }
 }
