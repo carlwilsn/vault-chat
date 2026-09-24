@@ -6353,6 +6353,84 @@ mod sync_role_tests {
 }
 
 #[cfg(test)]
+mod sync_engine_tests {
+    use super::{run_git, run_git_mut, vault_sync_commit_local, vault_sync_pull, vault_sync_push};
+
+    fn init_checkout(dir: &std::path::Path, origin: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let d = dir.to_str().unwrap();
+        run_git(d, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(d, &["remote", "add", "origin", origin]).unwrap();
+    }
+
+    // End-to-end proof of the actual cross-machine reconciliation loop: A (the
+    // always-on box) commits + pushes while B (an intermittent laptop) is mid-
+    // cycle, so B's own commit+push lands on a stale tip. This exercises
+    // `vault_sync_push`'s push-rejected → fetch → `reconcile_with_upstream` →
+    // retry-push path for real, against real git processes, instead of a
+    // production run against the live vault — the wedge this path exists to
+    // prevent (see `vault_sync_push`'s comment on the summer sync freeze).
+    #[tokio::test]
+    async fn two_machine_divergence_reconciles_and_both_sides_converge() {
+        let base = std::env::temp_dir().join(format!("vc_sync_engine_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "main"]).unwrap();
+
+        init_checkout(&a, og);
+        let asr = a.to_str().unwrap();
+        std::fs::write(a.join("note.md"), "seed\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "-u", "origin", "main"]).unwrap();
+
+        // B "clones" via fetch + checkout, mirroring a fresh machine's first pull.
+        init_checkout(&b, og);
+        let bs = b.to_str().unwrap();
+        run_git(bs, &["fetch", "-q", "origin", "main"]).unwrap();
+        run_git_mut(bs, &["checkout", "-q", "-b", "main", "origin/main"]).unwrap();
+
+        // A edits and pushes cleanly.
+        std::fs::write(a.join("note.md"), "seed\nA edit\n").unwrap();
+        let r = vault_sync_commit_local(asr.to_string()).await.unwrap();
+        assert!(r.ok, "A commit: {}", r.message);
+        let r = vault_sync_push(asr.to_string()).await.unwrap();
+        assert!(r.ok && !r.error, "A push: {}", r.message);
+
+        // B, unaware of A's push, edits a DIFFERENT file and pushes too — the
+        // divergence every intermittent machine hits against an always-on box.
+        std::fs::write(b.join("other.md"), "B edit\n").unwrap();
+        let r = vault_sync_commit_local(bs.to_string()).await.unwrap();
+        assert!(r.ok, "B commit: {}", r.message);
+        let r = vault_sync_push(bs.to_string()).await.unwrap();
+        assert!(r.ok && !r.error, "B push must self-heal via reconcile, not fail: {}", r.message);
+        assert_eq!(
+            r.message, "merged + pushed",
+            "B's push must go through the reconcile-then-retry path, not silently drop A's edit"
+        );
+
+        // A pulls and must see B's file without losing its own edit — nothing
+        // stranded on either side, no data loss across the divergence.
+        let r = vault_sync_pull(asr.to_string()).await.unwrap();
+        assert!(r.ok && !r.error, "A pull: {}", r.message);
+        assert_eq!(std::fs::read_to_string(a.join("note.md")).unwrap(), "seed\nA edit\n");
+        assert_eq!(std::fs::read_to_string(a.join("other.md")).unwrap(), "B edit\n");
+
+        // No leftover merge/rebase state or conflict sidecars on either side.
+        assert!(!a.join(".git/MERGE_HEAD").exists());
+        assert!(!b.join(".git/MERGE_HEAD").exists());
+        assert!(!a.join("note.md.conflict").exists());
+        assert!(!b.join("note.md.conflict").exists());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
 mod conversation_jsonl_tests {
     use super::reconstruct_conversation;
 
