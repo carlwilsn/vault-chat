@@ -3181,21 +3181,46 @@ fn sync_one_repo(
                 run_git(sub, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
                 Ok((_, _, 0))
             );
-            let ahead = if has_upstream {
-                match run_git(sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
+            if has_upstream {
+                let ahead = match run_git(sub, &["rev-list", "--count", "@{upstream}..HEAD"]) {
                     Ok((c, _, 0)) => c.trim().parse::<u64>().unwrap_or(0),
                     _ => 0,
+                };
+                if ahead > 0 {
+                    match run_git_timeout(sub, &["push"], 300) {
+                        Ok((_, perr, pc)) if pc != 0 => {
+                            eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                        }
+                        Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
+                        _ => {}
+                    }
                 }
             } else {
-                0
-            };
-            if ahead > 0 {
-                match run_git_timeout(sub, &["push"], 300) {
-                    Ok((_, perr, pc)) if pc != 0 => {
-                        eprintln!("[sync] repo '{}' push skipped: {}", rel, first_line(&perr).trim())
+                // No upstream configured — e.g. the user `git init`'d + `remote
+                // add origin`'d this sub-repo by hand but never pushed, or its
+                // tracking got cleared. Without an attempt here, the commit
+                // above still lands locally every cycle (clearing the dirty
+                // dot) while nothing ever reaches the remote — silently, with
+                // no error logged anywhere. Attempt one first `push -u` when
+                // there's an actual commit and a remote to push to.
+                let has_commit =
+                    matches!(run_git(sub, &["rev-parse", "--quiet", "--verify", "HEAD"]), Ok((_, _, 0)));
+                let has_remote = matches!(run_git(sub, &["remote", "get-url", "origin"]), Ok((_, _, 0)));
+                if has_commit && has_remote {
+                    if let Ok((b, _, 0)) = run_git(sub, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+                        let b = b.trim();
+                        if !b.is_empty() {
+                            match run_git_timeout(sub, &["push", "-u", "origin", b], 300) {
+                                Ok((_, perr, pc)) if pc != 0 => eprintln!(
+                                    "[sync] repo '{}' first push skipped: {}",
+                                    rel,
+                                    first_line(&perr).trim()
+                                ),
+                                Err(e) => eprintln!("[sync] repo '{}' first push error: {}", rel, e),
+                                _ => {}
+                            }
+                        }
                     }
-                    Err(e) => eprintln!("[sync] repo '{}' push error: {}", rel, e),
-                    _ => {}
                 }
             }
         }
@@ -5575,8 +5600,10 @@ fn conv_is_mission_zone(head_line: &str) -> bool {
 /// sanitized commit's TIP matches origin for the zone, so the eventual merge
 /// carries no mission-state change from this machine (the 153-commits-ahead
 /// migration case). Uses the last-fetched origin ref — no network; the pull
-/// loop keeps it fresh. Local-only files (present here, absent on origin) are
-/// left alone: with no origin counterpart they can't clobber anything.
+/// loop keeps it fresh. A local-only path (present here, absent on origin) is
+/// deleted rather than left alone: a follower must never be the one to
+/// introduce a mission-zone path's first version — left alone, it would ride
+/// this very commit onto origin as this machine's unauthorized first write.
 fn sanitize_mission_zone(vault: &str, branch: &str) {
     let origin = format!("origin/{}", branch);
     // Origin must exist (a vault with no remote / never-fetched ref: nothing to
@@ -5586,8 +5613,13 @@ fn sanitize_mission_zone(vault: &str, branch: &str) {
         return;
     }
     for p in MISSION_ZONE_PATHS {
-        // Only paths origin knows; checkout fails harmlessly otherwise.
-        let _ = run_git_mut(vault, &["checkout", &origin, "--", p]);
+        let spec = format!("{}:{}", origin, p);
+        let exists_on_origin = matches!(run_git(vault, &["cat-file", "-e", &spec]), Ok((_, _, 0)));
+        if exists_on_origin {
+            let _ = run_git_mut(vault, &["checkout", &origin, "--", p]);
+        } else {
+            remove_mission_zone_local_only(vault, p);
+        }
     }
     // Conversations: classify by the meta line, local version first, origin's
     // as fallback (a file deleted locally still needs restoring if origin says
@@ -5596,7 +5628,8 @@ fn sanitize_mission_zone(vault: &str, branch: &str) {
     if lc != 0 {
         return;
     }
-    for path in ls.lines().map(str::trim).filter(|l| l.ends_with(".jsonl")) {
+    let origin_convs: std::collections::HashSet<&str> = ls.lines().map(str::trim).collect();
+    for path in origin_convs.iter().copied().filter(|l| l.ends_with(".jsonl")) {
         let local_head = std::fs::File::open(format!("{}/{}", vault, path))
             .ok()
             .and_then(|f| {
@@ -5616,6 +5649,54 @@ fn sanitize_mission_zone(vault: &str, branch: &str) {
             let _ = run_git_mut(vault, &["checkout", &origin, "--", path]);
         }
     }
+    // Local-only conversations: a thread created here since the last sync that
+    // origin has never seen at all. The loop above only walks origin's file
+    // list, so a follower-created mission/worker/ask thread — the exact class
+    // this function exists to keep off origin — was previously invisible to it.
+    // No origin fallback exists for these, so a mission-zone one is deleted
+    // outright rather than checked out.
+    let conv_dir = format!("{}/.vault-chat/conversations", vault);
+    if let Ok(entries) = std::fs::read_dir(&conv_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(fname) = p.file_name().and_then(|n| n.to_str()) else { continue };
+            let rel = format!(".vault-chat/conversations/{}", fname);
+            if origin_convs.contains(rel.as_str()) {
+                continue; // already handled above
+            }
+            let head = std::fs::File::open(&p)
+                .ok()
+                .and_then(|f| {
+                    use std::io::BufRead;
+                    std::io::BufReader::new(f).lines().next().and_then(|r| r.ok())
+                })
+                .unwrap_or_default();
+            if conv_is_mission_zone(&head) {
+                let _ = std::fs::remove_file(&p);
+                let _ = run_git_mut(vault, &["rm", "--cached", "-f", "--ignore-unmatch", &rel]);
+            }
+        }
+    }
+}
+
+/// Delete a mission-zone path that exists locally but has no counterpart on
+/// origin yet, from both the working tree and the index. Used by
+/// `sanitize_mission_zone` so a follower can never author a zone path's first
+/// version. Handles both file and directory zone paths (`supervisor`,
+/// `selftest`). Best-effort throughout: this runs on every commit, so a
+/// filesystem hiccup must not block the commit it's guarding.
+fn remove_mission_zone_local_only(vault: &str, rel: &str) {
+    let full = format!("{}/{}", vault, rel);
+    let path = std::path::Path::new(&full);
+    if path.is_dir() {
+        let _ = std::fs::remove_dir_all(path);
+    } else if path.exists() {
+        let _ = std::fs::remove_file(path);
+    }
+    let _ = run_git_mut(vault, &["rm", "-r", "--cached", "-f", "--ignore-unmatch", rel]);
 }
 
 #[tauri::command]
@@ -5717,6 +5798,12 @@ async fn vault_sync_gh_create_repo(
     private_repo: bool,
 ) -> Result<SyncOpResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // Every other mutating sync command serializes on the per-vault repo
+        // lock; this one didn't, despite being user-reachable at any time from
+        // Settings — including mid-tick of that vault's own sync loop, where it
+        // would otherwise race a concurrent commit/push against the same `.git`
+        // index and remote with no serialization and no index-lock retry.
+        with_repo_lock(&vault, || {
         let n = name.trim();
         if n.is_empty() {
             return Ok(SyncOpResult {
@@ -5765,6 +5852,7 @@ async fn vault_sync_gh_create_repo(
             ok: true,
             message: "repo created".into(),
             error: false,
+        })
         })
     })
     .await
@@ -6304,6 +6392,77 @@ mod sync_role_tests {
         assert!(chat.contains("laptop chat line"), "own chat content must survive");
         let note = std::fs::read_to_string(b.join("note.md")).unwrap();
         assert!(note.contains("laptop edit"), "doc content must survive");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Regression: a follower that ends up with a mission-zone path or
+    // conversation origin has NEVER seen at all (jobs.jsonl for the first
+    // time, or a brand-new mission thread) previously slipped through
+    // untouched — `checkout <origin> -- <path>` silently no-ops when origin
+    // lacks the path, and the conversation pass only walked origin's file
+    // list. Either would ride the very next commit onto origin as this
+    // follower's unauthorized first write to that path. Both must be deleted
+    // instead; an ordinary new chat (not mission-zone) must survive untouched.
+    #[test]
+    fn sanitize_deletes_local_only_mission_zone_paths_origin_never_saw() {
+        let base = std::env::temp_dir().join(format!("vc_sanitize_new_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let origin = base.join("origin.git");
+        let a = base.join("A");
+        let b = base.join("B");
+        std::fs::create_dir_all(&origin).unwrap();
+        let og = origin.to_str().unwrap();
+        run_git(og, &["init", "-q", "--bare", "-b", "master"]).unwrap();
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+            let ds = d.to_str().unwrap();
+            run_git(ds, &["init", "-q", "-b", "master"]).unwrap();
+            run_git(ds, &["config", "user.email", "t@t"]).unwrap();
+            run_git(ds, &["config", "user.name", "t"]).unwrap();
+            run_git(ds, &["remote", "add", "origin", og]).unwrap();
+        }
+        let asr = a.to_str().unwrap();
+        let bs = b.to_str().unwrap();
+        // Seed from A with nothing mission-zone-shaped at all — origin has
+        // never seen jobs.jsonl or any mission/worker/ask conversation.
+        std::fs::write(a.join("note.md"), "original\n").unwrap();
+        run_git_mut(asr, &["add", "-A"]).unwrap();
+        run_git_mut(asr, &["commit", "-q", "-m", "seed"]).unwrap();
+        run_git_mut(asr, &["push", "-q", "origin", "master"]).unwrap();
+        run_git_mut(bs, &["pull", "-q", "origin", "master"]).unwrap();
+        // B (a follower) somehow ends up with local-only mission-zone state —
+        // exactly the class this function exists to keep off origin.
+        std::fs::create_dir_all(b.join(".vault-chat/conversations")).unwrap();
+        std::fs::write(b.join(".vault-chat/jobs.jsonl"), "{\"id\":\"j1\",\"status\":\"running\"}\n").unwrap();
+        std::fs::write(
+            b.join(".vault-chat/conversations/m2.jsonl"),
+            "{\"id\":\"m2\",\"source\":\"mission\",\"missionState\":\"RUNNING\"}\n{\"role\":\"assistant\",\"content\":\"new mission on follower\"}\n",
+        )
+        .unwrap();
+        std::fs::write(b.join(".vault-chat/conversations/chat2.jsonl"), "{\"id\":\"chat2\",\"source\":\"phone\"}\n").unwrap();
+        run_git_mut(bs, &["add", "-A"]).unwrap();
+        run_git_mut(bs, &["commit", "-q", "-m", "follower creates local-only state"]).unwrap();
+        run_git(bs, &["fetch", "-q", "origin", "master"]).unwrap();
+
+        sanitize_mission_zone(bs, "master");
+
+        assert!(
+            !b.join(".vault-chat/jobs.jsonl").exists(),
+            "jobs.jsonl unknown to origin must be deleted, not left to ride the next push"
+        );
+        assert!(
+            !b.join(".vault-chat/conversations/m2.jsonl").exists(),
+            "a new mission-zone conversation origin never saw must be deleted"
+        );
+        assert!(
+            b.join(".vault-chat/conversations/chat2.jsonl").exists(),
+            "a new ordinary chat (not mission-zone) must survive untouched"
+        );
+        let (status, _, _) = run_git(bs, &["status", "--porcelain"]).unwrap();
+        assert!(
+            status.contains("D  .vault-chat/jobs.jsonl"),
+            "the deletion must be staged so the next commit doesn't re-carry it: {status}"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

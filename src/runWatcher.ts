@@ -151,9 +151,25 @@ export async function readJobs(vault: string): Promise<RunJob[]> {
       if (!parsed || typeof parsed.id !== "string") continue;
       const j = normalizeJob(parsed);
       // jsonl can hold duplicate rows for one id after a git union-merge; keep
-      // the most-recently-checked survivor.
+      // the most-recently-checked survivor. Terminal state (done/failed/stalled)
+      // is MONOTONIC: once a row has ended, it must never be resurrected by a
+      // stale "running" row that happens to carry a newer lastCheckedAt — e.g. a
+      // watcher on a second machine still polling the same external job after
+      // this one already saw it finish (see reconstruct_conversation's identical
+      // rule for mission completion). A terminal row always beats a non-terminal
+      // one regardless of freshness; between two of the same kind, freshest wins.
       const prev = byId.get(j.id);
-      if (!prev || (j.lastCheckedAt ?? 0) >= (prev.lastCheckedAt ?? 0)) byId.set(j.id, j);
+      if (!prev) {
+        byId.set(j.id, j);
+      } else {
+        const jTerminal = j.status !== "running";
+        const prevTerminal = prev.status !== "running";
+        const take =
+          jTerminal !== prevTerminal
+            ? jTerminal
+            : (j.lastCheckedAt ?? 0) >= (prev.lastCheckedAt ?? 0);
+        if (take) byId.set(j.id, j);
+      }
     } catch {
       // skip a bad line
     }
