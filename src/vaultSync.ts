@@ -385,6 +385,10 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
   // bows out if one is already running.
   let gitOpInFlight = false;
 
+  // Status failures (timeouts on a wedged repo) were console-only, invisible in
+  // the durable log; tracked separately so they don't flap the shared failure sig.
+  let statusFailing = false;
+
   // Unguarded status — the real work. Callers that already hold the in-flight
   // guard (tickPull/tickPush/commitPass) use this so they don't deadlock
   // against their own guard.
@@ -392,6 +396,10 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
     if (cancelled) return null;
     try {
       const st = await getVaultSyncStatus(vault);
+      if (statusFailing) {
+        statusFailing = false;
+        appendSyncLog(vault, "recovered", "status", "status ok");
+      }
       setStatus({
         remote: st.remote,
         hasChanges: st.has_changes,
@@ -401,6 +409,10 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       return st;
     } catch (e) {
       console.warn("[vault-sync] status failed:", e);
+      if (!statusFailing) {
+        statusFailing = true;
+        appendSyncLog(vault, "error", "status", String(e));
+      }
       return null;
     }
   };
@@ -500,10 +512,17 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       // up-to-date") when there's actually nothing ahead, so over-attempting
       // is safe; under-attempting is what strands work.
       if ((st === null || st.ahead > 0) && !cancelled) {
-        const flush = await vaultPush(vault).catch(() => null);
-        if (flush) recordResult("push-flush", flush);
-        if (flush?.ok) {
+        const flush = await vaultPush(vault).catch((e) => ({
+          ok: false,
+          message: String(e),
+          error: true,
+        }));
+        if (cancelled) return;
+        recordResult("push-flush", flush);
+        if (flush.ok) {
           setStatus({ lastSyncedAt: Date.now(), lastError: null });
+        } else if (flush.error) {
+          setStatus({ lastError: flush.message });
         }
         await rawStatus();
       }
