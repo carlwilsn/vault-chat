@@ -401,6 +401,12 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       return st;
     } catch (e) {
       console.warn("[vault-sync] status failed:", e);
+      const msg = String(e);
+      const sig = `status|${msg}`;
+      if (sig !== lastFailSig) {
+        lastFailSig = sig;
+        appendSyncLog(vault, "error", "status", msg);
+      }
       return null;
     }
   };
@@ -504,6 +510,8 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
         if (flush) recordResult("push-flush", flush);
         if (flush?.ok) {
           setStatus({ lastSyncedAt: Date.now(), lastError: null });
+        } else if (flush?.error) {
+          setStatus({ lastError: flush.message });
         }
         await rawStatus();
       }
