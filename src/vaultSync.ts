@@ -428,8 +428,12 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       if (cancelled || gitOpInFlight) return;
       gitOpInFlight = true;
       try {
-        const res = await vaultCommitLocalOnly(vault).catch(() => null);
-        if (cancelled || !res) return;
+        const res: SyncOpResult = await vaultCommitLocalOnly(vault).catch((e) => ({
+          ok: false,
+          message: String(e),
+          error: true,
+        }));
+        if (cancelled) return;
         recordResult("commit-local", res);
         if (res.ok && res.message !== "no local changes") {
           // Something committed — clear the now-stale dirty dots in the tree.
@@ -500,10 +504,17 @@ async function doStartVaultSyncLoop(vault: string): Promise<void> {
       // up-to-date") when there's actually nothing ahead, so over-attempting
       // is safe; under-attempting is what strands work.
       if ((st === null || st.ahead > 0) && !cancelled) {
-        const flush = await vaultPush(vault).catch(() => null);
-        if (flush) recordResult("push-flush", flush);
-        if (flush?.ok) {
+        const flush: SyncOpResult = await vaultPush(vault).catch((e) => ({
+          ok: false,
+          message: String(e),
+          error: true,
+        }));
+        if (cancelled) return;
+        recordResult("push-flush", flush);
+        if (flush.ok) {
           setStatus({ lastSyncedAt: Date.now(), lastError: null });
+        } else if (flush.error) {
+          setStatus({ lastError: flush.message });
         }
         await rawStatus();
       }
