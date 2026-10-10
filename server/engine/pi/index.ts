@@ -1,20 +1,25 @@
 // Boot the pi engine (VC_ENGINE=pi): install/locate the pinned pi, write its
 // agent dir and extension, build the sandbox, and hand the HTTP layer the
-// same routes the Codex engine takes (/message, /answer, /kill).
+// same routes the Codex engine takes (/message, /answer, /kill). Everything
+// engine-neutral (conversations, wakes, keep-going, watchdog, resume, tools,
+// ledger, CONTEXT, /poll) is the shared Engine (../engine.ts); pi is its
+// EngineBackend (backend.ts).
 import { statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
-import type { EngineBoot } from "../index";
-import { engineModel } from "../index";
+import { mkdirSync } from "node:fs";
+import type { EngineBoot, EngineHandle } from "../index";
+import { engineModel, engineNotify } from "../index";
+import { Engine } from "../engine";
+import { Ledger } from "../ledger";
 import { loadCatalog, modelMeta } from "../catalog";
 import { configureContext, setModelWindow } from "../context";
 import { excludeLocalDir } from "../wakes";
 import { initCapabilities } from "../capabilities";
-import type { AgentEngineHandle } from "../types";
 import { ensurePi, findBwrap, type PiInstall } from "./install";
 import { listPiModels, modelWindow, piPaths, writePiConfig } from "./config";
-import { PiEngine, piToolSpecs, type PiSandbox } from "./engine";
-import { PiLedger } from "./ledger";
+import { PiBackend, type PiSandbox } from "./backend";
+import { startJob, jobStatus } from "./jobs";
 
 const isDir = (p: string) => {
   try {
@@ -78,10 +83,10 @@ export function buildSandbox(o: {
   return { outer, shell, denyRead, denyWrite };
 }
 
-export async function startPiEngine(b: EngineBoot): Promise<AgentEngineHandle> {
-  const fail = (error: string): AgentEngineHandle => {
+export async function startPiEngine(b: EngineBoot): Promise<EngineHandle> {
+  const fail = (error: string): EngineHandle => {
     console.error(`[engine:pi] ${error}`);
-    return { kind: "pi", engine: null, error, health: () => ({ kind: "pi", pi: { state: "missing", error } }) };
+    return { engine: null, install: null, error, health: () => ({ backend: "pi", pi: { state: "missing", error } }) };
   };
   let install: PiInstall;
   try {
@@ -97,6 +102,7 @@ export async function startPiEngine(b: EngineBoot): Promise<AgentEngineHandle> {
 
   const cat = await loadCatalog(join(b.stateDir, "openrouter-models.json"));
   console.log(`[engine:pi] OpenRouter catalog: ${cat.models} model(s) (${cat.source})`);
+  setInterval(() => void loadCatalog(join(b.stateDir, "openrouter-models.json")), 24 * 3_600_000).unref();
   initCapabilities(join(b.stateDir, "capabilities.json"), `pi-${install.version}`);
   const piCat = listPiModels(install);
   const model = engineModel();
@@ -108,7 +114,7 @@ export async function startPiEngine(b: EngineBoot): Promise<AgentEngineHandle> {
 
   const paths = piPaths(b.stateDir);
   const baseUrl = b.openrouterBase ? b.openrouterBase.replace(/\/+$/, "") : undefined;
-  writePiConfig({ paths, install, catalog: piCat, models: [model, visionModel], baseUrl, toolSpecs: piToolSpecs() });
+  writePiConfig({ paths, install, catalog: piCat, models: [model, visionModel], baseUrl });
   console.log(`[engine:pi] model ${model} (window ${win}${modelMeta(model) ? "" : piCat.has(model) ? ", pi catalog" : ", defined in models.json"}); sandbox ${bwrap ?? "OFF"}`);
 
   const home = process.env.HOME || homedir();
@@ -119,6 +125,8 @@ export async function startPiEngine(b: EngineBoot): Promise<AgentEngineHandle> {
       return -1;
     }
   })();
+  // The sandbox read-only-binds these; they must exist when it is built.
+  for (const d of [join(b.vault, ".vault-chat", "conversations"), join(b.vault, ".vault-chat", "local"), join(b.stateDir, "jobs")]) mkdirSync(d, { recursive: true });
   const sandbox = buildSandbox({
     bwrap,
     home,
@@ -130,50 +138,37 @@ export async function startPiEngine(b: EngineBoot): Promise<AgentEngineHandle> {
     vault: b.vault,
     uid,
   });
-  const jobsDir = join(b.stateDir, "jobs");
-  const engine = new PiEngine({
-    vault: b.vault,
+  const backend = new PiBackend({
     install,
     paths,
     catalog: piCat,
     sandbox,
-    ledger: new PiLedger(join(b.stateDir, "pi-ledger.json"), b.apiKey, baseUrl ?? "https://openrouter.ai/api/v1", Number(process.env.VC_PI_LOOKUP_MS) || 30_000),
-    jobEnv: {
-      logDir: jobsDir,
-      // The job runs outside pi's namespace (it must outlive turns), still without the key store.
-      wrap: sandbox.outer ? sandbox.outer.filter((x) => x !== "--unshare-pid" && x !== "--die-with-parent") : null,
-      env: { PATH: process.env.PATH ?? "/run/current-system/sw/bin", HOME: home },
-    },
-    model: engineModel,
+    apiKey: b.apiKey,
     thinking: process.env.VC_PI_THINKING || "medium",
+    idleMs: Number(process.env.VC_PI_IDLE_MS) || 10 * 60_000,
+    maxProcs: Number(process.env.VC_PI_MAX_PROCS) || 6,
+  });
+  const jobEnv = {
+    logDir: join(b.stateDir, "jobs"),
+    // Jobs outlive turns: the same hiding as pi's sandbox, without its pid namespace.
+    wrap: sandbox.outer ? sandbox.outer.filter((x) => x !== "--unshare-pid" && x !== "--die-with-parent") : null,
+    env: { PATH: process.env.PATH ?? "/run/current-system/sw/bin", HOME: home },
+  };
+  const engine = new Engine({
+    vault: b.vault,
+    backend,
+    ledger: new Ledger(join(b.stateDir, "ledger.json"), b.apiKey, baseUrl ?? "https://openrouter.ai/api/v1"),
+    jobEnv: { codexBin: "", jobsHome: "", logDir: jobEnv.logDir },
+    jobs: { start: (cwd, a) => startJob(jobEnv, cwd, a), status: (a) => jobStatus(jobEnv, a) },
+    model: engineModel,
     webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
-    visionModel,
     apiKey: b.apiKey,
     broadcast: b.broadcast,
+    visionModel,
     stallMs: Number(process.env.VC_ENGINE_STALL_MS) || 30 * 60_000,
-    idleMs: Number(process.env.VC_PI_IDLE_MS) || 10 * 60_000,
-    askParkMs: Number(process.env.VC_PI_ASK_PARK_MS) || 30 * 60_000,
-    maxProcs: Number(process.env.VC_PI_MAX_PROCS) || 6,
-    notify: async (n) => {
-      const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-      const rec: Record<string, unknown> = { id, ts: Date.now(), kind: n.kind, title: n.title.slice(0, 90), body: n.body.slice(0, 2000), convId: n.convId };
-      if (n.kind === "ask") {
-        rec.deliberation = {
-          ask: n.body.slice(0, 600),
-          options: (n.options ?? []).slice(0, 6).map((o) => ({ answer: o.slice(0, 200), title: o.slice(0, 120), body: "" })),
-        };
-      }
-      try {
-        b.notificationAppend(b.vault, JSON.stringify(rec));
-      } catch {
-        /* feed is best effort */
-      }
-      b.broadcast({ type: "notif" });
-      const sent = await b.sendPush(n.title.slice(0, 90), n.body.slice(0, 180), `/phone?conv=${encodeURIComponent(n.convId)}`, n.convId).catch(() => 0);
-      return sent ? id : null;
-    },
+    notify: engineNotify(b),
   });
-  await engine.start();
-  return { kind: "pi", engine, error: null, health: () => ({ ...engine.health(), model, version: install.version }) };
+  engine.start();
+  backend.start();
+  return { engine, install: null, error: null, health: () => ({ ...engine.health(), model, version: install.version }) };
 }
-

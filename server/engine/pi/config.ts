@@ -19,7 +19,6 @@ export type PiPaths = {
   agentDir: string;
   extDir: string;
   ext: string;
-  toolsJson: string;
   sessionsDir: string;
   instrDir: string;
   pidsFile: string;
@@ -33,7 +32,6 @@ export function piPaths(stateDir: string): PiPaths {
     agentDir: join(root, "agent"),
     extDir,
     ext: join(extDir, "vc.mjs"),
-    toolsJson: join(extDir, "tools.json"),
     sessionsDir: join(root, "sessions"),
     instrDir: join(root, "instr"),
     pidsFile: join(root, "pids.json"),
@@ -95,7 +93,6 @@ export type PiConfigInput = {
   models: string[];
   /** OpenRouter base override (tests: the fake). */
   baseUrl?: string;
-  toolSpecs: unknown[];
 };
 
 /** Write settings.json, models.json, the extension and tools.json. */
@@ -137,5 +134,4 @@ export function writePiConfig(c: PiConfigInput): void {
   writeAtomic(join(p.agentDir, "models.json"), JSON.stringify({ providers: Object.keys(provider).length ? { openrouter: provider } : {} }, null, 2));
   writeAtomic(p.ext, EXT_SOURCE);
   writeAtomic(join(p.extDir, "policy.mjs"), POLICY_SOURCE);
-  writeAtomic(p.toolsJson, JSON.stringify(c.toolSpecs));
 }

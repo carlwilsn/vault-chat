@@ -68,6 +68,6 @@ describe("pi extension policy", () => {
     expect(s.p.q).toEqual({ t: "s" });
     expect(s.p.o.opt).toBe(true);
     expect(s.p.a.t).toBe("u");
-    expect(shq("it's")).toBe(`'it'\''s'`);
+    expect(shq("it's")).toBe(["'it'", "\\", "''s'"].join(""));
   });
 });

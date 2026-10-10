@@ -83,7 +83,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
       vault,
       secrets,
       openrouter: or.url,
-      extra: { VC_ENGINE: "pi", VC_PI_DIR: PI_DIR!, VC_ENGINE_MODEL: "test/fake-model", VC_STATE_DIR: state, VC_PI_LOOKUP_MS: "15000" },
+      extra: { VC_ENGINE: "pi", VC_PI_DIR: PI_DIR!, VC_ENGINE_MODEL: "test/fake-model", VC_STATE_DIR: state },
     });
     await waitFor(async () => {
       const h = await (await fetch(srv.base + "/api/v1/health")).json();
@@ -168,7 +168,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
 
   it("health: pi pinned and up, its agent dir written, no key anywhere in the logs", async () => {
     const h = await (await fetch(srv.base + "/api/v1/health")).json();
-    expect(h.engine.kind).toBe("pi");
+    expect(h.engine.backend).toBe("pi");
     expect(h.engine.pi.state).toBe("up");
     expect(h.engine.version).toBe("1.1.0");
     if (linux) expect(h.engine.pi.sandbox).toBe(true);
@@ -177,8 +177,6 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     const models = JSON.parse(readFileSync(join(state, "pi", "agent", "models.json"), "utf8"));
     expect(models.providers.openrouter.models.map((m: any) => m.id)).toContain("test/fake-model");
     expect(existsSync(join(state, "pi", "ext", "vc.mjs"))).toBe(true);
-    const tools = JSON.parse(readFileSync(join(state, "pi", "ext", "tools.json"), "utf8")).map((t: any) => t.name);
-    for (const t of ["AskUser", "ScheduleWake", "KeepWorking", "Done", "Blocked", "Notify", "StartJob", "PdfRead", "WebSearch", "SetProject", "ProjectMemory", "Plan"]) expect(tools).toContain(t);
     expect(srv.logs()).not.toContain(CANARY);
   });
 
@@ -191,8 +189,12 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     const again = await post("/message", { text: "CHAT1 hi there", clientMsgId: "p-1" });
     expect(again.convId).toBe(chatId);
     const c = await assistantSays(chatId, /hello from pi/);
-    expect(c.piSessionFile).toBeTruthy();
-    expect(existsSync(c.piSessionFile)).toBe(true);
+    expect(c.codexThreadId).toBeTruthy(); // the pi session id
+    expect(existsSync(c.codexThreadPath)).toBe(true); // its session file
+    // Every vault-chat tool was declared to the model.
+    const first0 = or.calls.find((b) => lastUser(b).includes("CHAT1"));
+    const names = (first0.tools ?? []).map((t: any) => t.function?.name);
+    for (const t of ["AskUser", "ScheduleWake", "KeepWorking", "Done", "Blocked", "Notify", "StartJob", "PdfRead", "WebSearch", "SetProject", "ProjectMemory", "Plan", "bash", "read", "write", "edit"]) expect(names).toContain(t);
     expect(c.messages.filter((m: any) => m.role === "user")).toHaveLength(1);
     const evs: any[] = [];
     await waitFor(async () => {
@@ -209,7 +211,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(Object.keys(d.messages[1]).sort()).toEqual(["askOptions", "content", "decision", "direct", "role", "system", "timeline", "tools"]);
     const full = await (await fetch(srv.base + `/conversation?id=${chatId}&full=1`)).json();
     expect(full.full).toBe(true);
-    expect(full.meta.piSessionFile).toBeTruthy();
+    expect(full.meta.codexThreadPath).toBeTruthy();
     // The rules prefix and pi's system prompt with vault-chat's role reached the model.
     const first = or.calls.find((b) => lastUser(b).includes("CHAT1"));
     expect(JSON.stringify(first.messages[0])).toContain("vault-chat's agent");
@@ -222,8 +224,9 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     }, 20_000);
     expect(c.costUsd).toBeCloseTo(CHAT_COST, 6);
     expect(c.messages.find((m: any) => m.role === "assistant").costUsd).toBeCloseTo(CHAT_COST, 6);
-    const ledger = JSON.parse(readFileSync(join(state, "pi-ledger.json"), "utf8"));
+    const ledger = JSON.parse(readFileSync(join(state, "ledger.json"), "utf8"));
     expect(Object.keys(ledger).some((k) => k.startsWith("gen-pi-"))).toBe(true);
+    expect(or.lookups).toEqual([]); // the streamed cost was used, no lookup needed
   });
 
   it("a call whose stream carries no cost is priced from /generation by its generation id", async () => {
@@ -347,7 +350,8 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     await sawCall("CRASH1");
     await new Promise((res) => setTimeout(res, 1500));
     const h = await (await fetch(srv.base + "/api/v1/health")).json();
-    const p = h.engine.pi.procs.find((x: any) => x.convId === r.convId);
+    const cc = await conv(r.convId);
+    const p = h.engine.pi.procs.find((x: any) => x.threadId === cc.codexThreadId);
     expect(p?.pid).toBeTruthy();
     process.kill(p.pid, "SIGKILL");
     const c = await assistantSays(r.convId, /resumed after the crash/, 60_000);
@@ -372,7 +376,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(c2.messages.some((m: any) => m.role === "user" && /Wake: check the run/.test(m.content))).toBe(true);
     expect(JSON.parse(readFileSync(join(vault, ".vault-chat", "local", "wakes.json"), "utf8"))).toEqual([]);
     // The same pi session file carried the conversation across the restart.
-    expect(c2.piSessionFile).toBe(c.piSessionFile);
+    expect(c2.codexThreadPath).toBe(c.codexThreadPath);
   });
 });
 

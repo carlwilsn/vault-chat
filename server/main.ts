@@ -92,15 +92,14 @@ async function main(): Promise<void> {
   const { startPhoneAppHost, sendPush } = await import("../src/phoneApp");
   await startPhoneAppHost();
 
-  // Every agent turn runs in the engine (server/engine): Codex by default, pi
-  // with VC_ENGINE=pi (server/engine/pi), both behind AgentEngine (types.ts).
-  // The old in-process loop stays in the bundle for legacy mission threads
-  // until Phase 3 removes it (VC_ENGINE=0 keeps it for every turn).
+  // Every agent turn runs in Codex (server/engine). The old in-process loop
+  // stays in the bundle for legacy mission threads until Phase 3 removes it.
   const { notificationAppend } = await import("./commands/phone");
-  const { engineKind } = await import("./engine/types");
+  const { startEngine } = await import("./engine");
   const { modelsList } = await import("./engine/capabilities");
-  const kind = engineKind();
-  const boot = {
+  const engine = process.env.VC_ENGINE === "0"
+    ? { engine: null, install: null, error: "disabled (VC_ENGINE=0): turns run on the old in-process loop", health: () => ({}) }
+    : await startEngine({
     vault: cfg.vault,
     stateDir: cfg.stateDir,
     secretsDir: cfg.secretsDir,
@@ -113,16 +112,10 @@ async function main(): Promise<void> {
       const v = keychainCommands.keychain_get({ key: "api.openrouter" });
       return typeof v === "string" && v ? v : null;
     },
-    sendPush: (title: string, body: string, url: string, tag: string) => sendPush(title, body, url, tag),
+    sendPush: (title, body, url, tag) => sendPush(title, body, url, tag),
     notificationAppend,
-    broadcast: (ev: Record<string, unknown>) => getRing().push(JSON.stringify(ev)),
-  };
-  const engine: { engine: import("./engine/types").AgentEngine | null; error: string | null; health: () => Record<string, unknown> } =
-    kind === "off"
-      ? { engine: null, error: "disabled (VC_ENGINE=0): turns run on the old in-process loop", health: () => ({}) }
-      : kind === "pi"
-        ? await (await import("./engine/pi")).startPiEngine(boot)
-        : await (await import("./engine")).startEngine(boot);
+    broadcast: (ev) => getRing().push(JSON.stringify(ev)),
+  });
 
   const { activeRuns } = await import("../src/runRegistry");
   const { startBoxSync, syncStatus, syncSummary, triggerSync } = await import("./sync");

@@ -34,6 +34,8 @@ export type EngineDeps = {
   backend: EngineBackend;
   ledger: Ledger;
   jobEnv: JobEnv;
+  /** A runtime's own detached-job tools (pi: bubblewrap under systemd-run); default: Codex's sandbox. */
+  jobs?: { start: (cwd: string, a: any) => string; status: (a: any) => string };
   model: () => string;
   webSearchModel: string;
   apiKey: () => string | null;
@@ -452,7 +454,9 @@ export class Engine {
       const existing = this.live.get(convId);
       if (existing && !existing.finished) {
         if (existing.turnId && !existing.ask) {
-          await this.d.backend.steer(existing.threadId, existing.turnId, { texts: [input], images: [] }).catch(() => undefined);
+          const b = this.d.backend;
+          if (kind !== "user" && b.followUp) await b.followUp(existing.threadId, { texts: [input] }).catch(() => undefined);
+          else await b.steer(existing.threadId, existing.turnId, { texts: [input], images: [] }).catch(() => undefined);
         }
         return;
       }
@@ -535,9 +539,17 @@ export class Engine {
     // Subagents only for models where they work (learned from use; see capabilities.ts).
     const subagents = capabilitiesOf(model).subagents;
     if (conv.codexThreadId) {
-      await this.d.backend.resumeThread(conv.codexThreadId, { model, subagents });
-      this.byThread.set(conv.codexThreadId, conv.id);
-      return conv.codexThreadId;
+      try {
+        await this.d.backend.resumeThread(conv.codexThreadId, { model, subagents });
+        this.byThread.set(conv.codexThreadId, conv.id);
+        return conv.codexThreadId;
+      } catch (e) {
+        if (!(e as any)?.threadUnknown) throw e;
+        // A thread of the other runtime (VC_ENGINE switched) or a lost one: a fresh thread, with the transcript handed over.
+        this.log(`thread ${conv.codexThreadId} is unknown to ${this.d.backend.name}; starting a new one`);
+        conv.codexThreadId = undefined;
+        conv.codexThreadPath = undefined;
+      }
     }
     const note = capabilityNote(model);
     const instructions = buildDeveloperInstructions(conv as any, { rolePrompt: ENGINE_ROLE_PROMPT + (note ? `\n\n${note}` : "") });
@@ -633,6 +645,17 @@ export class Engine {
         return;
       case "turnCompleted":
         void this.finishTurn(l, e.status, e.error);
+        return;
+      case "threadLost":
+        // Only this thread's runtime died: cut its turn and resume it now (no "up" will follow).
+        if (l.ask) {
+          this.live.delete(l.convId);
+          unregisterRun(l.convId, l.controller);
+          setLive(l.convId, false);
+          return;
+        }
+        l.cut = true;
+        void this.finishTurn(l, "interrupted", null).then(() => this.run(l.convId, RESUME_TEXT, "resume")).catch((err) => this.log(`resume ${l.convId} failed: ${err}`));
         return;
     }
   }
@@ -914,9 +937,9 @@ export class Engine {
         case "WebSearch":
           return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel));
         case "StartJob":
-          return text(startJob(this.d.jobEnv, vault, a));
+          return text(this.d.jobs ? this.d.jobs.start(vault, a) : startJob(this.d.jobEnv, vault, a));
         case "JobStatus":
-          return text(jobStatus(this.d.jobEnv, a));
+          return text(this.d.jobs ? this.d.jobs.status(a) : jobStatus(this.d.jobEnv, a));
         case "Cost": {
           if (a.project) {
             const pc = projectCost(String(a.project), (await allConvs(vault)) as any);
