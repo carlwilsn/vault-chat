@@ -230,9 +230,12 @@ function filterFilesForMention(
     const relLower = rel.toLowerCase();
     let score: number;
     if (!q) score = 10;
-    else if (nameLower.startsWith(q)) score = 100 - Math.abs(nameLower.length - q.length);
-    else if (nameLower.includes(q)) score = 60 - nameLower.indexOf(q);
-    else if (relLower.includes(q)) score = 30 - relLower.indexOf(q);
+    // Tiers first (name prefix > name contains > path contains), closeness
+    // within a tier — the old flat scores let a long prefix match sink below
+    // a contains match, and a late contains match below a path match.
+    else if (nameLower.startsWith(q)) score = 3000 - Math.min(999, nameLower.length - q.length);
+    else if (nameLower.includes(q)) score = 2000 - Math.min(999, nameLower.indexOf(q));
+    else if (relLower.includes(q)) score = 1000 - Math.min(999, relLower.indexOf(q));
     else continue;
     hits.push({ path: f.path, name: f.name, rel, score });
   }
