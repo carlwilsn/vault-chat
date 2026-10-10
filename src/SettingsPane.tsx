@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useStore } from "./store";
 import { PROVIDER_LABEL, AUTO_MODEL_ID, type ProviderId } from "./providers";
+import { roleModelId, ROLE_STORAGE } from "./roles";
 import { Button, Input, MenuSelect } from "./ui";
 import { SUPPORTED_VOICE_LLMS, DEFAULT_LLM } from "./voice-elevenlabs";
 import {
@@ -93,6 +94,18 @@ export function SettingsPane() {
   const setSupervisorModelId = useStore((s) => s.setSupervisorModelId);
   const setWorkerModelId = useStore((s) => s.setWorkerModelId);
   const vaultPath = useStore((s) => s.vaultPath);
+  // Background and Images & PDFs roles (roles.ts) — Ctrl+K / Ctrl+L run on
+  // these per its surface mapping; stored like the other role picks.
+  const [backgroundModelId, setBackgroundModelIdState] = useState(() => roleModelId("background"));
+  const [visionModelId, setVisionModelIdState] = useState(() => roleModelId("vision"));
+  const setRoleModel = (role: "background" | "vision", set: (id: string) => void) => (id: string) => {
+    try {
+      localStorage.setItem(ROLE_STORAGE[role], id);
+    } catch {
+      /* non-fatal */
+    }
+    set(id);
+  };
   const [modelSearch, setModelSearch] = useState("");
   const filteredCatalog = (() => {
     const q = modelSearch.trim().toLowerCase();
@@ -411,6 +424,8 @@ export function SettingsPane() {
               ["Assistant (phone)", assistantModelId, setAssistantModelId],
               ["Supervisors (missions)", supervisorModelId, setSupervisorModelId],
               ["Workers", workerModelId, setWorkerModelId],
+              ["Background", backgroundModelId, setRoleModel("background", setBackgroundModelIdState)],
+              ["Images & PDFs", visionModelId, setRoleModel("vision", setVisionModelIdState)],
             ] as [string, string, (id: string) => void][]
           ).map(([label, val, setter]) => (
             <div key={label} className="flex items-center justify-between gap-3">
