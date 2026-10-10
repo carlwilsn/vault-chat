@@ -166,7 +166,7 @@ export async function sendMessage(
         else cur0.appendMessage(m);
       };
       if (trimmed) append({ role: "user", content: trimmed, direct: true });
-      if (!mh.missionHostConfigured()) {
+      if (!(await mh.missionHostConfigured(s.vaultPath))) {
         append({
           role: "assistant",
           system: true,
@@ -175,7 +175,13 @@ export async function sendMessage(
         });
         return;
       }
-      const res = await mh.relayMissionMessage(targetConv.id, trimmed);
+      // A mission waiting on Carl takes this as its answer (the phone's tagged
+      // /answer — a plain /message would not resume it on the box); anything
+      // else is an ordinary steer, exactly like the phone.
+      const res =
+        targetConv.source === "mission" && targetConv.missionState === "AWAITING_USER"
+          ? await mh.relayMissionAnswer(targetConv.id, trimmed)
+          : await mh.relayMissionMessage(targetConv.id, trimmed);
       append({
         role: "assistant",
         system: true,

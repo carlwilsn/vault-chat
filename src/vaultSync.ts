@@ -111,6 +111,8 @@ export async function readVaultSyncConfig(
   return {
     ...DEFAULT_SYNC_CONFIG,
     ...(cfg.sync ?? {}),
+    // A vault whose sync.json names a box always syncs (with the box).
+    ...((await readBoxConfig(vault)) ? { enabled: true } : {}),
   };
 }
 
@@ -278,6 +280,8 @@ function emitOpen() {
   const v = openVault();
   const s = v ? snapOf(v) : { ...EMPTY_SNAPSHOT };
   for (const l of listeners) l(s);
+  const b = v ? boxStates.get(v) ?? null : null;
+  for (const l of boxListeners) l(b);
 }
 
 export function subscribeSyncStatus(fn: SyncListener): () => void {
@@ -333,6 +337,13 @@ export function startVaultSyncLoop(vault: string): Promise<void> {
 
 async function doStartVaultSyncLoop(vault: string): Promise<void> {
   stopVaultSyncLoop(vault);
+  // sync.json names a box → the per-machine-branch sync with the merge gate
+  // instead of the origin loop below.
+  const box = await readBoxConfig(vault);
+  if (box) {
+    startBoxSyncLoop(vault, box);
+    return;
+  }
   const config = await readVaultSyncConfig(vault);
 
   let cancelled = false;
@@ -620,6 +631,7 @@ export function stopVaultSyncLoop(vault?: string): void {
     for (const l of loops.values()) l.cancel();
     loops.clear();
     snapshots.clear();
+    boxStates.clear();
     emitOpen();
     return;
   }
@@ -629,10 +641,347 @@ export function stopVaultSyncLoop(vault?: string): void {
     loops.delete(vault);
   }
   snapshots.delete(vault);
+  boxStates.delete(vault);
   if (openVault() === vault) emitOpen();
 }
 
 // Vaults with a live sync loop right now.
 export function activeSyncVaults(): string[] {
   return [...loops.keys()];
+}
+
+// ---- box sync (sync.json names a box) ----
+//
+// The laptop side of the per-machine-branch model: every cycle the engine
+// commits local edits on master, fetches the box's branch, merges it only if
+// the merge is clean (the gate), pushes master, and backs up to GitHub. See
+// src-tauri/src/box_sync.rs. This loop only schedules cycles, keeps the
+// attention state for the Titlebar chip, and sends the one phone alert.
+
+export type BoxConfig = { box: string; vault: string };
+
+export type BoxSyncReport = {
+  configured: boolean;
+  ok: boolean;
+  message: string;
+  committed: boolean;
+  merged: boolean;
+  conflict: { files: string[]; since: number } | null;
+  error: string | null;
+  error_kind: "unreachable" | "git" | null;
+  changes_waiting: number;
+  big_files: { path: string; size: number }[];
+  github_warning: string | null;
+  github_pushed_at: number | null;
+};
+
+export type BoxAttention = {
+  level: "amber" | "red";
+  /** One line for the chip. */
+  text: string;
+  /** Full details for the popover (full git stderr where there is one). */
+  detail: string;
+  since: number;
+};
+
+export type BoxSyncState = {
+  vault: string;
+  box: string;
+  running: boolean;
+  lastCycleAt: number | null;
+  lastOkAt: number | null;
+  report: BoxSyncReport | null;
+  /** First failed cycle of the current failure streak. */
+  failingSince: number | null;
+  bigSince: number | null;
+  githubFailingSince: number | null;
+  attention: BoxAttention | null;
+};
+
+const BOX_CYCLE_MS = 15_000;
+/** A failure must last this long before the chip shows (no blips). */
+const BOX_SHOW_FAILURE_AFTER_MS = 60_000;
+/** Amber turns red, and the phone gets its one alert, after this long. */
+const BOX_RED_AFTER_MS = 10 * 60_000;
+
+const boxStates = new Map<string, BoxSyncState>();
+type BoxListener = (s: BoxSyncState | null) => void;
+const boxListeners = new Set<BoxListener>();
+const boxConfigCache = new Map<string, { cfg: BoxConfig | null; at: number }>();
+const boxKick = new Map<string, () => Promise<void>>();
+
+/** The box this vault syncs with (from `.vault-chat/sync.json`), or null. */
+export async function readBoxConfig(vault: string): Promise<BoxConfig | null> {
+  const hit = boxConfigCache.get(vault);
+  if (hit && Date.now() - hit.at < 30_000) return hit.cfg;
+  let cfg: BoxConfig | null = null;
+  try {
+    cfg = (await invoke<BoxConfig | null>("vault_box_config", { vault })) ?? null;
+  } catch {
+    cfg = null;
+  }
+  boxConfigCache.set(vault, { cfg, at: Date.now() });
+  return cfg;
+}
+
+export function subscribeBoxSync(fn: BoxListener): () => void {
+  boxListeners.add(fn);
+  const v = openVault();
+  fn(v ? boxStates.get(v) ?? null : null);
+  return () => boxListeners.delete(fn);
+}
+
+/** Run one cycle now (Settings' "Sync now"). */
+export async function boxSyncNow(vault: string): Promise<void> {
+  const k = boxKick.get(vault);
+  if (k) await k();
+}
+
+function plural(n: number, w: string): string {
+  return `${n} ${w}${n === 1 ? "" : "s"}`;
+}
+
+export function fmtSize(bytes: number): string {
+  return bytes >= 1024 * 1024 * 1024
+    ? `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+    : `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
+// The line of git's stderr that says what went wrong (skipping our own
+// "git … failed (exit n)" header and git's generic trailer).
+function firstLine(s: string): string {
+  const lines = s
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const meaningful = lines.find(
+    (l) => !/^git .* failed \(exit -?\d+\):?$/.test(l) && !/^error: failed to push some refs/.test(l),
+  );
+  return (meaningful ?? lines[0] ?? s).replace(/^(fatal|error): /, "").slice(0, 120);
+}
+
+/** What (if anything) needs Carl's attention, most important first. */
+export function boxAttentionOf(st: BoxSyncState, now = Date.now()): BoxAttention | null {
+  const r = st.report;
+  if (!r) return null;
+  const level = (since: number): BoxAttention["level"] => (now - since >= BOX_RED_AFTER_MS ? "red" : "amber");
+  if (r.conflict && r.conflict.files.length) {
+    const f = r.conflict.files;
+    const names = f.length === 1 ? f[0] : `${f[0]} +${f.length - 1}`;
+    return {
+      level: level(r.conflict.since),
+      text: `Sync: conflict in ${names}`,
+      detail:
+        `The box's changes conflict with this laptop's in:\n${f.map((x) => `  ${x}`).join("\n")}\n\n` +
+        "Nothing was merged and master is untouched. This laptop's edits still reach the box; " +
+        "the box's come in once the conflict is resolved.",
+      since: r.conflict.since,
+    };
+  }
+  if (st.failingSince !== null && now - st.failingSince >= BOX_SHOW_FAILURE_AFTER_MS && r.error) {
+    const text =
+      r.error_kind === "unreachable"
+        ? `Box unreachable · ${plural(r.changes_waiting, "change")} waiting`
+        : `Sync failing: ${firstLine(r.error)}`;
+    return { level: level(st.failingSince), text, detail: r.error, since: st.failingSince };
+  }
+  if (r.big_files.length && st.bigSince !== null) {
+    const b = r.big_files[0];
+    const more = r.big_files.length > 1 ? ` +${r.big_files.length - 1}` : "";
+    return {
+      level: level(st.bigSince),
+      text: `File too large: ${b.path.split("/").pop()}${more}`,
+      detail:
+        "Kept out of git (over 50 MB), so the box and GitHub don't have:\n" +
+        r.big_files.map((x) => `  ${x.path} (${fmtSize(x.size)})`).join("\n"),
+      since: st.bigSince,
+    };
+  }
+  if (r.github_warning && st.githubFailingSince !== null && now - st.githubFailingSince >= BOX_RED_AFTER_MS) {
+    return { level: "amber", text: "GitHub backup failing", detail: r.github_warning, since: st.githubFailingSince };
+  }
+  return null;
+}
+
+// One alert per incident, remembered across restarts (best-effort).
+const ALERTED_KEY = "vault-chat:box-sync-alerted";
+function alertedSet(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(ALERTED_KEY) ?? "[]") as string[]);
+  } catch {
+    return new Set();
+  }
+}
+function markAlerted(key: string): void {
+  try {
+    const keys = [...alertedSet(), key].slice(-50);
+    localStorage.setItem(ALERTED_KEY, JSON.stringify(keys));
+  } catch {
+    /* best-effort */
+  }
+}
+
+async function postBoxAlert(box: string, title: string, body: string, tag: string): Promise<boolean> {
+  try {
+    const token = useStore.getState().missionHostToken || null;
+    const r = await invoke<{ status: number; body: string }>("box_post_json", {
+      url: `${box}/api/v1/alert`,
+      body: JSON.stringify({ title, body, tag }),
+      token,
+    });
+    return r.status >= 200 && r.status < 300;
+  } catch {
+    return false;
+  }
+}
+
+function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
+  let cancelled = false;
+  let inFlight = false;
+  let lastFailSig: string | null = null;
+  const vaultName = vault.split("/").filter(Boolean).pop() ?? cfg.vault;
+
+  const set = (patch: Partial<BoxSyncState>) => {
+    const prev: BoxSyncState = boxStates.get(vault) ?? {
+      vault,
+      box: cfg.box,
+      running: false,
+      lastCycleAt: null,
+      lastOkAt: null,
+      report: null,
+      failingSince: null,
+      bigSince: null,
+      githubFailingSince: null,
+      attention: null,
+    };
+    const next: BoxSyncState = { ...prev, ...patch };
+    next.attention = boxAttentionOf(next);
+    boxStates.set(vault, next);
+    // Keep the old snapshot shape fed too, so anything that reads it still works.
+    const r = next.report;
+    snapshots.set(vault, {
+      ...snapOf(vault),
+      running: next.running,
+      lastSyncedAt: next.lastOkAt,
+      lastMessage: r?.message ?? "",
+      lastError: r?.error ?? null,
+      remote: `${cfg.box}/git/${cfg.vault}.git`,
+      ahead: r?.changes_waiting ?? 0,
+    });
+    if (openVault() === vault) emitOpen();
+  };
+
+  const maybeAlert = async (st: BoxSyncState) => {
+    const r = st.report;
+    if (!r) return;
+    const sent = alertedSet();
+    if (r.conflict) {
+      const key = `${vault}|conflict|${r.conflict.since}`;
+      if (!sent.has(key)) {
+        const ok = await postBoxAlert(
+          cfg.box,
+          `Sync conflict in ${vaultName}`,
+          `The laptop can't merge the box's changes (${r.conflict.files.join(", ")}). On the laptop, ask the agent to resolve the sync conflict.`,
+          `vc-sync-conflict-${cfg.vault}`,
+        );
+        if (ok) markAlerted(key);
+      }
+    }
+    if (st.failingSince !== null && Date.now() - st.failingSince >= BOX_RED_AFTER_MS && r.error) {
+      const key = `${vault}|fail|${st.failingSince}`;
+      if (!sent.has(key)) {
+        const ok = await postBoxAlert(
+          cfg.box,
+          `Laptop sync failing (${vaultName})`,
+          `${firstLine(r.error)} · ${plural(r.changes_waiting, "change")} waiting on the laptop.`,
+          `vc-sync-laptop-${cfg.vault}`,
+        );
+        if (ok) markAlerted(key);
+      }
+    }
+  };
+
+  const cycle = async () => {
+    if (cancelled || inFlight) return;
+    inFlight = true;
+    set({ running: true });
+    try {
+      const r = await invoke<BoxSyncReport>("vault_box_sync", { vault }).catch(
+        (e): BoxSyncReport => ({
+          configured: true,
+          ok: false,
+          message: "sync failed",
+          committed: false,
+          merged: false,
+          conflict: null,
+          error: String(e),
+          error_kind: "git",
+          changes_waiting: 0,
+          big_files: [],
+          github_warning: null,
+          github_pushed_at: null,
+        }),
+      );
+      if (cancelled) return;
+      if (!r.configured) {
+        // sync.json lost its box: fall back to the ordinary loop.
+        boxConfigCache.delete(vault);
+        void startVaultSyncLoop(vault);
+        return;
+      }
+      const prev = boxStates.get(vault);
+      const now = Date.now();
+      set({
+        running: false,
+        report: r,
+        lastCycleAt: now,
+        lastOkAt: r.ok ? now : prev?.lastOkAt ?? null,
+        failingSince: r.error ? prev?.failingSince ?? now : null,
+        bigSince: r.big_files.length ? prev?.bigSince ?? now : null,
+        githubFailingSince: r.github_warning ? prev?.githubFailingSince ?? now : null,
+      });
+      // Durable log: one line per distinct incident (full stderr), one on recovery.
+      const sig = r.error ? `error|${r.error}` : r.conflict ? `conflict|${r.conflict.files.join(",")}` : null;
+      if (sig !== lastFailSig) {
+        if (sig) {
+          appendSyncLog(vault, "error", r.error ? "box-sync" : "box-gate", r.error ?? r.message, {
+            files: r.conflict?.files,
+            ahead: r.changes_waiting,
+          });
+        } else if (lastFailSig) {
+          appendSyncLog(vault, "recovered", "box-sync", r.message, { from: lastFailSig });
+        }
+        lastFailSig = sig;
+      }
+      if (r.merged) {
+        appendSyncLog(vault, "merge", "box-sync", r.message);
+        void refreshFileTreeIfChanged(vault);
+        void useStore.getState().refreshConversationsFromDisk(vault);
+      } else if (r.committed) {
+        void forceRefreshFileTree(vault);
+      }
+      const st = boxStates.get(vault);
+      if (st) await maybeAlert(st);
+    } finally {
+      inFlight = false;
+      if (!cancelled && boxStates.get(vault)?.running) set({ running: false });
+    }
+  };
+
+  const timer = window.setInterval(() => void cycle(), BOX_CYCLE_MS);
+  // Re-evaluate amber → red even while a cycle is stuck.
+  const clock = window.setInterval(() => {
+    if (boxStates.has(vault)) set({});
+  }, 30_000);
+  boxKick.set(vault, cycle);
+  loops.set(vault, {
+    vault,
+    cancel: () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.clearInterval(clock);
+      boxKick.delete(vault);
+    },
+  });
+  void cycle();
 }
