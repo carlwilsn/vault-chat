@@ -39,3 +39,4 @@ src-tauri/binaries/
 
 # Headless server bundle (npm run build:server)
 dist-server/
+preview-proof/
