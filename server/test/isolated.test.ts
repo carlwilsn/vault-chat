@@ -58,7 +58,7 @@ describe("bundle alone (no node_modules)", () => {
       }),
     );
     or = await fakeOpenRouter("ok");
-    srv = await startServer({ home, vault, bare, secrets, openrouter: or.url, bundle, extra: { NODE_PATH: "" } });
+    srv = await startServer({ home, vault, bare, secrets, openrouter: or.url, bundle, extra: { NODE_PATH: "", VC_ENGINE: "0" } }); // this test drives the old loop's PdfExtract
   });
 
   afterAll(async () => {

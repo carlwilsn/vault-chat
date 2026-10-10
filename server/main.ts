@@ -79,7 +79,9 @@ async function main(): Promise<void> {
   // stays in the bundle for legacy mission threads until Phase 3 removes it.
   const { notificationAppend } = await import("./commands/phone");
   const { startEngine } = await import("./engine");
-  const engine = await startEngine({
+  const engine = process.env.VC_ENGINE === "0"
+    ? { engine: null, install: null, error: "disabled (VC_ENGINE=0): turns run on the old in-process loop", health: () => ({}) }
+    : await startEngine({
     vault: cfg.vault,
     stateDir: cfg.stateDir,
     secretsDir: cfg.secretsDir,
