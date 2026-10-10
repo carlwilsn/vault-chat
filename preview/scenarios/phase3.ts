@@ -111,14 +111,9 @@ export function convs(now: number): W.Conv[] {
       lastActivityAt: now - 29 * HOUR,
       messages: [
         u("Set up the 3.2B-token extension as a proper piece of work."),
-        a("Here's the plan — approve it and it runs as a mission.
-
-```plan
-title: Extend BitNet 160M to 3.2B tokens
-- re-fit the cosine schedule for 6100 steps
-- train seed 42 to 3.2B and compare against the reference
-- update the writeup's results table
-```"),
+        a(
+          "Here's the plan — approve it and it runs as a mission.\n\n```plan\ntitle: Extend BitNet 160M to 3.2B tokens\n- re-fit the cosine schedule for 6100 steps\n- train seed 42 to 3.2B and compare against the reference\n- update the writeup's results table\n```",
+        ),
       ],
     },
     {
