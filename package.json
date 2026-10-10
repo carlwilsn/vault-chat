@@ -12,13 +12,16 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview",
+    "preview": "node preview/serve.mjs",
     "tauri": "tauri",
     "predev:tauri": "node scripts/download-tectonic.mjs",
     "build:server": "node server/build.mjs",
     "test:server": "node server/build.mjs && vitest run --config server/vitest.config.ts",
     "typecheck:server": "tsc -p server/tsconfig.json",
-    "test:harness": "node --import tsx --import ./test/harness/register.mjs --test \"test/harness/*.test.ts\""
+    "test:harness": "node --import tsx --import ./test/harness/register.mjs --test \"test/harness/*.test.ts\"",
+    "preview:test": "node preview/test.mjs",
+    "preview:record": "node preview/record.mjs",
+    "vite:preview": "vite preview"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.69",
