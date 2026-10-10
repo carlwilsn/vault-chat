@@ -1166,8 +1166,10 @@ function PlanCard({ title, tasks, desc }: { title: string; tasks: string[]; desc
       ]
         .filter(Boolean)
         .join("\n\n");
-      const { startMission } = await import("./offVaultRun");
-      await startMission(vaultPath, goal, title || "Mission");
+      // With a box configured the mission runs there (the phone's exact
+      // payload); otherwise it starts here as before.
+      const { approveMission } = await import("./missionHost");
+      await approveMission(vaultPath, goal, title || "Mission");
       setState("approved");
     } catch (e) {
       setState("idle");
