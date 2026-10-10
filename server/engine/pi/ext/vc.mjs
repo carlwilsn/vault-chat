@@ -121,11 +121,11 @@ export default function vaultChat(pi) {
       /* the host falls back to pi's own usage */
     }
   };
-  const cacheMarkers = E.VC_PI_GEMINI_CACHE !== "0";
+  const cacheMode = E.VC_PI_GEMINI_CACHE === "0" ? null : E.VC_PI_GEMINI_CACHE === "last" ? "last" : "system";
   pi.on("before_provider_request", (event) => {
     flush();
     pending = { genId: null, cost: null, model: String(event?.payload?.model ?? "") };
-    return cacheMarkers ? addCacheMarkers(event?.payload) : undefined;
+    return cacheMode ? addCacheMarkers(event?.payload, cacheMode) : undefined;
   });
   pi.on("after_provider_response", (event) => {
     const h = event?.headers ?? {};

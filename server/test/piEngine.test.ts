@@ -442,12 +442,10 @@ describe.skipIf(!PI_DIR)("pi engine without bubblewrap: the path guard alone; Ge
     expect(o).not.toContain(PASS);
   });
 
-  it("Gemini requests carry cache_control markers (system prompt and the newest user message)", async () => {
+  it("Gemini requests carry a cache_control marker on the system prompt", async () => {
     const body = or.calls.find((b) => lastUser(b).includes("GUARD1"));
     expect(body.model).toBe("google/fake-gemini");
     const sys = body.messages.find((m: any) => m.role === "system" || m.role === "developer");
     expect(JSON.stringify(sys)).toContain('"cache_control":{"type":"ephemeral"}');
-    const users = body.messages.filter((m: any) => m.role === "user");
-    expect(JSON.stringify(users[users.length - 1])).toContain("cache_control");
   });
 });

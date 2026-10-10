@@ -94,12 +94,15 @@ export function guardToolCall(toolName, input, { cwd, home, denyRead, denyWrite 
 }
 
 /**
- * Gemini through OpenRouter caches only with explicit cache_control markers:
- * mark the system prompt and the newest user message (OpenRouter's documented
- * shape: a text part with {cache_control:{type:"ephemeral"}}). Returns the
- * new payload, or undefined when nothing applies.
+ * Gemini through OpenRouter caches only with explicit cache_control markers
+ * (OpenRouter's shape: a text part with {cache_control:{type:"ephemeral"}}),
+ * and it honours one breakpoint per request. mode "system" (the default)
+ * marks only the system prompt — a breakpoint that never moves, so later
+ * calls can read what the first wrote; "last" also marks the newest user
+ * message (measured live: every call wrote a cache, none read one). Returns
+ * the new payload, or undefined when nothing applies.
  */
-export function addCacheMarkers(payload) {
+export function addCacheMarkers(payload, mode = "system") {
   if (!payload || typeof payload !== "object" || !Array.isArray(payload.messages)) return undefined;
   if (!/^google\//.test(String(payload.model ?? ""))) return undefined;
   const msgs = payload.messages.map((m) => (m && typeof m === "object" ? { ...m } : m));
@@ -125,7 +128,7 @@ export function addCacheMarkers(payload) {
   let changed = false;
   const sys = msgs.findIndex((m) => m && (m.role === "system" || m.role === "developer"));
   if (sys >= 0) changed = mark(msgs[sys]) || changed;
-  for (let i = msgs.length - 1; i >= 0; i--) {
+  for (let i = msgs.length - 1; mode === "last" && i >= 0; i--) {
     if (msgs[i] && msgs[i].role === "user" && mark(msgs[i])) {
       changed = true;
       break;

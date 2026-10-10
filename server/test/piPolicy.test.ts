@@ -40,7 +40,9 @@ describe("pi extension policy", () => {
     const p = { model: "google/gemini-3.8-flash", messages: [{ role: "system", content: "sys" }, { role: "user", content: "a" }, { role: "assistant", content: "b" }, { role: "user", content: [{ type: "text", text: "c" }, { type: "image_url", image_url: { url: "x" } }] }] };
     const out = addCacheMarkers(p);
     expect(out.messages[0].content[0].cache_control).toEqual({ type: "ephemeral" });
-    expect(out.messages[3].content[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(out.messages[3].content[0].cache_control).toBeUndefined(); // one fixed breakpoint by default
+    const last = addCacheMarkers(p, "last");
+    expect(last.messages[3].content[0].cache_control).toEqual({ type: "ephemeral" });
     expect(out.messages[1].content).toBe("a");
     expect(p.messages[0].content).toBe("sys"); // not mutated
     expect(addCacheMarkers({ model: "anthropic/claude-sonnet-5.5", messages: [] })).toBeUndefined();
