@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import type { ModelSpec, ProviderId } from "./providers";
 import { DEFAULT_MODEL_ID, DEFAULT_WORKER_MODEL_ID, setLiveCatalog, setAutoRouterCostBias } from "./providers";
+import { BACKGROUND_MODEL_STORAGE, VISION_MODEL_STORAGE, backgroundModel, visionModel } from "./roles";
 import type { Skill } from "./skills";
 import type { Note } from "./notes";
 import { readNotes, appendNote, writeAllNotes } from "./notes";
@@ -457,6 +458,8 @@ type State = {
   assistantModelId: string;
   supervisorModelId: string;
   workerModelId: string;
+  backgroundModelId: string;
+  visionModelId: string;
   theme: Theme;
   // Restrict file-op tools (Read/Write/Edit/Delete/Glob/Grep/ListDir/
   // NotebookEdit/PdfExtract) to the active vault + meta vault. Bash is
@@ -659,6 +662,8 @@ type State = {
   setAssistantModelId: (id: string) => void;
   setSupervisorModelId: (id: string) => void;
   setWorkerModelId: (id: string) => void;
+  setBackgroundModelId: (id: string) => void;
+  setVisionModelId: (id: string) => void;
   setTheme: (t: Theme) => void;
   applyThemeFromEvent: (t: Theme) => void;
   // Turning strict mode ON also flips bashDisabled ON (it's the matching
@@ -929,6 +934,8 @@ export const useStore = create<State>((set) => ({
   assistantModelId: localStorage.getItem(ASSISTANT_MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
   supervisorModelId: localStorage.getItem(SUPERVISOR_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
   workerModelId: localStorage.getItem(WORKER_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
+  backgroundModelId: backgroundModel(),
+  visionModelId: visionModel(),
   theme: loadTheme(),
   strictVaultMode: loadBoolFlag(STRICT_VAULT_STORAGE, !import.meta.env.DEV),
   // [harness-loop rig — DEV only, prod default stays true] The box runs with
@@ -1453,6 +1460,8 @@ export const useStore = create<State>((set) => ({
   setAssistantModelId: (id) => { localStorage.setItem(ASSISTANT_MODEL_STORAGE, id); set({ assistantModelId: id }); },
   setSupervisorModelId: (id) => { localStorage.setItem(SUPERVISOR_MODEL_STORAGE, id); set({ supervisorModelId: id }); },
   setWorkerModelId: (id) => { localStorage.setItem(WORKER_MODEL_STORAGE, id); set({ workerModelId: id }); },
+  setBackgroundModelId: (id) => { localStorage.setItem(BACKGROUND_MODEL_STORAGE, id); set({ backgroundModelId: id }); },
+  setVisionModelId: (id) => { localStorage.setItem(VISION_MODEL_STORAGE, id); set({ visionModelId: id }); },
   setTheme: (t) => {
     localStorage.setItem(THEME_STORAGE, t);
     set({ theme: t });

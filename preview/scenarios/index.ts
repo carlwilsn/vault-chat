@@ -163,6 +163,47 @@ const askScript: Script = {
 // ---- the box sync engine -----------------------------------------------------
 
 const BOX = { box: "https://box.tail0a1b2.ts.net", vault: "summer-demo" };
+
+/** Settings with every role set, keys configured, and the capability view in
+ *  each of its three layouts (a preview switch: vault_chat_caps_view). One
+ *  model of each source: learned (the box has seen it — seeded here, since
+ *  nothing on the box writes it yet), catalog, and untested (not in the
+ *  catalog). On today's app these open the same Settings as "settings". */
+function capsScenarios(): Scenario[] {
+  const views = [
+    ["table", "A, a small table under the pickers"],
+    ["inline", "B, one line under each role's picker"],
+    ["fold", "C, folded into one Capabilities row"],
+  ] as const;
+  return views.map(([view, what]) => ({
+    id: `settings-caps-${view}`,
+    title: `Settings — capabilities, option ${what}`,
+    group: "Settings",
+    notes:
+      "Roles: Chat Claude Sonnet 5.5 (learned: helpers yes), Background a model missing from the catalog (untested), Images & PDFs Gemini 3.5 Flash (learned: no helpers). Keys: OpenRouter, Tavily and a lambda_api_key service key; one other provider (Anthropic) under the fold.",
+    build: (c: BuildCtx) => world(c),
+    host: {
+      sync: { box: BOX },
+      keys: {
+        "service.tavily": "tvly-PREVIEW-0000",
+        "api.anthropic": "sk-ant-PREVIEW-0000",
+        "user.lambda_api_key": "PREVIEW-lambda-0000",
+      },
+    },
+    localStorage: {
+      vault_chat_caps_view: view,
+      vault_chat_model: "anthropic/claude-sonnet-5.5",
+      vault_chat_background_model: "deepseek/deepseek-v4",
+      vault_chat_vision_model: "google/gemini-3.5-flash",
+      vault_chat_user_keys: JSON.stringify(["lambda_api_key"]),
+      vault_chat_model_caps_learned: JSON.stringify({
+        "anthropic/claude-sonnet-5.5": { helpers: true },
+        "google/gemini-3.5-flash": { helpers: false },
+      }),
+    },
+    open: [{ click: "[title='Settings']" }, { sleep: 600 }, ...(view === "fold" ? [{ click: "summary", text: /^Capabilities/ } as Step] : [])],
+  }));
+}
 const syncTimers = { 15000: 1500, 30000: 1500 };
 
 export const scenarios: Scenario[] = [
@@ -331,6 +372,7 @@ export const scenarios: Scenario[] = [
     host: { sync: { box: BOX }, keys: { "service.tavily": "tvly-PREVIEW-0000" } },
     open: [{ click: "[title='Settings']" }],
   },
+  ...capsScenarios(),
   {
     id: "settings-fresh",
     title: "Settings (fresh install, no keys)",

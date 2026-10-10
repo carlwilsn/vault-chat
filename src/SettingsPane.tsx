@@ -1,19 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import {
-  ArrowLeft,
-  Check,
-  Key,
-  X,
-  Plus,
-  Lock,
-  Shield,
-  RefreshCw,
-  Smartphone,
-  ChevronDown,
-} from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ArrowLeft, Check, X, Plus, ChevronDown } from "lucide-react";
 import { useStore } from "./store";
-import { PROVIDER_LABEL, AUTO_MODEL_ID, type ProviderId } from "./providers";
-import { Button, Input, MenuSelect } from "./ui";
+import { PROVIDER_LABEL, AUTO_MODEL_ID, type ModelSpec, type ProviderId } from "./providers";
+import { Button, Input, MenuSelect, type MenuGroup } from "./ui";
 import { SUPPORTED_VOICE_LLMS, DEFAULT_LLM } from "./voice-elevenlabs";
 import {
   readVoiceLibraryCache,
@@ -34,7 +23,6 @@ import {
   subscribeSyncStatus,
   startVaultSyncLoop,
   stopVaultSyncLoop,
-  DEFAULT_SYNC_CONFIG,
   type VaultSyncConfig,
   readBoxConfig,
   subscribeBoxSync,
@@ -43,12 +31,10 @@ import {
   type BoxConfig,
   type BoxSyncState,
 } from "./vaultSync";
-import {
-  fireSchedulesOnThisMachine,
-  setFireSchedulesOnThisMachine,
-} from "./schedulerLoop";
-import { isRunInBackground, setRunInBackground } from "./background";
-const PROVIDERS: ProviderId[] = ["anthropic", "openai", "google", "openrouter"];
+import { ROLE_LABEL, type RoleId } from "./roles";
+import { CAP_KEYS, loadModelCaps, type CapKey, type ModelCaps } from "./modelCaps";
+
+// Six sections: Models, Keys, Voice, Box, Safety, Appearance.
 
 const KEY_PLACEHOLDER: Record<ProviderId, string> = {
   anthropic: "sk-ant-…",
@@ -57,225 +43,24 @@ const KEY_PLACEHOLDER: Record<ProviderId, string> = {
   openrouter: "sk-or-…",
 };
 
-export function SettingsPane() {
-  const {
-    apiKeys,
-    serviceKeys,
-    modelId,
-    theme,
-    setApiKey,
-    clearApiKey,
-    setServiceKey,
-    clearServiceKey,
-    setModelId,
-    setTheme,
-    strictVaultMode,
-    bashDisabled,
-    reasoningEffort,
-    setStrictVaultMode,
-    setBashDisabled,
-    setReasoningEffort,
-    setShowSettings,
-    catalog,
-    catalogRefreshing,
-    catalogErrors,
-    refreshCatalog,
-  } = useStore();
-  const autoRouterCostBias = useStore((s) => s.autoRouterCostBias);
-  const setAutoRouterCostBias = useStore((s) => s.setAutoRouterCostBias);
-  const missionHostUrl = useStore((s) => s.missionHostUrl);
-  const missionHostToken = useStore((s) => s.missionHostToken);
-  const setMissionHost = useStore((s) => s.setMissionHost);
-  const assistantModelId = useStore((s) => s.assistantModelId);
-  const supervisorModelId = useStore((s) => s.supervisorModelId);
-  const workerModelId = useStore((s) => s.workerModelId);
-  const setAssistantModelId = useStore((s) => s.setAssistantModelId);
-  const setSupervisorModelId = useStore((s) => s.setSupervisorModelId);
-  const setWorkerModelId = useStore((s) => s.setWorkerModelId);
-  const vaultPath = useStore((s) => s.vaultPath);
-  const [modelSearch, setModelSearch] = useState("");
-  const filteredCatalog = (() => {
-    const q = modelSearch.trim().toLowerCase();
-    if (!q) return catalog;
-    const terms = q.split(/\s+/);
-    return catalog.filter((m) => {
-      const hay = `${m.provider} ${m.id} ${m.label}`.toLowerCase();
-      return terms.every((t) => hay.includes(t));
-    });
-  })();
-  const [drafts, setDrafts] = useState<Record<ProviderId, string>>({
-    anthropic: apiKeys.anthropic ?? "",
-    openai: apiKeys.openai ?? "",
-    google: apiKeys.google ?? "",
-    openrouter: apiKeys.openrouter ?? "",
-  });
-  const [tavilyDraft, setTavilyDraft] = useState(serviceKeys.tavily ?? "");
-  const [elevenlabsDraft, setElevenlabsDraft] = useState(serviceKeys.elevenlabs ?? "");
-  const [elevenlabsVoiceDraft, setElevenlabsVoiceDraft] = useState(
-    localStorage.getItem("vault_chat_elevenlabs_voice") ?? "nPczCjzI2devNBz1zQrb",
+const mask = (k?: string) => (k ? `${k.slice(0, 6)}…${k.slice(-4)}` : "not set");
+
+function SectionHead({ title, hint, right }: { title: string; hint?: ReactNode; right?: ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{title}</h3>
+        {hint && <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">{hint}</p>}
+      </div>
+      {right}
+    </div>
   );
-  const [voiceLibrary, setVoiceLibrary] = useState<SavedVoice[]>(() => {
-    const cached = readVoiceLibraryCache();
-    return cached.length ? cached : DEFAULT_VOICES;
-  });
-  // The saved voice set is git-synced via <vault>/.vault-chat/voices.json. On
-  // open, load it from the vault (the cross-machine source of truth); if the
-  // vault has no file yet, seed it from whatever's local so it starts syncing.
-  useEffect(() => {
-    if (!vaultPath) return;
-    let cancelled = false;
-    (async () => {
-      const fromVault = await readVoiceLibrary(vaultPath);
-      if (cancelled) return;
-      if (fromVault) setVoiceLibrary(fromVault);
-      else await writeVoiceLibrary(vaultPath, voiceLibrary);
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vaultPath]);
-  const [newVoiceName, setNewVoiceName] = useState("");
-  const [newVoiceId, setNewVoiceId] = useState("");
-  const voicePickerRef = useRef<HTMLDetailsElement | null>(null);
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      const el = voicePickerRef.current;
-      if (!el || !el.open) return;
-      if (e.target instanceof Node && !el.contains(e.target)) {
-        el.open = false;
-      }
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, []);
-  const [elevenlabsLlmDraft, setElevenlabsLlmDraft] = useState(() => {
-    // Fall back to the default if the stored model is no longer voice-supported
-    // (e.g. a previously-selected Opus), so the dropdown never renders blank.
-    const stored = localStorage.getItem("vault_chat_elevenlabs_llm");
-    return stored && SUPPORTED_VOICE_LLMS.has(stored) ? stored : DEFAULT_LLM;
-  });
-  const [savedFlash, setSavedFlash] = useState<
-    | ProviderId
-    | "tavily"
-    | "elevenlabs"
-    | "elevenlabs_voice"
-    | "elevenlabs_llm"
-    | null
-  >(null);
+}
 
-  const save = (p: ProviderId) => {
-    const v = drafts[p].trim();
-    if (!v) return;
-    setApiKey(p, v);
-    // Keep the draft populated so type=password keeps showing dots —
-    // an empty input after save reads as "nothing saved." A small
-    // refresh delay lets the saved-flash animate before models reload.
-    setDrafts((d) => ({ ...d, [p]: v }));
-    setSavedFlash(p);
-    setTimeout(() => setSavedFlash((x) => (x === p ? null : x)), 1500);
-    setTimeout(() => refreshCatalog(), 500);
-  };
+const Divider = () => <div className="h-px bg-border" />;
 
-  const remove = (p: ProviderId) => {
-    clearApiKey(p);
-    setDrafts((d) => ({ ...d, [p]: "" }));
-  };
-
-  const saveTavily = () => {
-    const v = tavilyDraft.trim();
-    if (!v) return;
-    setServiceKey("tavily", v);
-    setTavilyDraft(v);
-    setSavedFlash("tavily");
-    setTimeout(() => setSavedFlash((x) => (x === "tavily" ? null : x)), 1500);
-  };
-
-  const saveElevenlabs = () => {
-    const v = elevenlabsDraft.trim();
-    if (!v) return;
-    setServiceKey("elevenlabs", v);
-    setElevenlabsDraft(v);
-    setSavedFlash("elevenlabs");
-    setTimeout(() => setSavedFlash((x) => (x === "elevenlabs" ? null : x)), 1500);
-  };
-
-  const removeElevenlabs = () => {
-    clearServiceKey("elevenlabs");
-    setElevenlabsDraft("");
-  };
-
-  const saveElevenlabsVoice = (v: string) => {
-    const trimmed = v.trim();
-    if (!trimmed) return;
-    localStorage.setItem("vault_chat_elevenlabs_voice", trimmed);
-    setElevenlabsVoiceDraft(trimmed);
-    setSavedFlash("elevenlabs_voice");
-    setTimeout(
-      () => setSavedFlash((x) => (x === "elevenlabs_voice" ? null : x)),
-      1500,
-    );
-  };
-
-  const addVoiceToLibrary = () => {
-    const name = newVoiceName.trim();
-    const id = newVoiceId.trim();
-    if (!name || !id) return;
-    const next = [...voiceLibrary.filter((v) => v.id !== id), { name, id }];
-    setVoiceLibrary(next);
-    void writeVoiceLibrary(vaultPath, next);
-    setNewVoiceName("");
-    setNewVoiceId("");
-    saveElevenlabsVoice(id);
-  };
-
-  const removeVoiceFromLibrary = (id: string) => {
-    const next = voiceLibrary.filter((v) => v.id !== id);
-    setVoiceLibrary(next);
-    void writeVoiceLibrary(vaultPath, next);
-  };
-
-  const saveElevenlabsLlm = (v: string) => {
-    localStorage.setItem("vault_chat_elevenlabs_llm", v);
-    setElevenlabsLlmDraft(v);
-    setSavedFlash("elevenlabs_llm");
-    setTimeout(
-      () => setSavedFlash((x) => (x === "elevenlabs_llm" ? null : x)),
-      1500,
-    );
-  };
-
-  const removeTavily = () => {
-    clearServiceKey("tavily");
-    setTavilyDraft("");
-  };
-
-  // --- your keys (custom user-managed credentials) ---
-  const [userKeyNames, setUserKeyNames] = useState<string[]>(() => listUserKeys());
-  const [userKeyAdd, setUserKeyAdd] = useState<{ name: string; value: string }>({
-    name: "",
-    value: "",
-  });
-  const [adding, setAdding] = useState(false);
-  useEffect(() => {
-    setUserKeyNames(listUserKeys());
-  }, []);
-  const saveUserKey = async () => {
-    const n = userKeyAdd.name.trim().replace(/[^\w-]/g, "_");
-    const v = userKeyAdd.value.trim();
-    if (!n || !v) return;
-    await setUserKey(n, v);
-    setUserKeyNames(listUserKeys());
-    setUserKeyAdd({ name: "", value: "" });
-    setAdding(false);
-  };
-  const removeUserKey = async (n: string) => {
-    await deleteUserKey(n);
-    setUserKeyNames(listUserKeys());
-  };
-
-  const mask = (k?: string) => (k ? `${k.slice(0, 6)}…${k.slice(-4)}` : "not set");
-
+export function SettingsPane() {
+  const setShowSettings = useStore((s) => s.setShowSettings);
   return (
     <div className="h-full flex flex-col bg-card border-l border-border">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
@@ -284,669 +69,714 @@ export function SettingsPane() {
         </Button>
         <span className="text-[13px] font-semibold">Settings</span>
       </div>
-
       <div className="flex-1 overflow-auto p-5 space-y-6">
-        <section className="space-y-2">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Model
-              </h3>
-              <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
-                Fetched live from each provider. Refresh to pick up new releases.
-              </p>
-            </div>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => refreshCatalog()}
-              disabled={catalogRefreshing}
-            >
-              {catalogRefreshing ? "Refreshing…" : `Refresh (${catalog.length})`}
-            </Button>
-          </div>
-          <Input
-            type="search"
-            placeholder="Search models (name, id, or provider)…"
-            value={modelSearch}
-            onChange={(e) => setModelSearch(e.target.value)}
-          />
-          <MenuSelect
-            value={modelId}
-            onChange={setModelId}
-            triggerLabel={
-              modelId === AUTO_MODEL_ID
-                ? "Auto — smart routing (saves credits)"
-                : (() => {
-                    const m = catalog.find((c) => c.id === modelId);
-                    return m ? `[${PROVIDER_LABEL[m.provider]}] ${m.label}` : modelId;
-                  })()
-            }
-            emptyHint={modelSearch ? `No models match "${modelSearch}"` : undefined}
-            groups={[
-              // Auto is always available at the top — no key required.
-              { options: [{ value: AUTO_MODEL_ID, label: "Auto — smart routing (saves credits)" }] },
-              ...(filteredCatalog.length > 0
-                ? [
-                    {
-                      options: filteredCatalog.map((m) => ({
-                        value: m.id,
-                        label: `[${PROVIDER_LABEL[m.provider]}] ${m.label}`,
-                      })),
-                    },
-                  ]
-                : []),
-            ]}
-          />
-          {modelSearch && (
-            <p className="text-[11px] text-muted-foreground/80">
-              {filteredCatalog.length} of {catalog.length} match
-            </p>
-          )}
-          {Object.entries(catalogErrors).length > 0 && (
-            <p className="text-[11px] text-amber-500/90">
-              {Object.entries(catalogErrors)
-                .map(([p, msg]) => `${p}: ${msg}`)
-                .join(" · ")}
-            </p>
-          )}
-          <p className="text-[11px] text-muted-foreground/70">
-            This is the <span className="font-medium text-foreground/80">Chat pane</span> (desktop) model. Set the other surfaces under <span className="font-medium text-foreground/80">Models by role</span> below.
-          </p>
-          {modelId === AUTO_MODEL_ID && (
-            <div className="rounded-md border border-border/60 bg-accent/20 p-3 space-y-2">
-              {apiKeys.openrouter ? (
-                <>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11.5px] font-medium text-foreground">
-                      Auto cost ⇄ quality
-                    </span>
-                    <span className="text-[11px] tabular-nums text-muted-foreground">
-                      {autoRouterCostBias <= 3
-                        ? "Quality"
-                        : autoRouterCostBias >= 8
-                          ? "Cheapest"
-                          : "Balanced"}{" "}
-                      ({autoRouterCostBias}/10)
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={10}
-                    step={1}
-                    value={autoRouterCostBias}
-                    onChange={(e) => setAutoRouterCostBias(Number(e.target.value))}
-                    className="w-full accent-primary"
-                  />
-                  <p className="text-[11px] text-muted-foreground/80">
-                    Auto uses OpenRouter's trained router (openrouter/auto) to pick the
-                    best model per message. Higher = cheaper models more often.
-                  </p>
-                </>
-              ) : (
-                <p className="text-[11px] text-muted-foreground/80">
-                  Auto routes to a cheap or capable model per message using your
-                  configured providers. Add an <span className="font-medium">OpenRouter</span>{" "}
-                  key to unlock its trained, provider-neutral router with a cost dial.
-                </p>
-              )}
-            </div>
-          )}
-        </section>
-
-        <div className="h-px bg-border" />
-
-        <section className="space-y-2">
-          <div>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Models by role
-            </h3>
-            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
-              Each surface runs its own model. <span className="font-medium text-foreground/80">Chat pane</span> is the model above; <span className="font-medium text-foreground/80">Voice</span> is in the Voice section.
-            </p>
-          </div>
-          {(
-            [
-              ["Assistant (phone)", assistantModelId, setAssistantModelId],
-              ["Supervisors (missions)", supervisorModelId, setSupervisorModelId],
-              ["Workers", workerModelId, setWorkerModelId],
-            ] as [string, string, (id: string) => void][]
-          ).map(([label, val, setter]) => (
-            <div key={label} className="flex items-center justify-between gap-3">
-              <span className="text-[12px] text-foreground/90 shrink-0">{label}</span>
-              <div className="min-w-0 flex-1 max-w-[62%]">
-                <MenuSelect
-                  value={val}
-                  onChange={setter}
-                  triggerLabel={
-                    val === AUTO_MODEL_ID
-                      ? "Auto — smart routing"
-                      : (() => {
-                          const m = catalog.find((c) => c.id === val);
-                          return m ? `[${PROVIDER_LABEL[m.provider]}] ${m.label}` : val;
-                        })()
-                  }
-                  groups={[
-                    { options: [{ value: AUTO_MODEL_ID, label: "Auto — smart routing" }] },
-                    {
-                      options: catalog.map((m) => ({
-                        value: m.id,
-                        label: `[${PROVIDER_LABEL[m.provider]}] ${m.label}`,
-                      })),
-                    },
-                  ]}
-                />
-              </div>
-            </div>
-          ))}
-        </section>
-
-        <div className="h-px bg-border" />
-
-        <section className="space-y-2">
-          <div>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Theme
-            </h3>
-            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
-              App color palette.
-            </p>
-          </div>
-          <MenuSelect
-            value={theme}
-            onChange={(v) => setTheme(v as "graphite" | "light")}
-            groups={[
-              {
-                options: [
-                  { value: "graphite", label: "Graphite (default)" },
-                  { value: "light", label: "Light" },
-                ],
-              },
-            ]}
-          />
-        </section>
-
-        <div className="h-px bg-border" />
-
-        <section className="space-y-3">
-          <div>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <Shield className="h-3 w-3" />
-              Security
-            </h3>
-            <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
-              Limit what the agent can touch.
-            </p>
-          </div>
-          <label className="flex items-start gap-2.5 cursor-pointer">
-            <input
-              type="checkbox"
-              className="vc-checkbox mt-0.5"
-              checked={strictVaultMode}
-              onChange={(e) => setStrictVaultMode(e.target.checked)}
-            />
-            <div className="flex-1">
-              <div className="text-[12px]">Strict vault mode</div>
-              <p className="text-[11px] text-muted-foreground/80">
-                File-op tools (Read/Write/Edit/Delete/Glob/Grep/ListDir/NotebookEdit/PdfExtract) refuse paths outside the active vault and meta vault. Does not constrain Bash. Symlinks are not resolved.
-              </p>
-            </div>
-          </label>
-          <label className="flex items-start gap-2.5 cursor-pointer">
-            <input
-              type="checkbox"
-              className="vc-checkbox mt-0.5"
-              checked={bashDisabled}
-              onChange={(e) => setBashDisabled(e.target.checked)}
-            />
-            <div className="flex-1">
-              <div className="text-[12px]">Disable Bash tool</div>
-              <p className="text-[11px] text-muted-foreground/80">
-                Removes the shell tool from the agent. Auto-enabled when strict vault mode turns on (Bash bypasses the file guard otherwise).
-              </p>
-            </div>
-          </label>
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex-1">
-              <div className="text-[12px]">Reasoning effort</div>
-              <p className="text-[11px] text-muted-foreground/80">
-                How hard reasoning-capable models (GPT-5, o-series, Claude 4.x, Gemini 2.5 — direct or via OpenRouter) think before answering. Higher = fewer careless mistakes on hard/long tasks, but slower and pricier. Doesn't affect non-reasoning models.
-              </p>
-            </div>
-            <select
-              className="vc-select shrink-0 text-[12px] rounded-md border border-border bg-background px-2 py-1"
-              value={reasoningEffort}
-              onChange={(e) => setReasoningEffort(e.target.value as typeof reasoningEffort)}
-            >
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-            </select>
-          </div>
-          <div className="space-y-1.5">
-            <div className="text-[12px]">Mission host (box)</div>
-            <p className="text-[11px] text-muted-foreground/80">
-              When this machine's vault checkout is a content-writer (follower), messages you type into mission threads relay to the mission host over HTTP — exactly like the phone — instead of running locally. Set the box's cockpit URL and vault token. Machine-local; never syncs.
-            </p>
-            <input
-              className="vc-input w-full text-[12px] rounded-md border border-border bg-background px-2 py-1 font-mono"
-              placeholder="http://100.79.81.14:8848"
-              defaultValue={missionHostUrl}
-              onBlur={(e) => setMissionHost(e.target.value, useStore.getState().missionHostToken)}
-            />
-            <input
-              className="vc-input w-full text-[12px] rounded-md border border-border bg-background px-2 py-1 font-mono"
-              placeholder="vault token (X-Vault-Token)"
-              type="password"
-              defaultValue={missionHostToken}
-              onBlur={(e) => setMissionHost(useStore.getState().missionHostUrl, e.target.value)}
-            />
-          </div>
-        </section>
-
-        <div className="h-px bg-border" />
-
-        {PROVIDERS.map((p) => (
-          <section key={p} className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                  <Key className="h-3 w-3" />
-                  {PROVIDER_LABEL[p]}
-                </h3>
-                <p className="text-[11px] text-muted-foreground/70 mt-0.5 font-mono">
-                  {mask(apiKeys[p])}
-                </p>
-              </div>
-              {savedFlash === p && (
-                <span className="text-[11px] text-emerald-500 flex items-center gap-1">
-                  <Check className="h-3 w-3" /> saved
-                </span>
-              )}
-            </div>
-            <div className="flex gap-2">
-              <Input
-                type="password"
-                placeholder={KEY_PLACEHOLDER[p]}
-                value={drafts[p]}
-                onChange={(e) => setDrafts({ ...drafts, [p]: e.target.value })}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") save(p);
-                }}
-              />
-              <Button size="sm" onClick={() => save(p)} disabled={!drafts[p].trim()}>
-                Save
-              </Button>
-              {apiKeys[p] && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => remove(p)}
-                  title="Remove this key from the OS keychain"
-                >
-                  <X className="h-3 w-3" />
-                </Button>
-              )}
-            </div>
-          </section>
-        ))}
-
-        <div className="h-px bg-border" />
-
-        <section className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                <Key className="h-3 w-3" />
-                Tavily (web search)
-              </h3>
-              <p className="text-[11px] text-muted-foreground/70 mt-0.5 font-mono">
-                {mask(serviceKeys.tavily)}
-              </p>
-            </div>
-            {savedFlash === "tavily" && (
-              <span className="text-[11px] text-emerald-500 flex items-center gap-1">
-                <Check className="h-3 w-3" /> saved
-              </span>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <Input
-              type="password"
-              placeholder="tvly-…"
-              value={tavilyDraft}
-              onChange={(e) => setTavilyDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") saveTavily();
-              }}
-            />
-            <Button size="sm" onClick={saveTavily} disabled={!tavilyDraft.trim()}>
-              Save
-            </Button>
-            {serviceKeys.tavily && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={removeTavily}
-                title="Remove this key from the OS keychain"
-              >
-                <X className="h-3 w-3" />
-              </Button>
-            )}
-          </div>
-          <p className="text-[11px] text-muted-foreground/80">
-            Enables WebSearch. Get a free key at tavily.com.
-          </p>
-        </section>
-
-        <div className="h-px bg-border" />
-
-        <PhoneVoiceSection />
-
-        <div className="h-px bg-border" />
-
-        <section className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                <Key className="h-3 w-3" />
-                ElevenLabs (voice mode)
-              </h3>
-              <p className="text-[11px] text-muted-foreground/70 mt-0.5 font-mono">
-                {mask(serviceKeys.elevenlabs)}
-              </p>
-            </div>
-            {savedFlash === "elevenlabs" && (
-              <span className="text-[11px] text-emerald-500 flex items-center gap-1">
-                <Check className="h-3 w-3" /> saved
-              </span>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <Input
-              type="password"
-              placeholder="sk_…"
-              value={elevenlabsDraft}
-              onChange={(e) => setElevenlabsDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") saveElevenlabs();
-              }}
-            />
-            <Button size="sm" onClick={saveElevenlabs} disabled={!elevenlabsDraft.trim()}>
-              Save
-            </Button>
-            {serviceKeys.elevenlabs && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={removeElevenlabs}
-                title="Remove this key from the OS keychain"
-              >
-                <X className="h-3 w-3" />
-              </Button>
-            )}
-          </div>
-          <p className="text-[11px] text-muted-foreground/80">
-            Required for voice mode. Conversational AI plan needed (free tier
-            includes 15 min/mo). Get a key at elevenlabs.io.
-          </p>
-          <div className="flex items-center justify-between pt-2">
-            <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-              Voice ID
-            </h4>
-            {savedFlash === "elevenlabs_voice" && (
-              <span className="text-[11px] text-emerald-500 flex items-center gap-1">
-                <Check className="h-3 w-3" /> saved
-              </span>
-            )}
-          </div>
-          <details ref={voicePickerRef} className="w-full rounded-md border border-input bg-background group">
-            <summary className="h-8 px-2.5 flex items-center justify-between cursor-pointer text-[12px] font-mono list-none">
-              <span className="truncate">
-                {voiceLibrary.find((v) => v.id === elevenlabsVoiceDraft)?.name ?? "(unsaved)"}
-                <span className="ml-2 text-muted-foreground/60">{elevenlabsVoiceDraft}</span>
-              </span>
-              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60 group-open:rotate-180 transition-transform" />
-            </summary>
-            <div className="border-t border-border max-h-48 overflow-y-auto">
-              {voiceLibrary.length === 0 && (
-                <div className="px-2 py-2 text-[11px] text-muted-foreground/70">
-                  No saved voices yet. Add one below.
-                </div>
-              )}
-              {voiceLibrary.map((v) => {
-                const active = v.id === elevenlabsVoiceDraft;
-                return (
-                  <div
-                    key={v.id}
-                    className={`flex items-center justify-between px-2 py-1.5 text-[12px] cursor-pointer hover:bg-muted/40 ${active ? "bg-muted/60" : ""}`}
-                    onClick={() => saveElevenlabsVoice(v.id)}
-                  >
-                    <span className="truncate flex-1">
-                      <span className="font-medium text-foreground/90">{v.name}</span>
-                      <span className="ml-2 font-mono text-muted-foreground/60">{v.id}</span>
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeVoiceFromLibrary(v.id);
-                      }}
-                      title="Remove from library"
-                    >
-                      <X className="h-3 w-3" />
-                    </Button>
-                  </div>
-                );
-              })}
-            </div>
-          </details>
-          <div className="flex gap-2 pt-1">
-            <Input
-              type="text"
-              placeholder="Name (e.g. Rachel)"
-              value={newVoiceName}
-              onChange={(e) => setNewVoiceName(e.target.value)}
-              className="flex-[2]"
-            />
-            <Input
-              type="text"
-              placeholder="Voice ID"
-              value={newVoiceId}
-              onChange={(e) => setNewVoiceId(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") addVoiceToLibrary();
-              }}
-              className="flex-[3] font-mono"
-            />
-            <Button size="sm" onClick={addVoiceToLibrary} disabled={!newVoiceName.trim() || !newVoiceId.trim()}>
-              Add
-            </Button>
-          </div>
-          <p className="text-[11px] text-muted-foreground/80">
-            Browse voices at elevenlabs.io/app/voice-library, then add them here
-            with a memorable name. Selecting from the dropdown sets the active voice.
-          </p>
-          <div className="flex items-center justify-between pt-2">
-            <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-              Voice model
-            </h4>
-            {savedFlash === "elevenlabs_llm" && (
-              <span className="text-[11px] text-emerald-500 flex items-center gap-1">
-                <Check className="h-3 w-3" /> saved
-              </span>
-            )}
-          </div>
-          <MenuSelect
-            value={elevenlabsLlmDraft}
-            onChange={saveElevenlabsLlm}
-            mono
-            groups={[
-              {
-                label: "Gemini (default — native PDF vision)",
-                options: [
-                  { value: "gemini-3.5-flash", label: "gemini-3.5-flash (default)" },
-                  { value: "gemini-2.5-flash", label: "gemini-2.5-flash (older)" },
-                ],
-              },
-              {
-                label: "Claude — Sonnet",
-                options: [
-                  { value: "claude-sonnet-4-6", label: "claude-sonnet-4-6 (newest)" },
-                  { value: "claude-sonnet-4-5@20250929", label: "claude-sonnet-4-5" },
-                  { value: "claude-sonnet-4@20250514", label: "claude-sonnet-4" },
-                  { value: "claude-3-7-sonnet", label: "claude-3-7-sonnet" },
-                ],
-              },
-              {
-                label: "Claude — Haiku (fastest)",
-                options: [{ value: "claude-haiku-4-5-20251001", label: "claude-haiku-4-5" }],
-              },
-            ]}
-          />
-          <p className="text-[11px] text-muted-foreground/80">
-            Brain that handles voice turns. Gemini 3.5 Flash is the default —
-            it sees PDFs natively (every page, diagram, equation) with the
-            snappiest TTFT. Claude variants don't get the PDF blob piped in,
-            so they fall back to the PdfExtract tool. Only models ElevenLabs
-            Agents can run for voice are listed (no Opus, no Gemini 2.5 Pro).
-            Changes re-provision the agent on next session.
-          </p>
-        </section>
-
-        <div className="h-px bg-border" />
-
-        <section className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                <Lock className="h-3 w-3" />
-                Your keys
-              </h3>
-              <p className="text-[11.5px] text-muted-foreground/80 mt-0.5 leading-relaxed">
-                Custom credentials your vault-tools can request via{" "}
-                <code className="font-mono bg-muted px-1 rounded text-[10.5px]">
-                  requires_keys
-                </code>{" "}
-                in TOOL.md. Stored in the OS keychain, passed to scripts as
-                environment variables at run-time. The agent never sees the
-                values.
-              </p>
-            </div>
-            {!adding && (
-              <Button size="sm" variant="ghost" onClick={() => setAdding(true)}>
-                <Plus className="h-3 w-3" />
-              </Button>
-            )}
-          </div>
-          {adding && (
-            <div className="flex flex-col gap-2 rounded-md border border-border/60 bg-muted/30 p-2">
-              <Input
-                placeholder="name (e.g. gmail_token)"
-                value={userKeyAdd.name}
-                onChange={(e) =>
-                  setUserKeyAdd((s) => ({ ...s, name: e.target.value }))
-                }
-                autoFocus
-              />
-              <Input
-                type="password"
-                placeholder="value"
-                value={userKeyAdd.value}
-                onChange={(e) =>
-                  setUserKeyAdd((s) => ({ ...s, value: e.target.value }))
-                }
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") saveUserKey();
-                }}
-              />
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  onClick={saveUserKey}
-                  disabled={!userKeyAdd.name.trim() || !userKeyAdd.value.trim()}
-                >
-                  Save
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setAdding(false);
-                    setUserKeyAdd({ name: "", value: "" });
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
-          {userKeyNames.length > 0 && (
-            <ul className="divide-y divide-border/40 rounded-md border border-border/60">
-              {userKeyNames.map((n) => (
-                <li
-                  key={n}
-                  className="flex items-center justify-between px-3 py-1.5 text-[12.5px]"
-                >
-                  <div className="flex flex-col">
-                    <span className="font-mono text-foreground/90">{n}</span>
-                    <span className="text-[10.5px] text-muted-foreground">
-                      ••••••••
-                    </span>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => removeUserKey(n)}
-                    title="Remove"
-                  >
-                    <X className="h-3 w-3" />
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-          {userKeyNames.length === 0 && !adding && (
-            <p className="text-[11px] text-muted-foreground/60 italic">
-              No custom keys yet.
-            </p>
-          )}
-        </section>
-
-        <div className="h-px bg-border" />
-
-        <VaultSyncSection />
-
-        <div className="h-px bg-border" />
-
-        <KeystoreSection />
-
-        <div className="h-px bg-border" />
-
-        <section className="space-y-1.5">
-          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Storage
-          </h3>
-          <p className="text-[11.5px] text-muted-foreground leading-relaxed">
-            API keys are stored in the OS keychain (Windows Credential Manager
-            / Mac Keychain / Linux libsecret) under the service name{" "}
-            <code className="font-mono bg-muted px-1 rounded text-[10.5px]">
-              com.vault-chat.app
-            </code>
-            . The agent's file-op tools cannot reach them. Model preference and
-            theme live in <code className="font-mono bg-muted px-1 rounded text-[10.5px]">localStorage</code>.
-          </p>
-        </section>
+        <ModelsSection />
+        <Divider />
+        <KeysSection />
+        <Divider />
+        <VoiceSection />
+        <Divider />
+        <BoxSection />
+        <Divider />
+        <SafetySection />
+        <Divider />
+        <AppearanceSection />
       </div>
     </div>
   );
 }
 
-function VaultSyncSection() {
+// ---- Models ------------------------------------------------------------------
+
+const shortName = (label: string) => label.replace(/^[^:]+:\s*/, "");
+
+const VOICE_GROUPS: MenuGroup[] = [
+  {
+    label: "Gemini (default — native PDF vision)",
+    options: [
+      { value: "gemini-3.5-flash", label: "gemini-3.5-flash (default)" },
+      { value: "gemini-2.5-flash", label: "gemini-2.5-flash (older)" },
+    ],
+  },
+  {
+    label: "Claude — Sonnet",
+    options: [
+      { value: "claude-sonnet-4-6", label: "claude-sonnet-4-6 (newest)" },
+      { value: "claude-sonnet-4-5@20250929", label: "claude-sonnet-4-5" },
+      { value: "claude-sonnet-4@20250514", label: "claude-sonnet-4" },
+      { value: "claude-3-7-sonnet", label: "claude-3-7-sonnet" },
+    ],
+  },
+  {
+    label: "Claude — Haiku (fastest)",
+    options: [{ value: "claude-haiku-4-5-20251001", label: "claude-haiku-4-5" }],
+  },
+];
+
+/** Which capability layout to draw. A preview switch while Carl picks one;
+ *  the losing layouts go once he has. */
+type CapsView = "table" | "inline" | "fold";
+function capsView(): CapsView {
+  try {
+    const v = localStorage.getItem("vault_chat_caps_view");
+    return v === "inline" || v === "fold" ? v : "table";
+  } catch {
+    return "table";
+  }
+}
+
+function ModelsSection() {
+  const catalog = useStore((s) => s.catalog);
+  const catalogRefreshing = useStore((s) => s.catalogRefreshing);
+  const catalogErrors = useStore((s) => s.catalogErrors);
+  const refreshCatalog = useStore((s) => s.refreshCatalog);
+  const hasOpenRouter = useStore((s) => !!s.apiKeys.openrouter);
+  const modelId = useStore((s) => s.modelId);
+  const setModelId = useStore((s) => s.setModelId);
+  const setAssistantModelId = useStore((s) => s.setAssistantModelId);
+  const backgroundModelId = useStore((s) => s.backgroundModelId);
+  const setBackgroundModelId = useStore((s) => s.setBackgroundModelId);
+  const visionModelId = useStore((s) => s.visionModelId);
+  const setVisionModelId = useStore((s) => s.setVisionModelId);
+  const autoRouterCostBias = useStore((s) => s.autoRouterCostBias);
+  const setAutoRouterCostBias = useStore((s) => s.setAutoRouterCostBias);
+  const reasoningEffort = useStore((s) => s.reasoningEffort);
+  const setReasoningEffort = useStore((s) => s.setReasoningEffort);
+
+  const [voiceLlm, setVoiceLlm] = useState(() => {
+    // A stored model ElevenLabs no longer runs falls back to the default, so
+    // the picker never renders blank.
+    const stored = localStorage.getItem("vault_chat_elevenlabs_llm");
+    return stored && SUPPORTED_VOICE_LLMS.has(stored) ? stored : DEFAULT_LLM;
+  });
+  const saveVoiceLlm = (v: string) => {
+    localStorage.setItem("vault_chat_elevenlabs_llm", v);
+    setVoiceLlm(v);
+  };
+
+  const [search, setSearch] = useState("");
+  const filtered = (() => {
+    const terms = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.length) return catalog;
+    return catalog.filter((m) => {
+      const hay = `${m.provider} ${m.id} ${m.label}`.toLowerCase();
+      return terms.every((t) => hay.includes(t));
+    });
+  })();
+  const labelOf = (id: string) => {
+    if (id === AUTO_MODEL_ID) return "Auto — smart routing";
+    const m = catalog.find((c) => c.id === id);
+    return m ? `[${PROVIDER_LABEL[m.provider]}] ${m.label}` : id;
+  };
+  const groups = (withAuto: boolean): MenuGroup[] => [
+    ...(withAuto ? [{ options: [{ value: AUTO_MODEL_ID, label: "Auto — smart routing" }] }] : []),
+    ...(filtered.length
+      ? [{ options: filtered.map((m: ModelSpec) => ({ value: m.id, label: `[${PROVIDER_LABEL[m.provider]}] ${m.label}` })) }]
+      : []),
+  ];
+
+  // The capability view covers the models these roles run (voice runs on
+  // ElevenLabs, so it has no OpenRouter row).
+  const used: Array<[RoleId, string]> = (
+    [
+      ["chat", modelId],
+      ["background", backgroundModelId],
+      ["vision", visionModelId],
+    ] as Array<[RoleId, string]>
+  ).filter(([, id]) => id !== AUTO_MODEL_ID);
+  const usedKey = used.map(([, id]) => id).join("|");
+  const [caps, setCaps] = useState<ModelCaps[]>([]);
+  useEffect(() => {
+    let alive = true;
+    void loadModelCaps([...new Set(used.map(([, id]) => id))]).then((c) => alive && setCaps(c));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usedKey]);
+  const view = capsView();
+  const capsOf = (id: string) => caps.find((c) => c.id === id);
+
+  const rows: Array<{ role: RoleId; value: string; onChange: (v: string) => void; groups: MenuGroup[]; mono?: boolean }> = [
+    {
+      role: "chat",
+      value: modelId,
+      onChange: (v) => {
+        setModelId(v);
+        setAssistantModelId(v);
+      },
+      groups: groups(true),
+    },
+    { role: "background", value: backgroundModelId, onChange: setBackgroundModelId, groups: groups(false) },
+    { role: "vision", value: visionModelId, onChange: setVisionModelId, groups: groups(false) },
+    { role: "voice", value: voiceLlm, onChange: saveVoiceLlm, groups: VOICE_GROUPS, mono: true },
+  ];
+
+  return (
+    <section className="space-y-2">
+      <SectionHead
+        title="Models"
+        hint="One model per role, from the live OpenRouter list."
+        right={
+          <Button size="sm" variant="outline" onClick={() => refreshCatalog()} disabled={catalogRefreshing}>
+            {catalogRefreshing ? "Refreshing…" : `Refresh (${catalog.length})`}
+          </Button>
+        }
+      />
+      <Input type="search" placeholder="Search models…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      {rows.map((r) => {
+        const c = view === "inline" && r.role !== "voice" ? capsOf(r.value) : undefined;
+        return (
+          <div key={r.role} className="flex items-start justify-between gap-3">
+            <span className="text-[12px] text-foreground/90 shrink-0 pt-1.5">{ROLE_LABEL[r.role]}</span>
+            <div className="min-w-0 flex-1 max-w-[62%] space-y-1">
+              <MenuSelect
+                value={r.value}
+                onChange={r.onChange}
+                mono={r.mono}
+                triggerLabel={r.role === "voice" ? undefined : labelOf(r.value)}
+                emptyHint={search ? `No models match "${search}"` : undefined}
+                groups={r.groups}
+              />
+              {c && <CapsLine caps={c} />}
+            </div>
+          </div>
+        );
+      })}
+      {view !== "inline" && caps.length > 0 && (
+        <CapsTable caps={caps} name={(id) => (id === AUTO_MODEL_ID ? id : shortName(labelOf(id).replace(/^\[[^\]]+\]\s*/, "")))} fold={view === "fold"} />
+      )}
+      {Object.entries(catalogErrors).length > 0 && (
+        <p className="text-[11px] text-amber-500/90">
+          {Object.entries(catalogErrors)
+            .map(([p, msg]) => `${p}: ${msg}`)
+            .join(" · ")}
+        </p>
+      )}
+      {modelId === AUTO_MODEL_ID && hasOpenRouter && (
+        <div className="rounded-md border border-border/60 bg-accent/20 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[11.5px] font-medium text-foreground">Auto cost ⇄ quality</span>
+            <span className="text-[11px] tabular-nums text-muted-foreground">
+              {autoRouterCostBias <= 3 ? "Quality" : autoRouterCostBias >= 8 ? "Cheapest" : "Balanced"} ({autoRouterCostBias}/10)
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={10}
+            step={1}
+            value={autoRouterCostBias}
+            onChange={(e) => setAutoRouterCostBias(Number(e.target.value))}
+            className="w-full accent-primary"
+          />
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[12px] text-foreground/90">Reasoning effort</span>
+        <select
+          className="vc-select shrink-0 text-[12px] rounded-md border border-border bg-background px-2 py-1"
+          value={reasoningEffort}
+          onChange={(e) => setReasoningEffort(e.target.value as typeof reasoningEffort)}
+        >
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+    </section>
+  );
+}
+
+const CAP_LABEL: Record<CapKey, string> = { tools: "tools", images: "images", pdf: "pdf", caching: "caching", helpers: "helpers" };
+
+function Mark({ v }: { v: boolean | undefined }) {
+  if (v === true) return <Check className="h-3 w-3 text-foreground/70 inline" />;
+  if (v === false) return <span className="text-muted-foreground/40">–</span>;
+  return <span className="text-muted-foreground/50">?</span>;
+}
+
+/** Option A (table) and C (fold): one compact row per model in use. */
+function CapsTable({ caps, name, fold }: { caps: ModelCaps[]; name: (id: string) => string; fold: boolean }) {
+  const table = (
+    <div className="rounded-md border border-border/60 text-[11px]">
+      <div className="grid grid-cols-[minmax(0,1fr)_repeat(5,3.25rem)_3.75rem] items-center px-2.5 py-1 text-[10px] text-muted-foreground/70 border-b border-border/40">
+        <span />
+        {CAP_KEYS.map((k) => (
+          <span key={k} className="text-center">
+            {CAP_LABEL[k]}
+          </span>
+        ))}
+        <span className="text-right">source</span>
+      </div>
+      {caps.map((c) => (
+        <div key={c.id} className="grid grid-cols-[minmax(0,1fr)_repeat(5,3.25rem)_3.75rem] items-center px-2.5 py-1" title={c.id}>
+          <span className="truncate text-foreground/90">{name(c.id)}</span>
+          {CAP_KEYS.map((k) => (
+            <span key={k} className="text-center">
+              <Mark v={c.caps[k]} />
+            </span>
+          ))}
+          <span className="text-right text-muted-foreground">{c.source}</span>
+        </div>
+      ))}
+    </div>
+  );
+  if (!fold) return table;
+  const untested = caps.filter((c) => c.source === "untested").length;
+  return (
+    <details className="group">
+      <summary className="flex items-center justify-between cursor-pointer list-none text-[12px] text-foreground/90 py-0.5">
+        <span>Capabilities</span>
+        <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          {caps.length} model{caps.length === 1 ? "" : "s"}
+          {untested > 0 && ` · ${untested} untested`}
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/60 group-open:rotate-180 transition-transform" />
+        </span>
+      </summary>
+      <div className="pt-1.5">{table}</div>
+    </details>
+  );
+}
+
+/** Option B (inline): one quiet line under each role's picker. */
+function CapsLine({ caps }: { caps: ModelCaps }) {
+  return (
+    <p className="text-[10.5px] text-muted-foreground/70 px-0.5">
+      {CAP_KEYS.map((k, i) => {
+        const v = caps.caps[k];
+        return (
+          <span key={k}>
+            {i > 0 && " · "}
+            <span className={v === true ? "text-foreground/75" : v === false ? "line-through text-muted-foreground/40" : "text-muted-foreground/50"}>
+              {CAP_LABEL[k]}
+              {v === undefined && "?"}
+            </span>
+          </span>
+        );
+      })}
+      <span className="text-muted-foreground/50"> — {caps.source}</span>
+    </p>
+  );
+}
+
+// ---- Keys --------------------------------------------------------------------
+
+function KeyRow({
+  label,
+  value,
+  placeholder,
+  onSave,
+  onClear,
+}: {
+  label: string;
+  value?: string;
+  placeholder: string;
+  onSave: (v: string) => void;
+  onClear: () => void;
+}) {
+  const [draft, setDraft] = useState(value ?? "");
+  const [saved, setSaved] = useState(false);
+  // Keys hydrate from the keychain after mount; keep the dots in step.
+  useEffect(() => setDraft(value ?? ""), [value]);
+  const save = () => {
+    const v = draft.trim();
+    if (!v) return;
+    onSave(v);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
+  };
+  return (
+    <div className="flex items-start gap-3">
+      <div className="w-24 shrink-0 pt-1">
+        <div className="text-[12px] text-foreground/90">{label}</div>
+        {saved ? (
+          <div className="text-[10.5px] text-emerald-500 flex items-center gap-1">
+            <Check className="h-3 w-3" /> saved
+          </div>
+        ) : (
+          <div className="text-[10.5px] text-muted-foreground/70 font-mono truncate">{mask(value)}</div>
+        )}
+      </div>
+      <div className="flex-1 flex gap-2">
+        <Input
+          type="password"
+          placeholder={placeholder}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save();
+          }}
+        />
+        <Button size="sm" onClick={save} disabled={!draft.trim()}>
+          Save
+        </Button>
+        {value && (
+          <Button size="sm" variant="ghost" onClick={onClear} title="Remove this key from the OS keychain">
+            <X className="h-3 w-3" />
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function KeysSection() {
+  const apiKeys = useStore((s) => s.apiKeys);
+  const serviceKeys = useStore((s) => s.serviceKeys);
+  const setApiKey = useStore((s) => s.setApiKey);
+  const clearApiKey = useStore((s) => s.clearApiKey);
+  const setServiceKey = useStore((s) => s.setServiceKey);
+  const clearServiceKey = useStore((s) => s.clearServiceKey);
+  const refreshCatalog = useStore((s) => s.refreshCatalog);
+
+  const provider = (p: ProviderId) => (
+    <KeyRow
+      key={p}
+      label={PROVIDER_LABEL[p]}
+      value={apiKeys[p]}
+      placeholder={KEY_PLACEHOLDER[p]}
+      onSave={(v) => {
+        setApiKey(p, v);
+        setTimeout(() => refreshCatalog(), 500);
+      }}
+      onClear={() => clearApiKey(p)}
+    />
+  );
+
+  // Service keys: Tavily's fixed slot plus the named keys vault tools ask for.
+  const [names, setNames] = useState<string[]>(() => listUserKeys());
+  const [add, setAdd] = useState<{ name: string; value: string } | null>(null);
+  const saveAdd = async () => {
+    if (!add) return;
+    const n = add.name.trim().replace(/[^\w-]/g, "_");
+    const v = add.value.trim();
+    if (!n || !v) return;
+    if (n.toLowerCase() === "tavily") setServiceKey("tavily", v);
+    else await setUserKey(n, v);
+    setNames(listUserKeys());
+    setAdd(null);
+  };
+  const service: Array<{ name: string; note?: string; remove: () => void }> = [
+    ...(serviceKeys.tavily ? [{ name: "tavily", note: "web search", remove: () => clearServiceKey("tavily") }] : []),
+    ...names.map((n) => ({
+      name: n,
+      remove: async () => {
+        await deleteUserKey(n);
+        setNames(listUserKeys());
+      },
+    })),
+  ];
+
+  return (
+    <section className="space-y-2.5">
+      <SectionHead title="Keys" hint="Kept in this machine's keychain." />
+      {provider("openrouter")}
+      <KeyRow
+        label="ElevenLabs"
+        value={serviceKeys.elevenlabs}
+        placeholder="sk_…"
+        onSave={(v) => setServiceKey("elevenlabs", v)}
+        onClear={() => clearServiceKey("elevenlabs")}
+      />
+      <div className="space-y-1.5 pt-1">
+        <div className="flex items-center justify-between">
+          <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">Service keys</h4>
+          {!add && (
+            <Button size="sm" variant="ghost" onClick={() => setAdd({ name: "", value: "" })} title="Add a key">
+              <Plus className="h-3 w-3" />
+            </Button>
+          )}
+        </div>
+        {add && (
+          <div className="flex gap-2">
+            <Input
+              placeholder="name (e.g. lambda_api_key)"
+              value={add.name}
+              onChange={(e) => setAdd({ ...add, name: e.target.value })}
+              className="flex-[2] font-mono"
+              autoFocus
+            />
+            <Input
+              type="password"
+              placeholder="value"
+              value={add.value}
+              onChange={(e) => setAdd({ ...add, value: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void saveAdd();
+                if (e.key === "Escape") setAdd(null);
+              }}
+              className="flex-[3]"
+            />
+            <Button size="sm" onClick={() => void saveAdd()} disabled={!add.name.trim() || !add.value.trim()}>
+              Save
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setAdd(null)} title="Cancel">
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+        )}
+        {service.length > 0 ? (
+          <ul className="divide-y divide-border/40 rounded-md border border-border/60">
+            {service.map((k) => (
+              <li key={k.name} className="flex items-center justify-between px-3 py-1 text-[12px]">
+                <span className="font-mono text-foreground/90">
+                  {k.name}
+                  {k.note && <span className="ml-2 font-sans text-[10.5px] text-muted-foreground">{k.note}</span>}
+                </span>
+                <Button size="sm" variant="ghost" onClick={k.remove} title="Remove">
+                  <X className="h-3 w-3" />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          !add && <p className="text-[11px] text-muted-foreground/60 italic">No service keys yet.</p>
+        )}
+        <p className="text-[11px] text-muted-foreground/80">
+          Vault tools get these as environment variables (
+          <code className="font-mono bg-muted px-1 rounded text-[10.5px]">requires_keys</code> in TOOL.md). On this
+          machine the agent's shell can still read the keychain.
+        </p>
+      </div>
+      <details className="group">
+        <summary className="flex items-center justify-between cursor-pointer list-none text-[12px] text-foreground/90 py-0.5">
+          <span>Other providers (optional)</span>
+          <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            {(() => {
+              const n = (["anthropic", "openai", "google"] as ProviderId[]).filter((p) => apiKeys[p]).length;
+              return n ? `${n} set` : "";
+            })()}
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/60 group-open:rotate-180 transition-transform" />
+          </span>
+        </summary>
+        <div className="space-y-2.5 pt-2">{(["anthropic", "openai", "google"] as ProviderId[]).map(provider)}</div>
+      </details>
+    </section>
+  );
+}
+
+// ---- Voice -------------------------------------------------------------------
+
+function VoiceSection() {
+  const vaultPath = useStore((s) => s.vaultPath);
+  const hasKey = useStore((s) => !!s.serviceKeys.elevenlabs);
+  const [voiceId, setVoiceId] = useState(
+    localStorage.getItem("vault_chat_elevenlabs_voice") ?? "nPczCjzI2devNBz1zQrb",
+  );
+  const [library, setLibrary] = useState<SavedVoice[]>(() => {
+    const cached = readVoiceLibraryCache();
+    return cached.length ? cached : DEFAULT_VOICES;
+  });
+  // The saved voices are git-synced via <vault>/.vault-chat/voices.json. On
+  // open, load them from the vault; if the vault has none yet, seed it from
+  // what's local so it starts syncing.
+  useEffect(() => {
+    if (!vaultPath) return;
+    let cancelled = false;
+    (async () => {
+      const fromVault = await readVoiceLibrary(vaultPath);
+      if (cancelled) return;
+      if (fromVault) setLibrary(fromVault);
+      else await writeVoiceLibrary(vaultPath, library);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vaultPath]);
+  const pickerRef = useRef<HTMLDetailsElement | null>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const el = pickerRef.current;
+      if (el?.open && e.target instanceof Node && !el.contains(e.target)) el.open = false;
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+  const [newName, setNewName] = useState("");
+  const [newId, setNewId] = useState("");
+
+  const choose = (id: string) => {
+    const v = id.trim();
+    if (!v) return;
+    localStorage.setItem("vault_chat_elevenlabs_voice", v);
+    setVoiceId(v);
+    if (pickerRef.current) pickerRef.current.open = false;
+  };
+  const addVoice = () => {
+    const name = newName.trim();
+    const id = newId.trim();
+    if (!name || !id) return;
+    const next = [...library.filter((v) => v.id !== id), { name, id }];
+    setLibrary(next);
+    void writeVoiceLibrary(vaultPath, next);
+    setNewName("");
+    setNewId("");
+    choose(id);
+  };
+  const removeVoice = (id: string) => {
+    const next = library.filter((v) => v.id !== id);
+    setLibrary(next);
+    void writeVoiceLibrary(vaultPath, next);
+  };
+
+  return (
+    <section className="space-y-2">
+      <SectionHead
+        title="Voice"
+        hint={hasKey ? "The voice ElevenLabs speaks with. The voice model is under Models." : "Needs an ElevenLabs key (Keys)."}
+      />
+      <details ref={pickerRef} className="w-full rounded-md border border-input bg-background group">
+        <summary className="h-8 px-2.5 flex items-center justify-between cursor-pointer text-[12px] font-mono list-none">
+          <span className="truncate">
+            {library.find((v) => v.id === voiceId)?.name ?? "(unsaved)"}
+            <span className="ml-2 text-muted-foreground/60">{voiceId}</span>
+          </span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60 group-open:rotate-180 transition-transform" />
+        </summary>
+        <div className="border-t border-border max-h-48 overflow-y-auto">
+          {library.length === 0 && (
+            <div className="px-2 py-2 text-[11px] text-muted-foreground/70">No saved voices yet. Add one below.</div>
+          )}
+          {library.map((v) => (
+            <div
+              key={v.id}
+              className={`flex items-center justify-between px-2 py-1.5 text-[12px] cursor-pointer hover:bg-muted/40 ${v.id === voiceId ? "bg-muted/60" : ""}`}
+              onClick={() => choose(v.id)}
+            >
+              <span className="truncate flex-1">
+                <span className="font-medium text-foreground/90">{v.name}</span>
+                <span className="ml-2 font-mono text-muted-foreground/60">{v.id}</span>
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeVoice(v.id);
+                }}
+                title="Remove from library"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      </details>
+      <div className="flex gap-2">
+        <Input type="text" placeholder="Name (e.g. Rachel)" value={newName} onChange={(e) => setNewName(e.target.value)} className="flex-[2]" />
+        <Input
+          type="text"
+          placeholder="Voice ID"
+          value={newId}
+          onChange={(e) => setNewId(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") addVoice();
+          }}
+          className="flex-[3] font-mono"
+        />
+        <Button size="sm" onClick={addVoice} disabled={!newName.trim() || !newId.trim()}>
+          Add
+        </Button>
+      </div>
+      <p className="text-[11px] text-muted-foreground/80">Voice IDs are on elevenlabs.io/app/voice-library.</p>
+    </section>
+  );
+}
+
+// ---- Safety, Appearance ------------------------------------------------------
+
+function SafetySection() {
+  const strictVaultMode = useStore((s) => s.strictVaultMode);
+  const bashDisabled = useStore((s) => s.bashDisabled);
+  const setStrictVaultMode = useStore((s) => s.setStrictVaultMode);
+  const setBashDisabled = useStore((s) => s.setBashDisabled);
+  const toggle = (checked: boolean, set: (v: boolean) => void, title: string, hint: string) => (
+    <label className="flex items-start gap-2.5 cursor-pointer">
+      <input type="checkbox" className="vc-checkbox mt-0.5" checked={checked} onChange={(e) => set(e.target.checked)} />
+      <div className="flex-1">
+        <div className="text-[12px]">{title}</div>
+        <p className="text-[11px] text-muted-foreground/80">{hint}</p>
+      </div>
+    </label>
+  );
+  return (
+    <section className="space-y-3">
+      <SectionHead title="Safety" hint="Limit what the agent can touch." />
+      {toggle(
+        strictVaultMode,
+        setStrictVaultMode,
+        "Strict vault mode",
+        "File tools refuse paths outside this vault. Turns Bash off too, since the shell would get around it.",
+      )}
+      {toggle(bashDisabled, setBashDisabled, "Disable Bash", "Removes the shell tool from the agent.")}
+    </section>
+  );
+}
+
+function AppearanceSection() {
+  const theme = useStore((s) => s.theme);
+  const setTheme = useStore((s) => s.setTheme);
+  return (
+    <section className="space-y-2">
+      <SectionHead title="Appearance" />
+      <MenuSelect
+        value={theme}
+        onChange={(v) => setTheme(v as "graphite" | "light")}
+        groups={[
+          {
+            options: [
+              { value: "graphite", label: "Graphite (default)" },
+              { value: "light", label: "Light" },
+            ],
+          },
+        ]}
+      />
+    </section>
+  );
+}
+
+// ---- Box ---------------------------------------------------------------------
+
+function BoxSection() {
   const vaultPath = useStore((s) => s.vaultPath);
   const [config, setConfig] = useState<VaultSyncConfig | null>(null);
+  const [box, setBox] = useState<BoxConfig | null>(null);
+  useEffect(() => {
+    if (!vaultPath) {
+      setConfig(null);
+      setBox(null);
+      return;
+    }
+    let cancelled = false;
+    void readVaultSyncConfig(vaultPath).then((c) => !cancelled && setConfig(c));
+    void readBoxConfig(vaultPath).then((b) => !cancelled && setBox(b));
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultPath]);
+
+  return (
+    <section className="space-y-3">
+      <SectionHead
+        title="Box"
+        hint={
+          !vaultPath || !config
+            ? "Open a vault to see its sync."
+            : box
+              ? "This vault syncs with the box: this laptop writes master, the box writes box."
+              : "No box for this vault. It syncs with its git remote."
+        }
+      />
+      {vaultPath && config && (box ? <BoxSyncPanel vault={vaultPath} box={box} /> : <GitSync vault={vaultPath} config={config} setConfig={setConfig} />)}
+      <PhoneLink />
+    </section>
+  );
+}
+
+/** A vault without a box: the plain git-remote loop. */
+function GitSync({ vault, config, setConfig }: { vault: string; config: VaultSyncConfig; setConfig: (c: VaultSyncConfig) => void }) {
   const [remoteDraft, setRemoteDraft] = useState("");
   const [snapshot, setSnapshot] = useState({
     lastSyncedAt: null as number | null,
@@ -961,342 +791,111 @@ function VaultSyncSection() {
   const [busy, setBusy] = useState(false);
   const [repoNameDraft, setRepoNameDraft] = useState("");
   const [creatingRepo, setCreatingRepo] = useState(false);
-  // Machine-local single-firer gate (localStorage, not synced config).
-  const [fireHere, setFireHere] = useState(true);
-  // Machine-local "run in background" daemon toggle (close-to-tray + autostart).
-  const [runBg, setRunBg] = useState(false);
-  // sync.json names a box → the box sync replaces the remote/interval controls.
-  const [box, setBox] = useState<BoxConfig | null>(null);
-
+  useEffect(() => subscribeSyncStatus(setSnapshot), []);
   useEffect(() => {
-    setFireHere(fireSchedulesOnThisMachine());
-    setRunBg(isRunInBackground());
-  }, []);
-
-  useEffect(() => {
-    if (!vaultPath) {
-      setConfig(null);
-      return;
-    }
-    let cancelled = false;
-    void readVaultSyncConfig(vaultPath).then((c) => {
-      if (cancelled) return;
-      setConfig(c);
-    });
-    void readBoxConfig(vaultPath).then((b) => {
-      if (!cancelled) setBox(b);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [vaultPath]);
-
-  useEffect(() => {
-    const unsub = subscribeSyncStatus((snap) => {
-      setSnapshot(snap);
-      if (snap.remote && remoteDraft === "") {
-        setRemoteDraft(snap.remote);
-      }
-    });
-    return unsub;
-  }, [remoteDraft]);
-
-  useEffect(() => {
-    if (snapshot.remote && !remoteDraft) {
-      setRemoteDraft(snapshot.remote);
-    }
+    if (snapshot.remote && !remoteDraft) setRemoteDraft(snapshot.remote);
   }, [snapshot.remote, remoteDraft]);
 
-  if (!vaultPath || !config) {
-    return (
-      <section className="space-y-2">
-        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-          <RefreshCw className="h-3 w-3" />
-          Vault sync (this vault)
-        </h3>
-        <p className="text-[11.5px] text-muted-foreground/80">
-          Open a vault to configure auto-sync.
-        </p>
-      </section>
-    );
-  }
-
   const toggleEnabled = async (next: boolean) => {
-    const updated = await writeVaultSyncConfig(vaultPath, { enabled: next });
-    setConfig(updated);
-    if (next) {
-      await startVaultSyncLoop(vaultPath);
-    } else {
-      stopVaultSyncLoop(vaultPath);
-    }
+    setConfig(await writeVaultSyncConfig(vault, { enabled: next }));
+    if (next) await startVaultSyncLoop(vault);
+    else stopVaultSyncLoop(vault);
   };
-
-  const saveRemote = async () => {
+  const withBusy = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     try {
-      await setVaultRemote(vaultPath, remoteDraft.trim());
-      if (config.enabled) await startVaultSyncLoop(vaultPath);
+      await fn();
     } catch (e) {
-      console.warn("[vault-sync] set remote failed:", e);
+      console.warn("[vault-sync]", e);
     } finally {
       setBusy(false);
     }
   };
-
-  const saveIntervals = async (patch: Partial<VaultSyncConfig>) => {
-    const next = await writeVaultSyncConfig(vaultPath, patch);
-    setConfig(next);
-    if (next.enabled) await startVaultSyncLoop(vaultPath);
-  };
-
-  const forcePull = async () => {
-    setBusy(true);
-    try {
-      await vaultPull(vaultPath);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const forcePush = async () => {
-    setBusy(true);
-    try {
-      await vaultCommitLocal(vaultPath);
-      await vaultPush(vaultPath);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const createGhRepo = async () => {
-    const name = repoNameDraft.trim();
-    if (!name) return;
-    setBusy(true);
-    try {
-      const result = await vaultGhCreateRepo(vaultPath, name, true);
-      if (result.ok) {
-        setRepoNameDraft("");
-        setCreatingRepo(false);
-        if (config.enabled) await startVaultSyncLoop(vaultPath);
-      } else {
-        console.warn("[vault-sync] gh repo create:", result.message);
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
+  const saveRemote = () =>
+    withBusy(async () => {
+      await setVaultRemote(vault, remoteDraft.trim());
+      if (config.enabled) await startVaultSyncLoop(vault);
+    });
+  const createGhRepo = () =>
+    withBusy(async () => {
+      const name = repoNameDraft.trim();
+      if (!name) return;
+      const result = await vaultGhCreateRepo(vault, name, true);
+      if (!result.ok) return console.warn("[vault-sync] gh repo create:", result.message);
+      setRepoNameDraft("");
+      setCreatingRepo(false);
+      if (config.enabled) await startVaultSyncLoop(vault);
+    });
 
   return (
-    <section className="space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-            <RefreshCw className="h-3 w-3" />
-            Vault sync (this vault)
-          </h3>
-          <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
-            {box
-              ? "Syncs with the box (from .vault-chat/sync.json): this laptop writes master, the box writes box."
-              : "Continuous auto-commit + push + pull against the vault's git remote."}
-          </p>
-        </div>
-        {!box && (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[12px] text-foreground/90">Auto-sync</span>
         <label className="flex items-center gap-2 shrink-0 cursor-pointer">
-          <span className="text-[10.5px] text-muted-foreground">
-            {config.enabled ? "on" : "off"}
-          </span>
-          <input
-            type="checkbox"
-            className="vc-checkbox"
-            checked={config.enabled}
-            onChange={(e) => toggleEnabled(e.target.checked)}
-          />
-        </label>
-        )}
-      </div>
-      {!box && (
-      <div className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
-        <div>
-          <div className="text-[11.5px] font-medium text-foreground/90">
-            Fire scheduled tasks on this machine
-          </div>
-          <p className="text-[10.5px] text-muted-foreground/80 mt-0.5">
-            Turn off on a secondary machine (e.g. a laptop sharing this
-            vault with an always-on box) so a daily schedule doesn't fire
-            twice. Machine-local — not synced. Leave one machine on.
-          </p>
-        </div>
-        <label className="flex items-center gap-2 shrink-0 cursor-pointer">
-          <span className="text-[10.5px] text-muted-foreground">
-            {fireHere ? "on" : "off"}
-          </span>
-          <input
-            type="checkbox"
-            className="vc-checkbox"
-            checked={fireHere}
-            onChange={(e) => {
-              setFireSchedulesOnThisMachine(e.target.checked);
-              setFireHere(e.target.checked);
-            }}
-          />
+          <span className="text-[10.5px] text-muted-foreground">{config.enabled ? "on" : "off"}</span>
+          <input type="checkbox" className="vc-checkbox" checked={config.enabled} onChange={(e) => toggleEnabled(e.target.checked)} />
         </label>
       </div>
+      <div className="flex gap-2">
+        <Input
+          type="text"
+          value={remoteDraft}
+          onChange={(e) => setRemoteDraft(e.target.value)}
+          placeholder="git@github.com:user/repo.git"
+          className="font-mono text-[11.5px]"
+        />
+        <Button size="sm" onClick={saveRemote} disabled={busy}>
+          Save
+        </Button>
+      </div>
+      {!snapshot.remote && !creatingRepo && (
+        <button onClick={() => setCreatingRepo(true)} className="text-[10.5px] text-muted-foreground/80 hover:text-foreground underline">
+          Create on GitHub (gh repo create)
+        </button>
       )}
-      <div className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
-        <div>
-          <div className="text-[11.5px] font-medium text-foreground/90">
-            Run in background
-          </div>
-          <p className="text-[10.5px] text-muted-foreground/80 mt-0.5">
-            Keep vault-chat alive as an always-on daemon: closing the window
-            hides it to the tray instead of quitting, and the app starts at
-            login. Schedules and the supervisor keep running while hidden —
-            turn this on for the machine you want watching your long tasks.
-            Machine-local; quit from the tray icon.
-          </p>
-        </div>
-        <label className="flex items-center gap-2 shrink-0 cursor-pointer">
-          <span className="text-[10.5px] text-muted-foreground">
-            {runBg ? "on" : "off"}
-          </span>
-          <input
-            type="checkbox"
-            className="vc-checkbox"
-            checked={runBg}
-            onChange={(e) => {
-              const on = e.target.checked;
-              setRunBg(on);
-              void setRunInBackground(on);
-            }}
+      {creatingRepo && (
+        <div className="flex gap-2">
+          <Input
+            type="text"
+            value={repoNameDraft}
+            onChange={(e) => setRepoNameDraft(e.target.value)}
+            placeholder="repo name (e.g. school)"
+            className="font-mono text-[11.5px]"
           />
-        </label>
-      </div>
-      {box ? (
-        <BoxSyncPanel vault={vaultPath} box={box} />
-      ) : (
-      <div className="space-y-2">
-        <div className="space-y-1">
-          <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
-            Git remote
-          </label>
-          <div className="flex gap-2">
-            <Input
-              type="text"
-              value={remoteDraft}
-              onChange={(e) => setRemoteDraft(e.target.value)}
-              placeholder="git@github.com:user/repo.git"
-              className="font-mono text-[11.5px]"
-            />
-            <Button size="sm" onClick={saveRemote} disabled={busy}>
-              Save
-            </Button>
-          </div>
-          {!snapshot.remote && !creatingRepo && (
-            <button
-              onClick={() => setCreatingRepo(true)}
-              className="text-[10.5px] text-muted-foreground/80 hover:text-foreground underline"
-            >
-              Create on GitHub (gh repo create)
-            </button>
-          )}
-          {creatingRepo && (
-            <div className="flex gap-2 pt-1">
-              <Input
-                type="text"
-                value={repoNameDraft}
-                onChange={(e) => setRepoNameDraft(e.target.value)}
-                placeholder="repo name (e.g. school)"
-                className="font-mono text-[11.5px]"
-              />
-              <Button size="sm" onClick={createGhRepo} disabled={busy || !repoNameDraft.trim()}>
-                Create
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setCreatingRepo(false);
-                  setRepoNameDraft("");
-                }}
-              >
-                Cancel
-              </Button>
-            </div>
-          )}
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="space-y-1">
-            <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
-              Pull every
-            </label>
-            <div className="flex items-center gap-1">
-              <Input
-                type="number"
-                min={5}
-                value={config.pullIntervalSec}
-                onChange={(e) =>
-                  saveIntervals({
-                    pullIntervalSec: Math.max(5, Number(e.target.value) || DEFAULT_SYNC_CONFIG.pullIntervalSec),
-                  })
-                }
-                className="flex-1 tabular-nums"
-              />
-              <span className="text-[10.5px] text-muted-foreground">seconds</span>
-            </div>
-          </div>
-          <div className="space-y-1">
-            <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
-              Push after
-            </label>
-            <div className="flex items-center gap-1">
-              <Input
-                type="number"
-                min={1}
-                value={config.pushDebounceSec}
-                onChange={(e) =>
-                  saveIntervals({
-                    pushDebounceSec: Math.max(1, Number(e.target.value) || DEFAULT_SYNC_CONFIG.pushDebounceSec),
-                  })
-                }
-                className="flex-1 tabular-nums"
-              />
-              <span className="text-[10.5px] text-muted-foreground">seconds quiet</span>
-            </div>
-          </div>
-        </div>
-        {snapshot.nestedRepos.length > 0 && (
-          <div className="text-[10.5px] text-muted-foreground/80 pt-1">
-            Nested git repos in this vault sync independently against their own remotes:{" "}
-            {snapshot.nestedRepos.map((n, i) => (
-              <span key={n}>
-                {i > 0 && ", "}
-                <span className="font-mono text-foreground/85">{n}</span>
-              </span>
-            ))}{" "}
-            (skipped)
-          </div>
-        )}
-        <div className="pt-1 flex items-center gap-2 flex-wrap">
-          <SyncStatusRow snapshot={snapshot} enabled={config.enabled} />
-          <span className="text-[10.5px] text-muted-foreground/70">·</span>
-          <button
-            onClick={forcePull}
-            disabled={busy || !snapshot.remote}
-            className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
+          <Button size="sm" onClick={createGhRepo} disabled={busy || !repoNameDraft.trim()}>
+            Create
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setCreatingRepo(false);
+              setRepoNameDraft("");
+            }}
           >
-            force pull
-          </button>
-          <button
-            onClick={forcePush}
-            disabled={busy || !snapshot.remote}
-            className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            force push
-          </button>
+            Cancel
+          </Button>
         </div>
-      </div>
       )}
-    </section>
+      <div className="flex items-center gap-2 flex-wrap">
+        <SyncStatusRow snapshot={snapshot} enabled={config.enabled} />
+        <span className="text-[10.5px] text-muted-foreground/70">·</span>
+        <button
+          onClick={() => withBusy(() => vaultPull(vault))}
+          disabled={busy || !snapshot.remote}
+          className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          force pull
+        </button>
+        <button
+          onClick={() => withBusy(async () => (await vaultCommitLocal(vault), await vaultPush(vault)))}
+          disabled={busy || !snapshot.remote}
+          className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          force push
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -1363,7 +962,6 @@ function BoxSyncPanel({ vault, box }: { vault: string; box: BoxConfig }) {
           r.github_warning ? "failing (see details below)" : r.github_pushed_at ? ago(r.github_pushed_at) : "no github remote, or not yet",
           r.github_warning ? "warn" : undefined,
         )}
-      {row("Missions", "run on the box; messages and approvals from here relay to it")}
       {(r?.error || r?.github_warning) && (
         <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-relaxed text-muted-foreground pt-1">
           {[r?.error, r?.github_warning].filter(Boolean).join("\n\n")}
@@ -1464,176 +1062,43 @@ function relativeAgo(ts: number): string {
   return `${day}d`;
 }
 
-function KeystoreSection() {
-  const vaultPath = useStore((s) => s.vaultPath);
-  const [hasPass, setHasPass] = useState(false);
-  const [passDraft, setPassDraft] = useState("");
-  const [hasEnc, setHasEnc] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const { getPassphrase, hasKeystore } = await import("./keystore");
-      const p = await getPassphrase();
-      const enc = vaultPath ? await hasKeystore(vaultPath) : false;
-      if (!cancelled) {
-        setHasPass(!!p);
-        setHasEnc(enc);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [vaultPath]);
-
-  const savePass = async () => {
-    const p = passDraft.trim();
-    if (!p) return;
-    try {
-      const { setPassphrase } = await import("./keystore");
-      await setPassphrase(p);
-      setHasPass(true);
-      setPassDraft("");
-      setMsg("passphrase saved on this machine");
-    } catch (e) {
-      // Never fail silently — a dead "Save" with no message is exactly what made
-      // the headless-box secret bug so hard to spot.
-      setMsg(`couldn't save passphrase: ${String(e)}`);
-    }
-  };
-
-  const run = async (which: "push" | "pull") => {
-    if (!vaultPath) return;
-    setBusy(true);
-    setMsg(null);
-    const mod = await import("./keystore");
-    const r =
-      which === "push" ? await mod.exportKeys(vaultPath) : await mod.importKeys(vaultPath);
-    setMsg(r.message);
-    if (which === "push" && r.ok) setHasEnc(true);
-    setBusy(false);
-  };
-
-  return (
-    <section className="space-y-3">
-      <div>
-        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-          <Lock className="h-3 w-3" />
-          Key sync across machines
-        </h3>
-        <p className="text-[11.5px] text-muted-foreground/80 mt-0.5 leading-relaxed">
-          Encrypt your keys into the vault so another machine inherits them with
-          one passphrase. The blob (<code className="font-mono">keys.enc</code>) is
-          git-synced; the passphrase never leaves this machine.
-        </p>
-      </div>
-      <div className="space-y-2">
-        <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
-          Passphrase (this machine)
-        </label>
-        <div className="flex gap-2">
-          <Input
-            type="password"
-            value={passDraft}
-            onChange={(e) => setPassDraft(e.target.value)}
-            placeholder={hasPass ? "•••••• (set — re-enter to change)" : "choose a passphrase"}
-            className="font-mono"
-          />
-          <Button size="sm" onClick={savePass} disabled={!passDraft.trim()}>
-            Save
-          </Button>
-        </div>
-        <div className="flex gap-2 pt-1">
-          <Button
-            size="sm"
-            onClick={() => run("push")}
-            disabled={!hasPass || !vaultPath || busy}
-          >
-            Push keys to vault
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => run("pull")}
-            disabled={!hasPass || !hasEnc || busy}
-          >
-            Pull keys now
-          </Button>
-        </div>
-        {msg && <p className="text-[11px] text-muted-foreground pt-0.5">{msg}</p>}
-        {!hasPass && (
-          <p className="text-[10.5px] text-muted-foreground/80">
-            Set the <em>same</em> passphrase on each machine to share keys. New
-            machines auto-pull on vault open.
-          </p>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function PhoneLinkRow({ link }: { link: string }) {
+function PhoneLink() {
+  const [link, setLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  return (
-    <div className="flex items-center gap-2">
-      <code className="text-[11px] font-mono bg-muted px-2 py-1 rounded truncate flex-1 min-w-0">
-        {link}
-      </code>
-      <button
-        className="text-[11px] px-2.5 py-1 rounded border border-border hover:bg-muted shrink-0"
-        onClick={() => {
-          void navigator.clipboard?.writeText(link);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        }}
-      >
-        {copied ? "copied" : "copy"}
-      </button>
-    </div>
-  );
-}
-
-function PhoneVoiceSection() {
-  const [chatLink, setChatLink] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     void (async () => {
       const { getPhoneChatLink } = await import("./phoneVoice");
       const c = await getPhoneChatLink().catch(() => null);
-      if (alive) setChatLink(c);
+      if (alive) setLink(c);
     })();
     return () => {
       alive = false;
     };
   }, []);
   return (
-    <section className="space-y-2">
-      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-        <Smartphone className="h-3 w-3" />
-        Phone
-      </h3>
-      <p className="text-[11px] text-muted-foreground/70">
-        One link — the full agent on your phone over Tailscale: send messages, watch runs
-        stream, open vault files, stop runs, and start{" "}
-        <span className="font-medium text-muted-foreground">voice</span> from the ☰ menu. Add
-        it to your Home Screen, then enable notifications from the menu for coach check-ins
-        and run-done pings.
-      </p>
-      {chatLink ? (
-        <PhoneLinkRow link={chatLink} />
+    <div className="space-y-1.5">
+      <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">Phone</h4>
+      {link ? (
+        <div className="flex items-center gap-2">
+          <code className="text-[11px] font-mono bg-muted px-2 py-1 rounded truncate flex-1 min-w-0">{link}</code>
+          <button
+            className="text-[11px] px-2.5 py-1 rounded border border-border hover:bg-muted shrink-0"
+            onClick={() => {
+              void navigator.clipboard?.writeText(link);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }}
+          >
+            {copied ? "copied" : "copy"}
+          </button>
+        </div>
       ) : (
-        <p className="text-[11px] text-muted-foreground/60">
-          Link appears once Tailscale is up on this box.
-        </p>
+        <p className="text-[11px] text-muted-foreground/60">The link appears once Tailscale is up.</p>
       )}
-      <p className="text-[11px] text-muted-foreground/60 pt-1">
-        Voice needs an <span className="font-mono">https://</span> link for the phone mic; if
-        it shows <span className="font-mono">http://</span>, enable HTTPS in your Tailscale
-        admin (DNS). <span className="font-mono">http://localhost:8848</span> also works here
-        for a quick test.
+      <p className="text-[11px] text-muted-foreground/70">
+        Open it on your phone and add it to the Home Screen. Voice needs the <span className="font-mono">https://</span> link.
       </p>
-    </section>
+    </div>
   );
 }
