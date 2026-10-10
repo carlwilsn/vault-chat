@@ -8,7 +8,7 @@ import type { SeedCommit } from "../runtime/backend/memgit";
 
 export type Step =
   | { wait: string; timeout?: number }
-  | { click: string; nth?: number; text?: string }
+  | { click: string; nth?: number; text?: string | RegExp }
   | { key: string; target?: string }
   | { type: string; into: string }
   | { sleep: number }

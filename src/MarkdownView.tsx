@@ -26,6 +26,7 @@ import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { fileKind } from "./fileKind";
 import { tryOpenLink } from "./linkNav";
+import { HistoryStrip, HistoryVersionView, useViewingVersion } from "./HistoryInline";
 import { noteEditedFile } from "./commit-controller";
 import { pushViewportContextDebounced } from "./voice-elevenlabs";
 
@@ -526,6 +527,8 @@ export function MarkdownView({ paneId }: Props) {
   // re-run the $$ regex on every keystroke. Cheap to keep this even
   // when not in markdown view; the memo just no-ops.
   const processedMarkdown = useMemo(() => preprocessMarkdownMath(content), [content]);
+  // History style C: a past version shown read-only in this pane.
+  const viewingVersion = useViewingVersion(file);
 
   if (!file) {
     return (
@@ -633,7 +636,10 @@ export function MarkdownView({ paneId }: Props) {
         </div>
       </div>
       )}
-      {showingEditor && kind === "markdown" ? (
+      <HistoryStrip file={file} />
+      {viewingVersion ? (
+        <HistoryVersionView file={file} />
+      ) : showingEditor && kind === "markdown" ? (
         <div className="flex-1 min-h-0">
           <LiveEditor
             value={content}

@@ -404,6 +404,11 @@ export const scenarios: Scenario[] = [
     build: (c) => world(c),
     open: [{ file: NOTE }, { key: "Ctrl+h" }],
   },
+  // ----- P3-history: the readable timeline, three styles (pick one) -----
+  // Each style is chosen by localStorage vault_chat_history_style (modal |
+  // sheet | inline); the default is the modal (A). Every flow below is played
+  // by its steps: Ctrl+H, pick an entry or a version, then Undo / Restore.
+  ...historyScenarios(),
   {
     id: "search",
     title: "Search — what exists today",
@@ -786,3 +791,106 @@ export const scenarios: Scenario[] = [
     open: [...deskOpen(NOTE, "c-spectral"), { sleep: 1500 }],
   },
 ];
+
+// ---- History (P3-history) ------------------------------------------------------
+
+function historyScenarios(): Scenario[] {
+  const STYLE = (v: "modal" | "sheet" | "inline") => ({ vault_chat_history_style: v });
+  const beat = { sleep: 900 } as Step;
+  const ctrlH: Step[] = [{ key: "Ctrl+h" }, { sleep: 1200 }];
+  const SPECTRAL = "notes/spectral-clustering.md";
+  const README = "projects/bitnet-160m/README.md";
+  return [
+    {
+      id: "history-a",
+      title: "History A — timeline modal",
+      group: "History",
+      notes:
+        "Style A: today's modal, tabs Timeline | Notes. The timeline groups saves into sessions (\"Edited daily/2026-10-09.md, …\"), hides the .vault-chat churn (most of the seeded commits), shows the kept mission as one entry, the box session, the undone agent edit struck through, and the restore. Opened with Ctrl+H; Esc closes.",
+      build: (c) => world(c),
+      localStorage: STYLE("modal"),
+      open: [{ file: NOTE }, ...ctrlH, { click: "button", text: /^Edited writeup\.md/ }, beat],
+    },
+    {
+      id: "history-a-undo",
+      title: "History A — undo an agent turn",
+      group: "History",
+      notes: "Style A: Ctrl+H, pick the agent's \"seed 43 rerun\" turn, Undo this change. results.csv goes back to two seeds in one new commit (\"Undo: …\"), the entry is struck through and offers Redo.",
+      build: (c) => world(c),
+      localStorage: STYLE("modal"),
+      open: [{ file: "projects/bitnet-160m/results.csv" }, ...ctrlH, { click: "button", text: /eval\.loss committed/ }, beat, { click: "button", text: /Undo this change/ }, { sleep: 1500 }],
+    },
+    {
+      id: "history-a-redo",
+      title: "History A — redo an undone change",
+      group: "History",
+      notes: "Style A: the agent's spectral-clustering edit was undone yesterday (struck through). Pick it and Redo: the line comes back as one commit.",
+      build: (c) => world(c),
+      localStorage: STYLE("modal"),
+      open: [{ file: SPECTRAL }, ...ctrlH, { click: "button", text: /degree-normalization|^Edited spectral/ }, beat, { click: "button", text: /^Redo$/ }, { sleep: 1500 }],
+    },
+    {
+      id: "history-a-restore",
+      title: "History A — restore a version of a note",
+      group: "History",
+      notes: "Style A, Notes tab on the open note: its versions as a list (one per session, not per save). Pick an older one, see Preview / Diff vs now, Restore this version. The open note reloads with the restored text.",
+      build: (c) => world(c),
+      localStorage: STYLE("modal"),
+      open: [{ file: "notes/scaling-laws.md" }, ...ctrlH, { click: "button", text: "Notes" }, beat, { click: "button", text: /^Your edit.*6d ago/ }, beat, { click: "button", text: "Diff vs now" }, beat, { click: "button", text: /Restore this version/ }, { sleep: 1500 }],
+    },
+    {
+      id: "history-a-mission",
+      title: "History A — a kept mission, and an undo that overlaps later work",
+      group: "History",
+      notes: "Style A: the kept mission is one entry (its 2 steps inside, cost shown). Undo it: results.csv was changed again later, so nothing is undone and the note is listed with its own Restore this version.",
+      build: (c) => world(c),
+      localStorage: STYLE("modal"),
+      open: [{ file: NOTE }, ...ctrlH, { click: "button", text: /^BitNet 160M MVP/ }, beat, { click: "button", text: /Show the mission/ }, beat, { click: "button", text: /Undo this change/ }, { sleep: 1500 }],
+    },
+    {
+      id: "history-b",
+      title: "History B — side sheet on this note",
+      group: "History",
+      notes: "Style B: a 380px sheet like Chats, so the note stays in view. It opens on this note's versions; a click shows the diff vs now under the row; Restore sits on the row (on hover).",
+      build: (c) => world(c),
+      localStorage: STYLE("sheet"),
+      open: [{ file: README }, ...ctrlH, { click: "button", text: /^Agent edit/ }, beat],
+    },
+    {
+      id: "history-b-restore",
+      title: "History B — restore from the sheet",
+      group: "History",
+      notes: "Style B: open the agent's README version, see its diff, then Restore on that row. The open note reloads.",
+      build: (c) => world(c),
+      localStorage: STYLE("sheet"),
+      open: [{ file: "notes/scaling-laws.md" }, ...ctrlH, { click: "button", text: /^Your edit.*6d ago/ }, beat, { click: "button", text: /^Restore$/ }, { sleep: 1500 }],
+    },
+    {
+      id: "history-b-everything",
+      title: "History B — Everything, undo from the sheet",
+      group: "History",
+      notes: "Style B, Everything: the vault's timeline in the sheet. A click opens the entry's notes and Undo under its row.",
+      build: (c) => world(c),
+      localStorage: STYLE("sheet"),
+      open: [{ file: NOTE }, ...ctrlH, { click: "button", text: "Everything" }, beat, { click: "button", text: /eval\.loss committed/ }, beat, { click: "button", text: /Undo this change/ }, { sleep: 1500 }],
+    },
+    {
+      id: "history-c",
+      title: "History C — inline version strip",
+      group: "History",
+      notes: "Style C: Ctrl+H puts a thin version strip above the note (one pill per session). A pill shows that version read-only in the pane: \"Viewing … · Restore · Back to current\". Everything › opens B's sheet for vault-wide entries.",
+      build: (c) => world(c),
+      localStorage: STYLE("inline"),
+      open: [{ file: "notes/scaling-laws.md", mode: "view" }, { sleep: 600 }, ...ctrlH, { click: "button", text: /^6d ago$/ }, beat],
+    },
+    {
+      id: "history-c-restore",
+      title: "History C — restore inline",
+      group: "History",
+      notes: "Style C: pick an older pill, Restore from the Viewing bar; the note shows the restored text and the strip gains a version.",
+      build: (c) => world(c),
+      localStorage: STYLE("inline"),
+      open: [{ file: "notes/scaling-laws.md", mode: "view" }, { sleep: 600 }, ...ctrlH, { click: "button", text: /^6d ago$/ }, beat, { click: "button", text: /^Restore$/ }, { sleep: 1500 }, ...ctrlH],
+    },
+  ];
+}

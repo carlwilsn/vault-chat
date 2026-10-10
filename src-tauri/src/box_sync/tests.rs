@@ -317,7 +317,7 @@ fn files_over_50mb_stay_out_of_git() {
     assert!(rep.big_files.iter().any(|b| b.path == "grows.bin"), "{:?}", rep.big_files);
     assert_eq!(git(&r.laptop, &["show", "HEAD:grows.bin"]), "tiny");
     // The agent's commit path obeys the same rule.
-    let committed = tauri::async_runtime::block_on(crate::git_commit_all(s(&r.laptop), "agent turn".into(), Some(true))).unwrap();
+    let committed = tauri::async_runtime::block_on(crate::git_commit_all(s(&r.laptop), "agent turn".into(), Some(true), None, None, None)).unwrap();
     assert!(committed.is_none(), "nothing committable: {:?}", committed);
     assert_eq!(git(&r.laptop, &["show", "HEAD:grows.bin"]), "tiny");
     // Once it shrinks again, the exclude entry goes away and it syncs.

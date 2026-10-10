@@ -12,7 +12,7 @@ import {
   endElevenLabsSession,
 } from "./voice-elevenlabs";
 import { VoiceCockpit } from "./VoiceCockpit";
-import { HistoryModal } from "./HistoryModal";
+import { HistoryRoot } from "./HistoryInline";
 import { NorthStarModal } from "./NorthStarModal";
 import { MissionControlModal } from "./MissionControlModal";
 import { subscribeBoxSync, type BoxSyncState } from "./vaultSync";
@@ -458,7 +458,7 @@ export function Titlebar() {
         </div>
       </div>
     )}
-    <HistoryModal open={showHistory} onClose={() => setShowHistory(false)} />
+    <HistoryRoot open={showHistory} onClose={() => setShowHistory(false)} />
     <NorthStarModal
       vault={vaultPath}
       open={northStarOpen}

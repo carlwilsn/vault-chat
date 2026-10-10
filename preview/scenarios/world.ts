@@ -339,21 +339,92 @@ export function schedules(now: number): string[] {
   ].map((s) => JSON.stringify(s));
 }
 
-/** Seeded git history: ~3 weeks of autosaves, agent edits and a mission's
- *  commits. "@current" = the file's content in the fixture vault. */
+/** Seeded git history: ~3 weeks shaped like a real vault's (F-history §1.5):
+ *  most commits are app-state churn in .vault-chat/, the rest are sessions of
+ *  a few saves each, agent turns (with their conversation), a box session, a
+ *  kept mission (its branch's own commits inside it), an agent edit that was
+ *  undone, and a restore. Every note ends at its fixture content.
+ *  "@current" = the file's content in the fixture vault; a function derives an
+ *  earlier version from it. `undoes`/`restores` name an earlier seed's `key`. */
 export function history(now: number) {
   const DAY = 24 * HOUR;
   const C = "@current";
+  const NL = "\n";
+  const drop = (needle: string) => (cur: string) =>
+    cur
+      .split(NL)
+      .filter((l) => !l.includes(needle))
+      .join(NL);
+  const add = (line: string) => (cur: string) => cur.replace(/\n*$/, NL) + line + NL;
+  const T = (who: "human" | "agent" | "mission" | "sync", machine = "laptop", extra: string[] = []) =>
+    [`Vault-Chat-Actor: ${who}`, `Vault-Chat-Machine: ${machine}`, ...extra].join(NL);
+  const human = (at: number, changes: Record<string, unknown>, subject = "edit " + Object.keys(changes)[0]) => ({ subject, body: T("human"), at, changes });
+  const agent = (at: number, conv: string, subject: string, changes: Record<string, unknown>) => ({
+    subject: `[agent] ${subject}`,
+    body: T("agent", "laptop", [`Conversation: ${conv}`]),
+    author: "vault-chat-agent",
+    at,
+    changes,
+  });
+  let n = 0;
+  const noise = (at: number) => {
+    const i = n++;
+    const file = ["conversations/c-spectral.jsonl", "schedules.jsonl", "heartbeat.json"][i % 3];
+    return {
+      subject: i % 3 === 2 ? "vault-chat: auto-sync submodule pointers" : "vault-chat: auto-sync",
+      body: T("sync"),
+      at,
+      changes: { [`.vault-chat/${file}`]: `{"tick":${i}}` + NL },
+    };
+  };
+  const churn = (from: number, count: number, every = 4 * MIN) => Array.from({ length: count }, (_, i) => noise(from + i * every));
+  const mup1 = ["# muP — hyperparameter transfer", "", "Tune once on a narrow proxy, transfer up.", ""].join(NL);
+  const mup2 = mup1 + ["", "- LR transfers; init scale must follow the width.", ""].join(NL);
+  const sl1 = ["# Scaling laws — the working picture", "", "Three levers set the loss: parameters $N$, tokens $D$, and compute.", ""].join(NL);
+  const sl2 = sl1 + ["", "- Compute-optimal ratio is about **20 tokens per parameter**.", ""].join(NL);
+  const csv2 = ["seed,tokens,steps,peak_lr,eval_loss,wall_hours,gpu", "42,1.70e9,3240,3.0e-3,1.5576,13.6,A10", "44,1.70e9,3240,3.0e-3,1.5588,13.5,A10", ""].join(NL);
+  const MISSION = ["Mission-Id: bitnet-160m-mvp"];
   return [
     { subject: "vault-chat start", at: now - 21 * DAY, changes: {}, anchor: true },
-    { subject: "autosave", at: now - 20 * DAY, changes: { "notes/mup.md": "# muP — hyperparameter transfer\n\nTune once on a narrow proxy, transfer up.\n" } },
-    { subject: "[agent] add STAT 210 syllabus", author: "vault-chat-agent", at: now - 14 * DAY, changes: { "courses/stat-210/syllabus.md": C } },
-    { subject: "autosave", at: now - 6 * DAY, changes: { "notes/scaling-laws.md": "# Scaling laws — the working picture\n\nThree levers set the loss: parameters $N$, tokens $D$, and compute.\n\n- Compute-optimal ratio is about **20 tokens per parameter**.\n" } },
-    { subject: "autosave", at: now - 3 * DAY, changes: { "notes/mup.md": C } },
-    { subject: "[agent] BitNet 160M MVP: results table (seeds 42, 44)", author: "vault-chat-agent", at: now - 2 * DAY, changes: { "projects/bitnet-160m/results.csv": "seed,tokens,steps,peak_lr,eval_loss,wall_hours,gpu\n42,1.70e9,3240,3.0e-3,1.5576,13.6,A10\n44,1.70e9,3240,3.0e-3,1.5588,13.5,A10\n" } },
-    { subject: "autosave", at: now - 26 * HOUR, changes: { "daily/2026-10-08.md": C, "notes/scaling-laws.md": C } },
-    { subject: "[agent] seed 43 rerun: eval.loss committed", author: "vault-chat-agent", at: now - 2 * HOUR, changes: { "projects/bitnet-160m/results.csv": C } },
-    { subject: "[agent] BitNet writeup draft", body: "mission: BitNet 160M MVP", author: "vault-chat-agent", at: now - 30 * MIN, changes: { "projects/bitnet-160m/writeup.md": C } },
-    { subject: "autosave", at: now - 12 * MIN, changes: { "daily/2026-10-09.md": C, "daily/2026-10-10.md": C } },
+    ...churn(now - 20 * DAY - 2 * HOUR, 6),
+    human(now - 20 * DAY, { "notes/mup.md": mup1 }, "create notes/mup.md"),
+    human(now - 20 * DAY + 3 * MIN, { "notes/mup.md": mup2 }),
+    agent(now - 14 * DAY, "c-ps3", "add STAT 210 syllabus", { "courses/stat-210/syllabus.md": C }),
+    ...churn(now - 14 * DAY + 10 * MIN, 8),
+    human(now - 10 * DAY, { "notes/spectral-clustering.md": drop("Normalizing by degree") }, "create notes/spectral-clustering.md"),
+    human(now - 6 * DAY, { "notes/scaling-laws.md": sl1 }),
+    noise(now - 6 * DAY + 2 * MIN),
+    human(now - 6 * DAY + 4 * MIN, { "notes/scaling-laws.md": sl2 }),
+    human(now - 6 * DAY + 7 * MIN, { "reading/chinchilla.md": C }),
+    ...churn(now - 5 * DAY, 10, 9 * MIN),
+    human(now - 3 * DAY, { "notes/mup.md": C }),
+    // The mission's branch, then its keep: one entry, its steps inside it.
+    { key: "plan", subject: "mission: plan", body: T("mission", "box", MISSION), author: "vault-chat-agent", at: now - 2 * DAY - 5 * HOUR, changes: { "projects/bitnet-160m/README.md": C }, mission: true },
+    { subject: "mission: seeds 42 and 44", body: T("mission", "box", MISSION), author: "vault-chat-agent", at: now - 2 * DAY - 2 * HOUR, changes: { "projects/bitnet-160m/results.csv": csv2, "projects/bitnet-160m/train.py": C }, mission: true },
+    { subject: "Mission: BitNet 160M MVP — two seeds", body: T("mission", "box", [...MISSION, "Cost-Usd: 3.40"]), author: "vault-chat-agent", at: now - 2 * DAY, changes: {}, merge: true },
+    ...churn(now - 2 * DAY + 5 * MIN, 12, 7 * MIN),
+    human(now - 30 * HOUR, { "projects/bitnet-160m/writeup.md": (cur: string) => cur.split(NL).slice(0, 8).join(NL) + NL }, "create projects/bitnet-160m/writeup.md"),
+    human(now - 26 * HOUR, { "daily/2026-10-08.md": C }),
+    noise(now - 26 * HOUR + MIN),
+    human(now - 26 * HOUR + 5 * MIN, { "notes/scaling-laws.md": C }),
+    // An agent edit Carl undid (struck through, with Redo).
+    { key: "spectral", ...agent(now - 25 * HOUR, "c-spectral", "add the degree-normalization point", { "notes/spectral-clustering.md": add("- (agent) Degree normalization is the Ncut relaxation; see Shi & Malik 2000.") }) },
+    { subject: "Undo: Edited spectral-clustering.md", body: T("human"), at: now - 24.5 * HOUR, changes: { "notes/spectral-clustering.md": C }, undoes: "spectral" },
+    ...churn(now - 20 * HOUR, 10, 11 * MIN),
+    // A session on the box.
+    { subject: "edit daily/2026-10-09.md", body: T("human", "box"), author: "carlwilsn", at: now - 8 * HOUR, changes: { "daily/2026-10-09.md": drop("Box spend") } },
+    { subject: "edit daily/2026-10-09.md", body: T("human", "box"), author: "carlwilsn", at: now - 8 * HOUR + 6 * MIN, changes: { "daily/2026-10-09.md": C } },
+    agent(now - 4.6 * HOUR, "c-writeup", "Tightened the summary: one sentence for the result, one for the gap", {
+      "projects/bitnet-160m/writeup.md": (cur: string) => cur.split(NL).slice(0, 12).join(NL) + NL,
+    }),
+    agent(now - 4.6 * HOUR + 40_000, "c-writeup", "Tightened the summary: one sentence for the result, one for the gap", { "projects/bitnet-160m/writeup.md": C }),
+    ...churn(now - 4 * HOUR, 12, 6 * MIN),
+    agent(now - 3 * HOUR, "m-bitnet", "seed 43 rerun: README status", { "projects/bitnet-160m/README.md": add("- [ ] (agent) Rerun seed 43 at 3.2B tokens") }),
+    agent(now - 2 * HOUR, "w-seed43", "seed 43 rerun: eval.loss committed", { "projects/bitnet-160m/results.csv": C }),
+    // Carl put the README back as the mission left it.
+    { subject: "Restore projects/bitnet-160m/README.md to Oct 8", body: T("human"), at: now - 70 * MIN, changes: { "projects/bitnet-160m/README.md": C }, restores: "plan" },
+    ...churn(now - 60 * MIN, 10, 4 * MIN),
+    human(now - 12 * MIN, { "daily/2026-10-09.md": C, "daily/2026-10-10.md": C }, "edit 2 files"),
+    noise(now - 2 * MIN),
   ];
 }

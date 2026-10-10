@@ -17,6 +17,9 @@ export type Commit = {
   at: number;
   tree: Snapshot;
   parent: Commit | null;
+  /** A mission keep (F-history): its branch's commits precede it, flagged `inner`. */
+  merge?: boolean;
+  inner?: boolean;
 };
 type Repo = { commits: Commit[]; anchor: string | null };
 
@@ -27,8 +30,16 @@ export type SeedCommit = {
   /** ms since epoch */
   at: number;
   /** rel → new content, null = delete, "@current" = the fixture's content */
-  changes: Record<string, string | null>;
+  changes: Record<string, string | null | ((current: string) => string)>;
   anchor?: boolean;
+  /** Name this seed so a later one can point at it. */
+  key?: string;
+  /** A kept mission's merge commit / a commit on the mission's branch. */
+  merge?: boolean;
+  mission?: boolean;
+  /** Seed key this commit undoes / restores (adds the trailer with its hash). */
+  undoes?: string;
+  restores?: string;
 };
 
 const repos = new Map<string, Repo>();
@@ -119,16 +130,23 @@ export function seedHistory(vault: string, commits: SeedCommit[]): void {
   for (const c of commits) for (const rel of Object.keys(c.changes)) mentioned.add(rel);
   let tree = workingTree(vault);
   const orig = new Map(tree);
+  const keyed = new Map<string, string>();
   for (const rel of mentioned) tree.delete(rel);
   for (const [i, c] of commits.entries()) {
     const next = new Map(tree);
     for (const [rel, v] of Object.entries(c.changes)) {
-      const val = v === "@current" ? orig.get(rel) ?? null : v;
+      const val = typeof v === "function" ? v(orig.get(rel) ?? "") : v === "@current" ? orig.get(rel) ?? null : v;
       if (val === null) next.delete(rel);
       else next.set(rel, val);
     }
     // The first commit carries the base tree plus its own changes.
-    const commit = makeCommit(vault, c.subject, next, c.author ?? HUMAN, c.at, c.body ?? "");
+    let body = c.body ?? "";
+    for (const [k, ref] of [["Undoes", c.undoes], ["Restores", c.restores]] as const)
+      if (ref && keyed.has(ref)) body = `${k}: ${keyed.get(ref)}\n${body}`;
+    const commit = makeCommit(vault, c.subject, next, c.author ?? HUMAN, c.at, body);
+    if (c.merge) commit.merge = true;
+    if (c.mission) commit.inner = true;
+    if (c.key) keyed.set(c.key, commit.hash);
     if (c.anchor || (i === 0 && !commits.some((x) => x.anchor))) repo(vault).anchor = commit.hash;
     tree = next;
   }
@@ -200,7 +218,8 @@ function commitWorkingTree(vault: string, message: string, agent: boolean): stri
     if (same) for (const [k, v] of wt) if (h.tree.get(k) !== v) { same = false; break; }
     if (same) return null;
   }
-  return makeCommit(vault, message, wt, agent ? AGENT : HUMAN, now()).short;
+  const [subject, ...rest] = message.split("\n");
+  return makeCommit(vault, subject, wt, agent ? AGENT : HUMAN, now(), rest.join("\n").trim()).short;
 }
 
 function asText(v: string | null): string | null {
@@ -214,7 +233,19 @@ export const gitCommands: Record<string, (a: Record<string, any>) => unknown> = 
     repo(vault).anchor = head(vault)!.hash;
     return true;
   },
-  git_commit_all: ({ vault, message, agent }) => commitWorkingTree(vault, String(message ?? "autosave"), !!agent),
+  // lib.rs git_commit_all: the attribution trailers end every message.
+  git_commit_all: ({ vault, message, agent, actor, machine, conversation }) =>
+    commitWorkingTree(
+      vault,
+      [
+        String(message ?? "autosave").trimEnd(),
+        "",
+        `Vault-Chat-Actor: ${actor ?? (agent ? "agent" : "human")}`,
+        `Vault-Chat-Machine: ${machine ?? "laptop"}`,
+        ...(conversation ? [`Conversation: ${conversation}`] : []),
+      ].join("\n"),
+      !!agent,
+    ),
   git_recent_commits: ({ vault, n, includeBeforeStart }) =>
     newestFirst(vault, !!includeBeforeStart).slice(0, Math.min(n ?? 30, 500)).map((c) => toGitCommit(vault, c)),
   git_repo_root_for_file: ({ vault }) => (head(vault) ? vault : null),
@@ -246,7 +277,7 @@ export const gitCommands: Record<string, (a: Record<string, any>) => unknown> = 
     const h = head(vault);
     if (h && h.hash === c.hash) throw "already at this commit";
     writeTree(vault, workingTree(vault), c.tree);
-    const msg = c.subject ? `Restore: ${c.subject} (${c.short})` : `Restore to ${c.short}`;
+    const msg = c.subject ? `Restore: ${c.subject} (${c.hash.slice(0, 8)})` : `Restore to ${c.hash.slice(0, 8)}`;
     return makeCommit(vault, msg, new Map(c.tree), HUMAN, now()).short;
   },
   git_all_touched_files: ({ vault, includeBeforeStart }) => {
@@ -271,12 +302,16 @@ export const gitCommands: Record<string, (a: Record<string, any>) => unknown> = 
     return [...byPath.values()];
   },
   git_commit_files: ({ vault, hash }) =>
-    changed(find(vault, hash)).map((f) => {
-      const s = stat(asText(f.before), asText(f.after));
-      return { path: f.rel, status: f.before === null ? "A" : f.after === null ? "D" : "M", additions: s.additions, deletions: s.deletions };
-    }),
+    changed(find(vault, hash))
+      .map((f) => {
+        const s = stat(asText(f.before), asText(f.after));
+        return { path: f.rel, status: f.before === null ? "A" : f.after === null ? "D" : "M", additions: s.additions, deletions: s.deletions };
+      })
+      // lib.rs: stable order A, M, D, then path.
+      .sort((a, b) => "AMD".indexOf(a.status) - "AMD".indexOf(b.status) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
   git_file_history: ({ vault, relativePath, n, includeBeforeStart }) =>
-    newestFirst(vault, !!includeBeforeStart, (c) => (c.parent?.tree.get(relativePath) ?? null) !== (c.tree.get(relativePath) ?? null))
+    newestFirst(vault, true, (c) => (c.parent?.tree.get(relativePath) ?? null) !== (c.tree.get(relativePath) ?? null))
+      .filter((_, i, all) => includeBeforeStart || !all.slice(0, i).some((x) => x.hash === repo(vault).anchor))
       .slice(0, Math.min(n ?? 50, 500))
       .map((c) => toGitCommit(vault, c)),
   git_file_at: ({ vault, hash, relativePath }) => asText(find(vault, hash).tree.get(relativePath) ?? null) ?? "",
@@ -292,7 +327,7 @@ export const gitCommands: Record<string, (a: Record<string, any>) => unknown> = 
     if (v === undefined) fs.rmSync(full, { force: true });
     else if (!v.startsWith("\0bin:")) fs.seedText(full, v, now());
     const leaf = String(relativePath).split("/").pop();
-    return makeCommit(vault, `Restore ${leaf} to ${c.short}`, workingTree(vault), HUMAN, now()).short;
+    return makeCommit(vault, `Restore ${leaf} to ${c.hash.slice(0, 8)}`, workingTree(vault), HUMAN, now()).short;
   },
 };
 
@@ -307,4 +342,15 @@ export function gitDirty(vault: string): number {
   for (const [k, v] of wt) if (h.tree.get(k) !== v) n++;
   for (const k of h.tree.keys()) if (!wt.has(k)) n++;
   return n;
+}
+
+// For memhistory.ts (the readable-history commands).
+export function commitsOf(vault: string): Commit[] {
+  return repo(vault).commits;
+}
+export function headOf(vault: string): Commit | null {
+  return head(vault);
+}
+export function makeCommitFor(vault: string, subject: string, tree: Map<string, string>, body: string): Commit {
+  return makeCommit(vault, subject, tree, HUMAN, now(), body);
 }
