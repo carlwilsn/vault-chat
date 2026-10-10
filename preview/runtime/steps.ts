@@ -90,6 +90,11 @@ export async function runSteps(steps: Step[], vault: string): Promise<void> {
       const content = binary ? "" : await invoke<string>("read_text_file", { path });
       useStore.getState().setCurrentFile(path, content);
       if (s.mode === "edit" && useStore.getState().mode !== "edit") useStore.getState().toggleMode?.();
+    } else if ("waitIdle" in s) {
+      const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+      await sleep(300);
+      const t0 = Date.now();
+      while (useStore.getState().busy && Date.now() - t0 < (s.timeout ?? 20000)) await sleep(100);
     } else if ("chat" in s) {
       const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
       if (useStore.getState().rightCollapsed) useStore.getState().toggleRight();

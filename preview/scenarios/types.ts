@@ -16,6 +16,8 @@ export type Step =
   | { file: string; mode?: "view" | "edit" }
   /** make sure the chat pane is shown */
   | { chat: true }
+  /** wait until the chat pane is idle (no turn in flight) */
+  | { waitIdle: true; timeout?: number }
   /** switch the chat pane to a conversation */
   | { conversation: string }
   | { advance: number }

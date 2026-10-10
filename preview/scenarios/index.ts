@@ -78,6 +78,7 @@ const reasoningScript: Script = {
   match: /.*/,
   steps: [
     {
+      chunkMs: 90,
       reasoning:
         "The user wants to know whether to extend to 3.2B tokens. Compute: 3.2B/1.7B ≈ 1.9×, so ~26 more A10-hours per seed. The gap is 0.13 nat; Chinchilla-style fits suggest most of it closes. But the LR schedule must be re-planned — cosine floor at the new last step. Cost ~$31 for one seed, ~$93 for three. Recommend extending one seed first as a probe.",
       text:
@@ -129,6 +130,13 @@ const compactionReply: Script = {
   match: /what's next|next for/i,
   steps: [{ text: "Picking up from the summary: next step is re-fitting the cosine schedule for 6100 steps (warmup 122, floor 0.1 × peak). Want me to write that into `train.py`?" }],
 };
+
+/** "Where were we?" — a recap whose reported prompt size is padded to `pad`. */
+const whereWere = (pad: number): Script => ({
+  id: `recap-${pad}`,
+  match: /where were we/i,
+  steps: [{ text: "We were on the 3.2B-token plan: re-fit the cosine schedule for 6100 steps and keep the step-0 LR guard.", promptPad: pad }],
+});
 
 const inlineEdit: Script = {
   id: "inline-edit",
@@ -206,7 +214,7 @@ export const scenarios: Scenario[] = [
     title: "Chat — reasoning (direct Anthropic key)",
     group: "Chat",
     notes:
-      "Reasoning only shows today on a direct Anthropic key: on the default OpenRouter path the AI SDK's chat adapter drops the reasoning deltas. This scenario uses an Anthropic key + Claude Sonnet 5 so the thinking streams. Switch to an OpenRouter model and ask again to see it vanish.",
+      "Today reasoning shows only (a) on a direct Anthropic key — on the default OpenRouter path the AI SDK's chat adapter drops the reasoning deltas — and (b) live, before the first text token: once the answer starts it disappears and it is not kept in the transcript. This scenario uses an Anthropic key + Claude Sonnet 5 and streams the thinking slowly so you can see it. Switch to an OpenRouter model and ask again: no thinking at all.",
     model: "claude-sonnet-5",
     host: { keys: { "api.anthropic": "sk-ant-PREVIEW-000000000000" } },
     build: (c) => world(c),
@@ -237,40 +245,33 @@ export const scenarios: Scenario[] = [
     title: "Chat — a long chat hits compaction",
     group: "Chat",
     notes:
-      "A 36-message chat whose last turn reported 176k context (over 85% of the fixed 200k limit). Sending a message runs today's compaction: a background summary call, the “Conversation compacted to free context.” banner, then the reply. Watch the dial before and after.",
+      "A 36-message chat. The first message's reply reports 176k context (over 85% of the fixed 200k limit — the dial goes red). The second message then runs today's compaction: a background summary call, the “Conversation compacted to free context.” banner, then the reply. Watch the dial before and after.",
     build: (c) => world(c, { extraConvs: (now) => [W.longChat(now, 176_000)] }),
     activeConversation: "c-long",
-    llm: { scripts: [compactionReply], chunkMs: 18 },
-    open: [...deskOpen("notes/scaling-laws.md", "c-long"), { sleep: 600 }, ...sendHere("OK — what's next for the 3.2B run?")],
+    llm: { scripts: [whereWere(176_000), compactionReply], chunkMs: 12 },
+    open: [
+      ...deskOpen("notes/scaling-laws.md", "c-long"),
+      { sleep: 400 },
+      ...sendHere("Where were we?"),
+      { waitIdle: true },
+      { sleep: 800 },
+      ...sendHere("OK — what's next for the 3.2B run?"),
+    ],
   },
-  {
-    id: "context-low",
-    title: "Context dial — low (14k)",
+  ...([
+    ["context-low", "Context dial — low (~14k)", 4_000, "c-spectral", "A short chat: the dial after a live turn (the dial only appears after a turn — a reopened chat shows nothing until you send)."],
+    ["context-high", "Context dial — high (~120k)", 110_000, "c-long", "A long chat at ~120k reported context."],
+    ["context-near", "Context dial — near the limit (~196k)", 186_000, "c-long", "~196k of 200k. The limit is the fixed MODEL_CONTEXT_LIMIT, not the model's real window (Sonnet 5.5 has 1M). The next message compacts first."],
+  ] as const).map(([id, title, pad, conv, notes]): Scenario => ({
+    id,
+    title,
     group: "Context dial",
-    notes: "The dial in the chat footer after a short chat (14k of the hard-coded 200k limit).",
-    build: (c) => world(c),
-    activeConversation: "c-spectral",
-    open: deskOpen(NOTE, "c-spectral"),
-  },
-  {
-    id: "context-high",
-    title: "Context dial — high (120k)",
-    group: "Context dial",
-    notes: "A long chat at 120k reported context.",
-    build: (c) => world(c, { extraConvs: (now) => [W.longChat(now, 120_000)] }),
-    activeConversation: "c-long",
-    open: deskOpen("notes/scaling-laws.md", "c-long"),
-  },
-  {
-    id: "context-near",
-    title: "Context dial — near the limit (196k)",
-    group: "Context dial",
-    notes: "196k of 200k. The limit is the fixed MODEL_CONTEXT_LIMIT, not the model's real window (Sonnet 5.5 has 1M). Sending a message compacts first.",
-    build: (c) => world(c, { extraConvs: (now) => [W.longChat(now, 196_000)] }),
-    activeConversation: "c-long",
-    llm: { scripts: [compactionReply] },
-    open: deskOpen("notes/scaling-laws.md", "c-long"),
-  },
+    notes,
+    build: (c) => world(c, { extraConvs: (now) => [W.longChat(now, pad + 10_000)] }),
+    activeConversation: conv,
+    llm: { scripts: [whereWere(pad), compactionReply] },
+    open: [...deskOpen(conv === "c-long" ? "notes/scaling-laws.md" : NOTE, conv), { sleep: 400 }, ...sendHere("Where were we?"), { waitIdle: true }],
+  })),
 
   // ===== Editing =====
   {
