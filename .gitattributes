@@ -1,1 +1,3 @@
 *.pdf binary
+*.sh text eol=lf
+server/deploy/* text eol=lf
