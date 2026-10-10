@@ -429,7 +429,8 @@ export const scenarios: Scenario[] = [
       ...sendHere("OK — what's next for the 3.2B run?"),
       { waitIdle: true },
       { sleep: 600 },
-      { click: "details > summary", text: /Earlier conversation summarized/ },
+      // Open the divider (after only — the before side has none).
+      { run: (api) => api.byText(/Earlier conversation summarized/, "details > summary")?.click() },
     ],
   },
   ...(["A", "B", "C"] as const).map(
