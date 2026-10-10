@@ -1843,6 +1843,16 @@ export const useStore = create<State>((set) => ({
         .then((m) => m.startBoxChat(vault))
         .catch((e) => console.warn("[box-chat] start failed:", e));
     };
+    // Know box mode BEFORE the load sets the list, so no persist is ever
+    // scheduled for a box-authored conversation.
+    try {
+      const bc = await import("./boxChat");
+      if (await bc.boxLinkFor(vault)) {
+        useStore.setState({ boxChat: useStore.getState().boxChat ?? { on: true, reachable: null, reason: "" } });
+      }
+    } catch {
+      /* not box mode */
+    }
     try {
       await loadConversationsInner(vault);
     } finally {
@@ -2293,7 +2303,7 @@ function scheduleConversationsPersist(vault: string) {
   conversationsPersistTimer = setTimeout(() => {
     conversationsPersistTimer = null;
     const v = conversationsPersistVault;
-    if (!v) return;
+    if (!v || useStore.getState().boxChat?.on) return;
     // Persist UNDER the shared conversation lock with a non-destructive merge.
     // Background runs (offVaultRun: missions, workers, wakes) advance
     // conversations on disk via the same lock; a blind memory→disk rewrite here

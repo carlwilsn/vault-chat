@@ -728,18 +728,29 @@ class BoxChatSession {
 let session: BoxChatSession | null = null;
 
 /** Start (or keep) the box chat for the open vault. No-op outside box mode. */
-export async function startBoxChat(vault: string): Promise<boolean> {
-  if (session && !session.stopped && session.vault === vault) return true;
-  stopBoxChat();
-  const link = await boxLinkFor(vault);
-  if (!link || useStore.getState().vaultPath !== vault) {
-    if (useStore.getState().boxChat) useStore.getState().setBoxChat(null);
-    return false;
-  }
-  session = new BoxChatSession(vault, link);
-  useStore.getState().setBoxChat({ on: true, reachable: null, reason: "" });
-  session.start();
-  return true;
+let starting: { vault: string; p: Promise<boolean> } | null = null;
+export function startBoxChat(vault: string): Promise<boolean> {
+  if (session && !session.stopped && session.vault === vault) return Promise.resolve(true);
+  if (starting && starting.vault === vault) return starting.p;
+  const p = (async () => {
+    session?.stop();
+    session = null;
+    const link = await boxLinkFor(vault);
+    if (!link || useStore.getState().vaultPath !== vault) {
+      if (useStore.getState().boxChat) useStore.getState().setBoxChat(null);
+      return false;
+    }
+    session = new BoxChatSession(vault, link);
+    const cur = useStore.getState().boxChat;
+    if (!cur?.on) useStore.getState().setBoxChat({ on: true, reachable: null, reason: "" });
+    session.start();
+    return true;
+  })();
+  starting = { vault, p };
+  void p.finally(() => {
+    if (starting?.p === p) starting = null;
+  });
+  return p;
 }
 
 export function stopBoxChat(): void {
