@@ -447,11 +447,8 @@ export function relativeTime(ts: number): string {
   const diff = Date.now() - ts;
   if (diff < 0) return "now";
   const sec = Math.floor(diff / 1000);
-  if (sec < 60) {
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m}:${String(s).padStart(2, "0")}`;
-  }
+  // Under a minute is "now" (it used to read as a clock: "0:04").
+  if (sec < 60) return "now";
   const min = Math.floor(sec / 60);
   if (min < 60) return `${min}m`;
   const hr = Math.floor(min / 60);
