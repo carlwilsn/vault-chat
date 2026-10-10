@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Folder, Plus, Check } from "lucide-react";
 import { useStore } from "./store";
 import { cn } from "./lib/utils";
+import { isArchivedThread } from "./conversations";
 import {
   listProjects,
   projectName,
@@ -58,7 +59,8 @@ export function ProjectChip({ placement = "up" }: { placement?: "up" | "down" })
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  if (!activeId) return null;
+  // An archived mission thread is history: no project to set.
+  if (!activeId || (conv && isArchivedThread(conv))) return null;
 
   const q = query.trim();
   const ql = q.toLowerCase();
