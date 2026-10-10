@@ -2,7 +2,7 @@
 // config.toml, start the supervised app-server, and hand the HTTP layer the
 // routes it takes over (/message, /answer, /kill for engine conversations).
 import { homedir, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { CodexSupervisor } from "./appServer";
 import { ensureCodex, type CodexInstall } from "./install";
@@ -61,7 +61,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   const model = engineModel();
   const win = modelMeta(model)?.contextLength;
   if (win) setModelWindow(model, win);
-  configureContext({ vault: b.vault, agentModel: model, apiKey: b.apiKey, verifierDeny: [b.stateDir, dirname(b.tokenPath), dirname(b.localStoragePath)] });
+  configureContext({ vault: b.vault, agentModel: model, apiKey: b.apiKey, verifierDeny: [b.stateDir, b.tokenPath, b.localStoragePath, b.pushSubsPath] });
   excludeLocalDir(b.vault);
 
   const home = process.env.HOME || homedir();
@@ -83,9 +83,10 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     readOnly: [join(home, ".config"), b.stateDir],
     deny: [
       b.secretsDir,
-      dirname(b.tokenPath),
-      dirname(b.localStoragePath),
-      dirname(b.pushSubsPath),
+      // The phone token, the VAPID keys (in the localStorage file) and the push subscriptions.
+      b.tokenPath,
+      b.localStoragePath,
+      b.pushSubsPath,
       ...(uid >= 0 ? [`/run/user/${uid}`, `/tmp/tmux-${uid}`] : []),
     ],
   });

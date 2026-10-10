@@ -310,6 +310,9 @@ export class Engine {
       if (LEGACY_SOURCES.has(conv.source)) return null;
     } else {
       conv = await createConv(this.d.vault, { project: body.project || undefined }, textIn);
+      // Let the phone host's store diff see the new (empty) conversation first,
+      // so this turn's messages go out as live "message" events.
+      await new Promise((r) => setTimeout(r, 400));
     }
     const id = conv.id;
     this.nudged.delete(id);
@@ -431,7 +434,13 @@ export class Engine {
         await appendMessage(this.d.vault, convId, { role: "assistant", content: `⚠️ The vault ${this.d.vault} is missing on the box; no turn was run.`, failed: true });
         return;
       }
-      const threadId = await this.ensureThread(conv);
+      let threadId: string;
+      try {
+        threadId = await this.ensureThread(conv);
+      } catch (e) {
+        await appendMessage(this.d.vault, convId, { role: "assistant", content: `⚠️ The engine could not open this conversation's thread: ${(e as Error).message}`, failed: true }, { state: "idle" });
+        throw e;
+      }
       const live: Live = {
         convId,
         threadId,

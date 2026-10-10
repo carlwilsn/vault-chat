@@ -87,9 +87,12 @@ export function renderCodexConfig(c: CodexConfigInput): string {
   );
   if (linux) {
     lines.push("", "[permissions.vc.filesystem]", `":root" = "read"`);
-    for (const p of c.write) lines.push(`${q(p)} = "write"`);
-    for (const p of c.readOnly) lines.push(`${q(p)} = "read"`);
-    for (const p of c.deny) lines.push(`${q(p)} = "deny"`);
+    // One entry per path; the strictest wins (deny > read > write).
+    const access = new Map<string, string>();
+    for (const p of c.write) access.set(p, "write");
+    for (const p of c.readOnly) access.set(p, "read");
+    for (const p of c.deny) access.set(p, "deny");
+    for (const [p, a] of access) lines.push(`${q(p)} = "${a}"`);
     lines.push("", "[permissions.vc.network]", "enabled = true");
   }
   return lines.join("\n") + "\n";

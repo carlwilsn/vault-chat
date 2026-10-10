@@ -74,6 +74,8 @@ describe.skipIf(!BIN)("engine (real Codex, fake Responses API)", () => {
     or = await fakeResponses();
     or.respond = (body): Step => {
       const last = lastItem(body);
+      // Codex places a steer after the tool output, as the newest user message.
+      if (lastUserText(body).includes("kiwi steer")) return { text: "saw the kiwi steer" };
       const user = lastUserText(body);
       const all = allText(body);
       if (last?.type === "function_call_output") {
