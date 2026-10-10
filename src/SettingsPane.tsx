@@ -36,6 +36,12 @@ import {
   stopVaultSyncLoop,
   DEFAULT_SYNC_CONFIG,
   type VaultSyncConfig,
+  readBoxConfig,
+  subscribeBoxSync,
+  boxSyncNow,
+  fmtSize,
+  type BoxConfig,
+  type BoxSyncState,
 } from "./vaultSync";
 import {
   fireSchedulesOnThisMachine,
@@ -959,6 +965,8 @@ function VaultSyncSection() {
   const [fireHere, setFireHere] = useState(true);
   // Machine-local "run in background" daemon toggle (close-to-tray + autostart).
   const [runBg, setRunBg] = useState(false);
+  // sync.json names a box → the box sync replaces the remote/interval controls.
+  const [box, setBox] = useState<BoxConfig | null>(null);
 
   useEffect(() => {
     setFireHere(fireSchedulesOnThisMachine());
@@ -974,6 +982,9 @@ function VaultSyncSection() {
     void readVaultSyncConfig(vaultPath).then((c) => {
       if (cancelled) return;
       setConfig(c);
+    });
+    void readBoxConfig(vaultPath).then((b) => {
+      if (!cancelled) setBox(b);
     });
     return () => {
       cancelled = true;
@@ -1084,9 +1095,12 @@ function VaultSyncSection() {
             Vault sync (this vault)
           </h3>
           <p className="text-[11.5px] text-muted-foreground/80 mt-0.5">
-            Continuous auto-commit + push + pull against the vault's git remote.
+            {box
+              ? "Syncs with the box (from .vault-chat/sync.json): this laptop writes master, the box writes box."
+              : "Continuous auto-commit + push + pull against the vault's git remote."}
           </p>
         </div>
+        {!box && (
         <label className="flex items-center gap-2 shrink-0 cursor-pointer">
           <span className="text-[10.5px] text-muted-foreground">
             {config.enabled ? "on" : "off"}
@@ -1098,7 +1112,9 @@ function VaultSyncSection() {
             onChange={(e) => toggleEnabled(e.target.checked)}
           />
         </label>
+        )}
       </div>
+      {!box && (
       <div className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
         <div>
           <div className="text-[11.5px] font-medium text-foreground/90">
@@ -1125,6 +1141,7 @@ function VaultSyncSection() {
           />
         </label>
       </div>
+      )}
       <div className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
         <div>
           <div className="text-[11.5px] font-medium text-foreground/90">
@@ -1154,6 +1171,9 @@ function VaultSyncSection() {
           />
         </label>
       </div>
+      {box ? (
+        <BoxSyncPanel vault={vaultPath} box={box} />
+      ) : (
       <div className="space-y-2">
         <div className="space-y-1">
           <label className="text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium">
@@ -1275,7 +1295,90 @@ function VaultSyncSection() {
           </button>
         </div>
       </div>
+      )}
     </section>
+  );
+}
+
+// Read-only status of the box sync, plus "Sync now". Everything here comes
+// from the last cycle's report (src-tauri/src/box_sync.rs).
+function BoxSyncPanel({ vault, box }: { vault: string; box: BoxConfig }) {
+  const [st, setSt] = useState<BoxSyncState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [, tick] = useState(0);
+  useEffect(() => subscribeBoxSync(setSt), []);
+  useEffect(() => {
+    const id = window.setInterval(() => tick((n) => n + 1), 5000);
+    return () => window.clearInterval(id);
+  }, []);
+  const r = st?.report ?? null;
+  const ago = (t: number | null | undefined) => {
+    if (!t) return "never";
+    const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+    return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : new Date(t).toLocaleString();
+  };
+  const row = (label: string, value: React.ReactNode, tone?: "warn" | "bad") => (
+    <div className="flex items-start gap-3 text-[11.5px]">
+      <span className="w-28 shrink-0 text-muted-foreground">{label}</span>
+      <span
+        className={`min-w-0 break-words ${tone === "bad" ? "text-destructive" : tone === "warn" ? "text-amber-500" : "text-foreground/90"}`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+  const syncNow = async () => {
+    setBusy(true);
+    try {
+      await boxSyncNow(vault);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="space-y-1.5 rounded-md border border-border/60 bg-muted/20 px-2.5 py-2">
+      {row("Box", <span className="font-mono text-[11px]">{`${box.box}/git/${box.vault}.git`}</span>)}
+      {row(
+        "Last sync",
+        st?.running && !r ? "syncing…" : r?.error ? `failed · last good ${ago(st?.lastOkAt)}` : ago(st?.lastOkAt),
+        r?.error ? (st?.attention?.level === "red" ? "bad" : "warn") : undefined,
+      )}
+      {r && row("Waiting for box", `${r.changes_waiting} commit${r.changes_waiting === 1 ? "" : "s"}`)}
+      {r?.conflict &&
+        row(
+          "Merge gate",
+          `closed since ${new Date(r.conflict.since).toLocaleString()}: ${r.conflict.files.join(", ")}. Ask the agent: resolve the sync conflict.`,
+          "warn",
+        )}
+      {r && !r.conflict && row("Merge gate", "open")}
+      {r && r.big_files.length > 0 &&
+        row(
+          "Kept out of git",
+          r.big_files.map((b) => `${b.path} (${fmtSize(b.size)})`).join(", "),
+          "warn",
+        )}
+      {r &&
+        row(
+          "GitHub backup",
+          r.github_warning ? "failing (see details below)" : r.github_pushed_at ? ago(r.github_pushed_at) : "no github remote, or not yet",
+          r.github_warning ? "warn" : undefined,
+        )}
+      {row("Missions", "run on the box; messages and approvals from here relay to it")}
+      {(r?.error || r?.github_warning) && (
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-relaxed text-muted-foreground pt-1">
+          {[r?.error, r?.github_warning].filter(Boolean).join("\n\n")}
+        </pre>
+      )}
+      <div className="pt-1">
+        <button
+          onClick={syncNow}
+          disabled={busy || !!st?.running}
+          className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {busy || st?.running ? "syncing…" : "sync now"}
+        </button>
+      </div>
+    </div>
   );
 }
 

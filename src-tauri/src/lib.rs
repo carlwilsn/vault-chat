@@ -1,4 +1,5 @@
 mod voice_server;
+mod box_sync;
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -1244,7 +1245,10 @@ async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<()
         // (store content vs origin content differ → content-compare rewrites
         // → dirty tree every cycle → the pull's merge refuses to start).
         // Enforced here because every writer funnels through this command.
-        let follower = is_sync_follower_cached(&vault);
+        // Box mode (sync.json names a box): the box is the mission host, so the
+        // laptop is a follower for the mission zone too — with box/box as the
+        // authority instead of origin.
+        let follower = is_sync_follower_cached(&vault) || box_sync::box_mode_cached(&vault);
         for line in &lines {
             let t = line.trim();
             if t.is_empty() {
@@ -4020,6 +4024,26 @@ async fn git_commit_all(
 ) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         with_repo_lock(&vault, || {
+        // Box mode: never abort a merge someone is resolving by hand, keep the
+        // mission zone the box's, and never commit a file over 50 MB.
+        if box_sync::box_mode_cached(&vault) {
+            if PathBuf::from(&vault).join(".git").join("MERGE_HEAD").exists() {
+                return Ok(None);
+            }
+            let (name, email) = commit_identity(&vault, agent.unwrap_or(false));
+            box_sync::box_stage_all(&vault, &name, &email)?;
+            if matches!(run_git(&vault, &["diff", "--cached", "--quiet"]), Ok((_, _, 0))) {
+                return Ok(None);
+            }
+            let (o, e, c) = run_git_as(&vault, &name, &email, &["commit", "-q", "-m", &message])?;
+            if c != 0 {
+                return Err(format!("git commit failed (exit {}):
+{}
+{}", c, e.trim(), o.trim()));
+            }
+            let (hash, _, _) = run_git(&vault, &["rev-parse", "--short", "HEAD"])?;
+            return Ok(Some(hash.trim().to_string()));
+        }
         // A crashed prior auto-sync can leave the repo mid-rebase, where
         // every commit silently no-ops. Clear that first so this commit
         // actually lands instead of vanishing.
@@ -5523,7 +5547,52 @@ fn is_sync_follower(vault: &str) -> bool {
 /// The sync role for the frontend (scheduler + mission-routing gates).
 #[tauri::command]
 fn vault_sync_role(vault: String) -> String {
-    if is_sync_follower(&vault) { "follower".into() } else { "writer".into() }
+    // A vault whose sync.json names a box is a follower: the box hosts its
+    // missions and fires its schedules; this machine relays to it.
+    if is_sync_follower(&vault) || box_sync::box_config(&vault).is_some() {
+        "follower".into()
+    } else {
+        "writer".into()
+    }
+}
+
+/// One box-sync cycle (sync.json mode): commit, fetch `box`, merge gate, push
+/// `master`, GitHub backup. See box_sync.rs.
+#[tauri::command]
+async fn vault_box_sync(vault: String) -> Result<box_sync::BoxSyncReport, String> {
+    tauri::async_runtime::spawn_blocking(move || box_sync::box_sync_cycle(&vault))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+struct BoxConfigOut {
+    #[serde(rename = "box")]
+    box_url: String,
+    vault: String,
+}
+
+/// The box this vault syncs with, from `.vault-chat/sync.json` (None = old mode).
+#[tauri::command]
+fn vault_box_config(vault: String) -> Option<BoxConfigOut> {
+    box_sync::box_config(&vault).map(|c| BoxConfigOut { box_url: c.box_url, vault: c.vault })
+}
+
+#[derive(Serialize)]
+struct PostResult {
+    status: u16,
+    body: String,
+}
+
+/// POST JSON to the box (relay, alerts). Done natively so the webview's CORS
+/// rules never get in the way.
+#[tauri::command]
+async fn box_post_json(url: String, body: String, token: Option<String>) -> Result<PostResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        box_sync::post_json(&url, &body, token.as_deref()).map(|(status, body)| PostResult { status, body })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// is_sync_follower behind a 60s cache — for hot paths (every conversations
@@ -7602,6 +7671,9 @@ pub fn run() {
             default_assistant_prompt,
             default_ask_prompt,
             vault_sync_role,
+            vault_box_sync,
+            vault_box_config,
+            box_post_json,
             run_script,
             keychain_get,
             keychain_set,
