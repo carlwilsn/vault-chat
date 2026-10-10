@@ -628,14 +628,14 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
     conversationId = await createScheduledConversation(vault, s);
   }
 
-  // [engine, Phase 2] A conversation run by the box's Codex engine is never
+  // [engine, Phase 2] A conversation run by the box's engine is never
   // driven by the old loop: its wakes are the engine's own (wakes.json).
   if (s.target.kind === "existing") {
     try {
       const c =
         useStore.getState().conversations.find((x) => x.id === conversationId) ??
         (await readConversations(vault)).find((x) => x.id === conversationId);
-      if (c?.codexThreadId) {
+      if (c?.threadId) {
         vlog("sched.skip.engine", { conv: conversationId.slice(0, 8), name: s.name });
         return;
       }

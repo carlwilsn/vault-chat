@@ -23,7 +23,7 @@ const text = (r: { contentItems: { text: string }[] }) => r.contentItems.map((c)
 const pdir = (slug: string) => join(vault, ".vault-chat", "projects", slug);
 
 describe("project tools", () => {
-  it("exposes Codex dynamicTools specs", () => {
+  it("exposes the tool specs", () => {
     expect(contextToolSpecs.map((t) => t.name)).toEqual(["SetProject", "ProjectMemory", "Plan", "ProjectCost"]);
     for (const t of contextToolSpecs) expect(t).toMatchObject({ type: "function", inputSchema: { type: "object" } });
   });

@@ -20,7 +20,7 @@ export type ContextConv = {
   project?: string;
   /** The agent's model for this conversation (default: ContextConfig.agentModel). */
   model?: string;
-  codexThreadId?: string;
+  threadId?: string;
   messages?: ContextMessage[];
   costUsd?: number;
   costMissingCalls?: number;
@@ -29,12 +29,12 @@ export type ContextConv = {
 
 export type RolloverInfo = {
   at: number;
-  /** The Codex thread that was retired. */
+  /** The engine thread (pi session) that was retired. */
   fromThread?: string;
   recap: string;
 };
 
-/** Codex `thread/tokenUsage/updated` → params.tokenUsage (ThreadTokenUsage). */
+/** A thread's token usage (the engine's last model call). */
 export type TokenUsageBreakdown = {
   totalTokens: number;
   inputTokens: number;
@@ -49,7 +49,7 @@ export type ThreadTokenUsage = {
   modelContextWindow?: number | null;
 };
 
-/** Codex DynamicToolSpec ({type:"function"} & DynamicToolFunctionSpec). */
+/** A tool spec: {type:"function", name, description, inputSchema (JSON schema)}. */
 export type DynamicToolSpec = {
   type: "function";
   name: string;
@@ -57,7 +57,7 @@ export type DynamicToolSpec = {
   inputSchema: Record<string, unknown>;
 };
 
-/** Codex DynamicToolCallResponse — the reply to `item/tool/call`. */
+/** A tool call's reply. */
 export type DynamicToolCallResponse = {
   success: boolean;
   contentItems: { type: "inputText"; text: string }[];

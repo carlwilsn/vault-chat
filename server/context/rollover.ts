@@ -1,4 +1,4 @@
-// Rolling sessions: when a Codex thread's context grows past a per-model
+// Rolling sessions: when an engine thread's context grows past a per-model
 // threshold, a cheap model writes a recap and ENGINE starts a new thread for the
 // same conversation id, with the recap in its developer instructions.
 import { randomUUID } from "node:crypto";
@@ -21,7 +21,7 @@ export function rollThreshold(model: string, window?: number | null): number {
 /**
  * True when the thread's current context (the last model call's totalTokens,
  * from `thread/tokenUsage/updated` → params.tokenUsage) is past the threshold.
- * The window is the one Codex reports, else the catalog's.
+ * The window is the one the engine reports, else the catalog's.
  */
 export function shouldRoll(conv: ContextConv, usage: ThreadTokenUsage | null | undefined): boolean {
   const last = usage?.last;
@@ -127,7 +127,7 @@ export async function buildRecap(conv: ContextConv, opts: { signal?: AbortSignal
     content: ROLLOVER_TEXT,
     system: true,
     mid: randomUUID().slice(0, 12),
-    rollover: { at: Date.now(), fromThread: conv.codexThreadId, recap },
+    rollover: { at: Date.now(), fromThread: conv.threadId, recap },
   };
   return { recap, marker, model: cfg.recapModel, costUsd, fallback };
 }

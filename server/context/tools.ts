@@ -1,4 +1,4 @@
-// The memory/project tools ENGINE exposes to Codex as dynamicTools, and their handlers.
+// The memory/project tools ENGINE exposes to the agent, and their handlers.
 import { appendSection, cap, getSection, readOr, setSection, writeFile } from "./files";
 import { ensureProject, projectExists, projectFilePath, readProject, type ProjectFile } from "./projects";
 import { projectCost } from "./cost";
@@ -93,7 +93,7 @@ function needProject(ctx: ToolContext): string | DynamicToolCallResponse {
   return slug;
 }
 
-/** Handle a context tool call (Codex `item/tool/call`). Never throws. */
+/** Handle a context tool call (an engine tool call). Never throws. */
 export async function handleContextTool(name: string, args: unknown, ctx: ToolContext): Promise<DynamicToolCallResponse> {
   const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
   try {

@@ -12,6 +12,7 @@ import { modelMeta } from "../catalog";
 import { rollThreshold } from "../context";
 import EXT_SOURCE from "./ext/vc.mjs?raw";
 import POLICY_SOURCE from "./ext/policy.mjs?raw";
+import SUBAGENT_SOURCE from "./ext/subagent.mjs?raw";
 import type { PiInstall } from "./install";
 
 export type PiPaths = {
@@ -22,6 +23,8 @@ export type PiPaths = {
   sessionsDir: string;
   instrDir: string;
   pidsFile: string;
+  /** Built-in subagent definitions (markdown + frontmatter). */
+  agentsDir: string;
 };
 
 export function piPaths(stateDir: string): PiPaths {
@@ -35,6 +38,7 @@ export function piPaths(stateDir: string): PiPaths {
     sessionsDir: join(root, "sessions"),
     instrDir: join(root, "instr"),
     pidsFile: join(root, "pids.json"),
+    agentsDir: join(root, "agents"),
   };
 }
 
@@ -98,7 +102,7 @@ export type PiConfigInput = {
 /** Write settings.json, models.json, the extension and tools.json. */
 export function writePiConfig(c: PiConfigInput): void {
   const p = c.paths;
-  for (const d of [p.root, p.agentDir, p.extDir, p.sessionsDir, p.instrDir]) mkdirSync(d, { recursive: true });
+  for (const d of [p.root, p.agentDir, p.extDir, p.sessionsDir, p.instrDir, p.agentsDir]) mkdirSync(d, { recursive: true });
   const openaiBase = (c.baseUrl || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
   const anthropicBase = openaiBase.replace(/\/v1$/, "");
   const overrides: Record<string, { reserveTokens: number; keepRecentTokens: number }> = {};
@@ -134,4 +138,42 @@ export function writePiConfig(c: PiConfigInput): void {
   writeAtomic(join(p.agentDir, "models.json"), JSON.stringify({ providers: Object.keys(provider).length ? { openrouter: provider } : {} }, null, 2));
   writeAtomic(p.ext, EXT_SOURCE);
   writeAtomic(join(p.extDir, "policy.mjs"), POLICY_SOURCE);
+  writeAtomic(join(p.extDir, "subagent.mjs"), SUBAGENT_SOURCE);
+  mkdirSync(p.agentsDir, { recursive: true });
+  for (const [name, text] of Object.entries(BUILTIN_AGENTS)) writeAtomic(join(p.agentsDir, `${name}.md`), text);
 }
+
+/** Built-in subagents, adapted from pi's example agents (MIT). No `model:` — the
+ * host picks VC_PI_SUBAGENT_MODEL (else the parent's). A vault can add or
+ * override agents in .vault-chat/agents/*.md. Tools: pi's built-ins plus the
+ * host tools a child may use (Done, Notify, PdfRead, WebSearch); never AskUser. */
+const BUILTIN_AGENTS: Record<string, string> = {
+  worker: `---
+name: worker
+description: General-purpose helper with file and shell access, in its own context
+tools: read, bash, edit, write, Done, Notify
+---
+
+You are a worker subagent of vault-chat's agent. You run in an isolated context to complete one delegated task.
+Work autonomously; you cannot ask Carl anything. When finished, reply with:
+
+## Completed
+What was done.
+
+## Files Changed
+- \`path\` - what changed
+
+## Notes (if any)
+Anything the main agent should know.
+`,
+  scout: `---
+name: scout
+description: Fast read-only reconnaissance of files and notes; returns what it found
+tools: read, grep, find, ls, bash
+---
+
+You are a scout subagent of vault-chat's agent. Investigate quickly and do not change anything.
+Report what you found, with file paths and the exact lines that matter, so the main agent can act without
+re-reading everything.
+`,
+};

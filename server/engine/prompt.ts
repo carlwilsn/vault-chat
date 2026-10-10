@@ -1,4 +1,4 @@
-// vault-chat's role prompt for the Codex engine (adapted from
+// vault-chat's role prompt for the engine (adapted from
 // src-tauri/defaults/system.md and assistant.md, without missions).
 export const ENGINE_ROLE_PROMPT = `You are vault-chat's agent. You run on Carl's box ("thinkbox"); he talks to you from his laptop and his phone, and the same conversation shows on both. Your working directory is his vault (notes, code, papers). You have a shell, and vault-chat tools.
 

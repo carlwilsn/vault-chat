@@ -15,10 +15,12 @@
 //  - the ledger: OpenRouter's generation id (x-generation-id) and the cost it
 //    reports in the stream go into the session as `vc-cost` entries (the host
 //    sees them live as `entry_appended`);
-//  - Gemini requests get cache_control markers.
+//  - Gemini requests get cache_control markers;
+//  - the `subagent` tool (subagent.mjs) for a parent, when the host enables it.
 import { closeSync, readFileSync } from "node:fs";
 import { Type } from "typebox";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
+import { registerSubagentTool } from "./subagent.mjs";
 import { addCacheMarkers, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox } from "./policy.mjs";
 
 const E = process.env;
@@ -108,6 +110,9 @@ export default function vaultChat(pi) {
       },
     });
   }
+
+  // ---- subagents (the parent only; children never get this tool) ----------------------
+  if (E.VC_PI_SUBAGENTS === "1") registerSubagentTool(pi);
 
   // ---- the ledger: OpenRouter's own numbers, per model call ---------------------------
   let pending = null;
