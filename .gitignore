@@ -36,3 +36,6 @@ src-tauri/binaries/
 
 .env.local
 .env*.local
+
+# Headless server bundle (npm run build:server)
+dist-server/

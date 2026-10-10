@@ -14,7 +14,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "predev:tauri": "node scripts/download-tectonic.mjs"
+    "predev:tauri": "node scripts/download-tectonic.mjs",
+    "build:server": "node server/build.mjs",
+    "test:server": "node server/build.mjs && vitest run --config server/vitest.config.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.69",
@@ -69,12 +71,15 @@
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
     "@vitejs/plugin-react": "^4.6.0",
+    "age-encryption": "^0.3.1",
     "autoprefixer": "^10.5.0",
+    "esbuild": "^0.27.7",
     "eslint": "^8.57.1",
     "eslint-plugin-react-hooks": "^5.1.0",
     "postcss": "^8.5.10",
     "tailwindcss": "^3.4.19",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^3.2.4"
   }
 }
