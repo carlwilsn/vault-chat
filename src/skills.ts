@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import matter from "gray-matter";
+import { DEFAULT_SKILLS } from "./defaultSkills";
 
 export type Skill = {
   name: string;
@@ -46,6 +47,10 @@ export async function loadSkills(vault: string): Promise<Skill[]> {
   // syncs via git, so skills built in a vault reach every machine that
   // opens it. Invoked with `/name`.
   const byName = new Map<string, Skill>();
+  // Built-in defaults first; a vault skill with the same name overrides one.
+  for (const d of DEFAULT_SKILLS) {
+    byName.set(d.name, { ...d, path: `(built in)/${d.name}/SKILL.md`, dir: `(built in)/${d.name}` });
+  }
   if (vault) {
     for (const s of await loadSkillsFromRoot(`${vault}/.vault-chat/skills`)) {
       byName.set(s.name, s);
