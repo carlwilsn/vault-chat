@@ -29,7 +29,7 @@ export type BoxChatState = {
   reason: string;
 };
 
-type Link = { url: string; token: string | null };
+export type Link = { url: string; token: string | null };
 type HttpResult = { status: number; body: string };
 
 const POLL_TIMEOUT_MS = 35_000;
@@ -98,6 +98,16 @@ async function httpPost(
   return { ok: true, data: d };
 }
 
+/** A GET to the box (projects, notifications). Throws on failure. */
+export function boxGet(link: Link, path: string, timeoutMs = 15_000): Promise<any> {
+  return httpGet(link, path, timeoutMs);
+}
+
+/** A POST to the box (projects, notifications). Never throws. */
+export function boxPost(link: Link, path: string, payload: Record<string, unknown>) {
+  return httpPost(link, path, payload);
+}
+
 // ---------- the box's shapes → the store's ----------
 
 type BoxRow = {
@@ -107,7 +117,20 @@ type BoxRow = {
   source?: string;
   msgCount?: number;
   missionState?: string;
+  project?: string;
+  state?: Conversation["state"];
+  nextWakeAt?: number;
+  costUsd?: number;
+  working?: boolean;
 };
+
+// The ongoing-work and project fields a list row carries (server/phoneData.ts).
+const ROW_META = ["project", "state", "nextWakeAt", "costUsd", "working"] as const;
+function rowMeta(row: BoxRow): Partial<Conversation> {
+  const out: Record<string, unknown> = {};
+  for (const k of ROW_META) if (row[k] !== undefined && row[k] !== null && row[k] !== "") out[k] = row[k];
+  return out as Partial<Conversation>;
+}
 
 type BoxDetail = {
   id: string;
@@ -417,6 +440,7 @@ class BoxChatSession {
     const s = useStore.getState();
     const byId = new Map(s.conversations.map((c) => [c.id, c]));
     const added: Conversation[] = [];
+    const metaPatches = new Map<string, Partial<Conversation>>();
     let fetches = 0;
     for (const row of rows) {
       if (!row || typeof row.id !== "string") continue;
@@ -432,10 +456,13 @@ class BoxChatSession {
           lastActivityAt: row.lastActivityAt ?? Date.now(),
           source: (row.source as Conversation["source"]) || "manual",
           unread: false,
+          ...rowMeta(row),
         });
         if (fetches++ < 20) this.scheduleDetail(row.id, 0);
         continue;
       }
+      const meta = rowMeta(row);
+      if (ROW_META.some((k) => meta[k] !== undefined && meta[k] !== local[k])) metaPatches.set(row.id, meta);
       const msgs = local.id === s.activeConversationId ? s.messages : local.messages;
       if (
         (row.msgCount ?? 0) > msgs.length ||
@@ -444,6 +471,11 @@ class BoxChatSession {
       ) {
         this.scheduleDetail(row.id, 0);
       }
+    }
+    if (metaPatches.size) {
+      useStore.setState((st) => ({
+        conversations: st.conversations.map((c) => (metaPatches.has(c.id) ? { ...c, ...metaPatches.get(c.id) } : c)),
+      }));
     }
     if (added.length) {
       useStore.setState((st) => {

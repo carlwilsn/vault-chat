@@ -367,3 +367,12 @@ export function formatUsd(n: number): string {
   if (n < 0.01) return `$${n.toFixed(4)}`;
   return `$${n.toFixed(2)}`;
 }
+
+// Threads from the old missions system (supervisor, workers, ask threads).
+// The system is gone; the threads stay as read-only history ("Archived
+// missions" at the bottom of the chat list).
+const ARCHIVED_SOURCES: ReadonlySet<string> = new Set(["mission", "worker", "ask"]);
+export function isArchivedThread(c: { source: string }): boolean {
+  return ARCHIVED_SOURCES.has(c.source);
+}
+export const ARCHIVED_THREAD = "Archived mission thread — read only. Start a new chat to go on.";

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, Mic, Compass, Keyboard, Rocket, GitMerge, CloudOff, FileWarning, AlertTriangle } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, Mic, Compass, Keyboard, GitMerge, CloudOff, FileWarning, AlertTriangle } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
@@ -14,7 +14,7 @@ import {
 import { VoiceCockpit } from "./VoiceCockpit";
 import { HistoryModal } from "./HistoryModal";
 import { NorthStarModal } from "./NorthStarModal";
-import { MissionControlModal } from "./MissionControlModal";
+import { NotificationsButton } from "./NotificationsPanel";
 import { subscribeBoxSync, type BoxSyncState } from "./vaultSync";
 
 export function Titlebar() {
@@ -39,8 +39,6 @@ export function Titlebar() {
   } = useStore();
   const voiceTextPanelOpen = useStore((s) => s.voiceTextPanelOpen);
   const setVoiceTextPanelOpen = useStore((s) => s.setVoiceTextPanelOpen);
-  const showMissionControl = useStore((s) => s.showMissionControl);
-  const setShowMissionControl = useStore((s) => s.setShowMissionControl);
   // The keyboard slide-out hugs the mic button, so right after the
   // user clicks the mic to enter voice mode their cursor is sitting
   // on top of the trigger — the button would slide out immediately,
@@ -250,17 +248,7 @@ export function Titlebar() {
                 <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
               )}
             </button>
-            <button
-              onClick={() => setShowMissionControl(!showMissionControl)}
-              className={`h-7 w-7 flex items-center justify-center rounded relative ${
-                showMissionControl
-                  ? "bg-accent text-foreground"
-                  : "hover:bg-accent/60 text-muted-foreground"
-              }`}
-              title="Mission control"
-            >
-              <Rocket className="h-3.5 w-3.5" />
-            </button>
+            <NotificationsButton />
             <div
               ref={micGroupRef}
               className="relative flex items-center group"
@@ -464,7 +452,6 @@ export function Titlebar() {
       open={northStarOpen}
       onClose={() => setNorthStarOpen(false)}
     />
-    <MissionControlModal open={showMissionControl} onClose={() => setShowMissionControl(false)} />
     </>
   );
 }

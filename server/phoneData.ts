@@ -32,6 +32,32 @@ function collapse(t: string, n: number): string {
   return [...t.split(/\s+/).filter(Boolean).join(" ")].slice(0, n).join("");
 }
 
+/** The project and ongoing-work fields (Phase 3): the conversation's
+ *  project slug, engine state, next wake, cost, and the reason of its last
+ *  ScheduleWake — what the clients' ongoing-work line is built from. Absent
+ *  fields are left out, so old clients see the same shape. */
+function ongoingMeta(c: any, msgs: any[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (typeof c.project === "string" && c.project) out.project = c.project;
+  if (typeof c.state === "string" && c.state) out.state = c.state;
+  if (typeof c.nextWakeAt === "number") out.nextWakeAt = c.nextWakeAt;
+  if (typeof c.costUsd === "number") out.costUsd = c.costUsd;
+  if (c.working === true) out.working = true;
+  if (c.state === "sleeping") {
+    outer: for (let i = msgs.length - 1; i >= 0; i--) {
+      const calls: any[] = Array.isArray(msgs[i]?.toolCalls) ? msgs[i].toolCalls : [];
+      for (let j = calls.length - 1; j >= 0; j--) {
+        const r = /ScheduleWake/i.test(str(calls[j]?.name)) ? calls[j]?.input?.reason : undefined;
+        if (typeof r === "string" && r.trim()) {
+          out.wakeReason = collapse(r, 80);
+          break outer;
+        }
+      }
+    }
+  }
+  return out;
+}
+
 /** voice_server.rs:2084 conversations_summary_json. */
 export function conversationsSummary(vault: string): unknown {
   const convs = readConversationObjects(vault);
@@ -58,6 +84,7 @@ export function conversationsSummary(vault: string): unknown {
       missionState: str(c.missionState),
       billing: c.billing === true,
       surfaced: c.surfaced === true,
+      ...ongoingMeta(c, msgs),
     };
   });
   return { vault: basename(vault.replace(/[\\/]+$/, "")) || vault, conversations: rows };
@@ -80,6 +107,7 @@ export function conversationDetail(vault: string, id: string, n: number): unknow
     askNotifId: str(c.askNotifId),
     askDecided: str(c.askDecided),
     askDecidedAt: int(c.askDecidedAt),
+    ...ongoingMeta(c, msgs),
     messages: visible.map((m) => ({
       role: str(m.role, "assistant"),
       content: truncateChars(str(m.content), 20_000),

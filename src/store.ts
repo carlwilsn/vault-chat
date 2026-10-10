@@ -542,9 +542,6 @@ type State = {
   notesLoaded: boolean;
   showNotesPanel: boolean;
   showHistory: boolean;
-  // Desktop Mission Control modal: Missions/Schedules/Notifications tabs,
-  // opened from the titlebar's Rocket button.
-  showMissionControl: boolean;
   // When set, a viewer should scroll to this anchor inside the
   // given path once it's ready. Consumed + cleared by the viewer.
   pendingScrollAnchor: { path: string; anchor: string } | null;
@@ -710,7 +707,6 @@ type State = {
   reformatNote: (id: string) => Promise<void>;
   setShowNotesPanel: (b: boolean) => void;
   setShowHistory: (b: boolean) => void;
-  setShowMissionControl: (b: boolean) => void;
   requestScrollAnchor: (path: string, anchor: string) => void;
   clearScrollAnchor: () => void;
   setLastCapture: (cap: State["lastCapture"]) => void;
@@ -969,7 +965,6 @@ export const useStore = create<State>((set) => ({
   notesLoaded: false,
   showNotesPanel: false,
   showHistory: false,
-  showMissionControl: false,
   pendingScrollAnchor: null,
   lastCapture: null,
   noteCapturePending: false,
@@ -1696,7 +1691,6 @@ export const useStore = create<State>((set) => ({
   setShowNotesPanel: (b) =>
     set(b ? { showNotesPanel: true, showChatsPanel: false, showSchedulesPanel: false } : { showNotesPanel: false }),
   setShowHistory: (b) => set({ showHistory: b }),
-  setShowMissionControl: (b) => set({ showMissionControl: b }),
   requestScrollAnchor: (path, anchor) => set({ pendingScrollAnchor: { path, anchor } }),
   clearScrollAnchor: () => set({ pendingScrollAnchor: null }),
   setLastCapture: (cap) => set({ lastCapture: cap }),

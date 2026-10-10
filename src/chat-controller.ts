@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { runAgent } from "./agent";
+import { isArchivedThread } from "./conversations";
 import { findModel, AUTO_MODEL_ID, resolveAutoModel, getLiveCatalog } from "./providers";
 import { compactConversation } from "./compactor";
 import { estimateBashEta } from "./eta-estimator";
@@ -36,25 +37,6 @@ const KEEP_RECENT = 4;
 // conversation exists in the store, and it never perturbs the run clock.
 const inFlightSends = new Set<string>();
 
-// Build the canonical ```plan``` block from a ProposeMission tool call. The
-// cockpit renders this block as an Approve card; generating it from the
-// validated tool args (not the model's free text) is what makes the proposal
-// robust — it can't be malformed or silently dropped. "" when there's nothing
-// to propose (no title and no tasks).
-function planBlockFromProposal(input: unknown): string {
-  const o = (input ?? {}) as { title?: unknown; tasks?: unknown };
-  const title = typeof o.title === "string" ? o.title.trim() : "";
-  const tasks = Array.isArray(o.tasks) ? o.tasks : [];
-  const lines = ["```plan"];
-  if (title) lines.push(`title: ${title}`);
-  for (const t of tasks) {
-    const s = String(t ?? "").trim();
-    if (s) lines.push(`- ${s}`);
-  }
-  lines.push("```");
-  return lines.length > 2 ? lines.join("\n") : "";
-}
-
 export async function sendMessage(
   text: string,
   contextPreamble?: string,
@@ -79,6 +61,12 @@ export async function sendMessage(
   // runs on the box. This machine never calls a model for chat — the message
   // goes to the box's /message (or /answer), and the reply streams back over
   // /poll. A message into a running thread steers it on the box.
+  {
+    // Threads from the old missions system are archived: readable, never run.
+    const s0 = useStore.getState();
+    const t0 = s0.conversations.find((c) => c.id === (targetConvIdOverride ?? s0.activeConversationId));
+    if (t0 && isArchivedThread(t0)) return;
+  }
   if (await routeToBox(text, contextPreamble, attachments, targetConvIdOverride)) return;
   const s = useStore.getState();
   // Concurrency model: every run marks its target conversation `status:
@@ -153,51 +141,6 @@ export async function sendMessage(
   }
   try {
 
-  // [sync split] On a follower checkout, mission/worker/ask threads belong to
-  // the mission host (the box). Relay the message over HTTP like the phone —
-  // never run a local executor turn here: this machine may not author mission
-  // state (the sanitize pass discards it) and the box would grind the same
-  // mission in parallel. The box appends the turn; its reply syncs back via
-  // git and the local view converges to the box's canonical thread.
-  if (
-    targetConv &&
-    (targetConv.source === "mission" || targetConv.source === "worker" || targetConv.source === "ask")
-  ) {
-    const mh = await import("./missionHost");
-    if (s.vaultPath && (await mh.isFollowerVault(s.vaultPath))) {
-      const cur0 = useStore.getState();
-      const append = (m: ChatMessage) => {
-        if (targetConvId && targetConvId !== cur0.activeConversationId) cur0.appendMessageToConversation(targetConvId, m);
-        else cur0.appendMessage(m);
-      };
-      if (trimmed) append({ role: "user", content: trimmed, direct: true });
-      if (!(await mh.missionHostConfigured(s.vaultPath))) {
-        append({
-          role: "assistant",
-          system: true,
-          content:
-            "⚠️ This machine doesn't host missions for this vault, and no mission host is configured — the message was NOT delivered to the running mission. Set the box's URL + token under Settings → Mission host, or reply from your phone.",
-        });
-        return;
-      }
-      // A mission waiting on Carl takes this as its answer (the phone's tagged
-      // /answer — a plain /message would not resume it on the box); anything
-      // else is an ordinary steer, exactly like the phone.
-      const res =
-        targetConv.source === "mission" && targetConv.missionState === "AWAITING_USER"
-          ? await mh.relayMissionAnswer(targetConv.id, trimmed)
-          : await mh.relayMissionMessage(targetConv.id, trimmed);
-      append({
-        role: "assistant",
-        system: true,
-        content: res.ok
-          ? "→ Relayed to the box (the mission host). The mission's reply lands here as the vault syncs — typically within a minute."
-          : `⚠️ Couldn't reach the box: ${res.error}. The message was NOT delivered — try again when the box is reachable, or reply from your phone.`,
-      });
-      return;
-    }
-  }
-
   // Skip compaction for off-target runs — compaction reaches into
   // the global s.messages view, which doesn't belong to the target.
   // If a Telegram-driven background run grows past the threshold,
@@ -256,23 +199,6 @@ export async function sendMessage(
       content: trimmed,
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
     });
-  }
-  // [harness v2] A genuine user message into a mission that's AWAITING_USER is
-  // the answer it was holding for — flip the board back to RUNNING immediately.
-  // Scheduled fires never reach an awaiting mission (the scheduler skips them),
-  // and are excluded here anyway via scheduledBriefing.
-  if (
-    harnessV2Enabled() &&
-    !scheduledBriefing &&
-    targetConv?.source === "mission" &&
-    targetConv?.missionState === "AWAITING_USER" &&
-    targetConvId
-  ) {
-    useStore.setState((s) => ({
-      conversations: s.conversations.map((c) =>
-        c.id === targetConvId ? { ...c, missionState: "RUNNING" as const } : c,
-      ),
-    }));
   }
   // Every run — foreground or background — marks its target conversation
   // "running". This is what lets conversations run in PARALLEL: per-conv
@@ -423,23 +349,6 @@ export async function sendMessage(
         const t: LiveTool = { id: e.id, name: e.name, input: e.input, startedAt: Date.now() };
         tools.push(t);
         if (live) store.pushLiveTool(t);
-        // A ProposeMission call becomes an Approve card. Inject the canonical
-        // plan block (built from the validated args) into the reply so the card
-        // is robust to model formatting drift. Surfaces that render the card:
-        // the phone cockpit (source "phone") and the desktop ChatPane (source
-        // "manual"). NOT telegram/scheduled — those go out as plain text, where
-        // raw ``` fences would just read as literal junk.
-        if (
-          e.name === "ProposeMission" &&
-          (targetConv?.source === "phone" || targetConv?.source === "manual")
-        ) {
-          const block = planBlockFromProposal(e.input);
-          if (block) {
-            const sep = !acc ? "" : acc.endsWith("\n\n") ? "" : acc.endsWith("\n") ? "\n" : "\n\n";
-            acc += sep + block;
-            if (live) store.appendStreamingText(sep + block);
-          }
-        }
         // Progress heartbeat so a supervisor can tell this run is alive even
         // mid-turn (throttled inside bumpHeartbeat).
         if (targetConvId) void bumpHeartbeat(vault, targetConvId, e.name);

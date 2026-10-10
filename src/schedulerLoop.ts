@@ -466,8 +466,7 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
   // per-checkout truth, so a laptop that also fires its OWN vaults still never
   // fires the box's. Resolved once here (the marker is a checkout constant).
   try {
-    const { isFollowerVault } = await import("./missionHost");
-    if (await isFollowerVault(vault)) followerVaults.add(vault);
+    if ((await invoke<string>("vault_sync_role", { vault })) === "follower") followerVaults.add(vault);
     else followerVaults.delete(vault);
   } catch {
     /* role unknown → treat as writer (matches the box default) */
