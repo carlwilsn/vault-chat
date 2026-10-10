@@ -59,6 +59,7 @@ function makeResponder(scenarios: Record<string, Scenario>, outputs: Record<stri
     const outs = toolOutputsSince(body, key);
     if (outs.length) outputs[key] = outs.join("\n---\n");
     const steps = scenarios[key]!;
+    if (!steps.length) return { text: "hello from pi" };
     if (outs.length < steps.length) return steps[outs.length]!(outs[outs.length - 1] ?? "");
     return { text: `${key} done: ${(outs[outs.length - 1] ?? "").slice(0, 80)}` };
   };
@@ -114,7 +115,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
           name: "bash",
           args: {
             command:
-              "echo ENV=$(env | grep -c -i -e OPENROUTER -e API_KEY); " +
+              "echo ENV=$(env | grep -c -e ^OPENROUTER -e API_KEY -e sk-or-); " + // (PI_PROVIDER=openrouter is not a key)
               "echo STORE=$(cat " + "SECRETS" + "/fallback.key " + "SECRETS" + "/secrets.age 2>/dev/null | wc -c); " +
               "echo PROCENV=$(cat /proc/*/environ 2>/dev/null | tr '\\0' '\\n' | grep -c canary); " +
               "echo SYSTEMD=$(systemd-run --user --quiet true 2>&1 >/dev/null; echo rc=$?); " +
@@ -154,6 +155,8 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     or.respond = (body, n) => {
       const s = orig(body, n);
       if (lastUser(body).includes("NOCOST1") && "text" in s) return { ...s, noCost: true };
+      // A reply slow enough for the phone host's store diff to see the run (it coalesces fast flips).
+      if (lastUser(body).includes("CHAT1") && "text" in s) return { ...s, delayMs: 1500 };
       return s;
     };
     await boot();
@@ -316,10 +319,11 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(o).toContain("END-KEY1");
     expect(o).not.toContain(CANARY);
     expect(o).not.toContain(PASS);
-    expect(o).toMatch(/ENV=0\b/);
-    expect(o).toMatch(/STORE=0\b/);
-    expect(o).toMatch(/PROCENV=0\b/);
-    expect(o).not.toMatch(/SYSTEMD=rc=0\b/);
+    const line = (k: string) => o.split("\n").find((l) => l.startsWith(`${k}=`));
+    expect(line("ENV")).toBe("ENV=0");
+    expect(line("STORE")).toBe("STORE=0");
+    expect(line("PROCENV")).toBe("PROCENV=0");
+    expect(line("SYSTEMD")).toMatch(/rc=[1-9]/); // the user's systemd bus is hidden: no escape
   });
 
   it("pi's own read/write tools cannot reach the key store (path guard, symlinks resolved) or its state", async () => {
