@@ -8,3 +8,5 @@ out/
 fixtures/synthetic/vault/papers/attention-survey.pdf
 # Lists real file names; committed only with Carl's approval.
 fixtures/REDACTION-REPORT.md
+# Tour shots (22 MB a run): regenerate with tools/tour-check.mjs; result.json is kept.
+proof/tour/*.png
