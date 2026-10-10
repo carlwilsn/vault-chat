@@ -3,6 +3,7 @@
 // which screen the open-steps drive the real app to.
 import type { BuildCtx, Scenario, Step } from "./types";
 import * as W from "./world";
+import { phase3Scenarios } from "./phase3";
 import type { Script } from "../runtime/llm";
 
 const MIN = 60_000;
@@ -790,6 +791,7 @@ export const scenarios: Scenario[] = [
     fastTimers: syncTimers,
     open: [...deskOpen(NOTE, "c-spectral"), { sleep: 1500 }],
   },
+  ...phase3Scenarios,
 ];
 
 // ---- History (P3-history) ------------------------------------------------------

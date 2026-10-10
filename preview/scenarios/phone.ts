@@ -6,7 +6,23 @@ import type { Scenario } from "./types";
 
 const VAULT = "/home/carl/vaults/summer-demo";
 
-function summary(c: W.Conv) {
+/** The project + ongoing-work fields server/phoneData.ts adds (Phase 3). */
+function meta(c: W.Conv) {
+  const out: Record<string, unknown> = {};
+  for (const k of ["project", "state", "nextWakeAt"]) if (c[k] !== undefined) out[k] = c[k];
+  if (c.state === "sleeping") {
+    for (const m of [...c.messages].reverse()) {
+      const w = ((m as any).toolCalls ?? []).filter((t: any) => /ScheduleWake/.test(t.name)).pop();
+      if (w?.input?.reason) {
+        out.wakeReason = w.input.reason;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+export function summary(c: W.Conv) {
   const vis = c.messages.filter((m: any) => !m.hidden);
   const last = [...vis].reverse().find((m: any) => String(m.content ?? "").trim());
   return {
@@ -26,15 +42,18 @@ function summary(c: W.Conv) {
     completedAt: c.completedAt,
     missionState: c.missionState,
     costUsd: c.costUsd,
+    ...meta(c),
   };
 }
 
-function thread(c: W.Conv) {
+export function thread(c: W.Conv) {
   return {
     id: c.id,
     title: c.title,
     source: c.source,
     status: c.status ?? "idle",
+    ...meta(c),
+    costUsd: c.costUsd,
     messages: c.messages
       .filter((m: any) => !m.hidden && !m.system)
       .map((m: any) => ({

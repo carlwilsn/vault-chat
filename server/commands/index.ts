@@ -11,7 +11,6 @@ import DEFAULT_SYSTEM_MD from "../../src-tauri/defaults/system.md";
 import DEFAULT_VOICE_MD from "../../src-tauri/defaults/voice.md";
 import DEFAULT_SUPERVISOR_MD from "../../src-tauri/defaults/supervisor.md";
 import DEFAULT_ASSISTANT_MD from "../../src-tauri/defaults/assistant.md";
-import DEFAULT_ASK_MD from "../../src-tauri/defaults/ask.md";
 
 let done = false;
 export function registerCommands(): void {
@@ -31,6 +30,5 @@ export function registerCommands(): void {
     default_voice_prompt: () => DEFAULT_VOICE_MD,
     default_supervisor_prompt: () => DEFAULT_SUPERVISOR_MD,
     default_assistant_prompt: () => DEFAULT_ASSISTANT_MD,
-    default_ask_prompt: () => DEFAULT_ASK_MD,
   });
 }

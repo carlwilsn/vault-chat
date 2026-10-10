@@ -87,12 +87,11 @@ describe("boot + phone routes", () => {
 
   let missionId = "";
 
-  it("/message {mission} starts a mission that runs one scripted turn and writes its file", async () => {
-    const r = await post("/message", { mission: { title: "Test mission", goal: "Write a haiku.\n\nDone when:\n- a haiku exists" } });
+  it("/message starts a chat that runs one scripted turn and writes its file", async () => {
+    const r = await post("/message", { text: "Write a haiku." });
     expect(r.status).toBe(200);
     const j = await r.json();
     expect(j.ok).toBe(true);
-    expect(j.mission).toBe("Test mission");
     missionId = j.convId;
     expect(missionId).toBeTruthy();
     // The scripted reply lands in the conversation file on disk.
@@ -104,18 +103,16 @@ describe("boot + phone routes", () => {
       return body.includes("Acknowledged. I have the brief") ? body : null;
     }, 60_000);
     const meta = JSON.parse(file.split("\n")[0]!);
-    expect(meta.source).toBe("mission");
-    expect(meta.title).toBe("Test mission");
+    expect(meta.source).toBe("phone");
     expect(or.calls.length).toBeGreaterThan(0);
-    expect(or.calls.some((c) => c.model === "openai/gpt-5.6-sol")).toBe(true);
     // And the phone sees it.
     const list = await (await get("/conversations")).json();
-    expect(list.conversations.some((c: any) => c.id === missionId && c.source === "mission")).toBe(true);
+    expect(list.conversations.some((c: any) => c.id === missionId)).toBe(true);
     const conv = await (await get(`/conversation?id=${missionId}`)).json();
     expect(conv.messages.some((m: any) => String(m.content).includes("Acknowledged"))).toBe(true);
   });
 
-  it("/answer resumes the mission with a tagged answer", async () => {
+  it("/answer sends the answer as the next message in the conversation", async () => {
     await waitFor(async () => (await (await get("/api/v1/health")).json()).busy.runs === 0, 60_000);
     const before = or.calls.length;
     or.reply = "Thanks, going with option A.";
@@ -146,7 +143,7 @@ describe("boot + phone routes", () => {
   };
 
   it("/message and /answer work through serve with the identity header and no token", async () => {
-    const r = await fetch(srv.base + "/message", { method: "POST", headers: viaServe, body: JSON.stringify({ mission: { title: "Serve mission", goal: "Say hi." } }) });
+    const r = await fetch(srv.base + "/message", { method: "POST", headers: viaServe, body: JSON.stringify({ text: "Say hi." }) });
     expect(r.status).toBe(200);
     const j = await r.json();
     expect(j.ok).toBe(true);
@@ -180,6 +177,42 @@ describe("boot + phone routes", () => {
     } finally {
       await push.close();
     }
+  });
+
+  it("a thread from the old missions system is archived: readable, never run", async () => {
+    const dir = join(vault, ".vault-chat", "conversations");
+    const now = Date.now();
+    writeFileSync(
+      join(dir, "old-mission.jsonl"),
+      JSON.stringify({ id: "old-mission", title: "Old mission", source: "mission", status: "idle", createdAt: now, lastActivityAt: now, unread: false }) +
+        "\n" +
+        JSON.stringify({ role: "user", content: "MISSION BRIEF" }) +
+        "\n",
+    );
+    const before = or.calls.length;
+    const j = await (await post("/message", { convId: "old-mission", text: "status?" })).json();
+    expect(j.error).toMatch(/archived/);
+    expect(or.calls.length).toBe(before);
+    const conv = await (await get("/conversation?id=old-mission")).json();
+    expect(conv.messages.some((m: any) => String(m.content).includes("MISSION BRIEF"))).toBe(true);
+  });
+
+  it("projects: list, tag a conversation (creating the project), clear it", async () => {
+    expect((await (await get("/projects")).json()).projects).toEqual([]);
+    const r = await (await post("/conversation/project", { convId: missionId, project: "BitNet 160M" })).json();
+    expect(r).toEqual({ ok: true, project: "bitnet-160m" });
+    expect((await (await get("/projects")).json()).projects).toEqual([{ slug: "bitnet-160m", name: "BitNet 160M" }]);
+    const row = (await (await get("/conversations")).json()).conversations.find((c: any) => c.id === missionId);
+    expect(row.project).toBe("bitnet-160m");
+    expect((await (await get(`/conversation?id=${missionId}`)).json()).project).toBe("bitnet-160m");
+    expect(await (await post("/conversation/project", { convId: missionId, project: null })).json()).toEqual({ ok: true, project: null });
+    expect((await (await post("/conversation/project", { convId: "nope", project: "x" })).json()).error).toMatch(/not found/);
+  });
+
+  it("the Claude/feedback screen's routes are gone", async () => {
+    expect((await get("/feedback")).status).toBe(404);
+    expect((await get("/coder-latest")).status).toBe(404);
+    expect((await post("/alert-followup", {})).status).toBe(404);
   });
 
   it("unknown routes 404", async () => {

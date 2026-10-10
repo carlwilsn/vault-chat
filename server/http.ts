@@ -12,6 +12,7 @@ import { getRing } from "./ring";
 import { conversationsSummary, conversationDetail, notificationsFeed, notesFeed, withinVault, mimeFor, dispatchVoiceTool } from "./phoneData";
 import { notificationAppend, pushSubsAdd, pushSubsRemove, vapidPublicKey } from "./commands/phone";
 import { isGitPath, handleGitHttp } from "./gitHttp";
+import { projectsList, setProject } from "./projectRoutes";
 import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
 import VOICE_PAGE_INLINE from "../src-tauri/assets/voice.html";
 import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
@@ -318,12 +319,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       return relayRoute(res, "phone:status", {}, 10_000, "app not answering — is a vault open?");
     case "POST /message": {
       const b = await jsonBody(req);
-      // A structured mission approval (Approve & run) stays on the old path (Phase 3 removes it).
-      const h = b?.mission ? undefined : hooks.engine?.message;
-      return engineRoute(res, h, b, "phone:msg", 15_000, "app not answering — is a vault open?");
+      return engineRoute(res, hooks.engine?.message, b, "phone:msg", 15_000, "app not answering — is a vault open?");
     }
-    case "POST /alert-followup":
-      return relayRoute(res, "phone:alert-followup", await jsonBody(req), 15_000, "app not answering");
     case "POST /answer": {
       const b = await jsonBody(req);
       return engineRoute(res, hooks.engine?.answer, b, "phone:answer", 15_000, "app not answering — is a vault open?", () => {
@@ -371,11 +368,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       const raw = await readBody(req);
       return send(res, 200, "text/plain; charset=utf-8", await dispatchVoiceTool(vault, raw));
     }
-    // Out of scope headless (contract): the in-app coder and feedback queue.
-    case "GET /feedback":
-      return json(res, 200, { items: [] });
-    case "GET /coder-latest":
-      return json(res, 200, { running: false, turn: 0, result: null });
+    // Projects: the chat chip and "New chat in project" (desktop box mode, phone).
+    case "GET /projects":
+      return json(res, 200, projectsList(vault));
+    case "POST /conversation/project": {
+      const b = await jsonBody(req);
+      const out = await setProject(vault, b);
+      if ("ok" in out) getRing().push(JSON.stringify({ type: "project", convId: b.convId, project: out.project }));
+      return json(res, "ok" in out ? 200 : 400, out);
+    }
     default:
       return json(res, 404, { error: "not found" });
   }

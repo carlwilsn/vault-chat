@@ -1,4 +1,4 @@
-// vault-chat-server: vault-chat's existing mission/phone machinery, headless.
+// vault-chat-server: the box. The engine runs every turn; the phone host and sync run headless here.
 // Boot order matters: browser globals first (store.ts reads localStorage at
 // import), then the command table, then the app modules (dynamic imports so
 // they evaluate after the shims).
@@ -93,7 +93,7 @@ async function main(): Promise<void> {
   await startPhoneAppHost();
 
   // Every agent turn runs in Codex (server/engine). The old in-process loop
-  // stays in the bundle for legacy mission threads until Phase 3 removes it.
+  // stays for the laptop's local chats (VC_ENGINE=0); old mission threads are archived, read-only.
   const { notificationAppend } = await import("./commands/phone");
   const { startEngine } = await import("./engine");
   const { modelsList } = await import("./engine/capabilities");
