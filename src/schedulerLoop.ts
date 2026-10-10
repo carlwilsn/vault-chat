@@ -13,6 +13,11 @@ import { vlog } from "./debugLog";
 import { harnessV2Enabled } from "./harness";
 import { invoke } from "@tauri-apps/api/core";
 
+/** True inside the headless vault-chat-server (server/shims/globals.ts). */
+function isHeadless(): boolean {
+  return (globalThis as { __VC_HEADLESS__?: boolean }).__VC_HEADLESS__ === true;
+}
+
 // Resume sweep runs at most once per vault per app session.
 const resumedVaults = new Set<string>();
 
@@ -757,7 +762,8 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
   }
 
   const store = useStore.getState();
-  const isActiveVault = store.vaultPath === vault;
+  // Headless server: always the on-disk path — there is no foreground chat.
+  const isActiveVault = store.vaultPath === vault && !isHeadless();
 
   // Positive "a schedule fired at T" marker — covers both fire paths, so even
   // a wake that produces nothing leaves a trail (the self-scheduled supervisor
@@ -806,7 +812,7 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
 }
 
 async function createScheduledConversation(vault: string, s: Schedule): Promise<string> {
-  const isActiveVault = useStore.getState().vaultPath === vault;
+  const isActiveVault = useStore.getState().vaultPath === vault && !isHeadless();
   if (isActiveVault) {
     const id = useStore.getState().newConversation();
     useStore.setState({
