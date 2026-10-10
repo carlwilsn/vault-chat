@@ -1,5 +1,6 @@
 mod voice_server;
 mod box_sync;
+mod history;
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -4016,6 +4017,29 @@ async fn git_init_if_needed(vault: String) -> Result<bool, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Append the attribution trailers (`Vault-Chat-Actor`, `Vault-Chat-Machine`,
+/// optional `Conversation`) as the message's last paragraph.
+pub(crate) fn with_actor_trailers(
+    vault: &str,
+    message: &str,
+    agent: bool,
+    actor: Option<String>,
+    machine: Option<String>,
+    conversation: Option<String>,
+) -> String {
+    let actor = actor.unwrap_or_else(|| if agent { "agent".into() } else { "human".into() });
+    let machine = machine.unwrap_or_else(|| if box_sync::box_mode_cached(vault) { "box".into() } else { "laptop".into() });
+    let mut t = format!("Vault-Chat-Actor: {}
+Vault-Chat-Machine: {}", actor, machine);
+    if let Some(c) = conversation.filter(|c| !c.trim().is_empty()) {
+        t.push_str(&format!("
+Conversation: {}", c.trim()));
+    }
+    format!("{}
+
+{}", message.trim_end(), t)
+}
+
 /// Stage all changes and commit with the given message. Returns the
 /// short hash of the new commit, or None if nothing was staged.
 #[tauri::command]
@@ -4023,7 +4047,13 @@ async fn git_commit_all(
     vault: String,
     message: String,
     agent: Option<bool>,
+    actor: Option<String>,
+    machine: Option<String>,
+    conversation: Option<String>,
 ) -> Result<Option<String>, String> {
+    // Attribution contract (F-history §2): every commit says who made it and
+    // where, so History reads trailers instead of guessing from subjects.
+    let message = with_actor_trailers(&vault, &message, agent.unwrap_or(false), actor, machine, conversation);
     tauri::async_runtime::spawn_blocking(move || {
         with_repo_lock(&vault, || {
         // Box mode: never abort a merge someone is resolving by hand, keep the
@@ -7659,6 +7689,13 @@ pub fn run() {
             git_file_at,
             git_diff_vs_current,
             git_restore_file_to,
+            history::history_timeline,
+            history::history_note_versions,
+            history::history_file_at,
+            history::history_diff,
+            history::history_restore_note,
+            history::history_undo_entry,
+            history::history_redo_entry,
             vault_sync_status,
             vault_sync_set_remote,
             vault_sync_commit_local,
