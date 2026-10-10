@@ -7,9 +7,11 @@ import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, resolve, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderPhone } from "./phone.mjs";
+import { desktopInventory, phoneInventory, galleryModule } from "./inventory.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url)); // <harness>/preview
 const HARNESS = resolve(HERE, "..");
+const GALLERY_ID = String.fromCharCode(0) + "vc-preview-gallery";
 const posix = (p) => p.replace(/\\/g, "/");
 
 const TEXT_EXT = new Set([
@@ -147,6 +149,20 @@ export function previewPlugin(opts) {
           res.setHeader("content-type", MIME[extname(p).toLowerCase()] ?? "application/octet-stream");
           return void res.end(readFileSync(p));
         }
+        if (url.pathname === "/__preview/inventory") {
+          try {
+            const surface = url.searchParams.get("surface") ?? "desktop";
+            let html = surface === "phone" ? phoneInventory(opts.tree) : desktopInventory(opts.tree);
+            const nav = `<p style="margin:0 0 10px"><a style="color:#6aa2ff" href="?surface=desktop">desktop</a> · <a style="color:#6aa2ff" href="?surface=phone">phone</a></p>`;
+            html = html.replace("<main>", "<main>" + nav);
+            if (surface !== "phone") html = await s.transformIndexHtml("/__preview/inventory", html);
+            res.setHeader("content-type", "text/html; charset=utf-8");
+            return void res.end(html);
+          } catch (e) {
+            res.statusCode = 500;
+            return void res.end(String(e?.stack ?? e));
+          }
+        }
         if (url.pathname === "/phone" || url.pathname === "/phone.html") {
           try {
             const html = await renderPhone({ tree: opts.tree, server: s, scenario: url.searchParams.get("scenario") ?? "home", base: url.searchParams.get("base") ?? "synthetic", side: opts.side, scenariosEntry, loadBase });
@@ -166,6 +182,7 @@ export function previewPlugin(opts) {
       order: "pre",
       handler(html, ctx) {
         const u = new URL(ctx.originalUrl ?? ctx.path ?? "/", "http://x");
+        if (u.pathname.startsWith("/__preview/")) return html; // inventory page: no app boot
         const base = u.searchParams.get("base") ?? "synthetic";
         const tag = `<script type="module" src="/@vc-preview/entry?base=${encodeURIComponent(base)}"></script>\n    `;
         const needle = /<script type="module" src="\/src\/main\.tsx"><\/script>/;
@@ -174,6 +191,7 @@ export function previewPlugin(opts) {
       },
     },
     resolveId(id, importer) {
+      if (id === "/@vc-preview/gallery") return GALLERY_ID;
       if (id.startsWith("/@vc-preview/entry")) return "\0vc-preview-entry" + (id.includes("?") ? id.slice(id.indexOf("?")) : "");
       if (id.startsWith("virtual:vc-preview-base/")) return "\0" + id;
       const imp = importer ? posix(importer) : "";
@@ -186,6 +204,7 @@ export function previewPlugin(opts) {
       return null;
     },
     load(id) {
+      if (id === "\0vc-preview-gallery") return galleryModule();
       if (id.startsWith("\0vc-preview-entry")) {
         const q = new URLSearchParams(id.slice("\0vc-preview-entry".length).replace(/^\?/, ""));
         const base = q.get("base") ?? "synthetic";

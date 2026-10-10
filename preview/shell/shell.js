@@ -20,7 +20,7 @@ function urlFor(side, surface, extra = {}) {
   if (!s) return null;
   const q = new URLSearchParams({ scenario: state.scenario, side, base: state.base, ...extra });
   if (surface === "phone") return `${s.url}/phone?${q}`;
-  if (surface === "inventory") return `${s.url}/__preview/inventory?${q}`;
+  if (surface === "inventory") return `${s.url}/__preview/inventory?surface=desktop`;
   if (surface === "popout-chat") return `${s.url}/?view=chat&${q}`;
   return `${s.url}/?${q}`;
 }
