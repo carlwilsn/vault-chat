@@ -102,6 +102,26 @@ export function convs(now: number): W.Conv[] {
       messages: [u("Sweep the repos for uncommitted drift and tell me if anything matters.")],
     },
     {
+      id: "c-plan",
+      title: "Set up the 3.2B extension",
+      source: "manual",
+      status: "idle",
+      unread: false,
+      createdAt: now - 30 * HOUR,
+      lastActivityAt: now - 29 * HOUR,
+      messages: [
+        u("Set up the 3.2B-token extension as a proper piece of work."),
+        a("Here's the plan — approve it and it runs as a mission.
+
+```plan
+title: Extend BitNet 160M to 3.2B tokens
+- re-fit the cosine schedule for 6100 steps
+- train seed 42 to 3.2B and compare against the reference
+- update the writeup's results table
+```"),
+      ],
+    },
+    {
       id: "p-figure",
       title: "Render the thesis figures",
       source: "manual",
@@ -158,121 +178,208 @@ export function phoneDb(db: any, now: number): void {
 const NOTE = "projects/bitnet-160m/writeup.md";
 const open = (conv: string, extra: Step[] = []): Step[] => [{ file: NOTE }, { chat: true }, { conversation: conv }, { sleep: 500 }, ...extra];
 
+// Playable steps that work on both sides: a target that only exists on one
+// side is clicked when present and skipped when not, so the tour shows
+// "before: X opens" and "after: X is gone / Y instead" from the same script.
+const tryClick = (sel: string, text?: RegExp): Step => ({
+  run: (api) => {
+    const el = text ? api.byText(text, sel) : api.q(sel);
+    if (!el) return;
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    el.click();
+  },
+});
+const tryType = (sel: string, text: string): Step => ({
+  run: (api) => {
+    const el = api.q(sel) as HTMLInputElement | null;
+    if (!el) return;
+    el.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(el, text);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  },
+});
+const tryEnter = (sel: string): Step => ({
+  run: (api) => {
+    const el = api.q(sel);
+    if (!el) return;
+    const init = { key: "Enter", code: "Enter", bubbles: true, cancelable: true };
+    el.dispatchEvent(new KeyboardEvent("keydown", init));
+  },
+});
+const pause = (ms = 1200): Step => ({ sleep: ms });
+const CHATS = "[title^='Chats — switch']";
+const CHIP = "[title^='Project —']";
+
 export const phase3Scenarios: Scenario[] = [
   // ----- desktop: removed -----
   {
     id: "p3-titlebar",
-    title: "Titlebar — the rocket is gone, the bell is in its place",
+    title: "Mission Control is gone — the bell is in the Rocket's place",
     group: "P3 · Removals",
     notes:
-      "Before: the Rocket opens Mission Control. After: no Mission Control anywhere; the same slot is the bell (a dot when something is unread). The old Missions scenarios show the removal too: their Mission control click finds nothing.",
+      "Plays: click the titlebar button between Notes and the mic. Before: the Rocket opens Mission Control (Missions / Schedules / Notifications). After: there is no Rocket; the bell in its place opens the notification list.",
     build,
-    open: open("p-seed44"),
+    open: [...open("c-spectral"), pause(), tryClick("[title='Mission control']"), tryClick("[title='Notifications']"), pause(2500)],
+  },
+  {
+    id: "p3-approve-gone",
+    title: "Approve & run is gone",
+    group: "P3 · Removals",
+    notes:
+      "A chat where the agent once proposed a mission. Before: an “Approve & run” card. After: the old plan block shows as a plain code block; no card, no button — there is no missions system to start.",
+    build: (c) => {
+      build(c);
+    },
+    activeConversation: "c-plan",
+    open: [...open("c-plan"), pause(2000)],
   },
   // ----- desktop: the chat list -----
   {
     id: "p3-chats",
-    title: "Chats — grouped by project, ongoing work, archived missions",
+    title: "Chats — grouped by project; old missions archived",
     group: "P3 · Chats",
     notes:
-      "Option A (sections): each project is a section (hover its header for + New chat in project); chats without a project keep Running / Recent / Earlier; the old mission, worker and ask threads fold into “Archived missions” at the bottom (click to open, read-only). Rows doing long work show the ongoing-work line instead of the preview.",
+      "Plays: open Chats, then open “Archived missions”. Before: one list, mission/worker/ask threads mixed in with chats. After (option A, sections): each project is a section (hover its header: + New chat in project), chats without a project keep Running / Recent / Earlier, rows doing long work show the ongoing-work line, and the old threads fold into Archived missions at the bottom.",
     build,
-    open: open("p-seed44", [{ click: "[title^='Chats — switch']" }, { sleep: 300 }]),
+    open: [...open("p-seed44"), pause(), { click: CHATS }, pause(1800), tryClick("button", /^Archived missions/), pause(2000)],
   },
   {
     id: "p3-chats-folders",
     title: "Chats — option B: projects as folders",
     group: "P3 · Chats",
-    notes: "Option B (folders): one row per project with its count and how many are working; click to open it in place. Same archive and lines as option A.",
+    notes: "Plays: open Chats, then open the BitNet 160M folder. Option B: one row per project with its count and how many are working; it opens in place.",
     localStorage: { vc_chat_grouping: "folders" },
     build,
-    open: open("p-seed44", [{ click: "[title^='Chats — switch']" }, { sleep: 300 }, { click: "button[aria-expanded]", text: /BitNet 160M/ }]),
+    open: [...open("p-seed44"), pause(), { click: CHATS }, pause(1500), tryClick("button[aria-expanded]", /BitNet 160M/), pause(2000)],
   },
   {
     id: "p3-archived",
     title: "An archived mission thread — readable, read-only",
     group: "P3 · Chats",
-    notes: "The old BitNet mission thread, opened from Archived missions: the history renders as before; the composer is off with “Archived mission thread — read only”.",
+    notes:
+      "Plays: Chats → Archived missions → the BitNet mission. Before: the mission thread with a live composer (a message would drive the supervisor). After: the history renders as before; the composer is off — “Archived mission thread — read only”.",
     build,
-    activeConversation: "m-bitnet",
-    open: open("m-bitnet"),
+    open: [...open("c-spectral"), pause(), { click: CHATS }, pause(1000), tryClick("button", /^Archived missions/), pause(800), { click: "button", text: /^BitNet 160M MVP/ }, pause(2500)],
   },
   // ----- desktop: the chat -----
   {
-    id: "p3-chat",
-    title: "Chat — project chip (option A: top) and the ongoing-work line",
+    id: "p3-chat-chip",
+    title: "Project chip — set a project on a chat",
     group: "P3 · Chat",
     notes:
-      "A keep-going conversation on the box: the project chip over the thread (click: pick, create by typing a name, No project, New chat in BitNet 160M) and, above the composer, “checking the run · next h:mm · $1.20” (grey dot = waiting on its own wake).",
+      "Plays: a chat with no project; click the chip over the thread, type “BitNet”, Enter — the chat joins BitNet 160M (open Chats to see it move into the section). Before: there is no chip.",
     build,
-    activeConversation: "p-seed44",
-    open: open("p-seed44"),
+    activeConversation: "c-spectral",
+    open: [...open("c-spectral"), pause(), tryClick(CHIP), pause(900), tryType("input[placeholder^='Find or name a project']", "BitNet"), pause(1200), tryEnter("input[placeholder^='Find or name a project']"), pause(1500), { click: CHATS }, pause(2200)],
   },
   {
-    id: "p3-chat-chip-open",
-    title: "Chat — the project chip's menu",
+    id: "p3-chat-new-in-project",
+    title: "Project chip — New chat in project",
     group: "P3 · Chat",
-    notes: "The chip's menu open: the vault's projects (✓ on this chat's), a search line that creates a project from a new name, No project, and New chat in BitNet 160M.",
+    notes: "Plays: in a BitNet 160M chat, chip → “New chat in BitNet 160M”: a fresh chat, already in the project. Before: no chip; New chat is the + only.",
     build,
-    activeConversation: "p-seed44",
-    open: open("p-seed44", [{ click: "[title^='Project —']" }, { sleep: 200 }]),
+    activeConversation: "p-evaltable",
+    open: [...open("p-evaltable"), pause(), tryClick(CHIP), pause(1200), tryClick("button", /^New chat in BitNet 160M/), pause(2000)],
   },
   {
     id: "p3-chat-chip-footer",
-    title: "Chat — option B: the chip beside the model picker",
+    title: "Project chip — option B: beside the model picker",
     group: "P3 · Chat",
-    notes: "The same chip in the composer's footer row, next to the model picker, instead of over the thread.",
+    notes: "Plays: the same chip in the composer's footer row, next to the model picker, opened.",
     localStorage: { vc_project_chip: "footer" },
     build,
     activeConversation: "p-seed44",
-    open: open("p-seed44"),
+    open: [...open("p-seed44"), pause(), tryClick(CHIP), pause(2200)],
   },
   {
-    id: "p3-chat-waiting",
-    title: "Chat — waiting for you, and blocked",
+    id: "p3-ongoing",
+    title: "The ongoing-work line — working, waiting, waiting for you, blocked",
     group: "P3 · Chat",
-    notes: "PS3 problem 5 asked a question (accent dot, “Waiting for you · $0.08”). Switch to “Render the thesis figures” in Chats for the red “Blocked · $0.91”.",
+    notes:
+      "Plays: a keep-going chat (“checking the run · next h:mm · $1.20”, grey dot: waiting on its own wake), then through Chats to PS3 problem 5 (“Waiting for you · $0.08”, accent dot), the repo sweep (“Working · $0.05”, pulsing) and the thesis figures (“Blocked · $0.91”, red). Before: no line anywhere.",
     build,
-    activeConversation: "p-ps3",
-    open: open("p-ps3"),
+    activeConversation: "p-seed44",
+    open: [
+      ...open("p-seed44"),
+      pause(2200),
+      { click: CHATS }, pause(900), { click: "button", text: /^PS3 problem 5/ }, pause(2000),
+      { click: CHATS }, pause(900), { click: "button", text: /^Sweep the repos/ }, pause(2000),
+      { click: CHATS }, pause(900), { click: "button", text: /^Render the thesis figures/ }, pause(2200),
+    ],
   },
   // ----- desktop: notifications -----
   {
     id: "p3-notifs",
-    title: "Notifications — the list behind the bell (option A: popover)",
+    title: "Notifications — one list, each opens its conversation",
     group: "P3 · Notifications",
     notes:
-      "Replaces Mission Control's Notifications tab: questions (?), finished work (✓), failures (!) — newest first, unread dotted, older under Earlier. Click a row: it's marked read and its conversation opens.",
+      "Plays: open the list, click the question. Before: Rocket → Mission Control → its Notifications tab. After (option A, popover): the bell's list — questions (?), finished work (✓), failures (!), unread dotted; a click marks it read and opens its conversation (here PS3 problem 5, waiting for you).",
     build,
-    open: open("p-seed44", [{ click: "[title='Notifications']" }, { sleep: 300 }]),
+    open: [
+      ...open("p-seed44"),
+      pause(),
+      tryClick("[title='Mission control']"), pause(800), tryClick("button", /^Notifications/),
+      tryClick("[title='Notifications']"),
+      pause(2200),
+      tryClick("button", /^Needs you: PS3 problem 5/),
+      pause(2200),
+    ],
   },
   {
     id: "p3-notifs-panel",
     title: "Notifications — option B: a side panel",
     group: "P3 · Notifications",
-    notes: "The same list in the Chats panel's right-hand sheet instead of a popover.",
+    notes: "Plays: the bell opens the same list in the Chats panel's right-hand sheet instead of a popover.",
     localStorage: { vc_notif_style: "panel" },
     build,
-    open: open("p-seed44", [{ click: "[title='Notifications']" }, { sleep: 300 }]),
+    open: [...open("p-seed44"), pause(), tryClick("[title='Notifications']"), pause(2500)],
   },
   // ----- phone -----
   {
     id: "p3-phone-menu",
     title: "Phone — the menu without Activity",
     group: "P3 · Phone",
-    notes: "Before: Chat, Activity, Alerts, Notes, Voice, Box & settings. After: Activity is gone (missions, workers, schedules).",
+    notes: "Plays: open the menu, tap Activity. Before: Chat, Activity, Alerts, Notes, Voice, Box & settings — Activity opens the missions board. After: there is no Activity row (missions, workers and schedules are gone); the menu stays open.",
     build,
     surfaces: ["phone"],
-    phone: { clicks: ["#menuBtn"], db: phoneDb },
+    phone: { clicks: ["#menuBtn", '.mrow[data-page="activity"]'], db: phoneDb },
   },
   {
     id: "p3-phone-chats",
     title: "Phone — conversations grouped by project",
     group: "P3 · Phone",
-    notes: "Project sections (+ starts a chat in the project), then Chats, the ongoing-work line on rows doing long work, and Archived missions folded at the bottom.",
+    notes: "Plays: open the conversations drawer. Project sections (+ starts a chat in the project), then Chats, the ongoing-work line on rows doing long work, and Archived missions folded at the bottom. Before: your chats only, ungrouped (missions lived on Activity).",
     build,
     surfaces: ["phone"],
     phone: { clicks: ["#convBtn"], db: phoneDb },
+  },
+  {
+    id: "p3-phone-archived",
+    title: "Phone — an archived mission thread",
+    group: "P3 · Phone",
+    notes: "Plays: drawer → Archived missions → the BitNet mission: the old thread, readable; the composer says “Archived mission thread — read only”. Before: there is no archive in the drawer (missions were on Activity).",
+    build,
+    surfaces: ["phone"],
+    phone: { clicks: ["#convBtn", "text:Archived missions · 5", "text:BitNet 160M MVP"], db: phoneDb },
+  },
+  {
+    id: "p3-phone-new-in-project",
+    title: "Phone — New chat in a project",
+    group: "P3 · Phone",
+    notes: "Plays: drawer → the + on the BitNet 160M section: a new chat whose header already says BitNet 160M (its first message creates it in the project).",
+    build,
+    surfaces: ["phone"],
+    phone: { clicks: ["#convBtn", ".csec.proj .padd"], db: phoneDb },
+  },
+  {
+    id: "p3-phone-approve-gone",
+    title: "Phone — Approve & run is gone",
+    group: "P3 · Phone",
+    notes: "Plays: open a chat where the agent once proposed a mission. Before: the “Proposed mission · Approve & run” card. After: the plan block is plain text in a code block.",
+    build,
+    surfaces: ["phone"],
+    phone: { clicks: ["#convBtn", "text:Set up the 3.2B extension"], db: phoneDb },
   },
   {
     id: "p3-phone-thread",
@@ -285,27 +392,27 @@ export const phase3Scenarios: Scenario[] = [
   },
   {
     id: "p3-phone-project-sheet",
-    title: "Phone — the project sheet",
+    title: "Phone — set a chat's project",
     group: "P3 · Phone",
-    notes: "Tap the chat's title: the projects (✓ on this chat's), No project, New chat in BitNet 160M, and a line to name a new project.",
+    notes: "Plays: open a chat, tap its title — the project sheet (projects with ✓ on this chat's, No project, New chat in BitNet 160M, a line to name a new one) — tap Coursework: the header now says Coursework. Before: tapping the title opened the Claude/feedback drawer.",
     build,
     surfaces: ["phone"],
-    phone: { clicks: ["#convBtn", "text:Train seed 44 to 3.2B tokens", "#titleBtn"], db: phoneDb },
+    phone: { clicks: ["#convBtn", "text:Train seed 44 to 3.2B tokens", "#titleBtn", "text:Coursework"], db: phoneDb },
   },
   {
     id: "p3-phone-alerts",
     title: "Phone — notifications open their conversation",
     group: "P3 · Phone",
-    notes: "Alerts is the one list: the question card (options answer in the conversation; the card or its chat icon opens it), Blocked and Done cards open their conversations. No deliberation sheets, no follow-up threads.",
+    notes: "Plays: Alerts, then the question card's chat icon. After: Alerts is the one list — the question card (options answer in the conversation), Blocked and Done cards — and every card opens its conversation (here PS3 problem 5). Before: the chat icon opened a separate deliberation sheet with its own ask thread.",
     build,
     surfaces: ["phone"],
-    phone: { page: "alerts", db: phoneDb },
+    phone: { page: "alerts", clicks: [".needsyou .digin"], db: phoneDb },
   },
   {
     id: "p3-phone-settings",
     title: "Phone — Box & settings without the Claude/feedback screen",
     group: "P3 · Phone",
-    notes: "Before: the drawer is the Claude screen (Feedback | Chat, reports, the coder chat) with settings behind a gear. After: just Box & settings — notifications, a test push, the version.",
+    notes: "Plays: menu → Box & settings. Before: the drawer is the Claude screen (Feedback | Chat, reports, the coder chat) with settings behind a gear. After: just Box & settings — notifications, a test push, the version.",
     build,
     surfaces: ["phone"],
     phone: { clicks: ["#menuBtn", "#settingsRow"], db: phoneDb },
