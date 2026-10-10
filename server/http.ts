@@ -16,6 +16,7 @@ import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
 import VOICE_PAGE_INLINE from "../src-tauri/assets/voice.html";
 import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
 import ICON_PNG_INLINE from "../src-tauri/assets/icon-apple-touch.png";
+import PHONE_APP from "vc:phone-app";
 
 export type ServerHooks = {
   health: () => Promise<Record<string, unknown>>;
@@ -51,6 +52,22 @@ function asset(name: string, inline: string | Uint8Array): string | Buffer {
 }
 
 const NO_STORE = "no-store, must-revalidate"; // voice_server.rs:242
+
+/** The phone page: the bundled app's index.html when the bundle carries it
+ * (build.mjs --phone-app), else phone.html. Either way never cached. */
+function phonePage(): string | Buffer {
+  const app = PHONE_APP["index.html"];
+  return app ? Buffer.from(app, "base64") : asset("phone.html", PHONE_PAGE_INLINE);
+}
+const ASSET_MIME: Record<string, string> = {
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff",
+  ".ttf": "font/ttf",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+};
 
 function send(res: ServerResponse, status: number, mime: string, body: string | Buffer, extra: Record<string, string> = {}): void {
   res.writeHead(status, { "Content-Type": mime, "Cache-Control": NO_STORE, ...extra });
@@ -139,7 +156,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     const t = phoneToken();
     const extra: Record<string, string> = {};
     if (t) extra["Set-Cookie"] = `vc_token=${t}; Path=/; HttpOnly; SameSite=Lax; Max-Age=34560000`;
-    return send(res, 200, "text/html; charset=utf-8", asset("phone.html", PHONE_PAGE_INLINE), extra);
+    return send(res, 200, "text/html; charset=utf-8", phonePage(), extra);
+  }
+  if (path.startsWith("/phone/assets/") && method === "GET") {
+    // The phone app's hashed files: immutable, so cached for good.
+    const f = PHONE_APP[path.slice("/phone/".length)];
+    if (!f) return json(res, 404, { error: "not found" });
+    const ext = path.slice(path.lastIndexOf("."));
+    return send(res, 200, ASSET_MIME[ext] ?? "application/octet-stream", Buffer.from(f, "base64"), { "Cache-Control": "public, max-age=31536000, immutable" });
   }
 
   const auth = authorize(req, url);
@@ -168,7 +192,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "GET /voice":
       return send(res, 200, "text/html; charset=utf-8", asset("voice.html", VOICE_PAGE_INLINE));
     case "GET /phone":
-      return send(res, 200, "text/html; charset=utf-8", asset("phone.html", PHONE_PAGE_INLINE));
+      return send(res, 200, "text/html; charset=utf-8", phonePage());
     case "GET /conversations":
       return json(res, 200, conversationsSummary(vault));
     case "GET /surface": {
