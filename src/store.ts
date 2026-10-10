@@ -24,6 +24,7 @@ function withMid(m: ChatMessage): ChatMessage {
 }
 import { formatNote } from "./notes-format";
 import { findModel } from "./providers";
+import { withCompactionDivider, lastReportedContext } from "./chatContext";
 import { keychainGet, keychainSet, keychainDelete, KEY } from "./keychain";
 import {
   fetchAllCatalog,
@@ -118,6 +119,11 @@ export type ChatMessage = {
   // are never replaced. Tapping one relays it as the tagged answer to the
   // waiting mission. Only ever set on assistant turns in source:"ask" threads.
   askOptions?: { answer: string; title: string; body: string; primary?: boolean }[];
+  // A compaction divider (always `system: true`): the earlier conversation was
+  // summarized here. The model sees this summary plus only the messages AFTER
+  // the divider; the chat shows a quiet divider whose summary expands. See
+  // chatContext.ts.
+  compaction?: { summary: string; at?: number };
 };
 
 // Shallow content-compare for the chat message list. The popout
@@ -141,7 +147,6 @@ function messagesEqual(a: ChatMessage[], b: ChatMessage[]): boolean {
   return true;
 }
 
-export const MODEL_CONTEXT_LIMIT = 200_000;
 
 export type LiveTool = { id: string; name: string; input: any; result?: string; startedAt?: number; inputChars?: number; etaSeconds?: number };
 
@@ -403,6 +408,12 @@ export async function hydrateKeychain(): Promise<void> {
   if (cached && cached.length > 0) {
     setLiveCatalog(cached);
     useStore.setState({ catalog: cached });
+    // A catalog cached before windows were kept has no contextLength on any
+    // OpenRouter entry: refresh once in the background so the context dial
+    // measures against each model's real window.
+    if (apiKeys.openrouter && cached.some((m) => m.provider === "openrouter") && !cached.some((m) => typeof m.contextLength === "number")) {
+      void useStore.getState().refreshCatalog();
+    }
   } else if (Object.keys(apiKeys).length > 0) {
     // New install with keys already in the keychain (e.g. migrated):
     // kick off a background refresh so the dropdown populates.
@@ -682,7 +693,7 @@ type State = {
   addTokenUsage: (u: { prompt: number; completion: number; total: number }) => void;
   setLastContext: (n: number) => void;
   setCompacting: (b: boolean) => void;
-  applyCompaction: (summary: string, keepCount: number, banner: ChatMessage) => void;
+  applyCompaction: (summary: string, keepCount: number) => void;
   appendStreamingText: (s: string) => void;
   setStreamingText: (s: string) => void;
   appendStreamingReasoning: (s: string) => void;
@@ -1410,10 +1421,14 @@ export const useStore = create<State>((set) => ({
     })),
   setLastContext: (n) => set({ lastContext: n }),
   setCompacting: (b) => set({ compacting: b }),
-  applyCompaction: (summary, keepCount, banner) =>
+  // Nothing is dropped: a divider carrying the summary goes in before the last
+  // `keepCount` messages (chatContext.ts). Messages are append-only on disk, so
+  // the old "replace the transcript with banner + tail" was refused by the
+  // never-shrink write and lost the summary on the next switch or reload.
+  applyCompaction: (summary, keepCount) =>
     set((s) => ({
-      messages: [banner, ...s.messages.slice(-keepCount)],
-      compactionSummary: summary,
+      messages: withCompactionDivider(s.messages, summary, keepCount),
+      compactionSummary: null,
       lastContext: 0,
     })),
   appendStreamingText: (s) => {
@@ -1804,7 +1819,7 @@ export const useStore = create<State>((set) => ({
         conversationsLoaded: true,
         messages: active.messages,
         compactionSummary: null,
-        lastContext: 0,
+        lastContext: lastReportedContext(active.messages),
         tokenUsage: { prompt: 0, completion: 0, total: 0 },
         agentTodos: [],
         streamingText: "",
@@ -2015,7 +2030,9 @@ export const useStore = create<State>((set) => ({
         // returning to a running thread looks exactly like never leaving.
         busy: target.status === "running",
         compactionSummary: null,
-        lastContext: rt?.lastContext ?? 0,
+        // A chat reopened without a live run shows its last reported context
+        // (from its newest assistant turn) instead of no dial at all.
+        lastContext: rt?.lastContext || lastReportedContext(target.messages),
         tokenUsage: rt?.tokenUsage ?? { prompt: 0, completion: 0, total: 0 },
         agentTodos: rt?.agentTodos ?? [],
         busyStartedAt: target.status === "running" ? rt?.startedAt ?? null : null,
@@ -2070,7 +2087,7 @@ export const useStore = create<State>((set) => ({
         activeConversationId: target.id,
         messages: target.messages,
         compactionSummary: null,
-        lastContext: 0,
+        lastContext: lastReportedContext(target.messages),
         tokenUsage: { prompt: 0, completion: 0, total: 0 },
         agentTodos: [],
         streamingText: "",

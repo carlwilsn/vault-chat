@@ -19,11 +19,12 @@ async function fetchAnthropic(apiKey: string): Promise<ModelSpec[]> {
     },
   });
   if (!res.ok) throw new Error(`anthropic ${res.status}`);
-  const json = (await res.json()) as { data: Array<{ id: string; display_name?: string }> };
+  const json = (await res.json()) as { data: Array<{ id: string; display_name?: string; max_input_tokens?: number }> };
   return json.data.map((m) => ({
     provider: "anthropic" as const,
     id: m.id,
     label: m.display_name ?? m.id,
+    ...(typeof m.max_input_tokens === "number" ? { contextLength: m.max_input_tokens } : {}),
   }));
 }
 
@@ -48,7 +49,7 @@ async function fetchGoogle(apiKey: string): Promise<ModelSpec[]> {
   );
   if (!res.ok) throw new Error(`google ${res.status}`);
   const json = (await res.json()) as {
-    models: Array<{ name: string; displayName?: string; supportedGenerationMethods?: string[] }>;
+    models: Array<{ name: string; displayName?: string; supportedGenerationMethods?: string[]; inputTokenLimit?: number }>;
   };
   return json.models
     .filter(
@@ -58,7 +59,12 @@ async function fetchGoogle(apiKey: string): Promise<ModelSpec[]> {
     )
     .map((m) => {
       const id = m.name.replace(/^models\//, "");
-      return { provider: "google" as const, id, label: m.displayName ?? id };
+      return {
+        provider: "google" as const,
+        id,
+        label: m.displayName ?? id,
+        ...(typeof m.inputTokenLimit === "number" ? { contextLength: m.inputTokenLimit } : {}),
+      };
     });
 }
 
@@ -67,11 +73,12 @@ async function fetchOpenRouter(apiKey: string): Promise<ModelSpec[]> {
     headers: { authorization: `Bearer ${apiKey}` },
   });
   if (!res.ok) throw new Error(`openrouter ${res.status}`);
-  const json = (await res.json()) as { data: Array<{ id: string; name?: string }> };
+  const json = (await res.json()) as { data: Array<{ id: string; name?: string; context_length?: number }> };
   return json.data.map((m) => ({
     provider: "openrouter" as const,
     id: m.id,
     label: m.name ?? m.id,
+    ...(typeof m.context_length === "number" ? { contextLength: m.context_length } : {}),
   }));
 }
 
