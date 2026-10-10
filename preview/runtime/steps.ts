@@ -73,7 +73,8 @@ export async function runSteps(steps: Step[], vault: string): Promise<void> {
   for (const s of steps) {
     if ("wait" in s) await waitFor(s.wait, s.timeout);
     else if ("click" in s) {
-      const el = await waitFor(s.click, 8000, s.text);
+      const el = s.optional ? await waitFor(s.click, 2500, s.text).catch(() => null) : await waitFor(s.click, 8000, s.text);
+      if (!el) continue;
       const target = s.nth !== undefined ? qa(s.click)[s.nth] ?? el : el;
       target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
       target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));

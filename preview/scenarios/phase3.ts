@@ -338,7 +338,7 @@ export const phase3Scenarios: Scenario[] = [
     notes: "Plays: open the menu, tap Activity. Before: Chat, Activity, Alerts, Notes, Voice, Box & settings — Activity opens the missions board. After: there is no Activity row (missions, workers and schedules are gone); the menu stays open.",
     build,
     surfaces: ["phone"],
-    phone: { clicks: ["#menuBtn", '.mrow[data-page="activity"]'], db: phoneDb },
+    phone: { clicks: ["#menuBtn", '?.mrow[data-page="activity"]'], db: phoneDb },
   },
   {
     id: "p3-phone-chats",
@@ -356,7 +356,7 @@ export const phase3Scenarios: Scenario[] = [
     notes: "Plays: drawer → Archived missions → the BitNet mission: the old thread, readable; the composer says “Archived mission thread — read only”. Before: there is no archive in the drawer (missions were on Activity).",
     build,
     surfaces: ["phone"],
-    phone: { clicks: ["#convBtn", "text:Archived missions · 5", "text:BitNet 160M MVP"], db: phoneDb },
+    phone: { clicks: ["#convBtn", "?text:Archived missions · 5", "?text:BitNet 160M MVP"], db: phoneDb },
   },
   {
     id: "p3-phone-new-in-project",
@@ -365,7 +365,7 @@ export const phase3Scenarios: Scenario[] = [
     notes: "Plays: drawer → the + on the BitNet 160M section: a new chat whose header already says BitNet 160M (its first message creates it in the project).",
     build,
     surfaces: ["phone"],
-    phone: { clicks: ["#convBtn", ".csec.proj .padd"], db: phoneDb },
+    phone: { clicks: ["#convBtn", "?.csec.proj .padd"], db: phoneDb },
   },
   {
     id: "p3-phone-approve-gone",
@@ -392,7 +392,7 @@ export const phase3Scenarios: Scenario[] = [
     notes: "Plays: open a chat, tap its title — the project sheet (projects with ✓ on this chat's, No project, New chat in BitNet 160M, a line to name a new one) — tap Coursework: the header now says Coursework. Before: tapping the title opened the Claude/feedback drawer.",
     build,
     surfaces: ["phone"],
-    phone: { clicks: ["#convBtn", "text:Train seed 44 to 3.2B tokens", "#titleBtn", "text:Coursework"], db: phoneDb },
+    phone: { clicks: ["#convBtn", "text:Train seed 44 to 3.2B tokens", "#titleBtn", "?text:Coursework"], db: phoneDb },
   },
   {
     id: "p3-phone-alerts",

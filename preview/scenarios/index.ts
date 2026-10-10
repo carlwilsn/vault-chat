@@ -610,7 +610,7 @@ export const scenarios: Scenario[] = [
     group: "Missions",
     notes: "Mission Control as it is today: one mission with workers, done and killed missions in the archive, Schedules and Alerts tabs.",
     build: (c) => world(c),
-    open: [{ file: NOTE }, { click: "[title='Mission control']" }],
+    open: [{ file: NOTE }, { optional: true, click: "[title='Mission control']" }],
     surfaces: ["desktop", "phone"],
     phone: { page: "activity" },
   },
@@ -620,7 +620,7 @@ export const scenarios: Scenario[] = [
     group: "Missions",
     notes: "The BitNet mission is AWAITING_USER: it asked whether to extend to 3.2B tokens. The ask is in Alerts.",
     build: (c) => world(c, { awaiting: true }),
-    open: [{ file: NOTE }, { click: "[title='Mission control']" }],
+    open: [{ file: NOTE }, { optional: true, click: "[title='Mission control']" }],
     surfaces: ["desktop", "phone"],
     phone: { page: "alerts" },
   },
@@ -630,7 +630,7 @@ export const scenarios: Scenario[] = [
     group: "Missions",
     notes: "The BitNet mission's own page: brief, done-when checklist, audits, workers, cost.",
     build: (c) => world(c),
-    open: [{ file: NOTE }, { click: "[title='Mission control']" }, { sleep: 400 }, { click: "button, [role=button], div", text: /^BitNet 160M MVP/ }],
+    open: [{ file: NOTE }, { optional: true, click: "[title='Mission control']" }, { sleep: 400 }, { optional: true, click: "button, [role=button], div", text: /^BitNet 160M MVP/ }],
   },
 
   // ===== Phone =====
@@ -659,7 +659,7 @@ export const scenarios: Scenario[] = [
     notes: "Activity → the BitNet mission: brief, done-when, workers, the thinking digest.",
     build: (c) => world(c),
     surfaces: ["phone"],
-    phone: { page: "activity", clicks: ["text:BitNet 160M MVP"] },
+    phone: { page: "activity", clicks: ["?text:BitNet 160M MVP"] },
   },
   {
     id: "phone-notes",
@@ -811,7 +811,7 @@ function historyScenarios(): Scenario[] {
         "Style A: today's modal, tabs Timeline | Notes. The timeline groups saves into sessions (\"Edited daily/2026-10-09.md, …\"), hides the .vault-chat churn (most of the seeded commits), shows the kept mission as one entry, the box session, the undone agent edit struck through, and the restore. Opened with Ctrl+H; Esc closes.",
       build: (c) => world(c),
       localStorage: STYLE("modal"),
-      open: [{ file: NOTE }, ...ctrlH, { click: "button", text: /^Edited writeup\.md/ }, beat],
+      open: [{ file: NOTE }, ...ctrlH, { optional: true, click: "button", text: /^Edited writeup\.md/ }, beat],
     },
     {
       id: "history-a-undo",
@@ -820,7 +820,7 @@ function historyScenarios(): Scenario[] {
       notes: "Style A: Ctrl+H, pick the agent's \"seed 43 rerun\" turn, Undo this change. results.csv goes back to two seeds in one new commit (\"Undo: …\"), the entry is struck through and offers Redo.",
       build: (c) => world(c),
       localStorage: STYLE("modal"),
-      open: [{ file: "projects/bitnet-160m/results.csv" }, ...ctrlH, { click: "button", text: /eval\.loss committed/ }, beat, { click: "button", text: /Undo this change/ }, { sleep: 1500 }],
+      open: [{ file: "projects/bitnet-160m/results.csv" }, ...ctrlH, { optional: true, click: "button", text: /eval\.loss committed/ }, beat, { optional: true, click: "button", text: /Undo this change/ }, { sleep: 1500 }],
     },
     {
       id: "history-a-redo",
@@ -829,7 +829,7 @@ function historyScenarios(): Scenario[] {
       notes: "Style A: the agent's spectral-clustering edit was undone yesterday (struck through). Pick it and Redo: the line comes back as one commit.",
       build: (c) => world(c),
       localStorage: STYLE("modal"),
-      open: [{ file: SPECTRAL }, ...ctrlH, { click: "button", text: /degree-normalization|^Edited spectral/ }, beat, { click: "button", text: /^Redo$/ }, { sleep: 1500 }],
+      open: [{ file: SPECTRAL }, ...ctrlH, { optional: true, click: "button", text: /degree-normalization|^Edited spectral/ }, beat, { optional: true, click: "button", text: /^Redo$/ }, { sleep: 1500 }],
     },
     {
       id: "history-a-restore",
@@ -838,7 +838,7 @@ function historyScenarios(): Scenario[] {
       notes: "Style A, Notes tab on the open note: its versions as a list (one per session, not per save). Pick an older one, see Preview / Diff vs now, Restore this version. The open note reloads with the restored text.",
       build: (c) => world(c),
       localStorage: STYLE("modal"),
-      open: [{ file: "notes/scaling-laws.md" }, ...ctrlH, { click: "button", text: "Notes" }, beat, { click: "button", text: /^Your edit.*6d ago/ }, beat, { click: "button", text: "Diff vs now" }, beat, { click: "button", text: /Restore this version/ }, { sleep: 1500 }],
+      open: [{ file: "notes/scaling-laws.md" }, ...ctrlH, { optional: true, click: "button", text: "Notes" }, beat, { optional: true, click: "button", text: /^Your edit.*6d ago/ }, beat, { optional: true, click: "button", text: "Diff vs now" }, beat, { optional: true, click: "button", text: /Restore this version/ }, { sleep: 1500 }],
     },
     {
       id: "history-a-mission",
@@ -847,7 +847,7 @@ function historyScenarios(): Scenario[] {
       notes: "Style A: the kept mission is one entry (its 2 steps inside, cost shown). Undo it: results.csv was changed again later, so nothing is undone and the note is listed with its own Restore this version.",
       build: (c) => world(c),
       localStorage: STYLE("modal"),
-      open: [{ file: NOTE }, ...ctrlH, { click: "button", text: /^BitNet 160M MVP/ }, beat, { click: "button", text: /Show the mission/ }, beat, { click: "button", text: /Undo this change/ }, { sleep: 1500 }],
+      open: [{ file: NOTE }, ...ctrlH, { optional: true, click: "button", text: /^BitNet 160M MVP/ }, beat, { optional: true, click: "button", text: /Show the mission/ }, beat, { optional: true, click: "button", text: /Undo this change/ }, { sleep: 1500 }],
     },
     {
       id: "history-b",
@@ -856,7 +856,7 @@ function historyScenarios(): Scenario[] {
       notes: "Style B: a 380px sheet like Chats, so the note stays in view. It opens on this note's versions; a click shows the diff vs now under the row; Restore sits on the row (on hover).",
       build: (c) => world(c),
       localStorage: STYLE("sheet"),
-      open: [{ file: README }, ...ctrlH, { click: "button", text: /^Agent edit/ }, beat],
+      open: [{ file: README }, ...ctrlH, { optional: true, click: "button", text: /^Agent edit/ }, beat],
     },
     {
       id: "history-b-restore",
@@ -865,7 +865,7 @@ function historyScenarios(): Scenario[] {
       notes: "Style B: open the agent's README version, see its diff, then Restore on that row. The open note reloads.",
       build: (c) => world(c),
       localStorage: STYLE("sheet"),
-      open: [{ file: "notes/scaling-laws.md" }, ...ctrlH, { click: "button", text: /^Your edit.*6d ago/ }, beat, { click: "button", text: /^Restore$/ }, { sleep: 1500 }],
+      open: [{ file: "notes/scaling-laws.md" }, ...ctrlH, { optional: true, click: "button", text: /^Your edit.*6d ago/ }, beat, { optional: true, click: "button", text: /^Restore$/ }, { sleep: 1500 }],
     },
     {
       id: "history-b-everything",
@@ -874,7 +874,7 @@ function historyScenarios(): Scenario[] {
       notes: "Style B, Everything: the vault's timeline in the sheet. A click opens the entry's notes and Undo under its row.",
       build: (c) => world(c),
       localStorage: STYLE("sheet"),
-      open: [{ file: NOTE }, ...ctrlH, { click: "button", text: "Everything" }, beat, { click: "button", text: /eval\.loss committed/ }, beat, { click: "button", text: /Undo this change/ }, { sleep: 1500 }],
+      open: [{ file: NOTE }, ...ctrlH, { optional: true, click: "button", text: "Everything" }, beat, { optional: true, click: "button", text: /eval\.loss committed/ }, beat, { optional: true, click: "button", text: /Undo this change/ }, { sleep: 1500 }],
     },
     {
       id: "history-c",
@@ -883,7 +883,7 @@ function historyScenarios(): Scenario[] {
       notes: "Style C: Ctrl+H puts a thin version strip above the note (one pill per session). A pill shows that version read-only in the pane: \"Viewing … · Restore · Back to current\". Everything › opens B's sheet for vault-wide entries.",
       build: (c) => world(c),
       localStorage: STYLE("inline"),
-      open: [{ file: "notes/scaling-laws.md", mode: "view" }, { sleep: 600 }, ...ctrlH, { click: "button", text: /^6d ago$/ }, beat],
+      open: [{ file: "notes/scaling-laws.md", mode: "view" }, { sleep: 600 }, ...ctrlH, { optional: true, click: "button", text: /^6d ago$/ }, beat],
     },
     {
       id: "history-c-restore",
@@ -892,7 +892,7 @@ function historyScenarios(): Scenario[] {
       notes: "Style C: pick an older pill, Restore from the Viewing bar; the note shows the restored text and the strip gains a version.",
       build: (c) => world(c),
       localStorage: STYLE("inline"),
-      open: [{ file: "notes/scaling-laws.md", mode: "view" }, { sleep: 600 }, ...ctrlH, { click: "button", text: /^6d ago$/ }, beat, { click: "button", text: /^Restore$/ }, { sleep: 1500 }, ...ctrlH],
+      open: [{ file: "notes/scaling-laws.md", mode: "view" }, { sleep: 600 }, ...ctrlH, { optional: true, click: "button", text: /^6d ago$/ }, beat, { optional: true, click: "button", text: /^Restore$/ }, { sleep: 1500 }, ...ctrlH],
     },
   ];
 }
