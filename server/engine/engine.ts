@@ -1,12 +1,13 @@
-// The engine: every agent turn on the box runs in Codex. A conversation maps to
-// one Codex thread (a new one after a roll-over); each turn's streamed items
-// become the existing message shapes in the conversation file, and the live
-// run is mirrored into the store so the phone host emits the /poll events the
-// phone already renders. vault-chat's own tools reach Codex as dynamicTools.
+// The engine: every agent turn on the box runs in pi (pi/backend.ts). A
+// conversation maps to one pi session ("thread"; a new one after a roll-over);
+// each turn's events become the existing message shapes in the conversation
+// file, and the live run is mirrored into the store so the phone host emits the
+// /poll events the phone already renders. vault-chat's own tools reach pi
+// through its extension as host calls.
 import { existsSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import type { ChatMessage } from "../../src/store";
 import { registerRun, unregisterRun } from "../../src/runRegistry";
-import type { BackendEvent, EngineBackend } from "./backend";
+import type { BackendEvent, PiBackend } from "./pi/backend";
 import {
   contextToolSpecs,
   handleContextTool,
@@ -24,18 +25,17 @@ import {
 import { appendMessage, patchMeta, readConv, allConvs, createConv, mutateConv, setLive, setRuntime, newMessageId } from "./convs";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { Ledger } from "./ledger";
-import { pdfRead, webSearch, startJob, jobStatus, type JobEnv } from "./extraTools";
+import { pdfRead, webSearch } from "./extraTools";
+import { startJob, jobStatus, type PiJobEnv } from "./pi/jobs";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
-import { capabilitiesOf, capabilityNote, isNamespaceRejection, learn, setProbing } from "./capabilities";
+import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { join } from "node:path";
 
 export type EngineDeps = {
   vault: string;
-  backend: EngineBackend;
+  backend: PiBackend;
   ledger: Ledger;
-  jobEnv: JobEnv;
-  /** A runtime's own detached-job tools (pi: bubblewrap under systemd-run); default: Codex's sandbox. */
-  jobs?: { start: (cwd: string, a: any) => string; status: (a: any) => string };
+  jobEnv: PiJobEnv;
   model: () => string;
   webSearchModel: string;
   apiKey: () => string | null;
@@ -78,9 +78,7 @@ type Live = {
   turnOpts: TurnOpts;
 };
 
-type Probe = { threadId: string; turnDone: ((s: string) => void) | null; parentCalls: number; childCalls: number; spawned: number; cached: number; error: string; path: string };
-
-type TurnOpts = { alreadyAppended?: boolean; images?: string[]; context?: string; retried?: boolean; attachments?: any[] };
+type TurnOpts = { alreadyAppended?: boolean; images?: string[]; context?: string; attachments?: any[] };
 
 const MSG_CAP = 20_000;
 const NUDGE_TEXT = "You're in keep-going mode: schedule your next check (ScheduleWake), or say Done or Blocked.";
@@ -206,7 +204,6 @@ export class Engine {
   private timers: NodeJS.Timeout[] = [];
   private firing = new Set<string>();
   private childOf = new Map<string, string>(); // subagent threadId → parent conversation id
-  private probes = new Map<string, Probe>(); // probe thread (and its subagents) → probe
 
   constructor(private d: EngineDeps) {}
 
@@ -219,7 +216,6 @@ export class Engine {
   start(): void {
     const b = this.d.backend;
     b.on("event", (e: BackendEvent) => this.onEvent(e));
-    b.on("down", () => this.onDown());
     b.on("up", () => void this.onUp());
     b.setHandlers({
       toolCall: async (threadId, name, args) => {
@@ -257,7 +253,7 @@ export class Engine {
       // A turn cut by a crash or restart of the whole server: the file still
       // says running. Mark it, then resume it.
       for (const c of await allConvs(this.d.vault).catch(() => [])) {
-        if (c.state === "running" && c.codexThreadId && !this.live.has(c.id)) {
+        if (c.state === "running" && c.threadId && !this.live.has(c.id)) {
           await appendMessage(this.d.vault, c.id, {
             role: "assistant",
             content: "⚠️ Interrupted by a restart — the command it was running was killed and may not have finished.",
@@ -270,22 +266,6 @@ export class Engine {
     const q = [...this.resumeQueue];
     this.resumeQueue.clear();
     for (const id of q) void this.run(id, RESUME_TEXT, "resume").catch((e) => this.log(`resume ${id} failed: ${e}`));
-  }
-
-  private onDown(): void {
-    // In-flight tool work died with the app-server. Close each turn as cut and
-    // resume it when Codex is back. A turn parked on a question keeps its
-    // question (persisted); the answer starts a new turn.
-    for (const l of [...this.live.values()]) {
-      if (l.ask) {
-        this.live.delete(l.convId);
-        unregisterRun(l.convId, l.controller);
-        continue;
-      }
-      l.cut = true;
-      this.resumeQueue.add(l.convId);
-      void this.finishTurn(l, "interrupted", null);
-    }
   }
 
   // ---------------------------------------------------------------- inbound
@@ -504,13 +484,13 @@ export class Engine {
         input,
         turnOpts: opts,
       };
-      // The old Stop path (runRegistry) reaches Codex runs too.
+      // The old Stop path (runRegistry) reaches engine runs too.
       live.controller.signal.addEventListener("abort", () => void this.interrupt(convId, true));
       this.live.set(convId, live);
       registerRun(convId, live.controller);
       setLive(convId, true);
       await patchMeta(this.d.vault, convId, { state: "running" });
-      // A legacy chat (history from the old loop) carries its transcript into the first Codex turn.
+      // A legacy chat (history from the old loop) carries its transcript into the first turn.
       let body = input;
       const prior = (conv as any).__legacyHistory as string | undefined;
       if (prior) body = `${prior}\n\n${input}`;
@@ -538,17 +518,17 @@ export class Engine {
     const model = this.d.model();
     // Subagents only for models where they work (learned from use; see capabilities.ts).
     const subagents = capabilitiesOf(model).subagents;
-    if (conv.codexThreadId) {
+    if (conv.threadId) {
       try {
-        await this.d.backend.resumeThread(conv.codexThreadId, { model, subagents });
-        this.byThread.set(conv.codexThreadId, conv.id);
-        return conv.codexThreadId;
+        await this.d.backend.resumeThread(conv.threadId, { model, subagents });
+        this.byThread.set(conv.threadId, conv.id);
+        return conv.threadId;
       } catch (e) {
         if (!(e as any)?.threadUnknown) throw e;
         // A thread of the other runtime (VC_ENGINE switched) or a lost one: a fresh thread, with the transcript handed over.
-        this.log(`thread ${conv.codexThreadId} is unknown to ${this.d.backend.name}; starting a new one`);
-        conv.codexThreadId = undefined;
-        conv.codexThreadPath = undefined;
+        this.log(`thread ${conv.threadId} is unknown to ${this.d.backend.name}; starting a new one`);
+        conv.threadId = undefined;
+        conv.threadPath = undefined;
       }
     }
     const note = capabilityNote(model);
@@ -567,9 +547,9 @@ export class Engine {
       const t = old.slice(-30).map((m) => `${m.role}: ${(m.content ?? "").slice(0, 1500)}`).join("\n");
       (conv as any).__legacyHistory = `<earlier_conversation>\n${t.slice(-12_000)}\n</earlier_conversation>`;
     }
-    await patchMeta(this.d.vault, conv.id, { codexThreadId: threadId, codexThreadPath: ref });
-    conv.codexThreadId = threadId;
-    conv.codexThreadPath = ref;
+    await patchMeta(this.d.vault, conv.id, { threadId: threadId, threadPath: ref });
+    conv.threadId = threadId;
+    conv.threadPath = ref;
     return threadId;
   }
 
@@ -587,8 +567,6 @@ export class Engine {
   }
 
   private onEvent(e: BackendEvent): void {
-    const probe = this.probes.get(e.threadId);
-    if (probe) return this.onProbeEvent(probe, e);
     const parent = this.childOf.get(e.threadId);
     if (parent) {
       // A subagent's own stream: keeps the parent's turn alive, never mixed into its text.
@@ -695,23 +673,7 @@ export class Engine {
     unregisterRun(l.convId, l.controller);
     const vault = this.d.vault;
     this.chatEvent(l.convId, "end");
-    // Silent fallbacks, learned from real use: a request rejected over the
-    // `namespace` tool type (Codex #32318) turns subagents off for this model
-    // and the turn is retried once without them.
     const errStr = status === "failed" ? errText(error) : "";
-    if (errStr && isNamespaceRejection(errStr) && !l.turnOpts.retried && !l.cut) {
-      learn(this.d.model(), "subagents", false, `request rejected: ${errStr}`);
-      this.log(`learned: ${this.d.model()} subagents off (${errStr.slice(0, 120)}); retrying the turn without them`);
-      setLive(l.convId, false);
-      // A thread keeps the features it started with (a resume with a config
-      // override does not change them, measured), so the retry runs on a new
-      // thread; the conversation's history is handed over in its first turn.
-      this.byThread.delete(l.threadId);
-      this.d.backend.forget(l.threadId);
-      await patchMeta(vault, l.convId, { codexThreadId: undefined, codexThreadPath: undefined });
-      void this.run(l.convId, l.input, l.kind, { ...l.turnOpts, alreadyAppended: true, retried: true });
-      return;
-    }
     if (errStr && /tool/i.test(errStr) && /(not support|unsupported|No endpoints found)/i.test(errStr)) {
       learn(this.d.model(), "tools", false, `request rejected: ${errStr}`);
     }
@@ -753,7 +715,7 @@ export class Engine {
     this.log(`turn ${l.kind} on ${l.convId} ${status}${l.cut ? " (cut)" : ""} → ${state}`);
 
     // Cost, from the rollout's response ids (async; lands a few seconds later).
-    void this.settleCost(l.convId, conv?.codexThreadPath ?? conv0?.codexThreadPath, l.turnId, hasBody ? mid : null);
+    void this.settleCost(l.convId, conv?.threadPath ?? conv0?.threadPath, l.turnId, hasBody ? mid : null);
 
     if (l.cut || !conv) return;
 
@@ -791,12 +753,12 @@ export class Engine {
 
   private async rollOver(conv: EngineConv): Promise<void> {
     const r = await buildRecap(conv as any);
-    const from = conv.codexThreadId;
+    const from = conv.threadId;
     await mutateConv(this.d.vault, conv.id, (c) => {
       c.messages.push({ ...(r.marker as any), mid: newMessageId() });
       c.recap = r.recap;
-      c.codexThreadId = undefined;
-      c.codexThreadPath = undefined;
+      c.threadId = undefined;
+      c.threadPath = undefined;
       if (typeof r.costUsd === "number") c.costUsd = round((c.costUsd ?? 0) + r.costUsd);
     });
     if (from) this.byThread.delete(from);
@@ -835,7 +797,7 @@ export class Engine {
    * (the ledger skips ids already counted), onto the message of its turn. */
   private async reconcileCosts(): Promise<void> {
     for (const c of await allConvs(this.d.vault)) {
-      const path = c.codexThreadPath;
+      const path = c.threadPath;
       if (!path) continue;
       const calls = this.d.backend.usageCalls(path).filter((x) => !this.d.ledger.has(x.responseId));
       if (!calls.length) continue;
@@ -858,12 +820,6 @@ export class Engine {
   // ---------------------------------------------------------------- tools
 
   private async onToolCall(p: any): Promise<unknown> {
-    const probe = this.probes.get(p?.threadId);
-    if (probe) {
-      if (p.threadId !== probe.threadId) probe.childCalls++;
-      else probe.parentCalls++;
-      return text(`echo: ${JSON.stringify(p?.arguments ?? {})}`);
-    }
     const convId = this.byThread.get(p?.threadId) ?? this.childOf.get(p?.threadId);
     const l = convId ? this.live.get(convId) : undefined;
     if (l) l.lastEventAt = Date.now();
@@ -937,9 +893,9 @@ export class Engine {
         case "WebSearch":
           return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel));
         case "StartJob":
-          return text(this.d.jobs ? this.d.jobs.start(vault, a) : startJob(this.d.jobEnv, vault, a));
+          return text(startJob(this.d.jobEnv, vault, a));
         case "JobStatus":
-          return text(this.d.jobs ? this.d.jobs.status(a) : jobStatus(this.d.jobEnv, a));
+          return text(jobStatus(this.d.jobEnv, a));
         case "Cost": {
           if (a.project) {
             const pc = projectCost(String(a.project), (await allConvs(vault)) as any);
@@ -1005,77 +961,6 @@ export class Engine {
     void this.run(convId, q ? `Carl's answer to your question "${q}": ${answer}` : answer, "user", { alreadyAppended: true });
   }
 
-  // ---------------------------------------------------------------- paid probe (on request only)
-
-  /**
-   * One capped run on `model`: a turn that must call a dynamic tool and spawn a
-   * subagent that calls it too, then a tiny second turn to see cached tokens.
-   * Results go to the learned capabilities; the spend to the ledger.
-   */
-  async probe(model: string, timeoutMs = Number(process.env.VC_PROBE_TIMEOUT_MS) || 180_000): Promise<Record<string, unknown>> {
-    if (!(await this.d.backend.ready(60_000))) return { error: `the ${this.d.backend.name} runtime is not up` };
-    setProbing(model, true);
-    const pr: Probe = { threadId: "", turnDone: null, parentCalls: 0, childCalls: 0, spawned: 0, cached: 0, error: "", path: "" };
-    try {
-      const r = await this.d.backend.startThread({
-        cwd: this.d.vault,
-        model,
-        instructions: "You are a capability probe. Follow the instructions exactly and briefly.",
-        tools: [
-          {
-            type: "function",
-            name: "ProbeEcho",
-            description: "Echo a word back.",
-            inputSchema: { type: "object", properties: { word: { type: "string" } }, required: ["word"], additionalProperties: false },
-          },
-        ],
-        subagents: true,
-      });
-      pr.threadId = r.threadId;
-      pr.path = r.ref ?? "";
-      this.probes.set(pr.threadId, pr);
-      const turn = async (t: string) => {
-        const done = new Promise<string>((res) => (pr.turnDone = res));
-        await this.d.backend.startTurn(pr.threadId, { texts: [t], images: [], model });
-        return Promise.race([done, new Promise<string>((res) => setTimeout(() => res("timeout"), timeoutMs))]);
-      };
-      const st1 = await turn(
-        "1) Call the ProbeEcho tool with word=alpha. 2) Spawn ONE subagent whose only task is to call the ProbeEcho tool with word=beta and report what it returned; wait for it. 3) Reply with the single word DONE.",
-      );
-      const st2 = st1 === "completed" ? await turn("Reply with the single word OK.") : st1;
-      const tools = pr.parentCalls > 0;
-      const subagents = pr.spawned > 0 && pr.childCalls > 0;
-      const ev = `probe ${new Date().toISOString()}: turn1 ${st1}, turn2 ${st2}; ProbeEcho calls parent=${pr.parentCalls} subagents=${pr.childCalls}; spawned=${pr.spawned}; cached tokens on repeat=${pr.cached}${pr.error ? `; error: ${pr.error.slice(0, 160)}` : ""}`;
-      learn(model, "tools", tools, ev);
-      learn(model, "subagents", subagents, ev);
-      if (st2 === "completed") learn(model, "caching", pr.cached > 0, ev);
-      await new Promise((res) => setTimeout(res, 1500));
-      const cost = await this.d.ledger.settle(this.d.backend.usageCalls(pr.path || undefined));
-      return { ok: true, model, tools, subagents, caching: st2 === "completed" ? pr.cached > 0 : null, evidence: ev, costUsd: cost.usd };
-    } catch (e) {
-      return { error: (e as Error).message };
-    } finally {
-      setProbing(model, false);
-      for (const [t, p] of [...this.probes]) if (p === pr) this.probes.delete(t);
-    }
-  }
-
-  private onProbeEvent(pr: Probe, e: BackendEvent): void {
-    if (e.kind === "subagents") {
-      for (const t of e.children) {
-        if (!this.probes.has(t)) {
-          this.probes.set(t, pr);
-          pr.spawned++;
-        }
-      }
-    } else if (e.kind === "usage" && e.threadId === pr.threadId) {
-      pr.cached = Number(e.usage?.last?.cachedInputTokens ?? 0);
-    } else if (e.kind === "turnCompleted" && e.threadId === pr.threadId) {
-      if (e.error) pr.error = e.error;
-      pr.turnDone?.(e.status);
-    }
-  }
-
   // ---------------------------------------------------------------- wakes & watchdog
 
   private async tickWakes(): Promise<void> {
@@ -1121,6 +1006,6 @@ function round(n: number): number {
 function errText(e: any): string {
   if (!e) return "unknown error";
   if (typeof e === "string") return e;
-  return String(e.message ?? e.codexErrorInfo ?? JSON.stringify(e)).slice(0, 500);
+  return String(e.message ?? JSON.stringify(e)).slice(0, 500);
 }
 

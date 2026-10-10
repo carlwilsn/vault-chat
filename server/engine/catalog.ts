@@ -1,7 +1,5 @@
-// OpenRouter model metadata for Codex. Codex knows nothing about OpenRouter
-// model ids and falls back to a generic 258k window, so the server reads the
-// catalog (cached on disk, refreshed at boot) and hands Codex each model's real
-// window and an auto-compaction limit.
+// OpenRouter model metadata (cached on disk, refreshed at boot and daily):
+// context windows and capabilities for models pi's bundled catalog may lack.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -13,15 +11,6 @@ export type ModelMeta = {
   cacheRead?: number;
 };
 
-const FALLBACK_WINDOW = 200_000;
-/** Codex compacts at this fraction of the window… */
-const COMPACT_FRACTION = 0.8;
-/** …but CONTEXT's roll-over (a fresh thread with a recap) should win, so
- * Codex's own compaction sits a quarter above CONTEXT's roll threshold:
- * min(window x 0.6, 300k) x 1.25 — never at 80% of a 1M window (each call
- * would re-read ~800k tokens). VC_CODEX_COMPACT_CAP overrides the cap. */
-const ROLL_FRACTION = 0.6;
-const ROLL_MAX = 300_000;
 
 let byId = new Map<string, ModelMeta>();
 
@@ -94,17 +83,6 @@ export function allModels(): ModelMeta[] {
 
 export function modelMeta(id: string): ModelMeta | undefined {
   return byId.get(id);
-}
-
-/** Codex's per-model limits for `model`, from the catalog. */
-export function codexLimits(model: string): { model_context_window: number; model_auto_compact_token_limit: number } {
-  const ctx = byId.get(model)?.contextLength ?? FALLBACK_WINDOW;
-  const capEnv = Number(process.env.VC_CODEX_COMPACT_CAP);
-  const cap = Number.isFinite(capEnv) && capEnv > 0 ? capEnv : Math.floor(Math.min(ctx * ROLL_FRACTION, ROLL_MAX) * 1.25);
-  return {
-    model_context_window: ctx,
-    model_auto_compact_token_limit: Math.max(8_000, Math.min(Math.floor(ctx * COMPACT_FRACTION), cap)),
-  };
 }
 
 /** Test hook. */

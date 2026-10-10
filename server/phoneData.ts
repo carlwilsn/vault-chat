@@ -73,7 +73,9 @@ export function conversationDetail(vault: string, id: string, n: number, full = 
   if (full) {
     // The desktop client (box mode): the stored meta line and ChatMessage
     // objects as written, hidden ones included. The phone never asks for this.
-    const { messages: _all, ...meta } = c;
+    // Meta fields renamed 2026-10-11: files written before carry codexThreadId/codexThreadPath.
+    const { messages: _all, codexThreadId, codexThreadPath, ...rest } = c as Record<string, any>;
+    const meta = { ...rest, threadId: rest.threadId ?? codexThreadId, threadPath: rest.threadPath ?? codexThreadPath };
     return { id, title: str(c.title, "New chat"), source: str(c.source, "manual"), status: str(c.status, "idle"), full: true, meta, messages: msgs.slice(-take) };
   }
   return {

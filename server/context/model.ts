@@ -61,7 +61,7 @@ export async function callResponses(req: {
 // ---- catalog (context windows) ----
 
 const windows = new Map<string, number>();
-export const FALLBACK_WINDOW = 258_400; // Codex's fallback metadata (CODEX-SPIKE §2)
+export const FALLBACK_WINDOW = 258_400; // a conservative default window
 
 /** Fetch OpenRouter's model list once and remember each model's context_length. */
 export async function loadCatalog(): Promise<Map<string, number>> {

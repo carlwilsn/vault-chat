@@ -8,12 +8,41 @@
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { BackendEvent, EngineBackend, ToolCallHandler, ToolSpec, UserInputHandler } from "../backend";
-import { ThreadUnknownError } from "../backend";
 import type { CallRecord } from "../ledger";
+import type { ThreadTokenUsage } from "../context";
 import { PiProc } from "./proc";
 import { modelWindow, type PiCatalogRow, type PiPaths } from "./config";
 import type { PiInstall } from "./install";
+
+// ---- what the engine (../engine.ts) sees: neutral events and the two handlers it answers
+export type ToolSpec = { type: "function"; name: string; description: string; inputSchema: Record<string, unknown> };
+
+/** What the runtime reports, in neutral terms. Every event names the thread it
+ * belongs to; subagent threads report under their own ids (the engine maps
+ * them to the parent conversation from the `subagents` event). */
+export type BackendEvent =
+  | { kind: "turnStarted"; threadId: string; turnId: string }
+  | { kind: "textDelta"; threadId: string; itemId: string; delta: string }
+  | { kind: "text"; threadId: string; itemId: string; text: string }
+  /** A tool the runtime ran (shell, file edit, our dynamic tools …); `result` once finished. */
+  | { kind: "tool"; threadId: string; itemId: string; name: string; input: unknown; result?: string }
+  | { kind: "reasoning"; threadId: string; text: string }
+  | { kind: "usage"; threadId: string; usage: ThreadTokenUsage }
+  /** The parent spawned/messaged subagents. */
+  | { kind: "subagents"; threadId: string; itemId: string; children: string[]; op: string; prompt?: string; model?: string | null; done: boolean; ok: boolean }
+  | { kind: "subagentStatus"; threadId: string; child: string; status: string; path?: string }
+  | { kind: "turnCompleted"; threadId: string; turnId: string | null; status: "completed" | "interrupted" | "failed" | string; error: string | null }
+  /** One thread's runtime died mid-turn while the rest of the runtime is fine (pi: one process per thread).
+   * The engine marks that turn cut and resumes it, as it does for all turns on "down". */
+  | { kind: "threadLost"; threadId: string };
+
+/** resumeThread throws this when the thread belongs to another runtime (or is gone): the engine starts a fresh one. */
+export class ThreadUnknownError extends Error {
+  readonly threadUnknown = true;
+}
+
+export type ToolCallHandler = (threadId: string, name: string, args: any) => Promise<{ ok: boolean; text: string }>;
+export type UserInputHandler = (threadId: string, question: string, options: string[]) => Promise<string>;
 
 export type PiSandbox = {
   /** bubblewrap argv for pi itself (ends with "--"), or null (no sandbox). */
@@ -55,7 +84,8 @@ type Thread = {
   restoreModel: string | null;
 };
 
-export class PiBackend extends EventEmitter implements EngineBackend {
+/** Events: "event" (BackendEvent), "up" (ready; the engine resumes cut turns). */
+export class PiBackend extends EventEmitter {
   readonly name = "pi";
   readonly version: string;
   private threads = new Map<string, Thread>();
@@ -86,7 +116,7 @@ export class PiBackend extends EventEmitter implements EngineBackend {
     setImmediate(() => this.emit("up"));
   }
 
-  async ready(): Promise<boolean> {
+  async ready(_ms?: number): Promise<boolean> {
     return true;
   }
 
@@ -414,7 +444,7 @@ export class PiBackend extends EventEmitter implements EngineBackend {
     return out;
   }
 
-  childUsageCalls(): CallRecord[] {
+  childUsageCalls(_threadId: string): CallRecord[] {
     return []; // no subagents on pi (yet)
   }
 

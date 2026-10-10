@@ -22,11 +22,10 @@ export type ServerHooks = {
   syncStatus: () => unknown;
   alert: (title: string, body: string, tag?: string) => Promise<number>;
   onGitPushed: () => void;
-  /** The Codex engine takes these routes; a handler returning null hands the
+  /** The engine takes these routes; a handler returning null hands the
    * request to the legacy relay (old mission threads). */
   engine?: {
     models: () => unknown;
-    probe: (model: string) => Promise<Record<string, unknown>>;
     message: (b: any) => Promise<Record<string, unknown> | null>;
     answer: (b: any) => Promise<Record<string, unknown> | null>;
     kill: (b: any) => Promise<Record<string, unknown> | null>;
@@ -207,15 +206,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     return json(res, 200, { ok: true, sent });
   }
 
-  // Model capabilities for Settings → Models; a paid probe only on request.
+  // Model capabilities for Settings → Models.
   if (path === "/api/v1/models" && method === "GET") {
     return hooks.engine ? json(res, 200, { models: hooks.engine.models() }) : json(res, 503, { error: "engine not running" });
   }
-  const probeM = /^\/api\/v1\/models\/(.+)\/probe$/.exec(path);
-  if (probeM && method === "POST") {
-    if (!hooks.engine) return json(res, 503, { error: "engine not running" });
-    return json(res, 200, await hooks.engine.probe(decodeURIComponent(probeM[1]!)));
-  }
+
 
   const q = (k: string) => url.searchParams.get(k) ?? "";
 

@@ -137,7 +137,7 @@ export function addCacheMarkers(payload, mode = "system") {
   return changed ? { ...payload, messages: msgs } : undefined;
 }
 
-/** A JSON-schema tool spec (the Codex dynamicTools shape) → TypeBox, for pi.registerTool. */
+/** A JSON-schema tool spec (the engine's tool shape) → TypeBox, for pi.registerTool. */
 export function toTypebox(Type, s) {
   const d = s && typeof s.description === "string" ? { description: s.description } : {};
   if (s && Array.isArray(s.enum) && s.enum.length) return Type.Union(s.enum.map((v) => Type.Literal(v)), d);
