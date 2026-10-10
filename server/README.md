@@ -68,8 +68,12 @@ server/
   forwarding headers and must carry an allowed login or the token.
 - **Phone routes**: same paths, methods and JSON as `src-tauri/src/voice_server.rs` v0.6.32. GETs read disk;
   mutations are relayed in-process to `phoneApp.ts`'s `phone:*` handlers. `/session` (voice) answers 503 —
-  there is no voice host headless; `/tool` uses the read-only voice tool fallback. `/feedback`, `/coder*` are
-  out of scope (empty / 404).
+  there is no voice host headless; `/tool` uses the read-only voice tool fallback. The Claude/feedback
+  screen's `/feedback`, `/coder*` and `/alert-followup` are gone (404; Phase 3).
+- **Projects** (Phase 3): `GET /projects` → `{projects:[{slug,name}]}`; `POST /conversation/project
+  {convId, project: name|slug|null}` → `{ok, project}` (create-or-attach via `server/context`; a `project`
+  event on `/poll`). `/conversations` rows and `/conversation` carry `project`, `state`, `nextWakeAt`,
+  `costUsd`, `working` and (sleeping) `wakeReason` when set — the clients' ongoing-work line.
 - **`GET /api/v1/health`** → `{ok, version, rev, vault, git:"ok"|"missing", keys:{openrouter}, busy:{runs}, conversations, sync:{…}}`
 - **`POST /api/v1/alert`** `{title, body, tag?}` → Web Push to every subscribed phone → `{ok, sent}`
 - **`GET /api/v1/sync`** → full sync status (every step with its full stderr on failure).
@@ -78,8 +82,9 @@ server/
 ## Engine (Phase 2): every agent turn runs in Codex
 
 `server/engine/` replaces the in-process agent loop for every turn (chats and long work) with the pinned
-**Codex 0.162.1** app-server. The old loop stays in the bundle only for legacy mission/worker/ask threads and
-Approve & run (Phase 3 removes them). `VC_ENGINE=0` boots without the engine (old loop for everything).
+**Codex 0.162.1** app-server. The old loop stays only for `VC_ENGINE=0` and the
+laptop's local chats; the missions system is gone and its mission/worker/ask threads are archived, read-only
+(a message to one is refused). `VC_ENGINE=0` boots without the engine (old loop for everything).
 
 ```
 server/engine/
@@ -122,7 +127,7 @@ profile, so they survive turns and restarts and still can't read the keys).
 **Routes.** `/message {text, convId?, project?, context?, images?: [{name?, mime, dataBase64}], imagePaths?: [vault-relative]}`
 → `{ok, convId}` (creates a conversation without `convId`; a message to a running turn steers it → `steered: true`;
 a message while a question is open answers it → `answered: true`). `/answer {convId, text | defer, notifId?}`,
-`/kill {convId}` (interrupt, keep-going off, wakes cancelled). Legacy mission threads fall through to the old relay.
+`/kill {convId}` (interrupt, keep-going off, wakes cancelled). Archived mission threads fall through to the old relay, which refuses them.
 `GET /conversation?id=&full=1` adds `full`, `meta` and the stored messages. `GET /api/v1/models` →
 `{models: [{id, capabilities, source: catalog|learned|untested, status, checkedAt}]}`. `POST /api/v1/models/<id>/probe`
 (and `node vault-chat-server.mjs probe-model <id>`) runs a short paid probe — only on request.
@@ -220,8 +225,6 @@ GitHub (no credential there); the laptop backs up.
 
 - `tools.ts` drops the Bash tool when `localStorage["vault_chat_bash_disabled"]` is absent or `"true"`
   (the production default). Missions that need Bash need `"false"` in `VC_LOCALSTORAGE`.
-- The mission/worker model comes from `vault_chat_supervisor_model` / `vault_chat_worker_model` in the same
-  file (default: the desktop's seed model, which is not an OpenRouter one).
 - Phone/cockpit chats run on `vault_chat_assistant_model` (same default). With no key for that model's
   provider, `chat-controller` returns silently — set it to an OpenRouter model too.
 
