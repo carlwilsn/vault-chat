@@ -446,6 +446,12 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
         await deleteSchedule(vault, s.id).catch(() => {});
         return;
       }
+      // [engine, Phase 2] A conversation run by the box's engine is never
+      // driven by this loop: its wakes are the engine's own (wakes.json).
+      if (conv?.codexThreadId) {
+        vlog("sched.skip.engine", { conv: conversationId.slice(0, 8), name: s.name });
+        return;
+      }
     } catch {
       /* fall through and fire */
     }

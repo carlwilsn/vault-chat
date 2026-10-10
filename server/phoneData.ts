@@ -91,12 +91,18 @@ export function conversationsSummary(vault: string): unknown {
 }
 
 /** voice_server.rs:2168 conversation_json. */
-export function conversationDetail(vault: string, id: string, n: number): unknown | null {
+export function conversationDetail(vault: string, id: string, n: number, full = false): unknown | null {
   const c = readConversationObjects(vault).find((x) => x.id === id);
   if (!c) return null;
   const take = Math.min(Math.max(n, 1), 200);
   const msgs: any[] = Array.isArray(c.messages) ? c.messages : [];
   const visible = msgs.filter((m) => m?.hidden !== true).slice(-take);
+  if (full) {
+    // The desktop client (box mode): the stored meta line and ChatMessage
+    // objects as written, hidden ones included. The phone never asks for this.
+    const { messages: _all, ...meta } = c;
+    return { id, title: str(c.title, "New chat"), source: str(c.source, "manual"), status: str(c.status, "idle"), full: true, meta, messages: msgs.slice(-take) };
+  }
   return {
     id,
     title: str(c.title, "New chat"),

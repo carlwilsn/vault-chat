@@ -162,7 +162,11 @@ export function conversationsRead(vault: string): string[] {
     for (const n of names) {
       if (!n.endsWith(".jsonl")) continue;
       const stem = n.slice(0, -6);
-      if (tomb.has(stem)) continue;
+      if (tomb.has(stem)) {
+        // The box authors conversations; a tombstone from the laptop removes the file here.
+        if (!isSyncFollower(vault)) rmSync(join(dir, n), { force: true });
+        continue;
+      }
       let contents: string;
       try {
         contents = readFileSync(join(dir, n), "utf8");

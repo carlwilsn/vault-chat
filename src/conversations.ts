@@ -149,14 +149,21 @@ export type Conversation = {
   askStakes?: "low" | "high";
   askOnDefer?: string;
   askDeadlineAt?: number;
-  // [phase 2] Box-run conversations (Codex engine). The box writes these; every
-  // reader must carry them through (the same strip-trap as `mission`).
+  // [engine, Phase 2] The box's Codex engine: the thread behind this
+  // conversation, its project, keep-going mode, wake and lifecycle state, an
+  // open question, the Done verifier's verdict and a roll-over recap. Carried
+  // through readConversations below (same strip-trap as `mission`).
   codexThreadId?: string;
+  codexThreadPath?: string;
   project?: string;
   working?: boolean;
   nextWakeAt?: number;
   state?: "idle" | "running" | "sleeping" | "waiting_user" | "blocked" | "done";
-  verdict?: unknown;
+  pendingAsk?: { question: string; options?: string[]; at: number; notifId?: string };
+  verdict?: { verdict: "pass" | "fail" | "unsure"; notes: string[]; at: number; summary?: string };
+  recap?: string;
+  // Codex subagent threads this conversation spawned (children, for later display).
+  subagents?: { threadId: string; prompt?: string; model?: string; status?: string; startedAt?: number; path?: string }[];
 };
 
 
@@ -281,13 +288,16 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         askStakes: parsed.askStakes,
         askOnDefer: parsed.askOnDefer,
         askDeadlineAt: parsed.askDeadlineAt,
-        // [phase 2] Codex conversation meta (box-authored).
         codexThreadId: parsed.codexThreadId,
+        codexThreadPath: parsed.codexThreadPath,
         project: parsed.project,
         working: parsed.working,
         nextWakeAt: parsed.nextWakeAt,
         state: parsed.state,
+        pendingAsk: parsed.pendingAsk,
         verdict: parsed.verdict,
+        recap: parsed.recap,
+        subagents: parsed.subagents,
       });
     } catch {
       // skip
