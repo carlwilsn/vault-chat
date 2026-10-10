@@ -3,10 +3,10 @@
 //   node server/build.mjs            → dist-server/vault-chat-server.mjs
 //   node server/build.mjs --metafile → also writes dist-server/meta.json
 import { build } from "esbuild";
-import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const shims = join(root, "server", "shims");
@@ -34,6 +34,36 @@ const ALIASES = {
   // pdf.js: DOM stubs + the legacy (node) build + its worker on the main
   // thread — see shims/pdfjs.ts.
   "pdfjs-dist": join(shims, "pdfjs.ts"),
+};
+
+/** The phone app's built files (phone/dist), embedded as "vc:phone-app" =
+ * { "index.html": base64, "assets/…": base64 }. Empty unless --phone-app, so
+ * by default /phone keeps serving phone.html. */
+const wantPhoneApp = process.argv.includes("--phone-app");
+function phoneAppFiles() {
+  if (!wantPhoneApp) return {};
+  const dist = join(root, "phone", "dist");
+  if (!existsSync(join(dist, "index.html"))) {
+    console.error("build: --phone-app needs phone/dist — run `npm run build:phone` first");
+    process.exit(1);
+  }
+  const out = {};
+  const walk = (d) => {
+    for (const n of readdirSync(d)) {
+      const p = join(d, n);
+      if (statSync(p).isDirectory()) walk(p);
+      else out[relative(dist, p).split("\\").join("/")] = readFileSync(p).toString("base64");
+    }
+  };
+  walk(dist);
+  return out;
+}
+const phoneApp = {
+  name: "vc-phone-app",
+  setup(b) {
+    b.onResolve({ filter: /^vc:phone-app$/ }, () => ({ path: "phone-app", namespace: "vc-phone-app" }));
+    b.onLoad({ filter: /.*/, namespace: "vc-phone-app" }, () => ({ contents: `export default ${JSON.stringify(phoneAppFiles())};`, loader: "js" }));
+  },
 };
 
 /** Vite-isms the app modules use: `?url` asset imports and aliases. */
@@ -71,7 +101,7 @@ const result = await build({
   metafile: wantMeta,
   logLevel: "warning",
   loader: { ".md": "text", ".html": "text", ".png": "binary" },
-  plugins: [viteCompat],
+  plugins: [viteCompat, phoneApp],
   // CJS deps bundled into ESM need a real require for node builtins.
   banner: {
     js: "import { createRequire as __vcCreateRequire } from 'node:module'; const require = __vcCreateRequire(import.meta.url);",
@@ -88,4 +118,4 @@ const result = await build({
 
 if (wantMeta) writeFileSync(join(outdir, "meta.json"), JSON.stringify(result.metafile, null, 1));
 writeFileSync(join(outdir, "server-version.json"), JSON.stringify({ version: pkg.version, rev }) + "\n");
-console.log(`built dist-server/vault-chat-server.mjs (v${pkg.version} ${rev})`);
+console.log(`built dist-server/vault-chat-server.mjs (v${pkg.version} ${rev})${wantPhoneApp ? " with the phone app" : ""}`);

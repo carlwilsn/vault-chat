@@ -1,0 +1,19 @@
+{
+  // The phone app. Lenient like scripts/check-phone-ts.mjs was for the inline
+  // source: interfaces and annotations are checked; the older unannotated
+  // code stays implicit-any. The shell (src/shell, App, main) is strict-clean.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "isolatedModules": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "types": []
+  },
+  "include": ["src"]
+}

@@ -1,0 +1,4105 @@
+// The phone app's behaviour: the former <script id="phone-ts"> body of
+// src-tauri/assets/phone.html, unchanged except for the module wrapper and the
+// bundled imports (ElevenLabs from npm instead of esm.sh). It drives the shell
+// that React renders (App.tsx) through element ids, exactly as before.
+import { installMock } from "./mock";
+
+export function boot(): void {
+  const qs = new URLSearchParams(location.search);
+  const MOCK = qs.get("mock") === "1";
+
+  const sdkPromise = MOCK ? Promise.resolve(null) : import("@elevenlabs/client").catch(() => null);
+
+  let TOKEN = qs.get("token") || "";
+  try {
+    if (TOKEN) localStorage.setItem("vc_phone_token", TOKEN);
+    else TOKEN = localStorage.getItem("vc_phone_token") || "";
+  } catch {}
+  const $ = (id: string): any => document.getElementById(id);
+  const toastEl = $("toast");
+  let toastT = 0;
+  const toast = (m: string) => { toastEl.textContent = m; toastEl.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove("show"), 2600); try { logEvent("toast", { msg: (m || "").slice(0, 160) }); } catch {} };
+  if (!TOKEN && !MOCK) {
+    // No stored/URL token — but the box provisions an httpOnly auth cookie when it
+    // serves this shell (self-heal after iOS evicts storage or a home-screen launch
+    // drops ?token=). So PROCEED and let the cookie authorize the data calls; fall
+    // back to the manual-link gate only if the box actually rejects us. Hard-
+    // blocking here was the "No access token" dead-end that a valid cookie couldn't
+    // rescue. Non-blocking probe, so startup isn't delayed.
+    fetch("/status").then((r) => {
+      if (r.status === 401) {
+        document.body.innerHTML = '<div class="gate"><b style="color:var(--text)">No access token</b><div>Open the phone link from vault-chat Settings once — it carries the token, which is then remembered on this device.</div></div>';
+      }
+    }).catch(() => {});
+  }
+
+  // ---------- mock box (test mode only) ----------
+  if (MOCK) installMock();
+
+  const api = (path: string, opts: RequestInit = {}) => fetch(path, { ...opts, headers: { "X-Vault-Token": TOKEN, ...(opts.headers || {}) } });
+  // [experience-log] Fire-and-forget: stream what the user SEES and TAPS to a
+  // synced client-events.jsonl, so a bug report becomes a replay of the real
+  // session instead of a description ("I need Claude to see what I saw"). Never
+  // throws, never blocks — a missing/failing endpoint just drops the event.
+  let __alertsSig = "";
+  function logEvent(type: string, detail?: Record<string, any>) {
+    try {
+      api("/client-event", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t: Date.now(), type, page, ...(detail || {}) }) }).catch(() => {});
+    } catch {}
+  }
+  // [list-busy] A background refresh (an SSE run/notif tick, or returning to the
+  // foreground) rebuilds a whole list via innerHTML — which resets scrollTop AND
+  // discards per-card closure state, most importantly a clear-all's two-tap
+  // "armed" flag. During an active mission those ticks arrive constantly, so one
+  // landing inside the 3s arm window silently reset the confirm and the button
+  // "did nothing" (the clear-all weirdness), or yanked the archive back to the
+  // top mid-cleanup. Fix: while the user is actively touching a list — or has a
+  // control armed — DEFER the background rebuild until they go idle. Reloads the
+  // user asked for (tab switch, post-swipe reconcile) still run immediately.
+  let listBusyUntil = 0, softReloadT = 0;
+  const markListBusy = (ms = 4000) => { listBusyUntil = Date.now() + ms; };
+  function softReload(fn) {
+    const wait = listBusyUntil - Date.now();
+    if (wait <= 0) { void fn(); return; }
+    clearTimeout(softReloadT);
+    softReloadT = setTimeout(() => softReload(fn), wait + 60);
+  }
+  const fileUrl = (p) => "/file?path=" + encodeURIComponent(p) + "&token=" + encodeURIComponent(TOKEN);
+  // Pull a worker thread into the recent/Chats list so you can find it again
+  // ("view history"). ONLY the thread-open entry points call this — opening a
+  // thread from the recent list, and the 3s sheet polls, deliberately do NOT —
+  // so a worker no longer re-pins to the top or re-marks itself unread when it's
+  // reopened from the pane (note ec78cbf8). Fetching a conversation is now
+  // side-effect-free; this is the explicit "surface it" signal.
+  const surfaceThread = (id) => {
+    if (!id) return;
+    api("/surface?id=" + encodeURIComponent(id)).catch(() => {});
+    // The pin bumps lastActivityAt to "now" on the box. YOU opened it, so it
+    // must not then read as unread on this device: re-stamp the seen watermark
+    // just after the bump lands so the pin can't out-run it.
+    setTimeout(() => markSeen(id), 1500);
+  };
+
+  // ---------- markdown ----------
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const isVaultPath = (u) => !/^[a-z][a-z0-9+.-]*:/i.test(u) && !u.startsWith("//");
+  const inline = (s) => {
+    let out = "";
+    for (const part of s.split(/(`[^`]+`)/)) {
+      if (part.startsWith("`") && part.endsWith("`") && part.length > 2) { out += "<code>" + esc(part.slice(1, -1)) + "</code>"; continue; }
+      let t = esc(part);
+      t = t.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, url) => '<img src="' + (isVaultPath(url) ? fileUrl(url) : url) + '" alt="' + alt + '" loading="lazy">');
+      t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => '<a href="' + (isVaultPath(url) ? fileUrl(url) : url) + '" target="_blank" rel="noopener">' + label + "</a>");
+      // Bare URLs become links. Word-boundary guards keep the emphasis rules
+      // below out of URLs (underscores in paths) and out of snake_case.
+      t = t.replace(/(^|[\s(])(https?:\/\/[^\s<>"')]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+      t = t.replace(/\*\*\*([^*]+)\*\*\*/g, "<b><i>$1</i></b>");
+      t = t.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, "$1<i>$2</i>");
+      t = t.replace(/(^|[\s(])__([^_]+)__(?=[\s.,!?;:)]|$)/g, "$1<b>$2</b>");
+      t = t.replace(/(^|[\s(])_([^_\s][^_]*)_(?=[\s.,!?;:)]|$)/g, "$1<i>$2</i>");
+      t = t.replace(/~~([^~]+)~~/g, "<s>$1</s>");
+      out += t;
+    }
+    return out;
+  };
+  // List parsing with real nesting: indentation depth opens sublists (inside
+  // the parent <li>), task bullets render checkboxes, and ordered/unordered
+  // mix freely. The old flat parser collapsed every level to one — the main
+  // "markdown isn't fully rendering" culprit on agent output.
+  const listLine = (s) => {
+    const m = s.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+    return m ? { indent: m[1].replace(/\t/g, "  ").length, ordered: /\d/.test(m[2]), text: m[3] } : null;
+  };
+  function buildList(items) {
+    let h = "";
+    const stack = [];
+    const close1 = () => { h += stack.pop().ordered ? "</li></ol>" : "</li></ul>"; };
+    for (const it of items) {
+      const task = it.text.match(/^\[([ xX])\]\s+(.*)$/);
+      const body = task ? (task[1] === " " ? "☐ " : "☑ ") + inline(task[2]) : inline(it.text);
+      if (!stack.length || it.indent > stack[stack.length - 1].indent) {
+        h += (it.ordered ? "<ol>" : "<ul>") + "<li>" + body;
+        stack.push({ indent: it.indent, ordered: it.ordered });
+      } else {
+        while (stack.length > 1 && stack[stack.length - 1].indent > it.indent) close1();
+        h += "</li><li>" + body;
+      }
+    }
+    while (stack.length) close1();
+    return h;
+  }
+  const mdCore = (src) => {
+    const lines = (src || "").replace(/\r\n/g, "\n").split("\n");
+    let html = "", i = 0;
+    const pbuf = [];
+    const flushP = () => { if (pbuf.length) html += "<p>" + pbuf.map(inline).join("<br>") + "</p>"; pbuf.length = 0; };
+    while (i < lines.length) {
+      const l = lines[i];
+      if (/^```/.test(l)) { flushP(); const lang = (l.match(/^```\s*(\w+)/) || [])[1] || ""; const f = []; i++; while (i < lines.length && !/^```/.test(lines[i])) f.push(lines[i++]); i++; if (lang === "plan") { html += renderPlanCard(f); continue; } html += "<pre><code>" + esc(f.join("\n")) + "</code></pre>"; continue; }
+      if (/^\s*$/.test(l)) { flushP(); i++; continue; }
+      const h = l.match(/^(#{1,6})\s+(.*)$/);
+      if (h) { flushP(); const n = Math.min(h[1].length, 3); html += `<h${n}>` + inline(h[2]) + `</h${n}>`; i++; continue; }
+      if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(l)) { flushP(); html += "<hr>"; i++; continue; }
+      if (/^\s*>/.test(l)) { flushP(); const qd = []; while (i < lines.length && /^\s*>/.test(lines[i])) qd.push(lines[i++].replace(/^\s*>\s?/, "")); html += "<blockquote>" + md(qd.join("\n")) + "</blockquote>"; continue; }
+      if (listLine(l)) {
+        flushP();
+        const items = [];
+        while (i < lines.length) {
+          const li = listLine(lines[i]);
+          if (li) { items.push(li); i++; continue; }
+          // An indented continuation line belongs to the previous item.
+          if (items.length && /^\s{2,}\S/.test(lines[i])) { items[items.length - 1].text += " " + lines[i].trim(); i++; continue; }
+          break;
+        }
+        html += buildList(items);
+        continue;
+      }
+      if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+        flushP();
+        const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(c.trim()));
+        html += '<div class="tablewrap"><table><thead><tr>' + cells(l).map((c) => "<th>" + c + "</th>").join("") + "</tr></thead><tbody>";
+        i += 2;
+        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) html += "<tr>" + cells(lines[i++]).map((c) => "<td>" + c + "</td>").join("") + "</tr>";
+        html += "</tbody></table></div>"; continue;
+      }
+      pbuf.push(l); i++;
+    }
+    flushP();
+    return html;
+  };
+
+  // Math-aware markdown: protect $$…$$ and *math-like* $…$ from the markdown pass
+  // (so emphasis never mangles TeX), then KaTeX auto-renders them in the DOM.
+  //
+  // A bare "$" is usually CURRENCY, not math ("$0 GPU cost", "~$0.26"). The old
+  // greedy /\$…\$/ matched from one dollar to the next and KaTeX's single-"$"
+  // delimiter rendered the text between as math — eating chunks of supervisor
+  // threads. So: only treat $…$ as math when it looks like math (the char after
+  // the opening "$" is non-space AND non-digit, and the char before the closing
+  // "$" is non-space — currency like $0/$5 never qualifies), restore it as
+  // \(…\), and give the DOM typeset NO single-"$" delimiter at all. Bare dollars
+  // then always stay literal text.
+  let mathSeq = 0;
+  const md = (src) => {
+    const id = ++mathSeq, math = [];
+    const s = String(src == null ? "" : src)
+      .replace(/\$\$([\s\S]+?)\$\$/g, (m, x) => { math.push("$$" + x + "$$"); return "@@M" + id + "_" + (math.length - 1) + "@@"; })
+      .replace(/\$([^\s\d$][^\n$]*?[^\s$]|[^\s\d$])\$/g, (m, x) => { math.push("\\(" + x + "\\)"); return "@@M" + id + "_" + (math.length - 1) + "@@"; });
+    return mdCore(s).replace(new RegExp("@@M" + id + "_(\\d+)@@", "g"), (m, i) => math[+i]);
+  };
+  function typeset(elm) {
+    if (elm && window.renderMathInElement) {
+      try {
+        window.renderMathInElement(elm, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "\\[", right: "\\]", display: true },
+            { left: "\\(", right: "\\)", display: false },
+          ],
+          throwOnError: false,
+        });
+      } catch {}
+    }
+  }
+  window.addEventListener("load", () => typeset(document.body));
+
+  // A ```plan fenced block (the cockpit "North Star" proposal) renders as an
+  // approve/refine card instead of code. Format: a `title:` line, then one
+  // `- task` bullet per worker the agent would fan out. Buttons are wired by
+  // delegation on #msgs (see approvePlan).
+  // Approved plan cards must STAY approved across leaving + reopening the thread.
+  // renderPlanCard runs on EVERY thread render, so without persistence the ✓
+  // state (a live DOM class approvePlan adds on click) is lost on re-render and a
+  // fresh "Approve & run" button reappears on an already-minted mission — inviting
+  // a duplicate approve (note 92536339). Persist a short signature per approved
+  // plan; renderPlanCard re-derives it so the card comes back approved.
+  const APPROVED_PLANS_KEY = "vc_approved_plans";
+  function planSig(title, tasks) {
+    const s = title + "\n" + tasks.join("\n");
+    let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return "p" + (h >>> 0).toString(36);
+  }
+  function approvedPlans() { try { return JSON.parse(localStorage.getItem(APPROVED_PLANS_KEY) || "[]"); } catch { return []; } }
+  function isPlanApproved(sig) { return approvedPlans().indexOf(sig) >= 0; }
+  function markPlanApproved(sig) {
+    const a = approvedPlans().filter((x) => x !== sig); a.push(sig);
+    try { localStorage.setItem(APPROVED_PLANS_KEY, JSON.stringify(a.slice(-100))); } catch {}
+  }
+
+  // [feedback-queue] "Report a problem" POSTs to the box, but the cockpit is a
+  // same-origin PWA served BY the box — so off-tailnet (cellular, or Tailscale
+  // asleep) the write has nowhere to land. Dropping a report there is the worst
+  // failure: the user typed it and it evaporated. So a failed send is PERSISTED
+  // locally and auto-delivered the next time the cockpit reaches the box (a
+  // refreshState success, or the `online` event). Never lose a report.
+  const FB_QUEUE_KEY = "vc_feedback_queue";
+  let fbFlushing = false;
+  function fbQueue() { try { return JSON.parse(localStorage.getItem(FB_QUEUE_KEY) || "[]"); } catch { return []; } }
+  function fbSaveQueue(a) { try { localStorage.setItem(FB_QUEUE_KEY, JSON.stringify(a.slice(-50))); } catch {} }
+  function fbEnqueue(text) { const a = fbQueue(); a.push({ text, ts: Date.now() }); fbSaveQueue(a); }
+  function fbQueuedCount() { return fbQueue().length; }
+  async function flushFeedbackQueue() {
+    if (fbFlushing) return;
+    let q = fbQueue(); if (!q.length) return;
+    fbFlushing = true; let delivered = 0;
+    try {
+      while (q.length) {
+        const item = q[0]; let done = false;
+        try {
+          const r = await api("/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: item.text }) });
+          const d = await r.json().catch(() => ({}));
+          if (r.ok && !d.error) { delivered++; done = true; }          // delivered
+          else if (r.status >= 400 && r.status < 500) { done = true; }  // server rejected it — a retry won't help; drop so one bad item can't wedge the queue
+          else break;                                                   // 5xx / transient — keep the rest, try again next contact
+        } catch { break; }                                              // network error — still offline; keep everything for later
+        if (done) { q.shift(); fbSaveQueue(q); } else break;
+      }
+    } finally { fbFlushing = false; }
+    if (delivered) toast(delivered === 1 ? "Delivered a report you saved while offline." : ("Delivered " + delivered + " reports you saved while offline."));
+  }
+  function planParse(lines) {
+    let title = ""; const tasks = [], desc = [];
+    for (const ln of lines) {
+      const t = ln.trim(); if (!t) continue;
+      const m = t.match(/^title:\s*(.+)$/i);
+      if (m) { title = m[1].trim(); continue; }
+      if (/^[-*]\s+/.test(t)) { tasks.push(t.replace(/^[-*]\s+/, "")); continue; }
+      desc.push(t);
+    }
+    return { title, tasks, desc: desc.join(" ") };
+  }
+  function renderPlanCard(lines) {
+    const { title, tasks, desc } = planParse(lines);
+    const sig = planSig(title, tasks);
+    const done = isPlanApproved(sig);
+    let h = '<div class="plancard' + (done ? " approved" : "") + '" data-sig="' + sig + '"><div class="pc-h">'
+      + (done ? "Proposed mission · approved ✓" : "Proposed mission · approve to start") + "</div>";
+    if (title) h += '<div class="pc-title">' + inline(title) + "</div>";
+    if (desc) h += '<div class="pc-desc">' + inline(desc) + "</div>";
+    if (tasks.length) { h += '<div class="pc-dw">Done when</div><ul class="pc-tasks">'; for (const t of tasks) h += "<li>" + inline(t) + "</li>"; h += "</ul>"; }
+    // Approved → no live button (the .approved class also hides .pc-btns), just a
+    // receipt. Un-approved → the Approve button, wired by delegation on #msgs.
+    h += done
+      ? '<div class="pc-done" style="color:var(--ok);font-size:12px;margin-top:11px">✓ Approved — running in Activity</div></div>'
+      : '<div class="pc-btns"><button class="pc-approve">Approve &amp; run</button></div></div>';
+    return h;
+  }
+
+  // ---------- state ----------
+  let page = "chat";
+  let convId = null, convTitle = "New chat";
+  // The open thread's source ("phone" | "mission" | "worker" | …). Missions and
+  // workers run in the BACKGROUND (their executor being busy is not "your turn
+  // generating"), so the composer must never offer the stop square for them —
+  // see stopMode().
+  let convSource = null;
+  let running = false, stopping = false, streamText = "", streamTool = "", streamStartedAt = null;
+  // Live in-flight state per conversation, NOT just the open one. Every runtime/
+  // status event lands here keyed by convId, so leaving a generating thread and
+  // coming back replays its streamed text, current tool, and elapsed clock
+  // instead of a blank "thinking" (the open thread used to be the ONLY thing
+  // tracked, and switching wiped it). Entries: {running, text, tool, startedAt}.
+  const liveByConv = new Map();
+  // Per-conversation activity, for the drawer rows AND the conversations icon:
+  //  • convRunning — convIds generating right now → a white pulsing "thinking" dot.
+  //  • convUnseen  — convIds whose run FINISHED while you were looking at another
+  //    conversation (or elsewhere in the app) this session → a solid dot.
+  // That "a parallel conversation finished a reply while I was looking elsewhere"
+  // case is the ONLY thing that earns an unread dot (note 9693499e). convUnseen is
+  // populated purely from live/status finishes (see applyRunningSet + the status
+  // handler) — NEVER derived from a conversation's age or a persisted watermark.
+  // So old chats never badge (you didn't miss a reply on them this sitting), and a
+  // reload / app-update starts clean instead of resurrecting stale "unread"s.
+  // Opening a thread clears its unseen state.
+  const convRunning = new Set();
+  const convUnseen = new Set();
+  let __dotState = ""; // last-logged conversations-icon dot state (think/solid/off)
+  // The conversations icon tracks YOUR chats only. A mission/worker self-wake
+  // ending in the background must never light it (note 8c84fc31 — "the icon is
+  // not accurate": CADENCE-FAST's 2-minute wakes kept flipping the dot as each
+  // wake started/ended). Eligible = a thread you actually converse in: a
+  // phone/manual chat, or any thread you sent a message to this session.
+  const convSourceById = new Map();
+  const userEngaged = new Set();
+  function dotEligible(id) {
+    if (!id) return false;
+    // The conversations icon mirrors the drawer, and the drawer shows ONLY your
+    // chats — missions/workers/asks live on Activity or behind their alert cards,
+    // never in this panel (see the source filter in loadConvs). So a steered
+    // mission finishing in the background must NOT light an icon whose panel will
+    // never list it (report afc7971c: "the indicator was up but no conversations
+    // in the panel"). Exclude those sources even when you engaged the thread.
+    const s = convSourceById.get(id);
+    if (s === "mission" || s === "worker" || s === "ask") return false;
+    if (userEngaged.has(id) || id === convId) return true;
+    return s === "phone" || s === "manual";
+  }
+  // One-time purge of the old per-conversation "seen" watermark. It used to drive
+  // unread off conversation age, which spuriously badged old chats and resurfaced
+  // "cleared" ones after an app update (note 9693499e). Nothing reads it now;
+  // drop it so a stale copy on-device can never be misread by a future change.
+  try { localStorage.removeItem("vc_phone_seen"); } catch {}
+  function markSeen(id) { if (!id) return; convUnseen.delete(id); updateConvDot(); }
+  function updateConvDot() {
+    const dot = $("convdot"); if (!dot) return;
+    // The icon is about BACKGROUND threads — the ones you can't see right now.
+    // A conversation you're currently viewing (the open main chat, or a thread
+    // open in the sheet) must NOT light the dot: you can already watch it work.
+    // Its whole purpose is "is one of my OTHER conversations still running /
+    // finished while I wasn't looking" (note 85c11485).
+    const viewing = (id) => id === convId || (!!sheetConvId && id === sheetConvId);
+    let running = false; for (const id of convRunning) { if (!viewing(id)) { running = true; break; } }
+    let anyUnseen = false; for (const id of convUnseen) { if (!viewing(id)) { anyUnseen = true; break; } }
+    const unseen = !running && anyUnseen;
+    dot.classList.toggle("on", running || unseen);
+    dot.classList.toggle("think", running);
+    dot.classList.toggle("solid", unseen);
+    // [experience-log] Record every change of the conversations-icon dot with
+    // WHY (which threads are running / unseen, what you're viewing) — the
+    // "unread indicator is out of whack" complaint is unreconstructable without
+    // seeing when it lit and what it was tracking at that moment.
+    const st = running ? "think" : unseen ? "solid" : "off";
+    if (st !== __dotState) { __dotState = st; try { logEvent("convdot", { state: st, running: [...convRunning], unseen: [...convUnseen], viewing: convId || null, sheet: sheetConvId || null }); } catch {} }
+  }
+  // Reconcile the running set against the heartbeat-backed /status truth. A conv
+  // that WAS running and no longer is — and that you weren't looking at — becomes
+  // done-unseen. Catches finishes even if the live status event was missed.
+  function applyRunningSet(ids) {
+    // Only YOUR chats count (dotEligible) — harness wakes on missions/workers
+    // used to churn through here and light the dot for plumbing.
+    const next = new Set((ids || []).filter(dotEligible));
+    for (const id of convRunning) { if (!next.has(id) && id !== convId) convUnseen.add(id); }
+    convRunning.clear();
+    for (const id of next) { convRunning.add(id); convUnseen.delete(id); }
+    updateConvDot();
+  }
+  let vaultName = "", boxModel = "", boxVersion = "";
+  let runCount = 0, unreadN = 0, offlineStreak = 0;
+  const msgsEl = $("msgs"), input = $("input"), sendBtn = $("sendBtn");
+  // One-tap send with the keyboard up (note 85933e24). A plain onclick needed
+  // TWO taps on iOS: the first tap blurred the textarea → the keyboard
+  // collapsed → the layout shifted → the click landed nowhere. preventDefault
+  // on pointerdown keeps focus (and the keyboard) exactly where they are; the
+  // action fires on pointerup, and the trailing synthetic click is swallowed.
+  // The bare click handler stays as the fallback for non-pointer browsers.
+  function wireTap(btn, fn) {
+    if (!btn) return;
+    let tappedAt = 0;
+    btn.addEventListener("pointerdown", (e) => e.preventDefault());
+    btn.addEventListener("pointerup", (e) => { e.preventDefault(); tappedAt = Date.now(); fn(); });
+    btn.addEventListener("click", () => { if (Date.now() - tappedAt < 700) return; fn(); });
+  }
+  // composer glyphs are drawn, not typed — one icon voice with the rest of the app
+  const SEND_ARROW_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 12l6-6 6 6"/></svg>';
+  const SEND_STOP_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>';
+
+  // Cosmetic "clear chats": a per-device hidden set. Never deletes anything on
+  // the box or in git — the chats just stop rendering in this drawer.
+  const HIDDEN_KEY = "vc_phone_hidden_chats";
+  let lastChatList = [];
+  function hiddenChats() { try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_KEY) || "[]")); } catch { return new Set(); } }
+  function saveHiddenChats(set) { try { localStorage.setItem(HIDDEN_KEY, JSON.stringify([...set])); } catch {} }
+  // Stopped missions: dismissed from this device's Activity. They reappear only
+  // if a worker of theirs actually starts running again.
+  const HIDDEN_MISSIONS_KEY = "vc_phone_hidden_missions";
+  function hiddenMissions() { try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_MISSIONS_KEY) || "[]")); } catch { return new Set(); } }
+  function saveHiddenMissions(set) { try { localStorage.setItem(HIDDEN_MISSIONS_KEY, JSON.stringify([...set])); } catch {} }
+
+  const age = (ts) => { while (ts >= 1e14) ts = Math.floor(ts / 1000); const m = Math.floor((Date.now() - ts) / 60000); if (m < 1) return "now"; if (m < 60) return m + "m"; const h = Math.floor(m / 60); if (h < 24) return h + "h"; return Math.floor(h / 24) + "d"; };
+
+  // ---------- pages ----------
+  function setPage(name) {
+    // [experience-log] The spine of a replay: every page the user lands on, in
+    // order. `page` still holds the page we're leaving here — log both so the
+    // path reads "chat → alerts → activity" and a swipe/clear event can be
+    // placed on the page it happened.
+    if (name !== page) { try { logEvent("nav", { to: name, from: page }); } catch {} }
+    page = name;
+    document.body.classList.remove("page-chat", "page-activity", "page-alerts", "page-notes");
+    document.body.classList.add("page-" + name);
+    document.querySelectorAll<HTMLElement>(".mrow[data-page]").forEach((r) => r.classList.toggle("cur", r.dataset.page === name));
+    if (name !== "chat") hideKb();
+    if (name === "activity") void loadActivity();
+    if (name === "alerts") void loadAlerts();
+    if (name === "notes") void loadNotes();
+    setHeader();
+  }
+  document.querySelectorAll<HTMLElement>(".mrow[data-page]").forEach((r) => (r.onclick = () => { closeMenu(); closeDrawer(); setPage(r.dataset.page); }));
+
+  function setHeader() {
+    const off = document.body.classList.contains("offline");
+    const tx = $("titleTx"), sub = $("titleSub");
+    if (page === "chat") {
+      if (convId && convTitle && convTitle !== "New chat") { tx.textContent = convTitle; sub.textContent = ""; }
+      else { tx.textContent = ""; sub.textContent = ""; }
+    } else { tx.textContent = page === "activity" ? "Activity" : page === "notes" ? "Notes" : "Alerts"; sub.textContent = ""; }
+    const mAct = $("mAct"); mAct.textContent = runCount; mAct.classList.toggle("zero", runCount === 0);
+    const mAl = $("mAl"); mAl.textContent = unreadN; mAl.classList.toggle("zero", unreadN === 0);
+    $("menudot").classList.toggle("on", unreadN > 0 && page !== "alerts");
+  }
+  function setOffline(off) { document.body.classList.toggle("offline", off); setHeader(); }
+
+  // ---------- menus ----------
+  const menu = $("menu");
+  function closeMenu() { menu.classList.remove("on"); }
+  $("menuBtn").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("on"); };
+  document.addEventListener("click", closeMenu);
+  menu.addEventListener("click", (e) => e.stopPropagation());
+  $("settingsRow").onclick = () => { closeMenu(); openDrawer(); };
+
+  const cdraw = $("cdraw"), scrim = $("scrim");
+  function openConvs() { scrim.classList.add("on"); cdraw.classList.add("on"); document.body.classList.add("cdraw-open"); void loadConvs(); }
+  function closeConvs() { scrim.classList.remove("on"); cdraw.classList.remove("on"); document.body.classList.remove("cdraw-open"); }
+  $("convBtn").onclick = openConvs;
+  scrim.onclick = closeConvs;
+  // [swipe-open] Swipe right from the left edge of the chat page and the
+  // conversations drawer follows the finger; release past a third of its
+  // width (or a flick) commits, anything less snaps back.
+  (() => {
+    const EDGE = 44;
+    let x0 = 0, y0 = 0, mode: any = null, W = 0, lastX = 0, lastT = 0, vx = 0;
+    const onStart = (e: TouchEvent) => {
+      mode = null;
+      if (page !== "chat" || cdraw.classList.contains("on")) return;
+      if ($("sheet").classList.contains("on") || menu.classList.contains("on")) return;
+      const t = e.touches[0];
+      if (t.clientX > EDGE) return;
+      x0 = lastX = t.clientX; y0 = t.clientY; lastT = e.timeStamp; vx = 0;
+      W = Math.min(window.innerWidth * 0.87, 342);
+      mode = "arm";
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!mode) return;
+      const t = e.touches[0];
+      const dx = t.clientX - x0, dy = t.clientY - y0;
+      if (mode === "arm") {
+        if (Math.abs(dx) < 9 && Math.abs(dy) < 9) return;
+        if (Math.abs(dy) > Math.abs(dx) || dx <= 0) { mode = null; return; }
+        mode = "drag";
+        hideKb();
+        cdraw.style.transition = "none";
+        scrim.classList.add("on");
+      }
+      if (mode !== "drag") return;
+      e.preventDefault();
+      const p = Math.max(0, Math.min(1, dx / W));
+      cdraw.style.transform = "translateX(" + (-(1 - p) * 102) + "%)";
+      scrim.style.opacity = String(0.15 + p * 0.85);
+      const dt = e.timeStamp - lastT;
+      if (dt > 0) { vx = (t.clientX - lastX) / dt; lastX = t.clientX; lastT = e.timeStamp; }
+    };
+    const onEnd = () => {
+      if (mode !== "drag") { mode = null; return; }
+      mode = null;
+      const m = /translateX\((-?[\d.]+)%\)/.exec(cdraw.style.transform || "");
+      const shown = m ? 1 - Math.abs(parseFloat(m[1])) / 102 : 0;
+      cdraw.style.transition = ""; scrim.style.opacity = "";
+      // settle on the next frame — or a timeout, because rAF stalls when the
+      // page isn't rendering (backgrounded PWA) and the gesture must still land
+      const settle = (fn) => { let done = false; const go = () => { if (!done) { done = true; fn(); } }; requestAnimationFrame(go); setTimeout(go, 40); };
+      if (shown > 0.33 || vx > 0.45) {
+        settle(() => { cdraw.style.transform = ""; openConvs(); });
+      } else {
+        settle(() => { cdraw.style.transform = ""; scrim.classList.remove("on"); });
+      }
+    };
+    document.addEventListener("touchstart", onStart, { passive: true });
+    document.addEventListener("touchmove", onMove, { passive: false });
+    document.addEventListener("touchend", onEnd, { passive: true });
+    document.addEventListener("touchcancel", onEnd, { passive: true });
+  })();
+  $("newBtn").onclick = () => { closeConvs(); newChat(); };
+  $("clearChatsBtn").onclick = () => {
+    if (!confirm("Clear these chats from this view? Nothing is deleted — they stay on the box and in git; this only hides them on this device.")) return;
+    const set = hiddenChats();
+    for (const c of lastChatList) { set.add(c.id); convUnseen.delete(c.id); }
+    saveHiddenChats(set);
+    updateConvDot();
+    toast("Cleared from this view — nothing deleted."); closeConvs(); newChat();
+  };
+  $("titleBtn").onclick = () => { if (page === "chat") openDrawer(); else setPage("chat"); };
+
+  async function loadConvs() {
+    const box = $("clist");
+    try {
+      const [r, sr] = await Promise.all([api("/conversations"), api("/status").catch(() => null)]);
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      vaultName = d.vault || vaultName;
+      const runIds = new Set();
+      if (sr && sr.ok) { const sd = await sr.json().catch(() => ({})); for (const x of sd.runs || []) runIds.add(x.convId); }
+      const convs = d.conversations || [];
+      // The drawer is ONLY your conversations with the assistant (note
+      // 1b0ee05a — the earlier design surfaced viewed mission/worker threads
+      // here via `surfaced`; the user asked for that back OUT). Missions and
+      // workers live on Activity; ask threads live behind their alert cards.
+      // The cosmetic hidden set (cleared "from this view") is filtered out,
+      // except the chat you're currently in.
+      const hidden = hiddenChats();
+      // Feed the dot's eligibility map — the icon needs sources to tell your
+      // chats from harness threads.
+      for (const c of convs) convSourceById.set(c.id, c.source);
+      const chats = convs.filter((c) => c.source !== "ask" && c.source !== "worker" && c.source !== "mission" && (!hidden.has(c.id) || c.id === convId));
+      // The chat you're in may not be on disk yet (the box persists ~500ms
+      // after the first message). Show it anyway so a just-made chat never
+      // looks missing.
+      if (convId && !chats.some((c) => c.id === convId)) {
+        chats.unshift({ id: convId, title: convTitle || "New chat", lastActivityAt: Date.now(), source: "phone", msgCount: 0, preview: "" });
+      }
+      lastChatList = chats.slice();
+      // Reconcile the running set with /status so the row dots and the
+      // conversations icon are right on open. Unseen state is NOT seeded here —
+      // it only comes from a run finishing while you were looking elsewhere, so
+      // opening the drawer never conjures unread dots on chats you didn't miss.
+      applyRunningSet([...runIds]);
+      // Opening the drawer = looking at your conversations. A chat whose reply
+      // finished while you were elsewhere has now been SEEN — clear its unseen
+      // so the icon dot stops claiming "unread" after you've looked (the "still
+      // out of whack" case: I opened my conversations and the dot stayed on).
+      // Scoped to the chats actually shown and only the finished ones — a chat
+      // still generating keeps its think-dot; workers/missions aren't here.
+      if (cdraw.classList.contains("on")) { for (const c of chats) { if (!runIds.has(c.id)) convUnseen.delete(c.id); } }
+      updateConvDot();
+      box.innerHTML = "";
+      if (chats.length) {
+        const h = document.createElement("div"); h.className = "csec"; h.textContent = "Chats"; box.appendChild(h);
+        for (const c of chats) box.appendChild(convRow(c, runIds.has(c.id)));
+      } else {
+        // Completed missions live in the Activity-page Archive now, not here —
+        // the drawer is your assistant chats.
+        box.innerHTML = '<div class="empty">No conversations yet. Tap New to start.</div>';
+      }
+    } catch (e) {
+      box.innerHTML = '<div class="empty">Couldn’t load: ' + esc(String(e.message || e)) + "</div>";
+    }
+  }
+  function convRow(c, isRunning) {
+    const b = document.createElement("button");
+    b.className = "crow2";
+    const running = isRunning || convRunning.has(c.id);
+    const unseen = !running && convUnseen.has(c.id);
+    const dot = running ? '<span class="rd think"></span>' : unseen ? '<span class="rd unseen"></span>' : "";
+    b.innerHTML = '<div class="t">' + dot + '<span class="nm"></span><span class="ag"></span></div><div class="p"></div>';
+    b.querySelector(".nm").textContent = c.title;
+    b.querySelector(".ag").textContent = age(c.lastActivityAt);
+    b.querySelector(".p").textContent = c.preview || c.msgCount + " messages";
+    b.onclick = () => { closeConvs(); openThread(c.id, c.title); };
+    return b;
+  }
+
+  // ---------- chat ----------
+  // Tool calls for a finished turn, collapsed to a tappable "N steps" summary
+  // that expands to the list. ProposeMission is filtered out — it already shows
+  // as its own Approve card in the content.
+  function stepsStr(tools) {
+    const t = (tools || []).filter((x) => x !== "ProposeMission");
+    if (!t.length) return "";
+    const items = t.map((x) => '<div class="step">' + esc(x) + "</div>").join("");
+    return '<div class="steps"><button class="steps-h"><svg class="sck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7"/></svg>' +
+      t.length + " step" + (t.length === 1 ? "" : "s") +
+      '<svg class="scv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button><div class="steps-list">' +
+      items + "</div></div>";
+  }
+  // [unified ask] Inline option cards riding a reply — the presence-gated ask
+  // (same visual language as the deliberation sheet's cards; the "inline"
+  // class scopes the main-chat tap wiring). live=false renders them inert —
+  // a later message already answered, or they're history.
+  function inlineOptionsHtml(opts, live, chosenAns) {
+    // [truth] Decided → losers say nothing: show ONLY the chosen option, "selected".
+    const shown = chosenAns ? opts.filter((o) => o.answer === chosenAns) : opts;
+    return '<div class="delib-proposed inline">' + shown.map((o) => {
+      const chosen = !!chosenAns && o.answer === chosenAns;
+      return '<div class="delib-opt inline' + (o.primary ? " prim" : "") + (!live || chosen ? " dead" : "") + (chosen ? " chosen" : "") + '" data-ans="' + esc(o.answer) + '" data-q="' + esc((o.body || o.title || o.answer).slice(0, 300)) + '">'
+        + '<div class="ot">' + esc(o.title || o.answer)
+        + (chosen
+          ? '<span class="pick">✓ selected</span>'
+          : (live ? '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>' : ""))
+        + "</div>"
+        + (o.body ? '<div class="ob">' + esc(o.body) + "</div>" : "")
+        + "</div>";
+    }).join("") + "</div>";
+  }
+  function bubble(role: string, content: string, tools?: string[], opts: Record<string, any> = {}) {
+    const div = document.createElement("div");
+    // A FORMAL decision (a tapped option / committed answer) renders as the
+    // same quiet "Your call" receipt the sheets use — one visual language for
+    // decisions everywhere.
+    if (role === "user" && opts.decision) {
+      div.className = "tdecision";
+      div.innerHTML = '<span class="td-l">Your call</span>' + esc(content);
+      return div;
+    }
+    // Agent replies are bubble-free (full-width markdown); user + system keep
+    // their bubbles.
+    const asst = role !== "user" && !opts.system;
+    div.className = (asst ? "amsg" : "m " + (role === "user" ? "user" : "sys")) + (opts.queued ? " queued" : "");
+    if (!asst) div.textContent = content;
+    else div.innerHTML = '<div class="md">' + md(content) + "</div>";
+    // Finished-turn tool calls collapse to a "Ran N steps" summary at the end.
+    if (asst) div.insertAdjacentHTML("beforeend", stepsStr(tools));
+    // [unified ask] Tappable option cards land WITH the reply that argues for
+    // them (a presence-gated AskUser — no push was sent, you're here).
+    if (asst && Array.isArray(opts.askOptions) && opts.askOptions.length)
+      div.insertAdjacentHTML("beforeend", inlineOptionsHtml(opts.askOptions, !!opts.optionsLive, opts.chosenAnswer || ""));
+    if (asst) typeset(div);
+    return div;
+  }
+  const atBottom = () => msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 80;
+  const scrollDown = (force) => { if (force || atBottom()) msgsEl.scrollTop = msgsEl.scrollHeight; };
+
+  let streamEl = null, runlineEl = null, _shownTool = null;
+  // Send (↑) flips to stop (■) while the open thread is running — the standard
+  // chatbot interrupt. ONLY for a direct chat (source phone/manual): a mission or
+  // worker thread is "running" whenever its BACKGROUND executor is busy — for
+  // minutes or hours — and flipping the composer made the only visible button a
+  // ■ that KILLS the mission run, exactly when a typed message would simply go
+  // to the conversational front ("the send button is weird"). Missions keep ↑
+  // always; stopping a mission lives in its Activity sheet, deliberately.
+  const stopMode = () => running && !!convId && convSource !== "mission" && convSource !== "worker";
+  function syncSendBtn() {
+    const stop = stopMode();
+    sendBtn.classList.toggle("stop", stop);
+    sendBtn.innerHTML = stop ? SEND_STOP_SVG : SEND_ARROW_SVG;
+    sendBtn.setAttribute("aria-label", stop ? "stop" : "send");
+  }
+  function fmtElapsed(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    if (s < 60) return s + "s";
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + "m " + (s % 60) + "s";
+    const h = Math.floor(m / 60);
+    return h + "h " + (m % 60) + "m";
+  }
+  // Elapsed-since-prompt clock on the thinking line — counts from the same start
+  // the desktop uses (runStartedAt), continuous across leaving and reopening the
+  // thread. A single shared ticker keeps it live without re-rendering the line.
+  function updateElapsed() {
+    if (!runlineEl) return;
+    const e = runlineEl.querySelector(".elapsed");
+    if (!e) return;
+    e.textContent = running && streamStartedAt ? fmtElapsed(Date.now() - streamStartedAt) : "";
+  }
+  setInterval(updateElapsed, 1000);
+  function renderRunline() {
+    syncSendBtn();
+    if (!running) { if (runlineEl) { runlineEl.remove(); runlineEl = null; } _shownTool = null; return; }
+    if (!runlineEl) {
+      runlineEl = document.createElement("div"); runlineEl.className = "thinking";
+      runlineEl.innerHTML = '<span class="pulse"></span><span class="tlbl"></span><span class="elapsed"></span>';
+      msgsEl.appendChild(runlineEl); _shownTool = null;
+    }
+    msgsEl.appendChild(runlineEl);
+    updateElapsed();
+    // The pulse is the "working" sign; beside it, the current tool's name
+    // cross-fades in/out — like the desktop app: a tool starts, its name fades
+    // in; the next swaps it. No "running" bar. Honest "stopping…" still shows.
+    const lbl = runlineEl.querySelector(".tlbl");
+    const txt = stopping ? "stopping — finishes after this step…" : (streamTool || "");
+    if (txt !== _shownTool) {
+      _shownTool = txt;
+      lbl.classList.remove("show");
+      setTimeout(() => { if (!running || !runlineEl) return; lbl.textContent = txt; lbl.classList.toggle("show", !!txt); }, 150);
+    }
+  }
+  function renderStream() {
+    if (!streamText) { if (streamEl) { streamEl.remove(); streamEl = null; } renderRunline(); return; }
+    if (!streamEl) { streamEl = document.createElement("div"); streamEl.className = "amsg stream"; msgsEl.appendChild(streamEl); }
+    streamEl.innerHTML = '<div class="md">' + md(streamText) + '</div>';
+    renderRunline(); scrollDown(false);
+  }
+  function clearThreadUi() { running = false; stopping = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
+  // A rotating greeting, Claude-style (note 25b7b572) — the same small-bold
+  // slot as the old "What needs doing?", but JUST the greeting: the Ink empty
+  // chat stays quiet, no explainer boilerplate under it.
+  const GREETS = ["Welcome back!", "He returns!", "Ready to work?", "Welcome, sir.", "At your service."];
+  function showHint() {
+    const g = GREETS[Math.floor(Math.random() * GREETS.length)];
+    msgsEl.innerHTML = '<div class="hint"><b>' + g + "</b></div>";
+  }
+
+  // The open thread is sticky: reopening the app returns you to the chat you
+  // were in, not a blank new one — replies keep landing where you expect.
+  const LAST_CONV_KEY = "vc_phone_conv";
+  function rememberConv() { try { if (convId) localStorage.setItem(LAST_CONV_KEY, JSON.stringify({ id: convId, title: convTitle })); else localStorage.removeItem(LAST_CONV_KEY); } catch {} }
+  function newChat() { convId = null; convTitle = "New chat"; convSource = null; rememberConv(); clearThreadUi(); showHint(); setPage("chat"); setHeader(); }
+  async function openThread(id: string, title?: string) {
+    convId = id; convTitle = title || "New chat"; convSource = null; clearThreadUi(); markSeen(id);
+    setPage("chat"); setHeader();
+    try {
+      const r = await api("/conversation?id=" + encodeURIComponent(id) + "&n=120");
+      if (!r.ok) throw new Error((await r.json()).error || r.status);
+      const d = await r.json();
+      convTitle = d.title;
+      convSource = d.source || null;
+      clearThreadUi();
+      // /conversation reads the on-disk (idle) status, so trust the live signals
+      // too: the activity sets seeded from /status, plus any per-conv live state
+      // we've buffered. Replaying that shows the thread already working on reopen
+      // instead of a blank "thinking".
+      const live = liveByConv.get(id);
+      running = d.status === "running" || convRunning.has(id) || !!(live && live.running);
+      if (!d.messages || !d.messages.length) showHint();
+      else {
+        // [unified ask] Option sets stay tappable only while they're the live
+        // fork (nothing after them); once a later user message answered —
+        // matched by verbatim option text — they render inert with the pick
+        // marked. Computed from the thread itself: no extra state to sync.
+        const msgs = d.messages;
+        for (let i = 0; i < msgs.length; i++) {
+          const m = msgs[i];
+          const o: Record<string, any> = { system: m.system, decision: m.decision };
+          if (Array.isArray(m.askOptions) && m.askOptions.length) {
+            o.askOptions = m.askOptions;
+            let chosen = "";
+            for (let j = i + 1; j < msgs.length && !chosen; j++) {
+              if (msgs[j].role === "user" && m.askOptions.some((x) => (x.answer || "") === (msgs[j].content || "").trim())) chosen = (msgs[j].content || "").trim();
+            }
+            o.chosenAnswer = chosen;
+            o.optionsLive = !chosen && i === msgs.length - 1;
+          }
+          msgsEl.appendChild(bubble(m.role, m.content, m.tools, o));
+        }
+      }
+      if (running && live) { streamText = live.text || ""; streamTool = live.tool || ""; streamStartedAt = live.startedAt ?? null; }
+      renderStream(); renderRunline(); setHeader(); scrollDown(true); rememberConv();
+    } catch (e) {
+      if (/not found/i.test(String(e.message || e))) { newChat(); return; }
+      toast("Load failed: " + (e.message || e));
+    }
+  }
+
+  let lastSentText = null;
+  // One send in flight at a time. The optimistic bubble + cleared input already
+  // stop a same-text re-tap, but a NEW chat is the dangerous case: until the
+  // POST returns the minted convId, a second submit still carries convId=null
+  // and the box would spin up a SECOND conversation. This flag closes that
+  // window; the clientMsgId below closes the network/service-worker-retry one.
+  let sending = false;
+  // send() with no argument sends the composer text; send(text) sends a given
+  // string through the SAME pipeline (optimistic bubble, clientMsgId dedupe,
+  // busy flags) — that's how a tapped inline option card becomes your message.
+  async function send(forced?) {
+    if (sending) return;
+    const text = (forced !== undefined ? String(forced) : input.value).trim(); if (!text) return;
+    sending = true;
+    if (forced === undefined) { input.value = ""; input.style.height = "auto"; }
+    lastSentText = text;
+    // Idempotency key: a flaky network or the PWA service worker can deliver the
+    // same POST twice. The box collapses duplicate ids to a single turn (one
+    // conversation, one run) — the "my message got sent twice" bug.
+    const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
+    if (msgsEl.querySelector(".hint")) msgsEl.innerHTML = "";
+    msgsEl.appendChild(bubble("user", text, null)); scrollDown(true);
+    const mine = msgsEl.lastChild;
+    try {
+      if (convId) userEngaged.add(convId); // you're conversing here → the dot may track it
+      const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, text, clientMsgId, supervisor: convId ? undefined : true }) });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || r.status);
+      if (!convId && d.convId) { convId = d.convId; convTitle = text.split("\n")[0].slice(0, 60); rememberConv(); }
+      if (d.queued) { mine.classList.add("queued"); toast("Mid-run — queued, sends when it finishes."); }
+      else { running = true; stopping = false; streamStartedAt = Date.now(); renderRunline(); }
+      setHeader();
+    } catch (e) {
+      const msg = String(e.message || e);
+      // The thread is gone on the box (deleted, or a stale pointer the server's
+      // disk refresh couldn't resolve). Don't dead-end — drop to a fresh chat and
+      // resend as a new conversation, the same recovery openThread uses. Reuse
+      // the clientMsgId so this recovery stays idempotent under retry too.
+      if (/not found/i.test(msg) && convId) {
+        convId = null; rememberConv();
+        try {
+          const r2 = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, clientMsgId, supervisor: true }) });
+          const d2 = await r2.json();
+          if (r2.ok && !d2.error) {
+            if (d2.convId) { convId = d2.convId; convTitle = text.split("\n")[0].slice(0, 60); rememberConv(); }
+            running = true; stopping = false; renderRunline(); setHeader();
+            return;
+          }
+        } catch {}
+      }
+      mine.classList.add("queued"); toast("Send failed: " + msg);
+    } finally {
+      sending = false;
+    }
+  }
+  // Same predicate as the visual: the tap does what the button SHOWS. (These
+  // diverging is how a ↑-looking button could kill a run, or a ■ re-send.)
+  // wireTap: one tap works with the keyboard up (note 85933e24).
+  wireTap(sendBtn, () => { if (stopMode()) void killCurrent(); else void send(); });
+  // Enter inserts a newline on the phone; sending is via the send button (no Shift+Enter on an iOS keyboard).
+  let autosizeRAF = 0;
+  function scheduleAutosize() {
+    if (autosizeRAF) return;
+    autosizeRAF = requestAnimationFrame(() => { autosizeRAF = 0; input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 120) + "px"; });
+  }
+  input.addEventListener("input", scheduleAutosize);
+  // Interrupt the open thread's generation (chatbot stop, not a "kill").
+  // Optimistic: clear the running UI the moment you tap — the box's idle
+  // broadcast confirms it, but the button must never keep flashing after a
+  // successful stop.
+  async function killCurrent() {
+    if (!convId) return;
+    // Honest stop: don't claim it's stopped — the run may be mid-tool-call and
+    // keep going until that returns. Show "stopping…" and let the box's REAL
+    // run-end flip it to idle, so the phone never lies about whether it's off.
+    stopping = true; streamText = ""; streamTool = ""; renderStream(); renderRunline(); setHeader();
+    const r = await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId }) }).catch(() => null);
+    const d = r ? await r.json().catch(() => ({})) : {};
+    toast(d.result || "Stop sent.");
+  }
+
+  // North Star: approving a proposed plan mints the MISSION directly — no
+  // agent does it. The plan is handed over as structured data and the box
+  // creates the mission deterministically; its supervisor then spawns and
+  // monitors the workers.
+  async function approvePlan(card) {
+    if (card.classList.contains("approved")) return;
+    card.classList.add("approved");
+    card.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    const title = (card.querySelector(".pc-title")?.textContent || "Mission").trim();
+    const desc = (card.querySelector(".pc-desc")?.textContent || "").trim();
+    const tasks = [...card.querySelectorAll(".pc-tasks li")].map((li) => "- " + li.textContent.trim());
+    // Approval is a STRUCTURED action, not a chat prompt: hand the plan over as
+    // data and the box mints the mission deterministically. Its own supervisor
+    // then spawns and runs the workers.
+    const goal = [title, desc, tasks.length ? "Done when (each defines completion — likely one worker each, but split or merge as you see fit):\n" + tasks.join("\n") : ""].filter(Boolean).join("\n\n");
+    try {
+      const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mission: { title, goal } }) });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || r.status);
+      // Persist the approval so re-rendering this thread (on return) keeps the card
+      // approved instead of resurrecting a live Approve button (note 92536339).
+      const sig = card.getAttribute("data-sig"); if (sig) markPlanApproved(sig);
+      toast("Mission created — it’s underway."); setPage("activity");
+    } catch (e) { card.classList.remove("approved"); card.querySelectorAll("button").forEach((b) => { b.disabled = false; }); toast("Approve failed: " + (e.message || e)); }
+  }
+  msgsEl.addEventListener("click", (e) => {
+    const ap = e.target.closest(".pc-approve");
+    if (ap) { void approvePlan(ap.closest(".plancard")); return; }
+    const rf = e.target.closest(".pc-refine");
+    if (rf) { try { input.focus({ preventScroll: true }); } catch {} showKb(); return; }
+    // [unified ask] Tap an inline option card → it becomes YOUR message (the
+    // same send pipeline as typing it), the set goes inert, and the decision
+    // lands in the Alerts ARCHIVE as a decided card (/decision-record) — the
+    // presence-gated ask leaves the same paper trail as the push kind.
+    const opt = e.target.closest(".delib-opt.inline");
+    if (opt) {
+      if (opt.classList.contains("dead") || opt.classList.contains("chosen") || sending) return;
+      const ans = opt.dataset.ans || "";
+      if (!ans) return;
+      const q = opt.dataset.q || "";
+      const wrap = opt.closest(".delib-proposed");
+      if (wrap) wrap.querySelectorAll(".delib-opt").forEach((x) => { x.classList.add("dead"); const p = x.querySelector(".pick"); if (p) p.remove(); });
+      opt.classList.remove("dead"); opt.classList.add("chosen");
+      const ot = opt.querySelector(".ot"); if (ot) ot.insertAdjacentHTML("beforeend", '<span class="pick">✓ your call</span>');
+      void send(ans);
+      void api("/decision-record", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: ans, title: convTitle || "Inline decision", question: q, convId: convId || "" }) }).catch(() => {});
+      return;
+    }
+    const sh = e.target.closest(".steps-h");
+    if (sh) { sh.closest(".steps").classList.toggle("open"); }
+  });
+
+  // ---------- live events ----------
+  let pollGen = 0;
+  async function pollLoop() {
+    const gen = ++pollGen; let after = "latest";
+    while (gen === pollGen) {
+      try {
+        const r = await api("/poll?after=" + after);
+        if (!r.ok) throw new Error("poll " + r.status);
+        const d = await r.json(); after = d.next; offlineStreak = 0;
+        if (document.body.classList.contains("offline")) setOffline(false);
+        for (const ev of d.events || []) handleEvent(ev);
+      } catch { offlineStreak++; if (offlineStreak >= 2) setOffline(true); await new Promise((res) => setTimeout(res, 3000)); }
+    }
+  }
+  function handleEvent(d: PollEvent) {
+    // The in-app coder streams over this same ring — token deltas + tool-use
+    // activity for the open Talk-to-Claude thread. Its own view, own state.
+    if (d.type === "coder") { coderOnEvent(d); return; }
+    // Live sheet: an open worker/mission thread streams its in-flight words and
+    // folds in its turns the moment they land, so a thread opened mid-run shows
+    // the worker working / the supervisor supervising on the fly — not a frozen
+    // snapshot. Runs alongside (not instead of) the active-chat handling below.
+    // Chat-lane busy bookkeeping for EVERY conversation (not just the open
+    // sheet) — a closed sheet's generation keeps going on the box; this is how
+    // a reopened sheet knows to show "working…" and block a second send.
+    if (d.type === "chat" && d.convId) {
+      if (d.phase === "start" || d.phase === "stream" || d.phase === "waiting") chatBusy.add(d.convId);
+      else if (d.phase === "end") chatBusy.delete(d.convId);
+    }
+    if (sheetConvId && d.convId === sheetConvId) {
+      if (d.type === "runtime") {
+        // Ignore a live frame that arrives after the box already said this thread
+        // is idle — it's the stale trailing frame, not a real new turn. Without
+        // this guard it re-armed the edge and the sheet stuck on "working…".
+        if (!sheetEnded) {
+          sheetRunning = true; sheetOptimisticWorking = false;
+          sheetLiveText = d.text || ""; sheetLiveSteps = Array.isArray(d.steps) ? d.steps : [];
+          // Update the edge in place if it's there; if paint hadn't drawn it yet
+          // (first sign of life), repaint so it appears now. While the
+          // conversational front is answering, hold the render frozen — the data
+          // is current, but the executor edge doesn't move until the reply lands.
+          if (!sheetChatActive) { if ($("liveEdge")) renderSheetLive(); else if (sheetRepaint) void sheetRepaint(); }
+        }
+      } else if (d.type === "chat") {
+        // The conversational-front lane on this mission thread.
+        if (d.phase === "start") {
+          sheetChatActive = true; sheetChatSettling = false; sheetChatText = "";
+          // The reply lane owns the indicator now — clear the probe's "working…"
+          // pulse in place (paint early-returns while the lane is active, so it
+          // could never clear it; the user saw BOTH "working…" and "answering…",
+          // note 9185d86a).
+          sheetOptimisticWorking = false;
+          const stale = document.querySelector("#delibX .liveplain");
+          if (stale) stale.remove();
+          renderChatEdge("");
+        }
+        else if (d.phase === "waiting") {
+          // [presence] The executor is mid-thought; the front is holding a beat
+          // for it to settle before it answers, so it reads live state instead of
+          // a half-formed one. Tell the user we're waiting (not a dead pause).
+          sheetChatActive = true; sheetChatSettling = false; sheetOptimisticWorking = false;
+          const stale = document.querySelector("#delibX .liveplain"); if (stale) stale.remove();
+          renderChatEdge("letting the mission finish this step…");
+        }
+        else if (d.phase === "stream") { sheetChatText = d.text || sheetChatText; renderChatEdge(sheetChatText); }
+        else if (d.phase === "end") {
+          // Don't yank the edge — hold the reply on screen (settled, no pulse) and
+          // let paint drop it ONLY once the persisted bubble is present, so there's
+          // no gap where the message vanishes then reappears (the flash).
+          sheetChatActive = false;
+          sheetChatSettling = true;
+          renderChatEdge(sheetChatText, true);
+          if (sheetRepaint) void sheetRepaint();
+        }
+      } else if (d.type === "status") {
+        sheetRunning = d.status === "running";
+        if (sheetRunning) {
+          // A genuine new run — un-latch so its live frames render.
+          sheetEnded = false;
+        } else {
+          // The box says done: latch it and drop the live edge for good (until a
+          // real new run), so a trailing frame can't bring "working…" back.
+          sheetEnded = true;
+          sheetLiveText = ""; sheetLiveSteps = []; sheetOptimisticWorking = false; sheetDirectReply = false;
+        }
+        if (sheetRepaint) void sheetRepaint();
+      } else if (d.type === "message") { if (sheetRepaint) void sheetRepaint(); }
+    }
+    // Per-conversation activity bookkeeping — for EVERY conv, not just the open
+    // one — so the drawer dots and the conversations icon track background
+    // threads, and a reopened thread can replay its live state instead of a
+    // blank "thinking".
+    if (d.type === "runtime" && d.convId) {
+      // Dot bookkeeping only for YOUR chats — a mission/worker wake's runtime
+      // frames must not light the conversations icon (note 8c84fc31).
+      if (dotEligible(d.convId)) { convRunning.add(d.convId); convUnseen.delete(d.convId); }
+      const prev = liveByConv.get(d.convId);
+      liveByConv.set(d.convId, { running: true, text: d.text || "", tool: d.tool || "", startedAt: d.startedAt ?? (prev && prev.startedAt) ?? null });
+      updateConvDot();
+    } else if (d.type === "status" && d.convId) {
+      // The dot sets (convRunning/convUnseen) track YOUR chats only — the
+      // runtime handler above gates on dotEligible, but this status branch used
+      // to add ANY finished conv to convUnseen. So a mission or worker ending in
+      // the background lit the conversations icon with a phantom "unread" you
+      // could never clear (it isn't in the drawer) — the "indicator is out of
+      // whack" bug, and a direct violation of note 8c84fc31. Gate both writes on
+      // dotEligible. liveByConv is NOT gated: the sheet still replays a
+      // mission/worker's live state.
+      const elig = dotEligible(d.convId);
+      if (d.status === "running") {
+        if (elig) { convRunning.add(d.convId); convUnseen.delete(d.convId); }
+        const prev = liveByConv.get(d.convId) || {};
+        liveByConv.set(d.convId, { ...prev, running: true });
+      } else {
+        convRunning.delete(d.convId); liveByConv.delete(d.convId);
+        if (d.convId === convId) markSeen(convId); else if (elig) convUnseen.add(d.convId);
+      }
+      updateConvDot();
+    }
+
+    if (d.type === "runtime" && d.convId === convId) { running = true; streamText = d.text || ""; streamTool = d.tool || ""; streamStartedAt = d.startedAt ?? streamStartedAt; renderStream(); setHeader(); }
+    else if (d.type === "message" && d.convId === convId) {
+      markSeen(convId);
+      if (d.role === "user" && lastSentText !== null && d.content === lastSentText) { lastSentText = null; return; }
+      streamText = ""; streamTool = ""; renderStream();
+      // A landing reply with askOptions retires any older live option set —
+      // the newest fork is the one that counts (latest wins, same as sheets).
+      if (Array.isArray(d.askOptions) && d.askOptions.length)
+        msgsEl.querySelectorAll(".delib-opt.inline:not(.dead)").forEach((x) => x.classList.add("dead"));
+      msgsEl.appendChild(bubble(d.role, d.content, d.tools, { askOptions: d.askOptions, decision: d.decision, optionsLive: !!(d.askOptions && d.askOptions.length) })); scrollDown(false);
+    } else if (d.type === "status") {
+      if (d.convId === convId) { running = d.status === "running"; stopping = false; if (!running) { streamText = ""; streamTool = ""; streamStartedAt = null; renderStream(); } renderRunline(); }
+      void refreshState(); if (page === "activity") softReload(loadActivity);
+      if (cdraw.classList.contains("on")) void loadConvs();
+    } else if (d.type === "title" && d.convId === convId) { convTitle = d.title; setHeader(); }
+    else if (d.type === "notif") { void refreshBadge(); if (page === "alerts") softReload(loadAlerts); }
+  }
+
+  // Activity badge counts what's ON the Activity page — missions + their
+  // workers — NOT every running thread. A normal chat mid-generation (source
+  // "phone"/"manual") is a run, but it isn't an "activity"; counting it made the
+  // burger badge read "1 activity" during an ordinary conversation and never
+  // clear once it idled. Filter to mission/worker so the badge tracks real work.
+  function activityRunCount(runs) { return (runs || []).filter((r) => r.source === "mission" || r.source === "worker").length; }
+  async function refreshState() { try { const d = await (await api("/status")).json(); if (d.error) throw 0; vaultName = d.vault || vaultName; boxModel = d.model || ""; boxVersion = d.version || boxVersion; runCount = activityRunCount(d.runs); for (const r of d.runs || []) { if (r.convId && r.source) convSourceById.set(r.convId, r.source); } applyRunningSet((d.runs || []).map((r) => r.convId)); setHeader(); void flushFeedbackQueue(); return d; } catch { return null; } }
+  async function refreshBadge() { try { const d = await (await api("/notifications")).json(); if (typeof d.unread === "number") { unreadN = d.unread; setHeader(); } } catch {} }
+
+  // ---------- activity ----------
+  function el(html: string): any { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
+  // drawn chevrons — the text glyphs (› ▸ ▾) read as fallback characters
+  const CHEV_R = '<svg class="chev-i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
+  const chevT = (open) => '<svg class="chev-t' + (open ? " open" : "") + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
+
+  // ---------- bottom sheet (the detail surface) ----------
+  // Threads render as a transcript with sender labels and bubble-free agent
+  // turns. A worker thread is Supervisor ⇄ Worker; a mission thread is You ⇄
+  // Supervisor. You operate at the mission layer — never type at a worker.
+  // The chain of substantive updates (Haiku-cleaned): each a meaningful
+  // development checked off, snags flagged. Legible progress — what it did and
+  // what it ran into — instead of a run-on paragraph + a collapsed "N steps" chip.
+  function timelineHtml(tl) {
+    if (!tl || !Array.isArray(tl.steps) || !tl.steps.length) return "";
+    // Each step is one COMPLETE logical thought (the work woven into the prose) —
+    // no separate mechanical "→ ran X" line. Checked off; snags flagged amber.
+    return '<div class="ttl">' + tl.steps.map((s) => {
+      const th = (s.thought || "").trim();
+      if (!th) return "";
+      return '<div class="ttl-step ' + (s.snag ? "snag" : "done") + '"><div class="ttl-th">' + esc(th) + "</div></div>";
+    }).join("") + "</div>";
+  }
+  // An assistant turn renders as its timeline (+ the turn's final reply) when one
+  // was computed; otherwise the raw content + a collapsed tool chip (older turns,
+  // or turns where no fast model was configured to clean them).
+  function assistantBody(m) {
+    const tl = m.timeline;
+    if (tl && Array.isArray(tl.steps) && tl.steps.length) {
+      const reply = (tl.reply || "").trim();
+      return '<div class="amsg">' + timelineHtml(tl) + (reply ? '<div class="md tl-reply">' + md(reply) + "</div>" : "") + "</div>";
+    }
+    return '<div class="amsg"><div class="md">' + md(m.content || "") + "</div>" + stepsStr(m.tools) + "</div>";
+  }
+  // A worker-report wake → a compact NEUTRAL note (not a right-aligned "You"
+  // bubble that looks like the user said it), dropping the boilerplate "review
+  // its thread and decide…" steering instruction.
+  function wakeReportHtml(seg) {
+    const mm = seg.match(/Your worker\s+"?([^"(]+?)"?\s*(?:\([^)]*\))?\s*just finished[^:]*:\s*([\s\S]*?)(?:\n\nReview its thread|$)/i);
+    const who = (mm ? mm[1] : "a worker").trim();
+    const out = (mm ? mm[2] : seg).trim().replace(/\s+/g, " ").slice(0, 200);
+    return '<div class="treport">↳ <b>' + esc(who) + "</b> reported — " + esc(out) + "</div>";
+  }
+  // A run-watcher wake ("Watched run "X" FINISHED/FAILED/STALLED …") → the same
+  // neutral note, NOT a right-aligned "You" bubble full of watcher boilerplate.
+  function wakeRunHtml(seg) {
+    const mm = seg.match(/Watched run\s+"?([^"]+?)"?\s+(FINISHED|FAILED|STALLED)\b[^A-Za-z0-9]*([\s\S]*?)(?:\n\nReview|\nReview|\nDecide|\n\n|$)/i);
+    const who = (mm ? mm[1] : "a run").trim();
+    const state = (mm ? mm[2] : "").toUpperCase();
+    const verb = state === "FINISHED" ? "finished" : state === "FAILED" ? "failed" : state === "STALLED" ? "stalled" : "updated";
+    const detail = (mm ? mm[3] : "").trim().replace(/^Last status:\s*/i, "").replace(/\s+/g, " ").slice(0, 160);
+    const warn = state === "FAILED" || state === "STALLED";
+    return '<div class="treport' + (warn ? " warn" : "") + '">↳ run <b>' + esc(who) + "</b> " + esc(verb) + (detail ? " — " + esc(detail) : "") + "</div>";
+  }
+  // A turn is "yours to answer" (plain prose) vs background reasoning (thought-
+  // chain) by what TRIGGERED it. A wake — a watcher run or a worker report — is
+  // plumbing, never something you typed.
+  function isWakeMsg(c) { return /Watched run\s+"|Your worker\s+"/i.test(c || ""); }
+  function threadHtml(msgs, labels) {
+    labels = labels || { user: "You", assistant: "Assistant" };
+    return '<div class="thread">' + (msgs || []).map((m) => {
+      const content = m.content || "";
+      if (m.role === "user") {
+        // A FORMAL decision (a tapped AskUser option / committed answer via
+        // /answer) renders as a receipt chip — the durable record of which way
+        // the user called it — not as an ordinary chat bubble.
+        if (m.decision) return '<div class="tdecision"><span class="td-l">Your call</span>' + esc(content) + "</div>";
+        // A run-watcher wake is a SYSTEM event, not something you said — render it
+        // as a neutral note, not a "You" bubble of watcher boilerplate.
+        if (/^\s*Watched run\s+"/i.test(content)) return wakeRunHtml(content);
+        // A worker-report wake — pure, OR appended onto the user's own message
+        // (the old merge bug: "How's it going  Your worker … finished"). Split it
+        // so the user's text stays its own clean bubble and the wake is a note.
+        const wi = content.search(/Your worker\s+"/i);
+        if (wi === 0) return wakeReportHtml(content);
+        if (wi > 0) {
+          const lead = content.slice(0, wi).trim();
+          const leadHtml = lead ? '<div class="tmsg user"><span class="sender">' + esc(labels.user) + '</span><div class="m user">' + esc(lead) + "</div></div>" : "";
+          return leadHtml + wakeReportHtml(content.slice(wi));
+        }
+      }
+      const side = m.role === "user" ? "user" : "asst";
+      let sender = m.role === "user" ? labels.user : labels.assistant;
+      if (m.role === "user" && /^MISSION BRIEF/i.test(content)) sender = "Mission brief · approved";
+      const inner = m.role === "user"
+        ? '<div class="m user">' + esc(content) + "</div>"
+        : assistantBody(m);
+      return '<div class="tmsg ' + side + '"><span class="sender">' + esc(sender) + "</span>" + inner + "</div>";
+    }).join("") + "</div>";
+  }
+  // Refresh handle for the live mission view — any new sheet (and closing one)
+  // cancels it so a mission's poll never bleeds into another sheet's body.
+  let missionPoll = 0;
+  // Per-attach token: every sheet-conversation attach takes ++sheetSeq and its
+  // paints bail when a NEWER attach exists. This is the structural fix for the
+  // cross-sheet bleed class (note 4264e049): the shared sheetConvId guard alone
+  // couldn't catch "closed A, opened B, then A's in-flight fetch resolved while
+  // B shows the same conversation id or a same-named #delibX". A stale token can
+  // never paint, whatever the ids say.
+  let sheetSeq = 0;
+  // Live-sheet state: while a worker/mission thread is open AND running, its
+  // in-flight words stream into the sheet (sheetLiveText, fed by runtime events),
+  // and sheetRepaint folds in finalized turns. Reset whenever a sheet opens/closes.
+  let sheetConvId = "";
+  let sheetLiveText = "";
+  let sheetLiveSteps = [];
+  let sheetRepaint = null;
+  // Whether the open thread's conv is RUNNING — the gate for the live edge.
+  // NOT from /conversation: the on-disk status is written "idle" (setConversation
+  // Status is in-memory only), so /conversation can't tell us a run is live. The
+  // truth comes from the heartbeat-backed /status runs + the live status/runtime
+  // events. sheetOptimisticWorking shows "working…" the instant you hit send,
+  // before the box has even started the turn, so there's no dead gap.
+  let sheetRunning = false;
+  let sheetOptimisticWorking = false;
+  // The in-flight turn is a DIRECT reply to a message the user typed — a normal
+  // conversation turn, so its live edge stays natural (streaming prose + a quiet
+  // pulse), NEVER the thought-chain. The thought-chain is for reasoning the user
+  // didn't ask to see (worker-wakes, scheduled self-checks). Set when the user
+  // sends from a supervisor thread; cleared when that run ends or the sheet closes.
+  let sheetDirectReply = false;
+  // Latched true the moment the box reports THIS thread idle. It blocks a stale
+  // trailing `runtime` frame — the box broadcasts status BEFORE runtime in a diff
+  // pass and wipes the runtime dedup key on the idle flip, so a lingering live
+  // frame lands just after status:idle and used to re-arm the edge — from
+  // re-showing "working…" after the turn is done (the "stuck until I close and
+  // reopen the sheet" bug). Cleared only by a genuine new status:running (or a
+  // fresh open), so once the box says done, the edge stays down.
+  let sheetEnded = false;
+  // Two-lane mission chat: true while the conversational front (a second agent on
+  // the SAME thread) is answering something you asked. While it's true we FREEZE
+  // the executor's live edge — its steps keep updating in the data but we don't
+  // re-render them — and the reply streams into its own edge below. When it ends
+  // we unfreeze and fold the persisted reply in. One thread, two agents, no fight
+  // for the view.
+  let sheetChatActive = false;
+  // Chat-lane busy state, tracked GLOBALLY (every "chat" broadcast, not just
+  // the open sheet's): closing a sheet mid-answer must not lose the fact that
+  // the agent is still generating — reopening shows the working pulse and the
+  // composer stays blocked until the reply lands (notes b5908f4c + 4bd29abb).
+  // TTL-backed, not a plain Set: if the phone misses a single "end" event
+  // (SSE reconnect, backgrounded PWA), a plain latch would brick the composer
+  // with "Still answering…" until a full reload. Entries auto-expire 180s
+  // after the last chat event; the backend's isRunActive guard stays the hard
+  // stop, so a premature expiry degrades to a server-refused send, never an
+  // interleaved turn.
+  const chatBusyAt = new Map();
+  const chatBusy = {
+    add(id) { chatBusyAt.set(id, Date.now()); },
+    delete(id) { chatBusyAt.delete(id); },
+    has(id) {
+      const t = chatBusyAt.get(id);
+      if (!t) return false;
+      if (Date.now() - t > 180000) { chatBusyAt.delete(id); return false; }
+      return true;
+    },
+  };
+  // The conversational front's reply while it SETTLES: after the lane ends we keep
+  // the reply text here and hold its edge on screen until the persisted bubble is
+  // actually in the fetched thread — closing the ~½s gap where the reply belonged
+  // to neither the live edge nor the thread and blinked out (the flash).
+  let sheetChatText = "";
+  let sheetChatSettling = false;
+  // The live edge appended to a RUNNING thread: the agent's work as it happens,
+  // rendered as a GROWING thought→action timeline (same look as the finished,
+  // Haiku-cleaned timeline above it — but building step by step, the last step
+  // pulsing). Actions are humanized on the box ("read worker-a.md"), never raw
+  // tool names. Before the first step lands it falls back to the streaming prose
+  // tail so there's always a sign of life.
+  // The live edge while a worker turn is in flight: the thoughts it has finished
+  // so far (each bounded by an action, so they read whole), plus a quiet
+  // "working…" beat for the one it's mid-way through. NO raw token stream — the
+  // user wants the reasoning, not a thread of text. When the turn lands, Haiku
+  // cleans the lot into crisp complete thoughts.
+  function liveEdgeHtml() {
+    const steps = sheetLiveSteps || [];
+    // A DIRECT reply to the user is a normal conversation turn — render it like
+    // the main chat (streaming prose + a quiet pulse), never the thought-chain.
+    // No orphaned timeline node, no "logic thread" for an answer they asked for.
+    if (sheetDirectReply) {
+      const t = (sheetLiveText || "").trim();
+      return '<div id="liveEdge" class="liveplain">'
+        + (t ? '<div class="md">' + md(t) + "</div>" : "")
+        + '<div class="thinking"><span class="pulse"></span><span class="tlbl show">working…</span></div>'
+        + "</div>";
+    }
+    // All but the last are finished thoughts; the last is still forming → hidden
+    // behind "working…" rather than shown as raw growing prose.
+    const done = steps.slice(0, Math.max(0, steps.length - 1));
+    let chain = "";
+    for (const s of done) {
+      const th = (s.thought || "").trim();
+      if (th) chain += '<div class="ttl-step ' + (s.snag ? "snag" : "done") + '"><div class="ttl-th">' + esc(th) + "</div></div>";
+    }
+    chain += '<div class="ttl-step ttl-cur"><div class="ttl-th dim">working…</div></div>';
+    return '<div class="ttl" id="liveEdge">' + chain + "</div>";
+  }
+  function renderSheetLive() {
+    const edge = $("liveEdge");
+    if (!edge) return;
+    const tpl = document.createElement("template");
+    tpl.innerHTML = liveEdgeHtml().trim();
+    edge.replaceWith(tpl.content.firstChild);
+    const be = $("sheetBody");
+    if (be && be.scrollHeight - be.scrollTop - be.clientHeight < 140) be.scrollTop = be.scrollHeight;
+  }
+  // The conversational front's live reply — its own prose edge at the bottom of
+  // the sheet, streamed while it answers. Kept separate from the executor's edge
+  // (which is frozen meanwhile) so the two lanes never race in the view. Removed
+  // on chat-end, when paint folds the persisted reply into the thread.
+  function renderChatEdge(text: string, settled?: boolean) {
+    const be = $("sheetBody"); if (!be) return;
+    let ce = $("chatEdge");
+    if (!ce) {
+      ce = document.createElement("div"); ce.id = "chatEdge"; ce.className = "liveplain chatedge";
+      // Put YOUR reply in the conversation flow — right after the thread, ABOVE the
+      // executor's background "working…" edge and the workers list — not dumped at
+      // the very bottom under everything (the "working indicator is in a weird
+      // spot" bug). Anchor before #liveEdge, else the Workers toggle, else append.
+      const anchor = $("liveEdge") || $("mWkToggle");
+      if (anchor && anchor.parentNode === be) be.insertBefore(ce, anchor);
+      else be.appendChild(ce);
+    }
+    const t = (text || "").trim();
+    // While streaming, a pulse + "working…" — the SAME label every lane uses
+    // (note b5908f4c: "answering…" made these threads read like a different
+    // kind of thing). Once settled (lane ended, waiting for the persisted
+    // bubble to land) just the reply, no pulse — so the handoff to the
+    // folded-in message is invisible.
+    ce.innerHTML = (t ? '<div class="md">' + md(t) + "</div>" : "")
+      + (settled ? "" : '<div class="thinking"><span class="pulse"></span><span class="tlbl show">working…</span></div>');
+    if (be.scrollHeight - be.scrollTop - be.clientHeight < 160) be.scrollTop = be.scrollHeight;
+  }
+  // Measure the top safe-area inset (Dynamic Island / notch) in px — 0 in a browser
+  // tab, ~47-59 in an iOS standalone PWA. A full-height sheet must stop BELOW it, or
+  // its top slides up under the Island and reads as "too far up" (note 86073ceb).
+  // Probed live (offsetHeight resolves env()), so rotation is handled.
+  function safeAreaTop() {
+    try {
+      const p = document.createElement("div");
+      p.style.cssText = "position:fixed;top:0;left:0;width:0;height:env(safe-area-inset-top,0px);visibility:hidden;pointer-events:none";
+      document.body.appendChild(p);
+      const h = p.offsetHeight || 0;
+      p.remove();
+      return h;
+    } catch { return 0; }
+  }
+  // The height a sheet opens/snaps to at rest. A smidge below the very top so the
+  // header still clears the Dynamic Island, but HIGHER than the old
+  // full-safe-area gap — the user wanted it "a smidge higher, halfway between all
+  // the way up and where it used to default." So we give back half the safe-area
+  // band. 0 inset in a browser tab, so this is the near-full height there.
+  function sheetRestHeight() { return Math.round(0.96 * window.innerHeight) - Math.round(safeAreaTop() / 2); }
+  // Cohesive monochrome line-icon set — replaces the old punctuation glyphs (?, ≡,
+  // ✓, $, !, ◎, ✦, ◷) in the .ico / .sheet-ico tiles. Drawn with currentColor so
+  // the tile's status class (.a warn · .r err · .g white) tints the icon ONLY, in
+  // keeping with the near-monochrome app. Keyed by the same glyph values the
+  // producers + alertMeta still emit, so callers are unchanged; an unknown key
+  // (e.g. a stray emoji from a producer) falls back to the neutral info icon.
+  const ICON_PATHS = {
+    "?": '<circle cx="6" cy="6" r="2.7"/><circle cx="18" cy="6" r="2.7"/><circle cx="12" cy="18" r="2.7"/><path d="M6 8.7v.6a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-.6M12 12.6v2.7"/>',
+    "!": '<path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4"/><circle cx="12" cy="17.3" r=".6" fill="currentColor" stroke="none"/>',
+    "✓": '<circle cx="12" cy="12" r="9"/><path d="M8 12.4l2.6 2.6L16 9.6"/>',
+    "$": '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M14.5 9.3c-.6-.7-1.6-1.1-2.6-1.1-1.4 0-2.4.8-2.4 1.9 0 2.6 5 1.4 5 4 0 1.2-1 2-2.6 2-1.1 0-2.1-.4-2.7-1.1"/>',
+    "≡": '<path d="M4 6h16M4 12h16M4 18h10"/>',
+    "•": '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="7.7" r=".6" fill="currentColor" stroke="none"/>',
+    "◎": '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.4"/>',
+    "✦": '<path d="M4 20l4-1L19 8a2 2 0 0 0-3-3L5 16l-1 4z"/><path d="M14.5 6.5l3 3"/>',
+    "◷": '<circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/>',
+    "✕": '<circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/>',
+    // Plain chat bubble — the "dig in / talk it through" affordance on an ask card.
+    "chat": '<path d="M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-4 4v-4H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/>',
+  };
+  function iconSvg(key) {
+    const p = ICON_PATHS[key] || ICON_PATHS["•"];
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + p + "</svg>";
+  }
+  function openSheet(opts) {
+    clearInterval(missionPoll); missionPoll = 0;
+    sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false; sheetChatActive = false; sheetChatSettling = false; sheetChatText = "";
+    const sh = $("sheet");
+    sh.style.transition = "";
+    // Cards open FULL-SCREEN by default (note 7a420a05) — not the old ~64% peek.
+    // A sheet→sheet transition (the back ‹, or opening a worker from its mission)
+    // instead PRESERVES the current height, so back never "forces me back up"
+    // after I've dragged the sheet down.
+    sh.style.maxHeight = "none";
+    // Open at the resting height (a smidge below the very top — see sheetRestHeight).
+    // A sheet→sheet transition (back ‹, or opening a worker from its mission)
+    // PRESERVES the current height so back never forces you back up.
+    sh.style.height = (sh.classList.contains("on") ? sh.offsetHeight : sheetRestHeight()) + "px";
+    $("sheetIco").innerHTML = iconSvg(opts.ico || "•");
+    $("sheetIco").className = "sheet-ico" + (opts.cls ? " " + opts.cls : "");
+    // A worker thread doesn't need an icon chip — the "Worker · …" intent label
+    // already says what it is, and the ● sitting next to the back ‹ just looked
+    // cluttered (note 7a420a05). Hide it for those views.
+    $("sheetIco").style.display = opts.noIco ? "none" : "";
+    $("sheetIntent").textContent = opts.intent || "";
+    $("sheetTitle").textContent = opts.title || "";
+    $("sheetBody").innerHTML = opts.bodyHtml || "";
+    const foot = $("sheetFoot");
+    if (opts.footHtml) { foot.style.display = ""; foot.innerHTML = opts.footHtml; } else { foot.style.display = "none"; foot.innerHTML = ""; }
+    const act = $("sheetAction");
+    if (opts.action) { act.style.display = ""; act.textContent = opts.action.label; act.className = "sheet-action" + (opts.action.danger ? " danger" : ""); act.onclick = opts.action.onClick; }
+    else { act.style.display = "none"; act.className = "sheet-action"; act.onclick = null; }
+    // Back affordance: when this sheet was reached FROM another (a worker thread
+    // opened from its mission), show a ‹ that returns there instead of forcing a
+    // full close + re-tap to get back to the supervisor/mission level.
+    const back = $("sheetBack");
+    if (opts.back) { back.style.display = ""; back.onclick = opts.back; } else { back.style.display = "none"; back.onclick = null; }
+    if (opts.wire) opts.wire($("sheetBody"), foot);
+    typeset($("sheetBody"));
+    $("sheetScrim").classList.add("on"); $("sheet").classList.add("on");
+  }
+  function closeSheet() { clearInterval(missionPoll); missionPoll = 0; markSeen(sheetConvId); /* leaving at close-time stamps it seen, after any open-time pin bump → never falsely unread (note ec78cbf8) */ sheetConvId = ""; sheetLiveText = ""; sheetLiveSteps = []; sheetRepaint = null; sheetRunning = false; sheetOptimisticWorking = false; sheetDirectReply = false; sheetEnded = false; sheetChatActive = false; sheetChatSettling = false; sheetChatText = ""; $("sheetScrim").classList.remove("on"); const sh = $("sheet"); sh.classList.remove("on", "editing"); sh.style.maxHeight = ""; updateConvDot(); /* no longer viewing the sheet thread → a still-running one re-lights the dot */ }
+  // ONE keyboard contract for EVERY text input inside a sheet — the reply
+  // composer, the note editor, any future field (note ba0735c9: "find all of
+  // the text box enter use cases and get them straightened out"). On focus the
+  // sheet fills exactly the space ABOVE the keyboard:
+  //  - never shrink-to-content (the old code cleared the inline height, so a
+  //    sheet with a short conversation COLLAPSED the moment you tapped the
+  //    composer — "brings the sheet down from being expanded");
+  //  - never full-height + lift (an input NOT on this contract kept the sheet
+  //    at full height while translateY(-kb) lifted it, pushing the top clean
+  //    out of the screen — the note editor "swiping way up out of frame").
+  // On blur the resting geometry comes back.
+  function sheetEditFocus(el) {
+    hideKb();
+    const sheet = $("sheet");
+    // Remember the resting height once (not when hopping between two inputs),
+    // so blur can put the sheet back — never the CSS 64% "middle" fallback
+    // (notes 7edf4afd / 55ab9006).
+    if (!sheet.classList.contains("editing")) sheet.dataset.restH = sheet.style.height || "";
+    // Keep the sheet at its RESTING spot on focus — do NOT balloon or lift it. The
+    // `.editing` class (CSS) reserves the keyboard height as INSIDE padding, so the
+    // top stays fixed and only the pinned composer rises above the keyboard. Was:
+    // height:100% + a live maxHeight cap, which grew the sheet to full-screen and
+    // let the whole-sheet lift shove its top up into the notch — the on-device
+    // report ("the top should not expand because I opened my keyboard; keep it in
+    // the same spot") and note 93b609bc. Resting height is an explicit px from
+    // openSheet, so not touching it can't collapse a short sheet.
+    sheet.classList.add("editing");
+    const be = $("sheetBody");
+    const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 80;
+    setTimeout(() => { try { el.scrollIntoView({ block: "nearest" }); } catch {} if (be && wasBottom) be.scrollTop = be.scrollHeight; }, 60);
+  }
+  function sheetEditBlur() {
+    const sh = $("sheet");
+    sh.classList.remove("editing");
+    // Restore the resting geometry (explicit height + maxHeight:none, like
+    // openSheet) so dismissing the keyboard doesn't collapse the sheet, and
+    // keep the thread pinned to its latest line across the resize.
+    const be = $("sheetBody");
+    const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 80;
+    sh.style.maxHeight = "none";
+    sh.style.height = sh.dataset.restH || (sheetRestHeight() + "px");
+    if (be && wasBottom) {
+      requestAnimationFrame(() => { be.scrollTop = be.scrollHeight; });
+      setTimeout(() => { if (be.scrollHeight - be.scrollTop - be.clientHeight < 220) be.scrollTop = be.scrollHeight; }, 300);
+    }
+  }
+  // Wire a sheet's reply textarea: auto-grows vertically as you type (like the
+  // chat composer), Enter inserts a newline, the ↑ button sends. The pinned
+  // footer + the visualViewport lift keep it above the keyboard.
+  function wireReply(foot, onSend) {
+    if (!foot) return;
+    const ta = foot.querySelector(".rinp"); if (!ta) return;
+    ta.setAttribute("enterkeyhint", "enter");
+    const autosize = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; };
+    ta.addEventListener("input", autosize);
+    ta.addEventListener("focus", () => sheetEditFocus(ta));
+    ta.addEventListener("blur", sheetEditBlur);
+    // onSend returning false = blocked (lane busy) — keep the typed text so
+    // nothing is lost; anything else counts as accepted and clears the box.
+    const go = () => { const v = ta.value.trim(); if (!v) return; if (onSend(v) === false) return; ta.value = ""; autosize(); };
+    wireTap(foot.querySelector(".rsend"), go);
+    // Enter inserts a newline; sending is via the send button.
+    setTimeout(autosize, 0);
+  }
+  $("sheetScrim").onclick = closeSheet; $("sheetX").onclick = closeSheet;
+  // Tool-call "N steps" chips expand inside the sheet too. The chat has its own
+  // handler on msgsEl; the sheet's thread (worker / mission / alert detail) is a
+  // separate container, so it needs its own delegated toggle — without this,
+  // tapping the steps chip in a thread did nothing.
+  $("sheetBody").addEventListener("click", (e) => {
+    const sh = e.target.closest(".steps-h");
+    if (sh) sh.closest(".steps").classList.toggle("open");
+  });
+  // Drag the grab/header: pull up to fill the screen for a long thread, pull
+  // down past the threshold to dismiss. Snaps to peek / full / closed.
+  (function sheetDrag() {
+    const sheet = $("sheet"); let startY = 0, startH = 0, dragging = false, H = 0, bodyBottom = false;
+    // Growing the sheet must NOT reveal the top of the thread: if the body was at
+    // the bottom (latest line in view), keep it there as the frame resizes — the
+    // "drag back up and it scrolls the conversation to the top" bug (note this
+    // session). Captured at drag-start, re-applied through the move + snap.
+    const be = () => $("sheetBody");
+    const atBot = () => { const b = be(); return !!b && b.scrollHeight - b.scrollTop - b.clientHeight < 80; };
+    const pin = () => { const b = be(); if (b && bodyBottom) b.scrollTop = b.scrollHeight; };
+    const down = (y) => { dragging = true; startY = y; startH = sheet.offsetHeight; H = window.innerHeight; bodyBottom = atBot(); sheet.style.transition = "none"; sheet.style.maxHeight = "none"; };
+    const move = (y) => { if (!dragging) return; const h = Math.max(80, Math.min(startH - (y - startY), Math.round(0.97 * H))); sheet.style.height = h + "px"; pin(); };
+    const up = () => { if (!dragging) return; dragging = false; sheet.style.transition = ""; const h = sheet.offsetHeight; if (h < 0.30 * H) { closeSheet(); return; } if (h > 0.55 * H) sheet.style.height = sheetRestHeight() + "px"; else sheet.style.height = Math.min(sheet.scrollHeight, Math.round(0.62 * H)) + "px"; setTimeout(pin, 300); };
+    for (const elx of [$("sheetGrab"), $("sheetHead")]) {
+      elx.addEventListener("touchstart", (e) => { if (e.target.closest(".sheet-x,.sheet-action")) return; down(e.touches[0].clientY); }, { passive: true });
+      elx.addEventListener("mousedown", (e) => { if (e.target.closest(".sheet-x,.sheet-action")) return; e.preventDefault(); down(e.clientY); });
+    }
+    window.addEventListener("touchmove", (e) => { if (dragging) move(e.touches[0].clientY); }, { passive: true });
+    window.addEventListener("touchend", up); window.addEventListener("touchcancel", up);
+    window.addEventListener("mousemove", (e) => { if (dragging) move(e.clientY); });
+    window.addEventListener("mouseup", up);
+  })();
+
+  // structured-first alert metadata; falls back to derivation (no longer a
+  // pure keyword sniff once the producer ships intention/summary/icon).
+  function alertMeta(n) {
+    if (n.intention || n.icon) return { intention: n.intention || "Update", icon: n.icon || "•", cls: n.cls || "" };
+    if (n.kind === "ask") return { intention: "Needs your call", icon: "?", cls: "a" };
+    if (/fail|error|diverg|crash|wedge|❌|⚠/i.test(n.title)) return { intention: "Something failed", icon: "!", cls: "r" };
+    if (/worker|complete|done|finished/i.test(n.title)) return { intention: "Worker deliverable", icon: "✓", cls: "g" };
+    if (/stopped|idle|cost|\$/i.test(n.title)) return { intention: "Cost / cleanup", icon: "$", cls: "r" };
+    if (/brief|coach|morning|daily|check-?in/i.test(n.title)) return { intention: "Briefing", icon: "≡", cls: "" };
+    return { intention: "Update", icon: "•", cls: "" };
+  }
+
+  // Pull the "done when" components out of an approved brief — the "- " bullets
+  // the assistant proposed. These ARE the success criterion; the spec shows
+  // them as a checklist, not the raw prompt blob.
+  function parseDoneWhen(goal) {
+    const out = [];
+    for (const ln of (goal || "").split(/\r?\n/)) {
+      // Accept dash/star/bullet AND numbered list markers — briefs phrase the
+      // criteria a few different ways and we want them all to parse so the spec
+      // shows a real checklist instead of falling back to a raw blob.
+      const m = ln.match(/^\s*(?:[-*•]|\d+[.)])\s+(.+)$/);
+      if (m) out.push(m[1].trim());
+    }
+    return out;
+  }
+  // A mission view = its goal's "Done when" checklist + the supervisor's THREAD
+  // (its operational feed: worker reports, its decisions, self-checks), with the
+  // latest thinking woven in as a dim thought. Steer it from the footer, or
+  // Stop. ONE surface — no "spec" page then a separate "view supervisor thread"
+  // hop. Read-only (no reply / Stop) for a completed mission opened from history.
+  async function openMission(mc, g, opts?) {
+    opts = opts || {};
+    // Opened from Activity (or the Archive) → surface it into recent so you can
+    // get back to it from the drawer (note c0d532eb). NOT on the back ‹ from a
+    // worker (opts.fromBack), so returning to a mission doesn't re-pin it.
+    if (!opts.fromBack) surfaceThread(mc.id);
+    const readonly = !!opts.readonly || !!mc.completedAt;
+    // Messages sent this session, shown immediately and kept until the on-disk
+    // thread folds them in — so a reply never blanks out while the box persists.
+    const optimistic = [];
+    let lastSig = "";
+    // Set when YOU act (send a reply) so that paint re-pins to the bottom to show
+    // it — distinct from a background poll, which must hold your scroll position.
+    let pinBottom = false;
+    // Arm the start-up "working…" exactly once, so a freshly-briefed mission shows
+    // life off the jump instead of a blank/idle thread (see paint()).
+    let armedStartWorking = false;
+    // Worker rows in the sheet are collapsed by default (they take unnecessary
+    // space above the thread) — tap the "Workers · N" header to expand. Held in
+    // this closure so a background repaint doesn't re-collapse what you opened.
+    let sheetWorkersOpen = false;
+    // The mission's workers, as tappable rows in the sheet. For an ARCHIVED
+    // mission this is the ONLY way back to its finished worker threads (the
+    // Activity board only lists live ones) — note c0d532eb. Active workers get a
+    // live dot; both open their read-only supervisor↔worker thread on tap.
+    const wkItems = [
+      ...((g && g.active) || []).map((x) => ({
+        run: x.run, c: x.c,
+        title: (x.run && x.run.title) || (x.c && x.c.title) || "worker",
+        live: true,
+      })),
+      ...((g && g.done) || []).map((c) => ({
+        run: { convId: c.id, title: c.title, mission: c.mission, done: true }, c,
+        title: c.title || "worker",
+        live: false,
+      })),
+    ];
+    // Options the user tapped in THIS sheet — survives the poll repaint (which
+    // rebuilds innerHTML) until the persisted thread carries the answer.
+    const pickedFront = new Set();
+    // Send to the mission thread — the ONE path for the composer AND a tapped
+    // inline option card. BLOCK-UNTIL-DONE (note 4bd29abb): while the
+    // conversational FRONT is still answering your last message, a second send
+    // is refused (returns false → the composer keeps your text). The executor
+    // being busy does NOT block — talking to a working mission is the whole
+    // point of the two-lane design.
+    const sendFront = (v) => {
+      if (sheetChatActive || chatBusy.has(mc.id)) { toast("Still answering — wait for the reply to finish."); return false; }
+      void (async () => {
+        optimistic.push(v);
+        // Show "working…" the INSTANT you send — before the box has even started
+        // the turn — so there's never a dead gap (the "no sign of life" the user
+        // hit). Real runtime/status events take over and a safety timer clears it.
+        sheetOptimisticWorking = true;
+        // A fresh send starts a new turn — clear any prior "ended" latch so this
+        // turn's live frames render.
+        sheetEnded = false;
+        // You typed this → the supervisor's reply is a direct, natural turn. Keep
+        // the live edge plain (no thought-chain) until this run ends.
+        sheetDirectReply = true;
+        pinBottom = true; // your own message → scroll to show it
+        setTimeout(() => { if (sheetOptimisticWorking) { sheetOptimisticWorking = false; if (sheetRepaint) void sheetRepaint(); } }, 15000);
+        lastSig = ""; // force the next paint to re-render with the new bubble
+        paint();
+        toast("Sent.");
+        // Idempotency key, same as the main composer (line ~1142): a flaky network
+        // or the PWA service worker can deliver this POST twice, and the box only
+        // dedupes sends that carry a clientMsgId — without one this reply path was
+        // the unprotected "my message got sent twice" case on supervisor threads.
+        const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
+        // Record the source so the conversations-icon eligibility check knows this
+        // is a mission thread (it lives on Activity, not the chats panel) even if
+        // the drawer hasn't populated convSourceById yet this session.
+        convSourceById.set(mc.id, mc.source || "mission");
+        userEngaged.add(mc.id); // you steered this mission → surfaced on Activity, not the chats icon
+        await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id, text: v, clientMsgId }) }).catch(() => {});
+        setTimeout(paint, 900); // pick up the durably-persisted turn quickly
+      })();
+      return true;
+    };
+    openSheet({
+      intent: readonly ? "Mission · complete" : "Mission",
+      title: mc.title, ico: readonly ? "✓" : "◎", cls: readonly ? "g" : "",
+      bodyHtml: '<div class="alsum-load" id="mLoad">loading…</div>',
+      // The reply composer stays even for a COMPLETED mission: the supervisor is
+      // always on, so the user can still discuss the finished work or its workers
+      // (note c0d532eb). Only "Stop" is gated — there's nothing to stop once done.
+      footHtml: '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + (readonly ? "Ask about this mission…" : "Steer, or spawn a worker…") + '" autocomplete="off"></textarea><button class="rsend">' + SEND_ARROW_SVG + '</button></div>',
+      action: readonly ? null : { label: "Stop", danger: true, onClick: () => stopMission(mc, g) },
+      // A NORMAL conversation: sending keeps the sheet open, shows the message
+      // right away, and the poll below folds in the supervisor's reply. Not a
+      // one-and-done — send follow-ups without reopening.
+      wire: (body, foot) => wireReply(foot, sendFront),
+    });
+    async function paint() {
+      // Frozen while the conversational front is answering: its reply drives
+      // #chatEdge directly, and a full rebuild here would wipe it and un-freeze the
+      // executor edge mid-answer. Resumes on chat-end (which repaints).
+      if (sheetChatActive) return;
+      let brief = (mc.goal || "").trim();
+      let rest = [];
+      let threadErr = "";
+      // Reliable running signal: the heartbeat-backed /status runs (the on-disk
+      // conversation status is written idle, so /conversation can't tell us a run
+      // is live — that's why the live edge never showed). Live content from
+      // runtime events also counts, so a just-started turn (not in /status yet)
+      // still shows life.
+      let liveRun = false;
+      try { const st = await (await api("/status")).json(); liveRun = (st.runs || []).some((r) => r.convId === mc.id); } catch {}
+      if (mc.id) {
+        try {
+          const d = await (await api("/conversation?id=" + encodeURIComponent(mc.id) + "&n=60")).json();
+          if (d.error) throw new Error(d.error);
+          const msgs = d.messages || [];
+          // The real brief is the MISSION BRIEF turn (it carries the done-when
+          // bullets) — not merely the first user message, which on a worker-wake
+          // could be internal plumbing.
+          const bi = msgs.findIndex((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || ""));
+          if (bi >= 0 && msgs[bi].content) brief = String(msgs[bi].content).trim() || brief;
+          rest = bi >= 0 ? msgs.filter((_, i) => i !== bi) : msgs;
+          // Drop optimistic messages the persisted thread now contains.
+          for (let k = optimistic.length - 1; k >= 0; k--) {
+            if (rest.some((m) => m.role === "user" && (m.content || "").trim() === optimistic[k].trim())) optimistic.splice(k, 1);
+          }
+        } catch (e) {
+          // Don't dead-end: the conversation summary's goal still carries the
+          // done-when, so render the spec and just note the thread couldn't load.
+          threadErr = String(e.message || e);
+        }
+      }
+      // [ask-object] Shared mount: the mission's ONE open ask renders inline in
+      // THIS supervisor sheet too, not only in the Alerts feed — the same object
+      // (one notif id), so answering here or there is one decision. A tap rides
+      // resolveDeliberation → /answer (the tagged relay that clears the wait),
+      // never the sendFront probe path the front's inline cards use. (User note:
+      // the supervisor conversation had no ask card and wasn't stacked onto the
+      // alerts one.) The !read/!answeredWith filter makes the card vanish the
+      // moment the ask is decided, even before this closure's mc goes RUNNING.
+      let pendingAsk = null;
+      if (!readonly && mc.missionState === "AWAITING_USER") {
+        try {
+          const nd = await (await api("/notifications")).json();
+          const nl = nd.notifications || [];
+          lastNotifList = nl;
+          pendingAsk = nl
+            .filter((x) => x.kind === "ask" && x.convId === mc.id && !x.read && !x.answeredWith)
+            .sort((a, b) => (b.ts || 0) - (a.ts || 0))[0] || null;
+        } catch {}
+      }
+      // Bleed guard: the fetches above are async. If the sheet was replaced while
+      // we awaited (closed + a different conversation/note opened), sheetConvId no
+      // longer matches ours — writing now would splash THIS mission's thread into
+      // the sheet showing something else (note 4264e049: "a supervisor reply I
+      // never asked for bled into the note conversation"). The new sheet owns the
+      // DOM now; bail before any state mutation or write. The token check closes
+      // the id-collision hole the convId compare can't (same conversation reopened
+      // in a NEW sheet while an old fetch is in flight).
+      if (sheetConvId !== mc.id || sheetSeq !== myTok) return;
+      const restPlus = rest.concat(optimistic.map((t) => ({ role: "user", content: t })));
+      const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
+      // The box's own liveRun is authoritative: if it reports a run, we're live
+      // (and any stale "ended" latch is wrong, so drop it). Leftover live content
+      // only counts while we HAVEN'T been told the turn ended — otherwise a
+      // trailing frame's steps would keep the edge alive forever (the reopen bug).
+      if (liveRun) sheetEnded = false;
+      sheetRunning = liveRun || (hasLive && !sheetEnded);
+      // Working off the jump: a freshly-briefed mission with no supervisor turn yet
+      // is spinning up from zero context. Show "working…" immediately — bounded by a
+      // safety timer that clears it if no real run shows — so the start is never a
+      // dead, blank-looking thread ("there should never be just nothing going on").
+      const noAssistantYet = !restPlus.some((m) => m.role === "assistant");
+      if (!readonly && noAssistantYet && !sheetRunning && !sheetOptimisticWorking && !armedStartWorking) {
+        armedStartWorking = true;
+        sheetOptimisticWorking = true;
+        setTimeout(() => { if (sheetOptimisticWorking) { sheetOptimisticWorking = false; if (sheetRepaint) void sheetRepaint(); } }, 15000);
+      }
+      const showLive = sheetRunning || sheetOptimisticWorking;
+      // Direct-reply vs thought-chain is a property of WHAT triggered this turn, not
+      // a sticky flag: a turn answering something you TYPED renders as plain prose; a
+      // turn woken by a watcher / worker / self-check renders as the thought-chain.
+      // Derive it from the last message each paint so the two never cross — the live
+      // edge used to flip mid-turn when a wake landed while the flag was still set
+      // from your reply.
+      {
+        const lastMsg = restPlus[restPlus.length - 1];
+        sheetDirectReply = !!(lastMsg && lastMsg.role === "user" && !isWakeMsg(lastMsg.content || "") && !/^\s*MISSION BRIEF/i.test(lastMsg.content || ""));
+      }
+      // Live edge content updates in place via renderSheetLive between polls, so a
+      // steady showLive doesn't force a disruptive full repaint here.
+      const sig = JSON.stringify(restPlus.map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + showLive + "|" + (pendingAsk ? pendingAsk.id + ":" + (pendingAsk.answeredWith || "") : "");
+      if (sig === lastSig) return; // nothing changed — don't disrupt reading
+      lastSig = sig;
+      const comps = parseDoneWhen(brief);
+      let body = '<div class="lbl">Done when</div>';
+      if (comps.length) {
+        const dwDone = new Set(mc.doneWhenDone || []);
+        const allDone = !!mc.completedAt;
+        body += '<ul class="dwlist">' + comps.map((c) => '<li><span class="dwb' + ((allDone || dwDone.has(c)) ? " done" : "") + '"></span><span>' + inline(c) + "</span></li>").join("") + "</ul>";
+      } else if (brief) {
+        body += '<div class="md">' + md(brief) + "</div>";
+      } else {
+        body += '<div class="md dim">No explicit criteria recorded for this mission.</div>';
+      }
+      // [ask-object] The mission's one open ask, pinned near the top of the sheet
+      // as a live decision card — the shared mount (same object as the Alerts
+      // card). Options tap through to /answer; the body opens the deliberation
+      // sheet. "Not now" is the formal defer terminal (Stage 3).
+      if (pendingAsk) {
+        const del = deliberationFromNotif(pendingAsk);
+        let ac = '<div class="lbl">Needs your call</div><div class="card needsyou supask">';
+        ac += '<div class="needs-q">' + esc(del.ask) + "</div>";
+        if (del.options.length) {
+          ac += '<div class="needs-qa">';
+          for (const o of del.options) ac += '<button class="supask-opt' + (o.primary ? " prim" : "") + '" data-ans="' + esc(o.answer) + '">' + esc(o.answer) + "</button>";
+          ac += "</div>";
+        }
+        if (del.onDefer) ac += '<div class="supask-hint" style="margin:8px 0 0">If you don’t answer: ' + esc(del.onDefer) + (del.stakes === "high" ? " · high-stakes, so I’ll hold" : "") + "</div>";
+        ac += '<div class="supask-foot"><button class="supask-defer">Not now</button><span class="supask-hint">tap to talk it through</span></div>';
+        ac += "</div>";
+        body += ac;
+      }
+      // [unified ask] The supervisor front can stage inline option cards on a
+      // reply (an interactive AskUser — the ONLY surface that does; a plain
+      // assistant chat just talks). Build the thread in segments so each option
+      // set lands right under the reply that argues it. Liveness mirrors the
+      // main chat: tappable only while it's the live fork — a later matching
+      // user message (or a tap remembered in pickedFront) renders it settled.
+      let threadBody = "";
+      {
+        let seg = [];
+        const names = { user: "You", assistant: "Supervisor" };
+        const flush = () => { if (seg.length) { threadBody += threadHtml(seg, names); seg = []; } };
+        for (let i = 0; i < restPlus.length; i++) {
+          const m = restPlus[i];
+          seg.push(m);
+          if (m.role === "assistant" && Array.isArray(m.askOptions) && m.askOptions.length) {
+            let chosen = "";
+            for (let j = i + 1; j < restPlus.length && !chosen; j++) {
+              if (restPlus[j].role === "user" && m.askOptions.some((x) => (x.answer || "") === (restPlus[j].content || "").trim())) chosen = (restPlus[j].content || "").trim();
+            }
+            if (!chosen) chosen = m.askOptions.map((x) => x.answer).find((a) => pickedFront.has(a)) || "";
+            flush();
+            threadBody += inlineOptionsHtml(m.askOptions, !chosen && i === restPlus.length - 1, chosen);
+          }
+        }
+        flush();
+      }
+      body += '<div class="lbl">Thread</div>' + (restPlus.length
+        ? threadBody + (showLive ? liveEdgeHtml() : "")
+        : (showLive
+            ? liveEdgeHtml()
+            : (threadErr
+                ? '<div class="md dim">Thread unavailable: ' + esc(threadErr) + "</div>"
+                : '<div class="md dim">No turns yet — it hasn’t run since being briefed.</div>')));
+      // A sign of life when it's NOT working: an idle supervisor isn't broken — it
+      // self-checks on its own schedule. Tell the user that and that a message
+      // engages it now (instead of a dead, blank-looking thread).
+      // A supervisor is ALWAYS ON but rarely working — its job is to be ready for
+      // you. Idle ≠ asleep: it's waiting on its workers and free for a question.
+      if (!showLive && !readonly && restPlus.length) body += '<div class="idlehint">Ready for you — it’s waiting on its workers and self-checks on its own schedule. Ask it anything below.</div>';
+      if (wkItems.length) {
+        body += '<button class="wktoggle" id="mWkToggle"><span class="wt-cv">' + chevT(sheetWorkersOpen) + '</span><b>Workers · ' + wkItems.length + "</b></button>";
+        body += '<div id="mWkHold"' + (sheetWorkersOpen ? "" : ' style="display:none"') + ">" + wkItems.map((w, i) => '<button class="arch-row wk-row" data-wk="' + i + '"><span class="arch-t">' + (w.live ? "● " : "○ ") + esc(w.title) + '</span><span class="chev">' + CHEV_R + '</span></button>').join("") + "</div>";
+      }
+      const be = $("sheetBody");
+      // Setting innerHTML resets scrollTop to 0, which yanked the user to the TOP
+      // every time a poll folded in a turn while they were reading mid-thread. Land
+      // at the bottom on the FIRST paint (loading → content); after that, stay
+      // pinned to the bottom only if you were already there, else hold your exact
+      // place — never an auto-scroll that forces you back down.
+      const firstPaint = !!be.querySelector("#mLoad");
+      const prevTop = be.scrollTop;
+      const wasBottom = be.scrollHeight - be.scrollTop - be.clientHeight < 80;
+      be.innerHTML = body; typeset(be);
+      // Two-lane fold-in with NO gap: if a chat reply is settling, keep it on
+      // screen until its persisted bubble is actually in the fetched thread; the
+      // moment it is, drop the transient edge (the bubble now carries the text).
+      // Setting innerHTML above wiped the settled edge, so re-append it until then.
+      if (sheetChatSettling && sheetChatText) {
+        const key = sheetChatText.replace(/\s+/g, " ").trim().slice(0, 30);
+        const landed = key && restPlus.some((m) => m.role === "assistant" && (m.content || "").replace(/\s+/g, " ").indexOf(key) >= 0);
+        if (landed) { sheetChatSettling = false; sheetChatText = ""; }
+        else renderChatEdge(sheetChatText, true);
+      }
+      // [unified ask] Wire the front's inline option cards: a tap posts the
+      // option as YOUR message to the mission thread (the same sendFront path
+      // as typing it — the executor reads it as a steer) and records the
+      // decision to the Alerts archive.
+      be.querySelectorAll(".delib-opt.inline").forEach((o) => {
+        o.addEventListener("click", () => {
+          if (o.classList.contains("dead") || o.classList.contains("chosen")) return;
+          const ans = o.dataset.ans || "";
+          if (!ans) return;
+          const q = o.dataset.q || "";
+          if (sendFront(ans) === false) return; // lane busy — card stays live
+          pickedFront.add(ans);
+          const set = o.closest(".delib-proposed");
+          if (set) set.querySelectorAll(".delib-opt").forEach((x) => { x.classList.add("dead"); const p = x.querySelector(".pick"); if (p) p.remove(); });
+          o.classList.remove("dead"); o.classList.add("chosen");
+          const ot = o.querySelector(".ot"); if (ot) ot.insertAdjacentHTML("beforeend", '<span class="pick">✓ your call</span>');
+          void api("/decision-record", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: ans, title: mc.title || "Mission decision", question: q, convId: mc.id }) }).catch(() => {});
+        });
+      });
+      // [ask-object] Wire the inline supervisor ask card. An option tap rides
+      // resolveDeliberation (/answer) — the ONLY tap in this sheet that clears
+      // AWAITING_USER and resumes the executor (the front's inline cards above go
+      // through sendFront, a probe that clears nothing). "Not now" is the formal
+      // defer terminal; the card body opens the deliberation sheet to talk it
+      // through. Re-wired each paint (innerHTML wipes handlers).
+      if (pendingAsk) {
+        be.querySelectorAll(".supask-opt").forEach((b) => {
+          b.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if ((b as HTMLButtonElement).disabled) return;
+            be.querySelectorAll(".supask-opt,.supask-defer").forEach((x) => { (x as HTMLButtonElement).disabled = true; });
+            resolveDeliberation(pendingAsk, (b as HTMLElement).dataset.ans || "");
+          });
+        });
+        const df = be.querySelector(".supask-defer");
+        if (df) df.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if ((df as HTMLButtonElement).disabled) return;
+          be.querySelectorAll(".supask-opt,.supask-defer").forEach((x) => { (x as HTMLButtonElement).disabled = true; });
+          deferAsk(pendingAsk);
+        });
+        const supcard = be.querySelector(".supask");
+        if (supcard) supcard.addEventListener("click", (e) => {
+          if ((e.target as HTMLElement).closest("button")) return;
+          openDeliberationSheet(pendingAsk);
+        });
+      }
+      // Re-attach worker-row taps each paint (innerHTML wipes handlers). Opening a
+      // worker swaps the sheet to its read-only thread; a fresh openMission tap
+      // brings you back.
+      be.querySelectorAll(".wk-row").forEach((el) => {
+        const w = wkItems[+el.dataset.wk];
+        // Pass a "back" that re-opens THIS mission so the worker view gets a ‹ to
+        // return to the supervisor/mission level (not just a full close).
+        if (w) el.onclick = () => openWorkerArtifact(w.run, w.c, () => openMission(mc, g, { ...opts, fromBack: true }));
+      });
+      // Workers collapse/expand toggle (re-wired each paint since innerHTML wipes
+      // handlers). Flips the closure flag so the state survives a background poll.
+      const wkToggle = be.querySelector("#mWkToggle");
+      if (wkToggle) wkToggle.onclick = () => {
+        sheetWorkersOpen = !sheetWorkersOpen;
+        const h = be.querySelector("#mWkHold"); if (h) h.style.display = sheetWorkersOpen ? "" : "none";
+        wkToggle.querySelector(".wt-cv").innerHTML = chevT(sheetWorkersOpen);
+      };
+      be.scrollTop = (firstPaint || wasBottom || pinBottom) ? be.scrollHeight : prevTop;
+      pinBottom = false;
+    }
+    // Stream this supervisor's in-flight words into the thread (runtime events)
+    // and fold in its turns as they land — see it supervising on the fly.
+    // Stream runtime events + repaint for ANY open mission sheet, including a
+    // completed one being discussed — so a reply to a finished mission streams
+    // and folds in just like a live one.
+    const myTok = ++sheetSeq;
+    sheetConvId = mc.id; sheetRepaint = paint;
+    updateConvDot(); // now viewing this thread → drop it from the background dot
+    await paint();
+    // Poll while the sheet stays open so the supervisor's turns — its reply to
+    // what you sent AND its in-flight self-checks — appear without reopening.
+    // openSheet/closeSheet clear this.
+    missionPoll = setInterval(() => {
+      if (!$("sheet").classList.contains("on")) { clearInterval(missionPoll); missionPoll = 0; return; }
+      void paint();
+    }, 3000);
+  }
+  function stopMission(mc, g) {
+    const a = $("sheetAction");
+    if (!a.classList.contains("confirm")) { a.classList.add("confirm"); a.textContent = "Confirm?"; setTimeout(() => { a.classList.remove("confirm"); a.textContent = "Stop"; }, 2200); return; }
+    const ids = new Set([mc.id, ...g.active.map((x) => x.run.convId)].filter(Boolean));
+    for (const id of ids) api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: id }) }).catch(() => {});
+    // Drop it from the board NOW — don't wait on the box's tombstone to propagate
+    // through the next fetch (the laggy "wait on the state to update" feel). Mark it
+    // dismissed (so a reload can't flash it back) and repaint immediately; the
+    // delayed reload just confirms the box agrees.
+    if (mc.id) dismissedMissions.add(mc.id);
+    dismissedMissions.add((mc.mission || mc.title || "").trim() || mc.title);
+    // The box tears the mission down when it handles the /kill above — aborts
+    // the supervisor + its workers, cancels its scheduled wakes, and tombstone-
+    // deletes them, so it's gone for every client and can't resurrect.
+    closeSheet(); toast("Mission stopped and cleared."); loadActivity(); setTimeout(loadActivity, 600);
+  }
+  // A worker is a read-only artifact: just its supervisor ⇄ worker thread, with
+  // the worker's thinking woven in per turn. No "State" section (read the thread,
+  // not a summarized state line); no reply / kill — you steer the supervisor,
+  // not the worker. Polls like the mission view so a worker opened mid-run shows
+  // it WORKING — its in-flight words stream into the live edge, and finished
+  // turns (with their cleaned timelines) fold in — instead of a frozen snapshot.
+  async function openWorkerArtifact(run, c, back?) {
+    const convId = run.convId;
+    // Opened from a mission thread or the Activity board (never from the recent
+    // pane) → surface it into recent so it's findable later (note ec78cbf8).
+    surfaceThread(convId);
+    openSheet({
+      intent: "Worker · " + ((run.mission || c.mission || "mission")) + " · read-only", title: run.title || c.title || "worker", noIco: true,
+      bodyHtml: '<div class="lbl">Thread · supervisor ↔ worker</div><div class="alsum-load" id="wkLoad">loading…</div>',
+      back: back || null,
+    });
+    const myTok = ++sheetSeq;
+    sheetConvId = convId;
+    updateConvDot(); // now viewing this worker thread → drop it from the background dot
+    // Seed running from the live run passed in (a non-null run = it's working);
+    // confirmed/refreshed below from /status, since /conversation reads idle.
+    sheetRunning = !!run && !run.done;
+    let lastSig = "";
+    async function paint() {
+      let msgs = [], err = "", liveRun = false;
+      try { const st = await (await api("/status")).json(); liveRun = (st.runs || []).some((r) => r.convId === convId); } catch {}
+      try {
+        const d = await (await api("/conversation?id=" + encodeURIComponent(convId) + "&n=60")).json();
+        if (d.error) throw new Error(d.error);
+        msgs = d.messages || [];
+      } catch (e) { err = String(e.message || e); }
+      // Bleed guard: awaited fetches above — if the sheet was swapped meanwhile,
+      // don't write this worker thread into whatever sheet is showing now.
+      if (sheetConvId !== convId || sheetSeq !== myTok) return;
+      const hasLive = sheetLiveSteps.length > 0 || !!(sheetLiveText || "").trim();
+      sheetRunning = liveRun || hasLive;
+      const showLive = sheetRunning;
+      const sig = JSON.stringify((msgs || []).map((m) => [m.role, (m.content || "").length, !!m.timeline])) + "|" + showLive;
+      if (sig === lastSig) return; // unchanged — live edge updates itself; don't disrupt reading
+      lastSig = sig;
+      const be = $("sheetBody");
+      // First paint lands at the bottom; later paints hold your place (never yank
+      // to the top on re-render) and only re-pin to the bottom if you were there.
+      const firstPaint = !!be.querySelector("#wkLoad");
+      const prevTop = be.scrollTop;
+      const wasBottom = be.scrollHeight - be.scrollTop - be.clientHeight < 90;
+      be.innerHTML = '<div class="lbl">Thread · supervisor ↔ worker</div>' +
+        (err
+          ? '<div class="md dim">Couldn’t load: ' + esc(err) + "</div>"
+          : threadHtml(msgs, { user: "Supervisor", assistant: "Worker" }) + (showLive ? liveEdgeHtml() : "")) +
+        '<div class="readonly">This back-and-forth is the <b>supervisor</b> briefing and steering the <b>worker</b> — not you. Read-only: if it’s off track, steer the supervisor or re-scope the mission.</div>';
+      typeset(be);
+      be.scrollTop = (firstPaint || wasBottom) ? be.scrollHeight : prevTop;
+    }
+    sheetRepaint = paint;
+    await paint();
+    missionPoll = setInterval(() => {
+      if (!$("sheet").classList.contains("on")) { clearInterval(missionPoll); missionPoll = 0; return; }
+      void paint();
+    }, 3000);
+  }
+  // Tap a schedule → its spec (what it runs, when, status) with the controls.
+  function openSchedule(sc) {
+    openSheet({
+      intent: "Scheduled · " + (sc.label || ""), title: sc.name, ico: "◷", cls: "",
+      bodyHtml:
+        '<div class="lbl">What it runs</div><div class="md">' + md(sc.prompt || "(scheduled prompt)") + "</div>" +
+        '<div class="lbl">When</div><div class="md">' + esc(sc.label || "") + (sc.lastFiredAt ? " · last fired " + age(sc.lastFiredAt) + " ago" : "") + "</div>" +
+        '<div class="lbl">Status</div><div class="md">' + (sc.enabled ? "Active" : "Paused") + (sc.quietUnlessAlert ? " · quiet unless ALERT" : "") + "</div>" +
+        '<div class="wbtns"><button class="wbtn tog">' + (sc.enabled ? "Pause" : "Enable") + '</button><button class="wbtn danger del">Delete</button></div>',
+      wire: (body) => {
+        body.querySelector(".tog").onclick = async () => { await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle", id: sc.id, enabled: !sc.enabled }) }).catch(() => {}); closeSheet(); toast(sc.enabled ? "Schedule paused." : "Schedule on."); loadActivity(); };
+        const del = body.querySelector(".del");
+        del.onclick = async () => { if (!del.classList.contains("confirm")) { del.classList.add("confirm"); del.textContent = "Confirm delete"; setTimeout(() => { del.classList.remove("confirm"); del.textContent = "Delete"; }, 2200); return; } await api("/schedule", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", id: sc.id }) }).catch(() => {}); closeSheet(); toast("Schedule deleted."); loadActivity(); };
+      },
+    });
+  }
+  // Activity is missions. Each mission renders as a header (its supervisor —
+  // tap to watch the conversation) with its running workers as PILLS beneath:
+  // one short line each; tap a pill to see its state plus Open thread / Kill.
+  // Finished workers don't accumulate here — their alert is the way back.
+  function workerPill(run, c) {
+    const done = !run; // no live run → a completed/idle worker
+    const pill = el('<div class="wpill"><button class="wp-head"><span class="wp-dot' + (done ? " done" : "") + '"></span><span class="wp-main"><span class="wp-t"></span></span><span class="wp-age"></span><span class="chev">' + CHEV_R + '</span></button></div>');
+    // Just the task + a live tool·age — no summarized "state" line (the user
+    // found it weak; the full thread is one tap away). Fall back to title until
+    // the first turn-completion task summary lands.
+    pill.querySelector(".wp-t").textContent = c.taskSummary || (run && run.title) || c.title || (run && run.convId) || c.id;
+    // Liveness, not tool-calls: the user doesn't want "Bash · 2m" on the pill —
+    // the raw tool name doesn't help when the thread doesn't show tools either.
+    // Just "working · <age>" while it runs, "done" when idle. Tap to watch it.
+    pill.querySelector(".wp-age").textContent = run
+      ? (run.lastProgressAt ? "working · " + age(run.lastProgressAt) : "working")
+      : "done";
+    // A completed worker has no live run — synthesize one so the read-only
+    // artifact (its thread + Haiku summary) opens exactly the same way.
+    const r = run || { convId: c.id, title: c.title, mission: c.mission };
+    pill.querySelector(".wp-head").onclick = () => openWorkerArtifact(r, c);
+    return pill;
+  }
+  // Archive (completed missions) collapsed by default on the Activity page.
+  let archiveOpen = false;
+  // A mission's worker list is collapsed by default (see .wcount). This holds
+  // the mission keys the user has expanded, in memory, so a background refresh
+  // that rebuilds the board doesn't re-collapse them. A fresh mission not in the
+  // set defaults collapsed.
+  const expandedMissions = new Set();
+  // Missions the user just stopped/completed from the sheet — dropped from the
+  // board INSTANTLY (optimistic), before the box's tombstone propagates and the
+  // next /conversations fetch stops returning them. Without this the mission
+  // lingered ~1s after you hit Stop, so the interaction felt laggy. Keyed by both
+  // the mission conv id and its name (the board buckets by name).
+  const dismissedMissions = new Set();
+  async function loadActivity() {
+    const box = $("actScroll");
+    try {
+      const [sr, cr, schr] = await Promise.all([api("/status"), api("/conversations"), api("/schedules")]);
+      const sd = await sr.json(), cd = await cr.json(), schd = await schr.json().catch(() => ({ schedules: [] }));
+      if (cd.error) throw new Error(cd.error);
+      const runs = sd.runs || [], runIds = new Set(runs.map((x) => x.convId));
+      const convs = cd.conversations || [], byId = new Map(convs.map((c) => [c.id, c]));
+      runCount = activityRunCount(runs); setHeader();
+      // Setting innerHTML resets scrollTop to 0, which yanked the board to the TOP
+      // whenever a background refresh (a status event, a wake, the visibility
+      // handler) rebuilt it while you were scrolled down reading. Capture your
+      // position and restore it after the rebuild — never top.
+      const prevTop = box.scrollTop;
+      box.innerHTML = "";
+
+      // Activity is missions, full stop. Assistant chats never appear here —
+      // you know what you're talking about; the drawer has those. Finished
+      // workers don't pile up either; their alert is the way back.
+      const missions = new Map(); // name -> { conv: mission thread | null, active: [{run, c}] }
+      const missionOf = (run, c) => ((run && run.mission) || (c && c.mission) || "").trim();
+      const bucket = (name) => { if (!missions.has(name)) missions.set(name, { conv: null, active: [], done: [] }); return missions.get(name); };
+      // A finished mission (its supervisor called CompleteMission) leaves the
+      // Activity surface entirely — and so do its workers, so a stray running
+      // worker can't resurrect a virtual group for a done mission.
+      const completedKeys = new Set();
+      for (const c of convs) {
+        if (c.source === "mission" && c.completedAt) completedKeys.add((c.mission || c.title || "").trim() || c.title);
+      }
+      // Mission threads seed the groups: recent ones show even between worker
+      // waves (a monitoring mission with everything idle is still a mission).
+      for (const c of convs) {
+        if (c.source !== "mission") continue;
+        if (c.completedAt) continue; // finished — off the surface
+        // An un-completed mission is by definition still in flight: it stays on
+        // Activity until its supervisor explicitly completes it (completedAt,
+        // above) or it is stopped (tombstone-deleted, already filtered out of
+        // /conversations). It must NOT silently vanish just for being quiet — a
+        // long-horizon / monitoring mission can sit idle for days between waves,
+        // and the old 48h age drop made it disappear, which read as "missions
+        // are vanishing". Quiet is not done.
+        bucket((c.mission || c.title || "").trim() || c.title).conv = c;
+      }
+      for (const run of runs as RunInfo[]) {
+        const c = (byId.get(run.convId) || {}) as Partial<ConvSummary>;
+        const src = run.source || c.source || "";
+        if (src === "mission") continue; // shown as its header's state
+        if (src && src !== "worker") continue; // assistant/chat runs don't belong here
+        const m = missionOf(run, c) || run.title || c.title;
+        if (m && !completedKeys.has(m)) bucket(m).active.push({ run, c });
+      }
+      // Completed workers: idle worker threads under an active mission's key,
+      // not currently running. Shown beneath the running ones so the mission's
+      // FULL state — done + in-flight — is visible, and tappable for the same
+      // stored Haiku summary as a running worker.
+      for (const c of convs) {
+        if (c.source !== "worker" || runIds.has(c.id)) continue;
+        const m = (c.mission || "").trim();
+        if (m && !completedKeys.has(m) && missions.has(m)) missions.get(m).done.push(c);
+      }
+      // A completed mission LEAVES the Activity board entirely — it's done, so it
+      // shouldn't linger here. It stays reviewable in the conversations drawer
+      // under "Completed missions" (loadConvs). Stopped/aged missions drop the
+      // same way.
+      if (!missions.size) {
+        box.appendChild(el('<div class="sec">Missions</div>'));
+        box.appendChild(el('<div class="empty">Nothing in flight. Hand the agent a goal in Chat — it proposes a plan, you approve, and the mission with its workers lands here.</div>'));
+      }
+      // Activity reflects the box's state ONLY — no per-device filtering, so
+      // every client (Safari, home-screen app) shows the same thing. A stopped
+      // mission is dropped box-side (dismissMissionFromActivity) and ages out
+      // of this window for everyone, rather than being hidden on one device.
+      for (const [name, g] of missions) {
+        // Optimistically hidden the instant the user stopped it — don't flash it
+        // back onto the board just because the box hasn't tombstoned it yet.
+        if (dismissedMissions.has(name) || (g.conv && dismissedMissions.has(g.conv.id))) continue;
+        const mc = g.conv || { id: "", title: name, goal: "", preview: "" };
+        // Just the mission name — no state chip, no "supervisor" button. Tapping
+        // the row opens the one mission view (goal + done-when + thread). The
+        // workers below are the at-a-glance state.
+        const workers = [...g.active.map((x) => ({ run: x.run, c: x.c })), ...g.done.map((c) => ({ run: null, c }))];
+        const group = el('<div class="mgroup"></div>');
+        const head = el('<div class="msec"><b></b></div>');
+        head.querySelector("b").textContent = name;
+        // [harness v2] A mission holding on the user reads "needs you", never
+        // healthy-idle — the silent-park failure made a blocked mission look
+        // fine for a day. Billing gets its own chip so "box burning money" is
+        // visible at a glance, distinct from worker activity.
+        if (mc.missionState === "AWAITING_USER") {
+          // A compact icon chip, not words (they wrapped on narrow cards — note
+          // d47a498d). Tapping it goes STRAIGHT to the decision: the pending
+          // ask's deliberation sheet, not the mission view (tapping the name
+          // still opens the mission).
+          const chip = el('<span class="needschip" title="Needs your call">' + iconSvg("?") + "</span>");
+          chip.onclick = async (e) => {
+            e.stopPropagation();
+            try {
+              const d = await (await api("/notifications")).json();
+              const list = d.notifications || [];
+              lastNotifList = list;
+              const ask = list.find((s) => s.kind === "ask" && !s.read && s.convId === mc.id);
+              if (ask) { openDeliberationSheet(ask); return; }
+            } catch {}
+            openMission(mc, g); // no live ask found — fall back to the mission view
+          };
+          head.appendChild(chip);
+        } else if (mc.billing) {
+          const chip = el('<span style="margin-left:8px;font-size:11px;font-weight:600;color:var(--accent);border:1px solid currentColor;border-radius:8px;padding:1px 7px">$ billing</span>');
+          head.appendChild(chip);
+        }
+        head.onclick = () => openMission(mc, g);
+        // Worker count = a small chip INLINE beside the name (note this session).
+        // Tapping the name opens the mission; tapping the chip expands the pills
+        // in place. Collapsed by default for ANY worker count (1+), so the board
+        // stays scannable — the pills live in a holder we show/hide locally (no
+        // rebuild, so a pill's own inner expand survives the outer toggle).
+        let hold = null;
+        if (workers.length) {
+          const open = expandedMissions.has(name);
+          const wc = el('<button class="wcount"><span class="wcn">' + workers.length + (workers.length === 1 ? " worker" : " workers") + '</span><span class="wt-cv">' + chevT(open) + "</span></button>");
+          const cv = wc.querySelector(".wt-cv");
+          hold = el('<div class="whold"></div>'); hold.style.display = open ? "" : "none";
+          for (const { run, c } of workers) hold.appendChild(workerPill(run, c));
+          wc.onclick = (e) => {
+            e.stopPropagation(); // don't fall through to head → openMission
+            const nowOpen = !expandedMissions.has(name);
+            if (nowOpen) expandedMissions.add(name); else expandedMissions.delete(name);
+            hold.style.display = nowOpen ? "" : "none";
+            cv.innerHTML = chevT(nowOpen);
+          };
+          head.appendChild(wc);
+        }
+        group.appendChild(head);
+        if (hold) group.appendChild(hold);
+        box.appendChild(group);
+      }
+
+      // Completed missions hide into a collapsed ARCHIVE right here on the page —
+      // they leave the active board the moment they finish, but stay one tap away
+      // to re-inspect (scope + done-when, the supervisor thread, the worker
+      // threads). Collapsed by default so done work doesn't clutter what's live.
+      const archived = convs
+        .filter((c) => c.source === "mission" && c.completedAt)
+        .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
+      if (archived.length) {
+        const ah = el('<button class="arch-h"><span class="arch-cv">' + chevT(archiveOpen) + "</span><span>Archive · " + archived.length + "</span></button>");
+        const cv = ah.querySelector(".arch-cv");
+        box.appendChild(ah);
+        // Toggle the archive locally: flip a pre-built holder + the caret glyph. The
+        // old path re-ran loadActivity() on every tap (3 network round-trips + a full
+        // page rebuild) — the lag/scroll-jump. Mirrors the Alerts archive toggle below.
+        const archHolder = el("<div></div>"); archHolder.style.display = archiveOpen ? "" : "none";
+        box.appendChild(archHolder);
+        ah.onclick = () => { archiveOpen = !archiveOpen; archHolder.style.display = archiveOpen ? "" : "none"; cv.innerHTML = chevT(archiveOpen); };
+        // Clear-all: delete every archived mission at once instead of swiping them
+        // one by one. Two-tap confirm so a stray tap can't wipe the record. /kill
+        // tombstones each (gone on every client); dismissedMissions hides them
+        // instantly and the reload confirms.
+        const clrM = el('<button class="earlier clearall">Clear archived · ' + archived.length + "</button>");
+        let armedM = false, armMT = 0;
+        clrM.onclick = async () => {
+          if (!armedM) { armedM = true; clrM.textContent = "Tap again to clear " + archived.length; clrM.classList.add("danger"); clearTimeout(armMT); armMT = setTimeout(() => { armedM = false; clrM.textContent = "Clear archived · " + archived.length; clrM.classList.remove("danger"); }, 3000); markListBusy(3500); logEvent("clearall", { kind: "mission", act: "arm", n: archived.length }); return; }
+          logEvent("clearall", { kind: "mission", act: "fire", n: archived.length });
+          clrM.disabled = true;
+          for (const mc of archived) { if (mc.id) dismissedMissions.add(mc.id); }
+          loadActivity(); // drop them from view immediately
+          for (const mc of archived) { await api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id }) }).catch(() => {}); }
+          toast("Archive cleared.");
+          setTimeout(loadActivity, 400);
+        };
+        archHolder.appendChild(clrM);
+        for (const mc of archived) {
+          const key = (mc.mission || mc.title || "").trim() || mc.title;
+          const workers = convs.filter((w) => w.source === "worker" && (w.mission || "").trim() === key);
+          const row = el('<button class="arch-row"><span class="arch-ico"></span><span class="arch-t"></span><span class="arch-age"></span><span class="chev">' + CHEV_R + '</span></button>');
+          // [harness v2] A stopped mission is archived (not silently deleted) and
+          // labeled apart from a finished one — "missions disappearing???" fix.
+          // Killed → a red X (icon set); finished → a neutral check.
+          const killed = mc.missionState === "KILLED";
+          const aico = row.querySelector(".arch-ico");
+          aico.innerHTML = iconSvg(killed ? "✕" : "✓");
+          if (killed) aico.classList.add("r");
+          row.querySelector(".arch-t").textContent = mc.mission || mc.title;
+          row.querySelector(".arch-age").textContent = age(mc.completedAt);
+          // Tap → re-inspect the finished mission. Swipe left → delete it (and its
+          // worker threads): /kill on a mission routes to stopAndDeleteMission,
+          // which tombstone-deletes the whole group so it's gone for every client.
+          row.addEventListener("click", () => {
+            if (row.dataset.swiped === "1") { row.dataset.swiped = ""; return; }
+            openMission(mc, { conv: mc, active: [], done: workers }, { readonly: true });
+          });
+          attachSwipeArchive(
+            row,
+            () => api("/kill", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: mc.id }) }).then(() => toast("Mission deleted.")).catch(() => {}),
+            loadActivity,
+          );
+          archHolder.appendChild(row);
+        }
+      }
+
+      box.appendChild(el('<div class="sec">Scheduled</div>'));
+      // Hide one-off schedules — those are the agents' own self-scheduled wakes
+      // (background plumbing), not things you monitor. Recurring ones are yours.
+      const scheds = (schd.schedules || []).filter((s) => !s.once);
+      if (!scheds.length) box.appendChild(el('<div class="empty">Nothing scheduled.</div>'));
+      for (const sc of scheds) {
+        const card = el('<button class="card schedcard"><div class="schedrow"><div class="info"><b></b><small></small></div><span class="chev">' + CHEV_R + '</span></div></button>');
+        card.querySelector("b").textContent = sc.name;
+        card.querySelector("small").textContent = [sc.label, sc.enabled ? null : "paused", sc.quietUnlessAlert ? "quiet" : null, sc.lastFiredAt ? "fired " + age(sc.lastFiredAt) + " ago" : null].filter(Boolean).join(" · ");
+        if (!sc.enabled) card.style.opacity = ".55";
+        card.onclick = () => openSchedule(sc);
+        box.appendChild(card);
+      }
+      box.appendChild(el('<div style="height:18px"></div>'));
+      // Rebuild done — put the scroll back where the user was (see prevTop above).
+      // Clamp so a now-shorter board doesn't leave a blank overscroll.
+      box.scrollTop = Math.min(prevTop, Math.max(0, box.scrollHeight - box.clientHeight));
+    } catch (e) { box.innerHTML = '<div class="empty">Activity unavailable: ' + esc(String(e.message || e)) + "</div>"; }
+  }
+
+  // ---------- alerts ----------
+  // Two classes, by design. ACTION (kind "ask") — something needs a decision;
+  // reply inline. INFO (everything else) — a heads-up. Archiving is the ONE
+  // explicit acknowledge gesture: swipe a card right-to-left and it's read.
+  // Archived items live behind the Archive toggle at the bottom.
+  let alertArchiveOpen = false;
+  // ---------- notes ----------
+  // Read-only view of the desktop's captured notes (highlights, asks, answers).
+  // Served by GET /notes; editing/resolving still happens on the desktop.
+  let notesResolvedOpen = false;
+  const noteFirstLine = (s) => String(s || "").split("\n").map((x) => x.trim()).find(Boolean) || "";
+  // A short, scannable header. The AI headline (Note.title) is already short, but
+  // the FALLBACKS — raw draft/turn text shown until the box has titled the note —
+  // are often one long paragraph with no early newline, so noteFirstLine returned
+  // the WHOLE paragraph and it rendered as a giant header (the "summary header is
+  // way too long" complaint, note 8da0e8bc; the lag before the AI title lands is
+  // note 7e432831). Clip the fallback to its first sentence / ~64 chars so even
+  // the pre-title state reads as a header, not a wall of text.
+  function clipHeadline(s) {
+    const t = noteFirstLine(s);
+    if (t.length <= 64) return t;
+    const cut = t.slice(0, 64);
+    const sentEnd = cut.search(/[.!?](\s|$)/);
+    if (sentEnd >= 24) return cut.slice(0, sentEnd + 1);
+    const sp = cut.lastIndexOf(" ");
+    return (sp >= 24 ? cut.slice(0, sp) : cut) + "…";
+  }
+  function noteTitle(n) {
+    // Prefer the AI headline (Note.title) — a short topic line distinct from the
+    // body, so the list is scannable instead of every row repeating its first
+    // line. Falls back to a CLIPPED first line of the content until titled.
+    if (n.title) return noteFirstLine(n.title);
+    if (n.formatted) return clipHeadline(n.formatted);
+    if (n.user_draft) return clipHeadline(n.user_draft);
+    if (n.turns && n.turns.length) return clipHeadline(n.turns[0].content);
+    if (n.anchors && n.anchors.length && n.anchors[0].source_path) return String(n.anchors[0].source_path).split("/").pop();
+    return "Note";
+  }
+  function noteWhen(n) { const t = Date.parse(n.last_updated || n.timestamp || ""); return isFinite(t) ? age(t) : ""; }
+  function buildNoteDetail(box, n) {
+    if (n.anchors && n.anchors.length) {
+      for (const a of n.anchors) {
+        const name = a.source_path ? String(a.source_path).split("/").pop() : "source";
+        const anchor = a.source_anchor ? " · " + a.source_anchor : "";
+        const chip = el('<div class="nanchor"></div>'); chip.textContent = "↳ " + name + anchor; box.appendChild(chip);
+        if (a.source_selection) { const q = el('<div class="nquote"></div>'); q.textContent = a.source_selection; box.appendChild(q); }
+      }
+    }
+    if (n.user_draft) { const d = el('<div class="ndraft"></div>'); d.textContent = n.user_draft; box.appendChild(d); }
+    if (n.turns && n.turns.length) {
+      for (const t of n.turns) {
+        const turn = el('<div class="nturn"><span class="nrole"></span><div class="ntext"></div></div>');
+        turn.querySelector(".nrole").textContent = t.role === "user" ? "you" : "assistant";
+        turn.querySelector(".ntext").textContent = t.content;
+        box.appendChild(turn);
+      }
+    } else if (n.formatted) {
+      const f = el('<div class="ntext"></div>'); f.textContent = n.formatted; box.appendChild(f);
+    }
+  }
+  // Which notes are expanded — held OUTSIDE the cards so a list rebuild
+  // (loadNotes after a save/status change) puts every card back in the state
+  // you left it, instead of collapsing what you were reading (note ba0735c9).
+  const expandedNotes = new Set();
+  function noteCard(n) {
+    const card = el('<div class="card"><div class="crow"><div class="ico">' + iconSvg("✦") + '</div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><p class="cs"></p></div></div><div class="ndetail" style="display:none"></div></div>');
+    card.querySelector("b").textContent = noteTitle(n);
+    card.querySelector(".t").textContent = noteWhen(n);
+    const cs = card.querySelector(".cs");
+    cs.textContent = n.formatted || n.user_draft || (n.turns && n.turns.length ? n.turns[n.turns.length - 1].content : "") || "";
+    const detail = card.querySelector(".ndetail");
+    let built = false;
+    const show = () => {
+      if (!built) { buildNoteDetail(detail, n); built = true; }
+      detail.style.display = ""; cs.style.display = "none";
+    };
+    if (expandedNotes.has(n.id)) show();
+    card.addEventListener("click", () => {
+      // A swipe fires a trailing click on mouseup — swallow that one so the
+      // resolve gesture doesn't also toggle the detail open.
+      if (card.dataset.swiped === "1") { card.dataset.swiped = ""; return; }
+      const showing = detail.style.display !== "none";
+      if (showing) { detail.style.display = "none"; cs.style.display = ""; expandedNotes.delete(n.id); return; }
+      show(); expandedNotes.add(n.id);
+    });
+    // Swipe left to resolve an open note (or reopen a resolved one) — the same
+    // acknowledge gesture as alerts. This now writes through to notes.jsonl on
+    // the box, so resolving from the phone sticks across devices.
+    // Swipe RIGHT to edit (note 002c8029): opens a sheet with the note's text
+    // in a textarea; Save writes through /notes/edit (freshest-on-disk on the
+    // box, headline regenerated).
+    const resolved = n.status === "resolved";
+    attachSwipeArchive(
+      card,
+      () =>
+        api("/notes/status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: n.id, status: resolved ? "open" : "resolved" }) })
+          .then((r) => { if (!r.ok) throw new Error(); toast(resolved ? "Reopened" : "Resolved"); })
+          .catch(() => toast("Couldn't update note — try again")),
+      loadNotes,
+      () => openNoteEditSheet(n),
+    );
+    return card;
+  }
+  // The note edit sheet: the note's text, editable, with one Save action. Only
+  // the user's own text (user_draft) is editable — captured turns/anchors are a
+  // record, not a draft.
+  function openNoteEditSheet(n) {
+    openSheet({
+      intent: "Note · edit", title: noteTitle(n), ico: "✦", cls: "",
+      bodyHtml: '<textarea class="note-edit" id="noteEditTa"></textarea>'
+        + '<div class="wbtns"><button class="wbtn" id="noteEditSave">Save</button></div>',
+      wire: (body) => {
+        const ta = body.querySelector("#noteEditTa");
+        ta.value = n.user_draft || "";
+        // Same keyboard contract as every other sheet input — without it the
+        // full-height sheet got LIFTED by the keyboard transform and its top
+        // flew out of the screen (note ba0735c9).
+        ta.addEventListener("focus", () => sheetEditFocus(ta));
+        ta.addEventListener("blur", sheetEditBlur);
+        const save = body.querySelector("#noteEditSave");
+        save.onclick = async () => {
+          const t = ta.value.trim();
+          if (!t) { toast("Note text can't be empty"); return; }
+          save.disabled = true;
+          try {
+            const r = await api("/notes/edit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: n.id, text: t }) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || d.error) throw new Error(d.error || r.status);
+            // Save COLLAPSES (note 122ec04d, superseding ba0735c9's stay-open):
+            // the sheet closes and the inline card folds shut — the saved note
+            // reads from the refreshed list, not a lingering editor.
+            n.user_draft = t;
+            toast("Saved.");
+            expandedNotes.delete(n.id);
+            closeSheet();
+            void loadNotes();
+            // The box re-headlines the edited note off the response path — refetch
+            // once more so the new title lands without leaving the page.
+            setTimeout(() => { if (page === "notes") void loadNotes(); }, 3500);
+          } catch (e) { toast("Couldn't save: " + (e.message || e)); save.disabled = false; }
+        };
+      },
+    });
+  }
+  async function loadNotes() {
+    const box = $("notesScroll");
+    try {
+      const d = await (await api("/notes")).json();
+      if (d.error) throw new Error(d.error);
+      const list = d.notes || [];
+      box.innerHTML = "";
+      if (!list.length) { box.appendChild(el('<div class="empty">No notes yet. Jot one above, or capture them on the desktop — they all show up here.</div>')); return; }
+      // "cleared" notes are terminal (emptied resolved pile) — the box already
+      // drops them from /notes, but filter explicitly so open never catches them.
+      const open = list.filter((n) => n.status === "open");
+      const resolved = list.filter((n) => n.status === "resolved");
+      if (open.length) box.appendChild(el('<div class="sec">Open · ' + open.length + "</div>"));
+      for (const n of open) box.appendChild(noteCard(n));
+      if (!open.length) box.appendChild(el('<div class="empty">Nothing open — every note is resolved.</div>'));
+      if (resolved.length) {
+        const holder = el('<div style="margin-top:8px"></div>'); holder.style.display = notesResolvedOpen ? "" : "none";
+        // Clear-all empties the resolved pile durably (POST /notes/clear-resolved →
+        // the box flips them to the terminal `cleared` status, union-merge-safe).
+        // Two-tap confirm so a stray tap can't wipe the list.
+        const clr = el('<button class="earlier clearall">Clear all resolved</button>');
+        let armed = false, armTimer = 0;
+        clr.onclick = async () => {
+          if (!armed) { armed = true; clr.textContent = "Tap again to clear " + resolved.length; clr.classList.add("danger"); clearTimeout(armTimer); armTimer = setTimeout(() => { armed = false; clr.textContent = "Clear all resolved"; clr.classList.remove("danger"); }, 3000); markListBusy(3500); logEvent("clearall", { kind: "note", act: "arm", n: resolved.length }); return; }
+          logEvent("clearall", { kind: "note", act: "fire", n: resolved.length });
+          clr.disabled = true;
+          try {
+            const r = await api("/notes/clear-resolved", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+            if (!r.ok) throw new Error();
+            toast("Cleared.");
+            notesResolvedOpen = false;
+            void loadNotes();
+          } catch { toast("Couldn't clear — try again"); clr.disabled = false; clr.classList.remove("danger"); clr.textContent = "Clear all resolved"; armed = false; }
+        };
+        holder.appendChild(clr);
+        for (const n of resolved) holder.appendChild(noteCard(n));
+        const t = el('<button class="earlier"></button>');
+        const label = () => { t.textContent = (notesResolvedOpen ? "Hide resolved · " : "Resolved · ") + resolved.length; };
+        label();
+        t.onclick = () => { notesResolvedOpen = !notesResolvedOpen; holder.style.display = notesResolvedOpen ? "" : "none"; label(); };
+        box.appendChild(t); box.appendChild(holder);
+      }
+      box.appendChild(el('<div style="height:18px"></div>'));
+    } catch (e) { box.innerHTML = '<div class="empty">Notes unavailable: ' + esc(String(e.message || e)) + "</div>"; }
+  }
+  // New-note composer (POST /notes → app buildNote/addNote). Save button submits;
+  // Return inserts a newline (matches the per-device Enter preference).
+  (() => {
+    const ta = $("noteInput"), btn = $("noteAddBtn");
+    if (!ta || !btn) return;
+    const autosize = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; };
+    ta.addEventListener("input", autosize);
+    wireTap(btn, async () => {
+      const text = ta.value.trim();
+      if (!text) return;
+      btn.disabled = true;
+      try {
+        const r = await api("/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || d.error) throw new Error(d.error || r.status);
+        ta.value = ""; autosize();
+        toast("Note saved.");
+        void loadNotes();
+        // The box generates the AI headline right after the note lands (a quick
+        // model call), so refetch once more a few seconds later to swap the
+        // clipped fallback header for the real short title — without making the
+        // user leave and come back to see it (note 7e432831).
+        setTimeout(() => { if (page === "notes") void loadNotes(); }, 3500);
+      } catch (e) { toast("Couldn't save: " + (e.message || e)); }
+      finally { btn.disabled = false; }
+    });
+  })();
+
+  async function loadAlerts() {
+    const box = $("alScroll");
+    try {
+      const d = await (await api("/notifications")).json();
+      if (d.error) throw new Error(d.error);
+      unreadN = d.unread || 0; setHeader();
+      const list = d.notifications || [];
+      // Some fixer-written notifications land with a NANOSECOND ts (the box's
+      // `date +%s%3N` emits ns, not ms — 19 digits, ~1e18). The age() label
+      // already guards against that, but the SORT below and the archive sort
+      // read `ts` RAW, so those cards — actually hours old — pin themselves to
+      // the TOP as if they were the newest alerts ("auto fixes always say now /
+      // as if they're super recent", report 381be0e1→558c993a). Normalize the
+      // stamp down to ms ONCE here so every consumer (sort, label, archive) agrees.
+      for (const n of list) { if (typeof n.ts === "number") { while (n.ts >= 1e14) n.ts = Math.floor(n.ts / 1000); } }
+      lastNotifList = list;
+      box.innerHTML = "";
+      if (!list.length) { box.appendChild(el('<div class="empty">Nothing yet. Worker results, failures that need a call, and your recurring briefings land here — with a push if notifications are on and the app isn’t already open.</div>')); return; }
+      // Strictly chronological (note 56e57731): the server sorts by ts, but the
+      // local "Updated to vX" card was unshifted ABOVE the list — an old unread
+      // update pinned itself over today's alerts. Re-sort so nothing jumps line.
+      list.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      const unread = list.filter((n) => !n.read);
+      // The Archive orders by WHEN YOU ARCHIVED (answered/read time — readAt is
+      // the read-marker ts the server now folds in), not by when the alert
+      // originally fired (note 56e57731): the pile reads as "what I put away,
+      // most recently first".
+      const archived = list.filter((n) => n.read)
+        .sort((a, b) => (b.answeredAt || b.readAt || b.ts || 0) - (a.answeredAt || a.readAt || a.ts || 0));
+      const actions = unread.filter((n) => n.kind === "ask");
+      const infos = unread.filter((n) => n.kind !== "ask");
+      // [experience-log] Snapshot the ask cards actually on screen, but only when
+      // the set CHANGES — so the log shows "you saw these N ask cards" (and would
+      // have caught the 4-duplicate-threads / two-sets-of-options case) without
+      // flooding on every repaint.
+      try {
+        const asig = JSON.stringify(actions.map((n) => [n.id, ((n.deliberation && n.deliberation.options) || []).length]));
+        if (asig !== __alertsSig) { __alertsSig = asig; logEvent("alerts", { asks: actions.map((n) => ({ id: n.id, conv: n.convId, title: (n.title || "").slice(0, 60), opts: ((n.deliberation && n.deliberation.options) || []).length })) }); }
+      } catch {}
+      if (actions.length) box.appendChild(el('<div class="sec">Needs a reply</div>'));
+      for (const n of actions) box.appendChild(alertCard(n, true));
+      if (infos.length) box.appendChild(el('<div class="sec">Heads-up</div>'));
+      for (const n of infos) box.appendChild(alertCard(n, false));
+      if (!unread.length) box.appendChild(el('<div class="empty">All caught up — swipe a card left to archive it.</div>'));
+      if (archived.length) {
+        const holder = el('<div style="margin-top:8px"></div>'); holder.style.display = alertArchiveOpen ? "" : "none";
+        // Clear the whole read/archived pile in one shot (POST /notifications/clear
+        // writes a single clear-before marker) instead of swiping each — the 80-item
+        // cap means swiping never actually empties it. Two-tap confirm; pending
+        // unread asks are kept.
+        const clrN = el('<button class="earlier clearall">Clear archive · ' + archived.length + "</button>");
+        let armedN = false, armNT = 0;
+        clrN.onclick = async () => {
+          if (!armedN) { armedN = true; clrN.textContent = "Tap again to clear " + archived.length; clrN.classList.add("danger"); clearTimeout(armNT); armNT = setTimeout(() => { armedN = false; clrN.textContent = "Clear archive · " + archived.length; clrN.classList.remove("danger"); }, 3000); markListBusy(3500); logEvent("clearall", { kind: "alert", act: "arm", n: archived.length }); return; }
+          logEvent("clearall", { kind: "alert", act: "fire", n: archived.length });
+          clrN.disabled = true;
+          try {
+            const r = await api("/notifications/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+            if (!r.ok) throw new Error();
+            toast("Notifications cleared."); alertArchiveOpen = false; void loadAlerts();
+          } catch { toast("Couldn't clear — try again"); clrN.disabled = false; clrN.classList.remove("danger"); clrN.textContent = "Clear archive · " + archived.length; armedN = false; }
+        };
+        holder.appendChild(clrN);
+        for (const n of archived) holder.appendChild(alertCard(n, false));
+        const t = el('<button class="earlier"></button>');
+        const label = () => { t.textContent = (alertArchiveOpen ? "Hide archive · " : "Archive · ") + archived.length; };
+        label();
+        t.onclick = () => { alertArchiveOpen = !alertArchiveOpen; holder.style.display = alertArchiveOpen ? "" : "none"; label(); };
+        box.appendChild(t); box.appendChild(holder);
+      } else { alertArchiveOpen = false; }
+      box.appendChild(el('<div style="height:18px"></div>'));
+    } catch (e) { box.innerHTML = '<div class="empty">Alerts unavailable: ' + esc(String(e.message || e)) + "</div>"; }
+  }
+  const markRead = (id) => api("/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
+  // The box's auto-update alert is now a single real notification pushed from
+  // the box (UpdateBanner.notifyUpdated) that already carries the release notes
+  // as its body — so there's no separate phone-local "what changed" card to
+  // synthesize here. One update, one notification.
+  // The feed as last fetched — so an action on one card (answering an ask) can
+  // reason about its siblings (other pending asks on the same conversation).
+  let lastNotifList = [];
+  // ---- unified AskUser ----
+  // EVERY kind:"ask" notification — a real AskUser fork AND the parked-mission
+  // escalation — renders in the ONE "needs you" style: a neutral card with the
+  // near-white status dot, the question, the agent's option buttons (when it gave
+  // any), and ALWAYS a freeform answer + a top-right chat icon to dig in. There
+  // is no separate "summary ask" card anymore. The structured `deliberation`
+  // payload (from the AskUser tool's `options`) is optional — an ask without it
+  // still renders here, just with no option buttons.
+  function deliberationFromNotif(n) {
+    const d = n.deliberation || {};
+    const ask = d.ask || n.summary || n.body || "";
+    return {
+      mission: d.mission || n.title || "",
+      ask,
+      askLong: d.askLong || d.ask || n.body || n.summary || ask,
+      // [ask-object] The declared fallback + stakes, so every ask surface can
+      // show "if you don't answer, X" and the defer relay can feed X back.
+      stakes: d.stakes || "",
+      onDefer: d.onDefer || "",
+      options: Array.isArray(d.options) ? d.options : [],
+    };
+  }
+  // The card is a SUMMARY (icon + title + intention + 2-line summary) built from
+  // the producer's structured deliverable, falling back to a derived category.
+  // Tap opens the bottom sheet with the full report; swipe left archives.
+  function alertCard(n, isAction) {
+    // EVERY ask (a decision the agent needs from you) is the unified "needs you"
+    // card — whether or not it carries structured options. isAction (unread ask)
+    // and any kind:"ask" both route here. So does ANY alert that carries a
+    // recorded decision (answeredWith) — e.g. an info alert whose follow-up
+    // relayed your call to the mission: one visual language for every decision
+    // you made, whatever surface it was made on (note ff31231e).
+    if (isAction || n.kind === "ask" || n.answeredWith) return needsYouCard(n);
+    const meta = alertMeta(n);
+    const card = el('<div class="card' + (isAction ? " ask" : n.read ? "" : " unread") + '"><div class="crow"><div class="ico"></div><div class="cb"><div class="ct"><b></b><span class="t"></span></div><div class="metabar"></div><p class="cs"></p></div></div></div>');
+    const ico = card.querySelector(".ico");
+    const cls = n.cls || meta.cls;
+    ico.innerHTML = iconSvg(n.icon || meta.icon); if (cls) ico.classList.add(cls);
+    card.querySelector("b").textContent = n.title;
+    card.querySelector(".t").textContent = age(n.ts);
+    card.querySelector(".metabar").textContent = n.intention || meta.intention;
+    card.querySelector(".cs").textContent = n.summary || n.body || "";
+    card.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest("a")) return;
+      if (card.dataset.swiped === "1") { card.dataset.swiped = ""; return; }
+      openAlertSheet(n, isAction);
+    });
+    attachSwipeArchive(card, n.read
+      ? () => api("/notifications/hide", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: n.id }) }).catch(() => {})
+      : () => markRead(n.id));
+    return card;
+  }
+  // Tap -> bottom sheet. Every ask opens the deliberation sheet; an info alert
+  // gets the summary + the SAME live conversation on its source thread ("ask
+  // about this…"). This is the open-thread swap: the old "Open thread" action
+  // dumped the user into the raw execution log — worker wakes, tool chatter,
+  // harness plumbing — which is unreadable as an answer to "what is this alert?".
+  // Now you just ask, and the thread's conversational front answers in place.
+  // (The raw thread stays reachable via Activity → the mission, where it makes
+  // sense.)
+  // The ONE probe composer for alert sheets — byte-identical markup to the
+  // mission sheet's reply row (textarea + the ↑ button), so an ask/info
+  // conversation looks and sits exactly like a supervisor conversation
+  // (the mismatched svg-span send button was the "end button is off" bug).
+  function probeFootHtml(ph) {
+    return '<div class="reply"><textarea class="rinp" rows="1" enterkeyhint="enter" placeholder="' + esc(ph) + '" autocomplete="off"></textarea><button class="rsend">' + SEND_ARROW_SVG + '</button></div>';
+  }
+  async function openAlertSheet(n, isAction) {
+    if (isAction || n.kind === "ask") { openDeliberationSheet(n); return; }
+    const meta = alertMeta(n);
+    let probe = null;
+    // [ask redesign] Info alerts are chats too (the user follows up on some) —
+    // but in the alert's OWN thread, created LAZILY on the first message, never
+    // as a lens on the source mission/worker thread (the bleed we removed). The
+    // agent is seeded with the alert + mission context and reads live state for
+    // "how does it stand now" questions; a relay card it proposes can steer the
+    // source mission via the tagged answer path.
+    const followupEmpty = "No follow-up yet — ask below; the agent knows this alert's mission and can check live state.";
+    const attachFollowup = (fid) =>
+      attachSheetConversation(fid, {
+        openAtTop: true,
+        onOption: (ans) => resolveDeliberation(n, ans),
+        answeredWith: n.answeredWith,
+        emptyText: followupEmpty,
+      });
+    openSheet({
+      intent: n.intention || meta.intention, title: n.title, ico: n.icon || meta.icon, cls: n.cls || meta.cls,
+      action: null,
+      bodyHtml: '<div class="md">' + md(n.body || "*(no summary)*") + "</div>"
+        + '<div class="lbl">Conversation</div><div id="delibX"></div>',
+      footHtml: probeFootHtml("Ask about this…"),
+      wire: (body, foot) => {
+        wireReply(foot, async (v) => {
+          if (probe) { probe(v); return; }
+          // First follow-up: mint the alert's thread, then send through the
+          // normal message path so the optimistic bubble + stream work as one
+          // code path.
+          try {
+            const r = await api("/alert-followup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notifId: n.id, title: n.title || "", body: n.body || n.summary || "", convId: n.convId || "" }) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || d.error || !d.convId) throw new Error(d.error || r.status);
+            n.followupConvId = d.convId;
+            probe = attachFollowup(d.convId);
+            probe(v);
+          } catch (e) { toast("Couldn't start the follow-up: " + (e.message || e)); }
+        });
+      },
+    });
+    if (n.followupConvId) probe = attachFollowup(n.followupConvId);
+    else {
+      const x0 = $("delibX");
+      if (x0) x0.innerHTML = '<div class="md dim">' + esc(followupEmpty) + "</div>";
+    }
+  }
+  // The feed card for an ask. A neutral card: a subtle near-white "Needs you" dot
+  // + label, a top-right chat icon that opens the deliberation sheet ("dig in"),
+  // the question, the agent's option buttons (only when it supplied options — one
+  // may be the near-white primary), and ALWAYS a freeform answer field with the
+  // send arrow inset. An option-tap or a committed freeform answer resolves the
+  // ask via /answer; the chat icon (or tapping the body) opens the sheet.
+  function needsYouCard(n) {
+    const del = deliberationFromNotif(n);
+    // A read/answered ask is DECIDED — its card shows the recorded decision, not
+    // live buttons. (Archived asks used to re-render tappable options; tapping a
+    // stale one fired /answer into a long-resolved thread.)
+    const decided = !!n.answeredWith || !!n.read;
+    const card = el('<div class="card needsyou' + (decided ? " decided" : "") + '"></div>');
+    const lbl = el('<div class="needs-lbl"><span class="d"></span><span class="t"></span><span class="digin" title="Talk it through"></span></div>');
+    lbl.querySelector(".t").textContent = decided ? "Your call · decided" : "Needs you";
+    const digin = lbl.querySelector(".digin"); digin.innerHTML = iconSvg("chat");
+    digin.onclick = (e) => { e.stopPropagation(); openDeliberationSheet(n); };
+    card.appendChild(lbl);
+    const q = el('<div class="needs-q"></div>'); q.textContent = del.ask; card.appendChild(q);
+    if (decided) {
+      // The decision that settled it, on the card itself (note d4db3542) — or an
+      // honest "no decision recorded" for an ask that was swiped away/superseded.
+      card.appendChild(el('<div class="needs-decided">' + (n.answeredWith ? "✓ <b>" + esc(n.answeredWith) + "</b>" : "dismissed — no decision recorded") + "</div>"));
+    } else if (del.options.length) {
+      const qa = el('<div class="needs-qa"></div>');
+      for (const opt of del.options) {
+        const b = el('<button></button>');
+        b.textContent = opt.answer;
+        // Lock every option the instant one is tapped — an accidental double-tap
+        // must not fire a second answer (note 6693e931). The backend collapses
+        // repeats too (deterministic clientMsgId), this just makes it visible.
+        b.onclick = (e) => { e.stopPropagation(); qa.querySelectorAll("button").forEach((x) => { x.disabled = true; }); resolveDeliberation(n, opt.answer); };
+        qa.appendChild(b);
+      }
+      card.appendChild(qa);
+    }
+    // [ask-object] "Not now" — the formal defer terminal, on every live ask card.
+    // It ends the ask AND resumes the parked mission (unlike swipe-archive, which
+    // only hid the card and left the mission stranded AWAITING_USER).
+    if (!decided) {
+      if (del.onDefer) card.appendChild(el('<div class="supask-hint" style="margin-top:8px">If you don’t answer: ' + esc(del.onDefer) + (del.stakes === "high" ? " · high-stakes, so I’ll hold" : "") + "</div>"));
+      const df = el('<button class="needs-defer">Not now</button>');
+      df.onclick = (e) => { e.stopPropagation(); (df as HTMLButtonElement).disabled = true; deferAsk(n); };
+      card.appendChild(df);
+    }
+    // Freeform answer lives in the dig-in sheet now, not inline on every feed card —
+    // the always-present input made each card ~50px taller so only ~2 fit on screen
+    // (user: cards spill over, can't see the recent needs-you). Tap the card / chat
+    // icon to answer in your words; options stay tappable inline.
+    card.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest("button,input,.rsend,.digin")) return;
+      if (card.dataset.swiped === "1") { card.dataset.swiped = ""; return; }
+      openDeliberationSheet(n);
+    });
+    attachSwipeArchive(card, n.read
+      ? () => api("/notifications/hide", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: n.id }) }).catch(() => {})
+      : () => markRead(n.id));
+    return card;
+  }
+  // The deliberation sheet — reuses openSheet's frame/scrim/drag. Body: eyebrow
+  // "The decision" + the ask + the option cards, then the DELIBERATION
+  // CONVERSATION. The conversation is styled exactly like a supervisor thread
+  // (sender labels, markdown bubbles, the same composer) but its CONTENT is its
+  // own: you and the agent talking about THIS decision — never the mission
+  // thread embedded (no brief, no wakes, no worker reports, no executor
+  // thought-chains: that content lives in Activity; embedding it here was poor
+  // design). The agent still has the mission's full context behind the scenes.
+  //
+  // Multiple rounds: each poll re-fetches; if the agent surfaces a fresh ask
+  // with new options, the newest ask's card replaces this one (latest wins).
+  // Shared plumbing for alert sheets (ask AND info): sheetConvId + a paint that
+  // renders the deliberation exchange into #delibX + the 3s poll; the front's
+  // reply streams via #chatEdge and folds in when persisted. Returns the probe
+  // sender (a plain /message — never resolves an ask). This is what replaced
+  // the old "Open thread" jump into the raw execution log.
+  // [ask redesign] Render a proposed option set (a message's askOptions) as
+  // tappable cards. Same visual language as the decision card's options; the
+  // "proposed" class scopes the tap wiring. `decided` (a Set of answer
+  // strings) marks the DURABLE record: the card whose answer was committed
+  // renders "✓ your call" and its siblings go dead — so reopening a settled
+  // ask shows WHICH refined card won, not a stack that looks still-live
+  // (the record is the whole deliberation, including what the fork's rounds
+  // offered and what you picked).
+  function askOptionCardsHtml(opts, decided) {
+    const anyChosen = decided && opts.some((o) => decided.has(o.answer));
+    // [truth] Once decided, the losers "say nothing": render ONLY the chosen card
+    // marked "selected" — never a stack of dimmed also-rans (matches the feed
+    // card, which drops the options and shows just the pick).
+    const shown = anyChosen ? opts.filter((o) => decided.has(o.answer)) : opts;
+    return '<div class="delib-proposed">' + shown.map((o) => {
+      const chosen = decided && decided.has(o.answer);
+      return '<div class="delib-opt proposed' + (o.primary ? " prim" : "") + (chosen ? " chosen" : "") + '" data-ans="' + esc(o.answer) + '">'
+        + '<div class="ot">' + esc(o.title || o.answer)
+        + (chosen
+          ? '<span class="pick">✓ selected</span>'
+          : '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>')
+        + "</div>"
+        + (o.body ? '<div class="ob">' + esc(o.body) + "</div>" : "")
+      + "</div>";
+    }).join("") + "</div>";
+  }
+  function attachSheetConversation(cid, hooks) {
+    hooks = hooks || {};
+    // One live poll per sheet — kill any predecessor so a replaced sheet's
+    // interval doesn't keep firing no-op paints underneath.
+    if (missionPoll) { clearInterval(missionPoll); missionPoll = 0; }
+    const myTok = ++sheetSeq;
+    sheetConvId = cid;
+    updateConvDot();
+    const optimistic = [];
+    // Answers tapped in THIS sheet — survives the 3s repaint (which rebuilds
+    // innerHTML and would otherwise resurrect a live-looking card).
+    const pickedAnswers = new Set();
+    let lastSig = "";
+    let firstPaint = true;
+    let pinBottom = false;
+    async function paint() {
+      // Frozen while the front is answering: its reply drives #chatEdge directly;
+      // chat-end repaints (same contract as the mission sheet).
+      if (sheetChatActive) return;
+      let msgs = [];
+      let src = "";
+      try {
+        const d = await (await api("/conversation?id=" + encodeURIComponent(cid) + "&n=60")).json();
+        if (!d.error) {
+          src = d.source || "";
+          // The conversation is the notification's OWN thread now (source "ask"),
+          // scoped by construction — no mission traffic can appear here and no
+          // slicing-by-decision is needed (the positional slice was exactly how
+          // an archived ask showed a DIFFERENT ask's exchange). The filter below
+          // only matters for legacy pre-redesign asks whose convId still points
+          // at a mission thread.
+          msgs = (d.messages || []).filter((m) =>
+            (m.role === "assistant" && (m.direct || (m.askOptions && m.askOptions.length))) ||
+            (m.role === "user" && (m.direct || m.decision) && !isWakeMsg(m.content || "") && !/^\s*MISSION BRIEF/i.test(m.content || "")));
+        }
+      } catch {}
+      // Bleed guard: /conversation is async. If you closed this ask/note sheet and
+      // opened a DIFFERENT conversation during the fetch, this attach's token is
+      // stale — bail before touching the DOM (note 4264e049; the token also
+      // covers reopening the SAME conversation in a new sheet).
+      if (sheetConvId !== cid || sheetSeq !== myTok) return;
+      // Drop optimistic bubbles the persisted thread now contains.
+      for (let k = optimistic.length - 1; k >= 0; k--) {
+        if (msgs.some((m) => m.role === "user" && (m.content || "").trim() === optimistic[k].trim())) optimistic.splice(k, 1);
+      }
+      const shown = msgs.slice(-16).concat(optimistic.map((t) => ({ role: "user", content: t })));
+      // One quiet pulse while a just-sent probe waits for the front's lane to
+      // open — the chat edge takes over from "start". The EXECUTOR's runtime
+      // never renders in this surface. chatBusy covers the REOPEN case: you
+      // closed the sheet mid-answer, the generation kept going on the box, and
+      // coming back should read "working…" — not a dead-looking thread
+      // (note b5908f4c: "they should finish generating if I close them").
+      const showWorking = (sheetOptimisticWorking || chatBusy.has(cid)) && !sheetChatActive && !sheetChatSettling;
+      const sig = JSON.stringify(shown.map((m) => [m.role, (m.content || "").length, m.askOptions ? m.askOptions.length : 0, !!m.decision])) + "|" + showWorking;
+      if (sig === lastSig) return; // unchanged — don't disrupt reading/typing
+      lastSig = sig;
+      const x = $("delibX"); if (!x) return;
+      const be = $("sheetBody");
+      const prevTop = be ? be.scrollTop : 0;
+      const wasBottom = be && be.scrollHeight - be.scrollTop - be.clientHeight < 90;
+      // Build the thread in segments so decision receipts render as receipts and
+      // a turn's proposed option cards stack right under its prose.
+      // The DURABLE decided set: answers committed in this session (local taps),
+      // decision receipts persisted in the thread, and the notification's own
+      // recorded answer — so a reopened settled ask marks WHICH card won.
+      const decidedAnswers = new Set(pickedAnswers);
+      for (const m of shown) if (m.decision && (m.content || "").trim()) decidedAnswers.add((m.content || "").trim());
+      if (hooks.answeredWith) decidedAnswers.add(String(hooks.answeredWith));
+      let html = "";
+      let seg = [];
+      const names = { user: "You", assistant: src === "mission" ? "Supervisor" : "Assistant" };
+      const flushSeg = () => { if (seg.length) { html += threadHtml(seg, names); seg = []; } };
+      for (const m of shown) {
+        if (m.decision) {
+          flushSeg();
+          html += '<div class="delib-done">✓ Decided — <b>' + esc((m.content || "").slice(0, 200)) + "</b></div>";
+          continue;
+        }
+        seg.push(m);
+        if (m.askOptions && m.askOptions.length) { flushSeg(); html += askOptionCardsHtml(m.askOptions, decidedAnswers); }
+      }
+      flushSeg();
+      x.innerHTML = (shown.length
+        ? html
+        : '<div class="md dim">' + esc(hooks.emptyText || "No conversation yet — ask below; the agent answers with the thread’s full context.") + "</div>")
+        + (showWorking ? '<div class="liveplain"><div class="thinking"><span class="pulse"></span><span class="tlbl show">working…</span></div></div>' : "");
+      // Wire the proposed cards: a tap relays that option as the user's formal
+      // answer (hooks.onOption — the deliberation sheet passes
+      // resolveDeliberation). Tapped answers are remembered locally so the 3s
+      // repaint keeps them marked; the lockout is PER SET (this fork is
+      // settled), not sheet-wide — keep-talking means the agent can propose a
+      // fresh set later and it must be tappable (a revision).
+      if (hooks.onOption) {
+        x.querySelectorAll(".delib-opt.proposed").forEach((o) => {
+          const ans = o.dataset.ans || "";
+          if (ans && pickedAnswers.has(ans)) { o.classList.add("dead", "chosen"); return; }
+          o.addEventListener("click", () => {
+            if (o.classList.contains("dead") || o.classList.contains("chosen")) return;
+            const set = o.closest(".delib-proposed");
+            if (set) set.querySelectorAll(".delib-opt").forEach((s) => s.classList.add("dead"));
+            o.classList.remove("dead"); o.classList.add("chosen");
+            if (ans) pickedAnswers.add(ans);
+            hooks.onOption(ans);
+          });
+        });
+      }
+      typeset(x);
+      // Two-lane fold-in with no gap, same as the mission sheet: hold a settling
+      // chat reply on screen until its persisted bubble is in the fetched thread.
+      if (sheetChatSettling && sheetChatText) {
+        const key = sheetChatText.replace(/\s+/g, " ").trim().slice(0, 30);
+        const landed = key && shown.some((m) => m.role === "assistant" && (m.content || "").replace(/\s+/g, " ").indexOf(key) >= 0);
+        if (landed) { sheetChatSettling = false; sheetChatText = ""; const ce = $("chatEdge"); if (ce) ce.remove(); }
+        else renderChatEdge(sheetChatText, true);
+      }
+      // Scroll contract: the sheet OPENS on its context (the decision card / the
+      // alert summary at the top); after that, hold your place — re-pin to the
+      // bottom only if you were already there or you just sent something.
+      if (be) {
+        if (firstPaint) be.scrollTop = hooks.openAtTop ? 0 : be.scrollHeight;
+        else if (wasBottom || pinBottom) be.scrollTop = be.scrollHeight;
+        else be.scrollTop = prevTop;
+      }
+      firstPaint = false;
+      pinBottom = false;
+    }
+    // Probe: a plain /message (the box routes it to the conversational front; a
+    // pending ask stays pending). Optimistic bubble + "working…" the instant you
+    // send, exactly like a supervisor thread. BLOCK-UNTIL-DONE (note 4bd29abb,
+    // the user's call): one message at a time on this lane — a second send while
+    // the agent is mid-answer returns false so the composer keeps the text.
+    function sendProbe(text) {
+      if (sheetChatActive || sheetOptimisticWorking || chatBusy.has(cid)) {
+        toast("Still answering — wait for the reply to finish.");
+        return false;
+      }
+      void sendProbeNow(text);
+      return true;
+    }
+    async function sendProbeNow(text) {
+      optimistic.push(text);
+      sheetOptimisticWorking = true;
+      sheetEnded = false;
+      pinBottom = true; // your own message → scroll to show it
+      lastSig = ""; // force the next paint to re-render with the new bubble
+      setTimeout(() => { if (sheetOptimisticWorking) { sheetOptimisticWorking = false; if (sheetRepaint) void sheetRepaint(); } }, 15000);
+      void paint();
+      const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
+      userEngaged.add(cid); // probing this thread → the dot may track the reply
+      await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: cid, text, clientMsgId }) }).catch(() => {});
+      setTimeout(() => { void paint(); }, 900); // pick up the durably-persisted turn quickly
+    }
+    sheetRepaint = paint;
+    void paint();
+    missionPoll = setInterval(() => {
+      if (!$("sheet").classList.contains("on")) { clearInterval(missionPoll); missionPoll = 0; return; }
+      if (hooks.onTick) void hooks.onTick();
+      void paint();
+    }, 3000);
+    return sendProbe;
+  }
+  async function openDeliberationSheet(n) {
+    let del = deliberationFromNotif(n);
+    // [ask redesign] The conversation behind an ask is the ask's OWN thread
+    // (askConvId), never the mission thread — the structural spillover fix.
+    // n.convId stays what it always was: the deterministic /answer relay target.
+    // Legacy asks minted before the redesign have no askConvId; they render
+    // their options + decision but attach no conversation (attaching the
+    // mission thread is exactly the bleed we removed).
+    // followupConvId covers a DECIDED INFO alert (an inline relay made from its
+    // follow-up thread) whose card now routes here — same sheet, same thread.
+    let cid = n.askConvId || n.followupConvId || "";
+    // [unified ask] A dec- inline-decision record (an option tapped in a live
+    // conversation) is a standard ask object too: no thread YET, but it mints
+    // an isolated follow-up lazily on the first message, exactly like an info
+    // alert. Only a true pre-redesign ask (no thread, not a dec- record) is a
+    // dead record.
+    const inlineRec = !cid && /^dec-/.test(String(n.id || ""));
+    const legacy = !cid && !inlineRec;
+    let probe = null;
+    // Decided = read or answered: the decision card renders its recorded outcome,
+    // options go inert, and the conversation below is DEAD (no probe foot) — a
+    // settled ask is a record, not a live surface.
+    const decided = !!n.answeredWith || !!n.read;
+    // Rounds superseded WHILE the sheet is open stack above the live card —
+    // the deliberation reads as a progression (round 1 → your pushback → a
+    // tighter round 2), not a card that silently swaps under you (note
+    // 9185d86a: "a conversation that stacks the options").
+    // Rounds persist NATURALLY: rebuild the stack from notification history —
+    // every older ask on this conversation is a round of this deliberation
+    // (answered rounds carry their recorded decision). The stack used to live
+    // only in sheet-local memory, so closing and reopening erased the
+    // progression and a new fork read as an overwrite of the old one.
+    const priorRounds = [];
+    for (const s of lastNotifList) {
+      // Rounds of one deliberation share the MISSION conv (the relay target),
+      // not the per-ask thread — each round has its own askConvId now.
+      if (s.kind !== "ask" || s.id === n.id || !n.convId || s.convId !== n.convId) continue;
+      if ((s.ts || 0) > (n.ts || 0)) continue;
+      // Only SUPERSEDED forks are rounds of THIS deliberation — retired (read)
+      // without an answer when the agent tightened the ask. An ANSWERED ask is
+      // its own settled decision (archive material — rendering it inside a
+      // different ask's sheet was the "one ask shows another ask's decision"
+      // confusion, note 9f971aec), and a still-live ask is its own card.
+      if (s.answeredWith || !s.read) continue;
+      const sd = deliberationFromNotif(s);
+      priorRounds.push({ ask: sd.askLong || sd.ask || "", options: sd.options || [], answeredWith: "", answeredAt: 0, ts: s.ts || 0 });
+    }
+    priorRounds.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    // The decision card — rebuilt in place when a newer ask supersedes this one
+    // ("latest wins", for real this time) or after the user decides.
+    const decisionHtml = () => {
+      let h = "";
+      for (const r of priorRounds.slice(-4)) {
+        h += '<div class="delib-round">'
+          + '<div class="delib-ask rdim">' + esc(r.ask) + "</div>"
+          + r.options.map((o) => '<div class="delib-opt dead mini' + (r.answeredWith && o.answer === r.answeredWith ? " chosen" : "") + '"><div class="ot">' + esc(o.title || o.answer) + (r.answeredWith && o.answer === r.answeredWith ? '<span class="pick">✓ your call</span>' : "") + "</div></div>").join("")
+          + '<div class="delib-done">' + (r.answeredWith
+            ? "✓ Decided — <b>" + esc(r.answeredWith) + "</b>" + (r.answeredAt ? " · " + age(r.answeredAt) : "")
+            : "superseded — the agent tightened the fork below") + "</div>"
+          + "</div>";
+      }
+      h += '<div class="delib-ask">' + esc(del.askLong || del.ask || "") + "</div>";
+      // [truth] Decided → show only the chosen option ("selected"); losers blank.
+      const shownOpts = decided && n.answeredWith ? del.options.filter((o) => o.answer === n.answeredWith) : del.options;
+      shownOpts.forEach((opt, i) => {
+        const chosen = !!n.answeredWith && (opt.answer === n.answeredWith);
+        h += '<div class="delib-opt' + (opt.primary ? " prim" : "") + (decided && !chosen ? " dead" : "") + (chosen ? " chosen" : "") + '" data-i="' + i + '">'
+          + '<div class="ot">' + esc(opt.title || opt.answer)
+          + (chosen
+            ? '<span class="pick">✓ selected</span>'
+            : (decided ? "" : '<span class="pick">choose <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>'))
+          + "</div>"
+          + (opt.body ? '<div class="ob">' + esc(opt.body) + "</div>" : "") + "</div>";
+      });
+      if (decided) {
+        h += '<div class="delib-done">' + (n.answeredWith
+          ? "✓ Decided — <b>" + esc(n.answeredWith) + "</b>" + (n.answeredAt ? " · " + age(n.answeredAt) : "")
+          : "Dismissed without a recorded decision") + "</div>";
+      }
+      return h;
+    };
+    const wireDecision = (root) => {
+      if (decided) return;
+      root.querySelectorAll(".delib-opt").forEach((o) => {
+        o.onclick = () => {
+          if (root.classList.contains("deciding")) return;
+          const opt = del.options[+o.dataset.i]; if (!opt) return;
+          // Visible lockout the instant you pick — a double-tap can't fire twice
+          // (and the backend collapses repeats via the deterministic answer id).
+          root.classList.add("deciding"); o.classList.add("chosen");
+          resolveDeliberation(n, opt.answer);
+        };
+      });
+    };
+    openSheet({
+      intent: decided ? "Your call · decided" : "Your call", title: del.mission || n.title, ico: "?", cls: "a",
+      bodyHtml: '<div class="delib-eyebrow">The decision</div>'
+        + '<div id="delibDecision">' + decisionHtml() + "</div>"
+        + '<div class="lbl">Conversation</div><div id="delibX"></div>',
+      // Decision card on top, then the deliberation conversation. ONE text box:
+      // the composer talks it through; options answer by tap. For an ask with
+      // no options, a single labeled commit action under the composer sends the
+      // SAME text as the formal answer — no second input (the two-boxes
+      // complaint). [unified ask] A DECIDED ask keeps its composer — deciding
+      // records the call, it does not end the conversation (the user keeps
+      // talking after: dig into why, or revise). Only a LEGACY decided ask
+      // (pre-redesign, no thread behind it) is a dead record.
+      footHtml: decided && legacy
+        ? ""
+        : probeFootHtml(decided ? "Keep talking about this…" : "Ask about this…")
+          + (!decided && !del.options.length ? '<button class="ans-commit">✓ Send it as my answer</button>' : ""),
+      wire: (body, foot) => {
+        wireDecision(body.querySelector("#delibDecision"));
+        // The composer talks to the ask's own agent (a plain /message to the ask
+        // thread, never an answer). LEGACY asks (pre-redesign, no ask thread)
+        // have nobody to talk to — there the send arrow commits the text as the
+        // formal answer, the old semantics, so the input is never dead UI.
+        if (!(decided && legacy)) wireReply(foot, async (v) => {
+          if (probe) { probe(v); return; }
+          if (legacy) { resolveDeliberation(n, v); return; }
+          // [unified ask] inlineRec (a dec- record) has no thread yet — mint the
+          // isolated follow-up lazily on the first message, then talk to it. Same
+          // path an info alert uses; the thread is seeded with the decision.
+          try {
+            const r = await api("/alert-followup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notifId: n.id, title: n.title || "", body: (n.answeredWith ? "Decided: " + n.answeredWith + "\n\n" : "") + (n.body || n.summary || ""), convId: n.convId || "" }) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || d.error || !d.convId) throw new Error(d.error || r.status);
+            n.followupConvId = d.convId; cid = d.convId;
+            probe = attachSheetConversation(d.convId, { openAtTop: true, decided, answeredWith: n.answeredWith, emptyText: "Follow-up on this decision — the agent has its context.", onOption: (ans) => resolveDeliberation(n, ans) });
+            probe(v);
+          } catch (e) { toast("Couldn't start the follow-up: " + (e.message || e)); }
+        });
+        // The commit action formalizes: whatever is typed in the ONE composer
+        // becomes the tagged answer via /answer.
+        const commit = foot.querySelector(".ans-commit");
+        if (commit) wireTap(commit, () => {
+          const ta = foot.querySelector(".rinp");
+          const v = (ta && ta.value.trim()) || "";
+          if (!v) { toast("Type your answer above first."); return; }
+          commit.disabled = true;
+          resolveDeliberation(n, v);
+        });
+      },
+    });
+    // Mock/legacy ask with no per-ask thread behind it: render any baked sample
+    // exchange statically and stop — attaching the MISSION thread here is
+    // exactly the spillover we removed, so a legacy ask gets no conversation.
+    if (!cid) {
+      const baked = Array.isArray(n.deliberation && n.deliberation.exchange) ? n.deliberation.exchange : [];
+      const x0 = $("delibX");
+      if (x0) x0.innerHTML = baked.length
+        ? threadHtml(baked.map((m) => ({ role: m.role, content: m.text || "" })), { user: "You", assistant: "Supervisor" })
+        : '<div class="md dim">' + (inlineRec ? "Decided in the conversation. Ask below to open an isolated follow-up on this call." : legacy && !decided ? "This ask predates per-ask conversations — the options above still work." : "No conversation behind this ask.") + "</div>";
+      return;
+    }
+    // Latest wins: while the sheet is open, each poll tick checks for a NEWER
+    // pending ask on the same MISSION (the executor can tighten the fork with a
+    // fresh AskUser). A superseding ask is a NEW card with its OWN thread now —
+    // reopen the sheet on it so the decision card, the conversation, and the
+    // relay target swap together (an in-place card swap over the OLD thread
+    // would mix two asks' surfaces).
+    const checkNewerAsk = async () => {
+      if (decided) return;
+      try {
+        const d = await (await api("/notifications")).json();
+        const list = d.notifications || [];
+        lastNotifList = list;
+        const newest = list.find((s) => s.kind === "ask" && !s.read && s.convId === n.convId);
+        if (newest && newest.id !== n.id) openDeliberationSheet(newest);
+      } catch {}
+    };
+    // [ask-conversation] The conversation is the ask's OWN thread — the
+    // dedicated ask agent answers here (with live ground-truth reads), and any
+    // option set it proposes renders as tappable relay cards (onOption).
+    probe = attachSheetConversation(cid, {
+      openAtTop: true,
+      onTick: checkNewerAsk,
+      decided,
+      // Stays wired after a decision — a fresh option set the agent proposes
+      // mid-follow-up relays as a REVISED answer (the mission treats a tagged
+      // answer to a non-waiting thread as a normal steer).
+      onOption: (ans) => resolveDeliberation(n, ans),
+      answeredWith: n.answeredWith,
+      emptyText: decided
+        ? "Decided — but not closed. Ask below if you want to dig into it or revise."
+        : "No conversation yet — talk it through below; the agent knows the mission and can check live state.",
+    });
+  }
+  // Resolve an ask: the TAGGED answer path (a tapped option OR a committed
+  // freeform reply). Hits /answer so the box clears AWAITING_USER and resumes the
+  // mission with this answer fed in — a plain /message could never do this. Marks
+  // the alert read + closes the sheet.
+  const resolvingAsks = new Set();
+  function resolveDeliberation(n, answer) {
+    try { logEvent("decide", { ask: n.id, conv: n.convId, answer: (answer || "").slice(0, 120) }); } catch {}
+    // One decision per (ask, answer), deterministically: repeat taps of the
+    // SAME option are locked out here, and the clientMsgId is DERIVED from the
+    // ask id + answer (not minted fresh per tap), so even a repeat that slips
+    // through — a double-fired handler, a PWA retry — collapses to ONE answer
+    // turn on the box (note 6693e931). Keyed per ANSWER, not per ask: a
+    // decided-but-open conversation can send a REVISED call later.
+    const rkey = n.id + "\u0000" + answer;
+    if (resolvingAsks.has(rkey)) return;
+    resolvingAsks.add(rkey);
+    setTimeout(() => resolvingAsks.delete(rkey), 60_000);
+    const clientMsgId = "answer-" + n.id + "-" + encodeURIComponent(answer).slice(0, 32);
+    if (n.convId) {
+      // notifId lets the box durably stamp WHICH answer settled this ask
+      // (answeredWith), so the Archive shows the decision that was made.
+      // askConvId pins the decision receipt into the ask's own thread (the
+      // thread stays TALKABLE after — deciding records, it doesn't close).
+      api("/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: answer, clientMsgId, notifId: n.id, ...(n.kind === "ask" && n.askConvId ? { askConvId: n.askConvId } : {}) }) }).catch(() => {});
+    }
+    // One answer settles the DECISION, not just this card: retire every live ask
+    // card pointing at the same conversation. The deadlocked self-test stacked 3
+    // cards for one fork; tapping the stale leftovers fed duplicate replies into
+    // the thread ("Force-close it" landed twice as separate turns).
+    for (const s of lastNotifList) {
+      if (s.kind === "ask" && !s.read && s.id !== n.id && s.convId && n.convId && s.convId === n.convId) markRead(s.id);
+    }
+    markRead(n.id);
+    // [unified ask] Deciding does NOT slam the sheet shut — the conversation
+    // keeps going (keep-talking). Re-render the ask sheet in its decided-but-
+    // live form; an info sheet just stays as it is (its tapped card is already
+    // marked by the sheet's own wiring).
+    n.answeredWith = answer; n.answeredAt = Date.now(); n.read = true;
+    if (n.kind === "ask" && $("sheet").classList.contains("on")) openDeliberationSheet(n);
+    void loadAlerts();
+  }
+  // [ask-object] "Not now" — the ask's terminal that ends it WITHOUT choosing an
+  // option and RESUMES the parked mission (the box injects the fallback
+  // instruction and clears AWAITING_USER; a swiped-away card used to strand the
+  // mission forever). Mirrors resolveDeliberation's /answer relay but tags
+  // defer:true and records "Not now" as the decision on the card + archive.
+  function deferAsk(n) {
+    try { logEvent("defer", { ask: n.id, conv: n.convId }); } catch {}
+    const rkey = n.id + " __defer__";
+    if (resolvingAsks.has(rkey)) return;
+    resolvingAsks.add(rkey);
+    setTimeout(() => resolvingAsks.delete(rkey), 60_000);
+    const del = deliberationFromNotif(n);
+    if (n.convId) {
+      api("/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: n.convId, text: "Not now", clientMsgId: "defer-" + n.id, notifId: n.id, defer: true, ...(del.onDefer ? { onDefer: del.onDefer } : {}), ...(n.kind === "ask" && n.askConvId ? { askConvId: n.askConvId } : {}) }) }).catch(() => {});
+    }
+    // One terminal settles the DECISION: retire every live ask card for the same
+    // conversation, same as answering (a mission has ONE open ask).
+    for (const s of lastNotifList) {
+      if (s.kind === "ask" && !s.read && s.id !== n.id && s.convId && n.convId && s.convId === n.convId) markRead(s.id);
+    }
+    markRead(n.id);
+    n.answeredWith = "Not now"; n.answeredAt = Date.now(); n.read = true;
+    if (n.kind === "ask" && $("sheet").classList.contains("on")) openDeliberationSheet(n);
+    void loadAlerts();
+  }
+  // [swipe-kind] Which list a swiped card lives in, for the experience-log — so a
+  // replay says "note swipe cancelled" not just "a card moved". Derived from the
+  // scroller it sits in; no call-site change needed.
+  const SWIPE_KIND = { alScroll: "alert", actScroll: "mission", notesScroll: "note" };
+  function attachSwipeArchive(card: any, action: any, reload?: any, rightAction?: any) {
+    reload = reload || loadAlerts;
+    let x0 = 0, y0 = 0, dx = 0, mode = null, t0 = 0;
+    const kindOf = () => { const s = card.closest("#alScroll,#actScroll,#notesScroll"); return (s && SWIPE_KIND[s.id]) || "card"; };
+    const start = (x, y) => { x0 = x; y0 = y; dx = 0; mode = null; t0 = Date.now(); markListBusy(); card.style.transition = "none"; };
+    const move = (x, y) => {
+      if (mode === "v") return false;
+      const ndx = x - x0, ndy = y - y0;
+      if (mode === null) {
+        if (Math.abs(ndx) < 9 && Math.abs(ndy) < 9) return false;
+        mode = Math.abs(ndx) > Math.abs(ndy) ? "h" : "v";
+        if (mode === "v") return false;
+      }
+      // Right-swipe only tracks when a rightAction exists (notes: swipe right to
+      // edit, note 002c8029); everywhere else the card stays pinned at 0 so the
+      // gesture keeps meaning exactly one thing (left = archive/resolve).
+      dx = rightAction ? Math.max(-innerWidth, Math.min(ndx, 90)) : Math.min(0, ndx);
+      card.style.transform = "translateX(" + dx + "px)";
+      return true;
+    };
+    const end = async () => {
+      if (mode !== "h") { mode = null; return; }
+      // A mouse drag fires a click on mouseup — flag it so the card's
+      // tap-for-summary handler swallows that one click. TIMED, not
+      // consume-on-next-click: touch swipes fire no click at all, and a
+      // lingering flag would eat the next real tap (the "tap does nothing"
+      // bug).
+      card.dataset.swiped = "1";
+      setTimeout(() => { card.dataset.swiped = ""; }, 400);
+      mode = null;
+      // [experience-log] Record the OUTCOME of every committed horizontal
+      // gesture — commit vs cancel, distance, duration — so a replay shows the
+      // swipes that didn't take (dx never reached threshold) next to the ones
+      // that did. This is the signal for "swiping was out of whack".
+      const logSwipe = (act) => { try { logEvent("swipe", { kind: kindOf(), act, dx: Math.round(dx), ms: Date.now() - t0 }); } catch {} };
+      card.style.transition = "transform .18s ease, opacity .18s ease";
+      if (rightAction && dx > 60) {
+        // Right-swipe: snap back and hand off (an edit opens a sheet — the card
+        // itself stays in place).
+        logSwipe("edit");
+        card.style.transform = "";
+        rightAction();
+      } else if (dx < -70) {
+        logSwipe("archive");
+        // Remember WHERE in the list you were, so the reload below doesn't yank you
+        // to the top. loadAlerts/loadActivity/loadNotes rebuild innerHTML (scrollTop
+        // → 0), so swiping a card DOWN in the archive scrolled you back up to the
+        // unread section — making it look like the swipe hit the wrong card and a
+        // "normal" alert reappeared. It didn't; the view just jumped.
+        const scroller = card.closest("#alScroll,#actScroll,#notesScroll");
+        const prevTop = scroller ? scroller.scrollTop : 0;
+        card.style.transform = "translateX(-110%)"; card.style.opacity = "0";
+        // Collapse the card's vertical space as it leaves so the list closes the
+        // gap smoothly. A translateX alone leaves the card's HEIGHT in the layout,
+        // so a hole sat where it was until the reload landed (the swipe-gap /
+        // orphaned-section-header jank in the recording). Animate height + margins
+        // + padding to 0, then reload to reconcile the count and headers.
+        const h = card.offsetHeight;
+        card.style.height = h + "px"; card.style.overflow = "hidden"; card.style.boxSizing = "border-box";
+        requestAnimationFrame(() => {
+          card.style.transition = "transform .18s ease, opacity .18s ease, height .2s ease, margin .2s ease, padding .2s ease";
+          card.style.height = "0px"; card.style.marginTop = "0px"; card.style.marginBottom = "0px"; card.style.paddingTop = "0px"; card.style.paddingBottom = "0px";
+        });
+        await action();
+        setTimeout(async () => {
+          await Promise.resolve(reload());
+          // Put the scroll back where it was (clamped to the now-shorter list) so the
+          // removed card just closes up in place instead of the view jumping to top.
+          if (scroller) scroller.scrollTop = Math.min(prevTop, Math.max(0, scroller.scrollHeight - scroller.clientHeight));
+        }, 240);
+      } else {
+        // Started a horizontal drag but released short of the archive threshold
+        // — snaps back. Logged so a run of these reads as "I kept trying to
+        // swipe and nothing happened".
+        logSwipe("cancel");
+        card.style.transform = "";
+      }
+    };
+    card.addEventListener("touchstart", (e) => start(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+    // [axis-lock] touchmove is NON-passive so that once the gesture is locked
+    // horizontal (move() returns true) we preventDefault and the list stops
+    // scrolling underneath the finger. Without this the card followed the
+    // finger while the scroller ALSO scrolled — the two fought, the swipe
+    // distance never reached threshold, and archiving felt "state-dependent"
+    // and "all over the place". Mirrors the drawer swipe-open handler, which
+    // has always locked its axis this way.
+    card.addEventListener("touchmove", (e) => { if (move(e.touches[0].clientX, e.touches[0].clientY)) e.preventDefault(); }, { passive: false });
+    card.addEventListener("touchend", end);
+    card.addEventListener("touchcancel", end);
+    let mouseDown = false;
+    card.addEventListener("mousedown", (e) => { if (e.target.closest(".rinp,.rsend")) return; mouseDown = true; start(e.clientX, e.clientY); });
+    window.addEventListener("mousemove", (e) => { if (mouseDown) move(e.clientX, e.clientY); });
+    window.addEventListener("mouseup", () => { if (mouseDown) { mouseDown = false; end(); } });
+  }
+
+  // ---------- settings drawer ----------
+  // ===== the Claude screen — feedback queue front, per-report conversations. =====
+  // Every report is an object with a LIVE state read from the box's real pipeline
+  // (/feedback merges notes.jsonl + the auto-fixer's audit/log), and tapping one
+  // opens a conversation with the box's Claude Code session scoped to that report.
+  let clTab = "fb";           // "fb" | "chat"
+  let clView = "queue";       // "queue" | "conv"
+  let clCur = null;           // the open feedback item (null = general chat)
+  let fbDismissing = false;   // latch so one dismiss tap fires one toast, not a burst
+  function openDrawer() {
+    $("drawer").classList.add("open");
+    clShowTab(clTab);
+    refreshPushUi(); void pushAutoOn();
+    void refreshState().then((d) => {
+      $("boxVer").textContent = d && d.version ? "vault-chat v" + d.version : "";
+    });
+  }
+  function closeDrawer() { $("drawer").classList.remove("open"); $("clGear").classList.remove("open"); }
+  // The settings page's top-right is now the normal nav burger (report bddae07e):
+  // it opens the same menu, so any destination navigates away and dismisses the
+  // drawer — no dedicated close X. stopPropagation so the document click-to-close
+  // doesn't immediately re-close the menu we just opened.
+  $("drawerMenuBtn").onclick = (e) => { e.stopPropagation(); menu.classList.toggle("on"); };
+  $("clGearBtn").onclick = () => { $("clGear").classList.toggle("open"); refreshPushUi(); };
+  $("clTabFb").onclick = () => clShowTab("fb");
+  $("clTabChat").onclick = () => clShowTab("chat");
+  $("clBackBtn").onclick = () => clShowTab("fb");
+  function clShowTab(tab) {
+    clTab = tab; clCur = null;
+    $("clTabFb").classList.toggle("on", tab === "fb");
+    $("clTabChat").classList.toggle("on", tab === "chat");
+    $("clSeg").style.display = ""; $("clBack").style.display = "none";
+    // The chat tab no longer carries a top "New chat" button — that action now
+    // lives as the + at the composer's left (report 58b93ebc). Keep it on Feedback.
+    $("fbNewBtn").style.display = tab === "fb" ? "" : "none";
+    $("fbNewLbl").textContent = tab === "fb" ? "New feedback — what felt off?" : "New chat — start fresh";
+    if (tab === "fb") {
+      clView = "queue";
+      $("clQueue").style.display = ""; $("clConv").style.display = "none"; $("clFoot").style.display = "none";
+      $("clFoot").classList.remove("nb"); // report threads keep the composer divider
+      void loadFeedbackQueue();
+    } else {
+      clView = "conv";
+      $("clQueue").style.display = "none"; $("clBrief").style.display = "none";
+      $("clConv").style.display = ""; $("clFoot").style.display = "";
+      $("clFoot").classList.add("nb"); // chat side: drop the line above the composer (report ba0ba077)
+      $("coderNewBtn").style.display = ""; // general chat: the + clears/starts fresh
+      coderLoadThread(generalThread()); // no auto-introduction — the boss types first
+    }
+  }
+  function generalThread() {
+    let t = localStorage.getItem("vc_coder_thread");
+    if (!t) { t = "c" + Date.now(); try { localStorage.setItem("vc_coder_thread", t); } catch {} }
+    return t;
+  }
+  // The state line mirrors the REAL pipeline — never invent a stage.
+  const FB_ICONS = {
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+    doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/></svg>',
+    alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 8v5M12 16h.01"/><circle cx="12" cy="12" r="9"/></svg>',
+  };
+  function fbStateLine(it) {
+    if (it.state === "done") return FB_ICONS.check + "confirmed fixed";
+    if (it.state === "reopened") return FB_ICONS.alert + "reopened — the fix didn't take";
+    if (it.state === "briefed") return FB_ICONS.doc + "briefed — needs your call";
+    if (it.state === "shipped") return FB_ICONS.check + (it.confirmable ? "fix shipped" : "fix shipped — landing on your phone…");
+    if (it.state === "diagnosing") return '<span class="fb-dot busy"></span>diagnosing now…';
+    // `queued` is the backend's honest flag: only reports the fixer will actually
+    // pick up (newer than its watermark) may promise so. Older ones are simply
+    // open — the affordance is the conversation, not a pickup that won't come.
+    if (it.queued) return '<span class="fb-dot"></span>queued — the fixer picks it up within ~10 min';
+    return '<span class="fb-dot"></span>open — tap to discuss';
+  }
+  let fbItems = [];
+  // Dismissed reports live per-device in localStorage, keyed by a SIGNATURE of
+  // the card's current state (state + confirmable). A dismiss hides the card AS
+  // IT IS, but never swallows a genuinely new development: the instant the fixer
+  // moves it on (open→diagnosing→briefed, briefed→shipped, shipped→confirmable,
+  // →reopened) the signature changes and the card resurfaces on its own.
+  //   Report 17197533 ("clear those, I didn't make them, they don't have a place
+  //   for me") REOPENED as ab2c86bb: the earlier fix offered the × on every card
+  //   EXCEPT briefed/reopened/shipped+confirmable — which were exactly the cards
+  //   cluttering his queue ("feedback ticket things asking me for a brief"), so
+  //   he couldn't clear them and it "didn't take". Now the × is on every card
+  //   except shipped+confirmable, which owns the Yes/No "Did this fix it?" pills
+  //   (the one action a stray × must not hide).
+  const FB_DISMISS_KEY = "vc_fb_dismissed";      // { id: signature }
+  const FB_CLEARED_KEY = "vc_fb_cleared_done";   // legacy id-array, migrated once
+  function fbSig(it) { return it.state + "|" + (it.confirmable ? 1 : 0); }
+  function fbDismissMap() {
+    try { const raw = localStorage.getItem(FB_DISMISS_KEY); if (raw) return new Map(Object.entries(JSON.parse(raw))); } catch {}
+    return new Map();
+  }
+  function fbSaveDismiss(map) { try { localStorage.setItem(FB_DISMISS_KEY, JSON.stringify(Object.fromEntries(map))); } catch {} }
+  function fbDismissed(it, map) { return map.get(it.id) === fbSig(it); }
+  // One-time migration: the old per-device store held bare ids. Preserve those
+  // dismissals by re-keying each still-present id at its current signature so the
+  // boss's already-cleared cards don't all pop back on this update.
+  function fbMigrateCleared(byId, map) {
+    if (map.size || !localStorage.getItem(FB_CLEARED_KEY)) return map;
+    try { for (const id of JSON.parse(localStorage.getItem(FB_CLEARED_KEY) || "[]")) { const it = byId.get(id); if (it) map.set(id, fbSig(it)); } } catch {}
+    try { localStorage.removeItem(FB_CLEARED_KEY); } catch {}
+    fbSaveDismiss(map);
+    return map;
+  }
+  async function loadFeedbackQueue() {
+    let items = [];
+    try { const d = await (await api("/feedback")).json(); items = d.items || []; } catch {}
+    fbItems = items;
+    if (clTab !== "fb" || !$("drawer").classList.contains("open")) return;
+    const list = $("fbList"); list.innerHTML = "";
+    const doneAll = items.filter((x) => x.state === "done");
+    // Prune dismissed ids that are gone or now need the boss, so the set never
+    // goes stale and a report that starts needing action (reopened, briefed,
+    // shipped+confirmable) always resurfaces instead of vanishing forever.
+    const byId = new Map(items.map((x) => [x.id, x]));
+    const dismissed = fbMigrateCleared(byId, fbDismissMap());
+    // Drop entries whose id no longer exists so the map never goes stale.
+    let staleDrop = false;
+    for (const id of Array.from(dismissed.keys())) { if (!byId.has(id)) { dismissed.delete(id); staleDrop = true; } }
+    if (staleDrop) fbSaveDismiss(dismissed);
+    const open = items.filter((x) => x.state !== "done" && !fbDismissed(x, dismissed));
+    const done = doneAll.filter((x) => !fbDismissed(x, dismissed));
+    const addCard = (it) => {
+      const b = document.createElement("button");
+      b.className = "fb-card" + (it.state === "reopened" ? " reop" : "") + (it.state === "done" ? " dn" : "");
+      b.innerHTML = '<div class="t"></div><div class="fb-st">' + fbStateLine(it) + "</div>";
+      b.querySelector(".t").textContent = it.title || (it.text || "").slice(0, 60);
+      if (it.state === "shipped" && it.confirmable) {
+        const c = document.createElement("div");
+        c.className = "fb-confirm";
+        c.innerHTML = '<span class="q">Did this fix it?</span><span class="fb-pill p" data-yn="y">Yes</span><span class="fb-pill" data-yn="n">No</span>';
+        c.querySelectorAll(".fb-pill").forEach((p: any) => {
+          p.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const fixed = p.dataset.yn === "y";
+            p.textContent = "…";
+            try {
+              await api("/feedback/confirm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: it.id, fixed, title: it.title || "" }) });
+              toast(fixed ? "Confirmed fixed." : "Reopened — it goes back to the fixer.");
+            } catch { toast("Couldn't send — try again"); }
+            void loadFeedbackQueue();
+          });
+        });
+        b.appendChild(c);
+      }
+      // Per-card dismiss × on every card except a shipped+confirmable one (that
+      // card owns the Yes/No "Did this fix it?" pills). The dismiss records the
+      // card's current signature; the prune above resurfaces it the instant the
+      // fixer moves it on, so clearing clutter can never swallow a new brief,
+      // ship, or reopen.
+      if (!(it.state === "shipped" && it.confirmable)) {
+        const dz = document.createElement("span");
+        dz.className = "fb-dismiss";
+        dz.setAttribute("aria-label", "Dismiss");
+        dz.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+        dz.addEventListener("click", (e) => {
+          e.stopPropagation();
+          // Latch the dismiss: a single tap was firing the handler in a burst
+          // (~20×) — the toast re-triggered and the queue re-rendered over and
+          // over (report: "Dismissed" toast loop). `fbDismissing` collapses any
+          // repeat within the render window to exactly ONE toast + one reload;
+          // the signature map still resurfaces the card only on a genuine update.
+          if (fbDismissing) return;
+          fbDismissing = true;
+          const next = fbDismissMap(); next.set(it.id, fbSig(it)); fbSaveDismiss(next);
+          toast("Dismissed — it comes back only if there's an update.");
+          void loadFeedbackQueue().finally(() => { setTimeout(() => { fbDismissing = false; }, 500); });
+        });
+        b.appendChild(dz);
+      }
+      b.addEventListener("click", () => clOpenConv(it));
+      list.appendChild(b);
+    };
+    if (open.length) {
+      const hd = document.createElement("div"); hd.className = "fb-done-hd";
+      const l = document.createElement("div"); l.className = "fb-lbl"; l.textContent = "Open"; hd.appendChild(l);
+      // Bulk clear for open clutter (report 17197533: system-generated items that
+      // "showed up when the big Settings update shipped — I didn't make them").
+      // Dismisses every open card that owns a × (i.e. every card except a
+      // shipped+confirmable one, whose Yes/No Verify pills a bulk clear must not
+      // swallow). Records each card's signature, so anything that later gets a new
+      // verdict resurfaces on its own — clearing clutter never buries live work.
+      const clearable = open.filter((x) => !(x.state === "shipped" && x.confirmable));
+      if (clearable.length) {
+        const clr = document.createElement("button"); clr.className = "fb-clear"; clr.textContent = "Clear";
+        clr.addEventListener("click", () => {
+          const n = clearable.length;
+          const next = fbDismissMap(); clearable.forEach((x) => next.set(x.id, fbSig(x))); fbSaveDismiss(next);
+          toast(n === 1 ? "Cleared 1 open report." : ("Cleared " + n + " open reports."));
+          void loadFeedbackQueue();
+        });
+        hd.appendChild(clr);
+      }
+      list.appendChild(hd);
+      open.forEach(addCard);
+    }
+    if (done.length) {
+      const hd = document.createElement("div"); hd.className = "fb-done-hd"; hd.style.marginTop = "14px";
+      const l = document.createElement("div"); l.className = "fb-lbl"; l.textContent = "Done"; hd.appendChild(l);
+      const clr = document.createElement("button"); clr.className = "fb-clear"; clr.textContent = "Clear";
+      clr.addEventListener("click", () => {
+        const n = done.length;
+        const next = fbDismissMap(); doneAll.forEach((x) => next.set(x.id, fbSig(x))); fbSaveDismiss(next);
+        toast(n === 1 ? "Cleared 1 done report." : ("Cleared " + n + " done reports."));
+        void loadFeedbackQueue();
+      });
+      hd.appendChild(clr); list.appendChild(hd);
+      done.forEach(addCard);
+    }
+    if (!open.length && !done.length) { const e = document.createElement("div"); e.className = "fb-lbl"; e.textContent = "No reports yet — anything feel off?"; list.appendChild(e); }
+  }
+  function clOpenConv(it) {
+    clCur = it; clView = "conv";
+    $("clSeg").style.display = "none"; $("clBack").style.display = "";
+    $("clBackTitle").textContent = it.title || "Report";
+    $("fbNewBtn").style.display = "none";
+    $("clQueue").style.display = "none"; $("clConv").style.display = ""; $("clFoot").style.display = "";
+    $("clFoot").classList.remove("nb"); // report threads keep the composer divider (only the chat tab drops it)
+    $("coderNewBtn").style.display = "none"; // a report thread isn't clearable — hide the +
+    $("clBrief").style.display = "";
+    $("clBriefText").textContent = it.text || "";
+    // Surface Claude's own diagnosis in the ticket. The backend already sends it
+    // as `it.detail` (voice_server.rs feedback_json → the fixer's audit summary),
+    // but it was never shown, so a "briefed — needs your call" ticket opened to
+    // just the original ask and an empty thread ("all I see is my original ask,
+    // not anything of Claude asking me to say anything" — report 66c5b8f6). Show
+    // it, and for a brief that's waiting on the boss, invite the reply outright.
+    const diag = $("clBriefDiag");
+    if (it.detail) {
+      diag.style.display = "";
+      $("clBriefDiagLbl").textContent = it.state === "briefed" || it.state === "reopened" ? "Claude needs your call" : "Claude looked into this";
+      $("clBriefDiagText").textContent = it.detail;
+      $("clBriefDiagNudge").style.display = (it.state === "briefed" || it.state === "reopened") ? "" : "none";
+    } else {
+      diag.style.display = "none";
+    }
+    const meta = $("clBriefMeta"); meta.innerHTML = '<div class="fb-st">' + fbStateLine(it) + "</div>";
+    coderLoadThread("fb-" + it.id); // no auto-introduction — the brief above is the context
+  }
+  // ---- the conversation surface (shared by report threads + the general chat) ----
+  let coderThread = "";
+  const coderLog = () => $("coderLog");
+  function coderAdd(cls, txt) {
+    const d = document.createElement("div"); d.className = "coder-msg " + cls;
+    // The box's replies render as markdown, bubble-free — the same conversation
+    // style the main chat uses for agent turns (report c867221d). Keep the RAW
+    // source on the node so coderSaveHist round-trips the markdown, not the
+    // rendered text. User + "thinking…" stay plain.
+    if (cls === "a") { d.dataset.raw = txt; d.innerHTML = '<div class="md">' + md(txt) + "</div>"; typeset(d); }
+    else if (cls === "t") { d.innerHTML = '<span class="pulse"></span><span class="tlbl"></span>'; d.querySelector(".tlbl").textContent = txt; }
+    else d.textContent = txt;
+    coderLog().appendChild(d); $("clBody").scrollTop = $("clBody").scrollHeight; return d;
+  }
+  function coderSaveHist() { try { const e = [...coderLog().querySelectorAll(".coder-msg")].filter((n) => !n.classList.contains("t")).map((n) => ({ c: n.classList.contains("u") ? "u" : "a", x: n.dataset.raw != null ? n.dataset.raw : n.textContent })); localStorage.setItem("vc_coder_hist_" + coderThread, JSON.stringify(e.slice(-60))); } catch {} }
+  function coderLoadThread(thread, greeting?) {
+    coderThread = thread;
+    // The DOM is about to be wiped — drop any live-turn refs pointing into it.
+    // coderReattach re-establishes the live view if a turn is still in flight.
+    coderTurnActive = false; coderLiveWrap = null; coderThinkEl = null; coderActs = [];
+    // Re-enable send for the freshly-opened thread. A disabled (greyed) button
+    // can otherwise persist from a prior thread's turn — coderFinalize (the only
+    // place that clears it) early-returns once you've switched threads, and
+    // coderReattach only ever RE-disables. Symptom: "send button greyed out even
+    // when it works" (report 61d14ea6) — pointerdown still fired submit(). The
+    // coderReattach() below re-disables this if THIS thread is actually running.
+    { const s = $("coderSend"); if (s) s.disabled = false; }
+    const log = coderLog(); log.innerHTML = "";
+    let had = false;
+    try { const h = JSON.parse(localStorage.getItem("vc_coder_hist_" + thread) || "[]"); h.forEach((m) => { coderAdd(m.c, m.x); had = true; }); } catch {}
+    if (!had && greeting) coderAdd("a", greeting);
+    setTimeout(() => { $("clBody").scrollTop = $("clBody").scrollHeight; }, 30);
+    void coderReattach(thread);
+  }
+
+  // ---- coder live turn: stream tokens + activity pills over /poll (same
+  //      transport the mission chat streams over), with the blocking POST as the
+  //      always-there fallback. A turn keeps running on the box if the phone
+  //      leaves/backgrounds; coderReattach lands its reply on return. ----
+  let coderTurnActive = false;  // a turn is in flight for the OPEN thread
+  let coderThinkEl = null;      // the "thinking…" pulse, dropped on first sign of life
+  let coderLiveWrap = null;     // wrapper: activity row + the streaming bubble
+  let coderActs = [];           // {tool,label} steps for the in-flight turn
+
+  function coderEnsureLive() {
+    if (coderLiveWrap && coderLiveWrap.isConnected) return coderLiveWrap;
+    if (coderThinkEl) { coderThinkEl.remove(); coderThinkEl = null; }
+    const w = document.createElement("div"); w.className = "coder-live";
+    w.innerHTML = '<div class="coder-acts"></div><div class="coder-msg a live"><div class="md"></div></div>';
+    coderLog().appendChild(w); coderLiveWrap = w;
+    return w;
+  }
+  function coderSetStream(text) {
+    const w = coderEnsureLive();
+    const bubble = w.querySelector(".coder-msg");
+    bubble.dataset.raw = text;
+    const el = bubble.querySelector(".md"); el.innerHTML = md(text); typeset(bubble);
+    $("clBody").scrollTop = $("clBody").scrollHeight;
+  }
+  function coderPushAct(tool, label) {
+    const w = coderEnsureLive();
+    coderActs.push({ tool: tool || "tool", label: label || "" });
+    const row = w.querySelector(".coder-acts");
+    row.innerHTML = '<div class="coder-act"><span class="pulse"></span><span class="at">' + esc(tool || "tool") + "</span>" +
+      ((label || "").trim() ? '<span class="al">' + esc(label.trim()) + "</span>" : "") + "</div>";
+    $("clBody").scrollTop = $("clBody").scrollHeight;
+  }
+  function coderCollapseActs() {
+    if (!coderLiveWrap) return;
+    const row = coderLiveWrap.querySelector(".coder-acts");
+    if (!row) return;
+    if (!coderActs.length) { row.remove(); return; }
+    const items = coderActs.map((a) => '<div class="step">' + esc((a.tool || "") + (a.label ? "  " + a.label : "")) + "</div>").join("");
+    row.className = "coder-steps";
+    row.innerHTML = '<div class="steps"><button class="steps-h"><svg class="sck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7"/></svg>' +
+      coderActs.length + " step" + (coderActs.length === 1 ? "" : "s") +
+      '<svg class="scv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button><div class="steps-list">' + items + "</div></div>";
+  }
+  // Land the final reply exactly once — the POST result, the `end` stream event,
+  // and reattach can all race to call this; the coderTurnActive guard makes it
+  // idempotent so a turn can never double-append.
+  function coderFinalize(reply, thread) {
+    if (thread && thread !== coderThread) return;
+    if (!coderTurnActive) return;
+    coderTurnActive = false;
+    const send = $("coderSend"); if (send) send.disabled = false;
+    const txt = reply || "(no reply)";
+    coderCollapseActs();
+    if (coderLiveWrap && coderLiveWrap.isConnected) {
+      const bubble = coderLiveWrap.querySelector(".coder-msg");
+      bubble.classList.remove("live");
+      bubble.dataset.raw = txt;
+      const el = bubble.querySelector(".md"); el.innerHTML = md(txt); typeset(bubble);
+    } else {
+      if (coderThinkEl) { coderThinkEl.remove(); coderThinkEl = null; }
+      coderAdd("a", txt);
+    }
+    coderLiveWrap = null; coderActs = []; coderThinkEl = null;
+    coderSaveHist();
+    $("clBody").scrollTop = $("clBody").scrollHeight;
+  }
+  function coderOnEvent(d) {
+    if (!d.thread || d.thread !== coderThread) return;
+    if (d.phase === "start") {
+      coderTurnActive = true;
+      const send = $("coderSend"); if (send) send.disabled = true;
+    } else if (d.phase === "stream") {
+      coderTurnActive = true; coderSetStream(d.text || "");
+    } else if (d.phase === "activity") {
+      coderTurnActive = true; coderPushAct(d.tool, d.label);
+    } else if (d.phase === "end") {
+      coderFinalize((d.result && d.result.reply) || d.text || "", d.thread);
+    }
+  }
+  // On (re)opening a thread — or returning to the foreground — ask the box
+  // whether a turn is still generating (reattach the live view) or a reply
+  // landed while we were gone (append it, deduped against what's on screen).
+  async function coderReattach(thread) {
+    if (MOCK || !thread) return;
+    try {
+      const r = await api("/coder-latest?thread=" + encodeURIComponent(thread));
+      if (!r.ok) return;
+      const d = await r.json().catch(() => null);
+      if (!d || thread !== coderThread) return; // the user moved on
+      if (d.running) {
+        if (!coderTurnActive) {
+          coderTurnActive = true;
+          const send = $("coderSend"); if (send) send.disabled = true;
+          if (!coderLiveWrap && !coderThinkEl) coderThinkEl = coderAdd("t", "thinking…");
+        }
+        return;
+      }
+      const reply = d.result && d.result.reply;
+      if (!reply) return;
+      const last = [...coderLog().querySelectorAll(".coder-msg.a")].pop();
+      const lastRaw = last ? (last.dataset.raw != null ? last.dataset.raw : last.textContent) : "";
+      if (coderTurnActive) { coderFinalize(reply, thread); }
+      else if (String(lastRaw).trim() !== String(reply).trim()) { coderAdd("a", reply); coderSaveHist(); }
+    } catch {}
+  }
+  // Expand/collapse the "N steps" chip on a finished coder turn.
+  coderLog().addEventListener("click", (e) => {
+    const sh = e.target.closest(".steps-h");
+    if (sh && coderLog().contains(sh)) sh.closest(".steps").classList.toggle("open");
+  });
+  (function coderComposer() {
+    const ta = $("coderTa"), send = $("coderSend");
+    if (!ta || !send) return;
+    const submit = async () => {
+      const m = ta.value.trim(); if (!m) return;
+      ta.value = ""; ta.style.height = "auto"; coderAdd("u", m); coderSaveHist();
+      send.disabled = true;
+      // Live: the turn now streams over /poll (coderOnEvent paints tokens +
+      // activity pills into a live bubble, replacing this "thinking…"). The POST
+      // still blocks for the full reply as the always-there fallback.
+      coderTurnActive = true;
+      const turnThread = coderThread;
+      coderThinkEl = coderAdd("t", "thinking…");
+      // First turn of a report thread carries the report itself, so the session
+      // starts from the formalized ask rather than a bare message.
+      let msg = m;
+      if (clCur && coderLog().querySelectorAll(".coder-msg.u").length === 1) {
+        msg = 'FEEDBACK THREAD — the boss opened his report "' + (clCur.title || "") + '" (id ' + clCur.id + ", state: " + clCur.state + ').\nThe report: "' + (clCur.text || "") + '"\n\nHis message: ' + m;
+      }
+      try {
+        const r = await api("/coder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread: coderThread, message: msg }) });
+        const d = await r.json().catch(() => ({}));
+        // Authoritative reply — finalize (no-op if the `end` stream event already did).
+        coderFinalize(d.reply || "(no reply)", turnThread);
+      } catch (e) {
+        // The app polls /status continuously (body.offline reflects that truth).
+        // If we're NOT flagged offline, the box is reachable and this was just a
+        // long coder turn whose blocking fetch dropped mid-flight (mobile /
+        // Tailscale idle, or the PWA backgrounding) — don't falsely blame
+        // Tailscale. The turn kept running on the box and streams over /poll;
+        // reattach lands the reply. (report fafcd51d — "can't find Tailscale???")
+        const off = document.body.classList.contains("offline");
+        if (off) {
+          coderFinalize("Can't reach the box right now — is it awake and is Tailscale on? I'll pick up where we left off once it's back.", turnThread);
+        } else {
+          // Keep the turn live — /poll + reattach will land the real reply.
+          void coderReattach(turnThread);
+        }
+      }
+    };
+    send.addEventListener("pointerdown", (e) => { e.preventDefault(); void submit(); }); // one-tap send with the keyboard up
+    ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; });
+    // Keyboard: the sheet pattern — reserve --kb as INSIDE padding on the panel so
+    // the top never moves and only the pinned composer rides up.
+    ta.addEventListener("focus", () => { document.querySelector("#drawer .panel").classList.add("editing"); setTimeout(() => { $("clBody").scrollTop = $("clBody").scrollHeight; }, 60); });
+    ta.addEventListener("blur", () => { document.querySelector("#drawer .panel").classList.remove("editing"); });
+  })();
+  // New chat: fresh thread, fresh session — the old one isn't kept around. The
+  // wipe PERSISTS (localStorage), so a reopened app stays on the cleared thread.
+  function coderNewChat() {
+    try { localStorage.removeItem("vc_coder_hist_" + generalThread()); localStorage.setItem("vc_coder_thread", "c" + Date.now()); } catch {}
+    clShowTab("chat");
+  }
+  $("fbNewBtn").onclick = () => {
+    if (clTab === "chat") coderNewChat(); // (chat tab no longer shows this btn; kept for safety)
+    else openFeedbackSheet();
+  };
+  // The + at the composer's left clears the existing general chat and starts fresh.
+  $("coderNewBtn").onclick = () => coderNewChat();
+
+  // [chat→feedback] There is no "turn this chat into a task" button any more
+  // (report 5f32d394 reopened 1fb648bf). The boss: "have a feedback skill, not a
+  // button that turns my message into a thing of feedback — feedback is kind of a
+  // task, it's 2 in one." So the CODER AGENT itself files the task when a chat
+  // lands on a concrete ask (see ~/vault-chat-fixer/coder-system.md → "File
+  // feedback as a task"): it writes through the exact same /notes pipe a report
+  // uses, so the item shows on the Feedback page and behaves like any other one.
+  // Nothing for the phone to render — the conversation IS the task.
+
+  // [feedback] Report a problem — now TWO-WAY (the boss: "no longer one way").
+  // The durable writes are unchanged: the complaint lands as a NOTE (the channel
+  // bug reports already flow through, and one you can see) AND a `feedback` line
+  // drops into the experience-log, so it sits in client-events.jsonl right after
+  // the swipes/taps that provoked it — the report replays its own context. On
+  // success we just confirm and refresh the queue — we do NOT auto-open the
+  // report's thread (report d3dedea5: that jump was a regression). The boss taps
+  // the report himself to add detail.
+  function openFeedbackSheet() {
+    openSheet({
+      intent: "Feedback", title: "Report a problem", ico: "⚑", cls: "",
+      bodyHtml: '<textarea class="note-edit" id="fbTa" placeholder="What felt broken or wrong, right now? Plain words — I can see what the app just recorded you doing."></textarea>'
+        + '<div class="wbtns"><button class="wbtn" id="fbSend">Send</button></div>',
+      wire: (body) => {
+        const ta = body.querySelector("#fbTa");
+        ta.addEventListener("focus", () => sheetEditFocus(ta));
+        ta.addEventListener("blur", sheetEditBlur);
+        setTimeout(() => { try { ta.focus(); } catch {} }, 60);
+        const send = body.querySelector("#fbSend");
+        send.onclick = async () => {
+          const t = ta.value.trim();
+          if (!t) { toast("Say what went wrong first"); return; }
+          send.disabled = true;
+          // Mark the complaint IN the gesture stream (best-effort, never blocks).
+          logEvent("feedback", { text: t.slice(0, 400), ver: boxVersion || "" });
+          // Durable, visible record via the same note pipe the desktop uses. Tag
+          // it so a bug report is scannable apart from a real research note.
+          const body2 = t + "\n\n— reported from the " + page + " screen" + (boxVersion ? " · v" + boxVersion : "");
+          try {
+            const r = await api("/notes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: body2 }) });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || d.error) throw new Error(d.error || r.status);
+            closeSheet();
+            void flushFeedbackQueue(); // deliver anything stranded from an earlier offline moment too
+            // The boss (report d3dedea5): sending feedback must NOT jump straight
+            // into that report's conversation — a "weird random regression". Just
+            // confirm and refresh the queue so the new report lands in the list;
+            // he taps it himself to open the thread if he wants to add detail.
+            await loadFeedbackQueue();
+            toast("Thanks — logged. I'll see it with what you were doing.");
+          } catch (e) {
+            // Box unreachable (off-tailnet on cellular, Tailscale asleep, or app
+            // restarting). NEVER lose the report: persist it and auto-deliver the
+            // next time the cockpit reaches the box.
+            fbEnqueue(body2);
+            closeSheet();
+            toast("Saved — you're offline. I'll deliver it when your phone reaches the box.");
+          }
+        };
+      },
+    });
+  }
+  // (Composer Enter-key toggle removed — the phone Return key always inserts a
+  // newline; sending is via the send button. enterkeyhint="enter" is set in the
+  // static markup and on the sheet reply input.)
+
+  // ---------- push ----------
+  const b64uToBytes = (s) => { const pad = "=".repeat((4 - (s.length % 4)) % 4); const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(raw, (c) => c.charCodeAt(0)); };
+  const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window;
+  async function currentSub() { if (!pushSupported()) return null; const reg = await navigator.serviceWorker.getRegistration().catch(() => null); return reg ? await reg.pushManager.getSubscription().catch(() => null) : null; }
+  // Notifications are DEFAULT ON: the gear just holds the off-switch. Once
+  // permission is granted (one tap on the switch the first time — iOS requires a
+  // gesture), the app keeps itself subscribed automatically from then on.
+  async function refreshPushUi() {
+    if (!pushSupported()) { $("pushState").textContent = navigator.standalone === false ? "Add to your Home Screen first — Safari tabs can't receive push." : "Push not supported here."; $("pushSw").classList.remove("on"); $("pushTestBtn").style.display = "none"; return; }
+    const sub = await currentSub();
+    $("pushSw").classList.toggle("on", !!sub);
+    $("pushState").textContent = sub ? "On for this device." : (Notification.permission === "denied" ? "Blocked in iOS Settings for this app." : "Off — flip the switch once.");
+    $("pushTestBtn").style.display = sub ? "" : "none";
+  }
+  async function pushSubscribe() {
+    const perm = await Notification.requestPermission(); if (perm !== "granted") { toast("Notifications not allowed."); return false; }
+    const reg = await navigator.serviceWorker.register("/phone-sw.js"); await navigator.serviceWorker.ready;
+    const vd = await (await api("/push/vapid")).json(); if (!vd.key) throw new Error(vd.error || "no VAPID key from box");
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(vd.key) });
+    const r = await api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) });
+    if (!r.ok) throw new Error("subscribe store failed");
+    return true;
+  }
+  // Default-ON keeper: whenever permission is already granted but the device has
+  // no live subscription (fresh install, iOS evicted it), re-subscribe silently.
+  async function pushAutoOn() {
+    if (MOCK || !pushSupported()) return;
+    try {
+      if (Notification.permission !== "granted" || localStorage.getItem("vc_push_optout") === "1") return;
+      const sub = await currentSub();
+      if (sub) { api("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub.toJSON()) }).catch(() => {}); }
+      else { await pushSubscribe(); }
+      refreshPushUi();
+    } catch {}
+  }
+  $("pushSw").onclick = async () => {
+    try {
+      const sub = await currentSub();
+      if (sub) {
+        try { localStorage.setItem("vc_push_optout", "1"); } catch {}
+        await api("/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: sub.endpoint }) }).catch(() => {});
+        await sub.unsubscribe().catch(() => {});
+        toast("Notifications off.");
+      } else {
+        try { localStorage.removeItem("vc_push_optout"); } catch {}
+        if (await pushSubscribe()) toast("Notifications on.");
+      }
+    } catch (e) { toast("Push setup failed: " + (e.message || e)); }
+    refreshPushUi();
+  };
+  $("pushTestBtn").onclick = async () => { const r = await api("/push/test", { method: "POST" }).catch(() => null); const d = r ? await r.json().catch(() => ({})) : {}; toast(d.error ? "Test failed: " + d.error : "Test sent — should arrive in seconds."); };
+  if (!MOCK) void pushAutoOn();
+
+  // ---------- in-app keyboard (verbatim) ----------
+  const KB_SYS_FLAG = "vc_kb_system";
+  // In-app keyboard removed — always use the system keyboard. (Was a toggle;
+  // the user moved to the system keyboard, so the custom one is retired.)
+  const CUSTOM_KB = false;
+  const kbEl = $("kb");
+  let kbLayer = 0, kbShift = false, kbCaps = false, lastShiftAt = 0, lastSpaceAt = 0;
+  const KB_LAYERS = [
+    [[..."qwertyuiop"].map((c) => ({ k: "ch", t: c })), [..."asdfghjkl"].map((c) => ({ k: "ch", t: c })), [{ k: "shift", t: "⇧" }, ...[..."zxcvbnm"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }], [{ k: "layer1", t: "123" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }]],
+    [[..."1234567890"].map((c) => ({ k: "ch", t: c })), [..."-/:;()$&@\""].map((c) => ({ k: "ch", t: c })), [{ k: "layer2", t: "#+=" }, ...[...".,?!'"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }], [{ k: "layer0", t: "ABC" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }]],
+    [[..."[]{}#%^*+="].map((c) => ({ k: "ch", t: c })), [..."_\\|~<>€£¥•"].map((c) => ({ k: "ch", t: c })), [{ k: "layer1", t: "123" }, ...[...".,?!'"].map((c) => ({ k: "ch", t: c })), { k: "bksp", t: "⌫" }], [{ k: "layer0", t: "ABC" }, { k: "space", t: "space" }, { k: "ret", t: "⏎" }]],
+  ];
+  const kbLayerDivs = []; let kbShiftKeyEl = null;
+  function kbBuild() {
+    kbEl.innerHTML = "";
+    KB_LAYERS.forEach((rows, li) => {
+      const layer = document.createElement("div"); layer.className = "kblayer" + (li === 0 ? " active" : "");
+      rows.forEach((row, ri) => {
+        const r = document.createElement("div"); r.className = "kbrow" + (li === 0 && ri === 1 ? " indent" : "");
+        for (const key of row) {
+          const b = document.createElement("div"); const spec = key.k !== "ch"; b.className = "kbk" + (spec ? " spec" : "");
+          if (key.k === "space") b.classList.add("space"); if (key.k === "ret") b.classList.add("ret");
+          b.dataset.k = key.k; b.dataset.t = key.t; b.textContent = key.t;
+          if (key.k === "ch" && /[a-z]/i.test(key.t)) b.classList.add("let");
+          if (key.k === "shift") kbShiftKeyEl = b; r.appendChild(b);
+        }
+        layer.appendChild(r);
+      });
+      kbEl.appendChild(layer); kbLayerDivs.push(layer);
+    });
+  }
+  // Shift flip is now a single class toggle (CSS uppercases .let keys) instead
+  // of rewriting textContent on all 26 letter keys per keystroke.
+  function kbApplyShift() { const up = kbShift || kbCaps; kbEl.classList.toggle("up", up); if (kbShiftKeyEl) { kbShiftKeyEl.classList.toggle("lit", up); kbShiftKeyEl.classList.toggle("caps", kbCaps); } }
+  function kbSetLayer(i) { kbLayer = i; kbLayerDivs.forEach((d, li) => d.classList.toggle("active", li === i)); if (i === 0) kbAutoShift(); kbApplyShift(); }
+  function kbSel() { const len = input.value.length; let s = input.selectionStart, e = input.selectionEnd; if (s == null || e == null) { s = len; e = len; } return [s, e]; }
+  function kbAfterEdit() { scheduleAutosize(); kbAutoShift(); }
+  function kbAutoShift() { if (kbCaps || kbLayer !== 0) return; const [s] = kbSel(); const tail = s >= 2 ? input.value.slice(s - 2, s) : input.value.slice(0, s); const want = s === 0 || /[.!?]\s$/.test(tail) || /\n$/.test(tail); if (want !== kbShift) { kbShift = want; kbApplyShift(); } }
+  function kbInsert(str) { const [s, e] = kbSel(); input.setRangeText(str, s, e, "end"); kbAfterEdit(); }
+  function kbBackspaceOnce() { let [s, e] = kbSel(); if (s === e) { if (s === 0) return; let n = 1; const code = input.value.charCodeAt(s - 1); if (code >= 0xdc00 && code <= 0xdfff && s > 1) n = 2; s -= n; } input.setRangeText("", s, e, "end"); kbAfterEdit(); }
+  let bkspT1 = 0, bkspIv = 0;
+  function kbStopRepeat() { clearTimeout(bkspT1); clearInterval(bkspIv); bkspT1 = bkspIv = 0; }
+  function kbKeyDown(elk) {
+    const k = elk.dataset.k, t = elk.dataset.t; elk.classList.add("down");
+    if (k === "ch") { kbInsert(kbShift || kbCaps ? t.toUpperCase() : t); if (kbShift && !kbCaps && /[a-z]/i.test(t)) { kbShift = false; kbApplyShift(); } }
+    else if (k === "bksp") { kbBackspaceOnce(); kbStopRepeat(); bkspT1 = setTimeout(() => { bkspIv = setInterval(kbBackspaceOnce, 55); }, 420); }
+    else if (k === "shift") { const now = Date.now(); if (now - lastShiftAt < 350) { kbCaps = true; kbShift = true; } else if (kbCaps) { kbCaps = false; kbShift = false; } else { kbShift = !kbShift; } lastShiftAt = now; kbApplyShift(); }
+    else if (k === "space") { const [caret] = kbSel(); const now = Date.now(); if (now - lastSpaceAt < 350 && caret >= 2 && input.value[caret - 1] === " " && /[\w)\]'"’”]/.test(input.value[caret - 2])) { input.setRangeText(". ", caret - 2, caret, "end"); kbAfterEdit(); } else kbInsert(" "); lastSpaceAt = now; }
+    else if (k === "ret") kbInsert("\n");
+    else if (k === "layer0") kbSetLayer(0); else if (k === "layer1") kbSetLayer(1); else if (k === "layer2") kbSetLayer(2);
+  }
+  function kbKeyUp(elk) { elk.classList.remove("down"); }
+  function showKb() { if (!CUSTOM_KB || page !== "chat") return; if (!document.body.classList.contains("kbopen")) { document.body.classList.add("kbopen"); scrollDown(true); } if (document.activeElement !== input) { try { input.focus({ preventScroll: true }); } catch {} } kbApplyShift(); kbAutoShift(); }
+  function hideKb() { if (!document.body.classList.contains("kbopen")) return; document.body.classList.remove("kbopen"); kbStopRepeat(); }
+  if (CUSTOM_KB) {
+    input.setAttribute("inputmode", "none"); input.setAttribute("autocapitalize", "off"); input.setAttribute("autocorrect", "off"); input.setAttribute("autocomplete", "off"); input.setAttribute("spellcheck", "false");
+    kbBuild(); kbApplyShift();
+    const hasTouch = "ontouchstart" in window; const downByKey = new Map();
+    const keyFrom = (target) => (target && target.closest ? target.closest(".kbk") : null);
+    if (hasTouch) {
+      kbEl.addEventListener("touchstart", (e) => { e.preventDefault(); for (const t of e.changedTouches) { const key = keyFrom(t.target); if (!key) continue; downByKey.set(t.identifier, key); kbKeyDown(key); } }, { passive: false });
+      const endTouch = (e) => { for (const t of e.changedTouches) { const key = downByKey.get(t.identifier); if (!key) continue; downByKey.delete(t.identifier); kbKeyUp(key); if (key.dataset.k === "bksp") kbStopRepeat(); } };
+      kbEl.addEventListener("touchend", endTouch); kbEl.addEventListener("touchcancel", endTouch);
+    } else {
+      kbEl.addEventListener("mousedown", (e) => { e.preventDefault(); const key = keyFrom(e.target); if (!key) return; downByKey.set("mouse", key); kbKeyDown(key); });
+      window.addEventListener("mouseup", () => { const key = downByKey.get("mouse"); if (!key) return; downByKey.delete("mouse"); kbKeyUp(key); if (key.dataset.k === "bksp") kbStopRepeat(); });
+    }
+    input.addEventListener("focus", showKb); input.addEventListener("click", showKb);
+    msgsEl.addEventListener("touchstart", hideKb, { passive: true }); msgsEl.addEventListener("mousedown", hideKb);
+  }
+
+  // ---------- voice (verbatim iOS-hardened connect) ----------
+  const NUM_BARS = 12, DECAY = 0.85;
+  const vizEl = $("viz"), verrEl = $("verr"); const vBars = [];
+  for (let i = 0; i < NUM_BARS; i++) { const b = document.createElement("div"); b.className = "vbar"; vizEl.appendChild(b); vBars.push(b); }
+  let vConv = null, vConnecting = false, vRafId = 0, vLive = false, vAutoRetried = false, vMuted = false;
+  const vSmoothed = new Array(NUM_BARS).fill(0);
+  // Agent speaking window + level, mirrored from voice.html: `vAgentSpeaking`
+  // follows the SDK's mode (onModeChange, worklet-playback-driven — flips false
+  // only when the output buffer DRAINS), and the level replays a per-50ms RMS
+  // envelope of the real chunks at wall-clock rate. Chunk ARRIVAL must never
+  // drive the bars — the SDK bursts a whole turn into the buffer seconds ahead
+  // of the audio the user hears, which is what desynced the wave (note 852e435b).
+  let vMicCtx = null, vMicAnalyser = null, vMicBuf = null, vAgentSpeaking = false;
+  const V_SLICE_MS = 50, V_SLICE_BYTES = (16000 * 2 * V_SLICE_MS) / 1000; // 16kHz mono PCM16
+  const vAgentEnv = []; let vAgentEnvPos = 0, vAgentEnvClock = 0;
+  function vAgentEnvReset() { vAgentEnv.length = 0; vAgentEnvPos = 0; vAgentEnvClock = 0; }
+  function vAgentEnvPush(b64) {
+    const s = atob(b64);
+    for (let off = 0; off + 1 < s.length; off += V_SLICE_BYTES) {
+      const end = Math.min(s.length, off + V_SLICE_BYTES);
+      let sum = 0, count = 0;
+      for (let i = off; i + 1 < end; i += 4) { let v = s.charCodeAt(i) | (s.charCodeAt(i + 1) << 8); if (v >= 32768) v -= 65536; sum += v * v; count++; }
+      const rms = count ? Math.sqrt(sum / count) / 32768 : 0;
+      vAgentEnv.push(Math.min(1, rms * 4));
+    }
+    const consumed = Math.floor(vAgentEnvPos);
+    if (consumed > 400) { vAgentEnv.splice(0, consumed); vAgentEnvPos -= consumed; }
+  }
+  function vAgentEnvLevel() {
+    const now = performance.now();
+    const dt = vAgentEnvClock ? Math.min(now - vAgentEnvClock, 200) : 0;
+    vAgentEnvClock = now;
+    vAgentEnvPos += dt / V_SLICE_MS;
+    if (!vAgentEnv.length) return 0;
+    return vAgentEnv[Math.min(vAgentEnv.length - 1, Math.floor(vAgentEnvPos))];
+  }
+  const setVErr = (e) => { verrEl.textContent = e || ""; };
+  const micAvailable = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  function vTeardownAudio() { try { if (vMicCtx) vMicCtx.close(); } catch {} vMicCtx = null; vMicAnalyser = null; vMicBuf = null; }
+  function vBin(data, n) { const out = new Array(n).fill(0); if (!data || !data.length) return out; const per = Math.max(1, Math.floor(data.length / n)); for (let i = 0; i < n; i++) { let s = 0; for (let j = 0; j < per; j++) s += data[i * per + j] || 0; out[i] = s / per / 255; } return out; }
+  function vMeter() {
+    if (!vLive) return;
+    const speaking = vAgentSpeaking; let raw;
+    try { if (speaking) { const lvl = vAgentEnvLevel(); raw = []; for (let i = 0; i < NUM_BARS; i++) { const shape = 0.55 + 0.45 * Math.sin((i / (NUM_BARS - 1)) * Math.PI); raw.push(lvl * shape); } } else if (vMicAnalyser) { vMicAnalyser.getByteFrequencyData(vMicBuf); raw = vBin(vMicBuf, NUM_BARS); } else { raw = vBin(vConv && vConv.getInputByteFrequencyData && vConv.getInputByteFrequencyData(), NUM_BARS); } } catch { raw = new Array(NUM_BARS).fill(0); }
+    // [truth] Muted + not the agent's turn → flat bars. The local mic analyser is
+    // a SEPARATE getUserMedia stream that vConv.setMicMuted() never touches, so
+    // without this the waves keep dancing to your voice while you're muted — the
+    // UI saying "you're being heard" when you aren't. (Mirrors voice.html:249.)
+    if (vMuted && !speaking) raw = new Array(NUM_BARS).fill(0);
+    for (let i = 0; i < NUM_BARS; i++) { const decayed = vSmoothed[i] * DECAY; vSmoothed[i] = raw[i] > decayed ? raw[i] : decayed; const h = 0.16 + Math.min(1, vSmoothed[i]) * 0.84; vBars[i].style.transform = `scaleY(${h.toFixed(3)})`; }
+    vRafId = requestAnimationFrame(vMeter);
+  }
+  function vClientTools(toolNames) { const tools = {}; for (const name of toolNames || []) { tools[name] = async (params) => { try { const r = await api("/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, arguments: params || {} }) }); return await r.text(); } catch (e) { return "error: " + String(e); } }; } return tools; }
+  async function vStart() {
+    if (vConnecting || vConv) return;
+    if (!micAvailable()) { setVErr("This page isn't HTTPS, so the browser blocks the mic. Open the https://…ts.net link from Settings → Phone."); return; }
+    vConnecting = true; setVErr(""); document.body.classList.add("vconnecting");
+    try {
+      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext!)(); vMicCtx.resume().catch(() => {}); const src = vMicCtx.createMediaStreamSource(micStream); vMicAnalyser = vMicCtx.createAnalyser(); vMicAnalyser.fftSize = 64; vMicAnalyser.smoothingTimeConstant = 0.5; src.connect(vMicAnalyser); vMicBuf = new Uint8Array(vMicAnalyser.frequencyBinCount); } catch { vMicAnalyser = null; }
+      let cfg = null;
+      let sessErr = "";
+      for (let a = 0; a < 6; a++) {
+        try { const r = await api("/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: convId || null }) }); if (r.ok) { cfg = await r.json(); break; } sessErr = `session ${r.status}: ${(await r.text()).slice(0, 200)}`; }
+        catch (e) { sessErr = String((e && e.message) || e); }
+        // Retry ANY failure (502 transient mint, network blip, 503 not-ready), not
+        // just 503 — a single stray error used to kill the whole start. Backoff.
+        if (a < 5) { await new Promise((res) => setTimeout(res, 700 * (a + 1))); continue; }
+        throw new Error(sessErr || "session not ready");
+      }
+      if (!cfg) throw new Error("session not ready");
+      // @ts-ignore — URL import; the browser resolves it at runtime
+      const sdk = (await sdkPromise) || (await import("@elevenlabs/client")); const { Conversation } = sdk;
+      let timedOut = false, watchdog = 0;
+      const sessionPromise = Conversation.startSession({
+        signedUrl: cfg.signedUrl,
+        overrides: { agent: { prompt: { prompt: cfg.systemPrompt || "" }, language: "en", firstMessage: "" }, tts: { voiceId: cfg.voiceId } },
+        dynamicVariables: cfg.dynamicVariables || {}, clientTools: vClientTools(cfg.toolNames),
+        onConnect: () => { if (timedOut) return; vConnecting = false; vAutoRetried = false; vLive = true; document.body.classList.remove("vconnecting"); vMeter(); },
+        onDisconnect: () => { if (!timedOut) vTeardown(); },
+        onError: (m) => setVErr(typeof m === "string" ? m : (m && m.message) || "voice error"),
+        onAudio: (b64) => { try { vAgentEnvPush(b64); } catch {} },
+        onMessage: ({ message, role }) => { const text = (message || "").trim(); if (!text) return; api("/voice-transcript", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role: role === "user" ? "user" : "assistant", text }) }).catch(() => {}); },
+        // Mode leaving "speaking" = the playback buffer drained (or barge-in) —
+        // everything that arrived was heard, so drop the queued envelope tail.
+        onModeChange: ({ mode }) => { vAgentSpeaking = mode === "speaking"; if (!vAgentSpeaking) vAgentEnvReset(); },
+      });
+      sessionPromise.then((c) => { clearTimeout(watchdog); if (timedOut && c) { try { c.endSession(); } catch {} } }).catch(() => clearTimeout(watchdog));
+      vConv = await Promise.race([sessionPromise, new Promise((_, rej) => { watchdog = setTimeout(() => { timedOut = true; rej(new Error("connect timed out after 15s")); }, 15000); })]);
+      clearTimeout(watchdog);
+    } catch (e) {
+      vConnecting = false; vTeardownAudio(); document.body.classList.remove("vconnecting");
+      if (!vAutoRetried) { vAutoRetried = true; setTimeout(() => { try { if (vMicCtx && vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {}); } catch {} vStart(); }, 800); return; }
+      setVErr(String((e && e.message) || e));
+    }
+  }
+  function vTeardown() { vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vAgentSpeaking = false; vAgentEnvReset(); vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; { const vh = $("vhint"); if (vh) vh.textContent = ""; } vConv = null; vConnecting = false; }
+  async function vStop() { try { if (vConv) await vConv.endSession(); } catch {} vTeardown(); }
+  $("voiceRow").onclick = () => {
+    closeMenu();
+    if (vLive || vConnecting) { document.body.classList.add("voice"); document.body.classList.remove("voicemin"); return; }
+    try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext!)(); if (vMicCtx.state === "suspended") vMicCtx.resume().catch(() => {}); const b = vMicCtx.createBuffer(1, 1, 22050); const s = vMicCtx.createBufferSource(); s.buffer = b; s.connect(vMicCtx.destination); s.start(0); } catch {}
+    hideKb(); document.body.classList.add("voice"); document.body.classList.remove("voicemin"); vStart();
+  };
+  function vSetMute(m) { vMuted = m; document.body.classList.toggle("vmicmuted", m); const vh = $("vhint"); if (vh) vh.textContent = m ? "Muted" : ""; if (vConv) try { vConv.setMicMuted(m); } catch {} }
+  $("vMuteBtn").onclick = () => vSetMute(!vMuted);
+  $("vEndBtn").onclick = vStop;
+  $("vMinBtn").onclick = () => { if (vLive || vConnecting) { document.body.classList.add("voicemin"); document.body.classList.remove("voice"); } else vStop(); };
+  $("vpill").onclick = () => { document.body.classList.add("voice"); document.body.classList.remove("voicemin"); };
+
+  // ---------- lifecycle ----------
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") { void pollLoop(); void refreshState(); void refreshBadge(); if (page === "activity") softReload(loadActivity); if (page === "alerts") softReload(loadAlerts); if (clTab === "chat" && $("drawer").classList.contains("open") && coderThread) void coderReattach(coderThread); }
+  });
+  // Connection came back — deliver any report the user saved while offline right
+  // away, rather than waiting for the next 45s status poll.
+  window.addEventListener("online", () => { void flushFeedbackQueue(); });
+  // Touching a list at all marks it briefly busy, so a background tick can't
+  // rebuild it (scroll → top) while you're reading or reaching for a card.
+  ["alScroll", "actScroll", "notesScroll"].forEach((id) => { const s = $(id); if (s) s.addEventListener("touchstart", () => markListBusy(2500), { passive: true }); });
+  if (window.visualViewport) {
+    const vv = window.visualViewport;
+    // Keyboard handling. --kb is the height the composer must rise to sit on top of
+    // the keyboard; the composer's padding-bottom and the .sheet transform consume
+    // it. Re-applied on scroll too because iOS shifts the viewport as the keyboard
+    // animates. The shell height itself is CSS-only (100lvh in standalone) — never
+    // JS-controlled — so nothing here can strand the old dead strip.
+    const applyKb = () => {
+      // kbRaw: keyboard height measured against documentElement.clientHeight, the
+      // stable layout viewport that equals vv.height at rest — so this reads ~0 with
+      // no keyboard and is the reliable "is the keyboard up?" signal.
+      const kbRaw = Math.max(0, document.documentElement.clientHeight - vv.height - vv.offsetTop);
+      const up = kbRaw > 60;
+      // Keyboard up: collapse the composer's home-indicator inset so the textbox
+      // sits flush on the keyboard (the keyboard already covers that strip).
+      document.body.classList.toggle("kbup", up);
+      // The body is sized to the FULL screen (100lvh in standalone), which is taller
+      // than clientHeight's layout viewport by the safe-area-top band iOS excludes
+      // (measured: 874 vs 812 = 62px on a Dynamic Island phone). kbRaw is computed in
+      // the shorter clientHeight space, so the composer landed ~62px BEHIND the
+      // keyboard. Add that band back. It is 0 in a browser tab (body == 100dvh ==
+      // clientHeight), so Safari is unaffected.
+      const safeBand = Math.max(0, document.body.offsetHeight - document.documentElement.clientHeight);
+      document.documentElement.style.setProperty("--kb", (up ? kbRaw + safeBand : 0) + "px");
+      // The sheet is NOT resized or lifted on keyboard-open — `.sheet.editing`
+      // reserves --kb as inside padding, so its top stays fixed while only the
+      // pinned composer rides above the keyboard (see sheetEditFocus). Nothing to
+      // do here but keep --kb current, which the line above already did.
+    };
+    const fit = () => { applyKb(); window.scrollTo(0, 0); scrollDown(false); };
+    vv.addEventListener("resize", fit);
+    vv.addEventListener("scroll", () => { window.scrollTo(0, 0); applyKb(); });
+    fit(); // reconcile the initial geometry so a short launch viewport can't strand a strip
+  }
+
+  // A push tapped while the app is already OPEN (iOS keeps the PWA backgrounded,
+  // not closed — the common case) can't be navigated from the service worker, so
+  // the SW postMessages the deep-link and we route in place to the asking thread.
+  // Without this a "Needs you" tap just re-focuses whatever chat you had open
+  // last — the wrong-conversation bug. Mirrors the ?conv= boot path below.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      const d = (e && e.data) || {};
+      if (d.type !== "deeplink" || !d.url) return;
+      try {
+        const p = new URLSearchParams(String(d.url).split("?")[1] || "");
+        // [ask redesign] An ask push deep-links to the ask surface (?ask=), not
+        // to the mission thread — the main composer must never get silently
+        // re-bound to a mission by a notification tap (spillover vector B3).
+        const aid = p.get("ask");
+        if (aid) { void openAskById(aid); return; }
+        const cid = p.get("conv");
+        if (cid) void openThread(cid);
+      } catch {}
+    });
+  }
+
+  // [ask redesign] Open an ask's deliberation sheet by notification id — the
+  // push deep-link target. Lands on the Alerts page with the sheet up; never
+  // touches the main chat's bound conversation.
+  async function openAskById(nid) {
+    try {
+      const d = await (await api("/notifications")).json();
+      lastNotifList = d.notifications || [];
+      setPage("alerts");
+      void loadAlerts();
+      const n = lastNotifList.find((x) => x.id === nid);
+      if (n) openDeliberationSheet(n);
+    } catch {}
+  }
+
+  // The scroll fade is a scrolling AFFORDANCE — per edge, and only when content
+  // is actually cut off on that edge. At rest (scrollTop 0) the first line is
+  // fully readable; the top fade appears only once you scroll down.
+  const fadeWatch = () => {
+    document.querySelectorAll("#msgs,.scroll,.clist,.sheet-body").forEach((sc) => {
+      const can = sc.scrollHeight > sc.clientHeight + 4;
+      sc.classList.toggle("fade-top", can && sc.scrollTop > 4);
+      sc.classList.toggle("fade-bot", can && sc.scrollTop + sc.clientHeight < sc.scrollHeight - 4);
+    });
+  };
+  new MutationObserver(fadeWatch).observe(document.body, { childList: true, subtree: true });
+  window.addEventListener("resize", fadeWatch);
+  // scroll doesn't bubble — capture phase catches every scrollable surface.
+  document.addEventListener("scroll", fadeWatch, true);
+  setInterval(fadeWatch, 1200);
+  fadeWatch();
+
+  showHint();
+  setHeader();
+  // A tapped push notification deep-links to the ASKING thread via ?conv=<id>
+  // (from the push url, when the app was launched cold). It MUST win over the
+  // sticky last-thread restore below — otherwise the tap lands you on whatever
+  // chat you had open last, not the one waiting on your call.
+  const bootAsk = qs.get("ask");
+  const bootConv = qs.get("conv");
+  if (bootAsk) {
+    // [ask redesign] Cold-launch from an ask push: open the ask surface, never
+    // a thread — the main composer keeps whatever chat it had.
+    void openAskById(bootAsk);
+  } else if (bootConv) {
+    void openThread(bootConv);
+  } else {
+    // Return to the thread you were in last session (404 falls back to a fresh chat).
+    try {
+      const saved = JSON.parse(localStorage.getItem(LAST_CONV_KEY) || "null");
+      if (saved && saved.id) void openThread(saved.id, saved.title);
+    } catch {}
+  }
+  void refreshState();
+  void refreshBadge();
+  void pollLoop();
+  setInterval(() => { void refreshState(); }, 45000);
+}
