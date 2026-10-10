@@ -244,7 +244,9 @@ describe.skipIf(!BIN)("engine (real Codex, fake Responses API)", () => {
     expect(p.subagents).toBe(false); // the fake never spawns
     // The probe thread ran with multi_agent on (a per-thread config override): its requests carry the namespace tool.
     expect(or.calls.slice(before).some((b) => JSON.stringify(b.tools ?? []).includes("multi_agent"))).toBe(true);
-    expect(p.costUsd).toBeCloseTo(COST_PER_CALL * (or.calls.length - before), 6);
+    const probeCalls = or.calls.slice(before).filter((b) => JSON.stringify(b.input ?? []).includes("capability probe")).length;
+    expect(probeCalls).toBeGreaterThanOrEqual(3); // tool call, its follow-up, the cache check
+    expect(p.costUsd).toBeCloseTo(COST_PER_CALL * probeCalls, 6);
     const { models } = await (await fetch(srv.base + "/api/v1/models")).json();
     expect(models.find((m: any) => m.id === "test/fake-model").status).toBe("tested");
   });
@@ -361,5 +363,12 @@ describe.skipIf(!BIN)("engine (real Codex, fake Responses API)", () => {
     const c2 = await assistantSays(r.convId, /woke up and checked/, 60_000);
     expect(c2.messages.some((m: any) => m.role === "user" && /Wake: check the run/.test(m.content))).toBe(true);
     expect(JSON.parse(readFileSync(join(vault, ".vault-chat", "local", "wakes.json"), "utf8"))).toEqual([]);
+    // The restart cut the first turn's cost lookup short; the boot reconcile puts it on its message.
+    const priced = await waitFor(async () => {
+      const x = await conv(r.convId);
+      const as = x.messages.filter((m: any) => m.role === "assistant");
+      return as.length >= 2 && as.every((m: any) => m.costUsd > 0) ? x : null;
+    }, 45_000);
+    expect(priced.costUsd).toBeCloseTo(COST_PER_CALL * or.calls.filter((b) => JSON.stringify(b.input).includes("WAKE1")).length, 6);
   });
 });

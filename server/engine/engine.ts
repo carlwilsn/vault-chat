@@ -6,7 +6,7 @@
 import { existsSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import type { ChatMessage } from "../../src/store";
 import { registerRun, unregisterRun } from "../../src/runRegistry";
-import type { CodexSupervisor } from "./appServer";
+import type { BackendEvent, EngineBackend } from "./backend";
 import {
   contextToolSpecs,
   handleContextTool,
@@ -21,10 +21,9 @@ import {
   type EngineConv,
   type ThreadTokenUsage,
 } from "./context";
-import { codexLimits } from "./catalog";
 import { appendMessage, patchMeta, readConv, allConvs, createConv, mutateConv, setLive, setRuntime, newMessageId } from "./convs";
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
-import { Ledger, rolloutCalls } from "./ledger";
+import { Ledger } from "./ledger";
 import { pdfRead, webSearch, startJob, jobStatus, type JobEnv } from "./extraTools";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { capabilitiesOf, capabilityNote, isNamespaceRejection, learn, setProbing } from "./capabilities";
@@ -32,7 +31,7 @@ import { join } from "node:path";
 
 export type EngineDeps = {
   vault: string;
-  sup: CodexSupervisor;
+  backend: EngineBackend;
   ledger: Ledger;
   jobEnv: JobEnv;
   model: () => string;
@@ -47,10 +46,6 @@ export type EngineDeps = {
   broadcast?: (ev: Record<string, unknown>) => void;
   /** Model for a turn that carries images when the default can't see. */
   visionModel?: string;
-  /** CODEX_HOME (subagent rollouts are found under its sessions/). */
-  codexHome?: string;
-  /** Linux: run tool shells under the `vc` permission profile. */
-  permissions?: string | null;
 };
 
 type ToolRec = { id?: string; name: string; input: any; result?: string };
@@ -86,7 +81,6 @@ type Probe = { threadId: string; turnDone: ((s: string) => void) | null; parentC
 type TurnOpts = { alreadyAppended?: boolean; images?: string[]; context?: string; retried?: boolean; attachments?: any[] };
 
 const MSG_CAP = 20_000;
-const RESULT_CAP = 4_000;
 const NUDGE_TEXT = "You're in keep-going mode: schedule your next check (ScheduleWake), or say Done or Blocked.";
 const RESUME_TEXT =
   "The box restarted (or the engine stopped) while your last turn was running, so any command it was running was killed and may not have finished. Re-check reality (files, processes, logs), then continue from where you were.";
@@ -203,7 +197,6 @@ const text = (t: string) => ({ success: true, contentItems: [{ type: "inputText"
 export class Engine {
   private live = new Map<string, Live>(); // convId → live turn
   private byThread = new Map<string, string>(); // threadId → convId
-  private loaded = new Set<string>(); // threads loaded in the current app-server process
   private chains = new Map<string, Promise<unknown>>();
   private nudged = new Set<string>();
   private resumeQueue = new Set<string>();
@@ -222,9 +215,17 @@ export class Engine {
   // ---------------------------------------------------------------- lifecycle
 
   start(): void {
-    this.d.sup.on("notification", (m: any) => this.onNotification(m));
-    this.d.sup.on("down", () => this.onDown());
-    this.d.sup.on("up", () => void this.onUp());
+    const b = this.d.backend;
+    b.on("event", (e: BackendEvent) => this.onEvent(e));
+    b.on("down", () => this.onDown());
+    b.on("up", () => void this.onUp());
+    b.setHandlers({
+      toolCall: async (threadId, name, args) => {
+        const r: any = await this.onToolCall({ threadId, tool: name, arguments: args });
+        return { ok: r?.success !== false, text: (r?.contentItems ?? []).map((c: any) => c?.text ?? "").join("\n") };
+      },
+      userInput: (threadId, question, options) => this.waitForAnswer(threadId, question, options),
+    });
     this.timers.push(setInterval(() => void this.tickWakes(), 2_000));
     this.timers.push(setInterval(() => this.tickWatchdog(), 15_000));
   }
@@ -235,7 +236,8 @@ export class Engine {
 
   health(): Record<string, unknown> {
     return {
-      codex: { ...this.d.sup.health },
+      [this.d.backend.name]: this.d.backend.health(),
+      backend: this.d.backend.name,
       liveTurns: [...this.live.values()].map((l) => ({ convId: l.convId, kind: l.kind, waitingUser: !!l.ask, sinceMs: Date.now() - l.startedAt })),
       wakes: readWakes(this.d.vault).length,
     };
@@ -246,40 +248,10 @@ export class Engine {
     return !!l && !l.ask;
   }
 
-  /** Server request handler for the supervisor. */
-  async onServerRequest(method: string, params: any): Promise<unknown> {
-    switch (method) {
-      case "item/tool/call":
-        return this.onToolCall(params);
-      case "item/tool/requestUserInput": {
-        const qs: any[] = Array.isArray(params?.questions) ? params.questions : [];
-        const q = qs.map((x) => x?.question).filter(Boolean).join("\n") || "Question";
-        const opts = (qs[0]?.options ?? []).map((o: any) => String(o?.label ?? "")).filter(Boolean);
-        const answer = await this.waitForAnswer(params?.threadId, q, opts);
-        const answers: Record<string, { answers: string[] }> = {};
-        for (const x of qs) answers[x.id] = { answers: [answer] };
-        return { answers };
-      }
-      case "item/commandExecution/requestApproval":
-      case "item/fileChange/requestApproval":
-      case "execCommandApproval":
-      case "applyPatchApproval":
-        return { decision: "accept" };
-      case "item/permissions/requestApproval":
-        return { permissions: {}, scope: "turn" };
-      case "mcpServer/elicitation/request":
-        return { action: "decline" };
-      case "currentTime/read":
-        return { currentTimeAt: Math.floor(Date.now() / 1000) };
-      default:
-        return {};
-    }
-  }
-
   private async onUp(): Promise<void> {
-    this.loaded.clear();
     if (this.firstUp) {
       this.firstUp = false;
+      void this.reconcileCosts().catch((e) => this.log(`cost reconcile failed: ${e}`));
       // A turn cut by a crash or restart of the whole server: the file still
       // says running. Mark it, then resume it.
       for (const c of await allConvs(this.d.vault).catch(() => [])) {
@@ -370,16 +342,7 @@ export class Engine {
     if (l && l.turnId && !l.finished) {
       await appendMessage(this.d.vault, id, { role: "user", content: shown, direct: true, ...(attachments.length ? { attachments } : {}) });
       try {
-        await this.d.sup.request("turn/steer", {
-          threadId: l.threadId,
-          expectedTurnId: l.turnId,
-          input: [
-            { type: "text", text: context ? `${context}
-
-${shown}` : shown, text_elements: [] },
-            ...paths.map((path) => ({ type: "localImage", path })),
-          ],
-        });
+        await this.d.backend.steer(l.threadId, l.turnId, { texts: [context ? `${context}\n\n${shown}` : shown], images: paths });
         return { ok: true, convId: id, steered: true };
       } catch (e) {
         this.log(`steer failed (${(e as Error).message}); starting a new turn`);
@@ -467,7 +430,7 @@ ${shown}` : shown, text_elements: [] },
     l.stopped = byUser || l.stopped;
     if (!l.turnId) return true;
     try {
-      await this.d.sup.request("turn/interrupt", { threadId: l.threadId, turnId: l.turnId }, 30_000);
+      await this.d.backend.interrupt(l.threadId, l.turnId);
     } catch (e) {
       this.log(`interrupt failed: ${(e as Error).message}`);
     }
@@ -489,13 +452,11 @@ ${shown}` : shown, text_elements: [] },
       const existing = this.live.get(convId);
       if (existing && !existing.finished) {
         if (existing.turnId && !existing.ask) {
-          await this.d.sup
-            .request("turn/steer", { threadId: existing.threadId, expectedTurnId: existing.turnId, input: [{ type: "text", text: input, text_elements: [] }] })
-            .catch(() => undefined);
+          await this.d.backend.steer(existing.threadId, existing.turnId, { texts: [input], images: [] }).catch(() => undefined);
         }
         return;
       }
-      if (!(await this.d.sup.ready(120_000))) throw new Error("codex app-server is not up");
+      if (!(await this.d.backend.ready(120_000))) throw new Error(`the ${this.d.backend.name} runtime is not up`);
       let conv = await readConv(this.d.vault, convId);
       if (!conv) throw new Error(`conversation ${convId} not found`);
       if (!opts.alreadyAppended) {
@@ -550,21 +511,15 @@ ${shown}` : shown, text_elements: [] },
       const prior = (conv as any).__legacyHistory as string | undefined;
       if (prior) body = `${prior}\n\n${input}`;
       const rules = rulesPrefixForTurn(conv as any);
-      if (opts.context) body = `${opts.context}
-
-${body}`;
-      const items: any[] = [
-        ...(rules ? [{ type: "text", text: rules, text_elements: [] }] : []),
-        { type: "text", text: kind === "wake" ? input : body, text_elements: [] },
-        ...(opts.images ?? []).map((path) => ({ type: "localImage", path })),
-      ];
+      if (opts.context) body = `${opts.context}\n\n${body}`;
+      const texts = [rules, kind === "wake" ? input : body].filter(Boolean);
       // Images on a model that can't see: this turn (silently) uses the vision model.
       let model = this.d.model();
       if (opts.images?.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
       this.chatEvent(convId, "start");
       try {
-        const r: any = await this.d.sup.request("turn/start", { threadId, input: items, model }, 60_000);
-        if (!live.turnId) live.turnId = r?.turn?.id ?? null;
+        const r = await this.d.backend.startTurn(threadId, { texts, images: opts.images ?? [], model });
+        if (!live.turnId) live.turnId = r.turnId;
       } catch (e) {
         live.finished = true;
         this.live.delete(convId);
@@ -577,48 +532,32 @@ ${body}`;
 
   private async ensureThread(conv: EngineConv): Promise<string> {
     const model = this.d.model();
-    // Codex subagents (multi_agent) only for models where they work: a per-thread config override.
-    const features = { multi_agent: capabilitiesOf(model).subagents };
+    // Subagents only for models where they work (learned from use; see capabilities.ts).
+    const subagents = capabilitiesOf(model).subagents;
     if (conv.codexThreadId) {
-      if (!this.loaded.has(conv.codexThreadId)) {
-        await this.d.sup.request("thread/resume", {
-          threadId: conv.codexThreadId,
-          excludeTurns: true,
-          ...(this.d.permissions ? { permissions: this.d.permissions } : {}),
-          config: { ...codexLimits(model), features },
-        }, 60_000);
-        this.loaded.add(conv.codexThreadId);
-      }
+      await this.d.backend.resumeThread(conv.codexThreadId, { model, subagents });
       this.byThread.set(conv.codexThreadId, conv.id);
       return conv.codexThreadId;
     }
     const note = capabilityNote(model);
-    const devInstr = buildDeveloperInstructions(conv as any, { rolePrompt: ENGINE_ROLE_PROMPT + (note ? `
-
-${note}` : "") });
-    const r: any = await this.d.sup.request("thread/start", {
+    const instructions = buildDeveloperInstructions(conv as any, { rolePrompt: ENGINE_ROLE_PROMPT + (note ? `\n\n${note}` : "") });
+    const { threadId, ref } = await this.d.backend.startThread({
       cwd: this.d.vault,
       model,
-      modelProvider: "openrouter",
-      approvalPolicy: "never",
-      ...(this.d.permissions ? { permissions: this.d.permissions } : { sandbox: "danger-full-access" }),
-      developerInstructions: devInstr,
-      dynamicTools: [...ENGINE_TOOL_SPECS, ...contextToolSpecs],
-      config: { ...codexLimits(model), features },
-    }, 60_000);
-    const threadId: string = r?.thread?.id;
-    if (!threadId) throw new Error("thread/start returned no thread id");
-    this.loaded.add(threadId);
+      instructions,
+      tools: [...ENGINE_TOOL_SPECS, ...contextToolSpecs] as any,
+      subagents,
+    });
     this.byThread.set(threadId, conv.id);
-    // History from before the engine (a legacy chat): hand it over once.
+    // History from before this thread (a legacy chat, or a retry on a fresh thread): hand it over once.
     const old = conv.messages.filter((m) => !m.hidden && !m.system && (m.content ?? "").trim()).slice(0, -1);
     if (old.length && !conv.messages.some((m: any) => m.rollover)) {
       const t = old.slice(-30).map((m) => `${m.role}: ${(m.content ?? "").slice(0, 1500)}`).join("\n");
       (conv as any).__legacyHistory = `<earlier_conversation>\n${t.slice(-12_000)}\n</earlier_conversation>`;
     }
-    await patchMeta(this.d.vault, conv.id, { codexThreadId: threadId, codexThreadPath: r?.thread?.path ?? undefined });
+    await patchMeta(this.d.vault, conv.id, { codexThreadId: threadId, codexThreadPath: ref });
     conv.codexThreadId = threadId;
-    conv.codexThreadPath = r?.thread?.path;
+    conv.codexThreadPath = ref;
     return threadId;
   }
 
@@ -635,93 +574,66 @@ ${note}` : "") });
     setRuntime(l.convId, { text: txt.slice(-6000), tools: l.tools, startedAt: l.startedAt });
   }
 
-  private onNotification(m: { method: string; params: any }): void {
-    const p = m.params ?? {};
-    const probe = this.probes.get(p.threadId);
-    if (probe) return this.onProbeEvent(probe, m.method, p);
-    const parent = this.childOf.get(p.threadId);
+  private onEvent(e: BackendEvent): void {
+    const probe = this.probes.get(e.threadId);
+    if (probe) return this.onProbeEvent(probe, e);
+    const parent = this.childOf.get(e.threadId);
     if (parent) {
       // A subagent's own stream: keeps the parent's turn alive, never mixed into its text.
       const pl = this.live.get(parent);
       if (pl) pl.lastEventAt = Date.now();
-      if (m.method === "turn/completed") void this.updateSubagent(parent, p.threadId, { status: String(p.turn?.status ?? "completed") });
+      if (e.kind === "turnCompleted") void this.updateSubagent(parent, e.threadId, { status: e.status });
       return;
     }
-    const l = this.liveByThread(p.threadId);
+    const l = this.liveByThread(e.threadId);
     if (!l) return;
     l.lastEventAt = Date.now();
-    switch (m.method) {
-      case "turn/started":
-        if (!l.turnId) l.turnId = p.turn?.id ?? null;
-        break;
-      case "item/agentMessage/delta": {
-        const id = String(p.itemId ?? "msg");
-        if (!l.texts.has(id)) l.order.push(id);
-        l.texts.set(id, (l.texts.get(id) ?? "") + String(p.delta ?? ""));
+    switch (e.kind) {
+      case "turnStarted":
+        if (!l.turnId) l.turnId = e.turnId;
+        return;
+      case "textDelta":
+        if (!l.texts.has(e.itemId)) l.order.push(e.itemId);
+        l.texts.set(e.itemId, (l.texts.get(e.itemId) ?? "") + e.delta);
         this.pushRuntime(l);
         this.chatStream(l);
-        break;
-      }
-      case "item/started":
-      case "item/completed": {
-        const it = p.item ?? {};
-        const done = m.method === "item/completed";
-        if (it.type === "agentMessage") {
-          if (!l.texts.has(it.id)) l.order.push(it.id);
-          if (done || typeof it.text === "string") l.texts.set(it.id, String(it.text ?? l.texts.get(it.id) ?? ""));
-        } else if (it.type === "reasoning" && done) {
-          const s = [...(it.summary ?? []), ...(it.summary?.length ? [] : it.content ?? [])].join("\n").trim();
-          if (s) l.reasoning.push(s);
-        } else if (it.type === "commandExecution") {
-          this.upsertTool(l, it.id, {
-            name: "Bash",
-            input: { command: it.commandActions?.[0]?.command ?? it.command },
-            result: done ? capStr(String(it.aggregatedOutput ?? ""), RESULT_CAP) + (it.exitCode != null && it.exitCode !== 0 ? `\n[exit ${it.exitCode}]` : "") : undefined,
-          });
-        } else if (it.type === "fileChange") {
-          const ch = (it.changes ?? [])[0] ?? {};
-          this.upsertTool(l, it.id, {
-            name: ch.kind?.type === "add" ? "Write" : "Edit",
-            input: { file_path: ch.path, changes: (it.changes ?? []).length },
-            result: done ? capStr(String(ch.diff ?? ""), RESULT_CAP) : undefined,
-          });
-        } else if (it.type === "dynamicToolCall") {
-          this.upsertTool(l, it.id, {
-            name: String(it.tool ?? "tool"),
-            input: it.arguments ?? {},
-            result: done ? capStr((it.contentItems ?? []).map((c: any) => c?.text ?? "").join("\n"), RESULT_CAP) : undefined,
-          });
-        } else if (it.type === "webSearch" || it.type === "mcpToolCall") {
-          this.upsertTool(l, it.id, { name: it.type === "webSearch" ? "WebSearch" : String(it.tool ?? "mcp"), input: it.query ?? it.arguments ?? {} });
-        } else if (it.type === "collabAgentToolCall") {
-          const receivers: string[] = Array.isArray(it.receiverThreadIds) ? it.receiverThreadIds : [];
-          for (const t of receivers) {
-            if (!this.childOf.has(t)) {
-              this.childOf.set(t, l.convId);
-              void this.updateSubagent(l.convId, t, { prompt: String(it.prompt ?? "").slice(0, 300), model: it.model ?? this.d.model(), status: "running", startedAt: Date.now() });
-            }
+        return;
+      case "text":
+        if (!l.texts.has(e.itemId)) l.order.push(e.itemId);
+        l.texts.set(e.itemId, e.text);
+        this.pushRuntime(l);
+        return;
+      case "reasoning":
+        l.reasoning.push(e.text);
+        return;
+      case "tool":
+        this.upsertTool(l, e.itemId, { name: e.name, input: e.input, result: e.result });
+        this.pushRuntime(l);
+        return;
+      case "usage":
+        l.usage = e.usage;
+        return;
+      case "subagents": {
+        for (const t of e.children) {
+          if (!this.childOf.has(t)) {
+            this.childOf.set(t, l.convId);
+            void this.updateSubagent(l.convId, t, { prompt: String(e.prompt ?? "").slice(0, 300), model: e.model ?? this.d.model(), status: "running", startedAt: Date.now() });
           }
-          this.upsertTool(l, it.id, { name: "Subagent", input: { tool: it.tool, prompt: it.prompt ?? undefined, agents: receivers.length }, result: done ? String(it.status ?? "") : undefined });
-          if (done && it.tool === "spawnAgent" && receivers.length && String(it.status) === "completed") {
-            if (learn(this.d.model(), "subagents", true, `spawned ${receivers.length} subagent(s) in a real turn`)) this.log(`learned: ${this.d.model()} subagents on`);
-          }
-        } else if (it.type === "subAgentActivity") {
-          if (it.agentThreadId && !this.childOf.has(it.agentThreadId)) this.childOf.set(it.agentThreadId, l.convId);
-          if (it.agentThreadId) void this.updateSubagent(l.convId, it.agentThreadId, { status: String(it.kind ?? "") === "completed" ? "completed" : "running", path: it.agentPath });
-        } else if (it.type === "contextCompaction" && done) {
-          this.upsertTool(l, it.id, { name: "Compaction", input: {}, result: "context compacted" });
+        }
+        this.upsertTool(l, e.itemId, { name: "Subagent", input: { tool: e.op, prompt: e.prompt, agents: e.children.length }, result: e.done ? (e.ok ? "completed" : "failed") : undefined });
+        if (e.done && e.ok && e.op === "spawnAgent" && e.children.length) {
+          if (learn(this.d.model(), "subagents", true, `spawned ${e.children.length} subagent(s) in a real turn`)) this.log(`learned: ${this.d.model()} subagents on`);
         }
         this.pushRuntime(l);
-        break;
+        return;
       }
-      case "thread/tokenUsage/updated":
-        l.usage = p.tokenUsage ?? l.usage;
-        break;
-      case "turn/completed":
-        void this.finishTurn(l, String(p.turn?.status ?? "completed"), p.turn?.error ?? null);
-        break;
-      default:
-        break;
+      case "subagentStatus":
+        if (!this.childOf.has(e.child)) this.childOf.set(e.child, l.convId);
+        void this.updateSubagent(l.convId, e.child, { status: e.status, path: e.path });
+        return;
+      case "turnCompleted":
+        void this.finishTurn(l, e.status, e.error);
+        return;
     }
   }
 
@@ -772,6 +684,7 @@ ${note}` : "") });
       // override does not change them, measured), so the retry runs on a new
       // thread; the conversation's history is handed over in its first turn.
       this.byThread.delete(l.threadId);
+      this.d.backend.forget(l.threadId);
       await patchMeta(vault, l.convId, { codexThreadId: undefined, codexThreadPath: undefined });
       void this.run(l.convId, l.input, l.kind, { ...l.turnOpts, alreadyAppended: true, retried: true });
       return;
@@ -796,6 +709,7 @@ ${note}` : "") });
       role: "assistant",
       content: capStr(content, MSG_CAP),
       mid,
+      ...(l.turnId ? { turnId: l.turnId } : {}),
       ...(l.tools.length ? { toolCalls: l.tools } : {}),
       ...(l.reasoning.length ? { thinking: capStr(l.reasoning.join("\n\n"), 8_000) } : {}),
       ...(usage
@@ -881,13 +795,8 @@ ${note}` : "") });
     await new Promise((r) => setTimeout(r, 1500));
     // The turn's own calls, plus every call of this conversation's subagents
     // (their rollouts are separate threads; the ledger skips ids already counted).
-    const childCalls = [...this.childOf.entries()]
-      .filter(([, c]) => c === convId)
-      .flatMap(([t]) => {
-        const f = this.d.codexHome ? findRollout(join(this.d.codexHome, "sessions"), t) : null;
-        return f ? rolloutCalls(f) : [];
-      });
-    const res = await this.d.ledger.settle([...rolloutCalls(threadPath, turnId), ...childCalls]);
+    const childCalls = [...this.childOf.entries()].filter(([, c]) => c === convId).flatMap(([t]) => this.d.backend.childUsageCalls(t));
+    const res = await this.d.ledger.settle([...this.d.backend.usageCalls(threadPath, turnId), ...childCalls]);
     if (!res.calls) return;
     await mutateConv(this.d.vault, convId, (c) => {
       c.costUsd = round((c.costUsd ?? 0) + res.usd);
@@ -897,6 +806,30 @@ ${note}` : "") });
         if (i >= 0) c.messages[i] = { ...c.messages[i]!, costUsd: round(((c.messages[i] as any).costUsd ?? 0) + res.usd) } as any;
       }
     });
+  }
+
+  /** At boot: cost any model call a restart cut off before its lookup finished
+   * (the ledger skips ids already counted), onto the message of its turn. */
+  private async reconcileCosts(): Promise<void> {
+    for (const c of await allConvs(this.d.vault)) {
+      const path = c.codexThreadPath;
+      if (!path) continue;
+      const calls = this.d.backend.usageCalls(path).filter((x) => !this.d.ledger.has(x.responseId));
+      if (!calls.length) continue;
+      const res = await this.d.ledger.settle(calls);
+      if (!res.calls) continue;
+      const turnOf = new Map(calls.map((x) => [x.responseId, x.turnId]));
+      await mutateConv(this.d.vault, c.id, (cv) => {
+        cv.costUsd = round((cv.costUsd ?? 0) + res.usd);
+        if (res.missing) cv.costMissingCalls = (cv.costMissingCalls ?? 0) + res.missing;
+        for (const [id, cost] of Object.entries(res.byId)) {
+          if (cost == null) continue;
+          const i = cv.messages.findIndex((m: any) => m.role === "assistant" && m.turnId && m.turnId === turnOf.get(id));
+          if (i >= 0) cv.messages[i] = { ...cv.messages[i]!, costUsd: round(((cv.messages[i] as any).costUsd ?? 0) + cost) } as any;
+        }
+      });
+      this.log(`reconciled ${res.calls} uncounted call(s) on ${c.id}: $${res.usd}`);
+    }
   }
 
   // ---------------------------------------------------------------- tools
@@ -1057,18 +990,15 @@ ${note}` : "") });
    * Results go to the learned capabilities; the spend to the ledger.
    */
   async probe(model: string, timeoutMs = Number(process.env.VC_PROBE_TIMEOUT_MS) || 180_000): Promise<Record<string, unknown>> {
-    if (!(await this.d.sup.ready(60_000))) return { error: "codex app-server is not up" };
+    if (!(await this.d.backend.ready(60_000))) return { error: `the ${this.d.backend.name} runtime is not up` };
     setProbing(model, true);
     const pr: Probe = { threadId: "", turnDone: null, parentCalls: 0, childCalls: 0, spawned: 0, cached: 0, error: "", path: "" };
     try {
-      const r: any = await this.d.sup.request("thread/start", {
+      const r = await this.d.backend.startThread({
         cwd: this.d.vault,
         model,
-        modelProvider: "openrouter",
-        approvalPolicy: "never",
-        ...(this.d.permissions ? { permissions: this.d.permissions } : { sandbox: "danger-full-access" }),
-        developerInstructions: "You are a capability probe. Follow the instructions exactly and briefly.",
-        dynamicTools: [
+        instructions: "You are a capability probe. Follow the instructions exactly and briefly.",
+        tools: [
           {
             type: "function",
             name: "ProbeEcho",
@@ -1076,14 +1006,14 @@ ${note}` : "") });
             inputSchema: { type: "object", properties: { word: { type: "string" } }, required: ["word"], additionalProperties: false },
           },
         ],
-        config: { ...codexLimits(model), features: { multi_agent: true } },
-      }, 60_000);
-      pr.threadId = r?.thread?.id;
-      pr.path = r?.thread?.path ?? "";
+        subagents: true,
+      });
+      pr.threadId = r.threadId;
+      pr.path = r.ref ?? "";
       this.probes.set(pr.threadId, pr);
       const turn = async (t: string) => {
         const done = new Promise<string>((res) => (pr.turnDone = res));
-        await this.d.sup.request("turn/start", { threadId: pr.threadId, input: [{ type: "text", text: t, text_elements: [] }], model }, 60_000);
+        await this.d.backend.startTurn(pr.threadId, { texts: [t], images: [], model });
         return Promise.race([done, new Promise<string>((res) => setTimeout(() => res("timeout"), timeoutMs))]);
       };
       const st1 = await turn(
@@ -1097,7 +1027,7 @@ ${note}` : "") });
       learn(model, "subagents", subagents, ev);
       if (st2 === "completed") learn(model, "caching", pr.cached > 0, ev);
       await new Promise((res) => setTimeout(res, 1500));
-      const cost = await this.d.ledger.settle(pr.path ? rolloutCalls(pr.path) : []);
+      const cost = await this.d.ledger.settle(this.d.backend.usageCalls(pr.path || undefined));
       return { ok: true, model, tools, subagents, caching: st2 === "completed" ? pr.cached > 0 : null, evidence: ev, costUsd: cost.usd };
     } catch (e) {
       return { error: (e as Error).message };
@@ -1107,22 +1037,19 @@ ${note}` : "") });
     }
   }
 
-  private onProbeEvent(pr: Probe, method: string, p: any): void {
-    if (method === "item/completed" || method === "item/started") {
-      const it = p.item ?? {};
-      if (it.type === "collabAgentToolCall") {
-        for (const t of it.receiverThreadIds ?? []) {
-          if (!this.probes.has(t)) {
-            this.probes.set(t, pr);
-            pr.spawned++;
-          }
+  private onProbeEvent(pr: Probe, e: BackendEvent): void {
+    if (e.kind === "subagents") {
+      for (const t of e.children) {
+        if (!this.probes.has(t)) {
+          this.probes.set(t, pr);
+          pr.spawned++;
         }
       }
-    } else if (method === "thread/tokenUsage/updated" && p.threadId === pr.threadId) {
-      pr.cached = Number(p.tokenUsage?.last?.cachedInputTokens ?? 0);
-    } else if (method === "turn/completed" && p.threadId === pr.threadId) {
-      if (p.turn?.error) pr.error = errText(p.turn.error);
-      pr.turnDone?.(String(p.turn?.status ?? "completed"));
+    } else if (e.kind === "usage" && e.threadId === pr.threadId) {
+      pr.cached = Number(e.usage?.last?.cachedInputTokens ?? 0);
+    } else if (e.kind === "turnCompleted" && e.threadId === pr.threadId) {
+      if (e.error) pr.error = e.error;
+      pr.turnDone?.(e.status);
     }
   }
 
@@ -1174,25 +1101,3 @@ function errText(e: any): string {
   return String(e.message ?? e.codexErrorInfo ?? JSON.stringify(e)).slice(0, 500);
 }
 
-import { readdirSync } from "node:fs";
-/** The rollout file of a thread: sessions/YYYY/MM/DD/rollout-…-<threadId>.jsonl */
-export function findRollout(dir: string, threadId: string): string | null {
-  let names: string[] = [];
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return null;
-  }
-  for (const n of names.sort().reverse()) {
-    const p = join(dir, n);
-    if (n.endsWith(".jsonl")) {
-      if (n.includes(threadId)) return p;
-      continue;
-    }
-    if (/^\d+$/.test(n)) {
-      const hit = findRollout(p, threadId);
-      if (hit) return hit;
-    }
-  }
-  return null;
-}
