@@ -118,6 +118,12 @@ export type ChatMessage = {
   // are never replaced. Tapping one relays it as the tagged answer to the
   // waiting mission. Only ever set on assistant turns in source:"ask" threads.
   askOptions?: { answer: string; title: string; body: string; primary?: boolean }[];
+  // [phase 2, box mode] In memory only (the laptop never writes conversations
+  // in box mode). `boxPartial`: built from the phone-shaped /conversation (tool
+  // calls by name only) — the git-synced full copy replaces it. `boxPending`:
+  // an optimistic user turn the box has not recorded yet.
+  boxPartial?: boolean;
+  boxPending?: boolean;
 };
 
 // Shallow content-compare for the chat message list. The popout
@@ -618,6 +624,9 @@ type State = {
   conversations: Conversation[];
   activeConversationId: string | null;
   conversationsLoaded: boolean;
+  // [phase 2] Box mode: the open vault's chat runs on the box (boxChat.ts).
+  // null = not box mode.
+  boxChat: import("./boxChat").BoxChatState | null;
   showChatsPanel: boolean;
   showSchedulesPanel: boolean;
 
@@ -772,12 +781,120 @@ type State = {
   // after the user navigated away.
   appendMessageToConversation: (id: string, m: ChatMessage) => void;
   setConversationStatus: (id: string, status: "idle" | "running") => void;
+  setBoxChat: (b: import("./boxChat").BoxChatState | null) => void;
+  // The box created a conversation the laptop had opened locally under another
+  // id: move it (list entry, active pointer, runtime) to the box's id.
+  rekeyConversation: (from: string, to: string) => void;
   // Bulk-clear the unread badge on every conversation. unread is a synced
   // boolean; setting all false is harmless + idempotent. Persisted via the
   // standard subscribe-driven, conv-lock-guarded merge (never shrinks history,
   // never resurrects tombstones).
   markAllRead: () => void;
 };
+
+// The git-synced load behind loadConversations (moved out so box mode can
+// start after it whatever path it returns by).
+async function loadConversationsInner(vault: string): Promise<void> {
+  try {
+    const list = await readConversations(vault);
+    const state = useStore.getState();
+    // First-run migration: if conversations.jsonl is empty but the
+    // user has live messages from the legacy single-chat path,
+    // promote them into a first conversation entry so nothing is
+    // lost across the upgrade.
+    if (list.length === 0 && state.messages.length > 0) {
+      const seeded: Conversation = {
+        ...emptyConversation(),
+        messages: state.messages,
+        title: deriveConversationTitle(state.messages),
+        lastActivityAt: Date.now(),
+      };
+      const next = [seeded];
+      useStore.setState({
+        conversations: next,
+        activeConversationId: seeded.id,
+        conversationsLoaded: true,
+      });
+      try {
+        await writeConversations(vault, next);
+      } catch (e) {
+        console.warn("[conversations] seed-write failed:", e);
+      }
+      return;
+    }
+    if (list.length === 0) {
+      // Brand-new vault — start with one empty conversation so the
+      // chat surface always has something selected.
+      const fresh = emptyConversation();
+      useStore.setState({
+        conversations: [fresh],
+        activeConversationId: fresh.id,
+        conversationsLoaded: true,
+        messages: [],
+      });
+      return;
+    }
+    // Sort by most-recent first.
+    const sorted = list
+      .slice()
+      .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+    // Per-device active conversation: restore THIS device's last-open thread
+    // (persisted per vault) rather than auto-jumping to whatever was most-
+    // recently touched — that's what let a phone chat steal the desktop's open
+    // pane. Fall back to the most-recent thread when there's no saved pick or
+    // it was deleted elsewhere.
+    const savedId = savedActiveConvId(vault);
+    const active =
+      (savedId ? sorted.find((c) => c.id === savedId) : undefined) ??
+      sorted[0];
+    persistActiveConvId(vault, active.id);
+    // Husk-prune: drop 0-message "New chat" shells that are neither the active
+    // thread nor freshly created (failed voice opens minted ~21 in one 20-min
+    // spree; a crashed worker/mission spawn leaves an empty shell too). The
+    // >2min createdAt guard spares a just-opened empty chat the user is about
+    // to type in; messages.length===0 means a thread with real messages is
+    // never touched; tombstoning (not omission) keeps a husk synced from
+    // another machine from resurrecting.
+    const HUSK_MAX_AGE_MS = 2 * 60 * 1000;
+    const nowTs = Date.now();
+    // Only interactive-chat husks (failed voice opens, abandoned "New chat").
+    // NEVER prune a worker/mission/scheduled shell: those are written empty
+    // then populated async (possibly by another machine), so tombstoning one
+    // here could race-delete a thread the box is about to fill.
+    const huskSources = new Set(["manual", "voice", "phone"]);
+    const husks = sorted.filter(
+      (c) =>
+        c.messages.length === 0 &&
+        c.id !== active.id &&
+        huskSources.has(c.source) &&
+        nowTs - (c.createdAt ?? nowTs) > HUSK_MAX_AGE_MS,
+    );
+    const survivors = husks.length
+      ? sorted.filter((c) => !husks.some((h) => h.id === c.id))
+      : sorted;
+    for (const h of husks) {
+      invoke<void>("conversation_delete", { vault, id: h.id }).catch((e) =>
+        console.warn("[conversations] husk-prune delete failed:", e),
+      );
+    }
+    useStore.setState({
+      conversations: survivors,
+      activeConversationId: active.id,
+      conversationsLoaded: true,
+      messages: active.messages,
+      compactionSummary: null,
+      lastContext: 0,
+      tokenUsage: { prompt: 0, completion: 0, total: 0 },
+      agentTodos: [],
+      streamingText: "",
+      streamingReasoning: "",
+      liveTools: [],
+    });
+  } catch (e) {
+    console.error("[conversations] load failed:", e);
+    useStore.setState({ conversationsLoaded: true });
+  }
+}
 
 export const useStore = create<State>((set) => ({
   // [harness-loop rig — DEV only, prod ignores VITE_DEV_VAULT] Boot straight
@@ -869,6 +986,7 @@ export const useStore = create<State>((set) => ({
   conversations: [],
   activeConversationId: null,
   conversationsLoaded: false,
+  boxChat: null,
   showChatsPanel: false,
   showSchedulesPanel: false,
   repoRoot: null,
@@ -923,6 +1041,7 @@ export const useStore = create<State>((set) => ({
         conversations: [],
         activeConversationId: null,
         conversationsLoaded: false,
+        boxChat: null,
         showChatsPanel: false,
         showSchedulesPanel: false,
         currentFile: null,
@@ -1716,104 +1835,18 @@ export const useStore = create<State>((set) => ({
   loadConversations: async () => {
     const vault = useStore.getState().vaultPath;
     if (!vault) return;
+    // [phase 2] Box mode: once the git-synced history is loaded, the box takes
+    // over the chat (list, live turns, sending). No-op outside box mode.
+    const startBox = () => {
+      if (useStore.getState().vaultPath !== vault) return;
+      void import("./boxChat")
+        .then((m) => m.startBoxChat(vault))
+        .catch((e) => console.warn("[box-chat] start failed:", e));
+    };
     try {
-      const list = await readConversations(vault);
-      const state = useStore.getState();
-      // First-run migration: if conversations.jsonl is empty but the
-      // user has live messages from the legacy single-chat path,
-      // promote them into a first conversation entry so nothing is
-      // lost across the upgrade.
-      if (list.length === 0 && state.messages.length > 0) {
-        const seeded: Conversation = {
-          ...emptyConversation(),
-          messages: state.messages,
-          title: deriveConversationTitle(state.messages),
-          lastActivityAt: Date.now(),
-        };
-        const next = [seeded];
-        useStore.setState({
-          conversations: next,
-          activeConversationId: seeded.id,
-          conversationsLoaded: true,
-        });
-        try {
-          await writeConversations(vault, next);
-        } catch (e) {
-          console.warn("[conversations] seed-write failed:", e);
-        }
-        return;
-      }
-      if (list.length === 0) {
-        // Brand-new vault — start with one empty conversation so the
-        // chat surface always has something selected.
-        const fresh = emptyConversation();
-        useStore.setState({
-          conversations: [fresh],
-          activeConversationId: fresh.id,
-          conversationsLoaded: true,
-          messages: [],
-        });
-        return;
-      }
-      // Sort by most-recent first.
-      const sorted = list
-        .slice()
-        .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-      // Per-device active conversation: restore THIS device's last-open thread
-      // (persisted per vault) rather than auto-jumping to whatever was most-
-      // recently touched — that's what let a phone chat steal the desktop's open
-      // pane. Fall back to the most-recent thread when there's no saved pick or
-      // it was deleted elsewhere.
-      const savedId = savedActiveConvId(vault);
-      const active =
-        (savedId ? sorted.find((c) => c.id === savedId) : undefined) ??
-        sorted[0];
-      persistActiveConvId(vault, active.id);
-      // Husk-prune: drop 0-message "New chat" shells that are neither the active
-      // thread nor freshly created (failed voice opens minted ~21 in one 20-min
-      // spree; a crashed worker/mission spawn leaves an empty shell too). The
-      // >2min createdAt guard spares a just-opened empty chat the user is about
-      // to type in; messages.length===0 means a thread with real messages is
-      // never touched; tombstoning (not omission) keeps a husk synced from
-      // another machine from resurrecting.
-      const HUSK_MAX_AGE_MS = 2 * 60 * 1000;
-      const nowTs = Date.now();
-      // Only interactive-chat husks (failed voice opens, abandoned "New chat").
-      // NEVER prune a worker/mission/scheduled shell: those are written empty
-      // then populated async (possibly by another machine), so tombstoning one
-      // here could race-delete a thread the box is about to fill.
-      const huskSources = new Set(["manual", "voice", "phone"]);
-      const husks = sorted.filter(
-        (c) =>
-          c.messages.length === 0 &&
-          c.id !== active.id &&
-          huskSources.has(c.source) &&
-          nowTs - (c.createdAt ?? nowTs) > HUSK_MAX_AGE_MS,
-      );
-      const survivors = husks.length
-        ? sorted.filter((c) => !husks.some((h) => h.id === c.id))
-        : sorted;
-      for (const h of husks) {
-        invoke<void>("conversation_delete", { vault, id: h.id }).catch((e) =>
-          console.warn("[conversations] husk-prune delete failed:", e),
-        );
-      }
-      useStore.setState({
-        conversations: survivors,
-        activeConversationId: active.id,
-        conversationsLoaded: true,
-        messages: active.messages,
-        compactionSummary: null,
-        lastContext: 0,
-        tokenUsage: { prompt: 0, completion: 0, total: 0 },
-        agentTodos: [],
-        streamingText: "",
-        streamingReasoning: "",
-        liveTools: [],
-      });
-    } catch (e) {
-      console.error("[conversations] load failed:", e);
-      useStore.setState({ conversationsLoaded: true });
+      await loadConversationsInner(vault);
+    } finally {
+      startBox();
     }
   },
   refreshConversationFromDisk: async (vault, convId) => {
@@ -1900,7 +1933,14 @@ export const useStore = create<State>((set) => ({
         // Disk wins only when it's genuinely newer — more messages (an append
         // from another machine) or changed metadata at equal length. A disk copy
         // that's BEHIND memory (a local edit not yet flushed) is ignored.
+        // [phase 2, box mode] Messages built from the box's phone-shaped view
+        // (tool calls by name only) give way to the git-synced full copy once
+        // it has caught up with them.
+        const visible = (ms: ChatMessage[]) => ms.filter((m) => !m.hidden && !m.boxPending).length;
+        const partialCaughtUp =
+          cur.messages.some((m) => m.boxPartial) && visible(disk.messages) >= visible(cur.messages);
         const diskNewer =
+          partialCaughtUp ||
           disk.messages.length > cur.messages.length ||
           (disk.messages.length === cur.messages.length &&
             (disk.lastActivityAt !== cur.lastActivityAt ||
@@ -1928,11 +1968,14 @@ export const useStore = create<State>((set) => ({
       const activeDisk = activeId ? byId.get(activeId) : undefined;
       const activeRunning =
         s.conversations.find((c) => c.id === activeId)?.status === "running";
+      const visibleCount = (ms: ChatMessage[]) => ms.filter((m) => !m.hidden && !m.boxPending).length;
       const messagesStale =
         !!activeDisk &&
         !s.busy &&
         !activeRunning &&
-        activeDisk.messages.length > s.messages.length;
+        (activeDisk.messages.length > s.messages.length ||
+          (s.messages.some((m) => m.boxPartial) &&
+            visibleCount(activeDisk.messages) >= visibleCount(s.messages)));
 
       if (!listChanged && !messagesStale) return {}; // nothing to apply → no re-render
 
@@ -2113,6 +2156,29 @@ export const useStore = create<State>((set) => ({
           : c,
       ),
     })),
+  setBoxChat: (b) => set({ boxChat: b }),
+  rekeyConversation: (from, to) => {
+    if (from === to) return;
+    set((s) => {
+      const exists = s.conversations.some((c) => c.id === to);
+      const conversations = exists
+        ? s.conversations.filter((c) => c.id !== from)
+        : s.conversations.map((c) => (c.id === from ? { ...c, id: to } : c));
+      let convRuntime = s.convRuntime;
+      if (from in convRuntime) {
+        convRuntime = { ...convRuntime, [to]: convRuntime[from]! };
+        delete convRuntime[from];
+      }
+      return {
+        conversations,
+        convRuntime,
+        ...(s.activeConversationId === from ? { activeConversationId: to } : {}),
+      };
+    });
+    if (useStore.getState().activeConversationId === to) {
+      persistActiveConvId(useStore.getState().vaultPath, to);
+    }
+  },
   setConversationStatus: (id, status) =>
     set((s) => ({
       conversations: s.conversations.map((c) => {
@@ -2219,6 +2285,9 @@ function loadSavedChats(): SavedChat[] {
 let conversationsPersistTimer: ReturnType<typeof setTimeout> | null = null;
 let conversationsPersistVault: string | null = null;
 function scheduleConversationsPersist(vault: string) {
+  // [phase 2] Box mode: the box authors every conversation; nothing to write
+  // (lib.rs refuses too — this just skips the read-merge round trip).
+  if (useStore.getState().boxChat?.on) return;
   conversationsPersistVault = vault;
   if (conversationsPersistTimer !== null) return;
   conversationsPersistTimer = setTimeout(() => {
