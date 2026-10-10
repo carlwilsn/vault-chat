@@ -25,6 +25,8 @@ export type ServerHooks = {
   /** The Codex engine takes these routes; a handler returning null hands the
    * request to the legacy relay (old mission threads). */
   engine?: {
+    models: () => unknown;
+    probe: (model: string) => Promise<Record<string, unknown>>;
     message: (b: any) => Promise<Record<string, unknown> | null>;
     answer: (b: any) => Promise<Record<string, unknown> | null>;
     kill: (b: any) => Promise<Record<string, unknown> | null>;
@@ -205,6 +207,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     return json(res, 200, { ok: true, sent });
   }
 
+  // Model capabilities for Settings → Models; a paid probe only on request.
+  if (path === "/api/v1/models" && method === "GET") {
+    return hooks.engine ? json(res, 200, { models: hooks.engine.models() }) : json(res, 503, { error: "engine not running" });
+  }
+  const probeM = /^\/api\/v1\/models\/(.+)\/probe$/.exec(path);
+  if (probeM && method === "POST") {
+    if (!hooks.engine) return json(res, 503, { error: "engine not running" });
+    return json(res, 200, await hooks.engine.probe(decodeURIComponent(probeM[1]!)));
+  }
+
   const q = (k: string) => url.searchParams.get(k) ?? "";
 
   switch (`${method} ${path}`) {
@@ -221,7 +233,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     }
     case "GET /conversation": {
       const n = parseInt(q("n"), 10);
-      const c = conversationDetail(vault, q("id"), Number.isFinite(n) ? n : 60);
+      const c = conversationDetail(vault, q("id"), Number.isFinite(n) ? n : 60, q("full") === "1");
       return c ? json(res, 200, c) : json(res, 404, { error: "conversation not found" });
     }
     case "GET /file":

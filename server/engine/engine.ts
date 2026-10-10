@@ -27,7 +27,7 @@ import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } f
 import { Ledger, rolloutCalls } from "./ledger";
 import { pdfRead, webSearch, startJob, jobStatus, type JobEnv } from "./extraTools";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
-import { capabilitiesOf, capabilityNote, isNamespaceRejection, learn } from "./capabilities";
+import { capabilitiesOf, capabilityNote, isNamespaceRejection, learn, setProbing } from "./capabilities";
 import { join } from "node:path";
 
 export type EngineDeps = {
@@ -80,6 +80,8 @@ type Live = {
   input: string;
   turnOpts: TurnOpts;
 };
+
+type Probe = { threadId: string; turnDone: ((s: string) => void) | null; parentCalls: number; childCalls: number; spawned: number; cached: number; error: string; path: string };
 
 type TurnOpts = { alreadyAppended?: boolean; images?: string[]; context?: string; retried?: boolean; attachments?: any[] };
 
@@ -209,6 +211,7 @@ export class Engine {
   private timers: NodeJS.Timeout[] = [];
   private firing = new Set<string>();
   private childOf = new Map<string, string>(); // subagent threadId → parent conversation id
+  private probes = new Map<string, Probe>(); // probe thread (and its subagents) → probe
 
   constructor(private d: EngineDeps) {}
 
@@ -634,6 +637,8 @@ ${note}` : "") });
 
   private onNotification(m: { method: string; params: any }): void {
     const p = m.params ?? {};
+    const probe = this.probes.get(p.threadId);
+    if (probe) return this.onProbeEvent(probe, m.method, p);
     const parent = this.childOf.get(p.threadId);
     if (parent) {
       // A subagent's own stream: keeps the parent's turn alive, never mixed into its text.
@@ -894,6 +899,12 @@ ${note}` : "") });
   // ---------------------------------------------------------------- tools
 
   private async onToolCall(p: any): Promise<unknown> {
+    const probe = this.probes.get(p?.threadId);
+    if (probe) {
+      if (p.threadId !== probe.threadId) probe.childCalls++;
+      else probe.parentCalls++;
+      return text(`echo: ${JSON.stringify(p?.arguments ?? {})}`);
+    }
     const convId = this.byThread.get(p?.threadId) ?? this.childOf.get(p?.threadId);
     const l = convId ? this.live.get(convId) : undefined;
     if (l) l.lastEventAt = Date.now();
@@ -1033,6 +1044,83 @@ ${note}` : "") });
     // The turn that asked is gone (restart): a new turn carries the answer.
     const q = conv?.pendingAsk?.question;
     void this.run(convId, q ? `Carl's answer to your question "${q}": ${answer}` : answer, "user", { alreadyAppended: true });
+  }
+
+  // ---------------------------------------------------------------- paid probe (on request only)
+
+  /**
+   * One capped run on `model`: a turn that must call a dynamic tool and spawn a
+   * subagent that calls it too, then a tiny second turn to see cached tokens.
+   * Results go to the learned capabilities; the spend to the ledger.
+   */
+  async probe(model: string, timeoutMs = Number(process.env.VC_PROBE_TIMEOUT_MS) || 180_000): Promise<Record<string, unknown>> {
+    if (!(await this.d.sup.ready(60_000))) return { error: "codex app-server is not up" };
+    setProbing(model, true);
+    const pr: Probe = { threadId: "", turnDone: null, parentCalls: 0, childCalls: 0, spawned: 0, cached: 0, error: "", path: "" };
+    try {
+      const r: any = await this.d.sup.request("thread/start", {
+        cwd: this.d.vault,
+        model,
+        modelProvider: "openrouter",
+        approvalPolicy: "never",
+        ...(this.d.permissions ? { permissions: this.d.permissions } : { sandbox: "danger-full-access" }),
+        developerInstructions: "You are a capability probe. Follow the instructions exactly and briefly.",
+        dynamicTools: [
+          {
+            type: "function",
+            name: "ProbeEcho",
+            description: "Echo a word back.",
+            inputSchema: { type: "object", properties: { word: { type: "string" } }, required: ["word"], additionalProperties: false },
+          },
+        ],
+        config: { ...codexLimits(model), features: { multi_agent: true } },
+      }, 60_000);
+      pr.threadId = r?.thread?.id;
+      pr.path = r?.thread?.path ?? "";
+      this.probes.set(pr.threadId, pr);
+      const turn = async (t: string) => {
+        const done = new Promise<string>((res) => (pr.turnDone = res));
+        await this.d.sup.request("turn/start", { threadId: pr.threadId, input: [{ type: "text", text: t, text_elements: [] }], model }, 60_000);
+        return Promise.race([done, new Promise<string>((res) => setTimeout(() => res("timeout"), timeoutMs))]);
+      };
+      const st1 = await turn(
+        "1) Call the ProbeEcho tool with word=alpha. 2) Spawn ONE subagent whose only task is to call the ProbeEcho tool with word=beta and report what it returned; wait for it. 3) Reply with the single word DONE.",
+      );
+      const st2 = st1 === "completed" ? await turn("Reply with the single word OK.") : st1;
+      const tools = pr.parentCalls > 0;
+      const subagents = pr.spawned > 0 && pr.childCalls > 0;
+      const ev = `probe ${new Date().toISOString()}: turn1 ${st1}, turn2 ${st2}; ProbeEcho calls parent=${pr.parentCalls} subagents=${pr.childCalls}; spawned=${pr.spawned}; cached tokens on repeat=${pr.cached}${pr.error ? `; error: ${pr.error.slice(0, 160)}` : ""}`;
+      learn(model, "tools", tools, ev);
+      learn(model, "subagents", subagents, ev);
+      if (st2 === "completed") learn(model, "caching", pr.cached > 0, ev);
+      await new Promise((res) => setTimeout(res, 1500));
+      const cost = await this.d.ledger.settle(pr.path ? rolloutCalls(pr.path) : []);
+      return { ok: true, model, tools, subagents, caching: st2 === "completed" ? pr.cached > 0 : null, evidence: ev, costUsd: cost.usd };
+    } catch (e) {
+      return { error: (e as Error).message };
+    } finally {
+      setProbing(model, false);
+      for (const [t, p] of [...this.probes]) if (p === pr) this.probes.delete(t);
+    }
+  }
+
+  private onProbeEvent(pr: Probe, method: string, p: any): void {
+    if (method === "item/completed" || method === "item/started") {
+      const it = p.item ?? {};
+      if (it.type === "collabAgentToolCall") {
+        for (const t of it.receiverThreadIds ?? []) {
+          if (!this.probes.has(t)) {
+            this.probes.set(t, pr);
+            pr.spawned++;
+          }
+        }
+      }
+    } else if (method === "thread/tokenUsage/updated" && p.threadId === pr.threadId) {
+      pr.cached = Number(p.tokenUsage?.last?.cachedInputTokens ?? 0);
+    } else if (method === "turn/completed" && p.threadId === pr.threadId) {
+      if (p.turn?.error) pr.error = errText(p.turn.error);
+      pr.turnDone?.(String(p.turn?.status ?? "completed"));
+    }
   }
 
   // ---------------------------------------------------------------- wakes & watchdog

@@ -12,6 +12,7 @@ import { configureContext, setModelWindow } from "./context";
 import { Engine } from "./engine";
 import { Ledger } from "./ledger";
 import { excludeLocalDir } from "./wakes";
+import { initCapabilities } from "./capabilities";
 
 export type EngineBoot = {
   vault: string;
@@ -58,6 +59,10 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
 
   const cat = await loadCatalog(join(b.stateDir, "openrouter-models.json"));
   console.log(`[engine] model catalog: ${cat.models} model(s) (${cat.source})`);
+  // Refreshed daily (capabilities come from it for free).
+  setInterval(() => void loadCatalog(join(b.stateDir, "openrouter-models.json")), 24 * 3_600_000).unref();
+  // Learned capabilities are stamped with the Codex version: an upgrade makes them stale.
+  initCapabilities(join(b.stateDir, "capabilities.json"), install.version);
   const model = engineModel();
   const win = modelMeta(model)?.contextLength;
   if (win) setModelWindow(model, win);

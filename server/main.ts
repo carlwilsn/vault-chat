@@ -38,7 +38,24 @@ function checkGit(): void {
   gitState = r.status === 0 ? "ok" : "missing";
 }
 
+/** `vault-chat-server probe-model <id>`: ask the running server for a paid, capped capability probe. */
+async function probeCli(model: string): Promise<never> {
+  const cfg = loadConfig();
+  try {
+    const r = await fetch(`http://127.0.0.1:${cfg.port}/api/v1/models/${encodeURIComponent(model)}/probe`, { method: "POST" });
+    console.log(JSON.stringify(await r.json(), null, 2));
+    process.exit(r.ok ? 0 : 1);
+  } catch (e) {
+    console.error(`probe-model: the server on port ${cfg.port} is not reachable (${(e as Error).message})`);
+    process.exit(1);
+  }
+}
+
 async function main(): Promise<void> {
+  if (process.argv[2] === "probe-model") {
+    if (!process.argv[3]) fatal("usage: vault-chat-server probe-model <openrouter-model-id>");
+    await probeCli(process.argv[3]);
+  }
   const cfg = loadConfig();
   console.log(`[vault-chat-server] v${SERVER_VERSION}${SERVER_REV ? ` (${SERVER_REV})` : ""} starting — vault ${cfg.vault}`);
   if (!existsSync(cfg.vault) || !statSync(cfg.vault).isDirectory()) {
@@ -79,6 +96,7 @@ async function main(): Promise<void> {
   // stays in the bundle for legacy mission threads until Phase 3 removes it.
   const { notificationAppend } = await import("./commands/phone");
   const { startEngine } = await import("./engine");
+  const { modelsList } = await import("./engine/capabilities");
   const engine = process.env.VC_ENGINE === "0"
     ? { engine: null, install: null, error: "disabled (VC_ENGINE=0): turns run on the old in-process loop", health: () => ({}) }
     : await startEngine({
@@ -146,6 +164,8 @@ async function main(): Promise<void> {
     onGitPushed: () => triggerSync(),
     engine: engine.engine
       ? {
+          models: () => modelsList(),
+          probe: (m) => engine.engine!.probe(m),
           message: (b) => engine.engine!.message(b),
           answer: (b) => engine.engine!.answerRoute(b),
           kill: (b) => engine.engine!.kill(b),
