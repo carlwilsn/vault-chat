@@ -29,6 +29,7 @@ export type ServerHooks = {
     message: (b: any) => Promise<Record<string, unknown> | null>;
     answer: (b: any) => Promise<Record<string, unknown> | null>;
     kill: (b: any) => Promise<Record<string, unknown> | null>;
+    subagent: (convId: string, sid: string, op: "steer" | "stop", b: any) => Promise<Record<string, unknown>>;
   };
 };
 
@@ -209,6 +210,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // Model capabilities for Settings → Models.
   if (path === "/api/v1/models" && method === "GET") {
     return hooks.engine ? json(res, 200, { models: hooks.engine.models() }) : json(res, 503, { error: "engine not running" });
+  }
+  // Steer or stop one running subagent of a conversation.
+  const subM = /^\/api\/v1\/conversations\/([^/]+)\/subagents\/([^/]+)\/(steer|stop)$/.exec(path);
+  if (subM && method === "POST") {
+    if (!hooks.engine) return json(res, 503, { error: "engine not running" });
+    const out = await hooks.engine.subagent(decodeURIComponent(subM[1]!), decodeURIComponent(subM[2]!), subM[3] as "steer" | "stop", await jsonBody(req));
+    return json(res, out.ok ? 200 : 409, out);
   }
 
 

@@ -381,6 +381,14 @@ export class Engine {
   }
 
   /** /kill. null → legacy path. Stop means stop: interrupt, keep-going off, wakes cancelled. */
+  /** POST /api/v1/conversations/:id/subagents/:sid/{steer,stop} {text?}. */
+  async subagent(convId: string, sid: string, op: "steer" | "stop", body: { text?: string }): Promise<Record<string, unknown>> {
+    const conv = await readConv(this.d.vault, convId);
+    if (!conv) return { ok: false, error: `conversation ${convId} not found` };
+    if (!(conv.subagents ?? []).some((s: any) => s.threadId === sid)) return { ok: false, error: `no subagent ${sid} on this conversation` };
+    return this.d.backend.subagentControl(sid, op, body?.text);
+  }
+
   async kill(body: { convId?: string | null }): Promise<Record<string, unknown> | null> {
     const id = body?.convId ? String(body.convId) : "";
     if (!id) {
@@ -575,6 +583,12 @@ export class Engine {
       if (e.kind === "turnCompleted") void this.updateSubagent(parent, e.threadId, { status: e.status });
       return;
     }
+    // A subagent's end can arrive after its parent's turn is gone (the parent crashed): still record it.
+    if (e.kind === "subagentStatus" && !this.liveByThread(e.threadId)) {
+      const convId = this.byThread.get(e.threadId);
+      if (convId) void this.updateSubagent(convId, e.child, { status: e.status, ...(e.patch ?? {}) });
+      return;
+    }
     const l = this.liveByThread(e.threadId);
     if (!l) return;
     l.lastEventAt = Date.now();
@@ -619,7 +633,7 @@ export class Engine {
       }
       case "subagentStatus":
         if (!this.childOf.has(e.child)) this.childOf.set(e.child, l.convId);
-        void this.updateSubagent(l.convId, e.child, { status: e.status, path: e.path });
+        void this.updateSubagent(l.convId, e.child, { status: e.status, ...(e.path ? { path: e.path } : {}), ...(e.patch ?? {}) });
         return;
       case "turnCompleted":
         void this.finishTurn(l, e.status, e.error);

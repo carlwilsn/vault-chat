@@ -197,6 +197,15 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     thinking: process.env.VC_PI_THINKING || "medium",
     idleMs: Number(process.env.VC_PI_IDLE_MS) || 10 * 60_000,
     maxProcs: Number(process.env.VC_PI_MAX_PROCS) || 6,
+    subagents: {
+      agentsDirs: [paths.agentsDir, join(b.vault, ".vault-chat", "agents")],
+      concurrency: Number(process.env.VC_PI_SUBAGENT_CONCURRENCY) || 4,
+      maxTasks: Number(process.env.VC_PI_SUBAGENT_MAX_TASKS) || 8,
+      hostMax: Number(process.env.VC_PI_SUBAGENT_HOST_MAX) || 8,
+      timeoutMs: Number(process.env.VC_PI_SUBAGENT_TIMEOUT_MS) || 30 * 60_000,
+      graceMs: Number(process.env.VC_PI_SUBAGENT_GRACE_MS) || 5_000,
+      defaultModel: process.env.VC_PI_SUBAGENT_MODEL || null,
+    },
   });
   const jobEnv = {
     logDir: join(b.stateDir, "jobs"),

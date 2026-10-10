@@ -98,15 +98,17 @@ server/engine/
   pi/backend.ts     PiBackend: thread = pi session (id; ref = its session file), one pi process per thread with work
                     in hand (idle 10 min → closed; ≤ 6), RPC prompt/steer/follow_up/abort, pi events → the engine's
                     events, host calls from the extension → the engine's tool handlers, usage from vc-cost entries
+  pi/subagents.ts   subagents: each child a sibling pi the host starts (see below)
   pi/proc.ts        one `pi --mode rpc` child: strict LF-split JSONL, own process group, key written to fd 3 then closed
   pi/install.ts     npm-installs pi 1.1.0 into $VC_STATE_DIR/pi/1.1.0 (VC_PI_DIR overrides); finds bwrap
   pi/config.ts      $VC_STATE_DIR/pi/{agent/settings.json (compaction per model, above CONTEXT's roll threshold),
-                    agent/models.json (models pi's catalog lacks), ext/, instr/, sessions/}
+                    agent/models.json (models pi's catalog lacks), agents/, ext/, instr/, sessions/}
   pi/jobs.ts        StartJob/JobStatus: `systemd-run --user` + bubblewrap with the same hiding
   pi/ext/vc.mjs     the pi extension (copied to $VC_STATE_DIR/pi/ext at boot): vault-chat's tools as blocking host calls
                     (`extension_ui_request` editor "vc:host-call"), the key from fd 3 (runtime key, in-process), the
                     scrubbed + bubblewrapped `bash` with a default timeout, the path guard, vc-cost ledger entries,
                     Gemini cache markers
+  pi/ext/subagent.mjs  the `subagent` tool, vendored from pi's example extension (MIT; modes, agents, output)
   pi/ext/policy.mjs pure helpers (env scrub, path guard with symlinks resolved, cache markers, schema → TypeBox)
 ```
 
@@ -130,9 +132,10 @@ server/engine/
 **Routes.** `/message {text, convId?, project?, context?, images?: [{name?, mime, dataBase64}], imagePaths?: [vault-relative]}`
 → `{ok, convId}` (creates a conversation without `convId`; a message to a running turn steers it → `steered: true`;
 a message while a question is open answers it → `answered: true`). `/answer {convId, text | defer, notifId?}`,
-`/kill {convId}` (interrupt, keep-going off, wakes cancelled). Legacy mission threads fall through
+`/kill {convId}` (interrupt, keep-going off, wakes cancelled, its subagents stopped). Legacy mission threads fall through
 to the old relay. `GET /conversation?id=&full=1` adds `full`, `meta` and the stored messages. `GET /api/v1/models` →
 `{models: [{id, capabilities, source: catalog|learned|untested, status, checkedAt}]}`.
+`POST /api/v1/conversations/<id>/subagents/<sid>/steer {text}` and `…/stop` steer or stop one running subagent.
 
 **Conversation meta** written by the engine: `threadId` (the pi session id), `threadPath` (its session file),
 `project`, `working`, `nextWakeAt`, `state` (`idle|running|sleeping|waiting_user|blocked|done`), `pendingAsk`,
@@ -155,7 +158,28 @@ names; such a thread is unknown to pi, so its next turn starts a fresh session w
 | `VC_PI_SHELL_TIMEOUT_S` | 1800 | default `bash` timeout (pi has none) |
 | `VC_PI_GEMINI_CACHE` | `system` | `last` also marks the newest user message; `0` off |
 | `VC_PI_CACHE_RETENTION` | unset | → `PI_CACHE_RETENTION` (`long` = 1 h Claude cache) |
-Tests: `VC_TEST_PI_DIR=<npm prefix with pi 1.1.0> npm run test:server` runs `server/test/piEngine.test.ts` against real pi and a fake chat-completions OpenRouter (`server/test/fakeChat.ts`);
+| `VC_PI_SUBAGENT_MODEL` | the parent's | model for children whose agent names none |
+| `VC_PI_SUBAGENT_CONCURRENCY` / `VC_PI_SUBAGENT_MAX_TASKS` | 4 / 8 | children at once / tasks per `subagent` call |
+| `VC_PI_SUBAGENT_HOST_MAX` | 8 | children at once on the whole box |
+| `VC_PI_SUBAGENT_TIMEOUT_MS` / `VC_PI_SUBAGENT_GRACE_MS` | 30 min / 5 s | wall-clock limit per child; abort → SIGKILL of its group after the grace |
+
+**Subagents.** On models whose tool calls work (`capabilities.subagents`), the parent pi has a `subagent` tool
+(`pi/ext/subagent.mjs`, vendored from pi 1.1.0's example extension, MIT, attribution kept): single
+`{agent, task}`, parallel `{tasks: [...]}` (≤ 8, 4 at once) or chain `{chain: [...]}` with `{previous}`. Agents
+are markdown with frontmatter (`name, description, tools, model`): built-ins `worker` and `scout` in
+`$VC_STATE_DIR/pi/agents/`, overridden or added by `.vault-chat/agents/*.md` in the vault. The tool never spawns
+anything itself: per child it asks the host (`__subagent` over the extension bridge), and `pi/subagents.ts` starts
+the child as a **sibling** of the parent — the same launch as any pi (its own bubblewrap, pid namespace and process
+group, the key on its own fd 3, scrubbed env, the path guard), in RPC mode, on a persisted session in
+`sessions/sub/<parent session>/<child>/`. A child's tools are its agent's allow-list: pi's file/shell tools plus at
+most `Done`, `Notify`, `PdfRead`, `WebSearch` (default: read, bash, edit, write, Done, Notify) — never `AskUser`,
+`subagent`, `ScheduleWake`, `KeepWorking`, `Blocked` or `StartJob`; it reports to the parent, which decides what
+reaches Carl. The parent conversation's meta gets `subagents[]` = `{threadId, task, agent, model, state
+(running|completed|failed|stopped|timeout|killed), costUsd, startedAt, endedAt, sessionFile}`; each child's
+OpenRouter cost (its own vc-cost entries) is also rolled into the conversation's `costUsd`. Stopping the parent's
+turn stops its children (abort, SIGKILL after the grace); a parent pi that dies takes its children down at once.
+Tests: `VC_TEST_PI_DIR=<npm prefix with pi 1.1.0> npm run test:server` runs `server/test/piEngine.test.ts` and
+`server/test/piSubagents.test.ts` against real pi and a fake chat-completions OpenRouter (`server/test/fakeChat.ts`);
 without it those tests skip. `server/test/piPolicy.test.ts` needs nothing. The other server tests run with `VC_ENGINE=0`.
 
 ## Sync (box side)

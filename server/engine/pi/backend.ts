@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { CallRecord } from "../ledger";
 import type { ThreadTokenUsage } from "../context";
 import { PiProc } from "./proc";
+import { Subagents, type SubagentOptions } from "./subagents";
 import { modelWindow, type PiCatalogRow, type PiPaths } from "./config";
 import type { PiInstall } from "./install";
 
@@ -30,7 +31,7 @@ export type BackendEvent =
   | { kind: "usage"; threadId: string; usage: ThreadTokenUsage }
   /** The parent spawned/messaged subagents. */
   | { kind: "subagents"; threadId: string; itemId: string; children: string[]; op: string; prompt?: string; model?: string | null; done: boolean; ok: boolean }
-  | { kind: "subagentStatus"; threadId: string; child: string; status: string; path?: string }
+  | { kind: "subagentStatus"; threadId: string; child: string; status: string; path?: string; patch?: Record<string, unknown> }
   | { kind: "turnCompleted"; threadId: string; turnId: string | null; status: "completed" | "interrupted" | "failed" | string; error: string | null }
   /** One thread's runtime died mid-turn while the rest of the runtime is fine (pi: one process per thread).
    * The engine marks that turn cut and resumes it, as it does for all turns on "down". */
@@ -63,6 +64,7 @@ export type PiBackendOptions = {
   thinking: string;
   idleMs: number;
   maxProcs: number;
+  subagents: SubagentOptions;
   log?: (s: string) => void;
 };
 
@@ -73,6 +75,8 @@ const cap = (s: string, n = RESULT_CAP) => (s.length > n ? s.slice(0, n) + `\nâ€
 
 type Thread = {
   id: string;
+  /** Subagents may be spawned from this thread (the `subagent` tool is registered). */
+  subagents: boolean;
   file: string;
   proc: PiProc;
   model: string;
@@ -100,6 +104,27 @@ export class PiBackend extends EventEmitter {
     super();
     this.setMaxListeners(50);
     this.version = o.install.version;
+    this.subs = new Subagents(this, o.subagents, (m) => this.log(m));
+  }
+
+  private subs: Subagents;
+  /** The engine's handlers (a child's Notify/PdfRead/WebSearch go to its parent's). */
+  get handlers(): { toolCall: ToolCallHandler; userInput: UserInputHandler } | null {
+    return this.h;
+  }
+  get paths(): PiPaths {
+    return this.o.paths;
+  }
+  /** The tool-spec file of a thread (its children's specs are filtered from it). */
+  toolsFileOf(threadId: string): string | null {
+    try {
+      return JSON.parse(readFileSync(join(this.o.paths.instrDir, `${threadId}.json`), "utf8")).tools ?? null;
+    } catch {
+      return null;
+    }
+  }
+  modelOf(threadId: string): string | null {
+    return this.threads.get(threadId)?.model ?? null;
   }
 
   private log(s: string): void {
@@ -122,7 +147,7 @@ export class PiBackend extends EventEmitter {
 
   health(): Record<string, unknown> {
     const procs = [...this.threads.values()].map((t) => ({ threadId: t.id, pid: t.proc.pid, model: t.model, busy: !!t.turnId, sinceMs: Date.now() - t.proc.startedAt }));
-    return { state: "up", version: this.version, sandbox: !!this.o.sandbox.outer, pid: this.lastPid, procs, ...this.stats };
+    return { state: "up", version: this.version, sandbox: !!this.o.sandbox.outer, pid: this.lastPid, procs, subagents: this.subs.health(), ...this.stats };
   }
 
   setHandlers(h: { toolCall: ToolCallHandler; userInput: UserInputHandler }): void {
@@ -183,7 +208,7 @@ export class PiBackend extends EventEmitter {
     }
   }
 
-  private piEnv(toolsFile: string): NodeJS.ProcessEnv {
+  piEnv(toolsFile: string, subagents = false): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (v === undefined || /OPENROUTER|API_KEY|APIKEY|SECRET|PASSW|_TOKEN$|^VC_|^PI_/i.test(k)) continue;
@@ -196,6 +221,14 @@ export class PiBackend extends EventEmitter {
       PI_OFFLINE: "1",
       VC_KEY_FD: "3",
       VC_PI_TOOLS: toolsFile,
+      ...(subagents
+        ? {
+            VC_PI_SUBAGENTS: "1",
+            VC_PI_AGENTS_DIRS: JSON.stringify(this.o.subagents.agentsDirs),
+            VC_PI_SUBAGENT_CONCURRENCY: String(this.o.subagents.concurrency),
+            VC_PI_SUBAGENT_MAX_TASKS: String(this.o.subagents.maxTasks),
+          }
+        : {}),
       VC_PI_DENY_READ: JSON.stringify(this.o.sandbox.denyRead),
       VC_PI_DENY_WRITE: JSON.stringify(this.o.sandbox.denyWrite),
       ...(this.o.sandbox.shell ? { VC_PI_SHELL_WRAP: JSON.stringify(this.o.sandbox.shell) } : {}),
@@ -206,21 +239,24 @@ export class PiBackend extends EventEmitter {
   }
 
   /** Spawn pi on a session (new when `file` is null) and wait for it to answer. */
-  private async spawn(o: { cwd: string; model: string; file: string | null; instr: string; tools: string }): Promise<{ proc: PiProc; id: string; file: string }> {
-    await this.makeRoom();
+  /** Spawn pi on a session (new when `file` is null) and wait for it to answer. Children (subagents) pass
+   * their own session dir and built-in tool list; they don't count against maxProcs (their own cap). */
+  async spawn(o: { cwd: string; model: string; file: string | null; instr: string; tools: string; subagents?: boolean; sessionDir?: string; builtins?: string[] }): Promise<{ proc: PiProc; id: string; file: string }> {
+    if (!o.sessionDir) await this.makeRoom();
     const args = [
       this.o.install.cli,
       "--mode", "rpc",
-      "--session-dir", this.o.paths.sessionsDir,
+      "--session-dir", o.sessionDir ?? this.o.paths.sessionsDir,
       "--model", `openrouter/${o.model}`,
       "--thinking", this.o.thinking,
       "-ne", "--no-mcp", "-ns", "-np", "--no-themes", "-na", "--offline",
       "-e", this.o.paths.ext,
       "--append-system-prompt", o.instr,
+      ...(o.builtins ? ["--tools", o.builtins.join(",")] : []),
       ...(o.file ? ["--session", o.file] : []),
     ];
     const argv = this.o.sandbox.outer ? [...this.o.sandbox.outer, this.o.install.node, ...args] : [this.o.install.node, ...args];
-    const proc = new PiProc({ argv, cwd: o.cwd, env: this.piEnv(o.tools), key: this.o.apiKey() });
+    const proc = new PiProc({ argv, cwd: o.cwd, env: this.piEnv(o.tools, !!o.subagents), key: this.o.apiKey() });
     proc.start();
     this.stats.spawns++;
     let st: any;
@@ -266,6 +302,8 @@ export class PiBackend extends EventEmitter {
   }
 
   private onExit(t: Thread, x: { code: number | null; signal: string | null }): void {
+    // A parent that dies takes its children with it (they are its siblings, not its descendants).
+    this.subs.stopAll(t.id, "parent exited", true);
     const mine = this.threads.get(t.id) === t;
     if (mine) this.threads.delete(t.id);
     this.savePids();
@@ -294,7 +332,7 @@ export class PiBackend extends EventEmitter {
     }
   }
 
-  private writeTools(tools: ToolSpec[]): string {
+  writeTools(tools: ToolSpec[]): string {
     mkdirSync(this.o.paths.extDir, { recursive: true });
     const json = JSON.stringify(tools);
     const f = join(this.o.paths.extDir, `tools-${Buffer.from(json).length}-${hash(json)}.json`);
@@ -309,10 +347,10 @@ export class PiBackend extends EventEmitter {
     const instr = join(this.o.paths.instrDir, `${Date.now().toString(36)}-${++this.seq}.md`);
     writeFileSync(instr, o.instructions);
     const tools = this.writeTools(o.tools);
-    const { proc, id, file } = await this.spawn({ cwd: o.cwd, model: o.model, file: null, instr, tools });
+    const { proc, id, file } = await this.spawn({ cwd: o.cwd, model: o.model, file: null, instr, tools, subagents: o.subagents });
     // The session's instructions and tools live beside it, so any later pi on it gets the same prompt (cache-stable).
-    writeFileSync(join(this.o.paths.instrDir, `${id}.json`), JSON.stringify({ instr, tools, cwd: o.cwd }));
-    this.attach({ id, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
+    writeFileSync(join(this.o.paths.instrDir, `${id}.json`), JSON.stringify({ instr, tools, cwd: o.cwd, subagents: o.subagents }));
+    this.attach({ id, subagents: o.subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
     return { threadId: id, ref: file };
   }
 
@@ -322,7 +360,7 @@ export class PiBackend extends EventEmitter {
       have.lastUsed = Date.now();
       return;
     }
-    let meta: { instr: string; tools: string; cwd: string } | null = null;
+    let meta: { instr: string; tools: string; cwd: string; subagents?: boolean } | null = null;
     try {
       meta = JSON.parse(readFileSync(join(this.o.paths.instrDir, `${threadId}.json`), "utf8"));
     } catch {
@@ -336,8 +374,10 @@ export class PiBackend extends EventEmitter {
       await have.proc.waitExit(5000);
       if (this.threads.get(threadId) === have) this.threads.delete(threadId);
     }
-    const { proc } = await this.spawn({ cwd: meta.cwd, model: o.model, file, instr: meta.instr, tools: meta.tools });
-    this.attach({ id: threadId, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
+    // The tool set is the session's own (a cache-stable prompt); subagents only if it was started with them.
+    const subagents = !!meta.subagents && o.subagents;
+    const { proc } = await this.spawn({ cwd: meta.cwd, model: o.model, file, instr: meta.instr, tools: meta.tools, subagents });
+    this.attach({ id: threadId, subagents, file, proc, model: o.model, lastUsed: Date.now(), turnId: null, msgIndex: 0, crashes: [], restoreModel: null });
   }
 
   private live(threadId: string): Thread {
@@ -400,6 +440,7 @@ export class PiBackend extends EventEmitter {
   }
 
   async interrupt(threadId: string, _turnId: string): Promise<void> {
+    this.subs.stopAll(threadId, "stopped with the parent's turn", false);
     const t = this.threads.get(threadId);
     if (!t?.proc.isAlive()) return;
     try {
@@ -444,13 +485,19 @@ export class PiBackend extends EventEmitter {
     return out;
   }
 
-  childUsageCalls(_threadId: string): CallRecord[] {
-    return []; // no subagents on pi (yet)
+  /** A subagent's model calls (its own session's vc-cost entries), rolled up onto the parent's conversation. */
+  childUsageCalls(threadId: string): CallRecord[] {
+    return this.usageCalls(this.subs.sessionFileOf(threadId) ?? undefined);
+  }
+
+  /** Steer or stop one running subagent (POST /api/v1/conversations/:id/subagents/:sid/{steer,stop}). */
+  subagentControl(childId: string, op: "steer" | "stop", text?: string): Promise<{ ok: boolean; error?: string }> {
+    return this.subs.control(childId, op, text);
   }
 
   // ---------------------------------------------------------------- pi â†’ neutral events
 
-  private ev(e: BackendEvent): void {
+  ev(e: BackendEvent): void {
     this.emit("event", e);
   }
 
@@ -530,6 +577,11 @@ export class PiBackend extends EventEmitter {
         return reply({ value: JSON.stringify({ text: "bad host call", isError: true }) });
       }
       if (!this.h) return reply({ value: JSON.stringify({ text: "engine not ready", isError: true }) });
+      if (call.tool === "__subagent") {
+        if (!t.subagents) return reply({ value: JSON.stringify({ ok: false, text: "Subagents are off for this conversation." }) });
+        const r = await this.subs.run(t.id, call.args ?? {}).catch((e) => ({ ok: false, text: `subagent failed: ${(e as Error).message}` }));
+        return reply({ value: JSON.stringify(r) });
+      }
       const r = await this.h.toolCall(t.id, String(call.tool ?? ""), call.args ?? {}).catch((e) => ({ ok: false, text: `${call.tool} failed: ${(e as Error).message}` }));
       return reply({ value: JSON.stringify({ text: r.text, ...(r.ok ? {} : { isError: true }) }) });
     }

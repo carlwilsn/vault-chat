@@ -151,6 +151,7 @@ async function main(): Promise<void> {
           message: (b) => engine.engine!.message(b),
           answer: (b) => engine.engine!.answerRoute(b),
           kill: (b) => engine.engine!.kill(b),
+          subagent: (c, sid, op, b) => engine.engine!.subagent(c, sid, op, b),
         }
       : undefined,
   });

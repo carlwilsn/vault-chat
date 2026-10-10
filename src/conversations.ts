@@ -163,7 +163,7 @@ export type Conversation = {
   verdict?: { verdict: "pass" | "fail" | "unsure"; notes: string[]; at: number; summary?: string };
   recap?: string;
   // Subagents this conversation spawned (children: task, model, state, cost; for later display).
-  subagents?: { threadId: string; prompt?: string; model?: string; status?: string; startedAt?: number; path?: string }[];
+  subagents?: { threadId: string; prompt?: string; task?: string; agent?: string; model?: string; status?: string; state?: string; costUsd?: number; startedAt?: number; endedAt?: number; path?: string; sessionFile?: string; summary?: string }[];
 };
 
 
