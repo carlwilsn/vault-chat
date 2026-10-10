@@ -1,0 +1,10 @@
+node_modules/
+.cache/
+# Fixtures derived from a real vault: never committed until Carl approves
+# fixtures/REDACTION-REPORT.md.
+fixtures/private/
+proof/private/
+out/
+fixtures/synthetic/vault/papers/attention-survey.pdf
+# Lists real file names; committed only with Carl's approval.
+fixtures/REDACTION-REPORT.md

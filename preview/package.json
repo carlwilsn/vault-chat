@@ -1,0 +1,15 @@
+{
+  "name": "vault-chat-preview",
+  "private": true,
+  "description": "Dev-only preview harness for vault-chat. Never part of the app bundle.",
+  "type": "module",
+  "scripts": {
+    "start": "node serve.mjs",
+    "test": "node test.mjs",
+    "record": "node record.mjs",
+    "inventory": "node inventory.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.54.0"
+  }
+}

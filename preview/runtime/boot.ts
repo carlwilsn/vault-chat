@@ -1,0 +1,185 @@
+// The preview boot: runs synchronously BEFORE /src/main.tsx (the plugin
+// injects it as the first module script), so by the time any app module
+// evaluates, `__TAURI_INTERNALS__`, the network wall, the clock, localStorage
+// and the in-memory vault are all in place. No top-level await on purpose:
+// the next module script (main.tsx) must not start before this finishes.
+
+import { installIpc } from "./ipc";
+import { installNetworkGuard, refused } from "./net";
+import { installClock, now, advance } from "./clock";
+import { setLlmConfig, setLlmVault, releaseHolds, llmLog } from "./llm";
+import { report, reports, setOverlayHidden } from "./overlay";
+import * as fs from "./shims/memfs";
+import { conversationsWriteAll } from "../../server/commands/conversations";
+import { dispatch, calls, unknownCommands, setOverrides, knownCommands } from "./backend/index";
+import { setHostConfig } from "./backend/host";
+import { seedHistory, setGitClock } from "./backend/memgit";
+import { emitFromBackend } from "./ipc";
+import { scenarios } from "../scenarios/index";
+import { runSteps } from "./steps";
+import type { BuildCtx, Scenario } from "../scenarios/types";
+
+export type Base = {
+  name: string;
+  vaultName?: string;
+  files: Record<string, string>;
+  lazy: Record<string, { url: string; size: number }>;
+  mtime: number;
+};
+
+export function vaultPathFor(base: Base): string {
+  return `/home/carl/vaults/${base.vaultName ?? base.name}`;
+}
+
+function seedVault(vault: string, base: Base, sc: Scenario, t: number): void {
+  fs.resetFs();
+  fs.seedDir("/home/carl");
+  fs.seedDir(vault);
+  for (const [rel, text] of Object.entries(base.files)) fs.seedText(`${vault}/${rel}`, text, base.mtime);
+  for (const [rel, { url, size }] of Object.entries(base.lazy)) fs.seedLazy(`${vault}/${rel}`, url, size, base.mtime);
+  fs.seedDir(`${vault}/.vault-chat/conversations`);
+  const ls: Record<string, string> = {};
+  const ctx: BuildCtx = {
+    vault,
+    base: base.name,
+    now: t,
+    write: (rel, text) => fs.seedText(`${vault}/${rel}`, text, t),
+    read: (rel) => fs.readText(`${vault}/${rel}`),
+    conversations: (convs) => conversationsWriteAll(vault, convs.map((c) => JSON.stringify(c))),
+    history: (commits) => seedHistory(vault, commits),
+    ls,
+  };
+  sc.build?.(ctx);
+  // Scenario build may stage localStorage too.
+  for (const [k, v] of Object.entries(ls)) localStorage.setItem(k, v);
+}
+
+function seedLocalStorage(vault: string, sc: Scenario): void {
+  localStorage.clear();
+  sessionStorage.clear();
+  const ls: Record<string, string> = {
+    vault_chat_last_vault: vault,
+    vault_chat_tracked_vaults: JSON.stringify([vault]),
+    // Never fire schedules from the preview (no scheduler turns behind your back).
+    vault_chat_fire_schedules_on_this_machine: "false",
+    vault_chat_theme: sc.theme ?? "graphite",
+    vault_chat_model: sc.model ?? "anthropic/claude-sonnet-5.5",
+    // Already "migrated" so the one-shot wipe doesn't run.
+    vault_chat_voice_v2_cleared: "1",
+  };
+  if (sc.activeConversation) ls[`vault_chat_active_conv:${vault}`] = sc.activeConversation;
+  for (const [k, v] of Object.entries({ ...ls, ...(sc.localStorage ?? {}) })) localStorage.setItem(k, v.replace(/\{vault\}/g, vault));
+}
+
+function speedTimers(map: Record<number, number> | undefined): void {
+  if (!map || !Object.keys(map).length) return;
+  const si = window.setInterval.bind(window);
+  const st = window.setTimeout.bind(window);
+  (window as any).setInterval = (fn: TimerHandler, ms?: number, ...a: any[]) => si(fn, ms !== undefined && map[ms] ? map[ms] : ms, ...a);
+  (window as any).setTimeout = (fn: TimerHandler, ms?: number, ...a: any[]) => st(fn, ms !== undefined && map[ms] ? map[ms] : ms, ...a);
+}
+
+const blobUrls = new Map<string, string>();
+function convertFileSrc(path: string): string {
+  const lazy = fs.urlFor(path);
+  if (lazy) return lazy;
+  const bytes = fs.bytesOf(path);
+  if (!bytes) return `/__preview/missing?path=${encodeURIComponent(path)}`;
+  const key = `${path}:${bytes.length}`;
+  const hit = blobUrls.get(key);
+  if (hit) return hit;
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  const type =
+    { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", pdf: "application/pdf", html: "text/html", mp4: "video/mp4" }[ext] ??
+    "application/octet-stream";
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
+  blobUrls.set(key, url);
+  return url;
+}
+
+export function boot(base: Base): void {
+  const q = new URLSearchParams(location.search);
+  const side = q.get("side") ?? "before";
+  const id = q.get("scenario") ?? "home";
+  const isPopout = q.get("view") === "chat";
+  setOverlayHidden(q.get("overlay") === "0");
+  const sc = scenarios.find((s) => s.id === id) ?? scenarios[0];
+  if (sc.id !== id) report("error", `unknown scenario "${id}" — showing "${sc.id}"`);
+
+  installClock(sc.clock ?? "2026-10-10T09:30:00");
+  fs.setFsClock(now);
+  setGitClock(now);
+  installNetworkGuard();
+  speedTimers(sc.fastTimers);
+
+  const vault = vaultPathFor(base);
+  if (!isPopout) seedLocalStorage(vault, sc);
+  seedVault(vault, base, sc, now());
+  setLlmConfig(sc.llm ?? {});
+  setLlmVault(vault);
+  setHostConfig(sc.host ?? {}, now);
+  setOverrides(sc.overrides);
+
+  installIpc(isPopout ? "chat-popout" : "main", dispatch, `${side}:${sc.id}`);
+  (window as any).__TAURI_INTERNALS__.convertFileSrc = convertFileSrc;
+
+  window.addEventListener("error", (e) => report("error", String(e.message ?? e)));
+  window.addEventListener("unhandledrejection", (e) => {
+    const r = (e as PromiseRejectionEvent).reason;
+    const msg = typeof r === "string" ? r : r?.message ?? String(r);
+    if (/AbortError|aborted/i.test(msg)) return;
+    console.warn("[preview] unhandled rejection:", msg);
+  });
+
+  const api = {
+    side,
+    scenario: sc.id,
+    base: base.name,
+    vault,
+    emit: (event: string, payload?: unknown) => emitFromBackend(event, payload),
+    calls: () => calls,
+    unknown: () => [...unknownCommands],
+    refused: () => refused,
+    reports: () => reports,
+    llm: () => llmLog,
+    release: () => releaseHolds(),
+    advance: (ms: number) => advance(ms),
+    known: () => knownCommands(),
+    readFile: (p: string) => fs.readText(p.startsWith("/") ? p : `${vault}/${p}`),
+    ready: false,
+    stepsDone: false,
+    stepError: null as string | null,
+  };
+  (window as any).__preview = api;
+
+  // Tell the harness which scenario this frame is in.
+  try {
+    window.parent?.postMessage({ source: "vc-preview", type: "boot", side, scenario: sc.id, base: base.name }, "*");
+  } catch {
+    /* no parent */
+  }
+
+  // Steps run once the app has mounted (the splash is gone).
+  const startSteps = () => {
+    api.ready = true;
+    if (isPopout || !sc.open?.length || q.get("steps") === "0") {
+      api.stepsDone = true;
+      return;
+    }
+    runSteps(sc.open, vault)
+      .then(() => {
+        api.stepsDone = true;
+      })
+      .catch((e) => {
+        api.stepError = String(e?.message ?? e);
+        api.stepsDone = true;
+        report("error", `scenario step failed: ${api.stepError}`);
+      });
+  };
+  const waitMount = () => {
+    if (document.getElementById("vault-splash") || !document.querySelector("#root > *")) return void setTimeout(waitMount, 50);
+    setTimeout(startSteps, 150);
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", waitMount);
+  else waitMount();
+}
