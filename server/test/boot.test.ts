@@ -97,7 +97,8 @@ describe("boot + phone routes", () => {
     // The scripted reply lands in the conversation file on disk.
     const file = await waitFor(() => {
       const dir = join(vault, ".vault-chat", "conversations");
-      const f = readdirSync(dir).find((n) => n.endsWith(".jsonl") && readFileSync(join(dir, n), "utf8").includes(missionId));
+      // The mission's own file (an "ask" conversation that mentions the mission id may sort first).
+      const f = readdirSync(dir).find((n) => n === `${missionId}.jsonl`);
       if (!f) return null;
       const body = readFileSync(join(dir, f), "utf8");
       return body.includes("Acknowledged. I have the brief") ? body : null;

@@ -235,8 +235,8 @@ export async function startServer(e: ServerEnv & { bundle?: string }): Promise<R
     VC_TOKEN_FILE: tokenFile,
     VC_STATE_DIR: join(e.home, "state"),
     VC_SYNC: e.bare ? "1" : "0",
-    // The engine needs the pinned Codex binary; without one the old loop runs.
-    ...(process.env.VC_TEST_CODEX_BIN ? { VC_CODEX_BIN: process.env.VC_TEST_CODEX_BIN } : { VC_ENGINE: "0" }),
+    // The old loop unless a test boots the engine (piEngine.test.ts sets VC_ENGINE and VC_PI_DIR).
+    VC_ENGINE: "0",
     ...(e.openrouter ? { VC_OPENROUTER_BASE: e.openrouter } : {}),
     ...(e.extra ?? {}),
   };

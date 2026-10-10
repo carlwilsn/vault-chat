@@ -149,12 +149,12 @@ export type Conversation = {
   askStakes?: "low" | "high";
   askOnDefer?: string;
   askDeadlineAt?: number;
-  // [engine, Phase 2] The box's Codex engine: the thread behind this
+  // [engine, Phase 2] The box's engine (pi): the thread behind this
   // conversation, its project, keep-going mode, wake and lifecycle state, an
   // open question, the Done verifier's verdict and a roll-over recap. Carried
   // through readConversations below (same strip-trap as `mission`).
-  codexThreadId?: string;
-  codexThreadPath?: string;
+  threadId?: string;
+  threadPath?: string;
   project?: string;
   working?: boolean;
   nextWakeAt?: number;
@@ -162,8 +162,8 @@ export type Conversation = {
   pendingAsk?: { question: string; options?: string[]; at: number; notifId?: string };
   verdict?: { verdict: "pass" | "fail" | "unsure"; notes: string[]; at: number; summary?: string };
   recap?: string;
-  // Codex subagent threads this conversation spawned (children, for later display).
-  subagents?: { threadId: string; prompt?: string; model?: string; status?: string; startedAt?: number; path?: string }[];
+  // Subagents this conversation spawned (children: task, model, state, cost; for later display).
+  subagents?: { threadId: string; prompt?: string; task?: string; agent?: string; model?: string; status?: string; state?: string; costUsd?: number; startedAt?: number; endedAt?: number; path?: string; sessionFile?: string; summary?: string }[];
 };
 
 
@@ -288,8 +288,9 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         askStakes: parsed.askStakes,
         askOnDefer: parsed.askOnDefer,
         askDeadlineAt: parsed.askDeadlineAt,
-        codexThreadId: parsed.codexThreadId,
-        codexThreadPath: parsed.codexThreadPath,
+        // Renamed from codexThreadId/codexThreadPath (2026-10-11); files written before still load.
+        threadId: parsed.threadId ?? (parsed as any).codexThreadId,
+        threadPath: parsed.threadPath ?? (parsed as any).codexThreadPath,
         project: parsed.project,
         working: parsed.working,
         nextWakeAt: parsed.nextWakeAt,

@@ -111,7 +111,7 @@ export async function setConversationProject(
   if (!vault) return { ok: false, error: "no vault" };
   const want = nameOrSlug?.trim() || null;
   const conv = s.conversations.find((c) => c.id === convId);
-  const onBox = !!conv?.messages.some((m) => !m.boxPending) || !!conv?.codexThreadId;
+  const onBox = !!conv?.messages.some((m) => !m.boxPending) || !!conv?.threadId;
   const link = await boxLinkFor(vault);
 
   let slug: string | null = null;

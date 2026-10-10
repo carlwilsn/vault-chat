@@ -192,8 +192,8 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     const again = await post("/message", { text: "CHAT1 hi there", clientMsgId: "p-1" });
     expect(again.convId).toBe(chatId);
     const c = await assistantSays(chatId, /hello from pi/);
-    expect(c.codexThreadId).toBeTruthy(); // the pi session id
-    expect(existsSync(c.codexThreadPath)).toBe(true); // its session file
+    expect(c.threadId).toBeTruthy(); // the pi session id
+    expect(existsSync(c.threadPath)).toBe(true); // its session file
     // Every vault-chat tool was declared to the model.
     const first0 = or.calls.find((b) => lastUser(b).includes("CHAT1"));
     const names = (first0.tools ?? []).map((t: any) => t.function?.name);
@@ -214,10 +214,43 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(Object.keys(d.messages[1]).sort()).toEqual(["askOptions", "content", "decision", "direct", "role", "system", "timeline", "tools"]);
     const full = await (await fetch(srv.base + `/conversation?id=${chatId}&full=1`)).json();
     expect(full.full).toBe(true);
-    expect(full.meta.codexThreadPath).toBeTruthy();
+    expect(full.meta.threadPath).toBeTruthy();
     // The rules prefix and pi's system prompt with vault-chat's role reached the model.
     const first = or.calls.find((b) => lastUser(b).includes("CHAT1"));
     expect(JSON.stringify(first.messages[0])).toContain("vault-chat's agent");
+  });
+
+  it("/api/v1/models: capabilities from the catalog; subagents wherever tools work", async () => {
+    const { models } = await (await fetch(srv.base + "/api/v1/models")).json();
+    const m = models.find((x: any) => x.id === "test/fake-model");
+    expect(m.capabilities.tools).toBe(true);
+    expect(m.capabilities.subagents).toBe(true);
+    expect(["catalog", "learned", "untested"]).toContain(m.source);
+  });
+
+  it("an old conversation file (codexThreadId) still loads; its unknown thread gets a fresh pi session", async () => {
+    const id = "old-codex-conv";
+    const meta = { id, title: "Old chat", source: "phone", createdAt: Date.now(), lastActivityAt: Date.now(), status: "idle", codexThreadId: "0199-not-a-pi-session", codexThreadPath: "/nowhere/rollout.jsonl" };
+    writeFileSync(join(vault, ".vault-chat", "conversations", `${id}.jsonl`), [JSON.stringify(meta), JSON.stringify({ role: "user", content: "earlier question KIWIWORD" }), JSON.stringify({ role: "assistant", content: "earlier answer" })].join("\n") + "\n");
+    const d = await (await fetch(srv.base + `/conversation?id=${id}&full=1`)).json();
+    expect(d.meta.threadId).toBe("0199-not-a-pi-session");
+    await post("/message", { convId: id, text: "CHAT1 again" });
+    const c = await assistantSays(id, /hello from pi/);
+    expect(c.threadId).not.toBe("0199-not-a-pi-session");
+    expect(c.codexThreadId).toBeUndefined();
+    const body = or.calls.filter((b) => lastUser(b).includes("CHAT1 again")).pop();
+    expect(lastUser(body)).toContain("KIWIWORD"); // the transcript was handed over
+  });
+
+  it("a tombstone from the laptop removes the conversation file on the box", async () => {
+    const r = await post("/message", { text: "CHAT1 to be deleted" });
+    await assistantSays(r.convId, /hello from pi/);
+    const f = join(vault, ".vault-chat", "conversations", `${r.convId}.jsonl`);
+    expect(existsSync(f)).toBe(true);
+    writeFileSync(join(vault, ".vault-chat", "conversations-deleted.jsonl"), JSON.stringify({ id: r.convId, ts: Date.now() }) + "\n", { flag: "a" });
+    const list = await (await fetch(srv.base + "/conversations")).json();
+    expect(list.conversations.some((x: any) => x.id === r.convId)).toBe(false);
+    expect(existsSync(f)).toBe(false);
   });
 
   it("the cost ledger sums OpenRouter's streamed costs (never pi's own price)", async () => {
@@ -355,7 +388,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     await new Promise((res) => setTimeout(res, 1500));
     const h = await (await fetch(srv.base + "/api/v1/health")).json();
     const cc = await conv(r.convId);
-    const p = h.engine.pi.procs.find((x: any) => x.threadId === cc.codexThreadId);
+    const p = h.engine.pi.procs.find((x: any) => x.threadId === cc.threadId);
     expect(p?.pid).toBeTruthy();
     process.kill(p.pid, "SIGKILL");
     const c = await assistantSays(r.convId, /resumed after the crash/, 60_000);
@@ -380,7 +413,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(c2.messages.some((m: any) => m.role === "user" && /Wake: check the run/.test(m.content))).toBe(true);
     expect(JSON.parse(readFileSync(join(vault, ".vault-chat", "local", "wakes.json"), "utf8"))).toEqual([]);
     // The same pi session file carried the conversation across the restart.
-    expect(c2.codexThreadPath).toBe(c.codexThreadPath);
+    expect(c2.threadPath).toBe(c.threadPath);
   });
 });
 

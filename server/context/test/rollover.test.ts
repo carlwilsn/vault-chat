@@ -27,7 +27,7 @@ const usage = (total: number, window: number | null = null): ThreadTokenUsage =>
 });
 
 describe("shouldRoll", () => {
-  it("rolls past min(window × 0.6, 300k), per model, from the catalog or Codex's window", async () => {
+  it("rolls past min(window × 0.6, 300k), per model, from the catalog or the engine's window", async () => {
     await loadCatalog();
     expect(rollThreshold("openai/gpt-6.1-sol")).toBe(300_000);
     expect(rollThreshold("deepseek/deepseek-v4.1-flash")).toBe(76_800);
@@ -39,7 +39,7 @@ describe("shouldRoll", () => {
     const ds: ContextConv = { id: "c", model: "deepseek/deepseek-v4.1-flash" };
     expect(shouldRoll(ds, usage(70_000))).toBe(false);
     expect(shouldRoll(ds, usage(80_000))).toBe(true);
-    // Codex's own reported window wins over the catalog.
+    // The engine's reported window wins over the catalog.
     expect(shouldRoll(ds, usage(80_000, 1_000_000))).toBe(false);
     // No model on the conversation → the default agent model.
     expect(shouldRoll({ id: "c" }, usage(301_000))).toBe(true);
@@ -57,7 +57,7 @@ describe("buildRecap", () => {
       id: "conv-42",
       title: "Train the coconut detector",
       project: "coconut",
-      codexThreadId: "thread-old",
+      threadId: "thread-old",
       model: "openai/gpt-6.1-sol",
       messages: [
         { role: "user", content: "Train the coconut detector overnight." },
@@ -88,7 +88,7 @@ describe("buildRecap", () => {
     expect(r.marker.rollover).toMatchObject({ fromThread: "thread-old", recap: r.recap });
 
     // ENGINE appends the marker to the SAME conversation and starts a new thread with the builder's output.
-    const after: ContextConv = { ...conv, messages: [...conv.messages!, r.marker], codexThreadId: undefined };
+    const after: ContextConv = { ...conv, messages: [...conv.messages!, r.marker], threadId: undefined };
     expect(after.id).toBe("conv-42");
     const instr = buildDeveloperInstructions(after);
     expect(instr).toContain("RECAP: training run 7");

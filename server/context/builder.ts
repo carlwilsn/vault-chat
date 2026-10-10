@@ -1,4 +1,4 @@
-// The developer instructions for a Codex thread, and the rules prefix for every turn.
+// The developer instructions for an engine thread, and the rules prefix for every turn.
 import { ctxConfig } from "./config";
 import { cap, vcPath } from "./files";
 import { listProjects, readGlobalRules, readProject } from "./projects";

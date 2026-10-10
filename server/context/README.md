@@ -44,14 +44,14 @@ setModelWindow(model, tokens);                  // or feed it windows ENGINE alr
 
 ```ts
 type ContextConv = {                 // the conversation's meta + messages, as ENGINE holds it
-  id: string; title?: string; project?: string; model?: string; codexThreadId?: string;
+  id: string; title?: string; project?: string; model?: string; threadId?: string;
   messages?: ContextMessage[]; costUsd?: number; costMissingCalls?: number; [k: string]: unknown;
 };
 type ContextMessage = { role: "user"|"assistant"; content: string; toolCalls?: {...}[]; system?: boolean;
   hidden?: boolean; costUsd?: number; rollover?: RolloverInfo; [k: string]: unknown };
 type RolloverInfo = { at: number; fromThread?: string; recap: string };
 type ThreadTokenUsage = { total?: TokenUsageBreakdown; last: TokenUsageBreakdown; modelContextWindow?: number|null };
-                                     // = Codex thread/tokenUsage/updated → params.tokenUsage
+                                     // = the last model call's usage, from the engine
 type DynamicToolSpec = { type: "function"; name: string; description: string; inputSchema: object };
 type DynamicToolCallResponse = { success: boolean; contentItems: { type: "inputText"; text: string }[] };
 type ToolContext = { conv: ContextConv; setConversationProject: (slug: string) => void | Promise<void> };
@@ -67,7 +67,7 @@ type Verdict = { verdict: "pass"|"fail"|"unsure"; notes: string[]; model: string
 | `buildDeveloperInstructions(conv, {rolePrompt?}): string` | `developerInstructions` for `thread/start` (new conversation, and the new thread after a roll-over). |
 | `rulesPrefixForTurn(conv?): string` | Put in front of **every** turn's input text (`turn/start`, wake and nudge turns, steers optional). `""` when there are no rules files. Read fresh each call. |
 | `shouldRoll(conv, usage): boolean` | Call on `thread/tokenUsage/updated` (or at turn end) with `params.tokenUsage`. |
-| `rollThreshold(model, window?)` | `min(window × 0.6, 300k)`; window = Codex's `modelContextWindow`, else the catalog, else 258,400. |
+| `rollThreshold(model, window?)` | `min(window × 0.6, 300k)`; window = the engine's `modelContextWindow`, else the catalog, else 258,400. |
 | `buildRecap(conv, {signal?}): Promise<Recap>` | `{recap, marker, model, costUsd, fallback}`. Never throws (a failed model → a verbatim excerpt, `fallback:true`). |
 | `verifyDone({conv, summary, evidence[]}): Promise<Verdict>` | For the **Done** tool. Resolves within 90 s; a model failure or the time limit → `"unsure"`. Never throws. |
 | `formatVerdict(v): string` | One line for the reply and the push: `Verifier (anthropic/claude-sonnet-5.5): pass — <first note>`. |
@@ -97,8 +97,8 @@ type Verdict = { verdict: "pass"|"fail"|"unsure"; notes: string[]; model: string
 4. **Roll-over:** when `shouldRoll(conv, usage)` and the turn has ended: `const r = await buildRecap(conv)`; append
    `r.marker` to the **same** conversation (a `system` message: both renderers draw it as a quiet divider, and it
    carries the recap in `rollover`); add `r.costUsd` to the conversation's cost; `thread/start` a new thread with
-   `buildDeveloperInstructions(convWithMarker)`; store the new `codexThreadId`. Set Codex's
-   `model_auto_compact_token_limit` above `rollThreshold(model)` if roll-over should win over Codex's own compaction.
+   `buildDeveloperInstructions(convWithMarker)`; store the new `threadId`. Set pi's
+   compaction above `rollThreshold(model)` so roll-over wins over pi's own compaction (the engine does).
 5. **Done:** `const v = await verifyDone({conv, summary, evidence})`; store it on the conversation (e.g. a
    `verdicts[]` meta field or on the message), add `v.costUsd` to the conversation's cost, show `formatVerdict(v)`
    in the reply and the push. Never block on it.

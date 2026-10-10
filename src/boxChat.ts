@@ -253,7 +253,7 @@ const META_KEYS = [
   "missionState",
   "costUsd",
   "costMissingCalls",
-  "codexThreadId",
+  "threadId",
   "project",
   "working",
   "nextWakeAt",

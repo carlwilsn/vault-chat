@@ -1,39 +1,15 @@
-// The dollar ledger. Codex's live usage events carry tokens, not dollars, and
-// the raw cost events stop after a resume; the rollout JSONL writes a
-// `token_usage_record` with the OpenRouter response id for every model call,
-// resumed or not. For each new id: GET /generation?id= (404 for a few seconds
-// after the call — retried for ~30 s) → total_cost. Counted ids are kept in
-// $VC_STATE_DIR/ledger.json so nothing is billed twice.
+// The dollar ledger. Every model call's OpenRouter generation id and the cost
+// OpenRouter reported for it come from pi's session (`vc-cost` entries, see
+// pi/backend.ts usageCalls). A call without a reported cost is looked up with
+// GET /generation?id= (404 for a few seconds after the call — retried for
+// ~30 s). Counted ids are kept in $VC_STATE_DIR/ledger.json so nothing is
+// billed twice.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { renameRetry } from "../atomic";
 
 /** One model call. `cost`: the dollar figure OpenRouter already reported for it (pi's stream); when absent it is looked up. */
 export type CallRecord = { responseId: string; turnId: string; cost?: number | null };
-
-/** Every token_usage_record in a rollout (optionally for one turn). */
-export function rolloutCalls(rolloutPath: string, turnId?: string): CallRecord[] {
-  let raw = "";
-  try {
-    raw = readFileSync(rolloutPath, "utf8");
-  } catch {
-    return [];
-  }
-  const out: CallRecord[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line.includes("token_usage_record")) continue;
-    try {
-      const v = JSON.parse(line);
-      const p = v?.payload;
-      if (v?.type !== "token_usage_record" || typeof p?.response_id !== "string") continue;
-      if (turnId && p.turn_id !== turnId && p.root_turn_id !== turnId) continue;
-      out.push({ responseId: p.response_id, turnId: String(p.turn_id ?? "") });
-    } catch {
-      /* partial line */
-    }
-  }
-  return out;
-}
 
 export class Ledger {
   private seen: Record<string, number | null> = {};
