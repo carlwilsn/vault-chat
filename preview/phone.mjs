@@ -8,7 +8,7 @@
 //     config compiled with the tree's tailwindcss, and the in-browser Babel
 //     TypeScript strip replaced by esbuild at serve time;
 //   • a network wall and error reporting, like the desktop boot.
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
@@ -45,12 +45,26 @@ function guardScript(scenario, side) {
 </script>`;
 }
 
-export async function renderPhone({ tree, server, scenario, side, scenariosEntry }) {
-  let html = readFileSync(join(tree, "src-tauri", "assets", "phone.html"), "utf8");
+export async function renderPhone({ tree, server, scenario, side, scenariosEntry, phoneVariant }) {
   const mod = await server.ssrLoadModule(scenariosEntry);
   const phoneMod = await server.ssrLoadModule(scenariosEntry.replace(/index\.ts$/, "phone.ts"));
   const sc = mod.scenarios.find((s) => s.id === scenario) ?? mod.scenarios[0];
   const db = phoneMod.phoneDB(sc, Date.now());
+
+  // 5. Wall + DB + page selection.
+  const clicks = [...(sc.phone?.page ? [`.mrow[data-page="${sc.phone.page}"]`] : []), ...(sc.phone?.clicks ?? [])];
+  const head = guardScript(sc.id, side) + `<script>window.__VC_PREVIEW_DB__ = ${JSON.stringify(db).replace(/</g, "\\u003c")};</script>`;
+  // Drive the page to the scenario's screen with real clicks ("text:Foo" =
+  // the innermost visible element whose text is Foo).
+  const driver = `<script>(function(){var cl=${JSON.stringify(clicks)};
+  function find(s){if(s.indexOf("text:")===0){var t=s.slice(5);var all=[].slice.call(document.querySelectorAll("body *")).filter(function(e){return e.offsetParent});var ex=all.filter(function(e){return e.textContent.trim()===t});if(ex.length)return ex[ex.length-1];var pre=all.filter(function(e){return e.textContent.trim().indexOf(t)===0});return pre[pre.length-1]||null}return document.querySelector(s)}
+  var i=0;function step(n){if(i>=cl.length){window.__previewPhone.ready=true;return}var e=find(cl[i]);if(e){e.click();i++;setTimeout(function(){step(0)},450)}else if(n<40)setTimeout(function(){step(n+1)},150);else{window.__previewPhone.ready=true;window.__previewPhone.stepError="not found: "+cl[i]}}
+  setTimeout(function(){step(0)},700)})();</script>`;
+  // A tree with the bundled phone app (phone/) renders it through its own hook;
+  // ?phone=classic keeps the old page.
+  const hook = join(tree, "phone", "preview.mjs");
+  if (existsSync(hook) && phoneVariant !== "classic") return (await import(fileUrl(hook))).renderPhoneApp({ head, tail: driver });
+  let html = readFileSync(join(tree, "src-tauri", "assets", "phone.html"), "utf8");
 
   const must = (cond, what) => {
     if (!cond) throw new Error(`preview: phone.html changed shape — ${what} not found (update preview/phone.mjs)`);
@@ -90,16 +104,7 @@ export async function renderPhone({ tree, server, scenario, side, scenariosEntry
   const bootClose = html.indexOf("</script>", bootIdx) + "</script>".length;
   html = html.slice(0, bootOpen) + `<script>\n${js.replace(/<\/script/gi, "<\\/script")}\n//# sourceURL=phone.ts\n</script>` + html.slice(bootClose);
 
-  // 5. Wall + DB + page selection.
-  const clicks = [...(sc.phone?.page ? [`.mrow[data-page="${sc.phone.page}"]`] : []), ...(sc.phone?.clicks ?? [])];
-  const head = guardScript(sc.id, side) + `<script>window.__VC_PREVIEW_DB__ = ${JSON.stringify(db).replace(/</g, "\\u003c")};</script>`;
   html = html.replace(/<head>/i, `<head>\n${head}`);
-  // Drive the page to the scenario's screen with real clicks ("text:Foo" =
-  // the innermost visible element whose text is Foo).
-  const driver = `<script>(function(){var cl=${JSON.stringify(clicks)};
-  function find(s){if(s.indexOf("text:")===0){var t=s.slice(5);var all=[].slice.call(document.querySelectorAll("body *")).filter(function(e){return e.offsetParent});var ex=all.filter(function(e){return e.textContent.trim()===t});if(ex.length)return ex[ex.length-1];var pre=all.filter(function(e){return e.textContent.trim().indexOf(t)===0});return pre[pre.length-1]||null}return document.querySelector(s)}
-  var i=0;function step(n){if(i>=cl.length){window.__previewPhone.ready=true;return}var e=find(cl[i]);if(e){e.click();i++;setTimeout(function(){step(0)},450)}else if(n<40)setTimeout(function(){step(n+1)},150);else{window.__previewPhone.ready=true;window.__previewPhone.stepError="not found: "+cl[i]}}
-  setTimeout(function(){step(0)},700)})();</script>`;
   html = html.replace(/<\/body>/i, `${driver}</body>`);
   return html;
 }

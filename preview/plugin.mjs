@@ -165,7 +165,7 @@ export function previewPlugin(opts) {
         }
         if (url.pathname === "/phone" || url.pathname === "/phone.html") {
           try {
-            const html = await renderPhone({ tree: opts.tree, server: s, scenario: url.searchParams.get("scenario") ?? "home", base: url.searchParams.get("base") ?? "synthetic", side: opts.side, scenariosEntry, loadBase });
+            const html = await renderPhone({ tree: opts.tree, server: s, scenario: url.searchParams.get("scenario") ?? "home", base: url.searchParams.get("base") ?? "synthetic", side: opts.side, scenariosEntry, loadBase, phoneVariant: url.searchParams.get("phone") });
             res.setHeader("content-type", "text/html; charset=utf-8");
             res.setHeader("cache-control", "no-store");
             return void res.end(html);
