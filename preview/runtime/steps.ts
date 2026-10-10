@@ -7,6 +7,8 @@ import { advance } from "./clock";
 import { emitFromBackend } from "./ipc";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// The app's own store module, under this side's base ("/before/src/store.ts").
+const STORE = `${import.meta.env.BASE_URL}src/store.ts`;
 
 function visible(el: Element): boolean {
   const r = (el as HTMLElement).getBoundingClientRect?.();
@@ -83,7 +85,7 @@ export async function runSteps(steps: Step[], vault: string): Promise<void> {
     else if ("sleep" in s) await sleep(s.sleep);
     else if ("file" in s) {
       // The app's own store module (same instance Vite serves the app).
-      const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+      const { useStore } = await import(/* @vite-ignore */ STORE);
       const { invoke } = await import(/* @vite-ignore */ "@tauri-apps/api/core");
       let path = `${vault}/${s.file}`;
       if (!(await invoke<boolean>("path_exists", { path }))) {
@@ -99,15 +101,15 @@ export async function runSteps(steps: Step[], vault: string): Promise<void> {
       useStore.getState().setCurrentFile(path, content);
       if (s.mode === "edit" && useStore.getState().mode !== "edit") useStore.getState().toggleMode?.();
     } else if ("waitIdle" in s) {
-      const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+      const { useStore } = await import(/* @vite-ignore */ STORE);
       await sleep(300);
       const t0 = Date.now();
       while (useStore.getState().busy && Date.now() - t0 < (s.timeout ?? 20000)) await sleep(100);
     } else if ("chat" in s) {
-      const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+      const { useStore } = await import(/* @vite-ignore */ STORE);
       if (useStore.getState().rightCollapsed) useStore.getState().toggleRight();
     } else if ("conversation" in s) {
-      const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+      const { useStore } = await import(/* @vite-ignore */ STORE);
       const st = useStore.getState();
       for (let i = 0; i < 100 && !useStore.getState().conversationsLoaded; i++) await sleep(50);
       useStore.getState().selectConversation(s.conversation);

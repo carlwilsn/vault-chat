@@ -3,7 +3,7 @@
 import { launch } from "./browser.mjs";
 const [id, out, extra = "3000", js] = process.argv.slice(2);
 const { browser, page, log } = await launch({ width: 1400, height: 900 });
-await page.goto(`http://127.0.0.1:1520/?scenario=${id}`);
+await page.goto(`http://127.0.0.1:1520/before/?scenario=${id}`);
 await page.waitForFunction(() => window.__preview?.stepsDone, null, { timeout: 40000 }).catch(() => {});
 if (js) await page.evaluate(js);
 await page.waitForTimeout(Number(extra));

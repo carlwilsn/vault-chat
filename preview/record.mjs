@@ -19,7 +19,7 @@ const opt = (k, d) => {
 const sideOpt = opt("side", "before");
 const surface = opt("surface", "desktop");
 const seconds = Number(opt("seconds", 12));
-const ORIGINS = { before: process.env.PREVIEW_BEFORE ?? "http://127.0.0.1:1520", after: process.env.PREVIEW_AFTER ?? "http://127.0.0.1:1521" };
+const ORIGINS = { before: process.env.PREVIEW_BEFORE ?? "http://127.0.0.1:1520/before", after: process.env.PREVIEW_AFTER ?? "http://127.0.0.1:1521/after" };
 const OUT = join(HERE, "out", "videos");
 mkdirSync(OUT, { recursive: true });
 

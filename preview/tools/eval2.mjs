@@ -1,9 +1,9 @@
 // dev: run a scenario on a side's port, then evaluate JS in the page and print the result.
 //   node preview/tools/eval2.mjs <port> <scenario> "<js expression>" [extraMs]
-import { launch } from "./browser.mjs";
+import { launch, sideBase } from "./browser.mjs";
 const [port, id, js, extra = "1500"] = process.argv.slice(2);
 const { browser, page, log } = await launch({ width: 1400, height: 900 });
-await page.goto(`http://127.0.0.1:${port}/?scenario=${id}`);
+await page.goto(`${await sideBase(port)}/?scenario=${id}`);
 await page.waitForFunction(() => window.__preview?.stepsDone, null, { timeout: 90000 }).catch(() => {});
 await page.waitForTimeout(Number(extra));
 const out = await page.evaluate(js);

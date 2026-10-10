@@ -53,7 +53,9 @@ function walk(dir, root, acc) {
   return acc;
 }
 
-function loadBase(name) {
+/** `prefix` = the side's Vite base ("/before/"): lazy fixture URLs are fetched
+ *  by the page, which is served under it. */
+function loadBase(name, prefix = "/") {
   const b = baseDirs()[name];
   if (!b) throw new Error(`unknown fixture base "${name}"`);
   const all = new Map();
@@ -64,7 +66,7 @@ function loadBase(name) {
     const ext = extname(rel).toLowerCase();
     const isText = (TEXT_EXT.has(ext) || rel.startsWith(".")) && f.size <= LAZY_TEXT_OVER;
     if (isText) files[rel] = readFileSync(f.path, "utf8");
-    else lazy[rel] = { url: `/__preview/fixture/${encodeURIComponent(name)}/${rel.split("/").map(encodeURIComponent).join("/")}`, size: f.size };
+    else lazy[rel] = { url: `${prefix}__preview/fixture/${encodeURIComponent(name)}/${rel.split("/").map(encodeURIComponent).join("/")}`, size: f.size };
   }
   return { name, vaultName: b.vaultName, files, lazy, mtime: Date.parse("2026-10-09T18:00:00Z") };
 }
@@ -98,7 +100,10 @@ const CSP = [
 ].join("; ");
 
 /**
- * @param {{ side: string, tree: string, label: string }} opts
+ * @param {{ side: string, tree: string, label: string, base?: string }} opts
+ * `base` is the side's Vite base ("/before/" or "/after/"): the shell proxies
+ * each side under it on its own origin, so every frame is same-origin with the
+ * shell (no cross-port iframes).
  */
 export function previewPlugin(opts) {
   const memfs = posix(join(HERE, "runtime", "shims", "memfs.ts"));
@@ -115,8 +120,11 @@ export function previewPlugin(opts) {
     enforce: "pre",
     configureServer(s) {
       server = s;
+      const prefix = opts.base ?? "/";
       s.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url ?? "/", "http://x");
+        // Vite strips the base after this middleware; strip it here for our routes.
+        if (prefix !== "/" && (url.pathname + "/").startsWith(prefix)) url.pathname = "/" + url.pathname.slice(prefix.length);
         res.setHeader("Content-Security-Policy", CSP);
         res.setHeader("Access-Control-Allow-Origin", "*");
         if (url.pathname.startsWith("/__preview/fixture/")) {
@@ -165,7 +173,9 @@ export function previewPlugin(opts) {
         }
         if (url.pathname === "/phone" || url.pathname === "/phone.html") {
           try {
-            const html = await renderPhone({ tree: opts.tree, server: s, scenario: url.searchParams.get("scenario") ?? "home", base: url.searchParams.get("base") ?? "synthetic", side: opts.side, scenariosEntry, loadBase, phoneVariant: url.searchParams.get("phone") });
+            let html = await renderPhone({ tree: opts.tree, server: s, scenario: url.searchParams.get("scenario") ?? "home", base: url.searchParams.get("base") ?? "synthetic", side: opts.side, scenariosEntry, loadBase, prefix, phoneVariant: url.searchParams.get("phone") });
+            // Root-relative links (icons, manifest) live under the side's base.
+            if (prefix !== "/") html = html.replace(/\b(href|src)="\/(?!\/)/g, (m, a, i, all) => (all.startsWith(prefix.slice(1), i + m.length) ? m : `${a}="${prefix}`));
             res.setHeader("content-type", "text/html; charset=utf-8");
             res.setHeader("cache-control", "no-store");
             return void res.end(html);
@@ -212,7 +222,7 @@ export function previewPlugin(opts) {
       }
       if (id.startsWith("\0virtual:vc-preview-base/")) {
         const name = id.slice("\0virtual:vc-preview-base/".length);
-        return `export default ${JSON.stringify(loadBase(name))};`;
+        return `export default ${JSON.stringify(loadBase(name, opts.base ?? "/"))};`;
       }
       return null;
     },

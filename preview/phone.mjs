@@ -35,6 +35,11 @@ function guardScript(scenario, side) {
 (function(){
   var report=function(kind,text){try{parent.postMessage({source:"vc-preview",type:"report",kind:kind,text:text,href:location.href},"*")}catch(e){}};
   window.__previewPhone={scenario:${JSON.stringify(scenario)},side:${JSON.stringify(side)},refused:[]};
+  // Both sides share the shell's origin: each side's phone gets its own localStorage view.
+  try{var R=window.localStorage,P="vcp:"+${JSON.stringify(side)}+":phone:",own=function(){var o=[];for(var i=0;i<R.length;i++){var k=R.key(i);if(k&&k.indexOf(P)===0)o.push(k.slice(P.length))}return o};
+  var L={getItem:function(k){return R.getItem(P+k)},setItem:function(k,v){R.setItem(P+k,String(v))},removeItem:function(k){R.removeItem(P+k)},clear:function(){own().forEach(function(k){R.removeItem(P+k)})},key:function(i){var o=own();return i<o.length?o[i]:null}};
+  Object.defineProperty(L,"length",{get:function(){return own().length}});
+  L.clear();Object.defineProperty(window,"localStorage",{configurable:true,get:function(){return L}})}catch(e){}
   var same=function(u){try{var x=new URL(String(u),location.href);return x.origin===location.origin||x.protocol==="data:"||x.protocol==="blob:"}catch(e){return true}};
   var f=window.fetch.bind(window);
   window.fetch=function(i,o){var u=i&&i.url?i.url:String(i);if(!same(u)){window.__previewPhone.refused.push(u);console.error("[preview] outbound fetch refused: "+u);report("refused","phone fetch "+u);return Promise.reject(new TypeError("preview: outbound refused"))}return f(i,o)};
@@ -45,7 +50,7 @@ function guardScript(scenario, side) {
 </script>`;
 }
 
-export async function renderPhone({ tree, server, scenario, side, scenariosEntry, phoneVariant }) {
+export async function renderPhone({ tree, server, scenario, side, scenariosEntry, phoneVariant, prefix = "/" }) {
   const mod = await server.ssrLoadModule(scenariosEntry);
   const phoneMod = await server.ssrLoadModule(scenariosEntry.replace(/index\.ts$/, "phone.ts"));
   const sc = mod.scenarios.find((s) => s.id === scenario) ?? mod.scenarios[0];
@@ -79,7 +84,7 @@ export async function renderPhone({ tree, server, scenario, side, scenariosEntry
   html = html.replace(DBLINE, "const DB: MockDB = (window as any).__VC_PREVIEW_DB__ || {");
 
   // 2. KaTeX from node_modules.
-  html = html.replace(/https:\/\/cdn\.jsdelivr\.net\/npm\/katex@[\d.]+\/dist\//g, "/__vendor/katex/").replace(/ crossorigin="anonymous"/g, "");
+  html = html.replace(/https:\/\/cdn\.jsdelivr\.net\/npm\/katex@[\d.]+\/dist\//g, `${prefix}__vendor/katex/`).replace(/ crossorigin="anonymous"/g, "");
 
   // 3. Tailwind Play CDN → compiled CSS with the page's own config.
   const twTag = '<script src="https://cdn.tailwindcss.com"></script>';

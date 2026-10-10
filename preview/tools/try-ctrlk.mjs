@@ -1,7 +1,7 @@
 // dev: drive Ctrl+K inline edit with real input on the inline-edit scenario.
 import { launch } from "./browser.mjs";
 const { browser, page, log } = await launch();
-await page.goto("http://127.0.0.1:1520/?scenario=inline-edit");
+await page.goto("http://127.0.0.1:1520/before/?scenario=inline-edit");
 await page.waitForFunction(() => window.__preview?.stepsDone, null, { timeout: 30000 });
 await page.waitForTimeout(800);
 const line = page.locator(".cm-line", { hasText: "The 160M reproduction is stable" }).first();

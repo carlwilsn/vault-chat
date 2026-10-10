@@ -249,7 +249,7 @@ for (const t of ["graphite", "light"]) { const d = document.createElement("div")
 // ---- --runtime: computed styles over every scenario screen ------------------
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1] && process.argv.includes("--runtime")) {
   const { launch } = await import("./tools/browser.mjs");
-  const origin = process.env.PREVIEW_BEFORE ?? "http://127.0.0.1:1520";
+  const origin = process.env.PREVIEW_BEFORE ?? "http://127.0.0.1:1520/before";
   const list = await (await fetch(origin + "/__preview/scenarios.json")).json();
   const agg = { at: new Date().toISOString(), screens: [], elements: 0, color: {}, background: {}, fontSize: {}, fontFamily: {}, radius: {}, tokenColors: {} };
   const { browser, page } = await launch({ width: 1400, height: 900 });

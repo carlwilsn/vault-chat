@@ -62,3 +62,16 @@ export async function launch({ width = 1400, height = 900, headless = true, reco
   context.on("page", attach);
   return { browser, context, page, log };
 }
+
+/** A side's dev server serves under /before/ or /after/: the URL prefix for a
+ *  bare port (tools that take a port). */
+export async function sideBase(port) {
+  for (const side of ["before", "after"]) {
+    try {
+      if ((await fetch(`http://127.0.0.1:${port}/${side}/__preview/info`, { signal: AbortSignal.timeout(3000) })).ok) return `http://127.0.0.1:${port}/${side}`;
+    } catch {
+      /* next */
+    }
+  }
+  return `http://127.0.0.1:${port}`;
+}

@@ -13,7 +13,7 @@ const opt = (k, d) => {
   const i = argv.indexOf(`--${k}`);
   return i >= 0 ? argv[i + 1] : d;
 };
-const sides = { before: process.env.PREVIEW_BEFORE ?? "http://127.0.0.1:1520", after: process.env.PREVIEW_AFTER ?? "http://127.0.0.1:1521" };
+const sides = { before: process.env.PREVIEW_BEFORE ?? "http://127.0.0.1:1520/before", after: process.env.PREVIEW_AFTER ?? "http://127.0.0.1:1521/after" };
 const which = opt("side", "before");
 const only = opt("only", "")?.split(",").filter(Boolean);
 const shots = opt("shots", null);

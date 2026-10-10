@@ -6,9 +6,14 @@
 // worktree/checkout of vault-chat) or a git ref of this repo, which is
 // exported (git archive) into preview/.cache/trees/<ref>/ — read-only, never a
 // worktree. Each tree gets its own Vite dev server as a child process with
-// cwd = the tree (:1520 before, :1521 after); the harness shell is served here.
+// cwd = the tree (:1520 before, :1521 after), served under /before/ and
+// /after/. The shell is served here, and both sides are reverse-proxied
+// through this same origin (/before/*, /after/*, HMR websocket included), so
+// every frame is same-origin with the shell: no cross-port iframes (the Claude
+// desktop app's browser pane answers 502 for those).
 import { spawn, execFileSync } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
+import { connect } from "node:net";
 import { existsSync, readFileSync, mkdirSync, symlinkSync, statSync } from "node:fs";
 import { join, resolve, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,7 +80,7 @@ if (afterSpec) sides.after = materialize(afterSpec, "after");
 
 const children = [];
 for (const [side, t] of Object.entries(sides)) {
-  const child = spawn(process.execPath, [join(HERE, "vite-child.mjs"), "--tree", t.dir, "--port", String(PORTS[side]), "--side", side, "--label", t.label], {
+  const child = spawn(process.execPath, [join(HERE, "vite-child.mjs"), "--tree", t.dir, "--port", String(PORTS[side]), "--side", side, "--label", t.label, "--base", `/${side}/`], {
     cwd: t.dir,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -94,29 +99,58 @@ process.on("SIGTERM", stop);
 
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml" };
 const config = () => ({
-  sides: Object.fromEntries(Object.entries(sides).map(([k, v]) => [k, { url: `http://127.0.0.1:${PORTS[k]}`, label: v.label, tree: v.dir }])),
+  // `url` is what the frames load: this origin, the side's prefix.
+  sides: Object.fromEntries(Object.entries(sides).map(([k, v]) => [k, { url: `/${k}`, direct: `http://127.0.0.1:${PORTS[k]}/${k}`, label: v.label, tree: v.dir }])),
 });
 
-createServer(async (req, res) => {
+/** /before/… or /after/… → that side's dev server (path unchanged: it serves under the prefix). */
+function sideOf(pathname) {
+  const m = /^\/(before|after)(\/|$)/.exec(pathname);
+  return m && sides[m[1]] ? m[1] : null;
+}
+
+function proxy(req, res, side) {
+  const up = httpRequest({ host: "127.0.0.1", port: PORTS[side], path: req.url, method: req.method, headers: req.headers }, (r) => {
+    res.writeHead(r.statusCode ?? 502, r.headers);
+    r.pipe(res);
+  });
+  up.on("error", (e) => {
+    if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
+    res.end(`preview: ${side} dev server: ${e.message}`);
+  });
+  req.pipe(up);
+}
+
+const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://x");
+  const side = sideOf(url.pathname);
+  if (side) {
+    if (url.pathname === `/${side}`) {
+      res.writeHead(302, { location: `/${side}/${url.search}` });
+      return void res.end();
+    }
+    return proxy(req, res, side);
+  }
   try {
     if (url.pathname === "/api/config") {
       res.setHeader("content-type", "application/json");
       return void res.end(JSON.stringify(config()));
     }
     if (url.pathname === "/api/scenarios") {
-      const r = await fetch(`http://127.0.0.1:${PORTS.before}/__preview/scenarios.json`);
+      const r = await fetch(`http://127.0.0.1:${PORTS.before}/before/__preview/scenarios.json`);
       res.setHeader("content-type", "application/json");
       return void res.end(await r.text());
     }
     if (url.pathname === "/api/bases") {
-      const r = await fetch(`http://127.0.0.1:${PORTS.before}/__preview/info`);
+      const r = await fetch(`http://127.0.0.1:${PORTS.before}/before/__preview/info`);
       res.setHeader("content-type", "application/json");
       return void res.end(JSON.stringify((await r.json()).bases));
     }
     let p = url.pathname === "/" ? "/index.html" : url.pathname;
-    const file = resolve(HERE, "shell", "." + p);
-    if (!file.startsWith(resolve(HERE, "shell")) || !existsSync(file) || !statSync(file).isFile()) {
+    // /tour/* is the Tour's data (preview/tour/); everything else is the shell.
+    const dir = p.startsWith("/tour/") ? resolve(HERE, "tour") : resolve(HERE, "shell");
+    const file = resolve(dir, "." + (p.startsWith("/tour/") ? p.slice(5) : p));
+    if (!file.startsWith(dir) || !existsSync(file) || !statSync(file).isFile()) {
       res.statusCode = 404;
       return void res.end("not found");
     }

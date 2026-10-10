@@ -1,9 +1,9 @@
 // dev: screenshot the Settings pane of a scenario on one side, tall enough to
 // hold every section.  node preview/tools/shot-settings.mjs <port> <scenario> <out.png> [height]
-import { launch } from "./browser.mjs";
+import { launch, sideBase } from "./browser.mjs";
 const [port, id, out, height = "2200"] = process.argv.slice(2);
 const { browser, page, log } = await launch({ width: 1400, height: Number(height) });
-await page.goto(`http://127.0.0.1:${port}/?scenario=${id}`);
+await page.goto(`${await sideBase(port)}/?scenario=${id}`);
 await page.waitForFunction(() => window.__preview?.stepsDone, null, { timeout: 40000 }).catch(() => {});
 await page.waitForTimeout(2500);
 const pane = page.locator("span", { hasText: /^Settings$/ }).first().locator("xpath=../..");
