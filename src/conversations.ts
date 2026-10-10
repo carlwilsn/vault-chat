@@ -149,6 +149,19 @@ export type Conversation = {
   askStakes?: "low" | "high";
   askOnDefer?: string;
   askDeadlineAt?: number;
+  // [engine, Phase 2] The box's Codex engine: the thread behind this
+  // conversation, its project, keep-going mode, wake and lifecycle state, an
+  // open question, the Done verifier's verdict and a roll-over recap. Carried
+  // through readConversations below (same strip-trap as `mission`).
+  codexThreadId?: string;
+  codexThreadPath?: string;
+  project?: string;
+  working?: boolean;
+  nextWakeAt?: number;
+  state?: "idle" | "running" | "sleeping" | "waiting_user" | "blocked" | "done";
+  pendingAsk?: { question: string; options?: string[]; at: number; notifId?: string };
+  verdict?: { verdict: "pass" | "fail" | "unsure"; notes: string[]; at: number; summary?: string };
+  recap?: string;
 };
 
 
@@ -273,6 +286,15 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         askStakes: parsed.askStakes,
         askOnDefer: parsed.askOnDefer,
         askDeadlineAt: parsed.askDeadlineAt,
+        codexThreadId: parsed.codexThreadId,
+        codexThreadPath: parsed.codexThreadPath,
+        project: parsed.project,
+        working: parsed.working,
+        nextWakeAt: parsed.nextWakeAt,
+        state: parsed.state,
+        pendingAsk: parsed.pendingAsk,
+        verdict: parsed.verdict,
+        recap: parsed.recap,
       });
     } catch {
       // skip
