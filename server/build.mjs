@@ -31,9 +31,9 @@ const ALIASES = {
   "@tauri-apps/plugin-process": join(shims, "plugins.ts"),
   "@tauri-apps/plugin-updater": join(shims, "plugins.ts"),
   "@tauri-apps/plugin-autostart": join(shims, "plugins.ts"),
-  // pdfjs's browser build touches DOMMatrix at import; the legacy build is the
-  // one meant for node.
-  "pdfjs-dist": join(root, "node_modules", "pdfjs-dist", "legacy", "build", "pdf.mjs"),
+  // pdf.js: DOM stubs + the legacy (node) build + its worker on the main
+  // thread — see shims/pdfjs.ts.
+  "pdfjs-dist": join(shims, "pdfjs.ts"),
 };
 
 /** Vite-isms the app modules use: `?url` asset imports and aliases. */

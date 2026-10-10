@@ -95,3 +95,18 @@ GitHub (no credential there); the laptop backs up.
   (the production default). Missions that need Bash need `"false"` in `VC_LOCALSTORAGE`.
 - The mission/worker model comes from `vault_chat_supervisor_model` / `vault_chat_worker_model` in the same
   file (default: the desktop's seed model, which is not an OpenRouter one).
+- Phone/cockpit chats run on `vault_chat_assistant_model` (same default). With no key for that model's
+  provider, `chat-controller` returns silently — set it to an OpenRouter model too.
+
+## Runtime dependencies of the bundle
+
+Only node 22 and `git`. Everything else is inside the `.mjs`; `server/test/isolated.test.ts` copies the
+bundle alone into a directory with no `node_modules` above it and boots it. The bundle's remaining runtime
+`require`s are all optional and guarded: `@napi-rs/canvas` (pdf.js page rendering), `esprima` (js-yaml's
+`!!js` types) and an ElevenLabs `import()` on the voice path, which the server never loads.
+
+**PDFs.** `pdfjs-dist` resolves to `server/shims/pdfjs.ts`: geometry-only `DOMMatrix`/`ImageData`/`Path2D`
+stubs, the legacy (node) build, and its worker bundled and run on the main thread. **Text extraction
+(`PdfExtract`) works.** Page rendering (`PdfPageSnapshot`) needs a canvas and fails with an error message
+headless. pdf.js prints one warning at start ("Cannot load @napi-rs/canvas") and may warn about
+`standardFontDataUrl`; both are harmless for text extraction.
