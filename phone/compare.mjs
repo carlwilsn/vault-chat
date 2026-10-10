@@ -32,23 +32,34 @@ const { launch } = await import(pathToFileURL(join(HARNESS, "tools", "browser.mj
 // with taps — so the sheets, menus, drawers and live flows are compared too.
 const T = (s) => ({ click: s });
 const CASES = [
+  // The plain phone scenarios that still reach a screen of today's phone
+  // (Activity, its mission sheets and the Claude/feedback screen are gone).
   { id: "home", sc: "home" },
-  { id: "missions", sc: "missions" },
-  { id: "missions-awaiting", sc: "missions-awaiting" },
+  { id: "alerts-awaiting", sc: "missions-awaiting" },
   { id: "phone-chats", sc: "phone-chats" },
   { id: "phone-thread", sc: "phone-thread" },
-  { id: "phone-mission", sc: "phone-mission" },
   { id: "phone-notes", sc: "phone-notes" },
   { id: "phone-settings", sc: "phone-settings" },
+  // The Phase 3 phone scenarios (preview/scenarios/phase3.ts), as they play.
+  { id: "p3-menu", sc: "p3-phone-menu" },
+  { id: "p3-chats", sc: "p3-phone-chats" },
+  { id: "p3-archived", sc: "p3-phone-archived" },
+  { id: "p3-new-in-project", sc: "p3-phone-new-in-project" },
+  { id: "p3-approve-gone", sc: "p3-phone-approve-gone" },
+  { id: "p3-thread", sc: "p3-phone-thread" },
+  { id: "p3-project-sheet", sc: "p3-phone-project-sheet" },
+  { id: "p3-alerts", sc: "p3-phone-alerts" },
+  { id: "p3-settings", sc: "p3-phone-settings" },
+  // Driven further: menu, the project sheet, the archive folding, notification
+  // cards opening their conversation, live flows.
   { id: "menu-open", sc: "home", steps: [T("#menuBtn")] },
-  { id: "mission-workers", sc: "phone-mission", steps: [T("#mWkToggle")] },
-  { id: "mission-worker-sheet", sc: "phone-mission", steps: [T("#mWkToggle"), { eval: "document.querySelector('.sheet-body .wk-row').click()" }] },
-  { id: "activity-workers", sc: "missions", steps: [T("#actScroll .wcount")] },
-  { id: "feedback-thread", sc: "phone-settings", steps: [T("#fbList > *")] },
-  { id: "alerts-ask-sheet", sc: "missions-awaiting", steps: [T("#alScroll .card, #alScroll .needsyou")] },
-  { id: "activity-archive", sc: "missions", steps: [T(".arch-h")] },
-  { id: "drawer-chat-tab", sc: "phone-settings", steps: [T("#clTabChat")] },
-  { id: "drawer-gear", sc: "phone-settings", steps: [T("#clGearBtn")] },
+  { id: "project-sheet-open", sc: "p3-phone-thread", steps: [T("#titleBtn")] },
+  { id: "project-sheet-new", sc: "p3-phone-chats", steps: [T("#newBtn"), { eval: "document.querySelector('#titleBtn').click()" }] },
+  { id: "archive-folded", sc: "p3-phone-archived", steps: [T("#convBtn"), T("text=Archived missions")] },
+  { id: "alerts-page", sc: "p3-phone-menu", steps: [T('.mrow[data-page="alerts"]')] },
+  { id: "alert-card-opens", sc: "p3-phone-menu", steps: [T('.mrow[data-page="alerts"]'), T("#alScroll .card:not(.needsyou)")] },
+  { id: "alert-needsyou-tap", sc: "p3-phone-menu", steps: [T('.mrow[data-page="alerts"]'), T("#alScroll .needsyou")] },
+  { id: "settings-from-drawer", sc: "p3-phone-settings", steps: [T("#drawerMenuBtn")] },
   { id: "chat-send", sc: "phone-thread", steps: [{ type: ["#input", "What is the Fiedler vector?"] }, T("#sendBtn"), { wait: 6000 }] },
   { id: "chat-typing", sc: "home", steps: [{ type: ["#input", "a long message that wraps onto a second line in the composer field"] }] },
   { id: "notes-add", sc: "phone-notes", steps: [{ type: ["#noteInput", "Check the seed-2 LR"] }, T("#noteAddBtn")] },
@@ -82,6 +93,15 @@ async function capture(page, base, c, tag) {
     }
   }
   await page.waitForTimeout(1200); // sheets/menus finish their transitions
+  // Endless animations (the pulsing activity dots) are in a phase that depends
+  // on when each page started them: hold every one at its first frame.
+  await page.evaluate(() => {
+    for (const a of document.getAnimations()) {
+      if (a.effect?.getTiming().iterations !== Infinity) continue;
+      a.pause();
+      a.currentTime = 0;
+    }
+  });
   const info = await page.evaluate((reSrc) => {
     const re = new RegExp(reSrc.source, reSrc.flags);
     const masks = [];
@@ -105,14 +125,18 @@ async function capture(page, base, c, tag) {
     });
     const walk = (n, d, out) => {
       if (n.nodeType === 3) {
-        const t = n.textContent.replace(/\s+/g, " ").trim();
+        // A clock time inside a longer text ("next 16:23 · $1.20") can tick
+        // over between the two captures.
+        const t = n.textContent.replace(/\s+/g, " ").trim().replace(/\b\d{1,2}:\d{2}\b/g, "<hh:mm>");
         if (t) out.push("  ".repeat(d) + JSON.stringify(t));
         return;
       }
       if (n.nodeType !== 1) return;
       const attrs = [...n.attributes]
         .filter((a) => a.name !== "data-cmp-time")
-        .map((a) => `${a.name}=${JSON.stringify(a.name === "class" ? a.value.split(/\s+/).filter(Boolean).sort().join(" ") : a.value)}`)
+        // A style attribute as the browser reads it: React writes "a: b;" where
+        // the markup had "a:b" — the same declarations.
+        .map((a) => `${a.name}=${JSON.stringify(a.name === "class" ? a.value.split(/\s+/).filter(Boolean).sort().join(" ") : a.name === "style" ? n.style.cssText : a.value)}`)
         .sort();
       out.push("  ".repeat(d) + `<${n.tagName.toLowerCase()}${attrs.length ? " " + attrs.join(" ") : ""}>`);
       for (const k of n.childNodes) walk(k, d + 1, out);
@@ -165,9 +189,10 @@ function domDiff(a, b) {
 
 const { browser, page, log } = await launch({ width: 390, height: 844, deviceScaleFactor: 2 });
 // Same random choices on both sides (the empty-chat greeting is picked at random).
+// A constant, not a seeded stream: React-DOM draws two randoms when its module
+// loads (its expando keys), which shifts a stream by two on the new side.
 await page.addInitScript(() => {
-  let x = 42;
-  Math.random = () => ((x = (x * 1103515245 + 12345) % 2147483648) / 2147483648);
+  Math.random = () => 0.42;
 });
 // The diff runs in its own context, so the captured page stays the visible one.
 const diffPage = await (await browser.newContext()).newPage();

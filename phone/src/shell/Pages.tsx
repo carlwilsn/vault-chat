@@ -1,4 +1,4 @@
-// The four pages; `body.page-*` (set by setPage) picks the visible one.
+// The three pages; `body.page-*` (set by setPage) picks the visible one.
 import { SendArrow } from "./icons";
 
 export function Pages() {
@@ -6,6 +6,7 @@ export function Pages() {
     <div className="body">
       <section className="page" id="pChat">
         <div id="msgs"></div>
+        <div className="ongoing" id="ongoing"></div>
         <div className="composer">
           <div className="field">
             <textarea id="input" rows={1} placeholder="Message…" enterKeyHint="enter" autoComplete="off"></textarea>
@@ -15,9 +16,6 @@ export function Pages() {
           </div>
         </div>
         <div id="kb"></div>
-      </section>
-      <section className="page" id="pAct">
-        <div className="scroll" id="actScroll"></div>
       </section>
       <section className="page" id="pAl">
         <div className="scroll" id="alScroll"></div>

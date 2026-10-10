@@ -863,6 +863,20 @@ body.page-chat #pChat,body.page-activity #pAct,body.page-alerts #pAl,body.page-n
 .cclear{width:62%;margin-left:auto;margin-right:auto}
 .pc-approve{background:var(--white);color:#000}
 .reply-cta{background:var(--white);color:#000}
+/* Phase 3: the ongoing-work line (chat + drawer rows) and the project rows */
+.ongoing{display:none;align-items:center;gap:7px;padding:2px 20px 6px;font-size:12px;color:var(--dim);min-width:0}
+.ongoing.on{display:flex}
+.ongoing .ogt,.crow2 .p.og .ogt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.od{width:6px;height:6px;border-radius:50%;background:var(--faint);flex:none}
+.od.running{background:var(--primary);animation:pul 1.4s ease-in-out infinite}
+.od.you{background:var(--primary)}
+.od.blocked{background:var(--err)}
+.ongoing.blocked,.crow2 .p.og.blocked{color:var(--err-text)}
+.crow2 .p.og{display:flex;align-items:center;gap:6px}
+.csec.proj{display:flex;align-items:center;justify-content:space-between}
+.csec .padd{font-size:15px;line-height:1;color:var(--label-2);padding:0 2px;font-weight:400}
+.proj-cur{margin-left:auto;font-size:12px;color:var(--dim)}
+.cl-title{flex:1;text-align:center;font-size:15px;font-weight:600}
 @media (prefers-reduced-motion:reduce){*{transition-duration:.01ms!important;animation:none!important}}
 
 /* The React root is not a box: the shell's parts are laid out as body's own

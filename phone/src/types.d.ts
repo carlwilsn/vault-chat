@@ -41,6 +41,12 @@ interface ConvSummary {
   statusSummary?: string;
   thinkingDigest?: string;
   doneWhenDone?: string[];
+  /** Phase 3: the project slug and the ongoing-work fields (server/phoneData.ts). */
+  project?: string;
+  state?: string;
+  nextWakeAt?: number;
+  costUsd?: number;
+  wakeReason?: string;
 }
 
 /** A live run from /status (heartbeat-backed — the Activity board's truth;
@@ -186,6 +192,6 @@ interface MockDB {
   notes: NoteItem[];
   threads: Record<string, ChatThread>;
   notifClearTs?: number;
-  /** Claude-screen feedback fixtures (one per pipeline state). */
-  feedback?: Array<{ id: string; title: string; text: string; ts: string; state: string; detail: string; confirmable: boolean; queued?: boolean }>;
+  /** The vault's projects (GET /projects). */
+  projects?: Array<{ slug: string; name: string }>;
 }

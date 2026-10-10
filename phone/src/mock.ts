@@ -192,26 +192,14 @@ export function installMock() {
     if (u === "/notes/status") { const n = DB.notes.find((x) => x.id === body.id); if (n) n.status = body.status === "open" ? "open" : "resolved"; return reply({ ok: true }); }
     if (u === "/notes/edit") { const n = DB.notes.find((x) => x.id === body.id); if (!n) return reply({ error: "note not found" }); n.user_draft = body.text; n.title = null; n.last_updated = new Date().toISOString(); return reply({ ok: true, id: n.id }); }
     if (u === "/notes/clear-resolved") { let c = 0; DB.notes.forEach((n) => { if (n.status === "resolved") { n.status = "cleared"; c += 1; } }); return reply({ ok: true, cleared: c }); }
-    // The Claude screen: one fixture per pipeline state, and a live-ish confirm.
-    if (u === "/feedback") {
-      if (!DB.feedback) DB.feedback = [
-        { id: "fb-ship", title: "Home-screen icon still gray", text: "The app icon is still gray, not the flat monochrome one.\n\n— reported from the chat screen · v0.5.90", ts: "2026-07-15T12:15:00Z", state: "shipped", detail: "manifest → PNG-only", confirmable: true },
-        { id: "fb-diag", title: "Overhaul the settings UI", text: "The Claude settings screen has poor design and functionality.\n\n— reported from the notes screen · v0.5.87", ts: "2026-07-15T12:06:00Z", state: "diagnosing", detail: "", confirmable: false },
-        { id: "fb-reop", title: "Voice cut out mid-slide", text: "Voice session ended in the middle of a walkthrough.\n\n— reported from the chat screen · v0.5.85", ts: "2026-07-14T20:00:00Z", state: "reopened", detail: "", confirmable: false },
-        { id: "fb-brief", title: "Old missions suddenly rerunning", text: "A bunch of old missions are rerunning???\n\n— reported from the activity screen · v0.5.87", ts: "2026-07-15T12:27:00Z", state: "briefed", detail: "post-Coconut gate", confirmable: false },
-        { id: "fb-open", title: "Testing report", text: "Testing report\n\n— reported from the notes screen · v0.5.82", ts: "2026-07-14T12:15:00Z", state: "open", detail: "", confirmable: false, queued: true },
-        { id: "fb-old", title: "Pre-fixer report (older than the watermark)", text: "An old report from before the auto-fixer existed.\n\n— reported from the notes screen · v0.5.80", ts: "2026-07-12T09:00:00Z", state: "open", detail: "", confirmable: false, queued: false },
-        { id: "fb-done", title: "Phantom conversations dot", text: "The conversations indicator was up with an empty panel.\n\n— reported from the chat screen · v0.5.87", ts: "2026-07-15T12:06:30Z", state: "done", detail: "", confirmable: false },
-      ];
-      return reply({ items: DB.feedback });
-    }
-    if (u === "/feedback/confirm") {
-      const f = (DB.feedback || []).find((x) => x.id === body.id);
-      if (f) { if (body.fixed) { f.state = "done"; f.confirmable = false; } else { f.state = "reopened"; f.confirmable = false; } }
-      return reply({ ok: true });
-    }
-    if (u === "/coder") {
-      return new Promise((res) => setTimeout(() => res(reply({ reply: "(mock coder) Got it — “" + String(body.message || "").slice(0, 80) + "”. In the real app this is a live Claude Code session in the box's source.", sessionId: "mock" })), 700));
+    if (u === "/projects") return reply({ projects: DB.projects || [] });
+    if (u === "/conversation/project") {
+      const want = String(body.project || "").trim();
+      const slug = want ? want.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : "";
+      if (slug && !(DB.projects || []).some((x) => x.slug === slug)) (DB.projects = DB.projects || []).push({ slug, name: want });
+      const cs = DB.convs.find((c) => c.id === body.convId); if (cs) cs.project = slug || undefined;
+      const th = DB.threads[body.convId]; if (th) (th as any).project = slug || undefined;
+      return reply({ ok: true, project: slug || null });
     }
     if (u === "/poll") {
       // Running workers stream signs of life so the thread's live timeline is
@@ -279,11 +267,17 @@ export function installMock() {
       return reply({ events: evs, next: String(pollTick) });
     }
     if (u === "/message") {
-      if (body.mission) return reply({ ok: true, convId: "m_new", mission: body.mission.title });
       // Append to an existing thread + a canned reply so follow-up threads
       // (ask / minted fu-) render a real round in the sheet.
       const th = body.convId && DB.threads[body.convId];
       if (th) { th.messages.push({ role: "user", content: body.text, direct: true }); setTimeout(() => { th.messages.push({ role: "assistant", content: "Here's the context on that call — happy to dig into any part of it.", direct: true }); }, 350); }
+      if (!body.convId && body.project) {
+        const nid = "new-" + Date.now();
+        DB.convs.unshift({ id: nid, title: String(body.text || "New chat").split("\n")[0].slice(0, 60), source: "phone", lastActivityAt: Date.now(), msgCount: 1, preview: "", project: body.project });
+        DB.threads[nid] = { id: nid, title: String(body.text || "New chat").slice(0, 60), source: "phone", status: "idle", messages: [{ role: "user", content: body.text }] } as any;
+        (DB.threads[nid] as any).project = body.project;
+        return reply({ ok: true, convId: nid });
+      }
       return reply({ ok: true, convId: body.convId || "new-" + Date.now(), probe: true });
     }
     if (u === "/decision-record") {
@@ -291,14 +285,6 @@ export function installMock() {
       // pre-decided ask card (never unread, never pushed).
       DB.notifs.push({ id: "dec-" + Date.now(), ts: Date.now(), kind: "ask", title: body.title || "Inline decision", intention: "Your call · decided in-conversation", icon: "?", cls: "a", body: body.question || "", convId: body.convId || "", read: true, answeredWith: body.answer, answeredAt: Date.now(), readAt: Date.now() });
       return reply({ ok: true });
-    }
-    if (u === "/alert-followup") {
-      // Mirror the box: mint an isolated follow-up thread for this notification
-      // (an info alert OR a dec- inline-decision record) and bind it to the card.
-      const fid = "fu-" + Date.now();
-      DB.threads[fid] = { id: fid, title: "Re: " + (body.title || "alert"), source: "ask", status: "idle", askOf: body.convId || "", messages: [ { role: "user", hidden: true, system: true, content: "[CONTEXT] " + (body.title || "") + " — " + (body.body || "") } ] };
-      const nn = DB.notifs.find((x) => x.id === body.notifId); if (nn) nn.followupConvId = fid;
-      return reply({ ok: true, convId: fid });
     }
     if (u === "/answer") {
       // Mirror the real box: stamp WHICH answer settled the ask (answeredWith)
