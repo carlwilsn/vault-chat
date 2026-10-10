@@ -143,19 +143,23 @@ async function changedPaths(repo: string): Promise<{ path: string; deleted: bool
  * skipped paths. Caller holds the repo lock. */
 export async function stageAllExceptLarge(repo: string, gitArgs: string[] = []): Promise<string[]> {
   const skipped: string[] = [];
+  const trackedSkips: string[] = [];
   for (const c of await changedPaths(repo)) {
     if (c.deleted) continue;
     try {
       const st = statSync(join(repo, c.path));
       if (st.isFile() && st.size > MAX_FILE_BYTES) {
         skipped.push(c.path);
+        // Untracked: ignore it for good (then `add -A` skips it). Tracked and
+        // grown past the cap: leave the change unstaged via a pathspec.
         if (c.untracked) excludeLocally(repo, c.path);
+        else trackedSkips.push(c.path);
       }
     } catch {
       /* vanished */
     }
   }
-  const pathspec = ["--", ".", ...skipped.map((p) => `:(exclude,literal)${p}`)];
+  const pathspec = ["--", ".", ...trackedSkips.map((p) => `:(exclude,literal)${p}`)];
   await git(repo, [...gitArgs, "add", "-A", ...pathspec]);
   return skipped;
 }

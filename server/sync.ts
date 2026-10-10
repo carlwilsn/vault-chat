@@ -49,7 +49,7 @@ export class BoxSync {
   private timer: NodeJS.Timeout | null = null;
   private inFlight: Promise<void> | null = null;
   private again = false;
-  private stopped = false;
+  private stopped = true; // until start()
   private alertedFailure = false;
   private alertedLarge = new Set<string>();
 
@@ -58,6 +58,7 @@ export class BoxSync {
     private bare: string,
     private intervalMs: number,
     private alert: Alert,
+    private alertAfterMs = ALERT_AFTER_MS,
   ) {
     this.status = {
       enabled: true,
@@ -282,7 +283,7 @@ exit 0
       s.lastError = errText(e);
       if (s.failingSince === null) s.failingSince = Date.now();
       console.warn("[sync] cycle failed:", s.lastError);
-      if (!this.alertedFailure && Date.now() - s.failingSince >= ALERT_AFTER_MS) {
+      if (!this.alertedFailure && Date.now() - s.failingSince >= this.alertAfterMs) {
         this.alertedFailure = true;
         void this.alert("Box sync failing", `For ${Math.round((Date.now() - s.failingSince) / 60_000)} min: ${s.lastError.slice(0, 300)}`, "vault-chat-sync").catch(() => {});
       }
