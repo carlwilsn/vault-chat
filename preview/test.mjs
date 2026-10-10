@@ -42,7 +42,7 @@ for (const side of targets) {
   const list = await (await fetch(origin + "/__preview/scenarios.json")).json();
   for (const sc of list) {
     if (only?.length && !only.includes(sc.id)) continue;
-    const surfaces = sc.surfaces.includes("phone") ? ["desktop", "phone"] : ["desktop"];
+    const surfaces = sc.surfaces;
     for (const surface of surfaces) {
       const phone = surface === "phone";
       const { browser, page, log } = await launch(phone ? { width: 390, height: 844, isMobile: true, deviceScaleFactor: 2 } : { width: 1400, height: 900 });
@@ -51,8 +51,11 @@ for (const side of targets) {
       try {
         await page.goto(url, { timeout: 30000 });
         if (phone) {
-          await page.waitForFunction(() => document.querySelector("#app, main, body > div") && !document.querySelector(".gate"), null, { timeout: 20000 }).catch(() => problems.push("phone did not render"));
-          await page.waitForTimeout(2500);
+          await page.waitForFunction(() => window.__previewPhone?.ready && !document.querySelector(".gate"), null, { timeout: 25000 }).catch(() => problems.push("phone did not render / steps did not finish"));
+          await page.waitForTimeout(1500);
+          const pst = await page.evaluate(() => ({ refused: window.__previewPhone?.refused ?? [], stepError: window.__previewPhone?.stepError ?? null }));
+          for (const r of pst.refused) problems.push(`refused: ${r}`);
+          if (pst.stepError) problems.push(`phone step: ${pst.stepError}`);
         } else {
           await page.waitForFunction(() => window.__preview?.stepsDone, null, { timeout: 30000 }).catch(() => problems.push("steps did not finish in 30 s"));
           await page.waitForTimeout(1500);
