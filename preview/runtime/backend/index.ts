@@ -29,6 +29,8 @@ const table: Record<string, Fn> = {
   default_voice_prompt: () => DEFAULT_VOICE_MD,
   default_supervisor_prompt: () => DEFAULT_SUPERVISOR_MD,
   default_assistant_prompt: () => DEFAULT_ASSISTANT_MD,
+  // Trees from before Phase 3 still seed ask.md (the ask agent is gone since).
+  default_ask_prompt: () => "",
 };
 
 export type CallRecord = { at: number; cmd: string; args: unknown; ok: boolean; ms: number; error?: string; unknown?: boolean };
