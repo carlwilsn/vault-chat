@@ -109,6 +109,22 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     return cfg.sync?.push ?? { ok: true, message: "Everything up-to-date", error: false };
   },
   vault_sync_gh_create_repo: () => ({ ok: false, message: "preview: no GitHub in the preview", error: true }),
+  // [phase 2] Box-mode chat (src/boxChat.ts) talks to the box over these. The
+  // preview's box is reachable and quiet: no conversations of its own, an
+  // empty event ring. A scenario overrides them to make it unreachable.
+  box_get_json: async ({ url }) => {
+    const u = new URL(String(url));
+    const p = u.pathname.replace(/^.*?(\/(poll|conversations|conversation|status))/, "$1");
+    if (p === "/poll") {
+      const after = u.searchParams.get("after");
+      if (after === "latest") return { status: 200, body: JSON.stringify({ next: 0, events: [] }) };
+      await sleep(25_000);
+      return { status: 200, body: JSON.stringify({ next: Number(after) || 0, events: [] }) };
+    }
+    if (p === "/conversations") return { status: 200, body: JSON.stringify({ conversations: [] }) };
+    if (p === "/status") return { status: 200, body: JSON.stringify({ runs: [] }) };
+    return { status: 404, body: JSON.stringify({ error: "not found" }) };
+  },
   box_post_json: ({ url }) => {
     report("info", `box POST ${url} (answered by the preview)`);
     return { status: 200, body: "{\"ok\":true}" };
@@ -241,5 +257,5 @@ export function windowCommand(cmd: string, args: Record<string, any>): { handled
 }
 
 export function fileForConvert(path: string): string {
-  return fs.urlFor(path) ?? `/__preview/vfs?path=${encodeURIComponent(path)}`;
+  return fs.urlFor(path) ?? `${import.meta.env.BASE_URL}__preview/vfs?path=${encodeURIComponent(path)}`;
 }

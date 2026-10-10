@@ -215,7 +215,7 @@ function capsScenarios(): Scenario[] {
         "google/gemini-3.5-flash": { helpers: false },
       }),
     },
-    open: [{ click: "[title='Settings']" }, { sleep: 600 }, ...(view === "fold" ? [{ click: "summary", text: /^Capabilities/ } as Step] : [])],
+    open: [{ click: "[title='Settings']" }, { sleep: 600 }, ...(view === "fold" ? [{ run: (api) => api.byText(/^Capabilities/, "summary")?.click() } as Step] : [])],
   }));
 }
 const syncTimers = { 15000: 1500, 30000: 1500 };
@@ -514,8 +514,19 @@ export const scenarios: Scenario[] = [
       { file: NOTE },
       { sleep: 600 },
       { key: "Ctrl+l" },
-      { type: "What is the absmean scale in BitNet?", into: "textarea[placeholder^='Ask about']" },
-      { key: "Enter", target: "textarea[placeholder^='Ask about']" },
+      { sleep: 600 },
+      // Before, Ctrl+L on Auto may not get as far as the popover: ask only if it opened.
+      {
+        run: async (api) => {
+          const ta = api.q("textarea[placeholder^='Ask about']") as HTMLTextAreaElement | null;
+          if (!ta) return;
+          ta.focus();
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(ta, "What is the absmean scale in BitNet?");
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 100));
+          ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
+        },
+      },
       { sleep: 2500 },
     ],
   },
@@ -527,7 +538,20 @@ export const scenarios: Scenario[] = [
       "papers/attention-survey.pdf (320 pages) open; the chat asks for a summary and the scripted model calls PdfExtract with no pages, then pages 4-8. After (the box engine's PdfRead rules): no pages → pages 1-3 plus “320 pages in total … pass pages for more”, each call capped at 12k chars (maxChars up to 40k), so the dial stays low. Before: no pages → all 320 pages extracted and ~60k chars returned. “2 tool calls” under the reply is opened: read the end of each result.",
     build: (c) => world(c),
     llm: { scripts: [pdfRanges] },
-    open: [...deskOpen("papers/attention-survey.pdf"), { sleep: 1500 }, ...send("Summarize the attention survey PDF."), { waitIdle: true, timeout: 90000 }, { click: "details > summary", text: /2 tool calls/ }],
+    open: [...deskOpen("papers/attention-survey.pdf"), { sleep: 1500 }, ...send("Summarize the attention survey PDF."),
+      { waitIdle: true, timeout: 90000 },
+      // Open the reply's tool calls ("2 tool calls"; before, the whole-PDF
+      // extract is slow and the group can read differently — open whatever is there).
+      {
+        run: async (api) => {
+          for (let i = 0; i < 150; i++) {
+            const s = api.byText(/\d+ tool calls?/, "details > summary");
+            if (s) return void s.click();
+            await new Promise((r) => setTimeout(r, 200));
+          }
+        },
+      },
+    ],
   },
   {
     id: "search-notes",
@@ -693,6 +717,35 @@ export const scenarios: Scenario[] = [
     },
     fastTimers: syncTimers,
     open: [...deskOpen(NOTE, "c-spectral"), { sleep: 1200 }, { advance: 11 * MIN }, { sleep: 3500 }],
+  },
+  {
+    id: "box-unreachable",
+    title: "Phase 2 — chat when the box is unreachable",
+    group: "Sync",
+    notes:
+      "Box mode (Phase 2): the vault's sync.json names a box, so every chat turn runs on the box. Here the box can't be reached. After: the composer is disabled and says “Box unreachable — agent runs on the box” (notes and editing still work). Before: the laptop runs the agent itself, so the composer stays open; only the sync chip turns red.",
+    build: (c) => world(c),
+    host: {
+      sync: {
+        box: BOX,
+        reports: [
+          {
+            ok: false,
+            message: "box unreachable",
+            error: "git fetch failed (exit 128):\nfatal: unable to access 'https://box.tail0a1b2.ts.net/git/summer-demo.git/': Could not resolve host: box.tail0a1b2.ts.net",
+            error_kind: "unreachable",
+            changes_waiting: 1,
+          },
+        ],
+      },
+    },
+    overrides: {
+      box_get_json: { error: "error sending request for url (https://box.tail0a1b2.ts.net/poll?after=latest): dns error: Could not resolve host" },
+      box_post_json: { error: "error sending request for url (https://box.tail0a1b2.ts.net/message): dns error: Could not resolve host" },
+    },
+    fastTimers: syncTimers,
+    activeConversation: "c-spectral",
+    open: [...deskOpen(NOTE, "c-spectral"), { sleep: 1500 }, { advance: 11 * MIN }, { sleep: 2500 }],
   },
   {
     id: "sync-error",
