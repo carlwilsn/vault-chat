@@ -34,7 +34,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::{
-    conv_is_mission_zone, human_identity, prepare_vault_repo, run_git, run_git_as, run_git_mut,
+    human_identity, prepare_vault_repo, run_git, run_git_as, run_git_mut,
     run_git_timeout, with_repo_lock, MISSION_ZONE_PATHS,
 };
 
@@ -272,38 +272,19 @@ fn path_in_zone_dirs(path: &str) -> bool {
         .any(|z| path == *z || path.starts_with(&format!("{}/", z)))
 }
 
-fn first_line_of_file(vault: &str, rel: &str) -> String {
-    std::fs::File::open(PathBuf::from(vault).join(rel))
-        .ok()
-        .and_then(|f| {
-            use std::io::BufRead;
-            std::io::BufReader::new(f).lines().next().and_then(|r| r.ok())
-        })
-        .unwrap_or_default()
-}
-
-fn first_line_at(vault: &str, rev: &str, rel: &str) -> String {
-    run_git(vault, &["show", &format!("{}:{}", rev, rel)])
-        .ok()
-        .filter(|(_, _, c)| *c == 0)
-        .map(|(o, _, _)| o.lines().next().unwrap_or("").to_string())
-        .unwrap_or_default()
-}
-
-/// Is `rel` a mission-zone path? Conversations are classified by their meta
-/// line: the local copy first, the box's as a fallback.
-fn is_zone_path(vault: &str, rel: &str, authority: &str) -> bool {
+/// Is `rel` a mission-zone path? [phase 2] In box mode every agent turn runs
+/// on the box, so EVERY conversation file is the box's (not just
+/// mission/worker/ask threads): the laptop resets them all to the box before a
+/// commit, and a conflict on one resolves to the box's side.
+fn is_zone_path(_vault: &str, rel: &str, _authority: &str) -> bool {
     if path_in_zone_dirs(rel) {
         return true;
     }
-    if rel.starts_with(".vault-chat/conversations/") && rel.ends_with(".jsonl") {
-        let local = first_line_of_file(vault, rel);
-        if !local.is_empty() && conv_is_mission_zone(&local) {
-            return true;
-        }
-        return conv_is_mission_zone(&first_line_at(vault, authority, rel));
-    }
-    false
+    is_conversation_file(rel)
+}
+
+fn is_conversation_file(rel: &str) -> bool {
+    rel.starts_with(".vault-chat/conversations/") && (rel.ends_with(".jsonl") || rel.ends_with(".json"))
 }
 
 /// Reset every mission-zone path that differs from `authority` (box/box) back
@@ -807,6 +788,23 @@ pub fn post_json(url: &str, body: &str, token: Option<&str>) -> Result<(u16, Str
         .post(url)
         .header("Content-Type", "application/json")
         .body(body.to_string());
+    if let Some(t) = token.filter(|t| !t.is_empty()) {
+        req = req.header("X-Vault-Token", t);
+    }
+    let resp = req.send().map_err(|e| e.to_string())?;
+    let status = resp.status().as_u16();
+    let text = resp.text().unwrap_or_default();
+    Ok((status, text))
+}
+
+/// GET from the box with a bounded timeout (the chat's long-poll needs ~30 s).
+pub fn get_json(url: &str, token: Option<&str>, timeout_ms: u64) -> Result<(u16, String), String> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("vault-chat/box-chat")
+        .timeout(Duration::from_millis(timeout_ms.clamp(1_000, 120_000)))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut req = client.get(url).header("Accept", "application/json");
     if let Some(t) = token.filter(|t| !t.is_empty()) {
         req = req.header("X-Vault-Token", t);
     }

@@ -281,7 +281,8 @@ fn mission_zone_is_never_written_by_the_laptop() {
     ];
     tauri::async_runtime::block_on(crate::conversations_write_all(v.clone(), lines)).unwrap();
     assert_eq!(read(&r.laptop, ".vault-chat/conversations/m1.jsonl"), mission);
-    assert!(r.laptop.join(".vault-chat/conversations/chat2.jsonl").exists());
+    // [phase 2] …nor any other conversation: the box authors every one.
+    assert!(!r.laptop.join(".vault-chat/conversations/chat2.jsonl").exists());
     assert_eq!(crate::vault_sync_role(v), "follower", "box mode = follower: no local scheduler/missions");
 
     // A zone-only conflict (a stale laptop commit that bypassed the sanitize)
@@ -421,5 +422,54 @@ fn github_failure_stays_reported_between_debounced_attempts() {
     let second = r.cycle();
     assert!(second.ok);
     assert_eq!(second.github_warning, first.github_warning);
+    r.done();
+}
+
+/// [phase 2] Box mode: the box authors EVERY conversation. The laptop's
+/// conversations writer is a no-op (chats included), a delete is a tombstone
+/// only, and a stray laptop edit to a chat is reset to the box's before the
+/// commit.
+#[test]
+fn box_mode_never_writes_conversations() {
+    let r = rig("convs");
+    let chat = "{\"id\":\"c9\",\"source\":\"manual\",\"title\":\"box chat\"}\n{\"role\":\"user\",\"content\":\"hi\"}\n{\"role\":\"assistant\",\"content\":\"from the box\"}\n";
+    r.box_commit(&[(".vault-chat/conversations/c9.jsonl", chat)], "box chat turn");
+    let rep = r.cycle();
+    assert!(rep.merged, "{:?}", rep);
+    assert_eq!(read(&r.laptop, ".vault-chat/conversations/c9.jsonl"), chat);
+    let v = s(&r.laptop);
+
+    // 1. The writer writes nothing — not an existing chat (even with more
+    //    messages in memory), not a brand-new one, not a legacy monolith sweep.
+    let before_chat1 = read(&r.laptop, ".vault-chat/conversations/chat1.jsonl");
+    let lines = vec![
+        "{\"id\":\"c9\",\"source\":\"manual\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"from the box\"},{\"role\":\"user\",\"content\":\"laptop local turn\"}]}".to_string(),
+        "{\"id\":\"chat1\",\"source\":\"manual\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"laptop model reply\"}]}".to_string(),
+        "{\"id\":\"fresh\",\"source\":\"manual\",\"messages\":[{\"role\":\"user\",\"content\":\"new\"}]}".to_string(),
+    ];
+    tauri::async_runtime::block_on(crate::conversations_write_all(v.clone(), lines)).unwrap();
+    assert_eq!(read(&r.laptop, ".vault-chat/conversations/c9.jsonl"), chat);
+    assert_eq!(read(&r.laptop, ".vault-chat/conversations/chat1.jsonl"), before_chat1);
+    assert!(!r.laptop.join(".vault-chat/conversations/fresh.jsonl").exists());
+    let st = git(&r.laptop, &["status", "--porcelain"]);
+    assert!(!st.contains("conversations/"), "writer dirtied a conversation: {}", st);
+
+    // 2. A delete is a tombstone only; the file stays for the box to remove.
+    tauri::async_runtime::block_on(crate::conversation_delete(v.clone(), "c9".to_string())).unwrap();
+    assert!(r.laptop.join(".vault-chat/conversations/c9.jsonl").exists());
+    assert!(read(&r.laptop, ".vault-chat/conversations-deleted.jsonl").contains("\"c9\""));
+
+    // 3. A stray laptop edit to a CHAT (not a mission) is reset to the box's
+    //    before the commit: master carries the box's bytes; the tombstone flows.
+    write(&r.laptop, ".vault-chat/conversations/c9.jsonl", "{\"id\":\"c9\",\"source\":\"manual\"}\n{\"role\":\"user\",\"content\":\"stray\"}\n");
+    let rep = r.cycle();
+    assert!(rep.ok, "{:?}", rep.error);
+    assert_eq!(
+        git(&r.bare, &["show", "master:.vault-chat/conversations/c9.jsonl"]),
+        git(&r.bare, &["show", "box:.vault-chat/conversations/c9.jsonl"]),
+    );
+    assert!(git(&r.bare, &["show", "master:.vault-chat/conversations-deleted.jsonl"]).contains("\"c9\""));
+
+    no_sidecars(&r.laptop);
     r.done();
 }
