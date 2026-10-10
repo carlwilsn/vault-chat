@@ -629,20 +629,32 @@ fn changes_waiting(vault: &str) -> u32 {
         .unwrap_or(0)
 }
 
-static GITHUB_LAST: Mutex<Option<HashMap<String, (Instant, u64)>>> = Mutex::new(None);
+#[derive(Clone)]
+struct GithubState {
+    attempted: Instant,
+    pushed_at: Option<u64>,
+    warning: Option<String>,
+}
 
-/// Back up master + the box branch to the `github` remote, debounced.
+static GITHUB_LAST: Mutex<Option<HashMap<String, GithubState>>> = Mutex::new(None);
+
+/// Back up master + the box branch to the `github` remote, at most every
+/// 2 minutes (attempts too, so a failing backup doesn't retry every cycle).
+/// Between attempts the last outcome is reported again, so a failure stays
+/// visible until a push succeeds.
 fn github_backup(vault: &str, report: &mut BoxSyncReport) {
     if !git_ok(vault, &["remote", "get-url", GITHUB_REMOTE]) {
         return;
     }
-    {
+    let prev = {
         let g = GITHUB_LAST.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((at, ms)) = g.as_ref().and_then(|m| m.get(vault)) {
-            report.github_pushed_at = Some(*ms);
-            if at.elapsed() < GITHUB_DEBOUNCE {
-                return;
-            }
+        g.as_ref().and_then(|m| m.get(vault)).cloned()
+    };
+    if let Some(p) = &prev {
+        if p.attempted.elapsed() < GITHUB_DEBOUNCE {
+            report.github_pushed_at = p.pushed_at;
+            report.github_warning = p.warning.clone();
+            return;
         }
     }
     let box_spec = format!("{}:refs/heads/box", BOX_REF);
@@ -650,16 +662,20 @@ fn github_backup(vault: &str, report: &mut BoxSyncReport) {
     if ref_exists(vault, BOX_REF) {
         args.push(&box_spec);
     }
+    let mut next = GithubState {
+        attempted: Instant::now(),
+        pushed_at: prev.and_then(|p| p.pushed_at),
+        warning: None,
+    };
     match run_git_timeout(vault, &args, NET_TIMEOUT_SECS) {
-        Ok((_, _, 0)) => {
-            let ms = now_ms();
-            let mut g = GITHUB_LAST.lock().unwrap_or_else(|p| p.into_inner());
-            g.get_or_insert_with(HashMap::new).insert(vault.to_string(), (Instant::now(), ms));
-            report.github_pushed_at = Some(ms);
-        }
-        Ok((o, e, c)) => report.github_warning = Some(full_err(&o, &e, c, "GitHub backup (git push github)")),
-        Err(e) => report.github_warning = Some(format!("GitHub backup failed: {}", e)),
+        Ok((_, _, 0)) => next.pushed_at = Some(now_ms()),
+        Ok((o, e, c)) => next.warning = Some(full_err(&o, &e, c, "GitHub backup (git push github)")),
+        Err(e) => next.warning = Some(format!("GitHub backup failed: {}", e)),
     }
+    report.github_pushed_at = next.pushed_at;
+    report.github_warning = next.warning.clone();
+    let mut g = GITHUB_LAST.lock().unwrap_or_else(|p| p.into_inner());
+    g.get_or_insert_with(HashMap::new).insert(vault.to_string(), next);
 }
 
 /// One full sync cycle. Blocking; call from a worker thread.

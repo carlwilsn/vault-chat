@@ -409,3 +409,17 @@ fn without_sync_json_nothing_changes() {
     assert!(base.join(".vault-chat/conversations/m9.jsonl").exists());
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn github_failure_stays_reported_between_debounced_attempts() {
+    let r = rig("githubsticky");
+    git(&r.laptop, &["remote", "add", "github", &s(&r.base.join("nope.git"))]);
+    let first = r.cycle();
+    assert!(first.github_warning.is_some());
+    // Within the 2-minute window: no new attempt, but the warning is still there.
+    write(&r.laptop, "y.md", "y\n");
+    let second = r.cycle();
+    assert!(second.ok);
+    assert_eq!(second.github_warning, first.github_warning);
+    r.done();
+}
