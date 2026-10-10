@@ -3,7 +3,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
+import { tmp, cleanup, makeVault, makeKeyStore, fakeOpenRouter, fakePushService, startServer, waitFor, type Running, type FakeOpenRouter } from "./helpers";
 
 const TOKEN = "canary-phone-token-0000";
 
@@ -135,6 +135,51 @@ describe("boot + phone routes", () => {
   it("/answer without text is refused like the desktop", async () => {
     const j = await (await post("/answer", { convId: missionId })).json();
     expect(j.error).toMatch(/convId and non-empty text/);
+  });
+
+  // What `tailscale serve` adds for a tailnet user (the laptop / the phone).
+  const viaServe = {
+    "content-type": "application/json",
+    "x-forwarded-for": "100.64.0.7",
+    "x-forwarded-proto": "https",
+    "tailscale-user-login": "carwilson0929@gmail.com",
+  };
+
+  it("/message and /answer work through serve with the identity header and no token", async () => {
+    const r = await fetch(srv.base + "/message", { method: "POST", headers: viaServe, body: JSON.stringify({ mission: { title: "Serve mission", goal: "Say hi." } }) });
+    expect(r.status).toBe(200);
+    const j = await r.json();
+    expect(j.ok).toBe(true);
+    await waitFor(async () => (await (await get("/api/v1/health")).json()).busy.runs === 0, 60_000);
+    const a = await fetch(srv.base + "/answer", { method: "POST", headers: viaServe, body: JSON.stringify({ convId: j.convId, text: "go" }) });
+    expect(a.status).toBe(200);
+    expect((await a.json()).ok).toBe(true);
+    const bad = await fetch(srv.base + "/message", { method: "POST", headers: { ...viaServe, "tailscale-user-login": "x@y.z" }, body: "{}" });
+    expect(bad.status).toBe(401);
+  });
+
+  it("/api/v1/alert delivers a Web Push with the alert's tag", async () => {
+    const push = await fakePushService();
+    try {
+      const sub = await fetch(srv.base + "/push/subscribe", { method: "POST", headers: viaServe, body: JSON.stringify({ subscription: push.subscription }) });
+      expect(sub.status).toBe(200);
+      const vapid = await (await get("/push/vapid")).json();
+      expect(vapid.key).toMatch(/^[A-Za-z0-9_-]{80,}$/);
+      const r = await fetch(srv.base + "/api/v1/alert", {
+        method: "POST",
+        headers: viaServe,
+        body: JSON.stringify({ title: "Sync conflict", body: "notes/a.md", tag: "vc-sync-conflict-vault" }),
+      });
+      expect(r.status).toBe(200);
+      expect((await r.json()).sent).toBe(1);
+      expect(push.received).toHaveLength(1);
+      expect(push.received[0]!.payload).toMatchObject({ title: "Sync conflict", body: "notes/a.md", tag: "vc-sync-conflict-vault" });
+      expect(String(push.received[0]!.headers.authorization)).toMatch(/^vapid t=.+, k=/);
+      // Unsubscribe again so later tests see no subscriptions.
+      await fetch(srv.base + "/push/unsubscribe", { method: "POST", headers: viaServe, body: JSON.stringify({ endpoint: push.subscription.endpoint }) });
+    } finally {
+      await push.close();
+    }
   });
 
   it("unknown routes 404", async () => {

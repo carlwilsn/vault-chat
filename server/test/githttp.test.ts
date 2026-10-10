@@ -32,6 +32,7 @@ describe("git smart HTTP", () => {
   });
 
   afterAll(async () => {
+    if (process.env.VC_TEST_LOGS) console.log(srv?.logs());
     await srv?.stop();
     cleanup(home);
   });

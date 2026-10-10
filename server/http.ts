@@ -106,7 +106,10 @@ export function startHttpServer(hooks: ServerHooks): Promise<Server> {
   });
   // Long-polls hold for 25 s; don't let node's defaults cut them.
   server.requestTimeout = 0;
-  server.headersTimeout = 60_000;
+  server.headersTimeout = 70_000;
+  // Outlive client/proxy idle pools so a reused keep-alive socket is never
+  // closed under a request (ECONNRESET on the next call).
+  server.keepAliveTimeout = 65_000;
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(cfg.port, cfg.host, () => {

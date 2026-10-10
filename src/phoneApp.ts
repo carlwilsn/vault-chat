@@ -930,7 +930,7 @@ async function encryptForSub(
 
 /** Deliver a notification to every registered phone. Quietly prunes dead
  * subscriptions (404/410). Returns how many deliveries were attempted. */
-export async function sendPush(title: string, body: string, url = "/phone"): Promise<number> {
+export async function sendPush(title: string, body: string, url = "/phone", tag = "vault-chat"): Promise<number> {
   let subs: any[] = [];
   try {
     subs = JSON.parse(await invoke<string>("phone_push_subs"));
@@ -940,7 +940,7 @@ export async function sendPush(title: string, body: string, url = "/phone"): Pro
   if (!Array.isArray(subs) || subs.length === 0) return 0;
   const { pubB64u } = await ensureVapid();
   const payload = te.encode(
-    JSON.stringify({ title: title.slice(0, 80), body: body.slice(0, 400), url, tag: "vault-chat" }),
+    JSON.stringify({ title: title.slice(0, 80), body: body.slice(0, 400), url, tag }),
   );
   let sent = 0;
   for (const sub of subs) {

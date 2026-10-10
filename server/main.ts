@@ -76,9 +76,10 @@ async function main(): Promise<void> {
 
   const { activeRuns } = await import("../src/runRegistry");
   const { startBoxSync, syncStatus, syncSummary, triggerSync } = await import("./sync");
-  const alert = async (title: string, body: string, _tag?: string) => {
+  // The tag becomes the Web Push tag, so a repeat alert replaces the last one.
+  const alert = async (title: string, body: string, tag?: string) => {
     try {
-      return await sendPush(title, body);
+      return await sendPush(title, body, "/phone", tag || "vault-chat");
     } catch (e) {
       console.warn("[alert] push failed:", e);
       return 0;

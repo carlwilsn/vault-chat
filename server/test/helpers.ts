@@ -227,3 +227,52 @@ export async function waitFor<T>(fn: () => Promise<T | undefined | null | false>
   }
   throw new Error(`timed out waiting${last ? `: ${last}` : ""}`);
 }
+
+// ---- Web Push: a fake push service that decrypts what it receives ----
+import { createECDH, randomBytes, hkdfSync, createDecipheriv } from "node:crypto";
+
+export type FakePush = {
+  subscription: { endpoint: string; keys: { p256dh: string; auth: string } };
+  received: { headers: Record<string, string | string[] | undefined>; payload: any }[];
+  close: () => Promise<void>;
+};
+
+/** RFC 8291 receiver: a P-256 subscription whose endpoint is a local server
+ * that decrypts every aes128gcm POST back to its JSON payload. */
+export async function fakePushService(): Promise<FakePush> {
+  const ecdh = createECDH("prime256v1");
+  const uaPub = ecdh.generateKeys();
+  const auth = randomBytes(16);
+  const received: FakePush["received"] = [];
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const body = Buffer.concat(chunks);
+      const salt = body.subarray(0, 16);
+      const idlen = body[20]!;
+      const asPub = body.subarray(21, 21 + idlen);
+      const ct = body.subarray(21 + idlen);
+      const shared = ecdh.computeSecret(asPub);
+      const info = Buffer.concat([Buffer.from("WebPush: info\0"), uaPub, asPub]);
+      const ikm = Buffer.from(hkdfSync("sha256", shared, auth, info, 32));
+      const cek = Buffer.from(hkdfSync("sha256", ikm, salt, Buffer.from("Content-Encoding: aes128gcm\0"), 16));
+      const nonce = Buffer.from(hkdfSync("sha256", ikm, salt, Buffer.from("Content-Encoding: nonce\0"), 12));
+      const d = createDecipheriv("aes-128-gcm", cek, nonce);
+      d.setAuthTag(ct.subarray(ct.length - 16));
+      const plain = Buffer.concat([d.update(ct.subarray(0, ct.length - 16)), d.final()]);
+      const end = plain.lastIndexOf(2);
+      received.push({ headers: req.headers, payload: JSON.parse(plain.subarray(0, end).toString("utf8")) });
+      res.writeHead(201);
+      res.end();
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const port = (server.address() as any).port;
+  const b64u = (b: Buffer) => b.toString("base64url");
+  return {
+    subscription: { endpoint: `http://127.0.0.1:${port}/push/abc`, keys: { p256dh: b64u(uaPub), auth: b64u(auth) } },
+    received,
+    close: () => new Promise((r) => server.close(() => r())),
+  };
+}
