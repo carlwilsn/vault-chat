@@ -157,27 +157,6 @@ export async function saveVaultVoicePrompt(vault: string, contents: string): Pro
   });
 }
 
-/** Per-vault supervisor role prompt at `.vault-chat/agent/supervisor.md`. Layers
- *  the always-on orchestrator role (persistent mind, goal loop, worker steering)
- *  onto the agent. "" when absent — the agent stays a plain responder with no
- *  supervisor section. */
-export async function loadVaultSupervisorPrompt(vault: string | null): Promise<string> {
-  if (!vault) return "";
-  return readAgentConfig(vault, "supervisor.md");
-}
-
-export async function ensureVaultSupervisorPrompt(vault: string | null): Promise<void> {
-  if (!vault) return;
-  await ensureAgentConfig(vault, "supervisor.md", "default_supervisor_prompt");
-}
-
-export async function saveVaultSupervisorPrompt(vault: string, contents: string): Promise<void> {
-  await invoke("write_text_file", {
-    path: `${vault}/${AGENT_DIR}/supervisor.md`,
-    contents,
-  });
-}
-
 /** Per-vault cockpit-assistant prompt at `.vault-chat/agent/assistant.md`. Steers
  *  the interactive phone-cockpit chat — light, conversational, proposes missions
  *  via plan cards instead of running work itself. "" when absent (the agent then
@@ -219,7 +198,7 @@ export async function saveVaultNorthStar(vault: string, contents: string): Promi
 function formatNorthStarBlock(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) return "";
-  return `## Vault north star\n\nThe user has declared this brief for the vault you're working in. Treat it as load-bearing — it tells you what kind of help the user wants here (tutor / co-engineer / from-scratch / etc.). When the brief conflicts with your default behavior, the brief wins.\n\nThe brief lives at \`<vault>/.vault-chat/agent/north-star.md\`. If the user asks you to update, append to, or revise it, edit that file directly with the Edit or Write tool — the modal in the titlebar reads from the same place and will reflect your changes when reopened.\n\n${trimmed}`;
+  return `## Vault north star\n\nThe user has declared this brief for the vault you're working in. Treat it as load-bearing — it tells you what kind of help the user wants here (tutor / co-engineer / from-scratch / etc.). When the brief conflicts with your default behavior, the brief wins.\n\nThe brief lives at \`<vault>/.vault-chat/agent/north-star.md\`. If the user asks you to update, append to, or revise it, edit that file directly with the Edit or Write tool.\n\n${trimmed}`;
 }
 
 export function northStarPromptBlock(text: string): string {
