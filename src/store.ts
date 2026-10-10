@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import type { ModelSpec, ProviderId } from "./providers";
-import { DEFAULT_MODEL_ID, DEFAULT_WORKER_MODEL_ID, setLiveCatalog, setAutoRouterCostBias } from "./providers";
+import { DEFAULT_MODEL_ID, setLiveCatalog, setAutoRouterCostBias } from "./providers";
 import { BACKGROUND_MODEL_STORAGE, backgroundModel } from "./roles";
 import type { Skill } from "./skills";
 import type { Note } from "./notes";
@@ -230,18 +230,15 @@ const MODEL_STORAGE = "vault_chat_model";
 // stays cheap. Routed in sendMessage (by conversation source) + the worker /
 // mission spawn paths.
 const ASSISTANT_MODEL_STORAGE = "vault_chat_assistant_model";
-const SUPERVISOR_MODEL_STORAGE = "vault_chat_supervisor_model";
-const WORKER_MODEL_STORAGE = "vault_chat_worker_model";
 const THEME_STORAGE = "vault_chat_theme";
 const VAULT_STORAGE = "vault_chat_last_vault";
 const CHAT_STORAGE = "vault_chat_history";
 const STRICT_VAULT_STORAGE = "vault_chat_strict_vault";
 const BASH_DISABLED_STORAGE = "vault_chat_bash_disabled";
-// [sync split] Where THIS machine sends mission interaction when it isn't the
-// mission host (a follower checkout): the box's cockpit URL + token, exactly
-// what the phone uses. Machine-local by design — never in the synced config.
-const MISSION_HOST_URL_STORAGE = "vault_chat_mission_host_url";
-const MISSION_HOST_TOKEN_STORAGE = "vault_chat_mission_host_token";
+// The box's X-Vault-Token (box-mode chat and the sync's API calls), the same
+// token the phone uses. Machine-local by design — never in the synced config.
+// The key keeps its old name (it was the mission host's token).
+const BOX_TOKEN_STORAGE = "vault_chat_mission_host_token";
 const REASONING_EFFORT_STORAGE = "vault_chat_reasoning_effort";
 const AUTO_COST_BIAS_STORAGE = "vault_chat_auto_cost_bias";
 // The active/open conversation is PER-DEVICE, not synced: your phone chat and
@@ -467,8 +464,6 @@ type State = {
   catalogErrors: Partial<Record<ProviderId, string>>;
   modelId: string;
   assistantModelId: string;
-  supervisorModelId: string;
-  workerModelId: string;
   backgroundModelId: string;
   theme: Theme;
   // Restrict file-op tools (Read/Write/Edit/Delete/Glob/Grep/ListDir/
@@ -478,11 +473,8 @@ type State = {
   strictVaultMode: boolean;
   // Don't expose the Bash tool to the agent at all.
   bashDisabled: boolean;
-  // [sync split] The mission host (the box) this machine relays mission
-  // interaction to when its checkout is a follower — URL + X-Vault-Token,
-  // same contract as the phone. Empty = no relay configured.
-  missionHostUrl: string;
-  missionHostToken: string;
+  // The box's X-Vault-Token (same contract as the phone). Empty = none.
+  boxToken: string;
   // How hard reasoning-capable models think before answering.
   reasoningEffort: ReasoningEffort;
   // Cost ⇄ quality dial for OpenRouter's auto router (0 = quality … 10 =
@@ -667,8 +659,6 @@ type State = {
   refreshCatalog: () => Promise<void>;
   setModelId: (id: string) => void;
   setAssistantModelId: (id: string) => void;
-  setSupervisorModelId: (id: string) => void;
-  setWorkerModelId: (id: string) => void;
   setBackgroundModelId: (id: string) => void;
   setTheme: (t: Theme) => void;
   applyThemeFromEvent: (t: Theme) => void;
@@ -679,7 +669,7 @@ type State = {
   setStrictVaultMode: (b: boolean) => void;
   setAutoRouterCostBias: (n: number) => void;
   setBashDisabled: (b: boolean) => void;
-  setMissionHost: (url: string, token: string) => void;
+  setBoxToken: (token: string) => void;
   setReasoningEffort: (e: ReasoningEffort) => void;
   setSkills: (s: Skill[]) => void;
   setBusy: (b: boolean) => void;
@@ -937,8 +927,6 @@ export const useStore = create<State>((set) => ({
   // (sycophantic loops, lost context, ignored conventions), so default it to a
   // strong model — same tier as supervisors/workers — not the cheap router.
   assistantModelId: localStorage.getItem(ASSISTANT_MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
-  supervisorModelId: localStorage.getItem(SUPERVISOR_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
-  workerModelId: localStorage.getItem(WORKER_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
   backgroundModelId: backgroundModel(),
   theme: loadTheme(),
   strictVaultMode: loadBoolFlag(STRICT_VAULT_STORAGE, !import.meta.env.DEV),
@@ -946,8 +934,7 @@ export const useStore = create<State>((set) => ({
   // Bash enabled; a fresh isolated dev store defaulting it OFF makes probe
   // workers honestly refuse shell tasks and fail probes for the wrong reason.
   bashDisabled: loadBoolFlag(BASH_DISABLED_STORAGE, !import.meta.env.DEV),
-  missionHostUrl: localStorage.getItem(MISSION_HOST_URL_STORAGE) ?? "",
-  missionHostToken: localStorage.getItem(MISSION_HOST_TOKEN_STORAGE) ?? "",
+  boxToken: localStorage.getItem(BOX_TOKEN_STORAGE) ?? "",
   reasoningEffort: loadReasoningEffort(),
   autoRouterCostBias: loadNumFlag(AUTO_COST_BIAS_STORAGE, 7),
   skills: [],
@@ -1461,8 +1448,6 @@ export const useStore = create<State>((set) => ({
     set({ modelId: id });
   },
   setAssistantModelId: (id) => { localStorage.setItem(ASSISTANT_MODEL_STORAGE, id); set({ assistantModelId: id }); },
-  setSupervisorModelId: (id) => { localStorage.setItem(SUPERVISOR_MODEL_STORAGE, id); set({ supervisorModelId: id }); },
-  setWorkerModelId: (id) => { localStorage.setItem(WORKER_MODEL_STORAGE, id); set({ workerModelId: id }); },
   setBackgroundModelId: (id) => { localStorage.setItem(BACKGROUND_MODEL_STORAGE, id); set({ backgroundModelId: id }); },
   setTheme: (t) => {
     localStorage.setItem(THEME_STORAGE, t);
@@ -1492,12 +1477,10 @@ export const useStore = create<State>((set) => ({
     localStorage.setItem(BASH_DISABLED_STORAGE, String(b));
     set({ bashDisabled: b });
   },
-  setMissionHost: (url, token) => {
-    const u = url.trim().replace(/\/+$/, "");
+  setBoxToken: (token) => {
     const t = token.trim();
-    localStorage.setItem(MISSION_HOST_URL_STORAGE, u);
-    localStorage.setItem(MISSION_HOST_TOKEN_STORAGE, t);
-    set({ missionHostUrl: u, missionHostToken: t });
+    localStorage.setItem(BOX_TOKEN_STORAGE, t);
+    set({ boxToken: t });
   },
   setReasoningEffort: (e) => {
     localStorage.setItem(REASONING_EFFORT_STORAGE, e);

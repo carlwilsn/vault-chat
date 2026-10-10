@@ -838,7 +838,7 @@ function markAlerted(key: string): void {
 
 async function postBoxAlert(box: string, title: string, body: string, tag: string): Promise<boolean> {
   try {
-    const token = useStore.getState().missionHostToken || null;
+    const token = useStore.getState().boxToken || null;
     const r = await invoke<{ status: number; body: string }>("box_post_json", {
       url: `${box}/api/v1/alert`,
       body: JSON.stringify({ title, body, tag }),

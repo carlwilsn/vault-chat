@@ -54,7 +54,7 @@ export async function boxLinkFor(vault: string | null): Promise<Link | null> {
   if (!vault || headless()) return null;
   const cfg = await readBoxConfig(vault);
   if (!cfg?.box) return null;
-  return { url: cfg.box.replace(/\/+$/, ""), token: useStore.getState().missionHostToken || null };
+  return { url: cfg.box.replace(/\/+$/, ""), token: useStore.getState().boxToken || null };
 }
 
 async function httpGet(link: Link, path: string, timeoutMs = 20_000): Promise<any> {
