@@ -809,7 +809,7 @@ export const useStore = create<State>((set) => ({
   // plan cards. Auto's cost router was picking models too weak for that
   // (sycophantic loops, lost context, ignored conventions), so default it to a
   // strong model — same tier as supervisors/workers — not the cheap router.
-  assistantModelId: localStorage.getItem(ASSISTANT_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
+  assistantModelId: localStorage.getItem(ASSISTANT_MODEL_STORAGE) ?? DEFAULT_MODEL_ID,
   supervisorModelId: localStorage.getItem(SUPERVISOR_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
   workerModelId: localStorage.getItem(WORKER_MODEL_STORAGE) ?? DEFAULT_WORKER_MODEL_ID,
   theme: loadTheme(),

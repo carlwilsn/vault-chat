@@ -3696,6 +3696,7 @@ const VAULT_GITIGNORE: &str = "\
 .vault-chat/*heartbeat*.conflict
 .vault-chat/app-log.txt
 .vault-chat/sync-log.jsonl
+.vault-chat/pending-wakes.json
 .vault-chat/*.bak
 .vault-chat/*.tmp
 __pycache__/
@@ -3717,6 +3718,7 @@ const VAULT_GITIGNORE_REQUIRED: &[&str] = &[
     ".vault-chat/*heartbeat*.conflict",
     ".vault-chat/app-log.txt",
     ".vault-chat/sync-log.jsonl",
+    ".vault-chat/pending-wakes.json", // durable mission wake queue: per machine
     ".vault-chat/*.bak",
     ".vault-chat/*.tmp",
     "__pycache__/",

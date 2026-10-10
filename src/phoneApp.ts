@@ -256,6 +256,12 @@ async function handlePhoneMessage(
   }
 
   if (isThreadBusy(conv)) {
+    if (conv.source === "mission") {
+      // Durable: survives a restart; runWorkerTurn delivers it when the turn ends.
+      const { queueMissionWake } = await import("./offVaultRun");
+      await queueMissionWake(s.vaultPath, conv.id, trimmed, "user");
+      return { ok: true, convId: conv.id, queued: true };
+    }
     const q = queued.get(conv.id) ?? [];
     q.push(trimmed);
     queued.set(conv.id, q);
@@ -581,9 +587,8 @@ async function onRunEnded(convId: string): Promise<void> {
       if (isThreadBusy(missionNow)) {
         // Mission is mid-turn (likely the very AskWorker that drove this
         // worker). Queue the wake — it flushes when the mission's run ends.
-        const q = queued.get(missionConv.id) ?? [];
-        q.push(wake);
-        queued.set(missionConv.id, q);
+        const { queueMissionWake } = await import("./offVaultRun");
+        await queueMissionWake(useStore.getState().vaultPath!, missionConv.id, wake, "wake");
       } else {
         // Durable disk-lock path (same as a phone message / queued flush to a
         // mission) so the wake can't be clobbered by a concurrent refresh.

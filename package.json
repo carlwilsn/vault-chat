@@ -17,7 +17,8 @@
     "predev:tauri": "node scripts/download-tectonic.mjs",
     "build:server": "node server/build.mjs",
     "test:server": "node server/build.mjs && vitest run --config server/vitest.config.ts",
-    "typecheck:server": "tsc -p server/tsconfig.json"
+    "typecheck:server": "tsc -p server/tsconfig.json",
+    "test:harness": "node --import tsx --import ./test/harness/register.mjs --test \"test/harness/*.test.ts\""
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.69",
@@ -79,6 +80,7 @@
     "eslint-plugin-react-hooks": "^5.1.0",
     "postcss": "^8.5.10",
     "tailwindcss": "^3.4.19",
+    "tsx": "^4.23.15",
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
     "vitest": "^3.2.4"

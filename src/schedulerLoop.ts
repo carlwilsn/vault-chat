@@ -30,82 +30,6 @@ const resumedVaults = new Set<string>();
 // (and ends up with at least one worker, as it always should). Server box only
 // — gated by fireSchedulesOnThisMachine, same as schedule firing, so a client
 // machine viewing the same vault never double-runs it.
-async function resumeInterruptedMissions(vault: string): Promise<void> {
-  if (!fireSchedulesOnThisMachine()) return;
-  const convs = await readConversations(vault).catch(() => []);
-  const cutoff = Date.now() - 72 * 60 * 60 * 1000; // don't resurrect ancient threads
-  // Enabled, not-yet-fired wakes bound to a conversation — used below to avoid
-  // re-waking a mission that already has a scheduled tick coming.
-  const schedules = await (await import("./schedules")).readSchedules(vault).catch(() => []);
-  const hasPendingWake = (id: string) =>
-    schedules.some((sc) => {
-      const t = sc.target as { kind?: string; conversationId?: string };
-      return (
-        sc.enabled &&
-        t?.kind === "existing" &&
-        t.conversationId === id &&
-        (sc.recurrence?.kind !== "once" || !sc.lastFiredAt)
-      );
-    });
-  for (const c of convs) {
-    if (c.source !== "mission") continue;
-    if ((c.lastActivityAt ?? 0) < cutoff) continue;
-    if (c.completedAt || c.missionState === "DONE" || c.missionState === "KILLED") continue;
-    const msgs = (c.messages ?? []).filter((m) => !m.hidden);
-    const last = msgs[msgs.length - 1];
-    if (!last) continue;
-    if (last.role === "user") {
-      // Interrupted mid-brief: the last message is still an unanswered user turn
-      // (a hard kill skipped the status reset), so the supervisor never started.
-      vlog(`[mission-resume] ${c.id} (${c.title}) — re-running interrupted turn`);
-      const { runWorkerTurn } = await import("./offVaultRun");
-      void runWorkerTurn(vault, c.id, last.content, {
-        modelId: useStore.getState().supervisorModelId,
-        resume: true,
-      }).catch((e) => console.warn("[mission-resume] failed:", e));
-      continue;
-    }
-    // [restart-durable worker wake] A mission parked after spawning a worker; the
-    // worker then FINISHED, but its finish wake lived only in phoneApp's IN-MEMORY
-    // queue, which a restart (the auto-update a multi-day run WILL hit) drops — so
-    // the supervisor never woke to review/recover and the mission stalls silently.
-    // On boot, re-post a review wake when a worker finished AFTER the mission's
-    // last turn (i.e. unreviewed), no worker is still live, and no wake is already
-    // scheduled. Skip AWAITING_USER — that's a legitimate wait on the user.
-    if (!harnessV2Enabled()) continue;
-    if (c.missionState === "AWAITING_USER") continue;
-    if (hasPendingWake(c.id)) continue;
-    const key = (c.mission ?? c.title ?? "").trim();
-    const workers = convs.filter(
-      (w) => w.source === "worker" && (w.mission ?? w.title ?? "").trim() === key,
-    );
-    if (workers.some((w) => w.status === "running")) continue; // a live worker's finish will wake it
-    // A worker that has FINISHED (idle + at least one assistant turn). Do NOT gate
-    // on the worker finishing AFTER the mission's lastActivityAt: a worker very
-    // often finishes DURING the spawn turn (that IS the race that drops the wake),
-    // so its timestamp is OLDER than the mission's — that gate made this sweep skip
-    // the exact case it exists for. A parked mission (last msg is an assistant
-    // turn) with no scheduled wake, no live worker, and a finished worker is
-    // stalled: re-wake it. Re-waking is idempotent — once the supervisor reviews
-    // and reseeds/completes, later boots see a live worker / DONE / a schedule.
-    const finished = workers.filter(
-      (w) =>
-        w.status !== "running" &&
-        (w.messages ?? []).some((m) => m.role === "assistant" && !m.hidden),
-    );
-    if (!finished.length) continue;
-    const names = finished.map((w) => `"${w.title}" (id ${w.id})`).join(", ");
-    vlog("mission-resume.worker-wake", { conv: c.id.slice(0, 8), workers: finished.length });
-    const { runWorkerTurn } = await import("./offVaultRun");
-    void runWorkerTurn(
-      vault,
-      c.id,
-      `Your worker(s) ${names} finished while the app was restarting — the finish wake was not delivered. Review their thread(s) now: a worker may have FAILED and written a failure doc. Then continue the mission — verify a real deliverable exists on disk, reseed a fresh worker if one failed, or CompleteMission if the goal is genuinely met. Do not assume success without reading the files.`,
-      { modelId: useStore.getState().supervisorModelId },
-    ).catch((e) => console.warn("[mission-resume] worker-wake failed:", e));
-  }
-}
-
 // [harness v2] Independent per-mission liveness heartbeat. A mission advances by
 // self-scheduling its next wake each turn; that single wake is its whole
 // lifeline. If it's ever lost — a write that silently no-ops, or a turn that
@@ -143,7 +67,7 @@ async function tickMissionLiveness(vault: string): Promise<void> {
   livenessSweptAt.set(vault, now);
 
   const convs = await readConversations(vault).catch(() => []);
-  const cutoff = now - 72 * 60 * 60 * 1000; // don't resurrect ancient threads
+  const cutoff = 0; // no age cutoff: an active mission is resumed however old it is
   const schedules = await readSchedules(vault).catch(() => []);
   const hasPendingWake = (id: string) =>
     schedules.some((sc) => {
@@ -555,7 +479,7 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
   // crash/restart, so an approved mission never just sits there unworked.
   if (!resumedVaults.has(vault) && !followerVaults.has(vault)) {
     resumedVaults.add(vault);
-    void resumeInterruptedMissions(vault).catch((e) =>
+    void import("./offVaultRun").then((m) => m.resumeInterruptedMissions(vault)).catch((e) =>
       console.warn("[mission-resume] sweep failed:", e),
     );
   }
