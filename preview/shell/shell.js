@@ -7,7 +7,7 @@ let cfg = { sides: {} };
 let scenarios = [];
 const state = Object.assign(
   { scenario: "home", surface: "desktop", mode: "before", base: "synthetic" },
-  Object.fromEntries(new URLSearchParams(location.hash.slice(1))),
+  Object.fromEntries([...new URLSearchParams(location.hash.slice(1))].filter(([k]) => k !== "tour")),
 );
 let toggled = "before";
 
@@ -88,6 +88,7 @@ function fit() {
 }
 
 function render() {
+  if (window.__tour?.active) return void ($("#stage").innerHTML = "");
   save();
   for (const b of document.querySelectorAll("#surface button")) b.classList.toggle("on", b.dataset.v === state.surface);
   const hasAfter = !!cfg.sides.after;
@@ -195,6 +196,7 @@ window.addEventListener("keydown", (e) => {
 
 (async () => {
   cfg = await (await fetch("/api/config")).json();
+  window.__previewCfg = cfg;
   $("#sides").textContent = Object.entries(cfg.sides)
     .map(([k, v]) => `${k}: ${v.label}`)
     .join(" · ");
@@ -219,4 +221,6 @@ window.addEventListener("keydown", (e) => {
   }
   if (!scenarios.length) $("#stage").innerHTML = '<p class="empty">The before dev server did not answer. Check the terminal running npm run preview.</p>';
   renderList();
+  window.dispatchEvent(new Event("vc-shell-ready"));
 })();
+window.__shellRender = () => render();

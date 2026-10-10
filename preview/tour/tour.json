@@ -1,0 +1,654 @@
+{
+  "about": "The Tour (shell/tour.js): each slide plays a title card, then its steps on the before tree, then on the after tree (once per option). Steps are the harness's step runner (runtime/steps.ts) plus the paced ones in runtime/tour.ts: hover (draws the element's tooltip), highlight (after only unless both), scroll, typeSlow, selectLine, hold. open: the scenario's own open steps, played paced (default), fast, or skip. beforeSide / afterSide override scenario, steps or open per side; options replace the after pass; surface phone plays pages (one scenario each).",
+  "slides": [
+    {
+      "id": "settings-sections",
+      "group": "Settings",
+      "title": "Settings in six sections",
+      "caption": "One short page — Models, Keys, Voice, Box, Safety, Appearance — instead of a long scroll of every knob. Key sync, mission host, schedules and sync intervals leave the UI.",
+      "scenario": "settings",
+      "steps": [
+        {
+          "hold": 900
+        },
+        {
+          "highlight": "h3",
+          "all": true
+        },
+        {
+          "scroll": ".overflow-auto.p-5",
+          "to": "bottom",
+          "ms": 7000
+        },
+        {
+          "hold": 900
+        },
+        {
+          "scroll": ".overflow-auto.p-5",
+          "to": "top",
+          "ms": 2200
+        }
+      ]
+    },
+    {
+      "id": "settings-models",
+      "group": "Settings",
+      "title": "Models: one picker per role",
+      "caption": "Chat, Background and Voice each get one picker from the live OpenRouter list. There is no Images & PDFs row: images and PDFs go to the Chat model, and only if it can't read them to a built-in vision model.",
+      "scenario": "settings",
+      "steps": [
+        {
+          "hold": 600
+        },
+        {
+          "highlight": "section",
+          "text": "/^Models/",
+          "label": "Chat · Background · Voice"
+        },
+        {
+          "hold": 3200
+        }
+      ],
+      "beforeSide": {
+        "steps": [
+          {
+            "hold": 600
+          },
+          {
+            "scroll": "h3",
+            "text": "Models by role",
+            "ms": 1500
+          },
+          {
+            "hold": 3000
+          }
+        ]
+      }
+    },
+    {
+      "id": "settings-caps",
+      "group": "Settings",
+      "title": "What each model can do — pick a layout",
+      "caption": "A small capability view for the models your roles use: tools, images, PDFs, caching, helpers, and where we know it from (learned on the box, the catalog, or untested). Three layouts are built; pick one.",
+      "scenario": "settings-caps-table",
+      "beforeSide": {
+        "steps": [
+          {
+            "hold": 600
+          },
+          {
+            "scroll": "h3",
+            "text": "Models by role",
+            "ms": 1500
+          },
+          {
+            "hold": 2500
+          }
+        ]
+      },
+      "options": [
+        {
+          "label": "Option A — a table under the pickers",
+          "scenario": "settings-caps-table",
+          "steps": [
+            {
+              "hold": 700
+            },
+            {
+              "highlight": "div.rounded-md",
+              "text": "/source[\\s\\S]*(learned|untested)/",
+              "label": "Option A"
+            },
+            {
+              "hold": 3500
+            }
+          ]
+        },
+        {
+          "label": "Option B — one line under each picker",
+          "scenario": "settings-caps-inline",
+          "steps": [
+            {
+              "hold": 700
+            },
+            {
+              "highlight": "p",
+              "text": "/— (learned|catalog|untested)/",
+              "all": true,
+              "label": "Option B"
+            },
+            {
+              "hold": 3500
+            }
+          ]
+        },
+        {
+          "label": "Option C — folded into one Capabilities row",
+          "scenario": "settings-caps-fold",
+          "steps": [
+            {
+              "hold": 700
+            },
+            {
+              "highlight": "details",
+              "text": "/^Capabilities/",
+              "label": "Option C"
+            },
+            {
+              "hold": 3500
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "settings-keys",
+      "group": "Settings",
+      "title": "Keys, trimmed",
+      "caption": "OpenRouter first, then the service keys you actually use; the other providers fold away with a count of how many are set.",
+      "scenario": "settings",
+      "steps": [
+        {
+          "hold": 500
+        },
+        {
+          "scroll": "h3",
+          "text": "Keys",
+          "ms": 1500
+        },
+        {
+          "highlight": "section",
+          "text": "/^Keys/",
+          "label": "Keys"
+        },
+        {
+          "hold": 3500
+        }
+      ],
+      "beforeSide": {
+        "steps": [
+          {
+            "hold": 500
+          },
+          {
+            "scroll": "h3",
+            "text": "Anthropic",
+            "ms": 1500
+          },
+          {
+            "hold": 800
+          },
+          {
+            "scroll": ".overflow-auto.p-5",
+            "by": 700,
+            "ms": 2200
+          },
+          {
+            "hold": 2200
+          }
+        ]
+      }
+    },
+    {
+      "id": "settings-box",
+      "group": "Settings",
+      "title": "The Box section",
+      "caption": "Everything about the box in one place: where it is and whether this vault syncs to it. Sync intervals and the key-sync blurb are gone.",
+      "scenario": "settings",
+      "steps": [
+        {
+          "hold": 500
+        },
+        {
+          "scroll": "h3",
+          "text": "Box",
+          "ms": 1800
+        },
+        {
+          "highlight": "section",
+          "text": "/^Box/",
+          "label": "Box"
+        },
+        {
+          "hold": 3500
+        }
+      ],
+      "beforeSide": {
+        "steps": [
+          {
+            "hold": 500
+          },
+          {
+            "scroll": "h3",
+            "text": "Vault sync (this vault)",
+            "ms": 1800
+          },
+          {
+            "hold": 3500
+          }
+        ]
+      }
+    },
+    {
+      "id": "dial-cached",
+      "group": "Chat details",
+      "title": "The context dial counts cached tokens once",
+      "caption": "On a long cached chat the dial used to add the cached tokens on top of the prompt and read about twice the real size. Now it shows the real number against the model's real window.",
+      "scenario": "context-cached",
+      "steps": [
+        {
+          "hover": "[title^='Context:']",
+          "hold": 3800
+        },
+        {
+          "highlight": "[title^='Context:']",
+          "label": "counted once"
+        },
+        {
+          "hold": 1500
+        }
+      ]
+    },
+    {
+      "id": "dial-reopen",
+      "group": "Chat details",
+      "title": "The dial is there when you reopen a chat",
+      "caption": "Before, the dial only appeared after you sent something. Now a reopened chat shows the context its last turn reported.",
+      "scenario": "context-reopen",
+      "steps": [
+        {
+          "hover": "[title^='Context:']",
+          "hold": 3500
+        },
+        {
+          "highlight": "[title^='Context:']"
+        },
+        {
+          "hold": 1500
+        }
+      ],
+      "beforeSide": {
+        "steps": [
+          {
+            "hold": 3500
+          }
+        ]
+      }
+    },
+    {
+      "id": "dial-near",
+      "group": "Chat details",
+      "title": "Near the limit of a 1M-window model",
+      "caption": "At 880k the dial is red against Sonnet 5.5's real 1M window, and the tooltip says the next message first summarizes the earlier conversation. Before, it was pegged against a fixed 200k.",
+      "scenario": "context-near-real",
+      "steps": [
+        {
+          "hover": "[title^='Context:']",
+          "hold": 4200
+        },
+        {
+          "highlight": "[title^='Context:']"
+        },
+        {
+          "hold": 1200
+        }
+      ]
+    },
+    {
+      "id": "dial-small",
+      "group": "Chat details",
+      "title": "A small-window model",
+      "caption": "Qwen3 32B has a 131k window: at 120k the dial is red and the next message compacts first, so the prompt fits. Before, it looked amber against an assumed 200k and the next prompt would be rejected.",
+      "scenario": "context-small-window",
+      "steps": [
+        {
+          "hover": "[title^='Context:']",
+          "hold": 4200
+        },
+        {
+          "highlight": "[title^='Context:']"
+        },
+        {
+          "hold": 1200
+        }
+      ]
+    },
+    {
+      "id": "compaction-divider",
+      "group": "Chat details",
+      "title": "Compaction is a divider, not a disappearance",
+      "caption": "When a long chat is summarized, nothing leaves the transcript: a quiet divider sits above the messages kept word for word and opens to the summary. Before, the earlier messages vanished behind a banner.",
+      "scenario": "compaction-divider",
+      "steps": [
+        {
+          "highlight": "details",
+          "text": "/Earlier conversation summarized/",
+          "label": "the summary"
+        },
+        {
+          "hold": 3500
+        }
+      ],
+      "beforeSide": {
+        "steps": [
+          {
+            "hold": 3500
+          }
+        ]
+      }
+    },
+    {
+      "id": "inline-roles",
+      "group": "Chat details",
+      "title": "Ctrl+K and Ctrl+L say which model they use",
+      "caption": "Ctrl+L (ask) and Ctrl+K (edit) now say which model they run on, chosen by role instead of whatever the chat pane happens to be on. Which role each uses is your call — three options are built.",
+      "scenario": "inline-roles-B",
+      "steps": [
+        {
+          "typeSlow": "What is the absmean scale?",
+          "into": "textarea[placeholder^='Ask about']",
+          "enter": true
+        },
+        {
+          "hold": 2400
+        },
+        {
+          "hover": "[title$='set in Settings → Models']",
+          "hold": 2200
+        },
+        {
+          "highlight": "[title$='set in Settings → Models']",
+          "label": "Ctrl+L's model"
+        },
+        {
+          "hold": 1200
+        },
+        {
+          "key": "Escape"
+        },
+        {
+          "file": "projects/bitnet-160m/writeup.md",
+          "mode": "edit"
+        },
+        {
+          "hold": 700
+        },
+        {
+          "selectLine": "/The 160M reproduction is stable/"
+        },
+        {
+          "key": "Ctrl+k"
+        },
+        {
+          "hold": 900
+        },
+        {
+          "hover": "[title$='set in Settings → Models']",
+          "hold": 2200
+        },
+        {
+          "highlight": "[title$='set in Settings → Models']",
+          "label": "Ctrl+K's model"
+        },
+        {
+          "hold": 800
+        },
+        {
+          "typeSlow": "tighten this",
+          "into": "textarea[placeholder^='Edit the selection']",
+          "enter": true
+        },
+        {
+          "hold": 3000
+        }
+      ],
+      "beforeSide": {
+        "steps": [
+          {
+            "typeSlow": "What is the absmean scale?",
+            "into": "textarea[placeholder^='Ask about']",
+            "enter": true
+          },
+          {
+            "hold": 2400
+          },
+          {
+            "hold": 1200
+          },
+          {
+            "key": "Escape"
+          },
+          {
+            "file": "projects/bitnet-160m/writeup.md",
+            "mode": "edit"
+          },
+          {
+            "hold": 700
+          },
+          {
+            "selectLine": "/The 160M reproduction is stable/"
+          },
+          {
+            "key": "Ctrl+k"
+          },
+          {
+            "hold": 900
+          },
+          {
+            "hold": 1500
+          },
+          {
+            "typeSlow": "tighten this",
+            "into": "textarea[placeholder^='Edit the selection']",
+            "enter": true
+          },
+          {
+            "hold": 3000
+          }
+        ]
+      },
+      "options": [
+        {
+          "label": "Option A — Ctrl+K and Ctrl+L on Chat",
+          "scenario": "inline-roles-A"
+        },
+        {
+          "label": "Option B — Ctrl+K on Background, Ctrl+L on Chat (default)",
+          "scenario": "inline-roles-B"
+        },
+        {
+          "label": "Option C — Ctrl+K and Ctrl+L on Background",
+          "scenario": "inline-roles-C"
+        }
+      ]
+    },
+    {
+      "id": "inline-auto",
+      "group": "Chat details",
+      "title": "Ctrl+L works when the chat model is Auto",
+      "caption": "With the chat pane on Auto, Ctrl+L used to fail with “No API key for auto”. Now it resolves Auto the way a chat turn does and answers.",
+      "scenario": "inline-auto",
+      "steps": [
+        {
+          "hold": 3500
+        }
+      ]
+    },
+    {
+      "id": "pdf-ranges",
+      "group": "Chat details",
+      "title": "The PDF tool reads by page range",
+      "caption": "Asked about a 320-page PDF, the tool returns pages 1–3 and says how many pages there are; the model asks for the range it needs. Before, every call extracted the whole PDF and dumped ~60k characters into the chat.",
+      "scenario": "pdf-ranges",
+      "steps": [
+        {
+          "highlight": "details",
+          "text": "/tool calls?/",
+          "label": "a few pages per call"
+        },
+        {
+          "hold": 4000
+        }
+      ],
+      "beforeSide": {
+        "steps": [
+          {
+            "hold": 4000
+          }
+        ]
+      }
+    },
+    {
+      "id": "search-notes",
+      "group": "Chat details",
+      "title": "Notes search finds what a row shows",
+      "caption": "“failure modes” is in a note's title. Now the search matches the title, highlighted text and summary, in any word order, and the count leaves out cleared notes.",
+      "scenario": "search-notes",
+      "steps": [
+        {
+          "hold": 800
+        },
+        {
+          "highlight": "div",
+          "text": "Eigengap failure modes",
+          "label": "found by its title"
+        },
+        {
+          "hold": 3500
+        }
+      ],
+      "beforeSide": {
+        "steps": [
+          {
+            "hold": 3500
+          }
+        ]
+      }
+    },
+    {
+      "id": "search-mention",
+      "group": "Chat details",
+      "title": "@-mentions rank names that start with what you typed",
+      "caption": "A long file name that starts with “eigengap” used to sink below short names that merely contain it. Now: name starts with, then name contains, then path.",
+      "scenario": "search-mention",
+      "steps": [
+        {
+          "hold": 800
+        },
+        {
+          "highlight": "div",
+          "text": "/^eigengap-heuristic-when-it-fails/",
+          "label": "starts with “eigengap”"
+        },
+        {
+          "hold": 3500
+        }
+      ],
+      "beforeSide": {
+        "steps": [
+          {
+            "hold": 3500
+          }
+        ]
+      }
+    },
+    {
+      "id": "phone-react",
+      "group": "Phone",
+      "title": "The phone page, rebuilt in React — identical",
+      "caption": "The phone app is now a bundled React + TypeScript app instead of one big HTML file with in-browser Babel. It should look exactly the same: watch the same pages before and after.",
+      "surface": "phone",
+      "scenario": "phone-chats",
+      "pages": [
+        {
+          "scenario": "home",
+          "label": "Chat",
+          "hold": 2400
+        },
+        {
+          "scenario": "phone-chats",
+          "label": "Conversations",
+          "hold": 2400
+        },
+        {
+          "scenario": "phone-thread",
+          "label": "A thread",
+          "hold": 2600
+        },
+        {
+          "scenario": "phone-mission",
+          "label": "Mission sheet",
+          "hold": 2600
+        },
+        {
+          "scenario": "missions-awaiting",
+          "label": "Alerts",
+          "hold": 2400
+        },
+        {
+          "scenario": "phone-notes",
+          "label": "Notes",
+          "hold": 2400
+        }
+      ]
+    },
+    {
+      "id": "box-unreachable",
+      "group": "Phase 2",
+      "title": "Chat runs on the box — and says so when it can't",
+      "caption": "With a box configured, every chat turn runs on the box. When the box can't be reached, the composer is disabled and says why, instead of quietly running the agent on the laptop.",
+      "scenario": "box-unreachable",
+      "steps": [
+        {
+          "hover": "textarea",
+          "tip": false,
+          "hold": 1200
+        },
+        {
+          "highlight": "textarea[placeholder^='Box unreachable']",
+          "label": "Box unreachable — agent runs on the box"
+        },
+        {
+          "hold": 3500
+        }
+      ],
+      "beforeSide": {
+        "steps": [
+          {
+            "hover": "textarea",
+            "tip": false,
+            "hold": 1200
+          },
+          {
+            "hold": 3000
+          }
+        ]
+      }
+    },
+    {
+      "id": "closing",
+      "card": true,
+      "kicker": "End of the tour",
+      "title": "Not in the tour yet, and what's yours to decide",
+      "caption": "",
+      "sections": [
+        {
+          "title": "Not in the tour yet",
+          "items": [
+            "History (Ctrl+H timeline, styles A/B/C, restore and undo) — being finished on p3-history",
+            "Removals (Mission Control, Activity, feedback; the project chip, grouped chat list, “still working” line, notifications list) — being finished on p3-removals"
+          ]
+        },
+        {
+          "title": "Your decisions",
+          "items": [
+            "Capability view: option A (table), B (one line per picker) or C (folded)",
+            "Ctrl+K / Ctrl+L roles: A (both Chat), B (K Background, L Chat — default) or C (both Background)",
+            "Built-in vision model for images the Chat model can't read: Gemini 3.5 Flash (no setting)",
+            "Serve the React phone app at /phone (built, off until you approve)"
+          ]
+        }
+      ]
+    }
+  ]
+}
