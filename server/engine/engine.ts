@@ -251,6 +251,7 @@ export class Engine {
   private async onUp(): Promise<void> {
     if (this.firstUp) {
       this.firstUp = false;
+      void this.reconcileCosts().catch((e) => this.log(`cost reconcile failed: ${e}`));
       // A turn cut by a crash or restart of the whole server: the file still
       // says running. Mark it, then resume it.
       for (const c of await allConvs(this.d.vault).catch(() => [])) {
@@ -708,6 +709,7 @@ export class Engine {
       role: "assistant",
       content: capStr(content, MSG_CAP),
       mid,
+      ...(l.turnId ? { turnId: l.turnId } : {}),
       ...(l.tools.length ? { toolCalls: l.tools } : {}),
       ...(l.reasoning.length ? { thinking: capStr(l.reasoning.join("\n\n"), 8_000) } : {}),
       ...(usage
@@ -804,6 +806,30 @@ export class Engine {
         if (i >= 0) c.messages[i] = { ...c.messages[i]!, costUsd: round(((c.messages[i] as any).costUsd ?? 0) + res.usd) } as any;
       }
     });
+  }
+
+  /** At boot: cost any model call a restart cut off before its lookup finished
+   * (the ledger skips ids already counted), onto the message of its turn. */
+  private async reconcileCosts(): Promise<void> {
+    for (const c of await allConvs(this.d.vault)) {
+      const path = c.codexThreadPath;
+      if (!path) continue;
+      const calls = this.d.backend.usageCalls(path).filter((x) => !this.d.ledger.has(x.responseId));
+      if (!calls.length) continue;
+      const res = await this.d.ledger.settle(calls);
+      if (!res.calls) continue;
+      const turnOf = new Map(calls.map((x) => [x.responseId, x.turnId]));
+      await mutateConv(this.d.vault, c.id, (cv) => {
+        cv.costUsd = round((cv.costUsd ?? 0) + res.usd);
+        if (res.missing) cv.costMissingCalls = (cv.costMissingCalls ?? 0) + res.missing;
+        for (const [id, cost] of Object.entries(res.byId)) {
+          if (cost == null) continue;
+          const i = cv.messages.findIndex((m: any) => m.role === "assistant" && m.turnId && m.turnId === turnOf.get(id));
+          if (i >= 0) cv.messages[i] = { ...cv.messages[i]!, costUsd: round(((cv.messages[i] as any).costUsd ?? 0) + cost) } as any;
+        }
+      });
+      this.log(`reconciled ${res.calls} uncounted call(s) on ${c.id}: $${res.usd}`);
+    }
   }
 
   // ---------------------------------------------------------------- tools

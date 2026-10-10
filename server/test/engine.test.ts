@@ -363,5 +363,12 @@ describe.skipIf(!BIN)("engine (real Codex, fake Responses API)", () => {
     const c2 = await assistantSays(r.convId, /woke up and checked/, 60_000);
     expect(c2.messages.some((m: any) => m.role === "user" && /Wake: check the run/.test(m.content))).toBe(true);
     expect(JSON.parse(readFileSync(join(vault, ".vault-chat", "local", "wakes.json"), "utf8"))).toEqual([]);
+    // The restart cut the first turn's cost lookup short; the boot reconcile puts it on its message.
+    const priced = await waitFor(async () => {
+      const x = await conv(r.convId);
+      const as = x.messages.filter((m: any) => m.role === "assistant");
+      return as.length >= 2 && as.every((m: any) => m.costUsd > 0) ? x : null;
+    }, 45_000);
+    expect(priced.costUsd).toBeCloseTo(COST_PER_CALL * or.calls.filter((b) => JSON.stringify(b.input).includes("WAKE1")).length, 6);
   });
 });

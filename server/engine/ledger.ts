@@ -86,20 +86,22 @@ export class Ledger {
   }
 
   /** Cost the calls not yet counted: {usd, calls, missing}. */
-  async settle(calls: CallRecord[]): Promise<{ usd: number; calls: number; missing: number }> {
+  async settle(calls: CallRecord[]): Promise<{ usd: number; calls: number; missing: number; byId: Record<string, number | null> }> {
     const fresh = [...new Set(calls.map((c) => c.responseId))].filter((id) => !this.has(id));
     let usd = 0;
     let missing = 0;
+    const byId: Record<string, number | null> = {};
     // Claim first so a concurrent settle cannot double-count.
     for (const id of fresh) this.seen[id] = null;
     const costs = await Promise.all(fresh.map((id) => this.generationCost(id)));
     fresh.forEach((id, i) => {
       const c = costs[i];
       this.seen[id] = c ?? null;
+      byId[id] = c ?? null;
       if (c === null || c === undefined) missing++;
       else usd += c;
     });
     if (fresh.length) this.save();
-    return { usd: Math.round(usd * 1e7) / 1e7, calls: fresh.length, missing };
+    return { usd: Math.round(usd * 1e7) / 1e7, calls: fresh.length, missing, byId };
   }
 }
