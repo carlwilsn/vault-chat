@@ -7,7 +7,7 @@ import { loadVaultVoicePrompt, loadVaultNorthStar, northStarPromptBlock, loadVau
 // `Conversation` (the value) is the ElevenLabs SDK class imported above; alias
 // our thread type so the names don't collide.
 import { emptyConversation, type Conversation as ConvThread } from "./conversations";
-import { applyNotebookEdit, extractPdfText, stripNotebook, assertCanWrite } from "./tools";
+import { applyNotebookEdit, readPdf, stripNotebook, assertCanWrite } from "./tools";
 import { loadSessionContext } from "./context";
 import { loadSkills, skillPromptIndex } from "./skills";
 
@@ -216,9 +216,6 @@ let pendingScrollTarget: { path: string; anchor: string } | null = null;
 // answer questions about a real-sized file. 8k was too small for
 // notebooks (cell metadata ate the budget before any code showed up).
 const READ_CAP = 24_000;
-// PDFs page out fast and the agent needs room for the actual content,
-// not just the first page or two. Still under text-mode's 60k.
-const PDF_CAP = 30_000;
 
 // ElevenLabs's tool-parameter validator requires every property to
 // carry a `description` (or `dynamic_variable` / `is_system_provided`
@@ -407,7 +404,7 @@ const CLIENT_TOOL_DEFINITIONS = [
   {
     name: "PdfExtract",
     description:
-      "Extract text from a PDF file. Returns plain text grouped by page. Use `pages` to limit (e.g. '1', '1-5', '1,3,7-9'); omit for all pages. Call this — not Read — when the user asks about a .pdf file.",
+      "Read text from a PDF: the page count plus the pages asked for (default 1-3), capped at 12000 chars. Use page ranges; never read a whole long PDF at once. Call this — not Read — when the user asks about a .pdf file.",
     parameters: {
       type: "object" as const,
       properties: {
@@ -417,7 +414,7 @@ const CLIENT_TOOL_DEFINITIONS = [
         },
         pages: {
           type: "string",
-          description: "Optional page selection: '1', '1-5', '1,3,7-9'. Omit for all pages.",
+          description: "Optional page selection: '1', '4-8', '1,3,7-9'. Default '1-3'.",
         },
       },
       required: ["path"],
@@ -2647,10 +2644,8 @@ export function buildClientToolHandlers(): Record<
       "PdfExtract",
       async (args: { path: string; pages?: string }) => {
         try {
-          const text = await extractPdfText(args.path, args.pages);
-          return text.length > PDF_CAP
-            ? text.slice(0, PDF_CAP) + "\n…[truncated]"
-            : text;
+          // Same page-range rules as the chat tool (tools.ts readPdf).
+          return await readPdf(args.path, { pages: args.pages });
         } catch (e) {
           return `Error: ${(e as any)?.message ?? String(e)}`;
         }

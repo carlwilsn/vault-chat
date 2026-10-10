@@ -12,7 +12,6 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
 const READ_CAP = 24_000;
 const SHORT_CAP = 8_000;
-const PDF_CAP = 60_000;
 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
@@ -126,6 +125,30 @@ export async function extractPdfText(path: string, pageSpec?: string): Promise<s
   } finally {
     doc.destroy();
   }
+}
+
+// ---- PdfExtract: page ranges with limits -----------------------------------
+// The same rules as the box engine's PdfRead (server/engine/extraTools.ts) so
+// the laptop tool and the box tool behave alike: the page count plus the pages
+// asked for (default 1-3, never the whole document), capped at maxChars
+// (default 12k, at most 40k). It used to extract EVERY page and return up to
+// 60k chars (~15k tokens) per call — one call on a long paper filled the
+// context with text the model never asked for.
+export const PDF_DEFAULT_PAGES = "1-3";
+export const PDF_DEFAULT_CHARS = 12_000;
+export const PDF_MAX_CHARS = 40_000;
+export const PDF_TOOL_DESCRIPTION =
+  "Read text from a PDF: the page count plus the pages asked for (default 1-3), capped at maxChars (default 12000). Use page ranges; never read a whole long PDF at once.";
+
+export async function readPdf(path: string, a: { pages?: string; maxChars?: number } = {}): Promise<string> {
+  const pages = String(a?.pages ?? "").trim() || PDF_DEFAULT_PAGES;
+  const cap = Math.max(500, Math.min(Number(a?.maxChars) || PDF_DEFAULT_CHARS, PDF_MAX_CHARS));
+  const text = await extractPdfText(path, pages);
+  const m = /\] (\d+) page\(s\)/.exec(text);
+  const total = m ? Number(m[1]) : null;
+  let out = text.length > cap ? text.slice(0, cap) + `\n…[cut at ${cap} chars of ${text.length}; ask for fewer pages or a larger maxChars]` : text;
+  if (!a?.pages && total && total > 3) out += `\n\n(${total} pages in total; this shows pages ${PDF_DEFAULT_PAGES}. Pass pages, e.g. "4-8", for more.)`;
+  return out;
 }
 
 // Jupyter stores cell source as an array of lines with trailing newlines
@@ -665,21 +688,23 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     }),
 
     PdfExtract: tool({
-      description:
-        "Extract text from a PDF file. Returns plain text grouped by page. Use `pages` to limit (e.g., '1', '1-5', '1,3,7-9'); omit to extract all. Output is truncated at ~60k chars — prefer page ranges for long PDFs. Useful for reading lecture slides, papers, and other PDF content in the vault.",
+      description: PDF_TOOL_DESCRIPTION,
       inputSchema: z.object({
         path: z.string().describe("Absolute path to the PDF file."),
         pages: z
           .string()
           .optional()
-          .describe("Page selection: '1', '1-5', '1,3,7-9'. Omit for all pages."),
+          .describe('e.g. "1", "4-8", "1,3,7-9". Default "1-3".'),
+        maxChars: z
+          .number()
+          .optional()
+          .describe(`Character cap (default ${PDF_DEFAULT_CHARS}, at most ${PDF_MAX_CHARS}).`),
       }),
-      execute: async ({ path, pages }) => {
+      execute: async ({ path, pages, maxChars }) => {
         try {
           guardPath(path);
           await guardDenied(path);
-          const text = await extractPdfText(path, pages);
-          return truncate(text, PDF_CAP);
+          return await readPdf(path, { pages, maxChars });
         } catch (e) {
           return `PDF extraction failed: ${(e as Error).message}`;
         }
