@@ -1,0 +1,16 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "target": "ES2022",
+    "types": ["node"],
+    "noUnusedParameters": false,
+    "paths": {
+      "@tauri-apps/api/core": ["./shims/core.ts"],
+      "@tauri-apps/api/event": ["./shims/event.ts"],
+      "@tauri-apps/api/app": ["./shims/app.ts"]
+    }
+  },
+  "include": ["./**/*.ts", "../src/vite-env.d.ts"],
+  "exclude": ["./test/**"]
+}

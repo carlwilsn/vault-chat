@@ -16,7 +16,8 @@
     "tauri": "tauri",
     "predev:tauri": "node scripts/download-tectonic.mjs",
     "build:server": "node server/build.mjs",
-    "test:server": "node server/build.mjs && vitest run --config server/vitest.config.ts"
+    "test:server": "node server/build.mjs && vitest run --config server/vitest.config.ts",
+    "typecheck:server": "tsc -p server/tsconfig.json"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.69",
