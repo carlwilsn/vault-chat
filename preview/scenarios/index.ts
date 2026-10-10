@@ -476,10 +476,10 @@ export const scenarios: Scenario[] = [
     title: "The PDF tool — page ranges with limits",
     group: "PDF",
     notes:
-      "papers/attention-survey.pdf (320 pages) open; the chat asks for a summary and the scripted model calls PdfExtract with no pages, then pages 4-8. After (the box engine's PdfRead rules): no pages → pages 1-3 plus “320 pages in total … pass pages for more”, each call capped at 12k chars (maxChars up to 40k), so the dial stays low. Before: no pages → all 320 pages extracted and ~60k chars returned. Open “2 tool calls” under the reply to read what each call returned.",
+      "papers/attention-survey.pdf (320 pages) open; the chat asks for a summary and the scripted model calls PdfExtract with no pages, then pages 4-8. After (the box engine's PdfRead rules): no pages → pages 1-3 plus “320 pages in total … pass pages for more”, each call capped at 12k chars (maxChars up to 40k), so the dial stays low. Before: no pages → all 320 pages extracted and ~60k chars returned. “2 tool calls” under the reply is opened: read the end of each result.",
     build: (c) => world(c),
     llm: { scripts: [pdfRanges] },
-    open: [...deskOpen("papers/attention-survey.pdf"), { sleep: 1500 }, ...send("Summarize the attention survey PDF."), { waitIdle: true, timeout: 90000 }],
+    open: [...deskOpen("papers/attention-survey.pdf"), { sleep: 1500 }, ...send("Summarize the attention survey PDF."), { waitIdle: true, timeout: 90000 }, { click: "details > summary", text: /2 tool calls/ }],
   },
   {
     id: "search-notes",
