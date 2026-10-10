@@ -243,6 +243,9 @@ function ModelsSection() {
           </div>
         );
       })}
+      {view !== "inline" && caps.length > 0 && (
+        <CapsTable caps={caps} name={(id) => (id === AUTO_MODEL_ID ? id : shortName(labelOf(id).replace(/^\[[^\]]+\]\s*/, "")))} fold={view === "fold"} />
+      )}
       {Object.entries(catalogErrors).length > 0 && (
         <p className="text-[11px] text-amber-500/90">
           {Object.entries(catalogErrors)
@@ -281,9 +284,6 @@ function ModelsSection() {
           <option value="high">High</option>
         </select>
       </div>
-      {view !== "inline" && caps.length > 0 && (
-        <CapsTable caps={caps} name={(id) => (id === AUTO_MODEL_ID ? id : shortName(labelOf(id).replace(/^\[[^\]]+\]\s*/, "")))} fold={view === "fold"} />
-      )}
     </section>
   );
 }
@@ -300,7 +300,7 @@ function Mark({ v }: { v: boolean | undefined }) {
 function CapsTable({ caps, name, fold }: { caps: ModelCaps[]; name: (id: string) => string; fold: boolean }) {
   const table = (
     <div className="rounded-md border border-border/60 text-[11px]">
-      <div className="grid grid-cols-[minmax(0,1fr)_repeat(5,2.75rem)_3.75rem] items-center px-2.5 py-1 text-[10px] text-muted-foreground/70 border-b border-border/40">
+      <div className="grid grid-cols-[minmax(0,1fr)_repeat(5,3.25rem)_3.75rem] items-center px-2.5 py-1 text-[10px] text-muted-foreground/70 border-b border-border/40">
         <span />
         {CAP_KEYS.map((k) => (
           <span key={k} className="text-center">
@@ -310,7 +310,7 @@ function CapsTable({ caps, name, fold }: { caps: ModelCaps[]; name: (id: string)
         <span className="text-right">source</span>
       </div>
       {caps.map((c) => (
-        <div key={c.id} className="grid grid-cols-[minmax(0,1fr)_repeat(5,2.75rem)_3.75rem] items-center px-2.5 py-1" title={c.id}>
+        <div key={c.id} className="grid grid-cols-[minmax(0,1fr)_repeat(5,3.25rem)_3.75rem] items-center px-2.5 py-1" title={c.id}>
           <span className="truncate text-foreground/90">{name(c.id)}</span>
           {CAP_KEYS.map((k) => (
             <span key={k} className="text-center">
@@ -543,7 +543,10 @@ function KeysSection() {
         <summary className="flex items-center justify-between cursor-pointer list-none text-[12px] text-foreground/90 py-0.5">
           <span>Other providers (optional)</span>
           <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            {(["anthropic", "openai", "google"] as ProviderId[]).filter((p) => apiKeys[p]).length || ""}
+            {(() => {
+              const n = (["anthropic", "openai", "google"] as ProviderId[]).filter((p) => apiKeys[p]).length;
+              return n ? `${n} set` : "";
+            })()}
             <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/60 group-open:rotate-180 transition-transform" />
           </span>
         </summary>

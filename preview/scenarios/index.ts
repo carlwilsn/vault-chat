@@ -174,13 +174,12 @@ function capsScenarios(): Scenario[] {
     title: `Settings — capabilities, option ${what}`,
     group: "Settings",
     notes:
-      "Roles: Chat Claude Sonnet 5.5 (learned: helpers yes), Background a model missing from the catalog (untested), Images & PDFs Gemini 3.5 Flash (learned: no helpers). Keys: OpenRouter, ElevenLabs, Tavily and a lambda_api_key service key; one other provider (Anthropic) under the fold.",
+      "Roles: Chat Claude Sonnet 5.5 (learned: helpers yes), Background a model missing from the catalog (untested), Images & PDFs Gemini 3.5 Flash (learned: no helpers). Keys: OpenRouter, Tavily and a lambda_api_key service key; one other provider (Anthropic) under the fold.",
     build: (c: BuildCtx) => world(c),
     host: {
       sync: { box: BOX },
       keys: {
         "service.tavily": "tvly-PREVIEW-0000",
-        "service.elevenlabs": "sk_PREVIEW-0000",
         "api.anthropic": "sk-ant-PREVIEW-0000",
         "user.lambda_api_key": "PREVIEW-lambda-0000",
       },
@@ -367,6 +366,7 @@ export const scenarios: Scenario[] = [
     host: { sync: { box: BOX }, keys: { "service.tavily": "tvly-PREVIEW-0000" } },
     open: [{ click: "[title='Settings']" }],
   },
+  ...capsScenarios(),
   {
     id: "settings-fresh",
     title: "Settings (fresh install, no keys)",
