@@ -135,6 +135,8 @@ function modelPowerRank(spec: ModelSpec): number {
   }
 
   if (spec.provider === "openai") {
+    // GPT-6.x (tiers Astra > Sol > Terra > Luna) ranks above GPT-5.x.
+    if (/^gpt-[6-9]/.test(id)) return 9_800 + openAiTierBonus(id);
     if (/^gpt-5/.test(id) && /thinking|max|xhigh/.test(id)) return 9_700;
     if (/^gpt-5/.test(id)) return 9_500;
     if (/^o3.*pro/.test(id)) return 9_400;
@@ -161,7 +163,9 @@ function modelPowerRank(spec: ModelSpec): number {
     if (/anthropic\/claude-opus/i.test(id)) return 10_000 + versionScore(id);
     if (/anthropic\/claude-sonnet/i.test(id)) return 9_000 + versionScore(id);
     if (/anthropic\/claude-haiku/i.test(id)) return 8_000 + versionScore(id);
+    if (/openai\/gpt-[6-9]/i.test(id)) return 9_800 + openAiTierBonus(id);
     if (/openai\/gpt-5/i.test(id)) return 9_500;
+    if (/x-ai\/grok-4/i.test(id)) return 8_900;
     if (/openai\/gpt-4\.1/i.test(id)) return 8_500;
     if (/google\/gemini-.*-pro/i.test(id)) return 9_000 + versionScore(id);
     if (/google\/gemini-.*-flash/i.test(id)) return 7_500 + versionScore(id);
@@ -180,6 +184,16 @@ function modelPowerRank(spec: ModelSpec): number {
     return 4_000;
   }
 
+  return 0;
+}
+
+// OpenAI's GPT-6 tier names, strongest first — so Sol sorts above Luna within
+// a generation (updated October 2026).
+function openAiTierBonus(id: string): number {
+  if (/astra/.test(id)) return 40;
+  if (/sol/.test(id)) return 30;
+  if (/terra/.test(id)) return 20;
+  if (/luna/.test(id)) return 10;
   return 0;
 }
 
