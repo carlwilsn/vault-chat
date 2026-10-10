@@ -1002,6 +1002,13 @@ async fn conversation_delete(vault: String, id: String) -> Result<(), String> {
             .open(&p)
             .map_err(|e| format!("open {}: {}", p.display(), e))?;
         writeln!(f, "{}", line).map_err(|e| e.to_string())?;
+        // [phase 2] Box mode: the tombstone (append-only, merge=union) is the
+        // whole request. The box's own writer removes the file when it sees it,
+        // so the laptop never deletes a conversation file the box may be
+        // appending to (a modify/delete conflict would close the merge gate).
+        if box_sync::box_mode_cached(&vault) {
+            return Ok(());
+        }
         let dir = std::path::Path::new(&vault).join(NOTES_DIR).join(CONVERSATIONS_DIR);
         let stem = conversation_file_stem(&id);
         let _ = std::fs::remove_file(dir.join(format!("{}.jsonl", stem)));
@@ -1248,7 +1255,15 @@ async fn conversations_write_all(vault: String, lines: Vec<String>) -> Result<()
         // Box mode (sync.json names a box): the box is the mission host, so the
         // laptop is a follower for the mission zone too — with box/box as the
         // authority instead of origin.
-        let follower = is_sync_follower_cached(&vault) || box_sync::box_mode_cached(&vault);
+        let box_mode = box_sync::box_mode_cached(&vault);
+        // [phase 2] Box mode: every agent turn runs on the box, so the box
+        // authors EVERY conversation file — the laptop's copies are read-only
+        // mirrors that arrive through the merge gate. The laptop writing any of
+        // them (even a chat) would race the box's appends into a conflict.
+        if box_mode {
+            return Ok(());
+        }
+        let follower = is_sync_follower_cached(&vault);
         for line in &lines {
             let t = line.trim();
             if t.is_empty() {
@@ -5597,6 +5612,19 @@ async fn box_post_json(url: String, body: String, token: Option<String>) -> Resu
     .map_err(|e| e.to_string())?
 }
 
+/// GET from the box (the chat's `/conversations`, `/conversation`, `/poll`,
+/// `/status`). Native for the same CORS reason as `box_post_json`; the timeout
+/// covers `/poll`'s 25 s long-poll.
+#[tauri::command]
+async fn box_get_json(url: String, token: Option<String>, timeout_ms: Option<u64>) -> Result<PostResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        box_sync::get_json(&url, token.as_deref(), timeout_ms.unwrap_or(20_000))
+            .map(|(status, body)| PostResult { status, body })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// is_sync_follower behind a 60s cache — for hot paths (every conversations
 /// autosave) where a git subprocess per call would be a spawn storm. The role
 /// marker is a per-checkout constant; 60s staleness is irrelevant.
@@ -7676,6 +7704,7 @@ pub fn run() {
             vault_box_sync,
             vault_box_config,
             box_post_json,
+            box_get_json,
             run_script,
             keychain_get,
             keychain_set,

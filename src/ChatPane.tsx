@@ -18,6 +18,7 @@ import { isUnreadableAsText } from "./fileKind";
 import { SettingsPane } from "./SettingsPane";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
+import { BOX_UNREACHABLE } from "./boxChat";
 
 type MentionHit = { path: string; name: string; rel: string };
 
@@ -403,7 +404,11 @@ export function ChatPane() {
       : activeSpec
         ? apiKeys[activeSpec.provider]
         : undefined;
-  const ready = Boolean(vaultPath && activeKey);
+  // [phase 2] Box mode: the agent runs on the box — no laptop key needed, and
+  // the composer is off (with the reason) while the box can't be reached.
+  const boxChat = useStore((s) => s.boxChat);
+  const boxDown = !!boxChat?.on && boxChat.reachable === false;
+  const ready = Boolean(vaultPath && (activeKey || boxChat?.on)) && !boxDown;
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -471,7 +476,7 @@ export function ChatPane() {
 
   if (showSettings) return <SettingsPane />;
 
-  if (!activeKey) {
+  if (!activeKey && !boxChat?.on) {
     return (
       <div className="h-full flex flex-col bg-card border-l border-border">
         <div className="flex-1 flex items-center justify-center px-8">
@@ -926,7 +931,7 @@ export function ChatPane() {
                 onChange={(e) => onInputChange(e.target.value)}
                 onKeyDown={onKey}
                 onPaste={onPaste}
-                placeholder={ready ? "Ask anything, or / for commands…" : "Open a vault first"}
+                placeholder={boxDown ? BOX_UNREACHABLE : ready ? "Ask anything, or / for commands…" : "Open a vault first"}
                 disabled={!ready}
                 rows={1}
                 className="border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pl-3 !pr-20"

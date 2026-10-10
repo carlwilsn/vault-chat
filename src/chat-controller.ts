@@ -75,6 +75,11 @@ export async function sendMessage(
   // never run with no trace. A normal chat leaves this unset.
   scheduledBriefing?: boolean,
 ) {
+  // [phase 2] Box mode (`.vault-chat/sync.json` names a box): every agent turn
+  // runs on the box. This machine never calls a model for chat — the message
+  // goes to the box's /message (or /answer), and the reply streams back over
+  // /poll. A message into a running thread steers it on the box.
+  if (await routeToBox(text, contextPreamble, attachments, targetConvIdOverride)) return;
   const s = useStore.getState();
   // Concurrency model: every run marks its target conversation `status:
   // "running"`, and conversations run in PARALLEL — foreground (the one you're
@@ -703,8 +708,33 @@ export async function sendMessage(
   }
 }
 
+/** Box mode → hand the turn to the box. False = not box mode (run here). */
+async function routeToBox(
+  text: string,
+  contextPreamble: string | undefined,
+  attachments: import("./store").ChatAttachment[] | undefined,
+  convId: string | undefined,
+): Promise<boolean> {
+  const vault = useStore.getState().vaultPath;
+  if (!vault) return false;
+  const bc = await import("./boxChat");
+  if (!bc.boxChatOn()) {
+    // The box chat starts after the conversations load; a send that beats it
+    // must still never run here.
+    if (!(await bc.boxLinkFor(vault))) return false;
+    await bc.startBoxChat(vault);
+  }
+  return bc.boxSend({ text, contextPreamble, attachments, convId: convId ?? null });
+}
+
 export function stopAgent() {
   const store = useStore.getState();
+  // [phase 2] Box mode: Stop is the box's /kill. The thread reads running
+  // until the box says it ended — the UI never claims a stop it hasn't seen.
+  if (useStore.getState().boxChat?.on) {
+    void import("./boxChat").then((bc) => bc.boxStop(store.activeConversationId));
+    return;
+  }
   // Preserve whatever the agent streamed before Stop as an incomplete
   // assistant message, instead of discarding it — so stopping keeps the
   // partial reply and its context for the next turn (matches Claude Code).
@@ -748,6 +778,12 @@ export async function interruptAndSend(
   attachments?: import("./store").ChatAttachment[],
 ) {
   const s = useStore.getState();
+  // [phase 2] Box mode: a message into a running thread steers it on the box
+  // (/message while a turn runs) — nothing is cut short here.
+  if (s.boxChat?.on) {
+    await sendMessage(text, contextPreamble, attachments);
+    return;
+  }
   if (s.busy) {
     const partialText = s.streamingText.trim();
     const partialTools = s.liveTools;

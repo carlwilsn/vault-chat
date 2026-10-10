@@ -149,6 +149,14 @@ export type Conversation = {
   askStakes?: "low" | "high";
   askOnDefer?: string;
   askDeadlineAt?: number;
+  // [phase 2] Box-run conversations (Codex engine). The box writes these; every
+  // reader must carry them through (the same strip-trap as `mission`).
+  codexThreadId?: string;
+  project?: string;
+  working?: boolean;
+  nextWakeAt?: number;
+  state?: "idle" | "running" | "sleeping" | "waiting_user" | "blocked" | "done";
+  verdict?: unknown;
 };
 
 
@@ -273,6 +281,13 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         askStakes: parsed.askStakes,
         askOnDefer: parsed.askOnDefer,
         askDeadlineAt: parsed.askDeadlineAt,
+        // [phase 2] Codex conversation meta (box-authored).
+        codexThreadId: parsed.codexThreadId,
+        project: parsed.project,
+        working: parsed.working,
+        nextWakeAt: parsed.nextWakeAt,
+        state: parsed.state,
+        verdict: parsed.verdict,
       });
     } catch {
       // skip
