@@ -628,6 +628,22 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
     conversationId = await createScheduledConversation(vault, s);
   }
 
+  // [engine, Phase 2] A conversation run by the box's Codex engine is never
+  // driven by the old loop: its wakes are the engine's own (wakes.json).
+  if (s.target.kind === "existing") {
+    try {
+      const c =
+        useStore.getState().conversations.find((x) => x.id === conversationId) ??
+        (await readConversations(vault)).find((x) => x.id === conversationId);
+      if (c?.codexThreadId) {
+        vlog("sched.skip.engine", { conv: conversationId.slice(0, 8), name: s.name });
+        return;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
   // [harness v2] Never fire a self-check into a mission that is WAITING ON THE
   // USER. A pending unanswered AskUser means the mission asked a question and is
   // holding for the reply; firing a self-check keeps the thread "running", which
