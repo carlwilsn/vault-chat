@@ -25,12 +25,15 @@
   root.id = "tour";
   root.hidden = true;
   root.innerHTML = `
-    <div id="tour-progress"><i></i></div>
     <div id="tour-stage"></div>
-    <div id="tour-label"><b></b><span></span></div>
-    <div id="tour-card"><div class="in"><div class="kicker"></div><h1></h1><p></p><div class="extra"></div></div></div>
-    <div id="tour-paused">Paused — Space to resume</div>
-    <div id="tour-hint">Space pause · ← → step · R replay · Esc exit</div>`;
+    <div id="tour-bar">
+      <div id="tour-label"><b></b><span></span></div>
+      <span id="tour-loading">loading…</span>
+      <span id="tour-paused">Paused — Space to resume</span>
+      <span id="tour-hint">Space pause · ← → step · R replay · Esc exit</span>
+      <div id="tour-progress"><i></i></div>
+    </div>
+    <div id="tour-card"><div class="in"><div class="kicker"></div><h1></h1><p></p><div class="extra"></div></div></div>`;
   document.body.appendChild(root);
   const stage = $("#tour-stage");
   const card = $("#tour-card");
@@ -131,9 +134,11 @@
     if (w.ns) purge((k) => k.startsWith(`vcp:${w.ns}:`));
   }
 
+  // Contain, like a video in a player: the whole frame always fits the stage
+  // (the space above the caption bar), centred; re-fit whenever it changes size.
   function fit(wrap) {
-    const W = window.innerWidth - 24;
-    const H = window.innerHeight - 24;
+    const W = Math.max(50, stage.clientWidth - 16);
+    const H = Math.max(50, stage.clientHeight - 16);
     const frames = [...wrap.querySelectorAll(".tframe")];
     const totalW = frames.reduce((a, f) => a + Number(f.dataset.w), 0) + (frames.length - 1) * 12;
     const maxH = Math.max(...frames.map((f) => Number(f.dataset.h)));
@@ -175,7 +180,6 @@
       if (ph.kind === "card") return;
       const plan = planOf(ph);
       const w = buildFrames(plan, plan.pages ? plan.pages[0].scenario : plan.scenario);
-      w.classList.add("pre");
       stage.appendChild(w);
       fit(w);
       preloaded = { key: keyOf(plan), el: w };
@@ -251,6 +255,36 @@
     card.classList.add("on");
   }
 
+  /** Wait until a hidden frame has rendered (no splash), then cross-fade it
+   *  in over whatever is showing and let the rest fade out. Waiting past 15 s
+   *  says "loading…" in the caption bar — never a blank or splash frame. */
+  async function reveal(w, ready, my, what) {
+    const lt = setTimeout(() => my === token && $("#tour-loading").classList.add("on"), 15000);
+    let v;
+    try {
+      v = await until(ready, 60000, my, what);
+    } finally {
+      clearTimeout(lt);
+      $("#tour-loading").classList.remove("on");
+    }
+    fit(w);
+    w.classList.add("show");
+    clearStage(w);
+    return v;
+  }
+  /** Fade out and drop every frame but `keep` (and the preloaded one). */
+  function clearStage(keep) {
+    for (const o of [...stage.children]) {
+      if (o === keep || (preloaded && o === preloaded.el)) continue;
+      if (!o.classList.contains("show")) {
+        drop(o); // loaded for a phase that never came (stepped past)
+        continue;
+      }
+      o.classList.remove("show");
+      setTimeout(() => drop(o), 500);
+    }
+  }
+
   async function play(i) {
     const my = ++token;
     clearTimeout(timer);
@@ -260,14 +294,15 @@
     progress();
     const ph = T.phases[T.index];
     const s = slides[ph.si];
-    // Tear down what was showing (keep the preloaded frame).
-    for (const w of [...stage.children]) if (!preloaded || w !== preloaded.el) drop(w);
-    label.classList.remove("on");
+    // What was showing stays up until the next thing is ready to be seen (a
+    // title card fades over it, a frame cross-fades in once it has rendered).
     const t0 = Date.now();
     const result = { phase: T.index, slide: ph.si, id: s.id, kind: ph.kind, option: ph.oi, ok: true, error: null };
     try {
       if (ph.kind === "title" || ph.kind === "card") {
+        label.classList.remove("on");
         showCard(s, ph.kind);
+        setTimeout(() => my === token && clearStage(null), 450);
         if (ph.kind === "title") preloadNext();
         // Recorded once the card has faded in (the checker shoots it then).
         await wait(500, my);
@@ -282,37 +317,48 @@
         await wait(ms - 500, my);
         return next(my);
       }
-      card.classList.remove("on");
       const plan = planOf(ph);
-      label.querySelector("b").textContent = plan.label ?? (plan.side === "before" ? "Before · today" : "After · new");
-      label.querySelector("span").textContent = (plan.optLabel ? plan.optLabel + " — " : "") + s.title;
-      label.className = `on ${plan.side}`;
+      const setLabel = (extra) => {
+        label.querySelector("b").textContent = plan.label ?? (plan.side === "before" ? "Before · today" : "After · new");
+        label.querySelector("span").textContent = (plan.optLabel ? plan.optLabel + " — " : "") + s.title + (extra ? ` — ${extra}` : "");
+        label.className = `on ${plan.side}`;
+      };
       const w = framesFor(plan);
-      w.classList.remove("pre");
       fit(w);
       if (plan.surface === "phone") {
         const pages = plan.pages ?? [{ scenario: plan.scenario, hold: 3000 }];
+        const phoneReady = (fw, sc) => () => fw.main.contentWindow?.__previewPhone?.ready && fw.main.contentWindow.location.search.includes(`scenario=${sc}`);
+        let cur = w;
+        let upcoming = null;
         for (const [pi, pg] of pages.entries()) {
-          if (pi > 0) w.main.src = src(plan, pg.scenario, `${plan.tree}-t${++nsSeq}`);
-          if (pi > 0) await sleep(300);
-          await until(() => w.main.contentWindow?.__previewPhone?.ready && w.main.contentWindow.location.search.includes(`scenario=${pg.scenario}`), 30000, my, `phone ${pg.scenario} ready`);
+          if (pi > 0) cur = upcoming;
+          await reveal(cur, phoneReady(cur, pg.scenario), my, `phone ${pg.scenario} ready`);
+          card.classList.remove("on");
+          setLabel(pg.label ?? pg.scenario);
+          if (pi === 0) preloadNext();
+          // The next page loads hidden while this one is on screen.
+          if (pages[pi + 1]) {
+            upcoming = buildFrames(plan, pages[pi + 1].scenario);
+            stage.appendChild(upcoming);
+            fit(upcoming);
+          }
           // A tap on something only one side has (Activity, say) is the point of
           // some pages: noted for the checker, not a failure.
-          const pe = w.main.contentWindow.__previewPhone.stepError;
+          const pe = cur.main.contentWindow.__previewPhone.stepError;
           if (pe) (T.notes ??= []).push({ phase: T.index, page: pg.scenario, note: pe });
-          label.querySelector("span").textContent = `${s.title} — ${pg.label ?? pg.scenario}`;
           await wait(pg.hold ?? 2600, my);
         }
       } else {
-        const win = await until(() => w.main.contentWindow?.__preview?.ready && w.main.contentWindow, 45000, my, "app ready");
-        const pausedNow = () => win.__preview.tourPause(T.paused);
-        pausedNow();
+        const win = await reveal(w, () => w.main.contentWindow?.__preview?.ready && w.main.contentWindow, my, "app ready");
+        card.classList.remove("on");
+        setLabel();
+        preloadNext(); // the next phase loads hidden while this one plays
+        win.__preview.tourPause(T.paused);
         const r = await win.__preview.tour(plan.steps, { open: plan.open, pace: s.pace });
         if (my !== token) throw new Stale();
         if (!r.ok && !r.aborted) throw new Error(r.error ?? "steps failed");
       }
       T.results.push({ ...result, ms: Date.now() - t0 });
-      if (ph.kind === "after" || ph.kind === "before") preloadNext();
       await wait(plan.hold, my);
       return next(my);
     } catch (e) {
@@ -345,7 +391,7 @@
   function setPaused(p) {
     T.paused = p;
     $("#tour-paused").classList.toggle("on", p);
-    for (const ifr of stage.querySelectorAll(".tour-frames:not(.pre) iframe")) {
+    for (const ifr of stage.querySelectorAll(".tour-frames.show iframe")) {
       try {
         ifr.contentWindow?.__preview?.tourPause?.(p);
       } catch {
@@ -414,9 +460,11 @@
     e.preventDefault();
     e.stopPropagation();
   }, true);
-  window.addEventListener("resize", () => {
+  const refit = () => {
     for (const w of stage.querySelectorAll(".tour-frames")) fit(w);
-  });
+  };
+  window.addEventListener("resize", refit);
+  if (typeof ResizeObserver === "function") new ResizeObserver(refit).observe(stage);
 
   // Frames' reports (not faked, refused, errors) while touring: kept for the
   // checker (tools/tour-check.mjs); the shell's own log shows them too.

@@ -33,7 +33,8 @@ const out = join(dirname(fileURLToPath(import.meta.url)), "..", "proof", "tour")
 mkdirSync(out, { recursive: true });
 if (from === 0) for (const f of readdirSync(out)) if (f.endsWith(".png")) rmSync(join(out, f));
 
-const { browser, page, log } = await launch({ width: 1600, height: 1000 });
+const [vw, vh] = String(opt("size", "1664x932")).split("x").map(Number);
+const { browser, page, log } = await launch({ width: vw, height: vh });
 const crossPort = [];
 page.on("request", (r) => {
   const u = new URL(r.url());
@@ -48,8 +49,22 @@ console.log(`tour: ${phases.length} phases; checking ${from}..${last}`);
 let seen = 0;
 const t0 = Date.now();
 const results = [];
+const splashSeen = [];
 for (;;) {
-  const st = await page.evaluate(() => ({ results: window.__tour.results, index: window.__tour.index, done: window.__tour.done }));
+  const st = await page.evaluate(() => {
+    // A splash (desktop #vault-splash, phone .gate) inside a frame that is on screen.
+    let splash = false;
+    for (const f of document.querySelectorAll(".tour-frames.show iframe")) {
+      try {
+        const d = f.contentDocument;
+        if (d && (d.getElementById("vault-splash") || d.querySelector(".gate") || !d.querySelector("body *"))) splash = true;
+      } catch {
+        /* navigating */
+      }
+    }
+    return { results: window.__tour.results, index: window.__tour.index, done: window.__tour.done, splash };
+  });
+  if (st.splash) splashSeen.push(st.index);
   while (seen < st.results.length) {
     const r = st.results[seen++];
     const name = `${String(r.phase).padStart(2, "0")}-${r.id}-${r.kind}${r.option !== null && r.option !== undefined ? "-opt" + "ABC"[r.option] : ""}.png`;
@@ -63,7 +78,7 @@ for (;;) {
     console.log("timeout");
     break;
   }
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(250);
 }
 const reports = await page.evaluate(() => window.__tour.reports);
 const errs = log.console.filter((m) => m.type === "error");
@@ -77,9 +92,10 @@ const summary = {
   reports,
   outbound: log.outbound,
   crossPortRequests: crossPort,
+  splashVisibleInPhases: [...new Set(splashSeen)],
   minutes: Math.round((Date.now() - t0) / 6000) / 10,
 };
 writeFileSync(join(out, "result.json"), JSON.stringify(summary, null, 1));
 console.log(JSON.stringify(summary, null, 1));
 await browser.close();
-process.exit(summary.failed.length || summary.consoleErrors.length || summary.pageErrors.length || summary.outbound.length || summary.crossPortRequests.length || summary.notFaked.length || reports.length ? 1 : 0);
+process.exit(summary.failed.length || summary.consoleErrors.length || summary.pageErrors.length || summary.outbound.length || summary.crossPortRequests.length || summary.splashVisibleInPhases.length || summary.notFaked.length || reports.length ? 1 : 0);

@@ -1,5 +1,5 @@
 {
- "phases": 117,
+ "phases": 3,
  "failed": [],
  "consoleErrors": [],
  "pageErrors": [],
@@ -7,5 +7,6 @@
  "reports": [],
  "outbound": [],
  "crossPortRequests": [],
- "minutes": 28.5
+ "splashVisibleInPhases": [],
+ "minutes": 0.8
 }
