@@ -49,7 +49,7 @@ autosave, commit-controller, alert-summary, compactor, providers, modelCatalog (
 | `phone_set_vapid` | 6819 | commands/phone.ts | |
 | `phone_push_subs` / `phone_push_unsub` | 6825 / 6831 → voice_server.rs:1435–1470 | commands/phone.ts | file `VC_PUSH_SUBS` (default `~/.config/com.vault-chat.app/phone-push-subs.json`, the desktop's `app_config_dir`); absent file = no subscriptions |
 | `notification_add` | 6838 → voice_server.rs:1937 | commands/phone.ts | |
-| `default_system_prompt` … `default_ask_prompt` | 6511–6546 | commands/index.ts | the bundled `src-tauri/defaults/*.md` |
+| `default_system_prompt` … `default_assistant_prompt` | 6511–6546 | commands/index.ts | the bundled `src-tauri/defaults/*.md` |
 
 Desktop-only commands (file tree, history modal, vault sync, voice, TeX, window/app lifecycle) are not
 reachable from the server's modules and are deliberately not implemented.
