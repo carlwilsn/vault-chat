@@ -630,7 +630,6 @@ type State = {
   // null = not box mode.
   boxChat: import("./boxChat").BoxChatState | null;
   showChatsPanel: boolean;
-  showSchedulesPanel: boolean;
 
   // Git repo root for the currently-open file. When the file lives inside a
   // nested sub-repo (e.g. `DeepDL/bitnet-repro/notes.md`) this is that
@@ -774,7 +773,6 @@ type State = {
   // thread and flicker it back.
   deleteConversation: (id: string) => Promise<void>;
   setShowChatsPanel: (b: boolean) => void;
-  setShowSchedulesPanel: (b: boolean) => void;
   // Off-screen-safe message append: writes directly to a specific
   // conversation's stored messages array, regardless of which one is
   // currently active. Used by chat-controller when a run finishes
@@ -985,7 +983,6 @@ export const useStore = create<State>((set) => ({
   conversationsLoaded: false,
   boxChat: null,
   showChatsPanel: false,
-  showSchedulesPanel: false,
   repoRoot: null,
 
   setVault: (p) =>
@@ -1040,7 +1037,6 @@ export const useStore = create<State>((set) => ({
         conversationsLoaded: false,
         boxChat: null,
         showChatsPanel: false,
-        showSchedulesPanel: false,
         currentFile: null,
         currentContent: "",
         panes: [],
@@ -1692,7 +1688,7 @@ export const useStore = create<State>((set) => ({
     }
   },
   setShowNotesPanel: (b) =>
-    set(b ? { showNotesPanel: true, showChatsPanel: false, showSchedulesPanel: false } : { showNotesPanel: false }),
+    set(b ? { showNotesPanel: true, showChatsPanel: false } : { showNotesPanel: false }),
   setShowHistory: (b) => set({ showHistory: b }),
   requestScrollAnchor: (path, anchor) => set({ pendingScrollAnchor: { path, anchor } }),
   clearScrollAnchor: () => set({ pendingScrollAnchor: null }),
@@ -2133,9 +2129,7 @@ export const useStore = create<State>((set) => ({
     return done;
   },
   setShowChatsPanel: (b) =>
-    set(b ? { showChatsPanel: true, showNotesPanel: false, showSchedulesPanel: false } : { showChatsPanel: false }),
-  setShowSchedulesPanel: (b) =>
-    set(b ? { showSchedulesPanel: true, showNotesPanel: false, showChatsPanel: false } : { showSchedulesPanel: false }),
+    set(b ? { showChatsPanel: true, showNotesPanel: false } : { showChatsPanel: false }),
   markAllRead: () =>
     set((s) => {
       if (!s.conversations.some((c) => c.unread)) return {}; // no-op → no re-render / no write
