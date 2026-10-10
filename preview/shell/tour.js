@@ -107,7 +107,28 @@
       if (plan.surface === "popout") mk(src(plan, scenario, ns, "&view=chat"), SIZES.popout);
     }
     wrap.main = main;
+    wrap.ns = ns;
     return wrap;
+  }
+
+  // Every frame gets its own localStorage namespace on the shared origin
+  // (runtime/storage.ts); a frame's keys go with it, or a long tour fills the
+  // origin's quota.
+  function purge(match) {
+    try {
+      const dead = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && match(k)) dead.push(k);
+      }
+      for (const k of dead) localStorage.removeItem(k);
+    } catch {
+      /* storage unavailable */
+    }
+  }
+  function drop(w) {
+    w.remove();
+    if (w.ns) purge((k) => k.startsWith(`vcp:${w.ns}:`));
   }
 
   function fit(wrap) {
@@ -143,7 +164,7 @@
     return w;
   }
   function dropPreload() {
-    if (preloaded) preloaded.el.remove();
+    if (preloaded) drop(preloaded.el);
     preloaded = null;
   }
   function preloadNext() {
@@ -240,7 +261,7 @@
     const ph = T.phases[T.index];
     const s = slides[ph.si];
     // Tear down what was showing (keep the preloaded frame).
-    for (const w of [...stage.children]) if (!preloaded || w !== preloaded.el) w.remove();
+    for (const w of [...stage.children]) if (!preloaded || w !== preloaded.el) drop(w);
     label.classList.remove("on");
     const t0 = Date.now();
     const result = { phase: T.index, slide: ph.si, id: s.id, kind: ph.kind, option: ph.oi, ok: true, error: null };
@@ -352,6 +373,7 @@
       T.slides = slides.map((s) => s.id);
     }
     T.active = true;
+    purge((k) => /^vcp:(before|after)-t\d+:/.test(k)); // left by an earlier tour
     $("#stage").innerHTML = ""; // the shell's own frames stop while touring
     root.hidden = false;
     document.body.classList.add("touring");
@@ -363,7 +385,7 @@
     token++;
     abortFrames();
     dropPreload();
-    stage.innerHTML = "";
+    for (const w of [...stage.children]) drop(w);
     T.active = false;
     root.hidden = true;
     document.body.classList.remove("touring");

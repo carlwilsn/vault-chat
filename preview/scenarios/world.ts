@@ -369,7 +369,9 @@ export function history(now: number) {
   let n = 0;
   const noise = (at: number) => {
     const i = n++;
-    const file = ["conversations/c-spectral.jsonl", "schedules.jsonl", "heartbeat.json"][i % 3];
+    // App-state churn in files no scenario reads (it used to land on a real
+    // conversation file and schedules.jsonl, and wiped them from the working tree).
+    const file = ["sync-state.json", "presence.json", "heartbeat.json"][i % 3];
     return {
       subject: i % 3 === 2 ? "vault-chat: auto-sync submodule pointers" : "vault-chat: auto-sync",
       body: T("sync"),
