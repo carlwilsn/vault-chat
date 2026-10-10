@@ -22,7 +22,50 @@ export type ServerHooks = {
   syncStatus: () => unknown;
   alert: (title: string, body: string, tag?: string) => Promise<number>;
   onGitPushed: () => void;
+  /** The Codex engine takes these routes; a handler returning null hands the
+   * request to the legacy relay (old mission threads). */
+  engine?: {
+    message: (b: any) => Promise<Record<string, unknown> | null>;
+    answer: (b: any) => Promise<Record<string, unknown> | null>;
+    kill: (b: any) => Promise<Record<string, unknown> | null>;
+  };
 };
+
+// Idempotency for engine sends: the phone tags each POST with clientMsgId and
+// a flaky network can deliver it twice; a duplicate gets the first result.
+const engineSends = new Map<string, Promise<Record<string, unknown> | null>>();
+function dedupe(id: unknown, fn: () => Promise<Record<string, unknown> | null>): Promise<Record<string, unknown> | null> {
+  if (typeof id !== "string" || !id) return fn();
+  const hit = engineSends.get(id);
+  if (hit) return hit;
+  const p = fn();
+  engineSends.set(id, p);
+  p.then(
+    (r) => (r && (r as any).error ? engineSends.delete(id) : setTimeout(() => engineSends.delete(id), 60_000).unref?.()),
+    () => engineSends.delete(id),
+  );
+  return p;
+}
+
+/** Engine first; null → the legacy relay. */
+async function engineRoute(
+  res: ServerResponse,
+  handler: ((b: any) => Promise<Record<string, unknown> | null>) | undefined,
+  body: any,
+  event: string,
+  timeoutMs: number,
+  fail: string,
+  after?: (out: Record<string, unknown>) => void,
+): Promise<void> {
+  if (handler) {
+    const out = await dedupe(body?.clientMsgId, () => handler(body)).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
+    if (out) {
+      if (!(out as any).error) after?.(out);
+      return json(res, 200, out);
+    }
+  }
+  return relayRoute(res, event, body, timeoutMs, fail);
+}
 
 // voice_server.rs:45 PHONE_MANIFEST / 62 ICON_SVG
 const PHONE_MANIFEST = `{
@@ -237,14 +280,27 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       return relayRoute(res, "phone:schedule", await jsonBody(req), 10_000, "app not answering");
     case "GET /status":
       return relayRoute(res, "phone:status", {}, 10_000, "app not answering — is a vault open?");
-    case "POST /message":
-      return relayRoute(res, "phone:msg", await jsonBody(req), 15_000, "app not answering — is a vault open?");
+    case "POST /message": {
+      const b = await jsonBody(req);
+      // A structured mission approval (Approve & run) stays on the old path (Phase 3 removes it).
+      const h = b?.mission ? undefined : hooks.engine?.message;
+      return engineRoute(res, h, b, "phone:msg", 15_000, "app not answering — is a vault open?");
+    }
     case "POST /alert-followup":
       return relayRoute(res, "phone:alert-followup", await jsonBody(req), 15_000, "app not answering");
-    case "POST /answer":
-      return relayRoute(res, "phone:answer", await jsonBody(req), 15_000, "app not answering — is a vault open?");
+    case "POST /answer": {
+      const b = await jsonBody(req);
+      return engineRoute(res, hooks.engine?.answer, b, "phone:answer", 15_000, "app not answering — is a vault open?", () => {
+        // The alert card's decision record, as the old /answer wrote it.
+        if (typeof b.notifId === "string" && b.notifId) {
+          const answer = b.defer ? "Not now" : String(b.text ?? "");
+          notificationAppend(vault, JSON.stringify({ type: "answered", id: b.notifId, answer: [...answer].slice(0, 160).join(""), ts: Date.now() }));
+          getRing().push(JSON.stringify({ type: "notif" }));
+        }
+      });
+    }
     case "POST /kill":
-      return relayRoute(res, "phone:kill", await jsonBody(req), 10_000, "app not answering");
+      return engineRoute(res, hooks.engine?.kill, await jsonBody(req), "phone:kill", 10_000, "app not answering");
     case "POST /chats/clear":
       return relayRoute(res, "phone:clearchats", {}, 15_000, "app not answering");
     case "GET /push/vapid": {

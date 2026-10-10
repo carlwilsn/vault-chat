@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
 import { initRing } from "./ring";
-import { loadKeyStore, hasKey } from "./keys";
+import { loadKeyStore, hasKey, keychainCommands } from "./keys";
+import { getRing } from "./ring";
 
 function fatal(msg: string, code = 2): never {
   console.error(`[vault-chat-server] FATAL: ${msg}`);
@@ -74,6 +75,28 @@ async function main(): Promise<void> {
   const { startPhoneAppHost, sendPush } = await import("../src/phoneApp");
   await startPhoneAppHost();
 
+  // Every agent turn runs in Codex (server/engine). The old in-process loop
+  // stays in the bundle for legacy mission threads until Phase 3 removes it.
+  const { notificationAppend } = await import("./commands/phone");
+  const { startEngine } = await import("./engine");
+  const engine = await startEngine({
+    vault: cfg.vault,
+    stateDir: cfg.stateDir,
+    secretsDir: cfg.secretsDir,
+    tokenPath: cfg.tokenPath,
+    localStoragePath: cfg.localStoragePath,
+    pushSubsPath: cfg.pushSubsPath,
+    openrouterBase: cfg.openrouterBase,
+    serverVersion: SERVER_VERSION,
+    apiKey: () => {
+      const v = keychainCommands.keychain_get({ key: "api.openrouter" });
+      return typeof v === "string" && v ? v : null;
+    },
+    sendPush: (title, body, url, tag) => sendPush(title, body, url, tag),
+    notificationAppend,
+    broadcast: (ev) => getRing().push(JSON.stringify(ev)),
+  });
+
   const { activeRuns } = await import("../src/runRegistry");
   const { startBoxSync, syncStatus, syncSummary, triggerSync } = await import("./sync");
   // The tag becomes the Web Push tag, so a repeat alert replaces the last one.
@@ -114,10 +137,18 @@ async function main(): Promise<void> {
       busy: { runs: activeRuns().length },
       conversations: useStore.getState().conversations.length,
       sync: syncSummary(),
+      engine: engine.error ? { error: engine.error } : engine.health(),
     }),
     syncStatus,
     alert,
     onGitPushed: () => triggerSync(),
+    engine: engine.engine
+      ? {
+          message: (b) => engine.engine!.message(b),
+          answer: (b) => engine.engine!.answerRoute(b),
+          kill: (b) => engine.engine!.kill(b),
+        }
+      : undefined,
   });
   console.log(`[vault-chat-server] listening on http://${cfg.host}:${cfg.port}`);
 
