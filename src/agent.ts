@@ -665,7 +665,7 @@ Be terse. If the task is research, return findings as a structured list with fil
       // the new keys to them fails — so branch. (Fable/Mythos ship after 4.8
       // and inherit its adaptive API shape; revert this clause if their API
       // ever diverges.)
-      const isAdaptive = /^claude-(opus-4-(7|8)|opus-5|sonnet-5|haiku-5|fable-|mythos-)/i.test(spec.id);
+      const isAdaptive = /^claude-(opus-4-(7|8)|opus-5|sonnet-5|fable-|mythos-)/i.test(spec.id);
       providerOptions = isAdaptive
         ? {
             anthropic: {

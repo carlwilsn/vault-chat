@@ -434,7 +434,11 @@ export function resolveTurnModel(
   apiKeys: Partial<Record<ProviderId, string>>,
 ): { modelId: string; spec: ModelSpec; apiKey: string; routedFrom?: string } {
   const ids = [...new Set(candidates.filter((c): c is string => !!c && c !== AUTO_MODEL_ID))];
-  if (!ids.length) throw new MissingKeyError("(none)", null, "No model is configured.");
+  if (!ids.length) {
+    // Only "auto" was asked for and it could not resolve: Auto runs on OpenRouter.
+    if (candidates.includes(AUTO_MODEL_ID)) throw new MissingKeyError(AUTO_MODEL_ID, "openrouter");
+    throw new MissingKeyError("(none)", null, "No model is configured.");
+  }
   const orCatalog = _liveCatalog?.filter((m) => m.provider === "openrouter") ?? [];
   for (const id of ids) {
     const spec = findModel(id);
