@@ -3,7 +3,7 @@ import { errToString } from "./errfmt";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
-import { buildModel, findModel, supportsVision, DEFAULT_MODEL_ID } from "./providers";
+import { buildModel, findModel, supportsVision, createCostMeter, DEFAULT_MODEL_ID } from "./providers";
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext, buildLiveStateBlock } from "./context";
@@ -15,7 +15,17 @@ export type TokenUsage = {
   completion: number;
   total: number;
   context: number;
+  // Server-reported cost (USD) of every model call this turn made — the turn
+  // itself, auto-continues, mid-run compaction and sub-agents. OpenRouter only;
+  // absent when no call reported a cost.
+  costUsd?: number;
 };
+
+// What a turn cost, emitted once at the end of every runAgent call — on success
+// AND on error (a turn that died after ten paid calls still cost money).
+// `calls` = model calls made; `missing` = calls whose response carried no cost
+// (direct-provider calls, or OpenRouter responses without usage).
+export type TurnCost = { usd: number; calls: number; missing: number };
 
 export type StreamEvent =
   | { kind: "text"; delta: string }
@@ -26,6 +36,7 @@ export type StreamEvent =
   | { kind: "tool_use"; id: string; name: string; input: any }
   | { kind: "tool_result"; id: string; result: string }
   | { kind: "done"; usage?: TokenUsage }
+  | { kind: "cost"; cost: TurnCost }
   | { kind: "error"; message: string };
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };
@@ -214,11 +225,23 @@ export async function runAgent(params: {
 }) {
   const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, supervisorMode, assistantMode, askMode, interactive, conversationId, freshContext } = params;
   const reasoningEffort = params.reasoningEffort ?? "medium";
+  // Meters every OpenRouter call made with `model` below (the turn, its
+  // auto-continues, mid-run compaction, sub-agents) — see providers.ts.
+  const meter = createCostMeter();
+  let costReported = false;
+  const reportCost = async () => {
+    if (costReported) return;
+    costReported = true;
+    await meter.settle();
+    if (meter.calls.length) {
+      onEvent({ kind: "cost", cost: { usd: meter.totalUsd(), calls: meter.calls.length, missing: meter.missing() } });
+    }
+  };
 
   try {
     const spec = findModel(modelId) ?? findModel(DEFAULT_MODEL_ID);
     if (!spec) throw new Error(`unknown model: ${modelId}`);
-    const model = buildModel(spec, apiKey);
+    const model = buildModel(spec, apiKey, { meter });
 
     const [sessionContext, skills, vaultSystem, vaultTools, northStar, memoryIndex, shellKind, vaultSupervisor, vaultAssistant, vaultAsk] = await Promise.all([
       loadSessionContext(vault),
@@ -642,7 +665,7 @@ Be terse. If the task is research, return findings as a structured list with fil
       // the new keys to them fails — so branch. (Fable/Mythos ship after 4.8
       // and inherit its adaptive API shape; revert this clause if their API
       // ever diverges.)
-      const isAdaptive = /^claude-(opus-4-(7|8)|sonnet-5|fable-|mythos-)/i.test(spec.id);
+      const isAdaptive = /^claude-(opus-4-(7|8)|opus-5|sonnet-5|fable-|mythos-)/i.test(spec.id);
       providerOptions = isAdaptive
         ? {
             anthropic: {
@@ -658,8 +681,8 @@ Be terse. If the task is research, return findings as a structured list with fil
     } else if (
       (spec.provider === "openai" || spec.provider === "openrouter") &&
       // OpenAI reasoning families, by bare id (direct) or `openai/…`
-      // (OpenRouter). gpt-5 / o1 / o3 / o4.
-      /(^|\/)(o[134]|gpt-5)/i.test(spec.id)
+      // (OpenRouter). gpt-5 / gpt-6 (and later) / o1 / o3 / o4.
+      /(^|\/)(o[134]|gpt-[5-9])/i.test(spec.id)
     ) {
       providerOptions = { openai: { reasoningEffort } };
     } else if (
@@ -902,12 +925,15 @@ Be terse. If the task is research, return findings as a structured list with fil
     }
 
     if (!res.ok) {
+      await reportCost();
       onEvent({
         kind: "error",
         message: errToString(res.error),
       });
       return;
     }
+    await reportCost();
+    const turnCostUsd = meter.calls.some((c) => typeof c.usd === "number") ? meter.totalUsd() : undefined;
 
     // Report cumulative tokens across all continuations, but use the LAST
     // attempt's input+cached as the live context size (that's the window
@@ -923,12 +949,14 @@ Be terse. If the task is research, return findings as a structured list with fil
           completion: totalCompletion,
           total: totalPrompt + totalCompletion + totalCached,
           context: lastInput + lastCached,
+          ...(turnCostUsd != null ? { costUsd: turnCostUsd } : {}),
         },
       });
     } else {
       onEvent({ kind: "done" });
     }
   } catch (e: any) {
+    await reportCost().catch(() => {});
     onEvent({ kind: "error", message: errToString(e) });
   }
 }

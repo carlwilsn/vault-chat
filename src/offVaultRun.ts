@@ -1,10 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import { runAgent } from "./agent";
+import { runAgent, type TurnCost } from "./agent";
 import {
-  findModel,
   AUTO_MODEL_ID,
   DEFAULT_WORKER_MODEL_ID,
   resolveAutoModel,
+  resolveTurnModel,
+  MissingKeyError,
+  roundUsd,
   getLiveCatalog,
 } from "./providers";
 import {
@@ -15,7 +17,9 @@ import {
   newConversationId,
   newMessageId,
   withConvLock,
+  missionKeyOf,
   type Conversation,
+  type MissionAudit,
 } from "./conversations";
 import { scheduledDeliveryText } from "./scheduleDelivery";
 import { useStore, type ChatMessage, type LiveTool } from "./store";
@@ -46,6 +50,103 @@ function hasTrailingUserSteer(messages: ChatMessage[]): boolean {
 // withConvLock (shared read→modify→write serializer for the conversations
 // store) now lives in ./conversations so the store's autosave can share it.
 
+// ---- cost bookkeeping ----
+// runAgent emits one `cost` event per call (the summed server-reported
+// usage.cost of every model call it made). A turn may call runAgent more than
+// once (the quota-fallback retry) — every attempt's spend is real, so it adds.
+type CostAcc = { usd: number; calls: number; missing: number };
+function newCostAcc(): CostAcc {
+  return { usd: 0, calls: 0, missing: 0 };
+}
+function addTurnCost(acc: CostAcc, c: TurnCost): void {
+  acc.usd = roundUsd(acc.usd + (c.usd || 0));
+  acc.calls += c.calls || 0;
+  acc.missing += c.missing || 0;
+}
+// Fields to merge onto the conversation for a turn's spend (running totals).
+function convCostPatch(conv: Conversation, acc: CostAcc): Partial<Conversation> {
+  if (!acc.calls) return {};
+  return {
+    costUsd: roundUsd((conv.costUsd ?? 0) + acc.usd),
+    ...(acc.missing || conv.costMissingCalls ? { costMissingCalls: (conv.costMissingCalls ?? 0) + acc.missing } : {}),
+  };
+}
+// The per-message field (ChatMessage lives in store.ts; the JSON passthrough
+// keeps the extra field on disk).
+function msgCostPatch(acc: CostAcc): { costUsd?: number } {
+  return acc.calls ? { costUsd: acc.usd } : {};
+}
+
+// ---- no silent no-key runs ----
+// A turn whose model has no usable provider key used to return quietly ("no
+// model / API key configured", or a console.warn on the scheduled path) — on
+// the box that meant missions simply stopped, with nothing anywhere saying why.
+// Now the failure is written into the thread as a failed assistant turn (so the
+// thread, the phone and the resume sweep all see it) and pushed as ONE
+// notification per provider per half hour.
+const missingKeyNotifiedAt = new Map<string, number>();
+async function reportMissingKey(
+  vault: string,
+  conversationId: string,
+  err: MissingKeyError,
+  userMessage: string | null,
+): Promise<void> {
+  const text = `⚠️ ${err.message}`;
+  vlog("turn.no-key", { conv: conversationId.slice(0, 8), model: err.modelId, provider: err.provider });
+  console.error(`[harness] ${err.message} (conversation ${conversationId})`);
+  await withConvLock(async () => {
+    const list = await readConversations(vault);
+    const idx = list.findIndex((c) => c.id === conversationId);
+    if (idx < 0) return;
+    const add: ChatMessage[] = [];
+    if (userMessage != null) add.push({ role: "user", content: userMessage, mid: newMessageId() });
+    add.push({ role: "assistant", content: text, failed: true, mid: newMessageId() });
+    list[idx] = { ...list[idx]!, messages: [...list[idx]!.messages, ...add], lastActivityAt: Date.now() };
+    await writeConversations(vault, list);
+  }).catch((e) => console.warn("[harness] could not record the missing-key failure:", errToString(e)));
+  await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
+  const k = `${err.provider ?? "?"}`;
+  const now = Date.now();
+  if (now - (missingKeyNotifiedAt.get(k) ?? 0) < 30 * 60_000) return;
+  missingKeyNotifiedAt.set(k, now);
+  try {
+    const { notify } = await import("./phoneApp");
+    await notify("info", "A turn did not run — missing API key", err.message, conversationId, {
+      intention: "Missing API key",
+      summary: err.message.slice(0, 200),
+      icon: "⚠️",
+      cls: "r",
+    });
+  } catch (e) {
+    console.warn("[harness] missing-key notification failed:", errToString(e));
+  }
+}
+
+// Resolve the model + key a turn runs on, or report the failure loudly and
+// return null. `candidates` in preference order; the "auto" sentinel is
+// resolved against `message` first.
+async function resolveTurnOrReport(
+  vault: string,
+  conversationId: string,
+  candidates: Array<string | undefined | null>,
+  message: string,
+  appendUser: boolean,
+): Promise<{ modelId: string; apiKey: string } | null> {
+  const store = useStore.getState();
+  const ids = candidates.map((c) =>
+    c === AUTO_MODEL_ID ? resolveAutoModel(message, store.apiKeys, getLiveCatalog())?.id ?? c : c,
+  );
+  try {
+    const r = resolveTurnModel(ids, store.apiKeys);
+    if (r.routedFrom) vlog("turn.model.rerouted", { conv: conversationId.slice(0, 8), from: r.routedFrom, to: r.modelId });
+    return { modelId: r.modelId, apiKey: r.apiKey };
+  } catch (e) {
+    const err = e instanceof MissingKeyError ? e : new MissingKeyError(String(ids[0] ?? "?"), null, errToString(e));
+    await reportMissingKey(vault, conversationId, err, appendUser ? message : null);
+    return null;
+  }
+}
+
 export async function runScheduledHeadlessTurn(
   vault: string,
   conversationId: string,
@@ -57,31 +158,26 @@ export async function runScheduledHeadlessTurn(
   // reason — e.g. Opus for a heavy weekly sweep), else the default. Resolve the
   // "auto" sentinel to a concrete model so the headless run doesn't silently
   // no-op on a missing model.
-  let modelId = opts.modelId || store.modelId;
-  if (modelId === AUTO_MODEL_ID) {
-    modelId = resolveAutoModel(prompt, store.apiKeys, getLiveCatalog())?.id ?? modelId;
-  }
-  const spec = findModel(modelId);
-  const apiKey = spec ? store.apiKeys[spec.provider] : undefined;
-  if (!spec || !apiKey) {
-    console.warn("[scheduler] headless run: no model/key configured");
-    return;
-  }
-
   const list = await readConversations(vault);
-  let idx = list.findIndex((c) => c.id === conversationId);
-  if (idx < 0) {
-    // The schedule's target conversation no longer exists on disk —
-    // fall back to creating a fresh one rather than dropping the run.
-    const fresh: Conversation = {
+  // No silent no-key runs: a missing key is written into the target thread and
+  // pushed, instead of a console.warn nobody reads.
+  if (!list.some((c) => c.id === conversationId)) {
+    // The schedule's target conversation no longer exists on disk — fall back
+    // to creating a fresh one rather than dropping the run (persisted now so a
+    // missing-key failure below has a thread to land in).
+    list.unshift({
       ...emptyConversation(),
       id: conversationId,
       source: "scheduled",
       title: deriveConversationTitle([{ role: "user", content: prompt }]),
-    };
-    list.unshift(fresh);
-    idx = 0;
+    });
+    await writeConversations(vault, list);
   }
+  const resolved = await resolveTurnOrReport(vault, conversationId, [opts.modelId || store.modelId], prompt, true);
+  if (!resolved) return;
+  const { modelId, apiKey } = resolved;
+
+  const idx = list.findIndex((c) => c.id === conversationId);
   const userMsg: ChatMessage = { role: "user", content: prompt, mid: newMessageId() };
   list[idx] = {
     ...list[idx]!,
@@ -108,6 +204,7 @@ export async function runScheduledHeadlessTurn(
   registerRun(conversationId, controller);
 
   let runErr: string | null = null;
+  const cost = newCostAcc();
   vlog("sched.wake", {
     conv: conversationId.slice(0, 8),
     quiet: opts.quietUnlessAlert ?? false,
@@ -159,6 +256,8 @@ export async function runScheduledHeadlessTurn(
         } else if (e.kind === "tool_result") {
           const t = tools.find((x) => x.id === e.id);
           if (t) t.result = e.result;
+        } else if (e.kind === "cost") {
+          addTurnCost(cost, e.cost);
         } else if (e.kind === "error") {
           const emsg = errToString(e.message);
           runErr = emsg;
@@ -231,7 +330,8 @@ export async function runScheduledHeadlessTurn(
       last && last.role === "user" && last.content === prompt
         ? msgs.slice(0, -1)
         : msgs;
-    finalList[fi] = { ...finalList[fi]!, messages: pruned };
+    // A silent turn leaves no message — but its spend still counts.
+    finalList[fi] = { ...finalList[fi]!, messages: pruned, ...convCostPatch(finalList[fi]!, cost) };
     await writeConversations(vault, finalList);
   } else if (finalList[fi]) {
     const assistantMsg: ChatMessage = {
@@ -242,9 +342,12 @@ export async function runScheduledHeadlessTurn(
       // the record; the thread view prefers the timeline when present.
       timeline: timeline ?? undefined,
       mid: newMessageId(),
+      failed: runErr ? true : undefined,
+      ...msgCostPatch(cost),
     };
     finalList[fi] = {
       ...finalList[fi]!,
+      ...convCostPatch(finalList[fi]!, cost),
       messages: [...finalList[fi]!.messages, assistantMsg],
       lastActivityAt: Date.now(),
       // [unread hygiene] Only user-facing threads earn an unread badge. A mission
@@ -311,6 +414,7 @@ function humanizeToolAction(name: string, input: unknown): string {
     case "GitLog": return "checked git history";
     case "MarkDoneWhen": return "checked off a criterion";
     case "CompleteMission": return "marked the mission done";
+    case "MissionCost": return "checked the mission's cost";
     case "Schedule": return "scheduled a wake";
     case "CancelSchedule": return "canceled a wake";
     case "ListSchedules": return "checked its schedules";
@@ -336,27 +440,23 @@ export async function runWorkerTurn(
   opts: { modelId?: string; resume?: boolean; direct?: boolean; forkNudge?: boolean; answer?: boolean } = {},
 ): Promise<{ reply: string; error?: string }> {
   const store = useStore.getState();
-  // Workers default to the heavy long-horizon worker model (Fable), NOT the
-  // chat-pane default — they're expert grinds, not daily chat. An explicit
-  // opts.modelId (e.g. a schedule's pinned model) still wins. If the worker
-  // model can't run (no Anthropic key / not in catalog yet), fall back to the
-  // chat default so a worker never silently no-ops on a fresh setup.
-  let modelId = opts.modelId || DEFAULT_WORKER_MODEL_ID;
-  if (modelId === AUTO_MODEL_ID) {
-    modelId = resolveAutoModel(message, store.apiKeys, getLiveCatalog())?.id ?? modelId;
+  // Workers default to the heavy long-horizon mission model, NOT the chat-pane
+  // default — they're expert grinds, not daily chat. An explicit opts.modelId
+  // (the supervisor/worker role setting, a schedule's pinned model) still wins.
+  // Without an explicit pick, fall back to the chat default if the mission
+  // model can't run. If NOTHING can run, the failure is written into the
+  // thread and pushed (resolveTurnOrReport) — never a quiet no-op.
+  const resolved = await resolveTurnOrReport(
+    vault,
+    conversationId,
+    opts.modelId ? [opts.modelId] : [DEFAULT_WORKER_MODEL_ID, store.modelId],
+    message,
+    !opts.resume,
+  );
+  if (!resolved) {
+    return { reply: "", error: `no usable API key for this turn's model — see the thread` };
   }
-  let spec = findModel(modelId);
-  if ((!spec || !store.apiKeys[spec.provider]) && !opts.modelId && modelId !== store.modelId) {
-    const fallback = findModel(store.modelId);
-    if (fallback && store.apiKeys[fallback.provider]) {
-      modelId = store.modelId;
-      spec = fallback;
-    }
-  }
-  const apiKey = spec ? store.apiKeys[spec.provider] : undefined;
-  if (!spec || !apiKey) {
-    return { reply: "", error: "no model / API key configured" };
-  }
+  const { modelId, apiKey } = resolved;
 
   // A genuine user turn (a typed reply or a tapped /answer) is a DIRECT message —
   // the deliberation sheet's exchange shows it; harness wakes stay unmarked.
@@ -462,12 +562,17 @@ export async function runWorkerTurn(
     const s = useStore.getState();
     for (const cand of [s.supervisorModelId, DEFAULT_WORKER_MODEL_ID, s.modelId]) {
       if (!cand || cand === failedId || cand === AUTO_MODEL_ID) continue;
-      const cSpec = findModel(cand);
-      const cKey = cSpec ? s.apiKeys[cSpec.provider] : undefined;
-      if (cSpec && cKey) return { id: cand, key: cKey };
+      try {
+        const r = resolveTurnModel([cand], s.apiKeys);
+        if (r.modelId !== failedId) return { id: r.modelId, key: r.apiKey };
+      } catch {
+        /* no key for this candidate — try the next */
+      }
     }
     return null;
   };
+  // Spend across BOTH attempts — the failed attempt's calls were billed too.
+  const cost = newCostAcc();
   let attemptModelId = modelId;
   let attemptKey = apiKey;
   try {
@@ -535,6 +640,8 @@ export async function runWorkerTurn(
         } else if (e.kind === "tool_result") {
           const t = tools.find((x) => x.id === e.id);
           if (t) t.result = e.result;
+        } else if (e.kind === "cost") {
+          addTurnCost(cost, e.cost);
         } else if (e.kind === "error") {
           runErr = errToString(e.message);
           acc = (acc + `\n\n⚠️ ${runErr}`).trim();
@@ -619,6 +726,7 @@ export async function runWorkerTurn(
         // crashed worker that wrote nothing must not look like a deliverable.
         failed: runErr ? true : undefined,
         mid: newMessageId(),
+        ...msgCostPatch(cost),
       };
       // [harness v2] Stamp the mission's lifecycle state as this turn lands:
       // AskUser → AWAITING_USER; otherwise back to RUNNING (never overwrite a
@@ -640,10 +748,15 @@ export async function runWorkerTurn(
           : cur.missionState;
       finalList[fi] = {
         ...cur,
+        ...convCostPatch(cur, cost),
         messages: [...cur.messages, assistantMsg],
         lastActivityAt: Date.now(),
         missionState: v2state,
       };
+      await writeConversations(vault, finalList);
+    } else if (fi >= 0 && cost.calls) {
+      // Nothing to show, but the calls were billed — the thread's total counts them.
+      finalList[fi] = { ...finalList[fi]!, ...convCostPatch(finalList[fi]!, cost) };
       await writeConversations(vault, finalList);
     }
   });
@@ -651,6 +764,14 @@ export async function runWorkerTurn(
   // Now that the final turn is on disk and in the store, drop the live stream
   // so the phone swaps from the streaming bubble to the persisted message.
   useStore.getState().clearConvRuntime(conversationId);
+
+  // Deliver wakes that queued up (durably — see queueMissionWake) while this
+  // thread was busy. A flush starts the next turn, which is itself the "next
+  // tick", so the parked-turn check below is skipped when one fires.
+  const flushed = await flushQueuedWakes(vault, conversationId).catch((e) => {
+    console.warn("[mission] queued-wake flush failed:", errToString(e));
+    return false;
+  });
 
   // [harness v2] Fork-forcing: a mission turn may not END PARKED. The Coconut
   // gap-closer reached its budget fork, wrote a diagnosis, and went idle with no
@@ -660,7 +781,7 @@ export async function runWorkerTurn(
   // worker) or a pending user decision — otherwise re-enter once with a nudge,
   // and if the nudged turn parks again, escalate to the user. Fire-and-forget so
   // callers (AskWorker, watcher wakes) are never blocked on it.
-  if (harnessV2Enabled() && supervisorMode && !opts.direct && !opts.resume && !runErr) {
+  if (harnessV2Enabled() && supervisorMode && !opts.direct && !opts.resume && !runErr && !flushed) {
     void enforceMissionLoopInvariant(
       vault,
       conversationId,
@@ -805,14 +926,15 @@ export async function runMissionChatTurn(
 
   // The conversational front is the interactive assistant — use the chat default
   // model (a full-fidelity surface), not the heavy worker grind model.
-  let modelId = store.modelId;
-  let spec = findModel(modelId);
-  if (!spec || !store.apiKeys[spec.provider]) {
-    const fb = findModel(store.supervisorModelId) || findModel(DEFAULT_WORKER_MODEL_ID);
-    if (fb && store.apiKeys[fb.provider]) { modelId = fb.id; spec = fb; }
-  }
-  const apiKey = spec ? store.apiKeys[spec.provider] : undefined;
-  if (!spec || !apiKey) return { reply: "", error: "no model / API key configured" };
+  const resolved = await resolveTurnOrReport(
+    vault,
+    conversationId,
+    [store.modelId, store.supervisorModelId, DEFAULT_WORKER_MODEL_ID],
+    text,
+    true,
+  );
+  if (!resolved) return { reply: "", error: "no usable API key for the chat model — see the thread" };
+  const { modelId, apiKey } = resolved;
 
   // Distinct run identity so the conversational lane never touches the executor's
   // run registration, status, or convRuntime slot.
@@ -909,6 +1031,7 @@ export async function runMissionChatTurn(
   let lastLen = 0;
   let sawTool = false;
   let runErr: string | undefined;
+  const cost = newCostAcc();
   try {
     await runAgent({
       modelId,
@@ -941,6 +1064,8 @@ export async function runMissionChatTurn(
           }
         } else if (e.kind === "tool_use") {
           sawTool = true;
+        } else if (e.kind === "cost") {
+          addTurnCost(cost, e.cost);
         } else if (e.kind === "error") {
           runErr = errToString(e.message);
         }
@@ -959,19 +1084,34 @@ export async function runMissionChatTurn(
   const reply = acc.trim();
   const { takePendingAskOptions } = await import("./tools");
   const staged = takePendingAskOptions(conversationId);
-  if (reply || staged.length) {
+  if (reply || staged.length || runErr || cost.calls) {
     await withConvLock(async () => {
       const list = await readConversations(vault);
       const idx = list.findIndex((c) => c.id === conversationId);
       if (idx < 0) return;
-      const assistantMsg: ChatMessage = {
-        role: "assistant",
-        content: reply || "Here are the options I'd put in front of you:",
-        direct: true,
-        mid: newMessageId(),
-        ...(staged.length ? { askOptions: staged } : {}),
+      const cur = list[idx]!;
+      // A failed answer is shown, never dropped: the error text lands as a
+      // failed turn so the user sees why there's no reply.
+      const assistantMsg: ChatMessage | null =
+        reply || staged.length || runErr
+          ? {
+              role: "assistant",
+              content:
+                reply ||
+                (staged.length ? "Here are the options I'd put in front of you:" : `⚠️ ${runErr}`),
+              direct: true,
+              mid: newMessageId(),
+              ...(staged.length ? { askOptions: staged } : {}),
+              ...(runErr && !reply ? { failed: true } : {}),
+              ...msgCostPatch(cost),
+            }
+          : null;
+      list[idx] = {
+        ...cur,
+        ...convCostPatch(cur, cost),
+        messages: assistantMsg ? [...cur.messages, assistantMsg] : cur.messages,
+        lastActivityAt: assistantMsg ? Date.now() : cur.lastActivityAt,
       };
-      list[idx] = { ...list[idx]!, messages: [...list[idx]!.messages, assistantMsg], lastActivityAt: Date.now() };
       await writeConversations(vault, list);
     });
     await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
@@ -1174,14 +1314,15 @@ export async function runAskTurn(
   const text = message.trim();
   if (!text) return { reply: "", error: "empty message" };
 
-  let modelId = store.modelId;
-  let spec = findModel(modelId);
-  if (!spec || !store.apiKeys[spec.provider]) {
-    const fb = findModel(store.supervisorModelId) || findModel(DEFAULT_WORKER_MODEL_ID);
-    if (fb && store.apiKeys[fb.provider]) { modelId = fb.id; spec = fb; }
-  }
-  const apiKey = spec ? store.apiKeys[spec.provider] : undefined;
-  if (!spec || !apiKey) return { reply: "", error: "no model / API key configured" };
+  const resolved = await resolveTurnOrReport(
+    vault,
+    conversationId,
+    [store.modelId, store.supervisorModelId, DEFAULT_WORKER_MODEL_ID],
+    text,
+    true,
+  );
+  if (!resolved) return { reply: "", error: "no usable API key for the chat model — see the thread" };
+  const { modelId, apiKey } = resolved;
 
   const chatKey = conversationId + "#chat";
   const broadcastChat = (phase: string, extra?: Record<string, unknown>) =>
@@ -1260,6 +1401,7 @@ export async function runAskTurn(
   let lastLen = 0;
   let sawTool = false;
   let runErr: string | undefined;
+  const cost = newCostAcc();
   try {
     await runAgent({
       modelId,
@@ -1288,6 +1430,8 @@ export async function runAskTurn(
           }
         } else if (e.kind === "tool_use") {
           sawTool = true;
+        } else if (e.kind === "cost") {
+          addTurnCost(cost, e.cost);
         } else if (e.kind === "error") {
           runErr = errToString(e.message);
         }
@@ -1304,19 +1448,34 @@ export async function runAskTurn(
   const reply = acc.trim();
   const { takePendingAskOptions } = await import("./tools");
   const staged = takePendingAskOptions(conversationId);
-  if (reply || staged.length) {
+  if (reply || staged.length || runErr || cost.calls) {
     await withConvLock(async () => {
       const list = await readConversations(vault);
       const idx = list.findIndex((c) => c.id === conversationId);
       if (idx < 0) return;
-      const assistantMsg: ChatMessage = {
-        role: "assistant",
-        content: reply || "Here are the options I'd put in front of you:",
-        direct: true,
-        mid: newMessageId(),
-        ...(staged.length ? { askOptions: staged } : {}),
+      const cur = list[idx]!;
+      // A failed answer is shown, never dropped: the error text lands as a
+      // failed turn so the user sees why there's no reply.
+      const assistantMsg: ChatMessage | null =
+        reply || staged.length || runErr
+          ? {
+              role: "assistant",
+              content:
+                reply ||
+                (staged.length ? "Here are the options I'd put in front of you:" : `⚠️ ${runErr}`),
+              direct: true,
+              mid: newMessageId(),
+              ...(staged.length ? { askOptions: staged } : {}),
+              ...(runErr && !reply ? { failed: true } : {}),
+              ...msgCostPatch(cost),
+            }
+          : null;
+      list[idx] = {
+        ...cur,
+        ...convCostPatch(cur, cost),
+        messages: assistantMsg ? [...cur.messages, assistantMsg] : cur.messages,
+        lastActivityAt: assistantMsg ? Date.now() : cur.lastActivityAt,
       };
-      list[idx] = { ...list[idx]!, messages: [...list[idx]!.messages, assistantMsg], lastActivityAt: Date.now() };
       await writeConversations(vault, list);
     });
     await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
@@ -1557,7 +1716,7 @@ export async function stopAndDeleteMission(vault: string, conversationId: string
           // a stale not-killed meta line (same rule as completeMission), and the
           // reconstruct terminal-wins guard makes KILLED durable regardless.
           // unread:false so an archived mission never nags from the chat list.
-          fresh[i] = { ...fresh[i]!, missionState: "KILLED" as const, billing: false, completedAt: t, lastActivityAt: t, unread: false };
+          fresh[i] = { ...fresh[i]!, missionState: "KILLED" as const, completedAt: t, lastActivityAt: t, unread: false };
         }
       }
       await writeConversations(vault, fresh);
@@ -1716,29 +1875,47 @@ async function enforceMissionLoopInvariant(
 export async function completeMission(
   vault: string,
   conversationId: string,
-): Promise<{ ok: boolean; already?: boolean; missing?: string[] }> {
-  // [harness v2] Deterministic completion gate: a mission may only complete when
-  // every "Done when" bullet in its brief has been individually checked off via
-  // MarkDoneWhen (each of which passed the independent evidence check). Pure
-  // code, zero tokens — the supervisor cannot declare victory over an unmet
-  // criterion; it must either verify the remaining items or take the miss to the
-  // user. Closes the "sweep is done but the mission isn't" / silent-done class.
-  if (harnessV2Enabled()) {
-    const pre = await readConversations(vault);
-    const m0 = pre.find((c) => c.id === conversationId && c.source === "mission");
-    if (m0 && !m0.completedAt) {
-      const briefMsg =
-        m0.messages.find((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || "")) ??
-        m0.messages.find((m) => m.role === "user");
-      const criteria = parseDoneWhenCriteria(briefMsg?.content ?? "");
-      const done = new Set((m0.doneWhenDone ?? []).map(normalizeCriterion));
-      const missing = criteria.filter((c) => !done.has(normalizeCriterion(c)));
-      if (missing.length > 0) {
-        vlog("mission.complete.rejected", { conv: conversationId.slice(0, 8), missing: missing.length });
-        return { ok: false, missing };
-      }
-    }
-  }
+  // What proves the goal is met — artifact paths, numbers, which checks passed.
+  // Required: completion is the supervisor's call, but never an unexplained one.
+  evidence?: string,
+): Promise<{ ok: boolean; already?: boolean; needEvidence?: boolean; audit?: MissionAudit; unchecked?: string[] }> {
+  // [completion gate] The supervisor decides when the goal is met; the auditor
+  // ADVISES. The old gate refused completion until every "Done when" bullet had
+  // passed the LLM auditor via MarkDoneWhen — and that auditor deadlocked
+  // closing (it rejected verified work over context it misread, four explicit
+  // user force-closes later the mission was still RUNNING and billing), which is
+  // why a user-waiver bypass got bolted on. Now: CompleteMission with evidence
+  // completes. The auditor still runs, once, over the criteria not yet checked
+  // off plus the cited evidence; its verdict is RECORDED on the mission (and
+  // shown in the completion notice) but never blocks.
+  const ev = (evidence ?? "").trim();
+  if (!ev) return { ok: false, needEvidence: true };
+  const pre = await readConversations(vault);
+  const m0 = pre.find((c) => c.id === conversationId && c.source === "mission");
+  if (!m0) return { ok: false };
+  if (m0.completedAt) return { ok: false, already: true };
+  const briefMsg =
+    m0.messages.find((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || "")) ??
+    m0.messages.find((m) => m.role === "user");
+  const criteria = parseDoneWhenCriteria(briefMsg?.content ?? "");
+  const checked = new Set((m0.doneWhenDone ?? []).map(normalizeCriterion));
+  const unchecked = criteria.filter((c) => !checked.has(normalizeCriterion(c)));
+  const auditTarget = unchecked.length ? unchecked : criteria;
+  const verdict = auditTarget.length
+    ? await runAdvisoryAudit(
+        `The mission's goal is met. Criteria:\n${auditTarget.map((c) => `- ${c}`).join("\n")}`,
+        await buildAuditEvidence(vault, m0, pre, auditTarget.join("\n"), ev),
+      )
+    : { pass: null, reason: "no 'Done when' criteria in the brief to audit" };
+  const audit: MissionAudit = {
+    at: Date.now(),
+    by: "CompleteMission",
+    criterion: auditTarget.join(" | ").slice(0, 600) || "(no criteria)",
+    pass: verdict.pass,
+    reason: verdict.reason,
+    evidence: ev.slice(0, 2000),
+  };
+  vlog("mission.complete.audit", { conv: conversationId.slice(0, 8), pass: verdict.pass, unchecked: unchecked.length });
   // Atomic check-and-set of completedAt: the FIRST caller inside the lock wins;
   // a racing/repeat caller sees it already stamped and bails. This is what kills
   // the duplicate "Mission complete" notification (two CompleteMission tool
@@ -1774,13 +1951,15 @@ export async function completeMission(
       completedAt: t,
       lastActivityAt: t,
       missionState: "DONE" as const,
-      billing: false,
       unread: false,
+      audits: [...(fresh[i]!.audits ?? []), audit],
     };
     await writeConversations(vault, fresh);
     didComplete = true;
   });
   if (!didComplete || !mission) return { ok: false, already };
+  // A finished mission has nothing left to wake for.
+  await takeQueuedWakes(vault, conversationId).catch(() => []);
   // Real completion: stop leftover workers + cancel self-scheduled wakes so it
   // can't re-wake itself back onto Activity.
   const key = (mission.mission ?? mission.title ?? "").trim();
@@ -1803,7 +1982,7 @@ export async function completeMission(
     console.warn("[mission] complete: schedule cleanup failed:", e);
   }
   await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
-  return { ok: true };
+  return { ok: true, audit, unchecked };
 }
 
 // "Done when" bullets parsed from a mission brief — same shape the phone's
@@ -2077,33 +2256,156 @@ async function readNamedFiles(
   return parts.join("\n\n");
 }
 
-// Mark ONE of a mission's "Done when" criteria verified-complete. The supervisor
-// passes the criterion (a paraphrase is fine); we fuzzy-match it to the brief's
-// bullets and store the matched bullet's exact text in doneWhenDone, so the
-// spec checks off that one bullet (per-criterion progress, not all-at-once).
 // Harness-generated wake prefixes share role:"user" with real user messages —
 // used to exclude plumbing wherever "the user's own words" matter (auditor
-// evidence, the user-waiver rail).
+// evidence).
 const isPlumbingUserMsg = (t: string) =>
   /^\s*(MISSION BRIEF|Watched run |Worker "|Your worker |Reply from worker |HARNESS CHECK )/.test(t);
 
+// [completion gate] The evidence auditor, ADVISORY. A fresh fast-model judge
+// reads ground truth (files named in the criterion, recorded tool results, the
+// user's own replies) and says whether it substantiates the claim. Its verdict
+// is recorded on the mission and reported back to the supervisor — it never
+// blocks a check-off or a completion. Bounded: a judge that hangs or errors
+// yields pass:null ("unaudited"), which is recorded just the same.
+const AUDIT_TIMEOUT_MS = 90_000;
+async function runAdvisoryAudit(
+  criterion: string,
+  evidence: string,
+): Promise<{ pass: boolean | null; reason: string }> {
+  try {
+    const { verifyCriterionEvidence } = await import("./alert-summary");
+    const verdict = await Promise.race([
+      verifyCriterionEvidence(criterion, evidence, useStore.getState().apiKeys),
+      new Promise<"timeout">((r) => setTimeout(() => r("timeout"), AUDIT_TIMEOUT_MS)),
+    ]);
+    if (verdict === "timeout") return { pass: null, reason: `auditor timed out after ${AUDIT_TIMEOUT_MS / 1000}s — unaudited` };
+    if (!verdict) return { pass: null, reason: "auditor unavailable (no background model, or its call failed) — unaudited" };
+    return { pass: verdict.pass, reason: verdict.reason };
+  } catch (e) {
+    return { pass: null, reason: `auditor error: ${errToString(e)} — unaudited` };
+  }
+}
+
+// Ground truth for the auditor. The agent's narration is a CLAIM to corroborate,
+// not evidence: files named in the criterion are read from disk, recorded tool
+// results (the mission's and its workers'), and the user's own replies (which
+// the agent cannot author) come first; the supervisor's cited evidence and its
+// recent narration come last, labelled as claims.
+async function buildAuditEvidence(
+  vault: string,
+  mission0: Conversation,
+  list0: Conversation[],
+  criterionText: string,
+  citedEvidence: string,
+): Promise<string> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const briefMsg =
+    mission0.messages.find((m) => m.role === "user" && /^\s*MISSION BRIEF/i.test(m.content || "")) ??
+    mission0.messages.find((m) => m.role === "user");
+  const briefText = briefMsg?.content ?? "";
+  // Only THIS mission's goal file — a shared mind.md let another mission's state
+  // contaminate the audit.
+  const goalPath = (briefText.match(/\.vault-chat\/supervisor\/goals\/[\w.\-]+\.md/) ?? [])[0];
+  const goalDoc = goalPath
+    ? await invoke<string>("read_text_file", { path: `${vault}/${goalPath}` }).catch(() => "")
+    : "";
+  // Criterion text drives absence-classification and gets read priority; the
+  // brief (and the cited evidence) only contribute secondary paths.
+  const groundTruth = await readNamedFiles(
+    vault,
+    criterionText,
+    `${briefText}\n${citedEvidence}`,
+    invoke,
+    mission0.id,
+  );
+  const recent = mission0.messages
+    .filter((m) => m.role === "assistant")
+    .slice(-2)
+    .map((m) => m.content ?? "")
+    .join("\n\n");
+  // Self-referential harness tools are excluded: a prior verdict is not world
+  // state (surfacing it made every retry re-reject by citing the last one).
+  const SELF_REFERENTIAL_TOOLS = new Set(["MarkDoneWhen", "CompleteMission", "AskUser", "RecordJudgment", "MissionCost"]);
+  const clipToolResults = (msgs: typeof mission0.messages, msgWindow: number, keep: number) =>
+    msgs
+      .filter((m) => m.role === "assistant" && Array.isArray(m.toolCalls) && m.toolCalls.length)
+      .slice(-msgWindow)
+      .flatMap((m) => m.toolCalls ?? [])
+      .filter((t) => t && typeof t.result === "string" && t.result.trim() && !SELF_REFERENTIAL_TOOLS.has(t.name))
+      .slice(-keep)
+      .map((t) => {
+        const input = t.input ? JSON.stringify(t.input).slice(0, 200) : "";
+        return `- ${t.name}(${input}) => ${String(t.result).trim().slice(0, 1200)}`;
+      })
+      .join("\n");
+  const toolResults = clipToolResults(mission0.messages, 3, 8);
+  // Workers build the deliverables — their recorded tool results are evidence
+  // the mission thread itself never shows.
+  const key = missionKeyOf(mission0);
+  const workerToolResults = list0
+    .filter(
+      (c) =>
+        c.source === "worker" &&
+        (c.mission ?? "").trim() === key &&
+        c.messages.some((m) => m.role === "assistant" && (m.toolCalls ?? []).length),
+    )
+    .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
+    .slice(0, 3)
+    .map((w) => {
+      const r = clipToolResults(w.messages, 2, 4);
+      return r ? `worker "${w.title ?? w.id}":\n${r}` : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+  const userVoice = mission0.messages
+    .filter((m) => m.role === "user" && (m.content || "").trim() && !isPlumbingUserMsg(m.content || ""))
+    .slice(-4)
+    .map((m) => `- "${(m.content || "").trim().slice(0, 400)}"`)
+    .join("\n");
+  // Section ORDER is load-bearing: the judge caps the evidence, so the compact,
+  // highest-signal sections go first and the bulky ones last.
+  const evidence =
+    (toolResults
+      ? `== GROUND TRUTH: tool-call results recorded in the thread (external verification — e.g. a list/command result proving a box is terminated or a check passed) ==\n${toolResults}\n\n`
+      : "") +
+    (workerToolResults
+      ? `== GROUND TRUTH: tool-call results from this mission's worker threads (workers build the deliverables — their recorded writes/commands are evidence the mission thread itself never shows) ==\n${workerToolResults}\n\n`
+      : "") +
+    (userVoice
+      ? `== GROUND TRUTH: the USER's own recent replies in this thread (typed/tapped on their phone — the agent cannot author these; the user is the final authority) ==\n${userVoice}\n\n`
+      : "") +
+    (groundTruth ? `== GROUND TRUTH: files named in the criterion, read from disk just now ==\n${groundTruth}\n\n` : "") +
+    (goalDoc ? `== this mission's goal file (scoped — no other mission's state) ==\n${goalDoc.slice(0, 6000)}\n\n` : "") +
+    (citedEvidence
+      ? `== the supervisor's cited evidence (a CLAIM — corroborate it against the ground truth above) ==\n${citedEvidence.slice(0, 4000)}\n\n`
+      : "") +
+    `== the agent's own recent narration (a CLAIM — corroborate it against the ground truth above; do NOT trust it on its own) ==\n${recent.slice(-3000)}`;
+  vlog("mission.audit.evidence", {
+    conv: mission0.id.slice(0, 8),
+    goal: goalDoc.length,
+    files: groundTruth.length,
+    thread: toolResults.length,
+    workers: workerToolResults.length,
+    user: userVoice.length,
+    cited: citedEvidence.length,
+  });
+  return evidence;
+}
+
+// Mark ONE of a mission's "Done when" criteria done. The supervisor passes the
+// criterion (a paraphrase is fine — it's fuzzy-matched to the brief's bullets)
+// and, ideally, the evidence. The criterion is ALWAYS checked off (the
+// supervisor owns the call); the auditor's advisory verdict is recorded on the
+// mission next to it and returned so the supervisor can act on a doubt.
+// (The old user-waiver rail — a verbatim user quote that bypassed the auditor —
+// existed only because the auditor could block; it can't any more, so it's gone.)
 export async function markDoneWhen(
   vault: string,
   conversationId: string,
   criterion: string,
-  // [user-waiver rail] A verbatim quote of the USER's message that authorizes
-  // checking this criterion off (a force-close, an explicit confirmation, a
-  // rescope). Verified DETERMINISTICALLY: the quote must actually appear in a
-  // real (non-plumbing) user message on this thread — user messages arrive from
-  // the phone and cannot be authored by the agent. When it matches, the LLM
-  // audit is bypassed: the self-test deadlock proved a fast-model auditor
-  // cannot be trusted to APPLY its user-authority rule under conflict (it
-  // rejected a post-completion criterion over mind.md's "still EXECUTING" while
-  // four explicit force-close taps sat in its evidence).
-  userWaiver?: string,
-): Promise<{ matched: string | null; verified: boolean; reason?: string }> {
-  // Fuzzy-match the claimed criterion to the brief's bullets (read-only pass —
-  // the write happens under the lock only after verification).
+  evidence?: string,
+): Promise<{ matched: string | null; verified: boolean; audit?: MissionAudit; reason?: string }> {
   const list0 = await readConversations(vault);
   const mission0 = list0.find((c) => c.id === conversationId && c.source === "mission");
   if (!mission0) return { matched: null, verified: false, reason: "mission not found" };
@@ -2133,170 +2435,22 @@ export async function markDoneWhen(
   }
   const matched = bestScore >= 0.5 ? best : criterion.trim();
 
-  // [user-waiver rail] Deterministic user authority: if the agent cites the
-  // user's authorizing words and the quote REALLY exists in a user message on
-  // this thread, the criterion passes without the LLM audit. String-match on
-  // normalized whitespace/case; minimum length so a trivial fragment ("ok")
-  // can't waive anything.
-  const waiverQuote = (userWaiver || "").replace(/\s+/g, " ").trim().toLowerCase();
-  let userAuthorized = false;
-  if (matched && waiverQuote.length >= 8) {
-    userAuthorized = mission0.messages.some(
-      (m) =>
-        m.role === "user" &&
-        !isPlumbingUserMsg(m.content || "") &&
-        (m.content || "").replace(/\s+/g, " ").trim().toLowerCase().includes(waiverQuote),
+  let audit: MissionAudit | undefined;
+  if (harnessV2Enabled() && matched) {
+    const ev = (evidence ?? "").trim();
+    const verdict = await runAdvisoryAudit(
+      matched,
+      await buildAuditEvidence(vault, mission0, list0, `${matched}\n${criterion}`, ev),
     );
-    if (!userAuthorized) {
-      return {
-        matched,
-        verified: false,
-        reason: `the cited user_waiver quote does not appear in any user message on this thread — quote their authorization verbatim, or drop user_waiver and provide evidence`,
-      };
-    }
-    vlog("mission.markdone.user-waived", { conv: conversationId.slice(0, 8) });
-  }
-
-  // [harness v2] Independent verification BEFORE the check-off lands. The actor
-  // doesn't grade its own work: a fresh fast-model auditor judges whether the
-  // RECORDED state (mind.md + the thread's recent output) concretely
-  // substantiates the criterion. The BitNet-era lesson ("a worker reporting
-  // 'completed' is NOT evidence") becomes a rail instead of a prompt plea.
-  // Fails OPEN when no fast model is configured (verifier returns null).
-  // Skipped entirely when the user's own words authorized the check-off above.
-  if (harnessV2Enabled() && matched && !userAuthorized) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      // Evidence is GROUND TRUTH, not the agent's own prose. Two battery failures
-      // drove this: (1) reading the SHARED supervisor/mind.md let ANOTHER mission's
-      // state (a still-parked AskUser) contaminate this audit and cause phantom
-      // rejections — so read only THIS mission's goal file; (2) the auditor
-      // rubber-stamped "no missed wakes / no gaps" off the agent's self-authored
-      // summary while the log on disk had out-of-order timestamps — so read the
-      // files NAMED IN THE CRITERION straight from disk and give the auditor the
-      // real bytes to check the claim against. The agent's narration is now a
-      // CLAIM to corroborate, not the evidence itself.
-      const briefText = briefMsg?.content ?? "";
-      const goalPath = (briefText.match(/\.vault-chat\/supervisor\/goals\/[\w.\-]+\.md/) ?? [])[0];
-      const goalDoc = goalPath
-        ? await invoke<string>("read_text_file", { path: `${vault}/${goalPath}` }).catch(() => "")
-        : "";
-      // Criterion text drives absence-classification and gets read priority;
-      // the brief only contributes secondary paths (see readNamedFiles —
-      // classifying absence from the combined text poisoned every PROXY V3
-      // audit via the brief's "which does not exist" phrase).
-      const groundTruth = await readNamedFiles(vault, `${matched}\n${criterion}`, briefText, invoke, conversationId);
-      const recent = mission0.messages
-        .filter((m) => m.role === "assistant")
-        .slice(-2)
-        .map((m) => m.content ?? "")
-        .join("\n\n");
-      // [markdone auditor] Tool-call RESULTS from the thread are ground truth for
-      // an EXTERNAL-VERIFICATION criterion (a box terminated shown by a list tool
-      // returning empty, a command's stdout). Surface the recent tool calls + their
-      // recorded results so the auditor can pass a criterion a tool already proved,
-      // instead of demanding a local file that doesn't exist for external state.
-      // Self-referential harness tools are EXCLUDED from evidence: a prior
-      // MarkDoneWhen's "VERIFICATION FAILED — no worker tool result…" is the
-      // auditor's OWN past verdict, and surfacing it as in-thread "ground
-      // truth" made every retry re-reject by citing the previous rejection —
-      // a self-reinforcing loop the evidence-tail-worker probe caught live
-      // (the auditor literally wrote "the ground-truth MarkDoneWhen response
-      // explicitly states verification failed" while a genuine worker Bash
-      // result sat in the evidence). Verdicts are not world state.
-      const SELF_REFERENTIAL_TOOLS = new Set(["MarkDoneWhen", "CompleteMission", "AskUser", "RecordJudgment"]);
-      const clipToolResults = (msgs: typeof mission0.messages, msgWindow: number, keep: number) =>
-        msgs
-          .filter((m) => m.role === "assistant" && Array.isArray(m.toolCalls) && m.toolCalls.length)
-          .slice(-msgWindow)
-          .flatMap((m) => (m.toolCalls ?? []))
-          .filter((t) => t && typeof t.result === "string" && t.result.trim() && !SELF_REFERENTIAL_TOOLS.has(t.name))
-          .slice(-keep)
-          .map((t) => {
-            const input = t.input ? JSON.stringify(t.input).slice(0, 200) : "";
-            return `- ${t.name}(${input}) => ${String(t.result).trim().slice(0, 1200)}`;
-          })
-          .join("\n");
-      const toolResults = clipToolResults(mission0.messages, 3, 8);
-      // [markdone auditor] WORKER threads are where deliverables actually get
-      // built — a mission that fans out writes its artifacts through worker
-      // tool calls the mission thread never sees. Auditing only the mission
-      // thread made every worker-built deliverable look unevidenced (the
-      // handoff's defect B). Surface the freshest workers' recorded tool
-      // results as labeled ground truth, same rules as the mission's own.
-      const workerConvs = list0
-        .filter(
-          (c) =>
-            c.source === "worker" &&
-            (c.mission ?? "") === (mission0.mission ?? mission0.title ?? "") &&
-            c.messages.some((m) => m.role === "assistant" && (m.toolCalls ?? []).length),
-        )
-        .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
-        .slice(0, 3);
-      const workerToolResults = workerConvs
-        .map((w) => {
-          const r = clipToolResults(w.messages, 2, 4);
-          return r ? `worker "${w.title ?? w.id}":\n${r}` : "";
-        })
-        .filter(Boolean)
-        .join("\n");
-      // [markdone auditor] The USER's own replies are ground truth the agent cannot
-      // author — they arrive from the phone (/message and /answer), never from a
-      // tool. Without them the auditor's "a criterion explicitly waived by the user
-      // passes" rule was starved of data: the self-test kind-4 circular gate
-      // survived FOUR verbatim "Force-close it" taps because the auditor only ever
-      // saw the agent's second-hand record of the authorization (narration it is
-      // told to distrust) — an unfixable deadlock that ping-spammed the user.
-      // Harness wakes share role:"user", so exclude the known plumbing prefixes.
-      const userVoice = mission0.messages
-        .filter((m) => m.role === "user" && (m.content || "").trim() && !isPlumbingUserMsg(m.content || ""))
-        .slice(-4)
-        .map((m) => `- "${(m.content || "").trim().slice(0, 400)}"`)
-        .join("\n");
-      // Section ORDER is load-bearing: the judge prompt hard-caps the evidence,
-      // so the compact, highest-signal sections (recorded tool results, the
-      // user's own words) go FIRST and the bulky ones (file bodies, narration)
-      // last. The evidence-tail-worker probe caught the failure mode live: a
-      // double-read journal + thread results filled the whole cap and the
-      // worker section — which held the only proof — was silently sliced off,
-      // so the judge truthfully reported "no recorded tool result" forever.
-      const evidence =
-        (toolResults
-          ? `== GROUND TRUTH: tool-call results recorded in the thread (external verification — e.g. a list/command result proving a box is terminated or a check passed) ==\n${toolResults}\n\n`
-          : "") +
-        (workerToolResults
-          ? `== GROUND TRUTH: tool-call results from this mission's worker threads (workers build the deliverables — their recorded writes/commands are evidence the mission thread itself never shows) ==\n${workerToolResults}\n\n`
-          : "") +
-        (userVoice
-          ? `== GROUND TRUTH: the USER's own recent replies in this thread (typed/tapped on their phone — the agent cannot author these; the user is the final authority) ==\n${userVoice}\n\n`
-          : "") +
-        (groundTruth
-          ? `== GROUND TRUTH: files named in the criterion, read from disk just now ==\n${groundTruth}\n\n`
-          : "") +
-        (goalDoc
-          ? `== this mission's goal file (scoped — no other mission's state) ==\n${goalDoc.slice(0, 6000)}\n\n`
-          : "") +
-        `== the agent's own recent narration (a CLAIM — corroborate it against the ground truth above; do NOT trust it on its own) ==\n${recent.slice(-3000)}`;
-      // Section sizes make an empty evidence lane diagnosable from the app log
-      // (an auditor rejection with workers=0 while a worker built the artifact
-      // is an evidence-gathering bug, not a judging bug).
-      vlog("mission.markdone.evidence", {
-        conv: conversationId.slice(0, 8),
-        goal: goalDoc.length,
-        files: groundTruth.length,
-        thread: toolResults.length,
-        workers: workerToolResults.length,
-        user: userVoice.length,
-      });
-      const { verifyCriterionEvidence } = await import("./alert-summary");
-      const verdict = await verifyCriterionEvidence(matched, evidence, useStore.getState().apiKeys);
-      if (verdict && !verdict.pass) {
-        vlog("mission.markdone.rejected", { conv: conversationId.slice(0, 8), reason: verdict.reason });
-        return { matched, verified: false, reason: verdict.reason };
-      }
-    } catch (e) {
-      console.warn("[mission] done-when verification errored (failing open):", e);
-    }
+    audit = {
+      at: Date.now(),
+      by: "MarkDoneWhen",
+      criterion: matched.slice(0, 600),
+      pass: verdict.pass,
+      reason: verdict.reason,
+      ...(ev ? { evidence: ev.slice(0, 2000) } : {}),
+    };
+    vlog("mission.markdone.audit", { conv: conversationId.slice(0, 8), pass: verdict.pass });
   }
 
   await withConvLock(async () => {
@@ -2305,12 +2459,18 @@ export async function markDoneWhen(
     if (i < 0) return;
     const done = new Set(list[i]!.doneWhenDone ?? []);
     if (matched) done.add(matched);
-    list[i] = { ...list[i]!, doneWhenDone: [...done], lastActivityAt: Date.now() };
+    list[i] = {
+      ...list[i]!,
+      doneWhenDone: [...done],
+      ...(audit ? { audits: [...(list[i]!.audits ?? []), audit] } : {}),
+      lastActivityAt: Date.now(),
+    };
     await writeConversations(vault, list);
   });
   await useStore.getState().refreshConversationFromDisk(vault, conversationId).catch(() => {});
-  return { matched, verified: true };
+  return { matched, verified: true, audit };
 }
+
 
 // [harness v2] The hard-note tool: append one structured judgment to the
 // per-vault decision log. Soft, head-only judgments ("the user sounded hesitant
@@ -2383,4 +2543,236 @@ export async function createScheduledConversationOnDisk(
   list.unshift(fresh);
   await writeConversations(vault, list);
   return fresh.id;
+}
+
+// ===========================================================================
+// Durable queued wakes + resume after a restart
+// ===========================================================================
+//
+// A message or worker-finished wake that arrives while a mission is mid-turn
+// has to wait for that turn to end. That queue used to live only in memory
+// (phoneApp's `queued` map), so a restart — the auto-update a multi-day run WILL
+// hit — silently dropped it and the mission never woke. These wakes now live in
+// a small machine-local file, `<vault>/.vault-chat/pending-wakes.json` (it must
+// be gitignored / sync-excluded: it describes THIS process's in-flight state),
+// and are delivered when the thread's current turn ends (runWorkerTurn) or, after
+// a restart, by resumeInterruptedMissions.
+
+export type QueuedWake = { conv: string; text: string; kind: "user" | "wake"; at: number };
+type WakeFile = { version: 1; wakes: QueuedWake[] };
+
+export const PENDING_WAKES_FILE = ".vault-chat/pending-wakes.json";
+// The harness's own worker-finish wake prefix (phoneApp onRunEnded) — anything
+// else queued for a mission is the user's own message.
+const isWorkerWakeText = (t: string) => /^Your worker "/.test(t);
+
+let wakeChain: Promise<unknown> = Promise.resolve();
+function withWakeLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = wakeChain.then(fn, fn);
+  wakeChain = run.catch(() => undefined);
+  return run;
+}
+
+async function readWakeFile(vault: string): Promise<WakeFile> {
+  const raw = await invoke<string>("read_text_file", { path: `${vault}/${PENDING_WAKES_FILE}` }).catch(() => "");
+  if (!raw || !String(raw).trim()) return { version: 1, wakes: [] };
+  try {
+    const j = JSON.parse(String(raw));
+    const wakes: QueuedWake[] = Array.isArray(j?.wakes) ? j.wakes : [];
+    return {
+      version: 1,
+      wakes: wakes.filter((w) => w && typeof w.conv === "string" && typeof w.text === "string" && w.text.trim()),
+    };
+  } catch {
+    // A corrupt file must not wedge the queue — keep a copy for inspection.
+    console.warn("[wakes] pending-wakes.json unreadable; starting a fresh queue");
+    await invoke("write_text_file", {
+      path: `${vault}/${PENDING_WAKES_FILE}.corrupt.bak`,
+      contents: String(raw),
+    }).catch(() => {});
+    return { version: 1, wakes: [] };
+  }
+}
+
+async function writeWakeFile(vault: string, f: WakeFile): Promise<void> {
+  await invoke("write_text_file", {
+    path: `${vault}/${PENDING_WAKES_FILE}`,
+    contents: JSON.stringify(f, null, 1) + "\n",
+  });
+}
+
+/** Durably queue a message/wake for a busy thread. Delivered when its current
+ *  turn ends (or on the next boot). Identical pending text is not queued twice. */
+export async function queueMissionWake(
+  vault: string,
+  conversationId: string,
+  text: string,
+  kind?: "user" | "wake",
+): Promise<void> {
+  const t = text.trim();
+  if (!t) return;
+  const k = kind ?? (isWorkerWakeText(t) ? "wake" : "user");
+  await withWakeLock(async () => {
+    const f = await readWakeFile(vault);
+    if (f.wakes.some((w) => w.conv === conversationId && w.text === t)) return;
+    f.wakes.push({ conv: conversationId, text: t, kind: k, at: Date.now() });
+    await writeWakeFile(vault, f);
+  });
+  vlog("wake.queued", { conv: conversationId.slice(0, 8), kind: k });
+}
+
+/** Every pending wake, oldest first. */
+export async function readQueuedWakes(vault: string): Promise<QueuedWake[]> {
+  return withWakeLock(async () => (await readWakeFile(vault)).wakes);
+}
+
+/** Remove and return a thread's pending wakes (all of them, or one kind). */
+export async function takeQueuedWakes(
+  vault: string,
+  conversationId: string,
+  kind?: "user" | "wake",
+): Promise<QueuedWake[]> {
+  return withWakeLock(async () => {
+    const f = await readWakeFile(vault);
+    const mine = f.wakes.filter((w) => w.conv === conversationId && (!kind || w.kind === kind));
+    if (!mine.length) return [];
+    f.wakes = f.wakes.filter((w) => !mine.includes(w));
+    await writeWakeFile(vault, f);
+    return mine;
+  });
+}
+
+/**
+ * Deliver a thread's queued wakes as its next turn. The user's own messages go
+ * first, as their own DIRECT turn (never blended into worker-wake plumbing);
+ * worker wakes stay queued and are batched into one review turn when that one
+ * ends. Returns true when it started a turn. No-op while the thread is running;
+ * a finished/killed mission's wakes are dropped.
+ */
+export async function flushQueuedWakes(vault: string, conversationId: string): Promise<boolean> {
+  if (isRunActive(conversationId)) return false;
+  const pending = (await readQueuedWakes(vault)).filter((w) => w.conv === conversationId);
+  if (!pending.length) return false;
+  const conv = (await readConversations(vault)).find((c) => c.id === conversationId);
+  if (!conv || conv.completedAt || conv.missionState === "DONE" || conv.missionState === "KILLED") {
+    await takeQueuedWakes(vault, conversationId);
+    return false;
+  }
+  const hasUser = pending.some((w) => w.kind === "user");
+  const group = await takeQueuedWakes(vault, conversationId, hasUser ? "user" : "wake");
+  if (!group.length) return false;
+  const text = group.map((w) => w.text).join("\n\n");
+  vlog("wake.flush", { conv: conversationId.slice(0, 8), n: group.length, user: hasUser });
+  const s = useStore.getState();
+  void runWorkerTurn(vault, conversationId, text, {
+    modelId: conv.source === "worker" ? s.workerModelId : s.supervisorModelId,
+    direct: hasUser,
+  }).catch((e) => console.warn("[wakes] queued delivery failed:", errToString(e)));
+  return true;
+}
+
+/**
+ * Boot-time recovery (the box; the caller gates on "this machine fires
+ * schedules"). For EVERY active mission — no age cutoff: a mission is active
+ * until it is DONE or KILLED, however long it has been quiet:
+ *  1. a mission whose last visible message is an unanswered user turn (a hard
+ *     kill skipped its reply) re-runs that turn;
+ *  2. a worker of an active mission that was interrupted mid-turn (its last
+ *     visible message is a user turn) re-runs that turn — its finish then wakes
+ *     the mission as usual;
+ *  3. durably queued wakes (see queueMissionWake) are delivered;
+ *  4. a parked mission whose worker finished without the wake being delivered
+ *     (and nothing else will wake it) gets a review wake.
+ * Returns what it started, for logs and tests.
+ */
+export async function resumeInterruptedMissions(
+  vault: string,
+): Promise<{ missions: string[]; workers: string[]; flushed: string[]; reviewed: string[] }> {
+  const out = { missions: [] as string[], workers: [] as string[], flushed: [] as string[], reviewed: [] as string[] };
+  const convs = await readConversations(vault).catch(() => [] as Conversation[]);
+  const s = useStore.getState();
+  const schedules = await (await import("./schedules")).readSchedules(vault).catch(() => []);
+  const hasPendingWake = (id: string) =>
+    schedules.some((sc) => {
+      const t = sc.target as { kind?: string; conversationId?: string };
+      return (
+        sc.enabled &&
+        t?.kind === "existing" &&
+        t.conversationId === id &&
+        (sc.recurrence?.kind !== "once" || !sc.lastFiredAt)
+      );
+    });
+  const queued = await readQueuedWakes(vault).catch(() => [] as QueuedWake[]);
+  const isActiveMission = (c: Conversation) =>
+    c.source === "mission" && !c.completedAt && c.missionState !== "DONE" && c.missionState !== "KILLED";
+  const lastVisible = (c: Conversation) => {
+    const msgs = (c.messages ?? []).filter((m) => !m.hidden);
+    return msgs[msgs.length - 1];
+  };
+  const missions = convs.filter(isActiveMission);
+  const activeKeys = new Set(missions.map(missionKeyOf).filter(Boolean));
+
+  // 2) Interrupted workers first, so the mission sweep below knows they're live.
+  const resumingWorkers = new Set<string>();
+  for (const w of convs) {
+    if (w.source !== "worker" || isRunActive(w.id)) continue;
+    if (!activeKeys.has((w.mission ?? "").trim())) continue;
+    const last = lastVisible(w);
+    if (!last || last.role !== "user") continue;
+    resumingWorkers.add(w.id);
+    out.workers.push(w.id);
+    vlog("mission-resume.worker", { conv: w.id.slice(0, 8) });
+    void runWorkerTurn(vault, w.id, last.content, { modelId: s.workerModelId, resume: true }).catch((e) =>
+      console.warn("[mission-resume] worker resume failed:", errToString(e)),
+    );
+  }
+
+  for (const c of missions) {
+    if (isRunActive(c.id)) continue;
+    const last = lastVisible(c);
+    if (!last) continue;
+    // 1) Interrupted mid-turn: re-run it. Its end flushes any queued wakes.
+    if (last.role === "user") {
+      out.missions.push(c.id);
+      vlog("mission-resume.turn", { conv: c.id.slice(0, 8) });
+      void runWorkerTurn(vault, c.id, last.content, { modelId: s.supervisorModelId, resume: true }).catch((e) =>
+        console.warn("[mission-resume] failed:", errToString(e)),
+      );
+      continue;
+    }
+    // 3) Wakes that queued while it was busy and were never delivered.
+    if (queued.some((w) => w.conv === c.id)) {
+      if (await flushQueuedWakes(vault, c.id)) out.flushed.push(c.id);
+      continue;
+    }
+    // 4) A worker finished but its wake was lost. Skip AWAITING_USER (a real
+    // wait on the user) and anything that will wake it anyway.
+    if (!harnessV2Enabled()) continue;
+    if (c.missionState === "AWAITING_USER") continue;
+    if (hasPendingWake(c.id)) continue;
+    const key = missionKeyOf(c);
+    const workers = convs.filter((w) => w.source === "worker" && (w.mission ?? "").trim() === key);
+    if (workers.some((w) => resumingWorkers.has(w.id) || isRunActive(w.id))) continue; // its finish wakes it
+    // A worker that FINISHED (has an assistant turn). Not gated on finishing
+    // after the mission's last turn: a worker often finishes DURING the spawn
+    // turn — exactly the race that drops the wake. Re-waking is idempotent.
+    const finished = workers.filter((w) => (w.messages ?? []).some((m) => m.role === "assistant" && !m.hidden));
+    if (!finished.length) continue;
+    const names = finished.map((w) => `"${w.title}" (id ${w.id})`).join(", ");
+    out.reviewed.push(c.id);
+    vlog("mission-resume.worker-wake", { conv: c.id.slice(0, 8), workers: finished.length });
+    void runWorkerTurn(
+      vault,
+      c.id,
+      `Your worker(s) ${names} finished while the app was restarting — the finish wake was not delivered. Review their thread(s) now: a worker may have FAILED and written a failure doc. Then continue the mission — verify a real deliverable exists on disk, reseed a fresh worker if one failed, or CompleteMission (with evidence) if the goal is genuinely met. Do not assume success without reading the files.`,
+      { modelId: s.supervisorModelId },
+    ).catch((e) => console.warn("[mission-resume] worker-wake failed:", errToString(e)));
+  }
+  vlog("mission-resume.sweep", {
+    missions: out.missions.length,
+    workers: out.workers.length,
+    flushed: out.flushed.length,
+    reviewed: out.reviewed.length,
+  });
+  return out;
 }

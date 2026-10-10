@@ -35,6 +35,18 @@ export type MissionState =
   | "DONE"
   | "KILLED";
 
+// One advisory auditor verdict on a mission (see Conversation.audits).
+// pass: true/false = the auditor's judgment; null = the auditor could not run
+// (no model, timeout, error) — recorded so "unaudited" is visible, not hidden.
+export type MissionAudit = {
+  at: number;
+  by: "MarkDoneWhen" | "CompleteMission";
+  criterion: string;
+  pass: boolean | null;
+  reason?: string;
+  evidence?: string;
+};
+
 export type Conversation = {
   id: string;
   title: string;
@@ -101,10 +113,20 @@ export type Conversation = {
   // MUST be carried through readConversations below or it's silently stripped on
   // every append — the same load-bearing trap documented on `mission`.
   missionState?: MissionState;
-  // [harness v2] True while this mission owns a live billing resource (a rented
-  // GPU box). The deterministic cost guard (runWatcher) reads this so a mission
-  // that has gone idle while still billing auto-terminates without an LLM turn.
-  billing?: boolean;
+  // Model spend on THIS thread so far, in USD: the sum of OpenRouter's
+  // server-reported `usage.cost` over every model call its turns made
+  // (including mid-run compaction and sub-agents). Each assistant message also
+  // carries its own turn's `costUsd`. A mission's total = this + its workers'
+  // + its ask threads' (see computeMissionCost). Carried through
+  // readConversations below — the same strip-trap as `mission`.
+  costUsd?: number;
+  // Model calls whose response carried no cost (direct-provider keys, or an
+  // OpenRouter response without usage) — so a total is never silently partial.
+  costMissingCalls?: number;
+  // [completion gate] The evidence auditor's verdicts. ADVISORY: recorded for
+  // the user to see, never blocking — MarkDoneWhen checks a criterion off and
+  // CompleteMission completes (with evidence) whatever the auditor says.
+  audits?: MissionAudit[];
   // [ask redesign] Set on source "ask" threads only. `askOf` points at the
   // conversation the notification came FROM (the mission whose supervisor is
   // waiting — the deterministic relay target); `askNotifId` is the notification
@@ -238,7 +260,9 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         // read-modify-write (same load-bearing trap as `mission` above — drop
         // them and every appended turn resets a mission's state/billing on disk).
         missionState: parsed.missionState,
-        billing: parsed.billing,
+        costUsd: parsed.costUsd,
+        costMissingCalls: parsed.costMissingCalls,
+        audits: parsed.audits,
         // [ask redesign] Carry the ask-thread linkage + decision record (same
         // strip-trap: dropping askDecided here would resurrect a settled ask's
         // composer on every append).
@@ -280,4 +304,51 @@ export function withConvLock<T>(fn: () => Promise<T>): Promise<T> {
   const run = convChain.then(fn, fn);
   convChain = run.catch(() => undefined);
   return run;
+}
+
+// ---- cost per mission ----
+// A mission's spend = its own thread + every worker thread that serves it
+// (linked by the mission key, `mission ?? title`) + the ask threads it raised
+// (askOf). Pure — callers pass what readConversations returned.
+export type MissionCostBreakdown = {
+  missionId: string;
+  title: string;
+  totalUsd: number;
+  missingCalls: number;
+  parts: { id: string; kind: "mission" | "worker" | "ask"; title: string; costUsd: number; missingCalls: number }[];
+};
+
+export function missionKeyOf(c: Pick<Conversation, "mission" | "title">): string {
+  return (c.mission ?? c.title ?? "").trim();
+}
+
+export function computeMissionCost(convs: Conversation[], missionId: string): MissionCostBreakdown | null {
+  const m = convs.find((c) => c.id === missionId && c.source === "mission");
+  if (!m) return null;
+  const key = missionKeyOf(m);
+  const parts: MissionCostBreakdown["parts"] = [
+    { id: m.id, kind: "mission", title: m.title, costUsd: m.costUsd ?? 0, missingCalls: m.costMissingCalls ?? 0 },
+  ];
+  for (const c of convs) {
+    if (c.id === m.id) continue;
+    if (c.source === "worker" && key && (c.mission ?? "").trim() === key) {
+      parts.push({ id: c.id, kind: "worker", title: c.title, costUsd: c.costUsd ?? 0, missingCalls: c.costMissingCalls ?? 0 });
+    } else if (c.source === "ask" && c.askOf === m.id) {
+      parts.push({ id: c.id, kind: "ask", title: c.title, costUsd: c.costUsd ?? 0, missingCalls: c.costMissingCalls ?? 0 });
+    }
+  }
+  const total = parts.reduce((s, p) => s + p.costUsd, 0);
+  return {
+    missionId: m.id,
+    title: m.title,
+    totalUsd: Math.round(total * 1e6) / 1e6,
+    missingCalls: parts.reduce((s, p) => s + p.missingCalls, 0),
+    parts,
+  };
+}
+
+export function formatUsd(n: number): string {
+  if (n === 0) return "$0.00";
+  if (n < 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(2)}`;
 }

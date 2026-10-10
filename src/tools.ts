@@ -6,6 +6,7 @@ import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useStore, type TodoItem } from "./store";
 import { buildNote } from "./notes";
 import { harnessV2Enabled } from "./harness";
+import { errToString } from "./errfmt";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -1205,82 +1206,121 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
     }),
     CompleteMission: tool({
       description:
-        "Mark THIS mission FINISHED — call it once the goal's 'Done when' criteria are all met. It stamps the mission complete so it drops off the user's Activity page (a finished mission shouldn't linger there), stops any leftover workers, and sends the user a final wrap-up via the summary you pass. Only call it when the work is genuinely DONE — not to pause, abandon, or hand back. After calling it, end your turn: the mission is over.",
+        "Mark THIS mission FINISHED — call it once the goal is met. You decide; you must say WHY: pass `evidence` (artifact paths, numbers, which checks passed, where the deliverables live). It stamps the mission complete so it drops off the user's Activity page, stops leftover workers, cancels its wakes, and sends the user a final wrap-up from `summary`. An independent auditor reviews your evidence against the 'Done when' criteria; its verdict is ADVISORY — recorded on the mission and shown to the user next to your summary, never blocking. So be honest: if a criterion is unmet or was dropped, say so in the evidence. Only call it when the work is genuinely DONE — not to pause, abandon, or hand back. After calling it, end your turn: the mission is over.",
       inputSchema: z.object({
         summary: z
           .string()
           .describe(
             "The final wrap-up for the user: what was accomplished and where the deliverables live. One short, headline-worthy paragraph.",
           ),
+        evidence: z
+          .string()
+          .describe(
+            "Why the goal is met, checkably: the files that hold the deliverables (vault paths), the numbers/results, the checks that passed — and any criterion that is NOT met or was dropped, and why.",
+          ),
       }),
-      execute: async ({ summary }) => {
+      execute: async ({ summary, evidence }) => {
         if (!conversationId) return "No mission context — can't complete.";
         // completeMission atomically stamps completedAt and returns ok only on
         // the call that actually retired the mission — so the "Mission complete"
-        // notification fires exactly once, even if this tool is called twice
-        // (parallel calls, or a follow-up turn re-confirming done). [harness v2]
-        // It also enforces the completion gate: every "Done when" bullet must be
-        // individually checked off (MarkDoneWhen, each evidence-verified) first.
+        // notification fires exactly once, even if this tool is called twice.
         const { completeMission } = await import("./offVaultRun");
-        const res: { ok: boolean; already?: boolean; missing?: string[] } = await completeMission(
-          vault,
-          conversationId,
-        ).catch((e) => {
+        const res = await completeMission(vault, conversationId, evidence).catch((e) => {
           console.warn("[mission] complete failed:", e);
-          return { ok: false, already: true };
+          return { ok: false as const, failed: errToString(e) };
         });
         if (!res.ok) {
-          if (res.missing && res.missing.length) {
-            return (
-              `NOT completed — ${res.missing.length} "Done when" criteri${res.missing.length === 1 ? "on is" : "a are"} not verified yet:\n` +
-              res.missing.map((m) => `- ${m}`).join("\n") +
-              `\nVerify each and call MarkDoneWhen on it first. If a criterion is genuinely obsolete (the user rescoped), record that decision and MarkDoneWhen it with the rescope as evidence — or AskUser if the drop is their call.`
-            );
-          }
+          if ("failed" in res) return `CompleteMission failed: ${res.failed}. The mission is NOT complete; retry once, or tell the user.`;
+          if ("needEvidence" in res && res.needEvidence)
+            return "NOT completed — pass `evidence`: the files, numbers and checks that show the goal is met (and anything that isn't). Then call CompleteMission again.";
           return "This mission is already complete — nothing more to do. End your turn.";
         }
+        const audit = "audit" in res ? res.audit : undefined;
+        const unchecked = ("unchecked" in res && res.unchecked) || [];
+        const auditLine =
+          audit?.pass === true
+            ? "Auditor: evidence substantiates the criteria."
+            : audit?.pass === false
+              ? `Auditor flagged: ${audit.reason || "the evidence does not substantiate every criterion"}`
+              : `Auditor: ${audit?.reason || "not run"}`;
         const { notify } = await import("./phoneApp");
-        await notify("info", "Mission complete", summary, conversationId, {
+        const body = audit?.pass === false ? `${summary}\n\n⚠️ ${auditLine}` : summary;
+        await notify("info", "Mission complete", body, conversationId, {
           intention: "Mission complete",
           summary: summary.slice(0, 200),
-          icon: "✓",
-          cls: "g",
+          icon: audit?.pass === false ? "⚠️" : "✓",
+          cls: audit?.pass === false ? "a" : "g",
         });
-        return "Mission marked complete, the user notified, and it's cleared from Activity. End your turn — the mission is done.";
+        return (
+          "Mission marked complete, the user notified, and it's cleared from Activity. " +
+          `${auditLine}${unchecked.length ? ` (${unchecked.length} 'Done when' item(s) were never checked off: ${unchecked.join("; ")})` : ""} ` +
+          "The verdict is recorded on the mission for the user. End your turn — the mission is done."
+        );
       },
     }),
     MarkDoneWhen: tool({
       description:
-        "Check off ONE of this mission's 'Done when' criteria — call it the moment you've VERIFIED that specific criterion is met (by the success test / on disk, not on a worker's word). The bullet turns green in the user's mission spec, so they watch progress accrue one criterion at a time. Pass the criterion as it reads in the brief (a close paraphrase is fine — it's fuzzy-matched). Mark each as you confirm it; this is NOT completing the mission (use CompleteMission only once every criterion is done). Mission-tier only.",
+        "Check off ONE of this mission's 'Done when' criteria — call it the moment you've VERIFIED that specific criterion is met (by the success test / on disk, not on a worker's word). The bullet turns green in the user's mission spec, so they watch progress accrue one criterion at a time. Pass the criterion as it reads in the brief (a close paraphrase is fine — it's fuzzy-matched) and the `evidence`. It is always checked off — your call — and an independent auditor's ADVISORY verdict is recorded next to it and returned to you: if it doubts the claim, look again (and fix the record if it's right). This is NOT completing the mission (use CompleteMission for that). Mission-tier only.",
       inputSchema: z.object({
         criterion: z
           .string()
           .describe("The 'Done when' item you've just verified, roughly as it reads in the brief."),
-        user_waiver: z
+        evidence: z
           .string()
           .optional()
-          .describe(
-            "ONLY when the USER explicitly authorized checking this criterion off (a force-close, an 'I confirm it arrived', a rescope): their authorizing words, QUOTED VERBATIM from their message in this thread. The harness verifies the quote really exists in a user message and then passes the criterion on the user's authority — the escape hatch for a criterion only the user can verify (did a card reach their phone?) or that the auditor is wrongly blocking. Never paraphrase; never use for criteria you can evidence yourself.",
-          ),
+          .describe("What proves it: the file path(s), the number, the command output or check that passed."),
       }),
-      execute: async ({ criterion, user_waiver }) => {
+      execute: async ({ criterion, evidence }) => {
         if (!conversationId) return "No mission context — can't mark a criterion.";
         const { markDoneWhen } = await import("./offVaultRun");
-        const res = await markDoneWhen(vault, conversationId, criterion, user_waiver).catch(
-          () => ({ matched: null, verified: false, reason: "internal error" }) as const,
+        const res = await markDoneWhen(vault, conversationId, criterion, evidence).catch(
+          (e) => ({ matched: null, verified: false, reason: errToString(e) }) as const,
         );
-        // [harness v2] The check-off is gated by an independent evidence audit —
-        // a rejected claim tells the supervisor exactly what's unsubstantiated
-        // instead of silently going green.
-        if (!res.verified) {
-          return (
-            `VERIFICATION FAILED — "${criterion}" was NOT checked off. Auditor: ${res.reason || "the recorded evidence doesn't substantiate this criterion"}. ` +
-            `Put the substance on the record first (update mind.md / the goal file with the concrete result — numbers, artifact paths, what test passed), then call MarkDoneWhen again. Never re-claim without new evidence.`
-          );
+        if (!res.verified) return `Could not check off "${criterion}": ${res.reason || "internal error"}.`;
+        const audit = "audit" in res ? res.audit : undefined;
+        const name = res.matched ?? criterion;
+        const auditNote =
+          audit?.pass === false
+            ? ` The auditor DOUBTS it (advisory): ${audit.reason}. Re-check the ground truth; if it's right, fix the work or the record — the doubt is visible to the user.`
+            : audit?.pass === true
+              ? " The auditor agrees with the evidence."
+              : audit
+                ? ` (${audit.reason})`
+                : "";
+        return `Checked off "${name}" — the user sees that criterion go green.${auditNote}`;
+      },
+    }),
+    MissionCost: tool({
+      description:
+        "What a mission has cost so far in model spend (USD, as billed by OpenRouter): the total and the breakdown — the mission's own thread, each of its workers, and its ask threads. Omit `mission` for the mission this thread belongs to; otherwise pass a mission conversation id or its title (ListConversations shows them).",
+      inputSchema: z.object({
+        mission: z.string().optional().describe("Mission conversation id or title. Default: this thread's mission."),
+      }),
+      execute: async ({ mission }) => {
+        const { readConversations, computeMissionCost, formatUsd, missionKeyOf } = await import("./conversations");
+        const list = await readConversations(vault);
+        const missions = list.filter((c) => c.source === "mission");
+        let target = mission?.trim()
+          ? missions.find((c) => c.id === mission.trim()) ??
+            missions.find((c) => missionKeyOf(c).toLowerCase() === mission.trim().toLowerCase())
+          : undefined;
+        if (!mission?.trim() && conversationId) {
+          const me = list.find((c) => c.id === conversationId);
+          if (me?.source === "mission") target = me;
+          else if (me?.source === "ask" && me.askOf) target = missions.find((c) => c.id === me.askOf);
+          else if (me?.mission) target = missions.find((c) => missionKeyOf(c) === me.mission!.trim());
         }
-        return res.matched
-          ? `Checked off "${res.matched}" — verified against the recorded evidence; the user sees that criterion go green.`
-          : `Recorded "${criterion}". Couldn't match it to a listed criterion, but noted it.`;
+        if (!target) return mission ? `No mission matches "${mission}".` : "This thread isn't part of a mission — pass `mission` (id or title).";
+        const b = computeMissionCost(list, target.id)!;
+        const lines = b.parts.map(
+          (p) =>
+            `- ${p.kind} "${p.title}" (${p.id}): ${formatUsd(p.costUsd)}${p.missingCalls ? ` (+${p.missingCalls} call(s) with no reported cost)` : ""}`,
+        );
+        return (
+          `Mission "${b.title}" (${b.missionId}) — total ${formatUsd(b.totalUsd)}` +
+          `${b.missingCalls ? `; ${b.missingCalls} model call(s) reported no cost, so the true total is higher` : ""}.\n` +
+          lines.join("\n")
+        );
       },
     }),
     RecordJudgment: tool({
