@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
 import { initRing } from "./ring";
-import { loadKeyStore, hasKey } from "./keys";
+import { loadKeyStore, hasKey, keychainCommands } from "./keys";
+import { getRing } from "./ring";
 
 function fatal(msg: string, code = 2): never {
   console.error(`[vault-chat-server] FATAL: ${msg}`);
@@ -37,7 +38,24 @@ function checkGit(): void {
   gitState = r.status === 0 ? "ok" : "missing";
 }
 
+/** `vault-chat-server probe-model <id>`: ask the running server for a paid, capped capability probe. */
+async function probeCli(model: string): Promise<never> {
+  const cfg = loadConfig();
+  try {
+    const r = await fetch(`http://127.0.0.1:${cfg.port}/api/v1/models/${encodeURIComponent(model)}/probe`, { method: "POST" });
+    console.log(JSON.stringify(await r.json(), null, 2));
+    process.exit(r.ok ? 0 : 1);
+  } catch (e) {
+    console.error(`probe-model: the server on port ${cfg.port} is not reachable (${(e as Error).message})`);
+    process.exit(1);
+  }
+}
+
 async function main(): Promise<void> {
+  if (process.argv[2] === "probe-model") {
+    if (!process.argv[3]) fatal("usage: vault-chat-server probe-model <openrouter-model-id>");
+    await probeCli(process.argv[3]);
+  }
   const cfg = loadConfig();
   console.log(`[vault-chat-server] v${SERVER_VERSION}${SERVER_REV ? ` (${SERVER_REV})` : ""} starting — vault ${cfg.vault}`);
   if (!existsSync(cfg.vault) || !statSync(cfg.vault).isDirectory()) {
@@ -73,6 +91,31 @@ async function main(): Promise<void> {
 
   const { startPhoneAppHost, sendPush } = await import("../src/phoneApp");
   await startPhoneAppHost();
+
+  // Every agent turn runs in Codex (server/engine). The old in-process loop
+  // stays in the bundle for legacy mission threads until Phase 3 removes it.
+  const { notificationAppend } = await import("./commands/phone");
+  const { startEngine } = await import("./engine");
+  const { modelsList } = await import("./engine/capabilities");
+  const engine = process.env.VC_ENGINE === "0"
+    ? { engine: null, install: null, error: "disabled (VC_ENGINE=0): turns run on the old in-process loop", health: () => ({}) }
+    : await startEngine({
+    vault: cfg.vault,
+    stateDir: cfg.stateDir,
+    secretsDir: cfg.secretsDir,
+    tokenPath: cfg.tokenPath,
+    localStoragePath: cfg.localStoragePath,
+    pushSubsPath: cfg.pushSubsPath,
+    openrouterBase: cfg.openrouterBase,
+    serverVersion: SERVER_VERSION,
+    apiKey: () => {
+      const v = keychainCommands.keychain_get({ key: "api.openrouter" });
+      return typeof v === "string" && v ? v : null;
+    },
+    sendPush: (title, body, url, tag) => sendPush(title, body, url, tag),
+    notificationAppend,
+    broadcast: (ev) => getRing().push(JSON.stringify(ev)),
+  });
 
   const { activeRuns } = await import("../src/runRegistry");
   const { startBoxSync, syncStatus, syncSummary, triggerSync } = await import("./sync");
@@ -114,10 +157,20 @@ async function main(): Promise<void> {
       busy: { runs: activeRuns().length },
       conversations: useStore.getState().conversations.length,
       sync: syncSummary(),
+      engine: engine.error ? { error: engine.error } : engine.health(),
     }),
     syncStatus,
     alert,
     onGitPushed: () => triggerSync(),
+    engine: engine.engine
+      ? {
+          models: () => modelsList(),
+          probe: (m) => engine.engine!.probe(m),
+          message: (b) => engine.engine!.message(b),
+          answer: (b) => engine.engine!.answerRoute(b),
+          kill: (b) => engine.engine!.kill(b),
+        }
+      : undefined,
   });
   console.log(`[vault-chat-server] listening on http://${cfg.host}:${cfg.port}`);
 
