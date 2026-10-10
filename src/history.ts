@@ -131,15 +131,21 @@ export async function undoEntry(vault: string, entryId: string, redo = false): P
 // ----- formatting (local time; the API speaks unix seconds) -----
 
 export function relTime(unix: number, now = Date.now()): string {
-  const diff = now - unix * 1000;
-  const mins = Math.floor(diff / 60_000);
+  // Rounded like today's HistoryModal relativeTime.
+  const mins = Math.round((now - unix * 1000) / 60_000);
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
+  const hrs = Math.round(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
+  const days = Math.round(hrs / 24);
   if (days < 7) return `${days}d ago`;
   return new Date(unix * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/** The line a person reads for an entry. */
+export function entryTitle(e: HistoryEntry): string {
+  if (e.kind === "restore" && e.files.length === 1) return `Restored ${leafOf(e.files[0].path)}`;
+  return e.title;
 }
 
 export function clockTime(unix: number): string {

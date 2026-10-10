@@ -6,6 +6,7 @@ import { Undo2, Redo2 } from "lucide-react";
 import { useStore } from "./store";
 import { cn } from "./lib/utils";
 import {
+  entryTitle,
   fullTime,
   historyDiff,
   historyFileAt,
@@ -139,14 +140,14 @@ export function EntryDetail({
   return (
     <>
       <div className="px-4 py-3 border-b border-border/60 shrink-0">
-        <div className={cn("text-[12.5px]", entry.undone_by ? "line-through text-muted-foreground" : "text-foreground")}>{entry.title}</div>
+        <div className={cn("text-[12.5px]", entry.undone_by ? "line-through text-muted-foreground" : "text-foreground")}>{entryTitle(entry)}</div>
         <div className="text-[10.5px] text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
           <span>{span}</span>
           <ActorChip actor={entry.actor} machine={entry.machine} />
           {entry.commits.length > 1 && <span>{entry.commits.length} saves</span>}
           {entry.cost_usd != null && <span>${entry.cost_usd.toFixed(2)}</span>}
         </div>
-        {entry.summary && entry.kind === "session" && <div className="text-[11.5px] text-muted-foreground mt-1">{entry.summary}</div>}
+        {entry.summary && <div className="text-[11.5px] text-muted-foreground mt-1">{entry.summary}</div>}
       </div>
       <div className="flex-1 overflow-auto">
         {entry.files.length === 0 ? (

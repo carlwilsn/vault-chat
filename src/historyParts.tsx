@@ -18,6 +18,7 @@ import {
   bucketOf,
   historyNoteVersions,
   historyTimeline,
+  entryTitle,
   relTime,
   type HistoryEntry,
   type NoteVersion,
@@ -121,11 +122,11 @@ export function LineCounts({ add, del }: { add: number; del: number }) {
 }
 
 export function entryMeta(e: HistoryEntry): string {
-  if (e.kind === "undo" || e.kind === "redo" || e.kind === "restore") return e.summary ?? e.title;
   const n = e.files.length;
   const add = e.files.reduce((s, f) => s + f.add, 0);
   const del = e.files.reduce((s, f) => s + f.del, 0);
-  const parts = [`${n} ${n === 1 ? "note" : "notes"}`, `+${add} −${del}`];
+  const lines = [add ? `+${add}` : "", del ? `−${del}` : ""].filter(Boolean).join(" ");
+  const parts = [`${n} ${n === 1 ? "note" : "notes"}`, ...(lines ? [lines] : [])];
   if (e.cost_usd != null) parts.push(`$${e.cost_usd.toFixed(2)}`);
   return parts.join(" · ");
 }
@@ -146,7 +147,7 @@ export function EntryRow({ entry, selected, onClick, compact }: { entry: History
       <span className={cn("h-1.5 w-1.5 mt-[7px] shrink-0 rounded-full", actorDot(entry.actor))} />
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5">
-          <span className={cn("text-[12px] truncate flex-1", undone ? "line-through text-muted-foreground" : "text-foreground")}>{entry.title}</span>
+          <span className={cn("text-[12px] truncate flex-1", undone ? "line-through text-muted-foreground" : "text-foreground")}>{entryTitle(entry)}</span>
           <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">{relTime(entry.end)}</span>
         </span>
         <span className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-muted-foreground min-w-0">
@@ -291,7 +292,7 @@ export function VersionRow({ v, current, selected, onClick, trailing }: { v: Not
           <span className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-muted-foreground min-w-0">
             <ActorChip actor={v.actor} machine={v.machine} />
             <LineCounts add={v.add} del={v.del} />
-            {v.summary && <span className="truncate">{v.summary}</span>}
+            {v.summary && v.actor === "agent" && <span className="truncate">{v.summary}</span>}
           </span>
         </span>
       </button>

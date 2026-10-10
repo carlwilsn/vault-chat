@@ -39,3 +39,6 @@ src-tauri/binaries/
 
 # Headless server bundle (npm run build:server)
 dist-server/
+
+# history proof screenshots (P3)
+preview-proof/

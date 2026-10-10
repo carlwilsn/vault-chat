@@ -67,6 +67,7 @@ export function HistoryModal({ open, onClose }: Props) {
   const notes = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return files
+      .filter((f) => !f.is_dir)
       .map((f) => relInVault(vaultPath, f.path))
       .filter((p): p is string => !!p && !p.startsWith(".vault-chat/"))
       .filter((p) => !q || p.toLowerCase().includes(q))

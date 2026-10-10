@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>vault-chat preview</title>
+<link rel="stylesheet" href="shell.css" />
+</head>
+<body>
+<aside id="side">
+  <header>
+    <b>vault-chat preview</b>
+    <span id="sides" class="dim"></span>
+  </header>
+  <input id="filter" type="search" placeholder="Filter scenarios…" />
+  <nav id="list"></nav>
+  <section id="about">
+    <h3 id="sc-title"></h3>
+    <p id="sc-notes"></p>
+  </section>
+  <section id="log">
+    <h3>Backend gaps &amp; refusals <button id="log-clear" title="Clear">clear</button></h3>
+    <ul id="log-list"><li class="dim">none yet</li></ul>
+  </section>
+</aside>
+<main>
+  <div id="bar">
+    <div class="seg" id="surface">
+      <button data-v="desktop">Desktop</button>
+      <button data-v="popout">Popout</button>
+      <button data-v="phone">Phone</button>
+      <button data-v="inventory">Style inventory</button>
+    </div>
+    <div class="seg" id="mode">
+      <button data-v="before">Before</button>
+      <button data-v="after">After</button>
+      <button data-v="split">Split</button>
+      <button data-v="toggle" title="Both loaded in the same scenario; T flips">Toggle (T)</button>
+    </div>
+    <label class="dim">data <select id="base"></select></label>
+    <span class="grow"></span>
+    <button id="reload" title="Reload the scenario (resets every in-memory write)">Reset scenario</button>
+    <a id="open" target="_blank" title="Open the current side in its own tab">Open ↗</a>
+  </div>
+  <div id="stage"></div>
+</main>
+<script src="shell.js"></script>
+</body>
+</html>
