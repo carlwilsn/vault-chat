@@ -11,6 +11,12 @@ const MIN = 60_000;
 type WorldOpts = { awaiting?: boolean; extraConvs?: (now: number) => W.Conv[]; noHistory?: boolean };
 function world(ctx: BuildCtx, o: WorldOpts = {}): void {
   const { now, vault } = ctx;
+  // A private base (built from a real vault) brings its own conversations,
+  // alerts and notes; only the long chat a context scenario needs is added.
+  if (ctx.base !== "synthetic") {
+    if (o.extraConvs) ctx.conversations(o.extraConvs(now));
+    return;
+  }
   ctx.conversations([...W.chats(vault, now), ...W.missions(now, { awaiting: o.awaiting }), ...(o.extraConvs?.(now) ?? [])]);
   ctx.write(".vault-chat/notifications.jsonl", W.notifications(now, { awaiting: o.awaiting }).join("\n") + "\n");
   ctx.write(".vault-chat/notes.jsonl", W.notes(now).join("\n") + "\n");

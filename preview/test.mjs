@@ -42,7 +42,7 @@ for (const side of targets) {
   const list = await (await fetch(origin + "/__preview/scenarios.json")).json();
   for (const sc of list) {
     if (only?.length && !only.includes(sc.id)) continue;
-    const surfaces = sc.surfaces.includes("phone") ? ["desktop", "phone"] : ["desktop"];
+    const surfaces = sc.surfaces;
     for (const surface of surfaces) {
       const phone = surface === "phone";
       const { browser, page, log } = await launch(phone ? { width: 390, height: 844, isMobile: true, deviceScaleFactor: 2 } : { width: 1400, height: 900 });

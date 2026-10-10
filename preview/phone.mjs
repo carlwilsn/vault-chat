@@ -97,7 +97,7 @@ export async function renderPhone({ tree, server, scenario, side, scenariosEntry
   // Drive the page to the scenario's screen with real clicks ("text:Foo" =
   // the innermost visible element whose text is Foo).
   const driver = `<script>(function(){var cl=${JSON.stringify(clicks)};
-  function find(s){if(s.indexOf("text:")===0){var t=s.slice(5);var all=[].slice.call(document.querySelectorAll("button,a,div,span,li")).filter(function(e){return e.offsetParent&&e.textContent.trim()===t});return all[all.length-1]||null}return document.querySelector(s)}
+  function find(s){if(s.indexOf("text:")===0){var t=s.slice(5);var all=[].slice.call(document.querySelectorAll("body *")).filter(function(e){return e.offsetParent});var ex=all.filter(function(e){return e.textContent.trim()===t});if(ex.length)return ex[ex.length-1];var pre=all.filter(function(e){return e.textContent.trim().indexOf(t)===0});return pre[pre.length-1]||null}return document.querySelector(s)}
   var i=0;function step(n){if(i>=cl.length){window.__previewPhone.ready=true;return}var e=find(cl[i]);if(e){e.click();i++;setTimeout(function(){step(0)},450)}else if(n<40)setTimeout(function(){step(n+1)},150);else{window.__previewPhone.ready=true;window.__previewPhone.stepError="not found: "+cl[i]}}
   setTimeout(function(){step(0)},700)})();</script>`;
   html = html.replace(/<\/body>/i, `${driver}</body>`);
