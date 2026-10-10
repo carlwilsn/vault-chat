@@ -1,0 +1,179 @@
+// Boot the pi engine (VC_ENGINE=pi): install/locate the pinned pi, write its
+// agent dir and extension, build the sandbox, and hand the HTTP layer the
+// same routes the Codex engine takes (/message, /answer, /kill).
+import { statSync } from "node:fs";
+import { homedir, userInfo } from "node:os";
+import { join } from "node:path";
+import type { EngineBoot } from "../index";
+import { engineModel } from "../index";
+import { loadCatalog, modelMeta } from "../catalog";
+import { configureContext, setModelWindow } from "../context";
+import { excludeLocalDir } from "../wakes";
+import { initCapabilities } from "../capabilities";
+import type { AgentEngineHandle } from "../types";
+import { ensurePi, findBwrap, type PiInstall } from "./install";
+import { listPiModels, modelWindow, piPaths, writePiConfig } from "./config";
+import { PiEngine, piToolSpecs, type PiSandbox } from "./engine";
+import { PiLedger } from "./ledger";
+
+const isDir = (p: string) => {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+const isFile = (p: string) => {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The two bubblewrap layers. pi itself runs in the outer one: its own pid
+ * namespace (killing it kills every descendant, detached or not), the key
+ * store and the phone token / VAPID keys / push subscriptions hidden, the
+ * user's systemd and tmux sockets hidden (both would run commands outside),
+ * the server's state read-only except pi's sessions and agent dir. Each shell
+ * command runs in the inner one: a pid namespace of its own (it cannot see
+ * pi's process) and the key store hidden again.
+ */
+export function buildSandbox(o: {
+  bwrap: string | null;
+  home: string;
+  stateDir: string;
+  secretsDir: string;
+  hideFiles: string[];
+  sessionsDir: string;
+  agentDir: string;
+  vault: string;
+  uid: number;
+}): PiSandbox {
+  const denyRead = [o.secretsDir, ...o.hideFiles, "/proc", ...(o.uid >= 0 ? [`/run/user/${o.uid}`] : [])];
+  const denyWrite = [o.stateDir, join(o.vault, ".vault-chat", "conversations"), join(o.vault, ".vault-chat", "local")];
+  if (!o.bwrap) return { outer: null, shell: null, denyRead, denyWrite };
+  const outer: string[] = [o.bwrap, "--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--die-with-parent"];
+  // Later mounts win: the read-only state first, then pi's own writable dirs, then what is hidden.
+  if (isDir(o.stateDir)) outer.push("--ro-bind", o.stateDir, o.stateDir);
+  for (const d of [o.sessionsDir, o.agentDir]) if (isDir(d)) outer.push("--bind", d, d);
+  for (const f of ["settings.json", "models.json"]) if (isFile(join(o.agentDir, f))) outer.push("--ro-bind", join(o.agentDir, f), join(o.agentDir, f));
+  // The conversation files and wakes are the server's to write.
+  for (const d of [join(o.vault, ".vault-chat", "conversations"), join(o.vault, ".vault-chat", "local")]) if (isDir(d)) outer.push("--ro-bind", d, d);
+  const hide = (p: string) => {
+    if (isDir(p)) outer.push("--tmpfs", p);
+    else if (isFile(p)) outer.push("--ro-bind", "/dev/null", p);
+  };
+  hide(o.secretsDir);
+  for (const f of o.hideFiles) hide(f);
+  if (o.uid >= 0) {
+    hide(`/run/user/${o.uid}`);
+    hide(`/tmp/tmux-${o.uid}`);
+  }
+  outer.push("--");
+  const shell = [o.bwrap, "--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--die-with-parent"];
+  if (isDir(o.secretsDir)) shell.push("--tmpfs", o.secretsDir);
+  shell.push("--");
+  return { outer, shell, denyRead, denyWrite };
+}
+
+export async function startPiEngine(b: EngineBoot): Promise<AgentEngineHandle> {
+  const fail = (error: string): AgentEngineHandle => {
+    console.error(`[engine:pi] ${error}`);
+    return { kind: "pi", engine: null, error, health: () => ({ kind: "pi", pi: { state: "missing", error } }) };
+  };
+  let install: PiInstall;
+  try {
+    install = ensurePi(b.stateDir);
+  } catch (e) {
+    return fail((e as Error).message);
+  }
+  console.log(`[engine:pi] pi ${install.version} at ${install.cli}${install.installed ? " (installed now)" : ""}`);
+  const bwrap = findBwrap();
+  if (!bwrap && process.platform === "linux" && process.env.VC_PI_UNSAFE !== "1") {
+    return fail("bubblewrap (bwrap) was not found: the pi engine will not run without its sandbox on Linux (set VC_BWRAP, or VC_PI_UNSAFE=1 to run without it)");
+  }
+
+  const cat = await loadCatalog(join(b.stateDir, "openrouter-models.json"));
+  console.log(`[engine:pi] OpenRouter catalog: ${cat.models} model(s) (${cat.source})`);
+  initCapabilities(join(b.stateDir, "capabilities.json"), `pi-${install.version}`);
+  const piCat = listPiModels(install);
+  const model = engineModel();
+  const visionModel = process.env.VC_VISION_MODEL || "openai/gpt-6.1-sol";
+  const win = modelWindow(model, piCat);
+  setModelWindow(model, win);
+  configureContext({ vault: b.vault, agentModel: model, apiKey: b.apiKey, verifierDeny: [b.stateDir, b.tokenPath, b.localStoragePath, b.pushSubsPath] });
+  excludeLocalDir(b.vault);
+
+  const paths = piPaths(b.stateDir);
+  const baseUrl = b.openrouterBase ? b.openrouterBase.replace(/\/+$/, "") : undefined;
+  writePiConfig({ paths, install, catalog: piCat, models: [model, visionModel], baseUrl, toolSpecs: piToolSpecs() });
+  console.log(`[engine:pi] model ${model} (window ${win}${modelMeta(model) ? "" : piCat.has(model) ? ", pi catalog" : ", defined in models.json"}); sandbox ${bwrap ?? "OFF"}`);
+
+  const home = process.env.HOME || homedir();
+  const uid = (() => {
+    try {
+      return userInfo().uid;
+    } catch {
+      return -1;
+    }
+  })();
+  const sandbox = buildSandbox({
+    bwrap,
+    home,
+    stateDir: b.stateDir,
+    secretsDir: b.secretsDir,
+    hideFiles: [b.tokenPath, b.localStoragePath, b.pushSubsPath],
+    sessionsDir: paths.sessionsDir,
+    agentDir: paths.agentDir,
+    vault: b.vault,
+    uid,
+  });
+  const jobsDir = join(b.stateDir, "jobs");
+  const engine = new PiEngine({
+    vault: b.vault,
+    install,
+    paths,
+    catalog: piCat,
+    sandbox,
+    ledger: new PiLedger(join(b.stateDir, "pi-ledger.json"), b.apiKey, baseUrl ?? "https://openrouter.ai/api/v1", Number(process.env.VC_PI_LOOKUP_MS) || 30_000),
+    jobEnv: {
+      logDir: jobsDir,
+      // The job runs outside pi's namespace (it must outlive turns), still without the key store.
+      wrap: sandbox.outer ? sandbox.outer.filter((x) => x !== "--unshare-pid" && x !== "--die-with-parent") : null,
+      env: { PATH: process.env.PATH ?? "/run/current-system/sw/bin", HOME: home },
+    },
+    model: engineModel,
+    thinking: process.env.VC_PI_THINKING || "medium",
+    webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
+    visionModel,
+    apiKey: b.apiKey,
+    broadcast: b.broadcast,
+    stallMs: Number(process.env.VC_ENGINE_STALL_MS) || 30 * 60_000,
+    idleMs: Number(process.env.VC_PI_IDLE_MS) || 10 * 60_000,
+    askParkMs: Number(process.env.VC_PI_ASK_PARK_MS) || 30 * 60_000,
+    maxProcs: Number(process.env.VC_PI_MAX_PROCS) || 6,
+    notify: async (n) => {
+      const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+      const rec: Record<string, unknown> = { id, ts: Date.now(), kind: n.kind, title: n.title.slice(0, 90), body: n.body.slice(0, 2000), convId: n.convId };
+      if (n.kind === "ask") {
+        rec.deliberation = {
+          ask: n.body.slice(0, 600),
+          options: (n.options ?? []).slice(0, 6).map((o) => ({ answer: o.slice(0, 200), title: o.slice(0, 120), body: "" })),
+        };
+      }
+      try {
+        b.notificationAppend(b.vault, JSON.stringify(rec));
+      } catch {
+        /* feed is best effort */
+      }
+      b.broadcast({ type: "notif" });
+      const sent = await b.sendPush(n.title.slice(0, 90), n.body.slice(0, 180), `/phone?conv=${encodeURIComponent(n.convId)}`, n.convId).catch(() => 0);
+      return sent ? id : null;
+    },
+  });
+  await engine.start();
+  return { kind: "pi", engine, error: null, health: () => ({ ...engine.health(), model, version: install.version }) };
+}
+

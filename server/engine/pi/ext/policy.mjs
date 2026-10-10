@@ -1,0 +1,173 @@
+// Pure helpers for vault-chat's pi extension (vc.mjs). Plain JS: pi loads the
+// extension through jiti from $VC_STATE_DIR/pi/ext/, and the server's tests
+// import this file directly. No pi imports here.
+import { realpathSync } from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
+
+/** Env names that never reach the agent's shell. */
+const SECRET_ENV = /OPENROUTER|API_KEY|APIKEY|_TOKEN$|^TOKEN$|SECRET|PASSW|^VC_|^AWS_|^GH_|^GITHUB_TOKEN|^NPM_TOKEN/i;
+
+/** A copy of `env` without anything that looks like a credential or vault-chat's own config. */
+export function scrubEnv(env) {
+  const out = {};
+  for (const [k, v] of Object.entries(env ?? {})) {
+    if (v === undefined || SECRET_ENV.test(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/** POSIX single-quote a shell word. */
+export function shq(s) {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * `p` (relative to `cwd`, `~` expanded) resolved through symlinks as far as
+ * the path exists, with the missing tail re-appended — so a symlink planted in
+ * the vault that points into the key store resolves to the key store.
+ */
+export function realish(p, cwd, home) {
+  let s = String(p ?? "").trim();
+  if (s.startsWith("@")) s = s.slice(1); // pi accepts @path
+  if (s === "~") s = home;
+  else if (s.startsWith("~/")) s = join(home, s.slice(2));
+  const abs = resolve(cwd, s || ".");
+  const rest = [];
+  let cur = abs;
+  for (;;) {
+    try {
+      const r = realpathSync(cur);
+      return rest.length ? join(r, ...rest.reverse()) : r;
+    } catch {
+      const parent = dirname(cur);
+      if (parent === cur) return abs;
+      rest.push(basename(cur));
+      cur = parent;
+    }
+  }
+}
+
+export function isUnder(p, dir) {
+  if (!dir) return false;
+  const d = dir.endsWith(sep) && dir.length > 1 ? dir.slice(0, -1) : dir;
+  return p === d || p.startsWith(d + sep);
+}
+
+/** Each deny entry resolved too (the key store dir may itself be a symlink). */
+export function resolveList(list, home) {
+  return (list ?? []).filter(Boolean).flatMap((d) => {
+    const a = resolve(String(d));
+    const r = realish(a, "/", home);
+    return r === a ? [a] : [a, r];
+  });
+}
+
+/** Tools whose arguments name a path, and which argument. */
+const PATH_ARGS = {
+  read: ["path", "file_path"],
+  write: ["path", "file_path"],
+  edit: ["path", "file_path"],
+  grep: ["path"],
+  find: ["path"],
+  ls: ["path"],
+};
+const WRITES = new Set(["write", "edit"]);
+
+/**
+ * Why a call of one of pi's in-process tools must be blocked, or null.
+ * denyRead: never read or written (key store, tokens, /proc). denyWrite: read-only (state, pi's agent dir).
+ */
+export function guardToolCall(toolName, input, { cwd, home, denyRead, denyWrite }) {
+  const keys = PATH_ARGS[toolName];
+  if (!keys) return null;
+  for (const k of keys) {
+    const v = input?.[k];
+    if (typeof v !== "string" || !v.trim()) continue;
+    const p = realish(v, cwd, home);
+    for (const d of denyRead) if (isUnder(p, d)) return `${toolName}: ${v} is in a protected location (vault-chat's key store and server state are off limits).`;
+    if (WRITES.has(toolName)) for (const d of denyWrite) if (isUnder(p, d)) return `${toolName}: ${v} is read-only for the agent.`;
+  }
+  // grep/find with a glob that climbs out of the tree is not followed by pi's
+  // tools (no symlink following); nothing more to check.
+  return null;
+}
+
+/**
+ * Gemini through OpenRouter caches only with explicit cache_control markers:
+ * mark the system prompt and the newest user message (OpenRouter's documented
+ * shape: a text part with {cache_control:{type:"ephemeral"}}). Returns the
+ * new payload, or undefined when nothing applies.
+ */
+export function addCacheMarkers(payload) {
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.messages)) return undefined;
+  if (!/^google\//.test(String(payload.model ?? ""))) return undefined;
+  const msgs = payload.messages.map((m) => (m && typeof m === "object" ? { ...m } : m));
+  const mark = (m) => {
+    if (!m) return false;
+    if (typeof m.content === "string") {
+      if (!m.content) return false;
+      m.content = [{ type: "text", text: m.content, cache_control: { type: "ephemeral" } }];
+      return true;
+    }
+    if (Array.isArray(m.content)) {
+      for (let i = m.content.length - 1; i >= 0; i--) {
+        const part = m.content[i];
+        if (part && part.type === "text" && part.text) {
+          m.content = m.content.slice();
+          m.content[i] = { ...part, cache_control: { type: "ephemeral" } };
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  let changed = false;
+  const sys = msgs.findIndex((m) => m && (m.role === "system" || m.role === "developer"));
+  if (sys >= 0) changed = mark(msgs[sys]) || changed;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i] && msgs[i].role === "user" && mark(msgs[i])) {
+      changed = true;
+      break;
+    }
+  }
+  return changed ? { ...payload, messages: msgs } : undefined;
+}
+
+/** A JSON-schema tool spec (the Codex dynamicTools shape) → TypeBox, for pi.registerTool. */
+export function toTypebox(Type, s) {
+  const d = s && typeof s.description === "string" ? { description: s.description } : {};
+  if (s && Array.isArray(s.enum) && s.enum.length) return Type.Union(s.enum.map((v) => Type.Literal(v)), d);
+  switch (s?.type) {
+    case "string":
+      return Type.String(d);
+    case "number":
+    case "integer":
+      return Type.Number(d);
+    case "boolean":
+      return Type.Boolean(d);
+    case "array":
+      return Type.Array(toTypebox(Type, s.items ?? {}), d);
+    case "object": {
+      const req = new Set(Array.isArray(s.required) ? s.required : []);
+      const props = {};
+      for (const [k, v] of Object.entries(s.properties ?? {})) {
+        const t = toTypebox(Type, v);
+        props[k] = req.has(k) ? t : Type.Optional(t);
+      }
+      return Type.Object(props, d);
+    }
+    default:
+      return typeof Type.Any === "function" ? Type.Any(d) : Type.Unknown(d);
+  }
+}
+
+/** The cost and generation id OpenRouter reports, from one parsed stream event (any API pi uses). */
+export function costFromStreamEvent(data) {
+  if (!data || typeof data !== "object") return null;
+  const u = data.usage ?? data.message?.usage ?? data.delta?.usage ?? null;
+  if (!u || typeof u !== "object") return null;
+  const c = Number(u.cost);
+  if (!Number.isFinite(c)) return null;
+  return { cost: c, id: typeof data.id === "string" ? data.id : null };
+}

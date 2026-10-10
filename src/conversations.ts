@@ -155,6 +155,8 @@ export type Conversation = {
   // through readConversations below (same strip-trap as `mission`).
   codexThreadId?: string;
   codexThreadPath?: string;
+  // [engine pi, Phase 2] The pi session file behind this conversation (VC_ENGINE=pi).
+  piSessionFile?: string;
   project?: string;
   working?: boolean;
   nextWakeAt?: number;
@@ -290,6 +292,7 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         askDeadlineAt: parsed.askDeadlineAt,
         codexThreadId: parsed.codexThreadId,
         codexThreadPath: parsed.codexThreadPath,
+        piSessionFile: parsed.piSessionFile,
         project: parsed.project,
         working: parsed.working,
         nextWakeAt: parsed.nextWakeAt,
