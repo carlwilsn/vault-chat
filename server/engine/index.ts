@@ -70,9 +70,9 @@ export function engineNotify(b: EngineBoot) {
   };
 }
 
-/** VC_ENGINE: "pi" runs turns on pi (server/engine/pi); anything else (default "codex") on Codex. "0" never gets here (main.ts). */
+/** VC_ENGINE: "codex" runs turns on Codex; anything else (default "pi", Carl 2026-10-11) on pi (server/engine/pi). "0" never gets here (main.ts). */
 export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
-  if (String(process.env.VC_ENGINE ?? "").trim().toLowerCase() === "pi") return (await import("./pi")).startPiEngine(b);
+  if (String(process.env.VC_ENGINE ?? "").trim().toLowerCase() !== "codex") return (await import("./pi")).startPiEngine(b);
   let install: CodexInstall;
   try {
     install = ensureCodex(b.stateDir);

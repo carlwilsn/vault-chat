@@ -133,7 +133,7 @@ assistant messages carry `toolCalls`, `thinking`, `usage`, `costUsd`, `turnId`.
 
 | Var | Default | Meaning |
 |---|---|---|
-| `VC_ENGINE` | `codex` | `codex`, `pi` (see below), or `0` = no engine (old loop) |
+| `VC_ENGINE` | `pi` | `pi` (default, Carl 2026-10-11), `codex`, or `0` = no engine (old loop) |
 | `VC_ENGINE_MODEL` | `localStorage.vault_chat_engine_model` or `openai/gpt-6.1-sol` | the agent's model |
 | `VC_VISION_MODEL` | `openai/gpt-6.1-sol` | a turn with images on a model that can't see uses this |
 | `VC_WEBSEARCH_MODEL` | `google/gemini-2.5-flash-lite` | WebSearch (OpenRouter web plugin) |
