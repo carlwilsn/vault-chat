@@ -1,0 +1,15 @@
+# One pass of vault-chat-update.sh (see that file). Run by vault-chat-update.timer.
+[Unit]
+Description=vault-chat server self-update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/state/vault-chat-server/bin/vault-chat-update.sh
+# For VC_PORT (the health/alert endpoints are on loopback). Optional.
+EnvironmentFile=-%h/.config/vault-chat-server.env
+Environment=PATH=/run/wrappers/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin
+# Waits up to 2 h for running missions, then up to 90 s per health check.
+TimeoutStartSec=3h
+Nice=10
