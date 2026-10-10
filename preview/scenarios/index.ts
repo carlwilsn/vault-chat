@@ -20,7 +20,9 @@ function world(ctx: BuildCtx, o: WorldOpts = {}): void {
 const NOTE = "projects/bitnet-160m/writeup.md";
 const deskOpen = (file = NOTE, conv?: string): Step[] => [{ file }, { chat: true }, ...(conv ? [{ conversation: conv } as Step] : [])];
 const COMPOSER = "textarea[placeholder^='Ask anything']";
-const send = (text: string): Step[] => [{ type: text, into: COMPOSER }, { key: "Enter", target: COMPOSER }];
+const sendHere = (text: string): Step[] => [{ type: text, into: COMPOSER }, { key: "Enter", target: COMPOSER }];
+/** Start a new chat and send `text` in it. */
+const send = (text: string): Step[] => [{ click: "[title='New chat']" }, { sleep: 200 }, ...sendHere(text)];
 
 // ---- scripted model turns ----------------------------------------------------
 
@@ -28,14 +30,14 @@ const toolChain: Script = {
   id: "tool-chain",
   match: /seed-43 row|tool demo/i,
   steps: [
-    { text: "I'll read the results first.", tools: [{ name: "Read", args: { path: "projects/bitnet-160m/results.csv" } }] },
+    { text: "I'll read the results first.", tools: [{ name: "Read", args: { path: "{vault}/projects/bitnet-160m/results.csv" } }] },
     {
       text: "Three seeds, all at 1.70B tokens. Now updating the README's status list.",
       tools: [
         {
           name: "Edit",
           args: {
-            path: "projects/bitnet-160m/README.md",
+            path: "{vault}/projects/bitnet-160m/README.md",
             old_string: "- [ ] Writeup — draft in [[writeup]]",
             new_string: "- [x] Seed 43 row added to results (eval loss 1.5601)\n- [ ] Writeup — draft in [[writeup]]",
           },
@@ -60,7 +62,7 @@ const writeFile: Script = {
         {
           name: "Write",
           args: {
-            path: "notes/eigengap.md",
+            path: "{vault}/notes/eigengap.md",
             content:
               "# Eigengap heuristic — when it fails\n\n- Very different cluster sizes: the small cluster's eigenvalue hides in the bulk.\n- Overlapping clusters: no clear gap at all.\n- Noisy kernels (bad $\\sigma$): the gap moves with the bandwidth.\n",
           },
@@ -108,11 +110,16 @@ const pdfScript: Script = {
   id: "pdf-extract",
   match: /survey|pdf/i,
   steps: [
-    { text: "I'll extract the PDF's text first.", tools: [{ name: "PdfExtract", args: { path: "papers/attention-survey.pdf" } }] },
+    { text: "I'll extract the PDF's text first.", tools: [{ name: "PdfExtract", args: { path: "{vault}/papers/attention-survey.pdf" } }] },
+    {
+      text: "That came back truncated at ~60k characters (about page 15 of 320). Reading on in ranges.",
+      tools: [{ name: "PdfExtract", args: { path: "{vault}/papers/attention-survey.pdf", pages: "16-60" } }],
+    },
+    { text: "Still more to go.", tools: [{ name: "PdfExtract", args: { path: "{vault}/papers/attention-survey.pdf", pages: "61-120" } }] },
     {
       text:
-        "The survey is 320 pages. In short: sparse and sliding-window attention cut the quadratic cost; grouped-query attention and the KV cache dominate inference latency; state-space layers trade recall for throughput at long context.\n\n" +
-        "*(Note what happened to the context dial: the whole PDF went into the conversation.)*",
+        "I've read pages 1–120 of 320 (each extract is cut at ~60k characters, so I saw roughly the first 45 pages' worth of text). In short: sparse and sliding-window attention cut the quadratic cost; grouped-query attention and the KV cache dominate inference latency; state-space layers trade recall for throughput.\n\n" +
+        "*(Watch the context dial: three extracts put ~50k tokens of raw PDF text into this chat.)*",
     },
   ],
 };
@@ -234,7 +241,7 @@ export const scenarios: Scenario[] = [
     build: (c) => world(c, { extraConvs: (now) => [W.longChat(now, 176_000)] }),
     activeConversation: "c-long",
     llm: { scripts: [compactionReply], chunkMs: 18 },
-    open: [...deskOpen("notes/scaling-laws.md", "c-long"), { sleep: 600 }, ...send("OK — what's next for the 3.2B run?")],
+    open: [...deskOpen("notes/scaling-laws.md", "c-long"), { sleep: 600 }, ...sendHere("OK — what's next for the 3.2B run?")],
   },
   {
     id: "context-low",
@@ -292,7 +299,7 @@ export const scenarios: Scenario[] = [
     notes: "The chat pane's model picker, open, listing the real OpenRouter catalog (saved from openrouter.ai/api/v1/models). Search works. Settings has the per-role pickers.",
     build: (c) => world(c),
     activeConversation: "c-spectral",
-    open: [...deskOpen(NOTE, "c-spectral"), { sleep: 800 }, { click: "button", text: "Claude Sonnet 5.5" }],
+    open: [...deskOpen(NOTE, "c-spectral"), { sleep: 800 }, { click: "button", text: /Claude Sonnet 5\.5/ }],
   },
 
   // ===== PDF =====
@@ -301,7 +308,7 @@ export const scenarios: Scenario[] = [
     title: "A 320-page PDF and the PDF tool in chat",
     group: "PDF",
     notes:
-      "papers/attention-survey.pdf (320 pages) open in the viewer. The chat asks for a summary: PdfExtract really extracts every page in the browser (pdf.js), the whole text goes into the next model call, and the context dial shows the blowup.",
+      "papers/attention-survey.pdf (320 pages) open in the viewer. The chat asks for a summary: PdfExtract really runs pdf.js in the browser on all 320 pages, returns only the first ~60k characters (silently ~15 pages), and the scripted model reads on in page ranges — each extract lands in the context, and the dial climbs.",
     build: (c) => world(c),
     llm: { scripts: [pdfScript] },
     open: [...deskOpen("papers/attention-survey.pdf"), { sleep: 1500 }, ...send("Summarize the attention survey PDF.")],
@@ -450,7 +457,7 @@ export const scenarios: Scenario[] = [
     host: {
       sync: {
         box: BOX,
-        reports: [{ big_files: [{ path: "projects/bitnet-160m/results/seed43.ckpt", size: 212 * 1024 * 1024 }, { path: "papers/scan-2026-10-01.pdf", size: 61 * 1024 * 1024 }] }],
+        reports: [{ big_files: [{ path: "{vault}/projects/bitnet-160m/results/seed43.ckpt", size: 212 * 1024 * 1024 }, { path: "{vault}/papers/scan-2026-10-01.pdf", size: 61 * 1024 * 1024 }] }],
       },
     },
     fastTimers: syncTimers,

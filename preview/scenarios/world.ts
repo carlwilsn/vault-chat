@@ -333,6 +333,8 @@ export function schedules(now: number): string[] {
   return [
     { id: "sch-brief", name: "Morning briefing", prompt: "Run the morning briefing: what moved overnight, what's due today.", recurrence: { kind: "daily" }, time: "07:00", timezone: "America/Los_Angeles", target: { kind: "new" }, modelId: "anthropic/claude-sonnet-5.5", enabled: true, markUnreadOnFinish: true, lastFiredAt: now - 2.5 * HOUR, createdAt: now - 30 * 24 * HOUR },
     { id: "sch-hygiene", name: "Repo hygiene sweep", prompt: "Sweep the repos for uncommitted drift; ALERT only on a real problem.", recurrence: { kind: "every", minutes: 180 }, time: "09:00", timezone: "America/Los_Angeles", target: { kind: "new" }, modelId: "anthropic/claude-haiku-5.5", enabled: true, markUnreadOnFinish: false, quietUnlessAlert: true, lastFiredAt: now - 40 * MIN, createdAt: now - 14 * 24 * HOUR },
+    // The mission's own 15-minute wake (missions schedule their next check).
+    { id: "sch-bitnet-wake", name: "BitNet 160M MVP — check-in", prompt: "Watched run check-in: review the workers and continue the mission.", recurrence: { kind: "every", minutes: 15 }, time: "09:00", timezone: "America/Los_Angeles", target: { kind: "existing", conversationId: "m-bitnet" }, modelId: "openai/gpt-6.1-sol", enabled: true, markUnreadOnFinish: false, quietUnlessAlert: true, lastFiredAt: now - 8 * MIN, createdAt: now - 52 * HOUR },
     { id: "sch-weekly", name: "Weekly spend report", prompt: "Summarize the week's GPU and model spend.", recurrence: { kind: "weekly", dow: 5 }, time: "17:00", timezone: "America/Los_Angeles", target: { kind: "new" }, modelId: "anthropic/claude-haiku-5.5", enabled: false, markUnreadOnFinish: true, createdAt: now - 20 * 24 * HOUR },
   ].map((s) => JSON.stringify(s));
 }
@@ -344,22 +346,11 @@ export function history(now: number) {
   const C = "@current";
   return [
     { subject: "vault-chat start", at: now - 21 * DAY, changes: {}, anchor: true },
-    { subject: "autosave", at: now - 20 * DAY, changes: { "notes/mup.md": "# muP — hyperparameter transfer
-
-Tune once on a narrow proxy, transfer up.
-" } },
+    { subject: "autosave", at: now - 20 * DAY, changes: { "notes/mup.md": "# muP — hyperparameter transfer\n\nTune once on a narrow proxy, transfer up.\n" } },
     { subject: "[agent] add STAT 210 syllabus", author: "vault-chat-agent", at: now - 14 * DAY, changes: { "courses/stat-210/syllabus.md": C } },
-    { subject: "autosave", at: now - 6 * DAY, changes: { "notes/scaling-laws.md": "# Scaling laws — the working picture
-
-Three levers set the loss: parameters $N$, tokens $D$, and compute.
-
-- Compute-optimal ratio is about **20 tokens per parameter**.
-" } },
+    { subject: "autosave", at: now - 6 * DAY, changes: { "notes/scaling-laws.md": "# Scaling laws — the working picture\n\nThree levers set the loss: parameters $N$, tokens $D$, and compute.\n\n- Compute-optimal ratio is about **20 tokens per parameter**.\n" } },
     { subject: "autosave", at: now - 3 * DAY, changes: { "notes/mup.md": C } },
-    { subject: "[agent] BitNet 160M MVP: results table (seeds 42, 44)", author: "vault-chat-agent", at: now - 2 * DAY, changes: { "projects/bitnet-160m/results.csv": "seed,tokens,steps,peak_lr,eval_loss,wall_hours,gpu
-42,1.70e9,3240,3.0e-3,1.5576,13.6,A10
-44,1.70e9,3240,3.0e-3,1.5588,13.5,A10
-" } },
+    { subject: "[agent] BitNet 160M MVP: results table (seeds 42, 44)", author: "vault-chat-agent", at: now - 2 * DAY, changes: { "projects/bitnet-160m/results.csv": "seed,tokens,steps,peak_lr,eval_loss,wall_hours,gpu\n42,1.70e9,3240,3.0e-3,1.5576,13.6,A10\n44,1.70e9,3240,3.0e-3,1.5588,13.5,A10\n" } },
     { subject: "autosave", at: now - 26 * HOUR, changes: { "daily/2026-10-08.md": C, "notes/scaling-laws.md": C } },
     { subject: "[agent] seed 43 rerun: eval.loss committed", author: "vault-chat-agent", at: now - 2 * HOUR, changes: { "projects/bitnet-160m/results.csv": C } },
     { subject: "[agent] BitNet writeup draft", body: "mission: BitNet 160M MVP", author: "vault-chat-agent", at: now - 30 * MIN, changes: { "projects/bitnet-160m/writeup.md": C } },

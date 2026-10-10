@@ -1,5 +1,5 @@
 // Shared Playwright launcher for the self-test, recorder and probes. Uses the
-// Playwright Chromium build when present, else the installed Edge/Chrome.
+// installed Edge (or Chrome), the closest thing to the app's WebView2.
 // Every request that leaves 127.0.0.1/localhost is logged as outbound and
 // aborted at the network layer — a second wall behind the page's own guard.
 import { chromium } from "playwright-core";
@@ -32,14 +32,19 @@ export function isLocal(url) {
 }
 
 export async function launch({ width = 1400, height = 900, headless = true, recordVideo, deviceScaleFactor = 1, isMobile = false } = {}) {
-  // Playwright's own Chromium if it is installed (npx playwright-core install
-  // chromium), else the system Edge/Chrome.
+  // The installed Edge first (current Chromium, like WebView2 — pdf.js 5 needs
+  // ES2025 APIs older builds lack), then Chrome, then a given/bundled binary.
   let browser;
-  try {
-    browser = await chromium.launch({ headless });
-  } catch {
-    browser = await chromium.launch({ executablePath: browserPath(), headless });
+  const tries = [{ channel: "msedge" }, { channel: "chrome" }, { executablePath: browserPath() }, {}];
+  for (const t of tries) {
+    try {
+      browser = await chromium.launch({ ...t, headless, timeout: 30000 });
+      break;
+    } catch {
+      /* next */
+    }
   }
+  if (!browser) throw new Error("no browser could be launched");
   const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor, isMobile, hasTouch: isMobile, recordVideo });
   const log = { console: [], outbound: [], pageErrors: [] };
   await context.route("**/*", (route) => {

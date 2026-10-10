@@ -48,6 +48,14 @@ export type LlmConfig = {
 };
 
 let config: LlmConfig = {};
+let vaultPath = "";
+/** Tool args may say "{vault}/…"; the model sees absolute paths, like the real agent uses. */
+export function setLlmVault(v: string): void {
+  vaultPath = v;
+}
+function withVault<T>(x: T): T {
+  return JSON.parse(JSON.stringify(x).replace(/\{vault\}/g, vaultPath));
+}
 const holds = new Set<() => void>();
 export const llmLog: Array<{ at: number; url: string; model: string; script: string; step: number; stream: boolean }> = [];
 
@@ -269,7 +277,7 @@ async function serveOpenAI(p: Parsed, step: Step, signal?: AbortSignal): Promise
   const created = Math.floor(Date.now() / 1000);
   const model = p.model || "preview/model";
   const text = step.text ?? "";
-  const tools = step.tools ?? [];
+  const tools = withVault(step.tools ?? []);
   const u = usageFor(p, step, Math.round((text.length + JSON.stringify(tools).length) / 4));
   const usage = {
     prompt_tokens: u.prompt,
@@ -332,7 +340,7 @@ async function serveAnthropic(p: Parsed, step: Step, signal?: AbortSignal): Prom
     });
   const id = newId("msg_preview_");
   const text = step.text ?? "";
-  const tools = step.tools ?? [];
+  const tools = withVault(step.tools ?? []);
   const u = usageFor(p, step, Math.round((text.length + (step.reasoning ?? "").length) / 4));
   const stop = tools.length ? "tool_use" : "end_turn";
   if (!p.stream) {

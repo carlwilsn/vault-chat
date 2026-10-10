@@ -7,7 +7,7 @@
 import { installIpc } from "./ipc";
 import { installNetworkGuard, refused } from "./net";
 import { installClock, now, advance } from "./clock";
-import { setLlmConfig, releaseHolds, llmLog } from "./llm";
+import { setLlmConfig, setLlmVault, releaseHolds, llmLog } from "./llm";
 import { report, reports, setOverlayHidden } from "./overlay";
 import * as fs from "./shims/memfs";
 import { conversationsWriteAll } from "../../server/commands/conversations";
@@ -115,6 +115,7 @@ export function boot(base: Base): void {
   if (!isPopout) seedLocalStorage(vault, sc);
   seedVault(vault, base, sc, now());
   setLlmConfig(sc.llm ?? {});
+  setLlmVault(vault);
   setHostConfig(sc.host ?? {}, now);
   setOverrides(sc.overrides);
 
