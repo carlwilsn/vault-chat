@@ -66,7 +66,7 @@ export type Scenario = {
   /** The conversation open on load. */
   activeConversation?: string;
   /** Phone scenario: adjust the phone's MockDB (built from the same world). */
-  phone?: { page?: string; db?: (db: any, now: number) => void };
+  phone?: { page?: string; clicks?: string[]; db?: (db: any, now: number) => void };
   /** Surfaces this scenario is meant for. */
   surfaces?: Array<"desktop" | "phone">;
 };

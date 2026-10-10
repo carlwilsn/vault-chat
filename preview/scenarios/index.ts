@@ -382,6 +382,53 @@ export const scenarios: Scenario[] = [
     open: [{ file: NOTE }, { click: "[title='Mission control']" }, { sleep: 400 }, { click: "button, [role=button], div", text: /^BitNet 160M MVP/ }],
   },
 
+  // ===== Phone =====
+  {
+    id: "phone-chats",
+    title: "Phone — conversations drawer",
+    group: "Phone",
+    notes: "The phone's conversation list (left button). Tap a chat to open it; type and send (the phone's own mock answers).",
+    build: (c) => world(c),
+    surfaces: ["phone"],
+    phone: { clicks: ["#convBtn"] },
+  },
+  {
+    id: "phone-thread",
+    title: "Phone — a chat thread",
+    group: "Phone",
+    notes: "The spectral-clustering chat open on the phone, with math and a tool chip.",
+    build: (c) => world(c),
+    surfaces: ["phone"],
+    phone: { clicks: ["#convBtn", "text:Why eigenvectors in spectral clustering?"] },
+  },
+  {
+    id: "phone-mission",
+    title: "Phone — the mission sheet",
+    group: "Phone",
+    notes: "Activity → the BitNet mission: brief, done-when, workers, the thinking digest.",
+    build: (c) => world(c),
+    surfaces: ["phone"],
+    phone: { page: "activity", clicks: ["text:BitNet 160M MVP"] },
+  },
+  {
+    id: "phone-notes",
+    title: "Phone — notes",
+    group: "Phone",
+    notes: "The Notes page: open notes from the desktop's note composer.",
+    build: (c) => world(c),
+    surfaces: ["phone"],
+    phone: { page: "notes" },
+  },
+  {
+    id: "phone-settings",
+    title: "Phone — box & settings",
+    group: "Phone",
+    notes: "Menu → Box & settings.",
+    build: (c) => world(c),
+    surfaces: ["phone"],
+    phone: { clicks: ["#menuBtn", "#settingsRow"] },
+  },
+
   // ===== Sync =====
   {
     id: "sync-healthy",
