@@ -16,6 +16,7 @@ export type FakeTauri = {
   unknown: string[];
   notifications: any[];
   conversations: Map<string, any>;
+  schedules: any[];
   setHandler(cmd: string, fn: (args: any) => any): void;
 };
 
@@ -27,6 +28,18 @@ export function makeTempVault(prefix = "vc-harness-"): string {
 
 export function installFakeTauri(vault: string): FakeTauri {
   const g = globalThis as any;
+  // Tests must never reach a real provider: only loopback fetches are allowed.
+  if (!g.__vcFetchGuard) {
+    const realFetch = g.fetch;
+    g.__vcFetchGuard = true;
+    g.fetch = (input: any, init?: any) => {
+      const url = String(typeof input === "string" ? input : input?.url ?? input);
+      if (!/^https?:\/\/(127\.0\.0\.1|localhost)[:/]/.test(url)) {
+        return Promise.reject(new Error(`test fetch guard: refusing non-loopback request to ${url}`));
+      }
+      return realFetch(input, init);
+    };
+  }
   const ls = new Map<string, string>();
   g.localStorage = {
     getItem: (k: string) => (ls.has(k) ? ls.get(k)! : null),
@@ -46,6 +59,7 @@ export function installFakeTauri(vault: string): FakeTauri {
     unknown: [],
     notifications: [],
     conversations: new Map(),
+    schedules: [],
     setHandler(cmd, fn) {
       handlers[cmd] = fn;
     },
@@ -74,7 +88,7 @@ export function installFakeTauri(vault: string): FakeTauri {
       }
       return null;
     },
-    schedules_read: () => [],
+    schedules_read: () => state.schedules.map((x) => JSON.stringify(x)),
     schedules_write_all: () => null,
     notification_add: ({ json }) => {
       state.notifications.push(JSON.parse(json));

@@ -414,6 +414,7 @@ function humanizeToolAction(name: string, input: unknown): string {
     case "GitLog": return "checked git history";
     case "MarkDoneWhen": return "checked off a criterion";
     case "CompleteMission": return "marked the mission done";
+    case "MissionCost": return "checked the mission's cost";
     case "Schedule": return "scheduled a wake";
     case "CancelSchedule": return "canceled a wake";
     case "ListSchedules": return "checked its schedules";
