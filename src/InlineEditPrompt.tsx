@@ -995,7 +995,7 @@ export function InlineEditPrompt({
             });
             const name = m.spec?.label.replace(/^[^:]+:\s*/, "") ?? m.id;
             return (
-              <span title={`${ROLE_LABEL[m.role]} model${m.switchedFrom ? ` (an image is attached; ${ROLE_LABEL[m.switchedFrom]} can't read images)` : ""} · set in Settings → Models`}>
+              <span title={m.switchedFrom ? `Built-in vision model (an image is attached; the ${ROLE_LABEL[m.switchedFrom]} model can't read images)` : `${ROLE_LABEL[m.role]} model · set in Settings → Models`}>
                 {name} ·{" "}
               </span>
             );

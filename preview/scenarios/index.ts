@@ -195,7 +195,7 @@ function capsScenarios(): Scenario[] {
     title: `Settings — capabilities, option ${what}`,
     group: "Settings",
     notes:
-      "Roles: Chat Claude Sonnet 5.5 (learned: helpers yes), Background a model missing from the catalog (untested), Images & PDFs Gemini 3.5 Flash (learned: no helpers). Keys: OpenRouter, Tavily and a lambda_api_key service key; one other provider (Anthropic) under the fold.",
+      "Roles: Chat Claude Sonnet 5.5 (learned: helpers yes), Background a model missing from the catalog (untested). No Images & PDFs row any more: images and PDFs go to the Chat model, and only when it can't read them to a built-in vision model (Gemini 3.5 Flash, not a setting). Keys: OpenRouter, Tavily and a lambda_api_key service key; one other provider (Anthropic) under the fold.",
     build: (c: BuildCtx) => world(c),
     host: {
       sync: { box: BOX },
@@ -209,7 +209,6 @@ function capsScenarios(): Scenario[] {
       vault_chat_caps_view: view,
       vault_chat_model: "anthropic/claude-sonnet-5.5",
       vault_chat_background_model: "deepseek/deepseek-v4",
-      vault_chat_vision_model: "google/gemini-3.5-flash",
       vault_chat_user_keys: JSON.stringify(["lambda_api_key"]),
       vault_chat_model_caps_learned: JSON.stringify({
         "anthropic/claude-sonnet-5.5": { helpers: true },
@@ -494,7 +493,7 @@ export const scenarios: Scenario[] = [
             C: "Option C: Ctrl+K and Ctrl+L both on Background (Claude Haiku 5.5).",
           }[opt]
         } ` +
-        "For Ctrl+K: Esc, switch the viewer to edit, select a paragraph, Ctrl+K. Roles are set in Settings → Models by role (new Background and Images & PDFs rows); an image ask (PDF region, image viewer) moves to Images & PDFs when the role model can't see images. Before: both always ran on the chat pane's current model.",
+        "For Ctrl+K: Esc, switch the viewer to edit, select a paragraph, Ctrl+K. Roles are set in Settings → Models (a new Background row); an image ask (PDF region, image viewer) moves to the built-in vision model only when the role model can't read images — there is no Images & PDFs setting. Before: both always ran on the chat pane's current model.",
       build: (c) => world(c),
       localStorage: { vault_chat_inline_roles: opt },
       llm: { scripts: [inlineEdit, askScript] },

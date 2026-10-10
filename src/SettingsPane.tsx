@@ -136,8 +136,6 @@ function ModelsSection() {
   const setAssistantModelId = useStore((s) => s.setAssistantModelId);
   const backgroundModelId = useStore((s) => s.backgroundModelId);
   const setBackgroundModelId = useStore((s) => s.setBackgroundModelId);
-  const visionModelId = useStore((s) => s.visionModelId);
-  const setVisionModelId = useStore((s) => s.setVisionModelId);
   const autoRouterCostBias = useStore((s) => s.autoRouterCostBias);
   const setAutoRouterCostBias = useStore((s) => s.setAutoRouterCostBias);
   const reasoningEffort = useStore((s) => s.reasoningEffort);
@@ -181,7 +179,6 @@ function ModelsSection() {
     [
       ["chat", modelId],
       ["background", backgroundModelId],
-      ["vision", visionModelId],
     ] as Array<[RoleId, string]>
   ).filter(([, id]) => id !== AUTO_MODEL_ID);
   const usedKey = used.map(([, id]) => id).join("|");
@@ -208,7 +205,6 @@ function ModelsSection() {
       groups: groups(true),
     },
     { role: "background", value: backgroundModelId, onChange: setBackgroundModelId, groups: groups(false) },
-    { role: "vision", value: visionModelId, onChange: setVisionModelId, groups: groups(false) },
     { role: "voice", value: voiceLlm, onChange: saveVoiceLlm, groups: VOICE_GROUPS, mono: true },
   ];
 

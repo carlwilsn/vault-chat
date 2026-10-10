@@ -1,11 +1,11 @@
 // Which model each small surface runs on, by Settings role — never "whatever
 // the chat pane's picker happens to be on".
 //
-// Roles (Settings → Models): Chat (the chat pane picker, `vault_chat_model`),
-// Background (`vault_chat_background_model`) and Images & PDFs
-// (`vault_chat_vision_model`). Ctrl+K inline edit and Ctrl+L ask each map to a
-// role; an ask that carries an image (a PDF region, an image viewer, a pasted
-// capture) whose role model can't see images runs on Images & PDFs instead.
+// Roles (Settings → Models): Chat (the chat pane picker, `vault_chat_model`)
+// and Background (`vault_chat_background_model`). Ctrl+K inline edit and
+// Ctrl+L ask each map to a role. Images and PDFs go to that role's model; only
+// when it can't read images does the call quietly move to a built-in vision
+// model (DEFAULT_VISION_MODEL_ID — not a setting, Carl's call).
 //
 // The surface → role mapping is Carl's call; three options are built and
 // picked with `vault_chat_inline_roles` (the preview switches it per scenario):
@@ -24,45 +24,46 @@ import {
   type ProviderId,
 } from "./providers";
 
+/** "vision" is internal: the built-in fallback for an image the role model
+ *  can't read. It has no Settings row. */
 export type Role = "chat" | "background" | "vision";
 /** Every role Settings → Models shows a picker for (Voice is the voice agent's
  *  LLM, stored by the voice code, not here). */
-export type RoleId = Role | "voice";
+export type RoleId = "chat" | "background" | "voice";
 export type InlineSurface = "inlineEdit" | "inlineAsk";
 
 export const DEFAULT_VISION_MODEL_ID = "google/gemini-3.5-flash";
 
-export const ROLE_STORAGE: Record<Role, string> = {
+export const ROLE_STORAGE: Record<Exclude<Role, "vision">, string> = {
   chat: "vault_chat_model",
   background: "vault_chat_background_model",
-  vision: "vault_chat_vision_model",
 };
 const ROLE_DEFAULT: Record<Role, string> = {
   chat: DEFAULT_MODEL_ID,
   background: DEFAULT_BACKGROUND_MODEL_ID,
   vision: DEFAULT_VISION_MODEL_ID,
 };
-export const ROLE_LABEL: Record<RoleId, string> = {
+export const ROLE_LABEL: Record<RoleId | Role, string> = {
   chat: "Chat",
   background: "Background",
-  vision: "Images & PDFs",
+  vision: "Built-in vision",
   voice: "Voice",
 };
 
-// Settings (store.ts) reads and writes the two new roles through these; the
-// keys are the same ones roleModelId() reads, so a pick in Settings is what
-// Ctrl+K / Ctrl+L run on.
+// Settings (store.ts) reads and writes the Background role through this; the
+// key is the one roleModelId() reads, so a pick in Settings is what Ctrl+K /
+// Ctrl+L run on.
 export const BACKGROUND_MODEL_STORAGE = ROLE_STORAGE.background;
-export const VISION_MODEL_STORAGE = ROLE_STORAGE.vision;
 
 /** The model a background job (titles, compaction, summaries) should use. */
 export function backgroundModel(): string {
   return roleModelId("background");
 }
 
-/** The model a turn carrying an image or a PDF should switch to. */
+/** The built-in model an image or a PDF moves to when the model it was sent
+ *  to can't read it. Fixed; not a setting. */
 export function visionModel(): string {
-  return roleModelId("vision");
+  return DEFAULT_VISION_MODEL_ID;
 }
 
 export const INLINE_ROLE_OPTIONS = {
@@ -88,6 +89,7 @@ export function inlineRoleOption(): InlineRoleOption {
 
 /** The model id a role is set to (Settings), or its default. */
 export function roleModelId(role: Role): string {
+  if (role === "vision") return visionModel();
   return ls(ROLE_STORAGE[role]) || ROLE_DEFAULT[role];
 }
 

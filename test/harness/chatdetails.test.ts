@@ -71,8 +71,10 @@ test("Ctrl+K / Ctrl+L run on Settings roles, per option; images move to Images &
   // A role set in Settings wins over the default.
   localStorage.setItem("vault_chat_background_model", "google/gemini-3.5-flash");
   assert.equal(roles.inlineModel("inlineAsk", { apiKeys: keys }).spec?.id, "google/gemini-3.5-flash");
-  // An image on a text-only role model → Images & PDFs.
+  // An image on a text-only role model → the built-in vision model (not a
+  // setting: an old vault_chat_vision_model is ignored).
   localStorage.setItem("vault_chat_background_model", "qwen/qwen3-32b");
+  localStorage.setItem("vault_chat_vision_model", "openai/gpt-6.1-sol");
   const img = roles.inlineModel("inlineAsk", { apiKeys: keys, hasImage: true });
   assert.equal(img.role, "vision");
   assert.equal(img.switchedFrom, "background");
@@ -81,5 +83,5 @@ test("Ctrl+K / Ctrl+L run on Settings roles, per option; images move to Images &
   localStorage.setItem("vault_chat_inline_roles", "A");
   localStorage.setItem("vault_chat_model", "auto");
   assert.equal(roles.inlineModel("inlineEdit", { apiKeys: keys }).spec?.id, p.AUTO_ROUTER_MODEL_ID);
-  for (const k of ["vault_chat_model", "vault_chat_inline_roles", "vault_chat_background_model"]) localStorage.removeItem(k);
+  for (const k of ["vault_chat_model", "vault_chat_inline_roles", "vault_chat_background_model", "vault_chat_vision_model"]) localStorage.removeItem(k);
 });
