@@ -1,0 +1,33 @@
+{
+  "about": "Measured model capabilities through Codex (seed; the server learns more from real use into $VC_STATE_DIR/capabilities.json). Only fields that were measured are listed; everything else comes from the OpenRouter catalog.",
+  "entries": [
+    {
+      "model": "openai/gpt-6.1-sol",
+      "codexVersion": "0.162.1",
+      "testedAt": 1791620000000,
+      "results": { "tools": true },
+      "evidence": { "tools": "live probe 2026-10-10 on thinkbox: 3/3 turns called a dynamicTool and quoted its output; all requests HTTP 200 (code-mode exec carries dynamic tools)" }
+    },
+    {
+      "model": "anthropic/claude-sonnet-5.5",
+      "codexVersion": "0.162.1",
+      "testedAt": 1791620000000,
+      "results": { "tools": true },
+      "evidence": { "tools": "live probe 2026-10-10: 3/3 dynamicTool calls; tools sent as plain top-level functions; 6/6 requests HTTP 200 (multi_agent namespace tool was also sent and accepted)" }
+    },
+    {
+      "model": "deepseek/deepseek-v4.1-flash",
+      "codexVersion": "0.162.1",
+      "testedAt": 1791620000000,
+      "results": { "tools": true },
+      "evidence": { "tools": "live probe 2026-10-10: 3/3 dynamicTool calls; 6/6 requests HTTP 200" }
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "codexVersion": "0.162.1",
+      "testedAt": 1791620000000,
+      "results": { "tools": true },
+      "evidence": { "tools": "live probe 2026-10-10: 3/3 dynamicTool calls; 6/6 requests HTTP 200" }
+    }
+  ]
+}

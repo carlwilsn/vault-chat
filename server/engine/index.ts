@@ -119,6 +119,9 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
     apiKey: b.apiKey,
     permissions: process.platform === "linux" ? "vc" : null,
+    codexHome,
+    broadcast: b.broadcast,
+    visionModel: process.env.VC_VISION_MODEL || "openai/gpt-6.1-sol",
     stallMs: Number(process.env.VC_ENGINE_STALL_MS) || 30 * 60_000,
     notify: async (n) => {
       const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);

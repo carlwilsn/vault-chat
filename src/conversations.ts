@@ -162,6 +162,8 @@ export type Conversation = {
   pendingAsk?: { question: string; options?: string[]; at: number; notifId?: string };
   verdict?: { verdict: "pass" | "fail" | "unsure"; notes: string[]; at: number; summary?: string };
   recap?: string;
+  // Codex subagent threads this conversation spawned (children, for later display).
+  subagents?: { threadId: string; prompt?: string; model?: string; status?: string; startedAt?: number; path?: string }[];
 };
 
 
@@ -295,6 +297,7 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         pendingAsk: parsed.pendingAsk,
         verdict: parsed.verdict,
         recap: parsed.recap,
+        subagents: parsed.subagents,
       });
     } catch {
       // skip

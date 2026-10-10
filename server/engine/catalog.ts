@@ -5,7 +5,13 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type ModelMeta = { id: string; contextLength: number };
+export type ModelMeta = {
+  id: string;
+  contextLength: number;
+  supportedParameters?: string[];
+  inputModalities?: string[];
+  cacheRead?: number;
+};
 
 const FALLBACK_WINDOW = 200_000;
 /** Codex compacts at this fraction of the window… */
@@ -25,7 +31,15 @@ function parseCatalog(json: any): Map<string, ModelMeta> {
   for (const r of rows) {
     if (typeof r?.id !== "string") continue;
     const ctx = Number(r.context_length ?? r.top_provider?.context_length);
-    if (Number.isFinite(ctx) && ctx > 0) out.set(r.id, { id: r.id, contextLength: ctx });
+    if (!(Number.isFinite(ctx) && ctx > 0)) continue;
+    const cr = Number(r.pricing?.input_cache_read);
+    out.set(r.id, {
+      id: r.id,
+      contextLength: ctx,
+      supportedParameters: Array.isArray(r.supported_parameters) ? r.supported_parameters : undefined,
+      inputModalities: Array.isArray(r.architecture?.input_modalities) ? r.architecture.input_modalities : undefined,
+      cacheRead: Number.isFinite(cr) ? cr : undefined,
+    });
   }
   return out;
 }
@@ -51,7 +65,18 @@ export async function loadCatalog(cachePath: string, timeoutMs = 15_000): Promis
         source = "live";
         try {
           mkdirSync(dirname(cachePath), { recursive: true });
-          writeFileSync(cachePath, JSON.stringify({ data: [...live.values()].map((m) => ({ id: m.id, context_length: m.contextLength })) }));
+          writeFileSync(
+            cachePath,
+            JSON.stringify({
+              data: [...live.values()].map((m) => ({
+                id: m.id,
+                context_length: m.contextLength,
+                supported_parameters: m.supportedParameters,
+                architecture: { input_modalities: m.inputModalities },
+                pricing: m.cacheRead !== undefined ? { input_cache_read: String(m.cacheRead) } : {},
+              })),
+            }),
+          );
         } catch {
           /* cache is best effort */
         }
@@ -61,6 +86,10 @@ export async function loadCatalog(cachePath: string, timeoutMs = 15_000): Promis
     /* offline: keep the cache */
   }
   return { models: byId.size, source };
+}
+
+export function allModels(): ModelMeta[] {
+  return [...byId.values()];
 }
 
 export function modelMeta(id: string): ModelMeta | undefined {

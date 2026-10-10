@@ -3,7 +3,7 @@
 // become the existing message shapes in the conversation file, and the live
 // run is mirrored into the store so the phone host emits the /poll events the
 // phone already renders. vault-chat's own tools reach Codex as dynamicTools.
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import type { ChatMessage } from "../../src/store";
 import { registerRun, unregisterRun } from "../../src/runRegistry";
 import type { CodexSupervisor } from "./appServer";
@@ -27,6 +27,8 @@ import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } f
 import { Ledger, rolloutCalls } from "./ledger";
 import { pdfRead, webSearch, startJob, jobStatus, type JobEnv } from "./extraTools";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
+import { capabilitiesOf, capabilityNote, isNamespaceRejection, learn } from "./capabilities";
+import { join } from "node:path";
 
 export type EngineDeps = {
   vault: string;
@@ -41,6 +43,12 @@ export type EngineDeps = {
   /** One-line log. */
   log?: (s: string) => void;
   stallMs?: number;
+  /** /poll ring. */
+  broadcast?: (ev: Record<string, unknown>) => void;
+  /** Model for a turn that carries images when the default can't see. */
+  visionModel?: string;
+  /** CODEX_HOME (subagent rollouts are found under its sessions/). */
+  codexHome?: string;
   /** Linux: run tool shells under the `vc` permission profile. */
   permissions?: string | null;
 };
@@ -68,7 +76,12 @@ type Live = {
   stopped: boolean;
   controller: AbortController;
   finished: boolean;
+  /** What started the turn (for the silent retry). */
+  input: string;
+  turnOpts: TurnOpts;
 };
+
+type TurnOpts = { alreadyAppended?: boolean; images?: string[]; context?: string; retried?: boolean; attachments?: any[] };
 
 const MSG_CAP = 20_000;
 const RESULT_CAP = 4_000;
@@ -195,6 +208,7 @@ export class Engine {
   private firstUp = true;
   private timers: NodeJS.Timeout[] = [];
   private firing = new Set<string>();
+  private childOf = new Map<string, string>(); // subagent threadId → parent conversation id
 
   constructor(private d: EngineDeps) {}
 
@@ -300,46 +314,104 @@ export class Engine {
   // ---------------------------------------------------------------- inbound
 
   /** /message. Returns null when the conversation is a legacy mission thread (old path). */
-  async message(body: { convId?: string | null; text?: string; project?: string }): Promise<Record<string, unknown> | null> {
+  /**
+   * /message {text, convId?, project?, context?, images?, clientMsgId?} → {ok, convId}.
+   * images: [{name?, mime, dataBase64}] (saved under .vault-chat/captures/) or
+   * imagePaths: [vault-relative path]. context: a preamble the agent sees before
+   * the text (not shown as the message). project: tags the conversation.
+   * Returns null when the conversation is a legacy mission thread (old path).
+   */
+  async message(body: {
+    convId?: string | null;
+    text?: string;
+    project?: string;
+    context?: string;
+    images?: { name?: string; mime?: string; dataBase64?: string }[];
+    imagePaths?: string[];
+  }): Promise<Record<string, unknown> | null> {
     const textIn = String(body?.text ?? "").trim();
-    if (!textIn) return { error: "empty message" };
+    const hasImages = (body.images?.length ?? 0) + (body.imagePaths?.length ?? 0) > 0;
+    if (!textIn && !hasImages) return { error: "empty message" };
     let conv: EngineConv | null = null;
     if (body.convId) {
       conv = await readConv(this.d.vault, body.convId);
       if (!conv) return { error: `conversation ${body.convId} not found` };
       if (LEGACY_SOURCES.has(conv.source)) return null;
     } else {
-      conv = await createConv(this.d.vault, { project: body.project || undefined }, textIn);
+      conv = await createConv(this.d.vault, {}, textIn || "Image");
       // Let the phone host's store diff see the new (empty) conversation first,
       // so this turn's messages go out as live "message" events.
       await new Promise((r) => setTimeout(r, 400));
     }
     const id = conv.id;
+    if (typeof body.project === "string" && body.project.trim()) {
+      try {
+        const { ensureProject } = await import("../context");
+        const { project } = ensureProject(body.project.trim());
+        await patchMeta(this.d.vault, id, { project: project.slug });
+      } catch (e) {
+        this.log(`project ${body.project}: ${(e as Error).message}`);
+      }
+    }
+    const { paths, attachments } = this.saveImages(id, body);
+    const context = typeof body.context === "string" && body.context.trim() ? body.context.trim() : undefined;
+    const shown = textIn || "(image)";
     this.nudged.delete(id);
     // An open question: this message is the answer.
     if (this.live.get(id)?.ask || conv.pendingAsk) {
-      await this.answer(id, textIn);
+      await this.answer(id, shown);
       return { ok: true, convId: id, answered: true };
     }
     // A running turn: steer it.
     const l = this.live.get(id);
     if (l && l.turnId && !l.finished) {
-      await appendMessage(this.d.vault, id, { role: "user", content: textIn, direct: true });
+      await appendMessage(this.d.vault, id, { role: "user", content: shown, direct: true, ...(attachments.length ? { attachments } : {}) });
       try {
         await this.d.sup.request("turn/steer", {
           threadId: l.threadId,
           expectedTurnId: l.turnId,
-          input: [{ type: "text", text: textIn, text_elements: [] }],
+          input: [
+            { type: "text", text: context ? `${context}
+
+${shown}` : shown, text_elements: [] },
+            ...paths.map((path) => ({ type: "localImage", path })),
+          ],
         });
         return { ok: true, convId: id, steered: true };
       } catch (e) {
         this.log(`steer failed (${(e as Error).message}); starting a new turn`);
-        void this.run(id, textIn, "user", { alreadyAppended: true });
+        void this.run(id, shown, "user", { alreadyAppended: true, images: paths, context });
         return { ok: true, convId: id };
       }
     }
-    void this.run(id, textIn, "user").catch((e) => this.log(`turn failed: ${e}`));
+    void this.run(id, shown, "user", { images: paths, context, attachments }).catch((e) => this.log(`turn failed: ${e}`));
     return { ok: true, convId: id };
+  }
+
+  private saveImages(convId: string, body: { images?: { name?: string; mime?: string; dataBase64?: string }[]; imagePaths?: string[] }): { paths: string[]; attachments: any[] } {
+    const paths: string[] = [];
+    const attachments: any[] = [];
+    const dir = join(this.d.vault, ".vault-chat", "captures");
+    (body.images ?? []).slice(0, 8).forEach((img, i) => {
+      const b64 = String(img?.dataBase64 ?? "").replace(/^data:[^,]*,/, "");
+      if (!b64) return;
+      const buf = Buffer.from(b64, "base64");
+      if (!buf.length || buf.length > 15 * 1024 * 1024) return;
+      const mime = String(img?.mime ?? "image/png");
+      const ext = mime.includes("jpeg") || mime.includes("jpg") ? ".jpg" : mime.includes("webp") ? ".webp" : mime.includes("gif") ? ".gif" : ".png";
+      const rel = `.vault-chat/captures/${new Date().toISOString().replace(/[:.]/g, "-")}-${convId.slice(0, 8)}-${i}${ext}`;
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(this.d.vault, rel), buf);
+      paths.push(join(this.d.vault, rel));
+      attachments.push({ imageDataUrl: buf.length < 400_000 ? `data:${mime};base64,${b64}` : "", capturedFilePath: rel });
+    });
+    for (const p of (body.imagePaths ?? []).slice(0, 8)) {
+      const rel = String(p).replace(/^[\/]+/, "");
+      if (!rel || rel.includes("..")) continue;
+      paths.push(join(this.d.vault, rel));
+      attachments.push({ imageDataUrl: "", capturedFilePath: rel, sourcePath: rel });
+    }
+    return { paths, attachments };
   }
 
   /** /answer. null → legacy path. */
@@ -409,7 +481,7 @@ export class Engine {
   }
 
   /** Start a turn (or, if one is running, steer the input into it). */
-  run(convId: string, input: string, kind: TurnKind, opts: { alreadyAppended?: boolean } = {}): Promise<void> {
+  run(convId: string, input: string, kind: TurnKind, opts: TurnOpts = {}): Promise<void> {
     return this.serial(convId, async () => {
       const existing = this.live.get(convId);
       if (existing && !existing.finished) {
@@ -426,7 +498,7 @@ export class Engine {
       if (!opts.alreadyAppended) {
         const visible: ChatMessage =
           kind === "user"
-            ? { role: "user", content: input, direct: true }
+            ? { role: "user", content: input, direct: true, ...(opts.attachments?.length ? { attachments: opts.attachments } : {}) }
             : { role: "user", content: kind === "wake" ? `⏰ ${input}` : kind === "nudge" ? `↻ ${input}` : `↻ ${input}`, system: true };
         conv = (await appendMessage(this.d.vault, convId, visible)) ?? conv;
       }
@@ -461,6 +533,8 @@ export class Engine {
         stopped: false,
         controller: new AbortController(),
         finished: false,
+        input,
+        turnOpts: opts,
       };
       // The old Stop path (runRegistry) reaches Codex runs too.
       live.controller.signal.addEventListener("abort", () => void this.interrupt(convId, true));
@@ -473,12 +547,20 @@ export class Engine {
       const prior = (conv as any).__legacyHistory as string | undefined;
       if (prior) body = `${prior}\n\n${input}`;
       const rules = rulesPrefixForTurn(conv as any);
-      const items = [
+      if (opts.context) body = `${opts.context}
+
+${body}`;
+      const items: any[] = [
         ...(rules ? [{ type: "text", text: rules, text_elements: [] }] : []),
         { type: "text", text: kind === "wake" ? input : body, text_elements: [] },
+        ...(opts.images ?? []).map((path) => ({ type: "localImage", path })),
       ];
+      // Images on a model that can't see: this turn (silently) uses the vision model.
+      let model = this.d.model();
+      if (opts.images?.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
+      this.chatEvent(convId, "start");
       try {
-        const r: any = await this.d.sup.request("turn/start", { threadId, input: items }, 60_000);
+        const r: any = await this.d.sup.request("turn/start", { threadId, input: items, model }, 60_000);
         if (!live.turnId) live.turnId = r?.turn?.id ?? null;
       } catch (e) {
         live.finished = true;
@@ -492,19 +574,25 @@ export class Engine {
 
   private async ensureThread(conv: EngineConv): Promise<string> {
     const model = this.d.model();
+    // Codex subagents (multi_agent) only for models where they work: a per-thread config override.
+    const features = { multi_agent: capabilitiesOf(model).subagents };
     if (conv.codexThreadId) {
       if (!this.loaded.has(conv.codexThreadId)) {
         await this.d.sup.request("thread/resume", {
           threadId: conv.codexThreadId,
           excludeTurns: true,
           ...(this.d.permissions ? { permissions: this.d.permissions } : {}),
+          config: { ...codexLimits(model), features },
         }, 60_000);
         this.loaded.add(conv.codexThreadId);
       }
       this.byThread.set(conv.codexThreadId, conv.id);
       return conv.codexThreadId;
     }
-    const devInstr = buildDeveloperInstructions(conv as any, { rolePrompt: ENGINE_ROLE_PROMPT });
+    const note = capabilityNote(model);
+    const devInstr = buildDeveloperInstructions(conv as any, { rolePrompt: ENGINE_ROLE_PROMPT + (note ? `
+
+${note}` : "") });
     const r: any = await this.d.sup.request("thread/start", {
       cwd: this.d.vault,
       model,
@@ -513,7 +601,7 @@ export class Engine {
       ...(this.d.permissions ? { permissions: this.d.permissions } : { sandbox: "danger-full-access" }),
       developerInstructions: devInstr,
       dynamicTools: [...ENGINE_TOOL_SPECS, ...contextToolSpecs],
-      config: { ...codexLimits(model) },
+      config: { ...codexLimits(model), features },
     }, 60_000);
     const threadId: string = r?.thread?.id;
     if (!threadId) throw new Error("thread/start returned no thread id");
@@ -546,6 +634,14 @@ export class Engine {
 
   private onNotification(m: { method: string; params: any }): void {
     const p = m.params ?? {};
+    const parent = this.childOf.get(p.threadId);
+    if (parent) {
+      // A subagent's own stream: keeps the parent's turn alive, never mixed into its text.
+      const pl = this.live.get(parent);
+      if (pl) pl.lastEventAt = Date.now();
+      if (m.method === "turn/completed") void this.updateSubagent(parent, p.threadId, { status: String(p.turn?.status ?? "completed") });
+      return;
+    }
     const l = this.liveByThread(p.threadId);
     if (!l) return;
     l.lastEventAt = Date.now();
@@ -558,6 +654,7 @@ export class Engine {
         if (!l.texts.has(id)) l.order.push(id);
         l.texts.set(id, (l.texts.get(id) ?? "") + String(p.delta ?? ""));
         this.pushRuntime(l);
+        this.chatStream(l);
         break;
       }
       case "item/started":
@@ -591,6 +688,21 @@ export class Engine {
           });
         } else if (it.type === "webSearch" || it.type === "mcpToolCall") {
           this.upsertTool(l, it.id, { name: it.type === "webSearch" ? "WebSearch" : String(it.tool ?? "mcp"), input: it.query ?? it.arguments ?? {} });
+        } else if (it.type === "collabAgentToolCall") {
+          const receivers: string[] = Array.isArray(it.receiverThreadIds) ? it.receiverThreadIds : [];
+          for (const t of receivers) {
+            if (!this.childOf.has(t)) {
+              this.childOf.set(t, l.convId);
+              void this.updateSubagent(l.convId, t, { prompt: String(it.prompt ?? "").slice(0, 300), model: it.model ?? this.d.model(), status: "running", startedAt: Date.now() });
+            }
+          }
+          this.upsertTool(l, it.id, { name: "Subagent", input: { tool: it.tool, prompt: it.prompt ?? undefined, agents: receivers.length }, result: done ? String(it.status ?? "") : undefined });
+          if (done && it.tool === "spawnAgent" && receivers.length && String(it.status) === "completed") {
+            if (learn(this.d.model(), "subagents", true, `spawned ${receivers.length} subagent(s) in a real turn`)) this.log(`learned: ${this.d.model()} subagents on`);
+          }
+        } else if (it.type === "subAgentActivity") {
+          if (it.agentThreadId && !this.childOf.has(it.agentThreadId)) this.childOf.set(it.agentThreadId, l.convId);
+          if (it.agentThreadId) void this.updateSubagent(l.convId, it.agentThreadId, { status: String(it.kind ?? "") === "completed" ? "completed" : "running", path: it.agentPath });
         } else if (it.type === "contextCompaction" && done) {
           this.upsertTool(l, it.id, { name: "Compaction", input: {}, result: "context compacted" });
         }
@@ -606,6 +718,19 @@ export class Engine {
       default:
         break;
     }
+  }
+
+  /** Live streaming for clients that want it: /poll `chat` start/stream/end (throttled). */
+  private lastStream = new Map<string, number>();
+  private chatEvent(convId: string, phase: "start" | "end"): void {
+    this.lastStream.delete(convId);
+    this.d.broadcast?.({ type: "chat", convId, phase });
+  }
+  private chatStream(l: Live): void {
+    const now = Date.now();
+    if (now - (this.lastStream.get(l.convId) ?? 0) < 250) return;
+    this.lastStream.set(l.convId, now);
+    this.d.broadcast?.({ type: "chat", convId: l.convId, phase: "stream", text: this.turnContent(l).slice(-6000) });
   }
 
   private upsertTool(l: Live, id: string, t: Omit<ToolRec, "id">): void {
@@ -629,6 +754,23 @@ export class Engine {
     if (this.live.get(l.convId) === l) this.live.delete(l.convId);
     unregisterRun(l.convId, l.controller);
     const vault = this.d.vault;
+    this.chatEvent(l.convId, "end");
+    // Silent fallbacks, learned from real use: a request rejected over the
+    // `namespace` tool type (Codex #32318) turns subagents off for this model
+    // and the turn is retried once without them.
+    const errStr = status === "failed" ? errText(error) : "";
+    if (errStr && isNamespaceRejection(errStr) && !l.turnOpts.retried && !l.cut) {
+      learn(this.d.model(), "subagents", false, `request rejected: ${errStr}`);
+      this.log(`learned: ${this.d.model()} subagents off (${errStr.slice(0, 120)}); retrying the turn without them`);
+      setLive(l.convId, false);
+      await this.d.sup.request("thread/unsubscribe", { threadId: l.threadId }, 30_000).catch(() => undefined);
+      this.loaded.delete(l.threadId);
+      void this.run(l.convId, l.input, l.kind, { ...l.turnOpts, alreadyAppended: true, retried: true });
+      return;
+    }
+    if (errStr && /tool/i.test(errStr) && /(not support|unsupported|No endpoints found)/i.test(errStr)) {
+      learn(this.d.model(), "tools", false, `request rejected: ${errStr}`);
+    }
     let content = this.turnContent(l);
     let failed = false;
     if (l.cut) {
@@ -716,10 +858,28 @@ export class Engine {
     this.log(`rolled ${conv.id} over (from ${from}); next turn starts a new thread`);
   }
 
+  private async updateSubagent(convId: string, threadId: string, patch: Record<string, unknown>): Promise<void> {
+    await mutateConv(this.d.vault, convId, (c) => {
+      const list = [...((c.subagents as any[]) ?? [])];
+      const i = list.findIndex((x) => x.threadId === threadId);
+      if (i >= 0) list[i] = { ...list[i], ...patch };
+      else list.push({ threadId, ...patch });
+      c.subagents = list as any;
+    }).catch(() => undefined);
+  }
+
   private async settleCost(convId: string, threadPath: string | undefined, turnId: string | null, mid: string | null): Promise<void> {
     if (!threadPath || !turnId) return;
     await new Promise((r) => setTimeout(r, 1500));
-    const res = await this.d.ledger.settle(rolloutCalls(threadPath, turnId));
+    // The turn's own calls, plus every call of this conversation's subagents
+    // (their rollouts are separate threads; the ledger skips ids already counted).
+    const childCalls = [...this.childOf.entries()]
+      .filter(([, c]) => c === convId)
+      .flatMap(([t]) => {
+        const f = this.d.codexHome ? findRollout(join(this.d.codexHome, "sessions"), t) : null;
+        return f ? rolloutCalls(f) : [];
+      });
+    const res = await this.d.ledger.settle([...rolloutCalls(threadPath, turnId), ...childCalls]);
     if (!res.calls) return;
     await mutateConv(this.d.vault, convId, (c) => {
       c.costUsd = round((c.costUsd ?? 0) + res.usd);
@@ -734,7 +894,7 @@ export class Engine {
   // ---------------------------------------------------------------- tools
 
   private async onToolCall(p: any): Promise<unknown> {
-    const convId = this.byThread.get(p?.threadId);
+    const convId = this.byThread.get(p?.threadId) ?? this.childOf.get(p?.threadId);
     const l = convId ? this.live.get(convId) : undefined;
     if (l) l.lastEventAt = Date.now();
     const vault = this.d.vault;
@@ -829,7 +989,7 @@ export class Engine {
 
   /** Park the turn on a question until Carl answers (via /message or /answer). */
   private async waitForAnswer(threadId: string, question: string, options: string[]): Promise<string> {
-    const convId = this.byThread.get(threadId);
+    const convId = this.byThread.get(threadId) ?? this.childOf.get(threadId);
     const l = convId ? this.live.get(convId) : undefined;
     if (!convId || !l) return "No one is available to answer right now. Continue with your best judgement and say what you assumed.";
     const vault = this.d.vault;
@@ -921,4 +1081,27 @@ function errText(e: any): string {
   if (!e) return "unknown error";
   if (typeof e === "string") return e;
   return String(e.message ?? e.codexErrorInfo ?? JSON.stringify(e)).slice(0, 500);
+}
+
+import { readdirSync } from "node:fs";
+/** The rollout file of a thread: sessions/YYYY/MM/DD/rollout-…-<threadId>.jsonl */
+export function findRollout(dir: string, threadId: string): string | null {
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return null;
+  }
+  for (const n of names.sort().reverse()) {
+    const p = join(dir, n);
+    if (n.endsWith(".jsonl")) {
+      if (n.includes(threadId)) return p;
+      continue;
+    }
+    if (/^\d+$/.test(n)) {
+      const hit = findRollout(p, threadId);
+      if (hit) return hit;
+    }
+  }
+  return null;
 }
