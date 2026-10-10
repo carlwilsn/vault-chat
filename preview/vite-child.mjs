@@ -6,6 +6,7 @@
 import { createRequire } from "node:module";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { realpathSync, existsSync } from "node:fs";
 import { previewPlugin } from "./plugin.mjs";
 
 const args = Object.fromEntries(
@@ -33,7 +34,8 @@ const server = await vite.createServer({
     port,
     strictPort: true,
     host: "127.0.0.1",
-    fs: { allow: [tree, harness] },
+    // node_modules may be a junction to another checkout's (shared deps): allow its real path too.
+    fs: { allow: [tree, harness, ...[tree, harness].map((d) => resolve(d, "node_modules")).filter(existsSync).map((d) => realpathSync(d))] },
     watch: { ignored: ["**/src-tauri/target/**", "**/preview/.cache/**", "**/preview/out/**", "**/node_modules/**"] },
   },
   optimizeDeps: { entries: ["index.html"] },
