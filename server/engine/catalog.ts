@@ -10,9 +10,12 @@ export type ModelMeta = { id: string; contextLength: number };
 const FALLBACK_WINDOW = 200_000;
 /** Codex compacts at this fraction of the window… */
 const COMPACT_FRACTION = 0.8;
-/** …but never later than this many tokens: a 1M-window model re-reading 800k
- * tokens on every call costs dollars per call. VC_CODEX_COMPACT_CAP overrides. */
-const DEFAULT_COMPACT_CAP = 200_000;
+/** …but CONTEXT's roll-over (a fresh thread with a recap) should win, so
+ * Codex's own compaction sits a quarter above CONTEXT's roll threshold:
+ * min(window x 0.6, 300k) x 1.25 — never at 80% of a 1M window (each call
+ * would re-read ~800k tokens). VC_CODEX_COMPACT_CAP overrides the cap. */
+const ROLL_FRACTION = 0.6;
+const ROLL_MAX = 300_000;
 
 let byId = new Map<string, ModelMeta>();
 
@@ -68,7 +71,7 @@ export function modelMeta(id: string): ModelMeta | undefined {
 export function codexLimits(model: string): { model_context_window: number; model_auto_compact_token_limit: number } {
   const ctx = byId.get(model)?.contextLength ?? FALLBACK_WINDOW;
   const capEnv = Number(process.env.VC_CODEX_COMPACT_CAP);
-  const cap = Number.isFinite(capEnv) && capEnv > 0 ? capEnv : DEFAULT_COMPACT_CAP;
+  const cap = Number.isFinite(capEnv) && capEnv > 0 ? capEnv : Math.floor(Math.min(ctx * ROLL_FRACTION, ROLL_MAX) * 1.25);
   return {
     model_context_window: ctx,
     model_auto_compact_token_limit: Math.max(8_000, Math.min(Math.floor(ctx * COMPACT_FRACTION), cap)),
