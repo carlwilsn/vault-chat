@@ -58,7 +58,8 @@ export type Scenario = {
   model?: string;
   localStorage?: Record<string, string>;
   llm?: LlmConfig;
-  host?: HostConfig;
+  /** The fake host; a function gets the scenario clock's start (box chats with times). */
+  host?: HostConfig | ((now: number) => HostConfig);
   /** invoke overrides: value, function, or {error}. */
   overrides?: Record<string, unknown>;
   /** Timer delays to shorten (e.g. {15000: 1500} speeds the box sync loop). */

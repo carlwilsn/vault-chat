@@ -1032,6 +1032,158 @@
       }
     },
     {
+      "id": "p2-subagents",
+      "group": "Phase 2 · box chat",
+      "title": "Subagents: one task, split across two helpers",
+      "caption": "On the box, the agent can hand pieces of work to subagents that run in parallel. Known Phase 3 issue, shown as it renders today: one delegation shows three tool entries (the call, plus a duplicate “Subagent” record per child), and each child's state and cost are stored but not shown.",
+      "scenario": "p2-subagents",
+      "before": false,
+      "steps": [
+        {
+          "highlight": "details",
+          "text": "/3 tool calls/",
+          "label": "1 call + 2 duplicate records"
+        },
+        {
+          "hold": 1200
+        },
+        {
+          "scroll": "details",
+          "text": "/3 tool calls/",
+          "by": 420,
+          "ms": 2600
+        },
+        {
+          "hold": 2500
+        }
+      ]
+    },
+    {
+      "id": "p2-done",
+      "group": "Phase 2 · box chat",
+      "title": "Done is checked by a separate verifier",
+      "caption": "When the agent says it's done, a second model checks the evidence and its verdict is the last line of the Done step; the agent repeats it to you. Three verdicts, as they render — only that line (and a notification) shows them.",
+      "scenario": "p2-done-pass",
+      "before": false,
+      "steps": [
+        {
+          "highlight": "p",
+          "text": "/^Verifier \\(/",
+          "label": "the verdict"
+        },
+        {
+          "hold": 3200
+        }
+      ],
+      "options": [
+        {
+          "label": "Verdict: pass",
+          "scenario": "p2-done-pass"
+        },
+        {
+          "label": "Verdict: FAIL",
+          "scenario": "p2-done-fail"
+        },
+        {
+          "label": "Verdict: unsure",
+          "scenario": "p2-done-unsure"
+        }
+      ]
+    },
+    {
+      "id": "p2-wake",
+      "group": "Phase 2 · box chat",
+      "title": "Keep-going: a wake arrives, works, and sleeps again",
+      "caption": "A chat in keep-going mode schedules its own next check (“next 3:40” over the composer). When the wake fires, “⏰ Wake: …” appears, the turn works and reports, and the line moves to the next check. Before: the laptop has no wakes, so nothing arrives.",
+      "scenario": "p2-wake",
+      "steps": [
+        {
+          "highlight": "div",
+          "text": "/^checking the run · next/",
+          "label": "the next check"
+        },
+        {
+          "hold": 1800
+        },
+        {
+          "boxNext": true
+        },
+        {
+          "hold": 1800
+        },
+        {
+          "boxNext": true
+        },
+        {
+          "hold": 2400
+        },
+        {
+          "boxNext": true
+        },
+        {
+          "hold": 3000
+        }
+      ],
+      "beforeSide": {
+        "steps": [
+          {
+            "hold": 5000
+          }
+        ]
+      }
+    },
+    {
+      "id": "p2-rollover",
+      "group": "Phase 2 · box chat",
+      "title": "Roll-over: a long chat moves to a fresh session",
+      "caption": "When a box chat outgrows the model's window, the engine continues in a fresh session with a recap. The transcript shows one quiet line; the recap is stored on it but there's no way to read it on the desktop yet.",
+      "scenario": "p2-rollover",
+      "before": false,
+      "steps": [
+        {
+          "highlight": "span",
+          "text": "Rolled over to a fresh session",
+          "label": "roll-over"
+        },
+        {
+          "hold": 3500
+        }
+      ]
+    },
+    {
+      "id": "p2-image",
+      "group": "Phase 2 · box chat",
+      "title": "An image from the laptop, in box mode",
+      "caption": "Paste a chart and ask about it. Today the laptop runs the turn and reads the image. In box mode the message is NOT sent — “Images can't be sent to the box yet”. That's how this tree behaves; sending images to the box isn't built.",
+      "scenario": "p2-image",
+      "steps": [
+        {
+          "hold": 2500
+        }
+      ]
+    },
+    {
+      "id": "p2-just-now",
+      "group": "Phase 2 · box chat",
+      "title": "A chat from a few seconds ago says “now”",
+      "caption": "The chat list printed a clock for anything under a minute old (“0:04”, “0:08”). Now it says “now”. Watch the time on the “Quick question about muP” row.",
+      "scenario": "p2-just-now",
+      "steps": [
+        {
+          "hold": 600
+        },
+        {
+          "highlight": "div",
+          "text": "/^Quick question about muP/",
+          "label": "this row's time",
+          "both": true
+        },
+        {
+          "hold": 3500
+        }
+      ]
+    },
+    {
       "id": "closing",
       "card": true,
       "kicker": "End of the tour",
@@ -1046,7 +1198,7 @@
             "History: the timeline, undo, redo, restore, three styles",
             "Removals: Mission Control, Approve & run, schedules, the North star editor; chats by project, the project chip, the ongoing-work line, notifications",
             "Phone: the same changes, rebuilt in React",
-            "Phase 2: chat runs on the box (pi engine, subagents)"
+            "Phase 2: chat on the box — unreachable box, subagents, the Done verifier, wakes, roll-over, images, “now”"
           ]
         },
         {
@@ -1059,7 +1211,10 @@
             "Project chip: A over the thread · B beside the model picker",
             "Notifications: A popover · B side panel",
             "Built-in vision model for images the Chat model can't read: Gemini 3.5 Flash (no setting)",
-            "Serve the React phone app at /phone (built, off until you approve)"
+            "Serve the React phone app at /phone (built, off until you approve)",
+            "Duplicate subagent records: fold each child's “Subagent” record into the one subagent call (with its state and cost), or drop the records?",
+            "Images from the laptop in box mode are refused today: send them to the box, or keep the refusal for now?",
+            "Roll-over recap and the verifier's notes are stored but barely shown: open the recap from the roll-over line, like the compaction divider?"
           ]
         }
       ]

@@ -14,6 +14,7 @@ export type TourStep =
   | { typeSlow: string; into: string; enter?: boolean }
   | { selectLine: string; within?: string }
   | { hold: number }
+  | { boxNext: true }
   | { click: string; text?: string; nth?: number; optional?: boolean };
 
 export type TourOpts = { side: string; pace?: number; vault: string };
@@ -234,6 +235,13 @@ export async function playTour(steps: TourStep[], opts: TourOpts): Promise<{ ok:
     overlay();
     for (const s of steps) {
       await wait(0);
+      if ("boxNext" in s) {
+        // Box-mode chat: the fake box plays its next scripted step (a wake
+        // arriving, a turn finishing). The before tree has no box mode.
+        (window as any).__preview?.boxNext?.();
+        await wait(pace);
+        continue;
+      }
       if ("hold" in s && Object.keys(s).length === 1) {
         await wait(s.hold);
         continue;

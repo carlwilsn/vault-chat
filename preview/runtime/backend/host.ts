@@ -30,7 +30,21 @@ export type SyncScript = {
   pull?: { ok: boolean; message: string; error: boolean };
   push?: { ok: boolean; message: string; error: boolean };
   role?: "writer" | "follower";
+  /** Box-mode chat (src/boxChat.ts): the conversations the box serves and a
+   *  script of what happens next, one step per boxNext() (a scenario step). */
+  boxChat?: BoxChatScript;
 };
+
+export type BoxConv = { title: string; source?: string; status?: "running" | "idle"; meta?: Record<string, unknown>; messages: unknown[] };
+export type BoxStep = {
+  /** Poll events delivered for this step (status / runtime / message / chat). */
+  events?: unknown[];
+  /** Messages the box now has at the end of a conversation. */
+  append?: Record<string, unknown[]>;
+  meta?: Record<string, Record<string, unknown>>;
+  status?: Record<string, "running" | "idle">;
+};
+export type BoxChatScript = { convs: Record<string, BoxConv>; steps?: BoxStep[] };
 
 export type BashRule = { match: RegExp; stdout?: string; stderr?: string; code?: number; delayMs?: number };
 
@@ -44,12 +58,30 @@ export type HostConfig = {
 };
 
 let cfg: HostConfig = {};
+// The fake box's live state for box-mode chat.
+let boxConvs: Record<string, BoxConv> = {};
+let boxQueue: unknown[] = [];
+let boxStep = 0;
+/** Play the box script's next step (a scenario/tour step calls it). */
+export function boxNext(): boolean {
+  const st = cfg.sync?.boxChat?.steps?.[boxStep];
+  if (!st) return false;
+  boxStep++;
+  for (const [id, msgs] of Object.entries(st.append ?? {})) if (boxConvs[id]) boxConvs[id].messages = [...boxConvs[id].messages, ...msgs];
+  for (const [id, m] of Object.entries(st.meta ?? {})) if (boxConvs[id]) boxConvs[id].meta = { ...(boxConvs[id].meta ?? {}), ...m };
+  for (const [id, v] of Object.entries(st.status ?? {})) if (boxConvs[id]) boxConvs[id].status = v;
+  boxQueue.push(...(st.events ?? []));
+  return true;
+}
 let boxCalls = 0;
 const keys = new Map<string, string>();
 
 export function setHostConfig(c: HostConfig, now: () => number): void {
   cfg = c ?? {};
   boxCalls = 0;
+  boxConvs = JSON.parse(JSON.stringify(cfg.sync?.boxChat?.convs ?? {}));
+  boxQueue = [];
+  boxStep = 0;
   keys.clear();
   const defaults: Record<string, string> = { "api.openrouter": "sk-or-PREVIEW-0000000000000000000000000000000000000000" };
   for (const [k, v] of Object.entries({ ...defaults, ...(cfg.keys ?? {}) })) if (v) keys.set(k, v);
@@ -110,19 +142,32 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
   },
   vault_sync_gh_create_repo: () => ({ ok: false, message: "preview: no GitHub in the preview", error: true }),
   // [phase 2] Box-mode chat (src/boxChat.ts) talks to the box over these. The
-  // preview's box is reachable and quiet: no conversations of its own, an
-  // empty event ring. A scenario overrides them to make it unreachable.
+  // preview's box is reachable: it serves the scenario's box conversations
+  // (sync.boxChat, none by default) and an event ring fed by boxNext(). A
+  // scenario overrides them to make it unreachable.
   box_get_json: async ({ url }) => {
     const u = new URL(String(url));
     const p = u.pathname.replace(/^.*?(\/(poll|conversations|conversation|status))/, "$1");
+    const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });
     if (p === "/poll") {
       const after = u.searchParams.get("after");
-      if (after === "latest") return { status: 200, body: JSON.stringify({ next: 0, events: [] }) };
-      await sleep(25_000);
-      return { status: 200, body: JSON.stringify({ next: Number(after) || 0, events: [] }) };
+      if (after === "latest") return ok({ next: 0, events: [] });
+      const n = Number(after) || 0;
+      for (let t = 0; t < 125 && !boxQueue.length; t++) await sleep(200);
+      const events = boxQueue.splice(0);
+      return ok({ next: n + events.length, events });
     }
-    if (p === "/conversations") return { status: 200, body: JSON.stringify({ conversations: [] }) };
-    if (p === "/status") return { status: 200, body: JSON.stringify({ runs: [] }) };
+    if (p === "/conversations")
+      return ok({
+        conversations: Object.entries(boxConvs).map(([id, c]) => ({ id, title: c.title, source: c.source ?? "phone", msgCount: c.messages.length, lastActivityAt: Number(c.meta?.lastActivityAt) || undefined, ...(c.meta ?? {}) })),
+      });
+    if (p === "/status") return ok({ runs: Object.entries(boxConvs).filter(([, c]) => c.status === "running").map(([id]) => ({ convId: id })) });
+    if (p === "/conversation") {
+      const id = u.searchParams.get("id") ?? "";
+      const c = boxConvs[id];
+      if (!c) return { status: 404, body: JSON.stringify({ error: "not found" }) };
+      return ok({ id, title: c.title, source: c.source ?? "phone", status: c.status ?? "idle", full: true, meta: c.meta ?? {}, messages: c.messages });
+    }
     return { status: 404, body: JSON.stringify({ error: "not found" }) };
   },
   box_post_json: ({ url }) => {
