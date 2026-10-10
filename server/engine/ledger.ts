@@ -8,7 +8,8 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { renameRetry } from "../atomic";
 
-export type CallRecord = { responseId: string; turnId: string };
+/** One model call. `cost`: the dollar figure OpenRouter already reported for it (pi's stream); when absent it is looked up. */
+export type CallRecord = { responseId: string; turnId: string; cost?: number | null };
 
 /** Every token_usage_record in a rollout (optionally for one turn). */
 export function rolloutCalls(rolloutPath: string, turnId?: string): CallRecord[] {
@@ -88,12 +89,14 @@ export class Ledger {
   /** Cost the calls not yet counted: {usd, calls, missing}. */
   async settle(calls: CallRecord[]): Promise<{ usd: number; calls: number; missing: number; byId: Record<string, number | null> }> {
     const fresh = [...new Set(calls.map((c) => c.responseId))].filter((id) => !this.has(id));
+    const known = new Map<string, number>();
+    for (const c of calls) if (typeof c.cost === "number" && Number.isFinite(c.cost)) known.set(c.responseId, c.cost);
     let usd = 0;
     let missing = 0;
     const byId: Record<string, number | null> = {};
     // Claim first so a concurrent settle cannot double-count.
     for (const id of fresh) this.seen[id] = null;
-    const costs = await Promise.all(fresh.map((id) => this.generationCost(id)));
+    const costs = await Promise.all(fresh.map((id) => (known.has(id) ? Promise.resolve(known.get(id)!) : this.generationCost(id))));
     fresh.forEach((id, i) => {
       const c = costs[i];
       this.seen[id] = c ?? null;

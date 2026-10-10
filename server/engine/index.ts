@@ -47,7 +47,32 @@ export function engineModel(): string {
   return process.env.VC_ENGINE_MODEL || ls || "openai/gpt-6.1-sol";
 }
 
+/** Web Push + notifications.jsonl + the /poll "notif" event, for either runtime. */
+export function engineNotify(b: EngineBoot) {
+  return async (n: { kind: "info" | "ask"; title: string; body: string; convId: string; options?: string[] }): Promise<string | null> => {
+    const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    const rec: Record<string, unknown> = { id, ts: Date.now(), kind: n.kind, title: n.title.slice(0, 90), body: n.body.slice(0, 2000), convId: n.convId };
+    if (n.kind === "ask") {
+      rec.deliberation = {
+        ask: n.body.slice(0, 600),
+        options: (n.options ?? []).slice(0, 6).map((o) => ({ answer: o.slice(0, 200), title: o.slice(0, 120), body: "" })),
+      };
+    }
+    try {
+      b.notificationAppend(b.vault, JSON.stringify(rec));
+    } catch {
+      /* feed is best effort */
+    }
+    b.broadcast({ type: "notif" });
+    // One push per conversation: the tag is the conversation id (a newer push replaces the older one).
+    const sent = await b.sendPush(n.title.slice(0, 90), n.body.slice(0, 180), `/phone?conv=${encodeURIComponent(n.convId)}`, n.convId).catch(() => 0);
+    return sent ? id : null;
+  };
+}
+
+/** VC_ENGINE: "pi" runs turns on pi (server/engine/pi); anything else (default "codex") on Codex. "0" never gets here (main.ts). */
 export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
+  if (String(process.env.VC_ENGINE ?? "").trim().toLowerCase() === "pi") return (await import("./pi")).startPiEngine(b);
   let install: CodexInstall;
   try {
     install = ensureCodex(b.stateDir);
@@ -128,25 +153,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     broadcast: b.broadcast,
     visionModel: process.env.VC_VISION_MODEL || "openai/gpt-6.1-sol",
     stallMs: Number(process.env.VC_ENGINE_STALL_MS) || 30 * 60_000,
-    notify: async (n) => {
-      const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-      const rec: Record<string, unknown> = { id, ts: Date.now(), kind: n.kind, title: n.title.slice(0, 90), body: n.body.slice(0, 2000), convId: n.convId };
-      if (n.kind === "ask") {
-        rec.deliberation = {
-          ask: n.body.slice(0, 600),
-          options: (n.options ?? []).slice(0, 6).map((o) => ({ answer: o.slice(0, 200), title: o.slice(0, 120), body: "" })),
-        };
-      }
-      try {
-        b.notificationAppend(b.vault, JSON.stringify(rec));
-      } catch {
-        /* feed is best effort */
-      }
-      b.broadcast({ type: "notif" });
-      // One push per conversation: the tag is the conversation id (a newer push replaces the older one).
-      const sent = await b.sendPush(n.title.slice(0, 90), n.body.slice(0, 180), `/phone?conv=${encodeURIComponent(n.convId)}`, n.convId).catch(() => 0);
-      return sent ? id : null;
-    },
+    notify: engineNotify(b),
   });
   engine.start();
   backend.start();

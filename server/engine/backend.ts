@@ -22,7 +22,15 @@ export type BackendEvent =
   /** The parent spawned/messaged subagents. */
   | { kind: "subagents"; threadId: string; itemId: string; children: string[]; op: string; prompt?: string; model?: string | null; done: boolean; ok: boolean }
   | { kind: "subagentStatus"; threadId: string; child: string; status: string; path?: string }
-  | { kind: "turnCompleted"; threadId: string; turnId: string | null; status: "completed" | "interrupted" | "failed" | string; error: string | null };
+  | { kind: "turnCompleted"; threadId: string; turnId: string | null; status: "completed" | "interrupted" | "failed" | string; error: string | null }
+  /** One thread's runtime died mid-turn while the rest of the runtime is fine (pi: one process per thread).
+   * The engine marks that turn cut and resumes it, as it does for all turns on "down". */
+  | { kind: "threadLost"; threadId: string };
+
+/** resumeThread throws this when the thread belongs to another runtime (or is gone): the engine starts a fresh one. */
+export class ThreadUnknownError extends Error {
+  readonly threadUnknown = true;
+}
 
 export type ToolCallHandler = (threadId: string, name: string, args: any) => Promise<{ ok: boolean; text: string }>;
 export type UserInputHandler = (threadId: string, question: string, options: string[]) => Promise<string>;
@@ -46,6 +54,9 @@ export interface EngineBackend extends EventEmitter {
   startTurn(threadId: string, o: { texts: string[]; images: string[]; model: string }): Promise<{ turnId: string | null }>;
   steer(threadId: string, turnId: string, o: { texts: string[]; images: string[] }): Promise<void>;
   interrupt(threadId: string, turnId: string): Promise<void>;
+  /** Optional: queue input until the running turn's work is done (pi's follow_up). Wakes and nudges that
+   * arrive mid-turn use it when present; otherwise they steer. */
+  followUp?(threadId: string, o: { texts: string[] }): Promise<void>;
   forget(threadId: string): void;
   /** Model calls (OpenRouter response ids) of a thread, optionally one turn, for the dollar ledger. */
   usageCalls(ref: string | undefined, turnId?: string | null): CallRecord[];
