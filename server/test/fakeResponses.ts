@@ -17,6 +17,8 @@ export type FakeResponses = {
   /** Cost per call, by response id. */
   costs: Map<string, number>;
   respond: (body: any, n: number) => Step;
+  /** Refuse requests that carry a `namespace` tool. */
+  rejectNamespace: boolean;
   /** Plain text of all input items of a request. */
   inputText: (body: any) => string;
   close: () => Promise<void>;
@@ -47,6 +49,7 @@ export async function fakeResponses(): Promise<FakeResponses> {
     calls: [],
     costs: new Map(),
     respond: () => ({ text: "ok" }),
+    rejectNamespace: false,
     inputText,
     close: async () => {},
   };
@@ -60,7 +63,14 @@ export async function fakeResponses(): Promise<FakeResponses> {
       const path = url.pathname;
       if (req.method === "GET" && path.endsWith("/models")) {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ data: [{ id: "test/fake-model", context_length: 400000 }, { id: "openai/gpt-6.1-sol", context_length: 1050000 }] }));
+        res.end(
+          JSON.stringify({
+            data: [
+              { id: "test/fake-model", context_length: 400000, supported_parameters: ["tools"], architecture: { input_modalities: ["text"] }, pricing: {} },
+              { id: "openai/gpt-6.1-sol", context_length: 1050000, supported_parameters: ["tools"], architecture: { input_modalities: ["text", "image", "file"] }, pricing: { input_cache_read: "0.0000001" } },
+            ],
+          }),
+        );
         return;
       }
       if (req.method === "GET" && path.endsWith("/generation")) {
@@ -99,6 +109,12 @@ export async function fakeResponses(): Promise<FakeResponses> {
       }
       n++;
       state.calls.push(body);
+      // Like some OpenRouter endpoints (Codex #32318): a `namespace` tool is refused.
+      if (state.rejectNamespace && JSON.stringify(body.tools ?? []).includes('"type":"namespace"')) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "No endpoints found that support the native `namespace` tool type.", code: 404 } }));
+        return;
+      }
       const step = state.respond(body, n);
       if ("status" in step) {
         res.writeHead(step.status, { "content-type": "application/json" });

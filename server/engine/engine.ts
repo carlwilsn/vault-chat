@@ -768,8 +768,11 @@ ${note}` : "") });
       learn(this.d.model(), "subagents", false, `request rejected: ${errStr}`);
       this.log(`learned: ${this.d.model()} subagents off (${errStr.slice(0, 120)}); retrying the turn without them`);
       setLive(l.convId, false);
-      await this.d.sup.request("thread/unsubscribe", { threadId: l.threadId }, 30_000).catch(() => undefined);
-      this.loaded.delete(l.threadId);
+      // A thread keeps the features it started with (a resume with a config
+      // override does not change them, measured), so the retry runs on a new
+      // thread; the conversation's history is handed over in its first turn.
+      this.byThread.delete(l.threadId);
+      await patchMeta(vault, l.convId, { codexThreadId: undefined, codexThreadPath: undefined });
       void this.run(l.convId, l.input, l.kind, { ...l.turnOpts, alreadyAppended: true, retried: true });
       return;
     }

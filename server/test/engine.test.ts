@@ -71,7 +71,15 @@ describe.skipIf(!BIN)("engine (real Codex, fake Responses API)", () => {
     mkdirSync(join(state, "codex", "0.162.1"), { recursive: true });
     symlinkSync(nm, join(state, "codex", "0.162.1", "node_modules"));
     writeFileSync(join(vault, "doc.pdf"), tinyPdf("Quarterly banana report"));
+    // Learned before boot: the fake model "has" subagents, and the fake refuses
+    // the namespace tool they bring — the first turn must fall back silently.
+    mkdirSync(state, { recursive: true });
+    writeFileSync(
+      join(state, "capabilities.json"),
+      JSON.stringify({ "test/fake-model": { model: "test/fake-model", codexVersion: "0.162.1", testedAt: Date.now(), results: { subagents: true }, evidence: {} } }),
+    );
     or = await fakeResponses();
+    or.rejectNamespace = true;
     or.respond = (body): Step => {
       const last = lastItem(body);
       // Codex places a steer after the tool output, as the newest user message.
@@ -80,6 +88,7 @@ describe.skipIf(!BIN)("engine (real Codex, fake Responses API)", () => {
       const all = allText(body);
       if (last?.type === "function_call_output") {
         const out = typeof last.output === "string" ? last.output : JSON.stringify(last.output);
+        if (out.startsWith("echo:")) return { text: "DONE" };
         const key = Object.keys(scenarios).find((k) => all.includes(k)) ?? "";
         outputs[key] = (outputs[key] ?? "") + "\n" + out;
         if (key === "STEER1") return { text: all.includes("kiwi steer") ? "saw the kiwi steer" : "no steer seen" };
@@ -89,6 +98,7 @@ describe.skipIf(!BIN)("engine (real Codex, fake Responses API)", () => {
       if (user.includes("keep-going mode")) return { text: "still nothing to report" };
       if (user.includes("box restarted")) return { text: "resumed after the crash" };
       if (user.includes("Wake: check the run")) return { text: "woke up and checked" };
+      if (allText(body).includes("ProbeEcho") && user.includes("ProbeEcho tool with word=alpha")) return { call: { name: "ProbeEcho", args: { word: "alpha" } } };
       const key = Object.keys(scenarios).find((k) => user.includes(k));
       return key ? scenarios[key]!() : { text: "hello from codex" };
     };
@@ -151,6 +161,11 @@ describe.skipIf(!BIN)("engine (real Codex, fake Responses API)", () => {
     expect(again.convId).toBe(chatId); // idempotent
     const c = await assistantSays(chatId, /hello from codex/);
     expect(c.codexThreadId).toBeTruthy();
+    // The namespace rejection was learned and the turn retried without subagents, silently.
+    const ns = (b: any) => JSON.stringify(b.tools ?? []).includes('"type":"namespace"');
+    expect(or.calls.some(ns)).toBe(true);
+    expect(ns(or.calls[or.calls.length - 1])).toBe(false);
+    expect(c.messages.some((m: any) => m.failed)).toBe(false);
     expect(c.messages.filter((m: any) => m.role === "user")).toHaveLength(1);
     const evs: any[] = [];
     await waitFor(async () => {
@@ -165,6 +180,73 @@ describe.skipIf(!BIN)("engine (real Codex, fake Responses API)", () => {
     const d = await (await fetch(srv.base + `/conversation?id=${chatId}`)).json();
     expect(d.messages.map((m: any) => m.role)).toEqual(["user", "assistant"]);
     expect(Object.keys(d.messages[1]).sort()).toEqual(["askOptions", "content", "decision", "direct", "role", "system", "timeline", "tools"]);
+  });
+
+  it("/api/v1/models: capabilities from the catalog and learned use", async () => {
+    const { models } = await (await fetch(srv.base + "/api/v1/models")).json();
+    const fake = models.find((m: any) => m.id === "test/fake-model");
+    expect(fake.capabilities).toMatchObject({ tools: true, images: false, subagents: false, context: 400000 });
+    expect(fake.source).toBe("learned");
+    const sol = models.find((m: any) => m.id === "openai/gpt-6.1-sol");
+    expect(sol.capabilities).toMatchObject({ images: true, pdf: true, caching: true, subagents: true });
+    expect(sol.source).toBe("learned"); // the shipped seed (server/engine/capabilities.json)
+    const unknown = models.find((m: any) => m.id === "test/unlisted");
+    expect(unknown).toBeUndefined();
+  });
+
+  it("/conversation full=1 returns the stored meta and messages; the default shape is unchanged", async () => {
+    const d = await (await fetch(srv.base + `/conversation?id=${chatId}&full=1`)).json();
+    expect(d.full).toBe(true);
+    expect(d.meta.codexThreadId).toBeTruthy();
+    expect(d.meta.messages).toBeUndefined();
+    expect(d.messages[1].mid).toBeTruthy();
+    const plain = await (await fetch(srv.base + `/conversation?id=${chatId}`)).json();
+    expect(plain.full).toBeUndefined();
+  });
+
+  it("images on /message reach Codex; a model that can't see uses the vision model for that turn", async () => {
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="; // 1×1 PNG
+    const r = await post("/message", { text: "IMG1 what is this", images: [{ name: "x.png", mime: "image/png", dataBase64: png }], context: "Context: notes/ideas.md" });
+    await assistantSays(r.convId, /hello from codex/);
+    const req = or.calls.find((b) => lastUserText(b).includes("IMG1"));
+    expect(req.model).toBe("openai/gpt-6.1-sol");
+    const userParts = (req.input as any[]).filter((i) => i?.type === "message" && i.role === "user").flatMap((i) => i.content ?? []);
+    if (process.env.VC_TEST_LOGS) console.log("IMG PARTS", JSON.stringify(userParts.map((p: any) => ({ type: p.type, head: JSON.stringify(p).slice(0, 120) }))));
+    expect(userParts.some((p: any) => p.type === "input_image" && String(p.image_url ?? "").startsWith("data:image/"))).toBe(true);
+    expect(lastUserText(req)).toContain("Context: notes/ideas.md");
+    const c = await conv(r.convId);
+    const u = c.messages.find((m: any) => m.role === "user");
+    expect(u.content).toBe("IMG1 what is this");
+    expect(u.attachments[0].capturedFilePath).toMatch(/^\.vault-chat\/captures\//);
+    // The next turn is back on the default model.
+    await post("/message", { convId: r.convId, text: "IMG1 again, no image" });
+    await waitFor(() => or.calls.find((b) => lastUserText(b).includes("IMG1 again")) || null, 30_000);
+    expect(or.calls.find((b) => lastUserText(b).includes("IMG1 again")).model).toBe("test/fake-model");
+  });
+
+  it("a tombstone from the laptop removes the conversation file on the box", async () => {
+    const r = await post("/message", { text: "CHAT1 to be deleted" });
+    await assistantSays(r.convId, /hello from codex/);
+    const f = join(vault, ".vault-chat", "conversations", `${r.convId}.jsonl`);
+    expect(existsSync(f)).toBe(true);
+    writeFileSync(join(vault, ".vault-chat", "conversations-deleted.jsonl"), JSON.stringify({ id: r.convId, ts: Date.now() }) + String.fromCharCode(10), { flag: "a" });
+    const list = await (await fetch(srv.base + "/conversations")).json();
+    expect(list.conversations.some((x: any) => x.id === r.convId)).toBe(false);
+    expect(existsSync(f)).toBe(false);
+  });
+
+  it("the paid probe runs only on request and records what it saw", async () => {
+    or.rejectNamespace = false;
+    const before = or.calls.length;
+    const p = await post(`/api/v1/models/${encodeURIComponent("test/fake-model")}/probe`, {});
+    expect(p.ok).toBe(true);
+    expect(p.tools).toBe(true);
+    expect(p.subagents).toBe(false); // the fake never spawns
+    // The probe thread ran with multi_agent on (a per-thread config override): its requests carry the namespace tool.
+    expect(or.calls.slice(before).some((b) => JSON.stringify(b.tools ?? []).includes("multi_agent"))).toBe(true);
+    expect(p.costUsd).toBeCloseTo(COST_PER_CALL * (or.calls.length - before), 6);
+    const { models } = await (await fetch(srv.base + "/api/v1/models")).json();
+    expect(models.find((m: any) => m.id === "test/fake-model").status).toBe("tested");
   });
 
   it("the cost ledger sums the fake costs from the rollout's response ids", async () => {
