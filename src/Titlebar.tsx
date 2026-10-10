@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, Mic, Compass, Keyboard, Rocket } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, Mic, Compass, Keyboard, Rocket, GitMerge, CloudOff, FileWarning, AlertTriangle } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
@@ -15,6 +15,7 @@ import { VoiceCockpit } from "./VoiceCockpit";
 import { HistoryModal } from "./HistoryModal";
 import { NorthStarModal } from "./NorthStarModal";
 import { MissionControlModal } from "./MissionControlModal";
+import { subscribeBoxSync, type BoxSyncState } from "./vaultSync";
 
 export function Titlebar() {
   const {
@@ -319,6 +320,8 @@ export function Titlebar() {
 
       <div data-tauri-drag-region className="flex-1 h-full" />
 
+      <SyncChip />
+
       <div className="flex items-center">
         <button
           onClick={toggleRight}
@@ -463,5 +466,79 @@ export function Titlebar() {
     />
     <MissionControlModal open={showMissionControl} onClose={() => setShowMissionControl(false)} />
     </>
+  );
+}
+
+// Box sync chip: shown ONLY when something needs attention (a conflict that
+// closed the merge gate, the box unreachable for over a minute, a file kept
+// out of git for being over 50 MB, a GitHub backup failing for 10 min).
+// Amber, red after 10 minutes. Click for the details.
+function SyncChip() {
+  const [st, setSt] = useState<BoxSyncState | null>(null);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => subscribeBoxSync(setSt), []);
+  const att = st?.attention ?? null;
+  useEffect(() => {
+    if (!att) setOpen(false);
+  }, [att]);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  if (!att || !st) return null;
+  const kind = att.kind;
+  const Icon = kind === "conflict" ? GitMerge : kind === "offline" ? CloudOff : kind === "big" ? FileWarning : AlertTriangle;
+  const color = att.level === "red" ? "text-destructive" : "text-amber-500";
+  const since = new Date(att.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const hint =
+    kind === "conflict"
+      ? "Ask the agent: resolve the sync conflict"
+      : kind === "offline"
+        ? "Edits are committed here and go up when the box is back."
+        : kind === "big"
+          ? "These stay on this machine only. Move them out of the vault, or keep them here knowingly."
+          : kind === "github"
+            ? "The box still has everything; only the GitHub copy is behind."
+            : "Ask the agent to look at this sync error.";
+  return (
+    <div ref={ref} className="relative mr-1">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`h-7 flex items-center gap-1.5 px-2 rounded hover:bg-accent/60 text-[11.5px] ${color}`}
+        title="Vault sync needs attention"
+      >
+        <Icon className="h-3.5 w-3.5" />
+        <span className="max-w-[260px] truncate">{att.text}</span>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-50 w-[360px] rounded-md border border-border bg-card shadow-xl p-3 space-y-2">
+          <div className="flex items-baseline justify-between gap-2">
+            <div className={`text-[12px] font-semibold ${color}`}>{att.text}</div>
+            <div className="text-[10.5px] text-muted-foreground shrink-0">since {since}</div>
+          </div>
+          <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground">
+            {att.detail}
+          </pre>
+          <div className="text-[11.5px] text-foreground/90 border-t border-border/60 pt-2">
+            {hint}
+            {kind === "conflict" && (
+              <span className="text-muted-foreground"> (or type /resolve-sync-conflict)</span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

@@ -676,6 +676,7 @@ export type BoxSyncReport = {
 };
 
 export type BoxAttention = {
+  kind: "conflict" | "offline" | "error" | "big" | "github";
   level: "amber" | "red";
   /** One line for the chip. */
   text: string;
@@ -769,6 +770,7 @@ export function boxAttentionOf(st: BoxSyncState, now = Date.now()): BoxAttention
     const f = r.conflict.files;
     const names = f.length === 1 ? f[0] : `${f[0]} +${f.length - 1}`;
     return {
+      kind: "conflict",
       level: level(r.conflict.since),
       text: `Sync: conflict in ${names}`,
       detail:
@@ -783,12 +785,19 @@ export function boxAttentionOf(st: BoxSyncState, now = Date.now()): BoxAttention
       r.error_kind === "unreachable"
         ? `Box unreachable · ${plural(r.changes_waiting, "change")} waiting`
         : `Sync failing: ${firstLine(r.error)}`;
-    return { level: level(st.failingSince), text, detail: r.error, since: st.failingSince };
+    return {
+      kind: r.error_kind === "unreachable" ? "offline" : "error",
+      level: level(st.failingSince),
+      text,
+      detail: r.error,
+      since: st.failingSince,
+    };
   }
   if (r.big_files.length && st.bigSince !== null) {
     const b = r.big_files[0];
     const more = r.big_files.length > 1 ? ` +${r.big_files.length - 1}` : "";
     return {
+      kind: "big",
       level: level(st.bigSince),
       text: `File too large: ${b.path.split("/").pop()}${more}`,
       detail:
@@ -798,7 +807,13 @@ export function boxAttentionOf(st: BoxSyncState, now = Date.now()): BoxAttention
     };
   }
   if (r.github_warning && st.githubFailingSince !== null && now - st.githubFailingSince >= BOX_RED_AFTER_MS) {
-    return { level: "amber", text: "GitHub backup failing", detail: r.github_warning, since: st.githubFailingSince };
+    return {
+      kind: "github",
+      level: "amber",
+      text: "GitHub backup failing",
+      detail: r.github_warning,
+      since: st.githubFailingSince,
+    };
   }
   return null;
 }
