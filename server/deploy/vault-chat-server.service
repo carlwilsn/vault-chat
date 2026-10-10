@@ -1,0 +1,25 @@
+# vault-chat-server — the box's headless vault-chat (phone routes, missions, sync).
+# Installed by server/deploy/install.sh into ~/.config/systemd/user/.
+# The bundle is swapped by vault-chat-update.sh: `current` -> versions/<ver>.
+[Unit]
+Description=vault-chat server (headless missions, phone, vault sync)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# node is resolved through PATH: on thinkbox it is /etc/profiles/per-user/%u/bin/node,
+# not /run/current-system/sw/bin/node (that path does not exist on the box).
+ExecStart=/usr/bin/env node %h/.local/state/vault-chat-server/current/vault-chat-server.mjs
+EnvironmentFile=%h/.config/vault-chat-server.env
+Environment=PATH=/run/wrappers/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin
+Environment=NODE_ENV=production
+WorkingDirectory=%h
+Restart=always
+RestartSec=5
+# Let a mission's child processes die with the server, not linger.
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

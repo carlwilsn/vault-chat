@@ -1,16 +1,25 @@
 name: ship
 
-# Push-triggered shipping when source under src/** or src-tauri/**
+# Push-triggered shipping when source under src/**, src-tauri/** or server/**
 # changes. The path filter keeps trivial commits (workflow tweaks, docs,
 # scripts) from burning a build. Checks if there are any new commits on
 # main since the last release tag, and if so: bumps the patch version,
 # commits the bump back to main with [skip ci] (which prevents this
-# workflow from re-firing on its own version-bump push), builds + signs
-# installers for Windows and Linux, and publishes a GitHub Release with
-# the updater manifest. The installed app sees it on next launch.
+# workflow from re-firing on its own version-bump push), creates the
+# release as a DRAFT, builds + signs installers for Windows and Linux and
+# the headless server bundle, and only then — once every asset and the
+# complete updater manifest are attached — publishes the release.
 #
-# Manual escape hatch: push a v* tag yourself (release.yml), or
-# workflow_dispatch this from the Actions UI.
+# Why draft-first: `releases/latest` (which the desktop updater and the
+# box's vault-chat-update.sh both read) must never point at a release whose
+# latest.json or server bundle is not uploaded yet. A draft is invisible to
+# `latest`; the tag itself is created when the manifest job publishes it.
+# A ship that fails part-way leaves a draft behind and no tag — delete the
+# draft and re-run, nothing installed ever saw it.
+#
+# Manual escape hatch: workflow_dispatch this from the Actions UI.
+# (release.yml, the old tag-push workflow, is gone: it published its own
+# racing latest.json.)
 
 on:
   push:
@@ -24,11 +33,15 @@ on:
       - "tailwind.config.js"
       - "vite.config.ts"
       - "tsconfig.json"
+      - "server/**"
   workflow_dispatch:
 
+# Never cancel a running ship: a second push used to cancel one after the
+# bump and tag, leaving a release without latest.json. Later pushes queue
+# (GitHub keeps the newest pending run) and ship together.
 concurrency:
   group: ship
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   # ── Phase 1: run once ─────────────────────────────────────────────────────
@@ -45,6 +58,8 @@ jobs:
       version:     ${{ steps.bump.outputs.version }}
       body:        ${{ steps.notes.outputs.body }}
       range:       ${{ steps.changes.outputs.range }}
+      sha:         ${{ steps.push.outputs.sha }}
+      release_id:  ${{ steps.draft.outputs.id }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -106,16 +121,39 @@ jobs:
 
       - name: Commit version bump back to main
         if: steps.changes.outputs.has_changes == 'true'
+        id: push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
           git commit -m "v${{ steps.bump.outputs.version }} [skip ci]"
+          pushed=0
           for attempt in 1 2 3; do
-            git pull --rebase origin main && git push origin HEAD:main && break
+            if git pull --rebase origin main && git push origin HEAD:main; then pushed=1; break; fi
             echo "push attempt $attempt failed — retrying"
             sleep 2
           done
+          [ "$pushed" = 1 ] || { echo "could not push the version bump"; exit 1; }
+          # Every build job checks out exactly this commit (not `main`, which
+          # may have moved on by the time a queued job starts).
+          echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Create the draft release
+        if: steps.changes.outputs.has_changes == 'true'
+        id: draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BODY: ${{ steps.notes.outputs.body }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          SHA: ${{ steps.push.outputs.sha }}
+        run: |
+          printf '%s\n' "$BODY" > release-notes.md
+          ID=$(gh api "repos/${{ github.repository }}/releases" \
+            -f tag_name="v$VERSION" -f target_commitish="$SHA" \
+            -f name="vault-chat v$VERSION" -F body=@release-notes.md \
+            -F draft=true -F prerelease=false --jq .id)
+          echo "Draft release $ID for v$VERSION at $SHA"
+          echo "id=$ID" >> $GITHUB_OUTPUT
 
   # ── Phase 2: build on every platform ─────────────────────────────────────
   # Runs in parallel on Windows and Ubuntu. Each platform builds its own
@@ -134,7 +172,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           # Check out the version-bumped commit that prepare just pushed.
-          ref: main
+          ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
 
       - uses: actions/setup-node@v5
@@ -153,18 +191,16 @@ jobs:
       - name: Download Tectonic LaTeX engine
         run: node scripts/download-tectonic.mjs
 
-      - name: Build, sign, publish release
+      - name: Build, sign, upload to the draft release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v${{ needs.prepare.outputs.version }}
-          releaseName: vault-chat v${{ needs.prepare.outputs.version }}
-          releaseBody: ${{ needs.prepare.outputs.body }}
-          releaseDraft: false
-          prerelease: false
+          # Upload into the draft prepare created (by id: a draft has no tag
+          # yet, and two jobs creating "the" release by tag would race).
+          releaseId: ${{ needs.prepare.outputs.release_id }}
           # No per-job manifest: the Windows and Linux jobs used to each upload
           # their own latest.json (only their platforms) and race — last write
           # won, sometimes dropping a platform and breaking its updater. The
@@ -224,7 +260,7 @@ jobs:
 
       - uses: actions/checkout@v5
         with:
-          ref: main
+          ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
 
       # In the container the job runs as root over a checkout owned by another
@@ -252,30 +288,65 @@ jobs:
       - name: Download Tectonic LaTeX engine
         run: node scripts/download-tectonic.mjs
 
-      - name: Build, sign, publish release
+      - name: Build, sign, upload to the draft release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v${{ needs.prepare.outputs.version }}
-          releaseName: vault-chat v${{ needs.prepare.outputs.version }}
-          releaseBody: ${{ needs.prepare.outputs.body }}
-          releaseDraft: false
-          prerelease: false
+          # Upload into the draft prepare created (by id: a draft has no tag
+          # yet, and two jobs creating "the" release by tag would race).
+          releaseId: ${{ needs.prepare.outputs.release_id }}
           # See build_windows: the merged manifest is built by the `manifest`
           # job from the signatures, not per-platform here (which raced).
           includeUpdaterJson: false
           args: '--bundles appimage,deb --config src-tauri/tauri.linux.conf.json'
 
-  # ── Phase 3: one complete updater manifest ───────────────────────────────
-  # Both platforms are built and their signed installers + `.sig` files are on
-  # the release. Assemble a SINGLE latest.json covering every platform and
-  # upload it — replacing the per-job race that kept dropping a platform and
-  # breaking that platform's in-app updater.
+  # The headless box server (server/**). esbuild bundles it into one .mjs;
+  # scripts/build-server-release.mjs adds the sha256s, the phone/PWA assets and
+  # server-version.json — the files server/deploy/vault-chat-update.sh installs.
+  build_server:
+    needs: prepare
+    if: needs.prepare.outputs.has_changes == 'true'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build the server bundle
+        run: npm run build:server
+
+      - name: Package the release files
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          REV: ${{ needs.prepare.outputs.sha }}
+        run: node scripts/build-server-release.mjs
+
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "v${{ needs.prepare.outputs.version }}" \
+            --repo "${{ github.repository }}" --clobber release-server/*
+
+  # ── Phase 3: one complete updater manifest, then publish ─────────────────
+  # Every build is done and its files are on the draft. Assemble a SINGLE
+  # latest.json covering every platform (replacing the per-job race that kept
+  # dropping a platform), check the server files are there, and only then
+  # publish the draft — the moment `releases/latest` moves to this version.
   manifest:
-    needs: [prepare, build_windows, build_linux]
+    needs: [prepare, build_windows, build_linux, build_server]
     if: needs.prepare.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -283,7 +354,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: main
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - uses: actions/setup-node@v5
         with:
@@ -305,7 +376,28 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: node scripts/build-updater-manifest.mjs
 
-      - name: Publish merged manifest
+      - name: Upload merged manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "v${{ needs.prepare.outputs.version }}" latest.json --clobber
+        run: gh release upload "v${{ needs.prepare.outputs.version }}" --repo "${{ github.repository }}" latest.json --clobber
+
+      - name: Check every server file is on the draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          have=$(gh release view "v${{ needs.prepare.outputs.version }}" \
+            --repo "${{ github.repository }}" --json assets --jq '.assets[].name')
+          missing=0
+          for f in latest.json server-version.json \
+            vault-chat-server.mjs vault-chat-server.mjs.sha256 \
+            vault-chat-server-assets.tar.gz vault-chat-server-assets.tar.gz.sha256; do
+            if ! grep -qx "$f" <<< "$have"; then echo "missing: $f"; missing=1; fi
+          done
+          [ "$missing" = 0 ] || { echo "Refusing to publish an incomplete release."; exit 1; }
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "v${{ needs.prepare.outputs.version }}" \
+            --repo "${{ github.repository }}" --draft=false --latest

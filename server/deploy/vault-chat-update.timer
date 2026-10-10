@@ -1,0 +1,11 @@
+# Check GitHub for a new vault-chat-server release every 10 minutes.
+[Unit]
+Description=vault-chat server self-update, every 10 min
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target
