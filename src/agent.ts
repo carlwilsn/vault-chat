@@ -3,7 +3,7 @@ import { errToString } from "./errfmt";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
-import { buildModel, findModel, supportsVision, createCostMeter, DEFAULT_MODEL_ID } from "./providers";
+import { buildModel, findModel, supportsVision, createCostMeter, DEFAULT_MODEL_ID, contextWindowFor } from "./providers";
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext, buildLiveStateBlock } from "./context";
@@ -36,6 +36,9 @@ export type StreamEvent =
   | { kind: "tool_use"; id: string; name: string; input: any }
   | { kind: "tool_result"; id: string; result: string }
   | { kind: "done"; usage?: TokenUsage }
+  // The live context size after a model call inside the turn (each tool step),
+  // so the dial moves while a long turn runs instead of only at its end.
+  | { kind: "context"; context: number }
   | { kind: "cost"; cost: TurnCost }
   | { kind: "error"; message: string };
 
@@ -95,7 +98,23 @@ function getShellKind(): Promise<ShellKind> {
 // fully fail-safe (any error → leave the messages alone), so the worst case
 // is the pre-existing "dies at the limit" behavior, never something worse.
 const MID_RUN_CONTEXT_LIMIT = 200_000;
-const MID_RUN_COMPACT_AT = Math.floor(MID_RUN_CONTEXT_LIMIT * 0.75); // ~150k
+// Mid-run compaction fires at 75% of the turn model's REAL window (from the
+// catalog), or of MID_RUN_CONTEXT_LIMIT when the window is unknown.
+const MID_RUN_COMPACT_FRACTION = 0.75;
+
+/** Tokens in the model's context window after one call, from its usage: the
+ *  prompt (AI SDK v6 `inputTokens` is the TOTAL prompt — cache reads and cache
+ *  writes included, every provider) plus the reply it adds to the transcript
+ *  (output minus reasoning, which is not sent back). Never add
+ *  `cachedInputTokens` on top: it is a subset of `inputTokens` — that double
+ *  count is what made the dial read up to ~2x on cached OpenRouter turns. */
+export function contextFromUsage(u: any): number {
+  if (!u) return 0;
+  const input = Number(u.inputTokens ?? 0) || 0;
+  const output = Number(u.outputTokens ?? 0) || 0;
+  const reasoning = Number(u.outputTokenDetails?.reasoningTokens ?? u.reasoningTokens ?? 0) || 0;
+  return input + Math.max(0, output - reasoning);
+}
 
 // [harness v2] Drift tripwire threshold — ~40% of the working window, per the
 // context-rot findings (reliability degrades well below the nominal limit; the
@@ -242,6 +261,7 @@ export async function runAgent(params: {
     const spec = findModel(modelId) ?? findModel(DEFAULT_MODEL_ID);
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey, { meter });
+    const midRunCompactAt = Math.floor((contextWindowFor(spec.id) ?? MID_RUN_CONTEXT_LIMIT) * MID_RUN_COMPACT_FRACTION);
 
     const [sessionContext, skills, vaultSystem, vaultTools, northStar, memoryIndex, shellKind, vaultSupervisor, vaultAssistant, vaultAsk] = await Promise.all([
       loadSessionContext(vault),
@@ -720,7 +740,7 @@ Be terse. If the task is research, return findings as a structured list with fil
     // was emitted (`gotOutput`) so the caller can decide if a retry is
     // safe — retrying after tokens have been delivered would double-emit.
     type AttemptResult =
-      | { ok: true; usage: any; finishReason?: string; responseMessages?: ModelMessage[] }
+      | { ok: true; usage: any; totalUsage?: any; finishReason?: string; responseMessages?: ModelMessage[] }
       | { ok: false; error: any; gotOutput: boolean };
 
     // Set true the instant the model calls AskUser, so the auto-continue loop
@@ -769,7 +789,7 @@ Be terse. If the task is research, return findings as a structured list with fil
                 };
                 return { messages: [...(stepMessages as ModelMessage[]), order] };
               }
-              if (used < MID_RUN_COMPACT_AT) return undefined;
+              if (used < midRunCompactAt) return undefined;
               const msgs = stepMessages as ModelMessage[];
               const sys = (msgs[0] as any)?.role === "system" ? msgs[0] : null;
               const cut = findTailCut(msgs, MID_RUN_KEEP_TAIL);
@@ -859,6 +879,11 @@ Be terse. If the task is research, return findings as a structured list with fil
               });
               break;
             }
+            case "finish-step": {
+              const ctx = contextFromUsage((part as any).usage);
+              if (ctx > 0) onEvent({ kind: "context", context: ctx });
+              break;
+            }
             case "error": {
               // Mid-stream SDK error event. Surface as a structured
               // attempt failure so the outer loop can decide whether to
@@ -869,9 +894,10 @@ Be terse. If the task is research, return findings as a structured list with fil
         }
 
         const usage = await result.usage;
+        const totalUsage = await result.totalUsage;
         const finishReason = await result.finishReason;
         const responseMessages = (await result.response).messages as ModelMessage[];
-        return { ok: true, usage, finishReason, responseMessages };
+        return { ok: true, usage, totalUsage, finishReason, responseMessages };
       } catch (e) {
         return { ok: false, error: e, gotOutput };
       }
@@ -902,15 +928,15 @@ Be terse. If the task is research, return findings as a structured list with fil
     // it can't loop or run away; a natural finish ("stop") never continues.
     let totalPrompt = 0;
     let totalCompletion = 0;
-    let totalCached = 0;
     const accumulate = (u: any) => {
       if (!u) return;
       totalPrompt += u.inputTokens ?? 0;
       totalCompletion += u.outputTokens ?? 0;
-      totalCached += u.cachedInputTokens ?? 0;
     };
     let autoContinues = 0;
-    if (res.ok) accumulate(res.usage);
+    // `totalUsage` = every step of the attempt; `usage` is only its LAST step
+    // (AI SDK v6), which undercounted any multi-step turn.
+    if (res.ok) accumulate(res.totalUsage ?? res.usage);
     while (
       res.ok &&
       !abortSignal?.aborted &&
@@ -921,7 +947,7 @@ Be terse. If the task is research, return findings as a structured list with fil
       autoContinues++;
       runMessages = [...runMessages, ...(res.responseMessages ?? [])];
       res = await attempt(runMessages);
-      if (res.ok) accumulate(res.usage);
+      if (res.ok) accumulate(res.totalUsage ?? res.usage);
     }
 
     if (!res.ok) {
@@ -936,19 +962,18 @@ Be terse. If the task is research, return findings as a structured list with fil
     const turnCostUsd = meter.calls.some((c) => typeof c.usd === "number") ? meter.totalUsd() : undefined;
 
     // Report cumulative tokens across all continuations, but use the LAST
-    // attempt's input+cached as the live context size (that's the window
+    // call's prompt + reply as the live context size (that's the window
     // actually in play now, after any mid-run compaction).
     const lastUsage = res.usage;
     if (lastUsage) {
-      const lastInput = lastUsage.inputTokens ?? 0;
-      const lastCached = (lastUsage as any).cachedInputTokens ?? 0;
       onEvent({
         kind: "done",
         usage: {
           prompt: totalPrompt,
           completion: totalCompletion,
-          total: totalPrompt + totalCompletion + totalCached,
-          context: lastInput + lastCached,
+          // inputTokens already includes cached tokens (AI SDK v6).
+          total: totalPrompt + totalCompletion,
+          context: contextFromUsage(lastUsage),
           ...(turnCostUsd != null ? { costUsd: turnCostUsd } : {}),
         },
       });

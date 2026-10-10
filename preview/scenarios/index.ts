@@ -144,6 +144,21 @@ const whereWere = (pad: number): Script => ({
   steps: [{ text: "We were on the 3.2B-token plan: re-fit the cosine schedule for 6100 steps and keep the step-0 LR guard.", promptPad: pad }],
 });
 
+/** A long PDF read the way the page-range tool expects: default pages, then a range. */
+const pdfRanges: Script = {
+  id: "pdf-ranges",
+  match: /survey|pdf/i,
+  steps: [
+    { text: "Starting with the opening pages.", tools: [{ name: "PdfExtract", args: { path: "{vault}/papers/attention-survey.pdf" } }] },
+    { text: "Now the taxonomy section.", tools: [{ name: "PdfExtract", args: { path: "{vault}/papers/attention-survey.pdf", pages: "4-8" } }] },
+    {
+      text:
+        "From pages 1–8 of 320: the survey sorts efficient attention into sparse/sliding-window, low-rank/kernel, and recurrent/state-space families, and argues the KV cache — not the attention FLOPs — dominates inference cost. Want a specific chapter next?\n\n" +
+        "*(Watch the dial: each call returned a few pages, not the whole document.)*",
+    },
+  ],
+};
+
 const inlineEdit: Script = {
   id: "inline-edit",
   system: /inline editor/i,
@@ -292,7 +307,7 @@ export const scenarios: Scenario[] = [
     title: "Chat — a long chat hits compaction",
     group: "Chat",
     notes:
-      "A 36-message chat. The first message's reply reports 176k context (over 85% of the fixed 200k limit — the dial goes red). The second message then runs today's compaction: a background summary call, the “Conversation compacted to free context.” banner, then the reply. Watch the dial before and after.",
+      "A 36-message chat. The first message's reply reports 176k context. Before: over 85% of the fixed 200k, so the second message compacts (the “Conversation compacted to free context.” banner; the earlier messages leave the view). After: 176k is 18% of Sonnet 5.5's real 1M window — no compaction. See “Compaction — the divider” for compaction after the change.",
     build: (c) => world(c, { extraConvs: (now) => [W.longChat(now, 176_000)] }),
     activeConversation: "c-long",
     llm: { scripts: [whereWere(176_000), compactionReply], chunkMs: 12 },
@@ -306,9 +321,9 @@ export const scenarios: Scenario[] = [
     ],
   },
   ...([
-    ["context-low", "Context dial — low (~14k)", 4_000, "c-spectral", "A short chat: the dial after a live turn (the dial only appears after a turn — a reopened chat shows nothing until you send)."],
-    ["context-high", "Context dial — high (~120k)", 110_000, "c-long", "A long chat at ~120k reported context."],
-    ["context-near", "Context dial — near the limit (~196k)", 186_000, "c-long", "~196k of 200k. The limit is the fixed MODEL_CONTEXT_LIMIT, not the model's real window (Sonnet 5.5 has 1M). The next message compacts first."],
+    ["context-low", "Context dial — low (~14k)", 4_000, "c-spectral", "A short chat: the dial after a live turn. Before: measured against a fixed 200k. After: against Sonnet 5.5's real 1M window (catalog); hover for the numbers."],
+    ["context-high", "Context dial — high (~120k)", 110_000, "c-long", "A long chat at ~120k reported context. Before: amber (60% of a fixed 200k). After: grey, 12% of the real 1M window."],
+    ["context-near", "Context dial — ~196k", 186_000, "c-long", "~196k. Before: red, 98% of the fixed 200k — the next message compacts. After: 20% of Sonnet 5.5's real 1M window, no compaction. For a real near-limit dial see “Context dial — near Sonnet 5.5's 1M window” and “… a 131k-window model”."],
   ] as const).map(([id, title, pad, conv, notes]): Scenario => ({
     id,
     title,
@@ -398,6 +413,165 @@ export const scenarios: Scenario[] = [
       "There is no global in-app search in v0.6.32. What exists: the Notes panel's search (open here, query typed), the @-mention file search in the composer, the model search in the picker, and the file search in the note composer (Ctrl+N).",
     build: (c) => world(c),
     open: [{ file: NOTE }, { click: "[title^='Notes']" }, { sleep: 300 }, { type: "eigengap", into: "input[placeholder='Search…']" }],
+  },
+
+  // ===== Chat details (P3) =====
+  {
+    id: "context-cached",
+    title: "Context dial — a cached long chat (counted once)",
+    group: "Context dial",
+    notes:
+      "OpenRouter reports 90% of the ~110k prompt as served from its prompt cache (as a real cached Claude chat does). Before: the dial adds the cached tokens ON TOP of the prompt (which already includes them) and reads ~2× — red, past the 200k it measures against. After: ~110k of the real 1M window, grey. Hover the dial for the numbers.",
+    build: (c) => world(c, { extraConvs: (now) => [W.longChat(now, 110_000)] }),
+    activeConversation: "c-long",
+    llm: { scripts: [whereWere(100_000), compactionReply], cachedFraction: 0.9 },
+    open: [...deskOpen("notes/scaling-laws.md", "c-long"), { sleep: 400 }, ...sendHere("Where were we?"), { waitIdle: true }],
+  },
+  {
+    id: "context-reopen",
+    title: "Context dial — a chat reopened (no new turn)",
+    group: "Context dial",
+    notes: "The long chat opened without sending anything. Before: no dial until you send. After: the dial shows the context its last turn reported (each assistant message keeps it).",
+    build: (c) => world(c, { extraConvs: (now) => [W.longChat(now, 120_000)] }),
+    activeConversation: "c-long",
+    open: [...deskOpen("notes/scaling-laws.md", "c-long"), { sleep: 1500 }],
+  },
+  {
+    id: "context-near-real",
+    title: "Context dial — near Sonnet 5.5's 1M window (~880k)",
+    group: "Context dial",
+    notes:
+      "~880k after a live turn. After: red at 88% of the real 1M window; the tooltip says the next message first summarizes the earlier conversation (send anything to see it: the divider appears). Before: the same 880k against a fixed 200k (pegged).",
+    build: (c) => world(c, { extraConvs: (now) => [W.longChat(now, 880_000)] }),
+    activeConversation: "c-long",
+    llm: { scripts: [whereWere(870_000), compactionReply] },
+    open: [...deskOpen("notes/scaling-laws.md", "c-long"), { sleep: 400 }, ...sendHere("Where were we?"), { waitIdle: true }],
+  },
+  {
+    id: "context-small-window",
+    title: "Context dial — a 131k-window model near its limit",
+    group: "Context dial",
+    notes:
+      "Chat model Qwen3 32B (131k window); the reply reports ~120k. After: red, 92% of its real window — send any message and it compacts first (the divider appears above the last four messages) so the prompt fits. Before: amber, 60% of an assumed 200k — no compaction, and a real provider would reject the next prompt as too long.",
+    model: "qwen/qwen3-32b",
+    build: (c) => world(c, { extraConvs: (now) => [W.longChat(now, 120_000)] }),
+    activeConversation: "c-long",
+    llm: { scripts: [whereWere(112_000), compactionReply], chunkMs: 12 },
+    open: [...deskOpen("notes/scaling-laws.md", "c-long"), { sleep: 400 }, ...sendHere("Where were we?"), { waitIdle: true }],
+  },
+  {
+    id: "compaction-divider",
+    title: "Compaction — the divider (expanded)",
+    group: "Chat",
+    notes:
+      "A long chat past 85% of Sonnet 5.5's 1M window: the second message compacts on both sides. After: nothing leaves the transcript; a quiet “Earlier conversation summarized” divider sits above the four messages kept verbatim and expands to the summary (opened here). The summary rides on the divider, so it survives switching chats and reloads (before, it was one store field, cleared on every switch). Before: the “Conversation compacted to free context.” banner and the earlier messages gone from view (the never-shrink write keeps them on disk, so they come back on reload, without the summary).",
+    build: (c) => world(c, { extraConvs: (now) => [W.longChat(now, 100_000)] }),
+    activeConversation: "c-long",
+    llm: { scripts: [whereWere(890_000), compactionReply], chunkMs: 12 },
+    open: [
+      ...deskOpen("notes/scaling-laws.md", "c-long"),
+      { sleep: 400 },
+      ...sendHere("Where were we?"),
+      { waitIdle: true },
+      { sleep: 800 },
+      ...sendHere("OK — what's next for the 3.2B run?"),
+      { waitIdle: true },
+      { sleep: 600 },
+      // Open the divider (after only — the before side has none).
+      { run: (api) => api.byText(/Earlier conversation summarized/, "details > summary")?.click() },
+    ],
+  },
+  ...(["A", "B", "C"] as const).map(
+    (opt): Scenario => ({
+      id: `inline-roles-${opt}`,
+      title: `Ctrl+L / Ctrl+K models — option ${opt}`,
+      group: "Editing",
+      notes:
+        `The Ctrl+L ask popover on the writeup; its footer names the model (after only). ${
+          {
+            A: "Option A: Ctrl+K and Ctrl+L both on the Chat role (Claude Sonnet 5.5).",
+            B: "Option B (the default): Ctrl+K on Background (Claude Haiku 5.5), Ctrl+L on Chat (Claude Sonnet 5.5).",
+            C: "Option C: Ctrl+K and Ctrl+L both on Background (Claude Haiku 5.5).",
+          }[opt]
+        } ` +
+        "For Ctrl+K: Esc, switch the viewer to edit, select a paragraph, Ctrl+K. Roles are set in Settings → Models by role (new Background and Images & PDFs rows); an image ask (PDF region, image viewer) moves to Images & PDFs when the role model can't see images. Before: both always ran on the chat pane's current model.",
+      build: (c) => world(c),
+      localStorage: { vault_chat_inline_roles: opt },
+      llm: { scripts: [inlineEdit, askScript] },
+      open: [{ file: NOTE }, { sleep: 600 }, { key: "Ctrl+l" }],
+    }),
+  ),
+  {
+    id: "inline-auto",
+    title: "Ctrl+L with the chat model on Auto",
+    group: "Editing",
+    notes:
+      "The chat pane's model is Auto, and a Ctrl+L question is sent. Before: Ctrl+L reads the chat model, can't resolve “auto”, and fails with “No API key for auto. Add one in settings.” (Ctrl+K too). After: it runs on its role's model (Chat, here on Auto → OpenRouter's router) and answers.",
+    model: "auto",
+    localStorage: { vault_chat_inline_roles: "A" },
+    build: (c) => world(c),
+    llm: { scripts: [askScript] },
+    open: [
+      { file: NOTE },
+      { sleep: 600 },
+      { key: "Ctrl+l" },
+      { type: "What is the absmean scale in BitNet?", into: "textarea[placeholder^='Ask about']" },
+      { key: "Enter", target: "textarea[placeholder^='Ask about']" },
+      { sleep: 2500 },
+    ],
+  },
+  {
+    id: "pdf-ranges",
+    title: "The PDF tool — page ranges with limits",
+    group: "PDF",
+    notes:
+      "papers/attention-survey.pdf (320 pages) open; the chat asks for a summary and the scripted model calls PdfExtract with no pages, then pages 4-8. After (the box engine's PdfRead rules): no pages → pages 1-3 plus “320 pages in total … pass pages for more”, each call capped at 12k chars (maxChars up to 40k), so the dial stays low. Before: no pages → all 320 pages extracted and ~60k chars returned. “2 tool calls” under the reply is opened: read the end of each result.",
+    build: (c) => world(c),
+    llm: { scripts: [pdfRanges] },
+    open: [...deskOpen("papers/attention-survey.pdf"), { sleep: 1500 }, ...send("Summarize the attention survey PDF."), { waitIdle: true, timeout: 90000 }, { click: "details > summary", text: /2 tool calls/ }],
+  },
+  {
+    id: "search-notes",
+    title: "Search — the Notes panel finds what a row shows",
+    group: "Search",
+    notes:
+      "Notes with AI titles, plus two cleared notes kept on disk. The query “failure modes” is from a note's TITLE (the bold line on its row). After: the note is found and the count reads “1 of 5” (open + resolved). Before: “No matches.” (title, highlighted text and summary weren't searched, and the words had to be adjacent) and the count includes the cleared notes (“0 of 7”).",
+    build: (c) => {
+      world(c);
+      const iso = (t: number) => new Date(t).toISOString();
+      const extra = [
+        { id: "note-eig-title", h: 30, status: "open", title: "Eigengap failure modes", draft: "Find the reference office hours mentioned.", sel: "the heuristic fails when cluster sizes differ or clusters overlap" },
+        { id: "note-cleared-1", h: 90, status: "cleared", title: "Old: GPU quota", draft: "Ask for A10 quota." },
+        { id: "note-cleared-2", h: 95, status: "cleared", title: "Old: rename runs", draft: "Rename runs by seed." },
+      ].map((n) =>
+        JSON.stringify({
+          id: n.id,
+          timestamp: iso(c.now - n.h * 3_600_000),
+          last_updated: iso(c.now - n.h * 3_600_000),
+          anchors: n.sel ? [{ source_path: "notes/spectral-clustering.md", source_kind: "markdown", source_anchor: null, source_selection: n.sel, primary: true }] : [],
+          turns: [],
+          user_draft: n.draft,
+          status: n.status,
+          title: n.title,
+        }),
+      );
+      c.write(".vault-chat/notes.jsonl", (c.read(".vault-chat/notes.jsonl") ?? "") + extra.join("\n") + "\n");
+    },
+    open: [{ file: NOTE }, { click: "[title^='Notes']" }, { sleep: 300 }, { type: "failure modes", into: "input[placeholder='Search…']" }],
+  },
+  {
+    id: "search-mention",
+    title: "Search — @-mention ranking",
+    group: "Search",
+    notes:
+      "The composer with “@eigengap” typed: a long file name that STARTS with the query vs short ones that merely contain it. After: name-prefix matches first, then name-contains, then path matches. Before: the long prefix match sinks below the contains matches (its score fell with name length). The note composer's link picker (Ctrl+N → link a file) had the same ranking and the same fix.",
+    build: (c) => {
+      world(c);
+      c.write("notes/eigengap-heuristic-when-it-fails-unbalanced-cluster-sizes-and-overlap.md", "# Eigengap heuristic — failure cases\n");
+      c.write("reading/spectral-eigengap.md", "# Reading: spectral methods and the eigengap\n");
+    },
+    activeConversation: "c-spectral",
+    open: [...deskOpen(NOTE, "c-spectral"), { sleep: 400 }, { type: "@eigengap", into: COMPOSER }],
   },
 
   // ===== Missions =====

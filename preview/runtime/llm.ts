@@ -31,6 +31,10 @@ export type Step = {
   chunkMs?: number;
   /** Extra prompt tokens on top of the request's own size (context dial). */
   promptPad?: number;
+  /** Share of the prompt reported as served from the provider's prompt cache
+   *  (OpenRouter `prompt_tokens_details.cached_tokens`, Anthropic
+   *  `cache_read_input_tokens`), like a real cached long chat. */
+  cachedFraction?: number;
 };
 export type Script = {
   id: string;
@@ -45,6 +49,8 @@ export type LlmConfig = {
   chunkMs?: number;
   /** Added to every reported prompt size (the context dial reads this). */
   promptPad?: number;
+  /** Default Step.cachedFraction for every call. */
+  cachedFraction?: number;
 };
 
 let config: LlmConfig = {};
@@ -259,7 +265,8 @@ async function holdIfAsked(step: Step, signal?: AbortSignal): Promise<void> {
 
 function usageFor(p: Parsed, step: Step, completion: number) {
   const prompt = p.approxPromptTokens + (config.promptPad ?? 0) + (step.promptPad ?? 0);
-  return { prompt, completion: Math.max(1, completion) };
+  const cached = Math.round(prompt * Math.min(1, Math.max(0, step.cachedFraction ?? config.cachedFraction ?? 0)));
+  return { prompt, cached, completion: Math.max(1, completion) };
 }
 
 let idSeq = 0;
@@ -283,6 +290,7 @@ async function serveOpenAI(p: Parsed, step: Step, signal?: AbortSignal): Promise
     prompt_tokens: u.prompt,
     completion_tokens: u.completion,
     total_tokens: u.prompt + u.completion,
+    ...(u.cached ? { prompt_tokens_details: { cached_tokens: u.cached } } : {}),
     cost: +(u.prompt * 2e-6 + u.completion * 1e-5).toFixed(6),
   };
   if (!p.stream) {
@@ -349,13 +357,13 @@ async function serveAnthropic(p: Parsed, step: Step, signal?: AbortSignal): Prom
     if (text) content.push({ type: "text", text });
     tools.forEach((t, i) => content.push({ type: "tool_use", id: `toolu_${id}_${i}`, name: t.name, input: t.args }));
     return new Response(
-      JSON.stringify({ id, type: "message", role: "assistant", model: p.model, content, stop_reason: stop, usage: { input_tokens: u.prompt, output_tokens: u.completion } }),
+      JSON.stringify({ id, type: "message", role: "assistant", model: p.model, content, stop_reason: stop, usage: { input_tokens: u.prompt - u.cached, cache_read_input_tokens: u.cached, output_tokens: u.completion } }),
       { status: 200, headers: { "content-type": "application/json" } },
     );
   }
   const ms = step.chunkMs ?? config.chunkMs ?? 18;
   return sseResponse(async (send) => {
-    send({ type: "message_start", message: { id, type: "message", role: "assistant", model: p.model, content: [], stop_reason: null, usage: { input_tokens: u.prompt, output_tokens: 1 } } }, "message_start");
+    send({ type: "message_start", message: { id, type: "message", role: "assistant", model: p.model, content: [], stop_reason: null, usage: { input_tokens: u.prompt - u.cached, cache_read_input_tokens: u.cached, output_tokens: 1 } } }, "message_start");
     let idx = 0;
     if (step.reasoning) {
       send({ type: "content_block_start", index: idx, content_block: { type: "thinking", thinking: "" } }, "content_block_start");

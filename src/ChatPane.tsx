@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, type ComponentPropsWithoutRef } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -10,7 +10,8 @@ import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, Messa
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
-import { useStore, MODEL_CONTEXT_LIMIT, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
+import { COMPACT_THRESHOLD, windowFor, isCompactionDivider } from "./chatContext";
+import { useStore, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
 import { buildViewportContextText } from "./voice-elevenlabs";
 import { findModel, AUTO_MODEL_ID } from "./providers";
 import { loadSkills } from "./skills";
@@ -230,9 +231,12 @@ function filterFilesForMention(
     const relLower = rel.toLowerCase();
     let score: number;
     if (!q) score = 10;
-    else if (nameLower.startsWith(q)) score = 100 - Math.abs(nameLower.length - q.length);
-    else if (nameLower.includes(q)) score = 60 - nameLower.indexOf(q);
-    else if (relLower.includes(q)) score = 30 - relLower.indexOf(q);
+    // Tiers first (name prefix > name contains > path contains), closeness
+    // within a tier — the old flat scores let a long prefix match sink below
+    // a contains match, and a late contains match below a path match.
+    else if (nameLower.startsWith(q)) score = 3000 - Math.min(999, nameLower.length - q.length);
+    else if (nameLower.includes(q)) score = 2000 - Math.min(999, nameLower.indexOf(q));
+    else if (relLower.includes(q)) score = 1000 - Math.min(999, relLower.indexOf(q));
     else continue;
     hits.push({ path: f.path, name: f.name, rel, score });
   }
@@ -296,6 +300,9 @@ export function ChatPane() {
   const busy = useStore((s) => s.busy);
   const showSettings = useStore((s) => s.showSettings);
   const lastContext = useStore((s) => s.lastContext);
+  // Re-read the window when the catalog (re)loads — it carries the windows.
+  const catalog = useStore((s) => s.catalog);
+  const ctxWindow = useMemo(() => windowFor(modelId), [modelId, catalog]);
   const compacting = useStore((s) => s.compacting);
   const setSkills = useStore((s) => s.setSkills);
   const setShowSettings = useStore((s) => s.setShowSettings);
@@ -1014,9 +1021,9 @@ export function ChatPane() {
               {lastContext > 0 && (
                 <div
                   className="flex items-center gap-1.5"
-                  title={`Context: ${lastContext.toLocaleString()} / ${MODEL_CONTEXT_LIMIT.toLocaleString()} tokens`}
+                  title={contextTitle(lastContext, ctxWindow)}
                 >
-                  <TokenRing used={lastContext} limit={MODEL_CONTEXT_LIMIT} size={14} />
+                  <TokenRing used={lastContext} limit={ctxWindow.tokens} size={14} />
                   <span>{formatTokens(lastContext)}</span>
                 </div>
               )}
@@ -1228,6 +1235,9 @@ export const MessageBubble = memo(function MessageBubble({
 }: {
   message: ChatMessage;
 }) {
+  if (isCompactionDivider(message)) {
+    return <CompactionDivider message={message} />;
+  }
   if (message.system) {
     return (
       <div className="flex items-center justify-center gap-2 py-2 text-[11px] text-muted-foreground">
@@ -1320,6 +1330,26 @@ export const MessageBubble = memo(function MessageBubble({
     </div>
   );
 });
+
+// Where the earlier conversation was summarized: the quiet system-line divider,
+// whose summary expands like a tool-call list.
+function CompactionDivider({ message }: { message: ChatMessage }) {
+  return (
+    <details className="group py-2">
+      <summary className="flex items-center justify-center gap-2 text-[11px] text-muted-foreground cursor-pointer hover:text-foreground list-none select-none">
+        <div className="h-px w-8 bg-border" />
+        <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-0 -rotate-90" />
+        <span className="italic">{message.content}</span>
+        <div className="h-px w-8 bg-border" />
+      </summary>
+      <div className="mt-2 pl-4 border-l border-border prose-chat text-[12px] text-muted-foreground">
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeKatex, KATEX_OPTIONS]]} components={chatComponents}>
+          {preprocessMarkdownMath(message.compaction?.summary ?? "")}
+        </ReactMarkdown>
+      </div>
+    </details>
+  );
+}
 
 // Compact visual of the agent's current plan. Shows one row per todo,
 // uses different glyphs/styles for pending / in_progress / completed.
@@ -1528,6 +1558,13 @@ function TokenRing({ used, limit, size }: { used: number; limit: number; size: n
       />
     </svg>
   );
+}
+
+function contextTitle(used: number, w: { tokens: number; known: boolean }): string {
+  const pct = Math.round((used / w.tokens) * 100);
+  const of = w.known ? `${w.tokens.toLocaleString()}` : `~${w.tokens.toLocaleString()} (window unknown)`;
+  const next = used > COMPACT_THRESHOLD * w.tokens ? "\nThe next message first summarizes the earlier conversation." : "";
+  return `Context: ${used.toLocaleString()} of ${of} tokens (${pct}%)${next}`;
 }
 
 function formatTokens(n: number): string {

@@ -34,9 +34,8 @@ const server = await vite.createServer({
     port,
     strictPort: true,
     host: "127.0.0.1",
-    // A worktree may share another checkout's node_modules through a junction;
-    // Vite serves it by its real path, so allow that too.
-    fs: { allow: [tree, harness, ...(existsSync(resolve(tree, "node_modules")) ? [realpathSync(resolve(tree, "node_modules"))] : [])] },
+    // node_modules may be a junction to another checkout's (shared deps): allow its real path too.
+    fs: { allow: [tree, harness, ...[tree, harness].map((d) => resolve(d, "node_modules")).filter(existsSync).map((d) => realpathSync(d))] },
     watch: { ignored: ["**/src-tauri/target/**", "**/preview/.cache/**", "**/preview/out/**", "**/node_modules/**"] },
   },
   optimizeDeps: { entries: ["index.html"] },

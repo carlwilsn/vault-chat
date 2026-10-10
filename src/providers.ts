@@ -9,6 +9,10 @@ export type ModelSpec = {
   provider: ProviderId;
   id: string;
   label: string;
+  /** The model's context window in tokens, from the provider's catalog
+   *  (OpenRouter `context_length`, Google `inputTokenLimit`, Anthropic
+   *  `max_input_tokens`). Absent when the provider doesn't say. */
+  contextLength?: number;
 };
 
 // The offline seed list. The live catalog (modelCatalog.ts) replaces it at
@@ -356,6 +360,28 @@ export function supportsVision(spec: ModelSpec): boolean {
   if (spec.id === AUTO_ROUTER_MODEL_ID) return true;
   // OpenRouter: opt-in by id substring.
   return /(-vl|vision|pixtral|llava|gpt-[4-9]|claude|gemini|grok-4|llama-4|qwen.*2\.5|qwen3-vl)/i.test(spec.id);
+}
+
+/** Used for the context dial and compaction when a model's window is unknown
+ *  (no catalog entry, `auto`, an old cached catalog without windows). */
+export const FALLBACK_CONTEXT_WINDOW = 200_000;
+
+/** The model's real context window from the catalog, or null if unknown.
+ *  Tries the id as given, the id without an OpenRouter variant suffix
+ *  (`:nitro`, `:free`), and — for a direct-provider id — the same model's
+ *  OpenRouter entry (`claude-sonnet-5.5` → `anthropic/claude-sonnet-5.5`). */
+export function contextWindowFor(id: string | null | undefined): number | null {
+  if (!id || id === AUTO_MODEL_ID || id === AUTO_ROUTER_MODEL_ID) return null;
+  const list = [...(_liveCatalog ?? []), ...MODELS];
+  const hit = (x: string) => list.find((m) => m.id === x && typeof m.contextLength === "number" && m.contextLength > 0)?.contextLength ?? null;
+  const base = id.replace(/:[\w-]+$/, "");
+  const direct = hit(id) ?? hit(base);
+  if (direct) return direct;
+  if (!id.includes("/")) {
+    const viaOr = list.find((m) => m.provider === "openrouter" && m.id.split("/")[1] === base && typeof m.contextLength === "number");
+    if (viaOr?.contextLength) return viaOr.contextLength;
+  }
+  return null;
 }
 
 export function findModel(id: string): ModelSpec | undefined {

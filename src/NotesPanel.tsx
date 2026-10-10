@@ -59,20 +59,28 @@ export function NotesPanel({
 
   if (!open) return null;
 
-  const q = query.trim().toLowerCase();
+  // Every word must appear (in any order), like the model searches. The
+  // haystack includes what a row SHOWS — its title — and the highlighted text
+  // and summary it carries; it used to miss all three.
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const filtered = notes.filter((n) => {
     if (filter === "active" && n.status !== "open") return false;
     if (filter === "resolved" && n.status !== "resolved") return false;
-    if (!q) return true;
+    if (terms.length === 0) return true;
     const hay = [
+      n.title ?? "",
       n.user_draft ?? "",
+      n.formatted ?? "",
       ...n.turns.map((t) => t.content),
-      ...n.anchors.map((a) => a.source_path),
+      ...n.anchors.map((a) => `${a.source_path} ${a.source_selection ?? ""}`),
     ]
       .join(" ")
       .toLowerCase();
-    return hay.includes(q);
+    return terms.every((t) => hay.includes(t));
   });
+  // "N of M": M counts the notes this panel can show (open + resolved), not the
+  // cleared ones kept on disk.
+  const visibleCount = notes.filter((n) => n.status !== "cleared").length;
 
   const resolvedCount = notes.filter((n) => n.status === "resolved").length;
 
@@ -190,7 +198,7 @@ export function NotesPanel({
             <StickyNote className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="text-[13px] font-semibold">Notes</span>
             <span className="text-[11px] text-muted-foreground">
-              {filtered.length} of {notes.length}
+              {filtered.length} of {visibleCount}
             </span>
           </div>
           <button

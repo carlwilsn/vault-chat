@@ -11,15 +11,14 @@ import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import { registerRun, unregisterRun, abortRun } from "./runRegistry";
 import { takePendingAskOptions } from "./tools";
 import { harnessV2Enabled } from "./harness";
+import { activeWindow, COMPACT_THRESHOLD, windowFor } from "./chatContext";
 import {
   useStore,
-  MODEL_CONTEXT_LIMIT,
   type ChatMessage,
   type FileEntry,
   type LiveTool,
 } from "./store";
 
-const COMPACT_THRESHOLD = 0.85;
 const KEEP_RECENT = 4;
 
 // Conversation ids with a send in flight RIGHT NOW. The per-conversation
@@ -202,26 +201,31 @@ export async function sendMessage(
   // the global s.messages view, which doesn't belong to the target.
   // If a Telegram-driven background run grows past the threshold,
   // we'll compact it the next time the user opens that chat.
+  // The threshold is a fraction of THIS turn's model's real window (catalog),
+  // not a fixed 200k: a 1M-window model is not compacted at 170k, and a 128k
+  // model is compacted before it overflows.
+  const turnWindow = windowFor(spec.id).tokens;
+  const live = activeWindow(s.messages);
   if (
     !isOffTarget &&
-    s.lastContext > COMPACT_THRESHOLD * MODEL_CONTEXT_LIMIT &&
-    s.messages.length > KEEP_RECENT
+    s.lastContext > COMPACT_THRESHOLD * turnWindow &&
+    live.messages.length > KEEP_RECENT
   ) {
     s.setBusy(true);
     s.setCompacting(true);
     try {
-      const toSummarize = s.messages.slice(0, -KEEP_RECENT);
+      // Summarize what the model currently sees except the tail kept verbatim
+      // — including the previous summary, so nothing earlier is forgotten.
+      const toSummarize: ChatMessage[] = [
+        ...(live.summary ? [{ role: "user" as const, content: `[Earlier conversation summary]\n\n${live.summary}` }] : []),
+        ...live.messages.slice(0, -KEEP_RECENT),
+      ];
       const summary = await compactConversation({
         provider: spec.provider,
         apiKey,
         messages: toSummarize,
       });
-      const banner: ChatMessage = {
-        role: "assistant",
-        content: "Conversation compacted to free context.",
-        system: true,
-      };
-      useStore.getState().applyCompaction(summary, KEEP_RECENT, banner);
+      useStore.getState().applyCompaction(summary, KEEP_RECENT);
     } catch (err) {
       console.error("[compaction] failed:", err);
       useStore.getState().appendMessage({
@@ -309,15 +313,18 @@ export async function sendMessage(
   // (which was just appended into above). Off-target uses our local
   // snapshot of the target conversation's messages plus the user
   // message we pushed.
-  const filtered = (isOffTarget ? localHistory : useStore.getState().messages).filter(
-    (m) => !m.system,
-  );
+  // Only what follows the latest compaction divider, behind its summary
+  // (chatContext.ts). A legacy store-level summary (a chat restored from before
+  // dividers) still applies when the transcript has no divider.
+  const windowed = activeWindow(isOffTarget ? localHistory : useStore.getState().messages);
+  const filtered = windowed.messages.filter((m) => !m.system);
   const baseHistory = filtered.map((m) => ({ role: m.role, content: m.content }));
-  const history = cur.compactionSummary && !isOffTarget
+  const summaryForModel = windowed.summary ?? (!isOffTarget ? cur.compactionSummary : null);
+  const history = summaryForModel
     ? [
         {
           role: "user" as const,
-          content: `[Earlier conversation summary]\n\n${cur.compactionSummary}`,
+          content: `[Earlier conversation summary]\n\n${summaryForModel}`,
         },
         {
           role: "assistant" as const,
@@ -406,6 +413,8 @@ export async function sendMessage(
         acc += e.delta;
         finalSegment += e.delta;
         if (live) store.appendStreamingText(e.delta);
+      } else if (e.kind === "context") {
+        if (live) store.setLastContext(e.context);
       } else if (e.kind === "reasoning_start") {
         bgReasoning = "";
         if (live) store.clearStreamingReasoning();

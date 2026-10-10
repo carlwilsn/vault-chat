@@ -9,7 +9,7 @@ import { preprocessMarkdownMath } from "./mdMath";
 import { Check, X, Loader2, CornerDownLeft, MessageSquare, StickyNote, Camera } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
-import { findModel } from "./providers";
+import { inlineModel, ROLE_LABEL } from "./roles";
 import { isUnreadableAsText } from "./fileKind";
 import { fileKind } from "./fileKind";
 import { cn } from "./lib/utils";
@@ -90,7 +90,10 @@ export function InlineEditPrompt({
   onAccept: (result: string) => void;
   onCancel: () => void;
 }) {
-  const modelId = useStore((s) => s.modelId);
+  // Re-render when the chat model or catalog changes (the Chat role is the
+  // chat pane's model; labels come from the catalog).
+  useStore((s) => s.modelId);
+  useStore((s) => s.catalog);
   const apiKeys = useStore((s) => s.apiKeys);
   const vaultPath = useStore((s) => s.vaultPath);
   const serviceKeys = useStore((s) => s.serviceKeys);
@@ -314,10 +317,18 @@ export function InlineEditPrompt({
 
   const submit = async () => {
     if (!prompt.trim() || streaming) return;
-    const spec = findModel(modelId);
+    // The model comes from this surface's Settings role (roles.ts), not
+    // from whatever the chat pane's picker is on.
+    const picked = inlineModel(mode === "edit" ? "inlineEdit" : "inlineAsk", {
+      hasImage: !!request.imageDataUrl || extraImages.length > 0,
+      prompt,
+      apiKeys,
+    });
+    const spec = picked.spec;
+    const modelId = spec?.id ?? picked.id;
     const key = spec ? apiKeys[spec.provider] : undefined;
     if (!spec || !key) {
-      setError(`No API key for ${spec?.provider ?? modelId}. Add one in settings.`);
+      setError(`No API key for ${spec?.provider ?? modelId} (${ROLE_LABEL[picked.role]} model). Add one in settings.`);
       return;
     }
     if (mode === "ask" && !vaultPath) {
@@ -976,7 +987,21 @@ export function InlineEditPrompt({
             </span>
           )}
         </div>
-        <span className="opacity-70">Enter · Esc</span>
+        <span className="opacity-70">
+          {(() => {
+            const m = inlineModel(mode === "edit" ? "inlineEdit" : "inlineAsk", {
+              hasImage: !!request.imageDataUrl || extraImages.length > 0,
+              apiKeys,
+            });
+            const name = m.spec?.label.replace(/^[^:]+:\s*/, "") ?? m.id;
+            return (
+              <span title={`${ROLE_LABEL[m.role]} model${m.switchedFrom ? ` (an image is attached; ${ROLE_LABEL[m.switchedFrom]} can't read images)` : ""} · set in Settings → Models`}>
+                {name} ·{" "}
+              </span>
+            );
+          })()}
+          Enter · Esc
+        </span>
       </div>
       {(streaming || result || error) && (
         <div
