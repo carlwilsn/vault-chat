@@ -13,7 +13,8 @@ export type TourStep =
   | { scroll: string; text?: string; to?: "top" | "bottom" | number; by?: number; ms?: number }
   | { typeSlow: string; into: string; enter?: boolean }
   | { selectLine: string; within?: string }
-  | { hold: number };
+  | { hold: number }
+  | { click: string; text?: string; nth?: number; optional?: boolean };
 
 export type TourOpts = { side: string; pace?: number; vault: string };
 
@@ -173,12 +174,13 @@ function track(): void {
 
 // ---- finding things ----------------------------------------------------------
 
-function textMatcher(t: string): string | RegExp {
+function textMatcher(t: string | RegExp): string | RegExp {
+  if (t instanceof RegExp) return t;
   const m = /^\/(.*)\/([a-z]*)$/.exec(t);
   return m ? new RegExp(m[1], m[2]) : t;
 }
 
-async function find(sel: string, text?: string, timeout = 10000): Promise<HTMLElement> {
+async function find(sel: string, text?: string | RegExp, timeout = 10000): Promise<HTMLElement> {
   const t0 = Date.now();
   for (;;) {
     const el = text ? byText(textMatcher(text), sel) : q(sel);
@@ -237,7 +239,11 @@ export async function playTour(steps: TourStep[], opts: TourOpts): Promise<{ ok:
         continue;
       }
       if ("click" in s) {
-        const el = await find(s.click, s.text as any);
+        // optional: a control only one side has (the Rocket, the Compass) —
+        // clicked if it is there, skipped after a short look if not.
+        const opt = (s as { optional?: boolean }).optional;
+        const el = opt ? await find(s.click, s.text as any, 2500).catch(() => null) : await find(s.click, s.text as any);
+        if (!el) continue;
         const target = s.nth !== undefined ? qa(s.click)[s.nth] ?? el : el;
         await glideTo(target);
         await wait(180);

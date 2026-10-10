@@ -706,44 +706,297 @@
       ]
     },
     {
+      "id": "removals-titlebar",
+      "group": "Removals",
+      "title": "Mission Control is gone — the bell is in its place",
+      "caption": "The Rocket opened Mission Control (missions, schedules, notifications). Missions are gone; the bell in its place opens one notification list.",
+      "scenario": "p3-titlebar",
+      "steps": [
+        {
+          "hold": 1500
+        }
+      ]
+    },
+    {
+      "id": "removals-approve",
+      "group": "Removals",
+      "title": "Approve & run is gone",
+      "caption": "A chat where the agent once proposed a mission: the Approve & run card is now a plain plan block — there is no missions system to start.",
+      "scenario": "p3-approve-gone",
+      "steps": [
+        {
+          "hold": 2500
+        }
+      ]
+    },
+    {
+      "id": "removals-schedules",
+      "group": "Removals",
+      "title": "The Schedules panel is gone",
+      "caption": "Recurring schedules leave the app: Ctrl+Shift+S no longer opens a Schedules panel, and the agent has no Schedule tool. The engine's one-off wake (keep-going mode) stays.",
+      "scenario": "home",
+      "steps": [
+        {
+          "hold": 600
+        },
+        {
+          "key": "Ctrl+Shift+s"
+        },
+        {
+          "hold": 3000
+        }
+      ]
+    },
+    {
+      "id": "removals-northstar",
+      "group": "Removals",
+      "title": "The North star prompt editor is gone",
+      "caption": "The compass opened an editor for the agent's prompt files, including the supervisor's. With missions gone it goes too; supervisor.md is no longer created.",
+      "scenario": "home",
+      "steps": [
+        {
+          "hold": 600
+        },
+        {
+          "click": "[title^='North star']",
+          "optional": true
+        },
+        {
+          "hold": 3000
+        }
+      ]
+    },
+    {
+      "id": "chats-grouping",
+      "group": "Chats",
+      "title": "Chats grouped by project — pick a layout",
+      "caption": "Each project is a section of the chat list, chats without a project keep Running / Recent / Earlier, and the old mission threads fold into Archived missions.",
+      "scenario": "p3-chats",
+      "steps": [
+        {
+          "hold": 1500
+        }
+      ],
+      "options": [
+        {
+          "label": "Option A — projects as sections",
+          "scenario": "p3-chats"
+        },
+        {
+          "label": "Option B — projects as folders",
+          "scenario": "p3-chats-folders"
+        }
+      ]
+    },
+    {
+      "id": "chats-archived",
+      "group": "Chats",
+      "title": "Old mission threads: readable, read-only",
+      "caption": "A mission thread from before keeps its history, but its composer is off — “Archived mission thread — read only”.",
+      "scenario": "p3-archived",
+      "steps": [
+        {
+          "highlight": "textarea",
+          "label": "read only"
+        },
+        {
+          "hold": 2500
+        }
+      ],
+      "beforeSide": {
+        "steps": [
+          {
+            "hold": 2500
+          }
+        ]
+      }
+    },
+    {
+      "id": "project-chip",
+      "group": "Chats",
+      "title": "A project chip on every chat — pick where it sits",
+      "caption": "Set a chat's project from the chat itself: type a project's name (or a new one) and the chat moves into that section.",
+      "scenario": "p3-chat-chip",
+      "steps": [
+        {
+          "hold": 1500
+        }
+      ],
+      "options": [
+        {
+          "label": "Option A — over the thread",
+          "scenario": "p3-chat-chip"
+        },
+        {
+          "label": "Option B — beside the model picker",
+          "scenario": "p3-chat-chip-footer"
+        }
+      ]
+    },
+    {
+      "id": "project-new-chat",
+      "group": "Chats",
+      "title": "New chat in a project",
+      "caption": "From a project's chip, start a fresh chat that is already in that project.",
+      "scenario": "p3-chat-new-in-project",
+      "steps": [
+        {
+          "hold": 2500
+        }
+      ]
+    },
+    {
+      "id": "ongoing-line",
+      "group": "Chats",
+      "title": "The ongoing-work line",
+      "caption": "Over the composer, one line says what a chat's long work is doing: working, waiting on its next check, waiting for you, or blocked — with what it has cost.",
+      "scenario": "p3-ongoing",
+      "steps": [
+        {
+          "hold": 1500
+        }
+      ]
+    },
+    {
+      "id": "notifications",
+      "group": "Notifications",
+      "title": "One notification list — pick a frame",
+      "caption": "Questions, finished work and failures in one list behind the bell; each opens its conversation and marks itself read.",
+      "scenario": "p3-notifs",
+      "steps": [
+        {
+          "hold": 1500
+        }
+      ],
+      "options": [
+        {
+          "label": "Option A — a popover",
+          "scenario": "p3-notifs"
+        },
+        {
+          "label": "Option B — a side panel",
+          "scenario": "p3-notifs-panel"
+        }
+      ]
+    },
+    {
+      "id": "phone-removed",
+      "group": "Phone",
+      "title": "Phone: Activity and the feedback screen are gone",
+      "caption": "The menu has no Activity (missions, workers, schedules), Approve & run is gone, and the drawer is just Box & settings.",
+      "surface": "phone",
+      "scenario": "p3-phone-menu",
+      "pages": [
+        {
+          "scenario": "p3-phone-menu",
+          "label": "Menu",
+          "hold": 2600
+        },
+        {
+          "scenario": "p3-phone-approve-gone",
+          "label": "A proposed plan",
+          "hold": 2600
+        },
+        {
+          "scenario": "p3-phone-settings",
+          "label": "Box & settings",
+          "hold": 2600
+        }
+      ]
+    },
+    {
+      "id": "phone-projects",
+      "group": "Phone",
+      "title": "Phone: projects, the archive, ongoing work, notifications",
+      "caption": "Conversations grouped by project with Archived missions folded at the bottom, a project sheet on the chat title, the ongoing-work line, and notification cards that open their conversation.",
+      "surface": "phone",
+      "scenario": "p3-phone-chats",
+      "pages": [
+        {
+          "scenario": "p3-phone-chats",
+          "label": "Conversations by project",
+          "hold": 2800
+        },
+        {
+          "scenario": "p3-phone-archived",
+          "label": "An archived mission thread",
+          "hold": 2600
+        },
+        {
+          "scenario": "p3-phone-new-in-project",
+          "label": "New chat in a project",
+          "hold": 2400
+        },
+        {
+          "scenario": "p3-phone-thread",
+          "label": "A chat with its project and ongoing work",
+          "hold": 2600
+        },
+        {
+          "scenario": "p3-phone-project-sheet",
+          "label": "Set a chat's project",
+          "hold": 2600
+        },
+        {
+          "scenario": "p3-phone-alerts",
+          "label": "A notification opens its chat",
+          "hold": 2600
+        }
+      ]
+    },
+    {
       "id": "phone-react",
       "group": "Phone",
       "title": "The phone page, rebuilt in React — identical",
-      "caption": "The phone app is now a bundled React + TypeScript app instead of one big HTML file with in-browser Babel. It should look exactly the same: watch the same pages before and after.",
+      "caption": "The phone app is now a bundled React + TypeScript app instead of one big HTML file with in-browser Babel. It looks exactly like today's page with all the changes above: watch the same pages in both.",
       "surface": "phone",
       "scenario": "phone-chats",
       "pages": [
         {
           "scenario": "home",
           "label": "Chat",
-          "hold": 2400
+          "hold": 2200
         },
         {
-          "scenario": "phone-chats",
+          "scenario": "p3-phone-chats",
           "label": "Conversations",
           "hold": 2400
         },
         {
-          "scenario": "phone-thread",
+          "scenario": "p3-phone-thread",
           "label": "A thread",
-          "hold": 2600
+          "hold": 2400
         },
         {
-          "scenario": "phone-mission",
-          "label": "Mission sheet",
-          "hold": 2600
+          "scenario": "p3-phone-project-sheet",
+          "label": "Project sheet",
+          "hold": 2400
         },
         {
-          "scenario": "missions-awaiting",
+          "scenario": "p3-phone-alerts",
           "label": "Alerts",
           "hold": 2400
         },
         {
           "scenario": "phone-notes",
           "label": "Notes",
-          "hold": 2400
+          "hold": 2200
+        },
+        {
+          "scenario": "p3-phone-settings",
+          "label": "Box & settings",
+          "hold": 2200
         }
-      ]
+      ],
+      "beforeSide": {
+        "tree": "after",
+        "query": "phone=classic",
+        "label": "phone.html · today's page"
+      },
+      "afterSide": {
+        "tree": "after",
+        "label": "React port · new"
+      }
     },
     {
       "id": "box-unreachable",
@@ -782,21 +1035,29 @@
       "id": "closing",
       "card": true,
       "kicker": "End of the tour",
-      "title": "Not in the tour yet, and what's yours to decide",
+      "title": "That's everything — and what's yours to decide",
       "caption": "",
       "sections": [
         {
-          "title": "Not in the tour yet",
+          "title": "In this tour",
           "items": [
-            "Removals (Mission Control, Activity, feedback; the project chip, grouped chat list, “still working” line, notifications list) — being finished on p3-removals"
+            "Settings: six sections, roles (no Images & PDFs row), capabilities, keys, Box",
+            "Chat details: the context dial, compaction divider, Ctrl+K/L models, the PDF tool, search",
+            "History: the timeline, undo, redo, restore, three styles",
+            "Removals: Mission Control, Approve & run, schedules, the North star editor; chats by project, the project chip, the ongoing-work line, notifications",
+            "Phone: the same changes, rebuilt in React",
+            "Phase 2: chat runs on the box (pi engine, subagents)"
           ]
         },
         {
           "title": "Your decisions",
           "items": [
-            "Capability view: option A (table), B (one line per picker) or C (folded)",
-            "Ctrl+K / Ctrl+L roles: A (both Chat), B (K Background, L Chat — default) or C (both Background)",
-            "History style: A (modal), B (side sheet) or C (inline strip)",
+            "Capability view: A table · B one line per picker · C folded",
+            "Ctrl+K / Ctrl+L roles: A both Chat · B K Background, L Chat (default) · C both Background",
+            "History: A modal · B side sheet · C inline strip",
+            "Chat list: A projects as sections · B projects as folders",
+            "Project chip: A over the thread · B beside the model picker",
+            "Notifications: A popover · B side panel",
             "Built-in vision model for images the Chat model can't read: Gemini 3.5 Flash (no setting)",
             "Serve the React phone app at /phone (built, off until you approve)"
           ]

@@ -37,7 +37,7 @@ export function convs(now: number): W.Conv[] {
       state: "sleeping",
       nextWakeAt: at(now, 38 * MIN),
       costUsd: 1.2,
-      codexThreadId: "thr_seed44",
+      threadId: "thr_seed44",
       messages: [
         u("Train seed 44 out to 3.2B tokens with the re-fit cosine schedule, and keep an eye on it until it's done."),
         a("Started on the A10: `train.py --seed 44 --tokens 3.2e9 --schedule cosine-6100`. The first 400 steps look healthy — loss 3.91 → 3.12, no spikes, LR warmup as planned.\n\nI'll check the run again in 40 minutes.", {

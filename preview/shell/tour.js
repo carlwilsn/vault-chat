@@ -57,6 +57,11 @@
     const sideCfg = (side === "before" ? s.beforeSide : s.afterSide) ?? {};
     return {
       side,
+      // Which tree serves it (a slide can show two variants of the after tree),
+      // extra query, and the corner label.
+      tree: sideCfg.tree ?? side,
+      query: sideCfg.query ?? "",
+      label: sideCfg.label ?? null,
       surface: s.surface ?? "desktop",
       scenario: o?.scenario ?? sideCfg.scenario ?? s.scenario,
       steps: o?.steps ?? sideCfg.steps ?? s.steps ?? [],
@@ -70,14 +75,15 @@
   // ---- frames ------------------------------------------------------------------
   function src(plan, scenario, ns, extra = "") {
     const sides = window.__previewCfg?.sides ?? {};
-    const base = sides[plan.side]?.url ?? `/${plan.side}`;
-    const q = new URLSearchParams({ scenario, side: plan.side, base: "synthetic", tour: "1", overlay: "0", ns });
-    if (plan.surface === "phone") return `${base}/phone?${q}`;
-    return `${base}/?${q}${extra}`;
+    const base = sides[plan.tree]?.url ?? `/${plan.tree}`;
+    const q = new URLSearchParams({ scenario, side: plan.tree, base: "synthetic", tour: "1", overlay: "0", ns });
+    const more = plan.query ? `&${plan.query}` : "";
+    if (plan.surface === "phone") return `${base}/phone?${q}${more}`;
+    return `${base}/?${q}${more}${extra}`;
   }
 
   function buildFrames(plan, scenario) {
-    const ns = `${plan.side}-t${++nsSeq}`;
+    const ns = `${plan.tree}-t${++nsSeq}`;
     const wrap = document.createElement("div");
     wrap.className = "tour-frames " + plan.surface;
     const mk = (u, [w, h], cls) => {
@@ -120,7 +126,7 @@
   }
 
   function keyOf(plan) {
-    return `${plan.side}|${plan.surface}|${plan.pages ? plan.pages[0].scenario : plan.scenario}`;
+    return `${plan.tree}|${plan.query}|${plan.surface}|${plan.pages ? plan.pages[0].scenario : plan.scenario}`;
   }
 
   /** The frame for a plan: the preloaded one when it matches, else a new one. */
@@ -257,7 +263,7 @@
       }
       card.classList.remove("on");
       const plan = planOf(ph);
-      label.querySelector("b").textContent = plan.side === "before" ? "Before · today" : "After · new";
+      label.querySelector("b").textContent = plan.label ?? (plan.side === "before" ? "Before · today" : "After · new");
       label.querySelector("span").textContent = (plan.optLabel ? plan.optLabel + " — " : "") + s.title;
       label.className = `on ${plan.side}`;
       const w = framesFor(plan);
@@ -266,11 +272,13 @@
       if (plan.surface === "phone") {
         const pages = plan.pages ?? [{ scenario: plan.scenario, hold: 3000 }];
         for (const [pi, pg] of pages.entries()) {
-          if (pi > 0) w.main.src = src(plan, pg.scenario, `${plan.side}-t${++nsSeq}`);
+          if (pi > 0) w.main.src = src(plan, pg.scenario, `${plan.tree}-t${++nsSeq}`);
           if (pi > 0) await sleep(300);
           await until(() => w.main.contentWindow?.__previewPhone?.ready && w.main.contentWindow.location.search.includes(`scenario=${pg.scenario}`), 30000, my, `phone ${pg.scenario} ready`);
+          // A tap on something only one side has (Activity, say) is the point of
+          // some pages: noted for the checker, not a failure.
           const pe = w.main.contentWindow.__previewPhone.stepError;
-          if (pe) throw new Error(`phone ${pg.scenario}: ${pe}`);
+          if (pe) (T.notes ??= []).push({ phase: T.index, page: pg.scenario, note: pe });
           label.querySelector("span").textContent = `${s.title} — ${pg.label ?? pg.scenario}`;
           await wait(pg.hold ?? 2600, my);
         }

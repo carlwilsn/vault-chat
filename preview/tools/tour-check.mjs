@@ -14,8 +14,21 @@ const opt = (k, d) => {
   return i >= 0 ? argv[i + 1] : d;
 };
 const shell = argv.find((a) => a.startsWith("http")) ?? "http://127.0.0.1:1600";
-const from = Number(opt("from", 0));
-const to = opt("to", null);
+let from = Number(opt("from", 0));
+let to = opt("to", null);
+// --slide <id> [--until <id>]: phases by slide id (same flattening as shell/tour.js).
+if (opt("slide", null)) {
+  const { slides } = await (await fetch(`${argv.find((a) => a.startsWith("http")) ?? "http://127.0.0.1:1600"}/tour/tour.json`)).json();
+  const ids = [];
+  for (const s of slides) {
+    ids.push(s.id);
+    if (s.card) continue;
+    if (s.before !== false) ids.push(s.id);
+    for (const _ of s.options?.length ? s.options : [null]) ids.push(s.id);
+  }
+  from = ids.indexOf(opt("slide"));
+  to = ids.lastIndexOf(opt("until", opt("slide")));
+}
 const out = join(dirname(fileURLToPath(import.meta.url)), "..", "proof", "tour");
 mkdirSync(out, { recursive: true });
 if (from === 0) for (const f of readdirSync(out)) if (f.endsWith(".png")) rmSync(join(out, f));
