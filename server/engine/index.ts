@@ -10,6 +10,7 @@ import { writeCodexConfig, type CodexConfigInput } from "./codexConfig";
 import { loadCatalog, modelMeta } from "./catalog";
 import { configureContext, setModelWindow } from "./context";
 import { Engine } from "./engine";
+import { CodexBackend } from "./codexBackend";
 import { Ledger } from "./ledger";
 import { excludeLocalDir } from "./wakes";
 import { initCapabilities } from "./capabilities";
@@ -98,7 +99,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   writeCodexConfig(cfg(jobsHome));
   mkdirSync(join(b.stateDir, "jobs"), { recursive: true });
 
-  let engine: Engine;
+  let backend: CodexBackend;
   const sup = new CodexSupervisor({
     bin: install.bin,
     codexHome,
@@ -112,19 +113,18 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       if (key) env.OPENROUTER_API_KEY = key;
       return env;
     },
-    onServerRequest: (m, p) => engine.onServerRequest(m, p),
+    onServerRequest: (m, p) => backend.onServerRequest(m, p),
   });
+  backend = new CodexBackend(sup, install.version, { codexHome, permissions: process.platform === "linux" ? "vc" : null });
   const ledger = new Ledger(join(b.stateDir, "ledger.json"), b.apiKey);
-  engine = new Engine({
+  const engine = new Engine({
     vault: b.vault,
-    sup,
+    backend,
     ledger,
     jobEnv: { codexBin: install.bin, jobsHome, logDir: join(b.stateDir, "jobs") },
     model: engineModel,
     webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
     apiKey: b.apiKey,
-    permissions: process.platform === "linux" ? "vc" : null,
-    codexHome,
     broadcast: b.broadcast,
     visionModel: process.env.VC_VISION_MODEL || "openai/gpt-6.1-sol",
     stallMs: Number(process.env.VC_ENGINE_STALL_MS) || 30 * 60_000,
@@ -149,7 +149,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     },
   });
   engine.start();
-  sup.start();
+  backend.start();
   return {
     engine,
     install,

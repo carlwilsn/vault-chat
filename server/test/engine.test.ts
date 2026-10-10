@@ -244,7 +244,9 @@ describe.skipIf(!BIN)("engine (real Codex, fake Responses API)", () => {
     expect(p.subagents).toBe(false); // the fake never spawns
     // The probe thread ran with multi_agent on (a per-thread config override): its requests carry the namespace tool.
     expect(or.calls.slice(before).some((b) => JSON.stringify(b.tools ?? []).includes("multi_agent"))).toBe(true);
-    expect(p.costUsd).toBeCloseTo(COST_PER_CALL * (or.calls.length - before), 6);
+    const probeCalls = or.calls.slice(before).filter((b) => JSON.stringify(b.input ?? []).includes("capability probe")).length;
+    expect(probeCalls).toBeGreaterThanOrEqual(3); // tool call, its follow-up, the cache check
+    expect(p.costUsd).toBeCloseTo(COST_PER_CALL * probeCalls, 6);
     const { models } = await (await fetch(srv.base + "/api/v1/models")).json();
     expect(models.find((m: any) => m.id === "test/fake-model").status).toBe("tested");
   });
