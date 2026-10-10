@@ -169,6 +169,53 @@ export async function loadVaultAssistantPrompt(vault: string | null): Promise<st
 export async function ensureVaultAssistantPrompt(vault: string | null): Promise<void> {
   if (!vault) return;
   await ensureAgentConfig(vault, "assistant.md", "default_assistant_prompt");
+  await dropProposeMissionLines(vault).catch((e) => console.warn("[agent-cfg] assistant.md ProposeMission migration failed:", e));
+}
+
+// sha256 of each line (trimmed) that a shipped assistant.md ever had which
+// names ProposeMission — from every version of src-tauri/defaults/assistant.md
+// in git history. The tool is gone with the missions system.
+const SHIPPED_PROPOSE_MISSION_LINES = new Set([
+  "7024c5f9681262c73edfd74e5284a903af12c6c1cf972f043641f46ce7d616cb",
+  "9c92e30115a4d96b5e1644f32ecc379e52603bd31e6a3d022a0e803a96a18f8c",
+  "dce0e6cb87825502691a31de06694c38c894dd411e2bd8954b5b150731e63154",
+  "e07d9d53abf0528daa7370ff8776d3acfd28140879d4debeee8b47e467a576b3",
+  "fd66f7c04b6eee47e732f79a38ad79bd4cf0764ea2e9d8ad05b28b38ab2758d5",
+]);
+
+async function lineHash(line: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(line.trim()));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** One-time migration: an edited assistant.md (a pristine one was already
+ *  replaced by the current default above) loses the lines that tell the agent
+ *  to call ProposeMission — but only lines exactly as we shipped them; a line
+ *  the user wrote or changed stays. Idempotent: once no shipped line is left,
+ *  the file is never written again. */
+export async function dropProposeMissionLines(vault: string): Promise<boolean> {
+  const path = `${vault}/${AGENT_DIR}/assistant.md`;
+  let text: string;
+  try {
+    text = await invoke<string>("read_text_file", { path });
+  } catch {
+    return false;
+  }
+  if (!text.includes("ProposeMission")) return false;
+  const lines = text.split("\n");
+  const keep: string[] = [];
+  let dropped = 0;
+  for (const l of lines) {
+    if (l.includes("ProposeMission") && SHIPPED_PROPOSE_MISSION_LINES.has(await lineHash(l))) {
+      dropped++;
+      continue;
+    }
+    keep.push(l);
+  }
+  if (!dropped) return false;
+  await invoke("write_text_file", { path, contents: keep.join("\n") });
+  console.log(`[agent-cfg] assistant.md: removed ${dropped} shipped ProposeMission line(s)`);
+  return true;
 }
 
 export async function saveVaultAssistantPrompt(vault: string, contents: string): Promise<void> {
