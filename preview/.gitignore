@@ -6,3 +6,5 @@ fixtures/private/
 proof/private/
 out/
 fixtures/synthetic/vault/papers/attention-survey.pdf
+# Lists real file names; committed only with Carl's approval.
+fixtures/REDACTION-REPORT.md

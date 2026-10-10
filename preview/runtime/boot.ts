@@ -41,6 +41,7 @@ function seedVault(vault: string, base: Base, sc: Scenario, t: number): void {
   const ls: Record<string, string> = {};
   const ctx: BuildCtx = {
     vault,
+    base: base.name,
     now: t,
     write: (rel, text) => fs.seedText(`${vault}/${rel}`, text, t),
     read: (rel) => fs.readText(`${vault}/${rel}`),

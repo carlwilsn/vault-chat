@@ -84,8 +84,16 @@ export async function runSteps(steps: Step[], vault: string): Promise<void> {
     else if ("file" in s) {
       // The app's own store module (same instance Vite serves the app).
       const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
-      const path = `${vault}/${s.file}`;
       const { invoke } = await import(/* @vite-ignore */ "@tauri-apps/api/core");
+      let path = `${vault}/${s.file}`;
+      if (!(await invoke<boolean>("path_exists", { path }))) {
+        // A private fixture base doesn't have the synthetic vault's files:
+        // open its first note instead.
+        const files = await invoke<Array<{ path: string; is_dir: boolean }>>("list_markdown_files", { vault });
+        const first = files.find((f) => !f.is_dir && f.path.endsWith(".md") && !f.path.includes("/.vault-chat/"));
+        if (!first) continue;
+        path = first.path;
+      }
       const binary = /\.(pdf|png|jpe?g|gif|webp|mp4)$/i.test(path);
       const content = binary ? "" : await invoke<string>("read_text_file", { path });
       useStore.getState().setCurrentFile(path, content);

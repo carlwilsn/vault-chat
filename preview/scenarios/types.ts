@@ -33,6 +33,8 @@ export type StepApi = {
 
 export type BuildCtx = {
   vault: string;
+  /** fixture base: "synthetic" or a private one built from a real vault */
+  base: string;
   now: number;
   /** write a text file (vault-relative) */
   write: (rel: string, text: string) => void;
