@@ -81,6 +81,24 @@ export async function runSteps(steps: Step[], vault: string): Promise<void> {
     } else if ("key" in s) pressKey(s.key, s.target ? await waitFor(s.target) : null);
     else if ("type" in s) typeInto(await waitFor(s.into), s.type);
     else if ("sleep" in s) await sleep(s.sleep);
+    else if ("file" in s) {
+      // The app's own store module (same instance Vite serves the app).
+      const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+      const path = `${vault}/${s.file}`;
+      const { invoke } = await import(/* @vite-ignore */ "@tauri-apps/api/core");
+      const binary = /\.(pdf|png|jpe?g|gif|webp|mp4)$/i.test(path);
+      const content = binary ? "" : await invoke<string>("read_text_file", { path });
+      useStore.getState().setCurrentFile(path, content);
+      if (s.mode === "edit" && useStore.getState().mode !== "edit") useStore.getState().toggleMode?.();
+    } else if ("chat" in s) {
+      const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+      if (useStore.getState().rightCollapsed) useStore.getState().toggleRight();
+    } else if ("conversation" in s) {
+      const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+      const st = useStore.getState();
+      for (let i = 0; i < 100 && !useStore.getState().conversationsLoaded; i++) await sleep(50);
+      useStore.getState().selectConversation(s.conversation);
+    }
     else if ("advance" in s) advance(s.advance);
     else if ("emit" in s) emitFromBackend(s.emit, s.payload);
     else if ("run" in s) await s.run(api);

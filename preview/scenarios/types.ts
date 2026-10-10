@@ -12,6 +12,12 @@ export type Step =
   | { key: string; target?: string }
   | { type: string; into: string }
   | { sleep: number }
+  /** open a vault file in the viewer (vault-relative) */
+  | { file: string; mode?: "view" | "edit" }
+  /** make sure the chat pane is shown */
+  | { chat: true }
+  /** switch the chat pane to a conversation */
+  | { conversation: string }
   | { advance: number }
   | { emit: string; payload?: unknown }
   | { run: (api: StepApi) => unknown | Promise<unknown> };
