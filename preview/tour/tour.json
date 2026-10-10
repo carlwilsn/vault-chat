@@ -553,6 +553,159 @@
       }
     },
     {
+      "id": "history-timeline",
+      "group": "History",
+      "title": "History reads like a timeline",
+      "caption": "Ctrl+H used to list raw commits — autosaves, app-state churn, hashes. Now it groups saves into sessions, hides the app's own files, and shows agent turns, the box, missions, restores and undos as plain entries.",
+      "scenario": "history-a",
+      "beforeSide": {
+        "scenario": "history",
+        "steps": [
+          {
+            "hold": 3500
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hold": 3500
+        }
+      ]
+    },
+    {
+      "id": "history-undo",
+      "group": "History",
+      "title": "Undo one agent turn",
+      "caption": "Pick what the agent did and undo just that change, as one new commit. The entry is struck through and offers Redo.",
+      "scenario": "history-a-undo",
+      "beforeSide": {
+        "scenario": "history",
+        "steps": [
+          {
+            "hold": 3500
+          }
+        ]
+      },
+      "steps": [
+        {
+          "highlight": "button",
+          "text": "/^Redo$/",
+          "label": "undone — Redo is here"
+        },
+        {
+          "hold": 3500
+        }
+      ]
+    },
+    {
+      "id": "history-redo",
+      "group": "History",
+      "title": "Redo an undone change",
+      "caption": "An undone edit stays in the timeline, struck through. Redo brings it back, again as one commit.",
+      "scenario": "history-a-redo",
+      "beforeSide": {
+        "scenario": "history",
+        "steps": [
+          {
+            "hold": 3500
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hold": 3800
+        }
+      ]
+    },
+    {
+      "id": "history-restore",
+      "group": "History",
+      "title": "Restore a version of a note",
+      "caption": "A note's versions are one per session, not one per save. Preview or diff one against now, then restore it; the open note reloads with that text.",
+      "scenario": "history-a-restore",
+      "beforeSide": {
+        "scenario": "history",
+        "steps": [
+          {
+            "hold": 3500
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hold": 3800
+        }
+      ]
+    },
+    {
+      "id": "history-styles",
+      "group": "History",
+      "title": "Three ways to show history — pick one",
+      "caption": "The same timeline in three places: A a modal like today's, B a side sheet next to the note, C a thin version strip above the note.",
+      "scenario": "history-a",
+      "beforeSide": {
+        "scenario": "history",
+        "steps": [
+          {
+            "hold": 3500
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hold": 3500
+        }
+      ],
+      "options": [
+        {
+          "label": "Option A — timeline modal",
+          "scenario": "history-a"
+        },
+        {
+          "label": "Option B — side sheet",
+          "scenario": "history-b"
+        },
+        {
+          "label": "Option C — inline version strip",
+          "scenario": "history-c"
+        }
+      ]
+    },
+    {
+      "id": "history-styles-restore",
+      "group": "History",
+      "title": "Restoring, in each style",
+      "caption": "The same restore — an older version of the scaling-laws note — done from the modal, the sheet, and the inline strip.",
+      "scenario": "history-a-restore",
+      "beforeSide": {
+        "scenario": "history",
+        "steps": [
+          {
+            "hold": 3500
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hold": 3500
+        }
+      ],
+      "options": [
+        {
+          "label": "Option A — timeline modal",
+          "scenario": "history-a-restore"
+        },
+        {
+          "label": "Option B — side sheet",
+          "scenario": "history-b-restore"
+        },
+        {
+          "label": "Option C — inline version strip",
+          "scenario": "history-c-restore"
+        }
+      ]
+    },
+    {
       "id": "phone-react",
       "group": "Phone",
       "title": "The phone page, rebuilt in React — identical",
@@ -635,7 +788,6 @@
         {
           "title": "Not in the tour yet",
           "items": [
-            "History (Ctrl+H timeline, styles A/B/C, restore and undo) — being finished on p3-history",
             "Removals (Mission Control, Activity, feedback; the project chip, grouped chat list, “still working” line, notifications list) — being finished on p3-removals"
           ]
         },
@@ -644,6 +796,7 @@
           "items": [
             "Capability view: option A (table), B (one line per picker) or C (folded)",
             "Ctrl+K / Ctrl+L roles: A (both Chat), B (K Background, L Chat — default) or C (both Background)",
+            "History style: A (modal), B (side sheet) or C (inline strip)",
             "Built-in vision model for images the Chat model can't read: Gemini 3.5 Flash (no setting)",
             "Serve the React phone app at /phone (built, off until you approve)"
           ]
