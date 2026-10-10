@@ -10,8 +10,6 @@ import { safetyCommit } from "./autosave";
 import { scheduledDeliveryText } from "./scheduleDelivery";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import { registerRun, unregisterRun, abortRun } from "./runRegistry";
-import { takePendingAskOptions } from "./tools";
-import { harnessV2Enabled } from "./harness";
 import {
   useStore,
   MODEL_CONTEXT_LIMIT,
@@ -291,26 +289,10 @@ export async function sendMessage(
     strictVault,
     bashDisabled,
     voiceMode: cur.voiceMode,
-    supervisorMode: targetConv?.role === "supervisor",
     // The interactive assistant persona — the chat the user talks to directly,
     // on the phone (source "phone") OR the desktop ChatPane (source "manual").
-    // Both get the light assistant.md prompt (casual + propose-missions), NOT
-    // the heavy orchestrator supervisor.md (which stays for mission threads).
-    // Same agent, different surface — no second-class phone brain.
+    // Both get the light assistant.md prompt. Same agent, different surface.
     assistantMode: targetConv?.source === "phone" || targetConv?.source === "manual",
-    // [harness v2] Fresh-context only for AUTONOMOUS supervisor wakes on the active
-    // vault — i.e. SCHEDULER-fired turns (scheduledBriefing / quietUnlessAlert; the
-    // scheduler always passes scheduledBriefing:true). targetConvIdOverride is NOT
-    // an autonomy signal: every phone-relayed message and every Mission Control
-    // send arrives off-target, and counting it here gave the user's own cockpit
-    // chats mission-wake amnesia — each turn saw only history[0] + the newest
-    // message, so the front kept obeying the FIRST instruction ("don't propose
-    // yet") while ignoring every later correction (the 2026-07-09 Coconut-proposal
-    // thread). A user message keeps continuity, whatever surface it came from.
-    freshContext:
-      harnessV2Enabled() &&
-      targetConv?.role === "supervisor" &&
-      (!!scheduledBriefing || !!quietUnlessAlert),
     // [unified ask] A user-driven turn is LIVE — an AskUser mid-turn renders as
     // inline option cards with the reply, no push (weight follows presence).
     // Scheduler-fired turns are background: their asks keep the full card+push.
@@ -403,16 +385,11 @@ export async function sendMessage(
           store.addTokenUsage(e.usage);
           store.setLastContext(e.usage.context);
         }
-        // [unified ask] Carry option cards staged by an interactive AskUser —
-        // the presence-gated inline form: tappable cards land WITH the reply
-        // prose that argues for them (no push was sent; the user is here).
-        const stagedOpts = targetConvId ? takePendingAskOptions(targetConvId) : [];
         const assistantMsg: ChatMessage = {
           role: "assistant",
           content: acc,
           toolCalls: tools.length ? tools : undefined,
           usage: e.usage,
-          ...(stagedOpts.length ? { askOptions: stagedOpts } : {}),
         };
         if (live) {
           // User is still watching this conversation — write to the

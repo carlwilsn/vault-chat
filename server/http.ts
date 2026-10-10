@@ -240,8 +240,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       return relayRoute(res, "phone:status", {}, 10_000, "app not answering — is a vault open?");
     case "POST /message":
       return relayRoute(res, "phone:msg", await jsonBody(req), 15_000, "app not answering — is a vault open?");
-    case "POST /alert-followup":
-      return relayRoute(res, "phone:alert-followup", await jsonBody(req), 15_000, "app not answering");
     case "POST /answer":
       return relayRoute(res, "phone:answer", await jsonBody(req), 15_000, "app not answering — is a vault open?");
     case "POST /kill":

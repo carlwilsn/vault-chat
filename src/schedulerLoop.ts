@@ -7,187 +7,13 @@ import {
   writeSchedules,
 } from "./schedules";
 import { sendMessage } from "./chat-controller";
-import { readConversations, type Conversation } from "./conversations";
-import { tickRunWatcher } from "./runWatcher";
+import { readConversations, isArchivedThread } from "./conversations";
 import { vlog } from "./debugLog";
-import { harnessV2Enabled } from "./harness";
 import { invoke } from "@tauri-apps/api/core";
 
 /** True inside the headless vault-chat-server (server/shims/globals.ts). */
 function isHeadless(): boolean {
   return (globalThis as { __VC_HEADLESS__?: boolean }).__VC_HEADLESS__ === true;
-}
-
-// Resume sweep runs at most once per vault per app session.
-const resumedVaults = new Set<string>();
-
-// Recover missions interrupted by a crash, OS restart, or update relaunch. A
-// mission turn flips its thread to "running" before the model call and only
-// resets it in a `finally`; a hard process kill skips that, so the mission
-// comes back (status reset to idle on load) with an UNANSWERED brief — no
-// assistant turn, no workers, wedged forever. On boot we re-run any mission
-// whose last message is still a user turn so the supervisor actually starts
-// (and ends up with at least one worker, as it always should). Server box only
-// — gated by fireSchedulesOnThisMachine, same as schedule firing, so a client
-// machine viewing the same vault never double-runs it.
-// [harness v2] Independent per-mission liveness heartbeat. A mission advances by
-// self-scheduling its next wake each turn; that single wake is its whole
-// lifeline. If it's ever lost — a write that silently no-ops, or a turn that
-// errored before enforceMissionLoopInvariant (the turn-end backstop) even ran —
-// the mission is asleep with nothing to wake it, and a stalled mission is
-// indistinguishable from a healthy idle one, so nothing alarms (the human was
-// the only backstop that fired on PROXY phase 18). THIS is the out-of-band
-// backstop that fires even when no turn ran: for each parked mission with no
-// wake source that's been silent past a grace window, re-post a wake. Firer-
-// gated and de-duped so it can't spam. Liveness derived from disk — mirrors
-// tickRunWatcher / firingDarkMinutes — never from the agent remembering.
-function missionStallGraceMs(): number {
-  // Overridable per-install for the harness-loop rig — a real dropped-wake probe
-  // can't wait 45 min. Absent/invalid → the production default.
-  try {
-    const v = Number(localStorage.getItem("vault_chat_mission_stall_grace_ms"));
-    if (Number.isFinite(v) && v > 0) return v;
-  } catch {
-    /* localStorage unavailable — default */
-  }
-  return 45 * 60_000;
-}
-// Last time we re-woke each mission — so the sweep doesn't re-nudge every tick
-// while a nudge turn is still in flight (before it stamps a fresh lastActivityAt).
-const livenessNudgedAt = new Map<string, number>();
-// Per-vault throttle for the (heavier) conversations read this sweep does.
-const livenessSweptAt = new Map<string, number>();
-
-async function tickMissionLiveness(vault: string): Promise<void> {
-  if (!harnessV2Enabled()) return;
-  const now = Date.now();
-  const grace = missionStallGraceMs();
-  const throttle = Math.min(180_000, Math.max(20_000, Math.floor(grace / 3)));
-  if (now - (livenessSweptAt.get(vault) ?? 0) < throttle) return;
-  livenessSweptAt.set(vault, now);
-
-  const convs = await readConversations(vault).catch(() => []);
-  const cutoff = 0; // no age cutoff: an active mission is resumed however old it is
-  const schedules = await readSchedules(vault).catch(() => []);
-  const hasPendingWake = (id: string) =>
-    schedules.some((sc) => {
-      const t = sc.target as { kind?: string; conversationId?: string };
-      return (
-        sc.enabled &&
-        t?.kind === "existing" &&
-        t.conversationId === id &&
-        (sc.recurrence?.kind !== "once" || !sc.lastFiredAt)
-      );
-    });
-  let jobs: { status?: string; ownerConvId?: string }[] = [];
-  try {
-    jobs = await (await import("./runWatcher")).readJobs(vault);
-  } catch {
-    /* unreadable jobs — treat as none, fall through to the wake */
-  }
-  let liveWorkers = new Set<string>();
-  try {
-    liveWorkers = new Set((await import("./runRegistry")).activeRuns());
-  } catch {
-    /* same */
-  }
-
-  for (const c of convs) {
-    if (c.source !== "mission") continue;
-    if (c.completedAt || c.missionState === "DONE" || c.missionState === "KILLED") continue;
-    if (c.missionState === "AWAITING_USER") {
-      // [ask-object 4b] A parked mission is normally left alone. But if its open
-      // ask opted into a self-defer timeout (low-stakes + a declared fallback)
-      // and that deadline has passed with no answer, auto-"Not now": resume the
-      // mission on its onDefer branch so it never hangs forever. High-stakes asks
-      // carry no deadline, so they still wait for the user.
-      await maybeAutoDeferAsk(vault, c, convs, now, grace).catch((e) =>
-        console.warn("[ask-autodefer] sweep failed:", e),
-      );
-      continue;
-    }
-    const la = c.lastActivityAt ?? 0;
-    if (la < cutoff) continue;
-    if (now - la < grace) continue; // still inside a healthy self-schedule cadence
-    if (now - (livenessNudgedAt.get(c.id) ?? 0) < grace) continue; // just re-woke it
-    const msgs = (c.messages ?? []).filter((m) => !m.hidden);
-    const last = msgs[msgs.length - 1];
-    // Parked on an assistant turn. An unanswered trailing USER turn is the
-    // interrupted-mid-brief case, which resumeInterruptedMissions (boot) owns.
-    if (!last || last.role !== "assistant") continue;
-    if (hasPendingWake(c.id)) continue; // a wake is coming
-    if (jobs.some((j) => j.status === "running" && j.ownerConvId === c.id)) continue; // run-watcher wakes it
-    const key = (c.mission ?? c.title ?? "").trim();
-    if (
-      key &&
-      convs.some(
-        (w) => w.source === "worker" && (w.mission ?? "").trim() === key && liveWorkers.has(w.id),
-      )
-    )
-      continue; // a live worker's finish will wake it
-
-    // Stalled: no wake source and silent past the grace. Re-establish the tick.
-    const staleMin = Math.round((now - la) / 60_000);
-    livenessNudgedAt.set(c.id, now);
-    vlog("mission.liveness.rewake", { conv: c.id.slice(0, 8), staleMin });
-    const { runWorkerTurn } = await import("./offVaultRun");
-    void runWorkerTurn(
-      vault,
-      c.id,
-      `LIVENESS CHECK — this mission has gone ${staleMin} min with no scheduled wake, no running worker, and no watched run: its next tick was lost, so nothing will wake it. You are NOT done. Read ground truth from disk FIRST (do not trust prior narration about where you are), then re-establish progress: take the next concrete step and Schedule your next wake — or AskUser if you're at a genuine fork, or CompleteMission if the goal is verifiably met on disk.`,
-      { modelId: useStore.getState().supervisorModelId },
-    ).catch((e) => console.warn("[mission-liveness] re-wake failed:", e));
-  }
-}
-
-// [ask-object 4b] Self-defer a timed-out, low-stakes, fallback-declared ask on
-// the user's behalf — so a mission never hangs forever on a decision that has a
-// safe default. Finds the mission's one open ask; if it armed a deadline
-// (askDeadlineAt, set only for low-stakes asks with an onDefer) and that
-// deadline has passed with no answer, this records "Not now" on the ask (same
-// receipt + feed retirement as a user tap) and resumes the mission on its
-// onDefer branch via a tagged answer turn. High-stakes asks never carry a
-// deadline, so they are never auto-ended here — only the user can end those.
-async function maybeAutoDeferAsk(
-  vault: string,
-  mission: Conversation,
-  convs: Conversation[],
-  now: number,
-  grace: number,
-): Promise<void> {
-  const ask = convs
-    .filter((c) => c.source === "ask" && c.askOf === mission.id && !c.askDecided)
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
-  if (!ask) return;
-  if (!ask.askOnDefer || ask.askStakes === "high") return; // never auto-end these
-  if (!ask.askDeadlineAt || now < ask.askDeadlineAt) return; // not timed out yet
-  if (now - (livenessNudgedAt.get(ask.id) ?? 0) < grace) return; // just handled it
-  livenessNudgedAt.set(ask.id, now);
-  vlog("ask.autodefer", {
-    conv: mission.id.slice(0, 8),
-    ask: ask.id.slice(0, 8),
-    overdueMin: Math.round((now - ask.askDeadlineAt) / 60_000),
-  });
-  const { stampAskDecided, runWorkerTurn } = await import("./offVaultRun");
-  // Record the terminal on the ask thread + retire its feed card — byte-for-byte
-  // what a user "Not now" writes, so every surface shows the same settled state.
-  await stampAskDecided(vault, ask.id, "Not now (no reply)").catch(() => {});
-  if (ask.askNotifId) {
-    await invoke("notification_add", {
-      vault,
-      json: JSON.stringify({ type: "answered", id: ask.askNotifId, answer: "Not now", ts: now }),
-    }).catch(() => {});
-    // The phone's next /notifications poll retires the card — no broadcast needed.
-  }
-  // Resume the mission on its declared fallback. answer:true clears AWAITING_USER
-  // (clearAwait), exactly like the /answer defer relay.
-  const injected =
-    `[NOT NOW — auto] You raised this ask with a self-defer timeout and it elapsed with no reply from the user. Do not wait any longer and do not re-raise the same ask. Fall back to the plan you declared when you raised it: ${ask.askOnDefer}. If that plan is a hold/stand-down, do exactly that; otherwise carry it out. Then say plainly what you did.`;
-  await runWorkerTurn(vault, mission.id, injected, {
-    answer: true,
-    direct: true,
-    modelId: useStore.getState().supervisorModelId,
-  }).catch((e) => console.warn("[ask-autodefer] resume failed:", e));
 }
 
 // Multi-vault scheduler. Each tracked vault gets its own loop that
@@ -393,13 +219,13 @@ async function checkFirerHeartbeat(vault: string): Promise<void> {
   // `lastFiredAt` can read stale on a follower that's behind on its git pull —
   // that's what fired a "dark for 3698 min" alarm at the user while the daily
   // coach had in fact fired that very morning (two threads, even). Recent
-  // scheduled/mission activity is hard proof a firer is alive: if any such turn
+  // scheduled activity is hard proof a firer is alive: if any such turn
   // landed more recently than the overdue age we're about to report, the report
   // is stale — suppress it rather than cry wolf.
   try {
     const convs = await readConversations(vault).catch(() => []);
     const freshestAuto = convs
-      .filter((c) => c.source === "scheduled" || c.source === "mission")
+      .filter((c) => c.source === "scheduled")
       .reduce((mx, c) => Math.max(mx, c.lastActivityAt ?? 0), 0);
     if (freshestAuto && now - freshestAuto < darkMin * 60_000) {
       firingDarkAlarmed = false; // something fired recently — not actually dark
@@ -474,14 +300,6 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
   const initialSchedules = await readSchedules(vault).catch(() => []);
   schedulesByVault.set(vault, initialSchedules);
   emit();
-  // One-shot on the server box: resume any mission left mid-turn by a
-  // crash/restart, so an approved mission never just sits there unworked.
-  if (!resumedVaults.has(vault) && !followerVaults.has(vault)) {
-    resumedVaults.add(vault);
-    void import("./offVaultRun").then((m) => m.resumeInterruptedMissions(vault)).catch((e) =>
-      console.warn("[mission-resume] sweep failed:", e),
-    );
-  }
   let cancelled = false;
 
   const tick = async () => {
@@ -520,20 +338,8 @@ export async function startSchedulerLoop(vault: string): Promise<void> {
     // "already fired" and skip — silently disabling the schedule.
     if (!fireSchedulesOnThisMachine()) return;
     // [sync split] Per-vault: a follower checkout never fires this vault's
-    // schedules, run-watcher, or liveness backstop — the mission host does.
+    // schedules — the box does.
     if (followerVaults.has(vault)) return;
-    // Poll any long external jobs (training runs etc.) handed to the run-watcher.
-    // Deterministic recheck in code — independent of whether the agent
-    // remembered to self-schedule a wake. Same firing-machine gate as schedules.
-    void tickRunWatcher(vault).catch((e) =>
-      console.warn("[run-watcher] tick failed:", e),
-    );
-    // Independent liveness backstop: re-wake a mission whose self-scheduled tick
-    // was lost (silent write, or a turn that errored before its turn-end
-    // enforcement ran). Firer-gated like the watcher above; self-throttled.
-    void tickMissionLiveness(vault).catch((e) =>
-      console.warn("[mission-liveness] tick failed:", e),
-    );
     const list = (schedulesByVault.get(vault) ?? []).slice();
     let changed = false;
     for (const s of list) {
@@ -627,60 +433,21 @@ async function fireOnce(vault: string, s: Schedule): Promise<void> {
     conversationId = await createScheduledConversation(vault, s);
   }
 
-  // [harness v2] Never fire a self-check into a mission that is WAITING ON THE
-  // USER. A pending unanswered AskUser means the mission asked a question and is
-  // holding for the reply; firing a self-check keeps the thread "running", which
-  // (a) reads as busy/idle instead of "needs you" and (b) makes the app REJECT
-  // the user's answer as "a run is in progress" — exactly the dropped-$5-answer
-  // bug. Detect it structurally (last non-system message is an assistant turn
-  // that called AskUser, with no user reply after), stamp AWAITING_USER for the
-  // board, and skip — the user's reply is the wake.
-  if (s.target.kind === "existing" && harnessV2Enabled()) {
+  // A schedule aimed at a thread of the old missions system (a mission's
+  // check-in wake) has nothing to wake: those threads are archived. Skip it and
+  // sweep the dead row.
+  if (s.target.kind === "existing") {
     try {
       const conv =
         useStore.getState().conversations.find((c) => c.id === conversationId) ??
         (await readConversations(vault)).find((c) => c.id === conversationId);
-      if (conv && conv.source === "mission" && conv.completedAt) {
-        // A completed mission must never be re-run. A stray schedule that outlived
-        // CompleteMission's cleanup (a double-fire slot, or a heartbeat armed in
-        // the very turn that completed) would start a fresh turn on a finished
-        // mission — wasting a run and, worse, re-stamping missionState:RUNNING with
-        // a newer lastActivityAt that RESURRECTS the mission onto the Activity
-        // board (the reconstruct freshness tie-break). Skip and sweep the dead row.
-        vlog("sched.skip.completed", { conv: conversationId.slice(0, 8), name: s.name });
+      if (conv && isArchivedThread(conv)) {
+        vlog("sched.skip.archived", { conv: conversationId.slice(0, 8), name: s.name });
         await deleteSchedule(vault, s.id).catch(() => {});
         return;
       }
-      if (conv && conv.source === "mission" && !conv.completedAt) {
-        const msgs = conv.messages.filter((m) => !m.system);
-        const last = msgs[msgs.length - 1];
-        // Two independent signals that the mission is parked on the user's reply:
-        //  (1) the harness-stamped state — AUTHORITATIVE. offVaultRun stamps
-        //      missionState:"AWAITING_USER" the instant an ask turn ends, and
-        //      that survives even when a later line (a summary/system row, or a
-        //      trailing non-AskUser assistant turn) makes the message tail no
-        //      longer *look* like a bare trailing AskUser.
-        //  (2) the message-tail heuristic — belt-and-suspenders for a pre-v2
-        //      thread, or a race where the state stamp hasn't landed yet.
-        // Keying ONLY off (2) let a stale schedule fire into an AWAITING_USER
-        // mission whose tail wasn't a clean AskUser turn → a DUPLICATE parked
-        // ask (or a stale non-reply turn eating the wait). Skip on either.
-        const awaitingUserState = conv.missionState === "AWAITING_USER";
-        const trailingAsk =
-          !!last && last.role === "assistant" && (last.toolCalls ?? []).some((t) => t.name === "AskUser");
-        if (awaitingUserState || trailingAsk) {
-          vlog("sched.skip.awaitinguser", {
-            conv: conversationId.slice(0, 8),
-            name: s.name,
-            via: awaitingUserState ? "state" : "tail",
-          });
-          const { stampMissionAwaitingUser } = await import("./offVaultRun");
-          await stampMissionAwaitingUser(vault, conversationId).catch(() => {});
-          return; // hold — do not run a turn; the user's answer resumes it
-        }
-      }
     } catch {
-      // If the check itself fails, fall through and fire (fail toward liveness).
+      /* fall through and fire */
     }
   }
 

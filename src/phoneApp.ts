@@ -22,9 +22,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useStore, type ChatMessage } from "./store";
 import { abortRun, activeRuns } from "./runRegistry";
-import { emptyConversation, deriveConversationTitle, type Conversation } from "./conversations";
-import { isCrashBubble } from "./errfmt";
-import { twoLaneMissionChatEnabled } from "./harness";
+import { emptyConversation, deriveConversationTitle, isArchivedThread, type Conversation } from "./conversations";
 
 const STREAM_TAIL = 6_000;
 const MSG_CAP = 20_000;
@@ -43,14 +41,6 @@ function broadcast(event: Record<string, unknown>): void {
 // Messages that arrived while their thread was mid-run. Flushed (joined into
 // one turn) the moment the run ends — see the status-flip handler below.
 const queued = new Map<string, string[]>();
-
-// Worker conversation ids we've already sent a "worker done" notification for.
-// A worker runs many turns (initial + AskWorker kicks + duplicate wakes), each
-// ending → onRunEnded; without this, a single worker pinged the user several
-// times (the old 5x "Worker finished — …" spam). Dedupe so each worker notifies
-// exactly once. In-memory is enough: after a box restart a finished worker has
-// no live run to end, so it can't re-fire.
-const notifiedWorkers = new Set<string>();
 
 // Coalesce identical (title, body) notifications fired within this window. The
 // dark-alarm triple-fires the same record within one second (two scheduler
@@ -94,12 +84,11 @@ function dedupedPhoneMessage(
   convId: string | null,
   text: string,
   supervisor: boolean,
-  answer = false,
 ): Promise<Record<string, unknown>> {
-  if (!clientMsgId) return handlePhoneMessage(convId, text, supervisor, answer);
+  if (!clientMsgId) return handlePhoneMessage(convId, text, supervisor);
   const existing = inflightSends.get(clientMsgId);
   if (existing) return existing;
-  const p = handlePhoneMessage(convId, text, supervisor, answer);
+  const p = handlePhoneMessage(convId, text, supervisor);
   inflightSends.set(clientMsgId, p);
   p.then(
     (res) => {
@@ -115,10 +104,6 @@ async function handlePhoneMessage(
   convId: string | null,
   text: string,
   supervisor = false,
-  // [AskUser redesign] `answer` = this is a TAGGED answer to an AWAITING_USER
-  // mission (a tapped option or committed free-form reply via /answer), not a
-  // plain chat message. Only a tagged answer clears the wait + resumes.
-  answer = false,
 ): Promise<Record<string, unknown>> {
   const s = useStore.getState();
   if (!s.vaultPath) return { error: "no vault open on the box" };
@@ -168,123 +153,14 @@ async function handlePhoneMessage(
     conv = fresh;
   }
 
-  // [ask redesign] A message to an ask thread runs the dedicated ask agent —
-  // its own conversation, its own persona, physically incapable of touching
-  // the mission thread. [unified ask] A DECIDED ask stays talkable (note: the
-  // user keeps talking after making the call — the decision is recorded, the
-  // conversation is not over); the busy guard blocks a second turn while the
-  // agent is still answering the last one (block-until-done, note 4bd29abb).
-  if (conv.source === "ask") {
-    const { isRunActive } = await import("./runRegistry");
-    if (isRunActive(conv.id + "#chat"))
-      return { error: "still answering your last message — wait for it to finish" };
-    const { runAskTurn } = await import("./offVaultRun");
-    void runAskTurn(s.vaultPath, conv.id, trimmed).catch((e) =>
-      console.warn("[phone-app] ask turn failed:", e),
-    );
-    return { ok: true, convId: conv.id, ask: true };
-  }
-
-  // [AskUser redesign] A TAGGED answer (a tapped option or a committed free-form
-  // reply, arriving via /answer) is the ONLY thing that resumes an AWAITING_USER
-  // mission. Route it straight to the executor with opts.answer so clearAwait
-  // flips AWAITING_USER→RUNNING and the mission resumes with the answer fed in.
-  // (Falls through to the normal mission path for a non-awaiting mission — a
-  // tagged answer to a mission that isn't waiting is just a normal steer.)
-  if (answer && conv.source === "mission") {
-    const { runWorkerTurn } = await import("./offVaultRun");
-    // [unified ask] A formal answer to a COMPLETE mission is meaningless —
-    // there's no waiting decision to consume it (a stale card tapped after the
-    // run closed). Downgrade to a plain steer: the supervisor still hears it
-    // and replies, but no answer semantics and — via missionDone below — no
-    // "answered" marker or decision receipt gets stamped on the archive.
-    if (conv.missionState === "DONE" || conv.missionState === "KILLED" || conv.completedAt) {
-      void runWorkerTurn(s.vaultPath, conv.id, trimmed, {
-        modelId: useStore.getState().supervisorModelId,
-        direct: true,
-      }).catch((e) => console.warn("[phone-app] post-completion steer failed:", e));
-      return { ok: true, convId: conv.id, missionDone: true };
-    }
-    void runWorkerTurn(s.vaultPath, conv.id, trimmed, {
-      modelId: useStore.getState().supervisorModelId,
-      direct: true,
-      answer: true,
-    }).catch((e) => console.warn("[phone-app] answer turn failed:", e));
-    return { ok: true, convId: conv.id, answered: true };
-  }
-
-  // [AskUser redesign] A plain chat message to a mission that is AWAITING_USER is
-  // PROBING — "talk it through" — NOT the answer. The ask stays pending until a
-  // tagged answer arrives via /answer. This branch is UNCONDITIONAL on the mission
-  // being AWAITING_USER (not gated on the two-lane flag) so the shipping-critical
-  // invariant "an untagged message never clears the wait" holds regardless of the
-  // flag: with two-lane ON, the conversational front replies (real probing); with
-  // it OFF, we record the message but run NOTHING (the executor path would end its
-  // turn stamping RUNNING via direct:true and silently clear the wait). Either way
-  // missionState stays AWAITING_USER.
-  if (conv.source === "mission" && conv.missionState === "AWAITING_USER") {
-    if (twoLaneMissionChatEnabled()) {
-      const { runMissionChatTurn } = await import("./offVaultRun");
-      void runMissionChatTurn(s.vaultPath, conv.id, trimmed).catch((e) =>
-        console.warn("[phone-app] deliberation probe failed:", e),
-      );
-      return { ok: true, convId: conv.id, probe: true };
-    }
-    // Two-lane off: durably record the probe message without running a turn, so
-    // the ask is preserved and the executor picks the message up when it next runs
-    // (on the tagged answer). Never route to the executor here — that would clear
-    // the wait.
-    const { appendUserMessageOnly } = await import("./offVaultRun");
-    await appendUserMessageOnly(s.vaultPath, conv.id, trimmed).catch((e) =>
-      console.warn("[phone-app] probe record failed:", e),
-    );
-    return { ok: true, convId: conv.id, probe: true, recordedOnly: true };
-  }
-
-  // Two-lane mission chat: when the mission's executor is BUSY, don't queue the
-  // message silently behind its turn — answer immediately via the conversational
-  // front (the assistant persona, reading a snapshot of the executor's live
-  // state). The executor keeps working and picks the message up from the thread
-  // on its next turn. Idle missions fall through to the executor directly (the
-  // mission block below).
-  if (conv.source === "mission" && twoLaneMissionChatEnabled() && isThreadBusy(conv)) {
-    const { runMissionChatTurn } = await import("./offVaultRun");
-    void runMissionChatTurn(s.vaultPath, conv.id, trimmed).catch((e) =>
-      console.warn("[phone-app] mission chat turn failed:", e),
-    );
-    return { ok: true, convId: conv.id };
-  }
+  // Threads from the old missions system are archived: readable, never run.
+  if (isArchivedThread(conv)) return { error: "archived mission thread — read only; start a new chat" };
 
   if (isThreadBusy(conv)) {
-    if (conv.source === "mission") {
-      // Durable: survives a restart; runWorkerTurn delivers it when the turn ends.
-      const { queueMissionWake } = await import("./offVaultRun");
-      await queueMissionWake(s.vaultPath, conv.id, trimmed, "user");
-      return { ok: true, convId: conv.id, queued: true };
-    }
     const q = queued.get(conv.id) ?? [];
     q.push(trimmed);
     queued.set(conv.id, q);
     return { ok: true, convId: conv.id, queued: true };
-  }
-
-  // A MISSION (supervisor) thread is written by two paths — the user's messages
-  // AND its own self-scheduled wakes. The wake path is disk-lock based
-  // (runWorkerTurn) and refreshes the in-memory store from disk; if the user's
-  // message only lived in memory (chat-controller's off-target append + deferred
-  // autosave), a concurrent wake's refresh CLOBBERED it — the "message I sent to
-  // the supervisor vanished" bug. Route mission messages through the SAME
-  // disk-lock path so the user's turn is durably persisted before anything else
-  // can refresh over it.
-  if (conv.source === "mission") {
-    const { runWorkerTurn } = await import("./offVaultRun");
-    // The user typed this straight to the supervisor — its reply stays natural
-    // prose (direct), not a cleaned thought-chain.
-    void runWorkerTurn(s.vaultPath, conv.id, trimmed, {
-      modelId: useStore.getState().supervisorModelId,
-      direct: true,
-    }).catch((e) => console.warn("[phone-app] supervisor turn failed:", e));
-    return { ok: true, convId: conv.id };
   }
 
   const { sendMessage } = await import("./chat-controller");
@@ -292,27 +168,6 @@ async function handlePhoneMessage(
     console.warn("[phone-app] agent run failed:", e),
   );
   return { ok: true, convId: conv.id };
-}
-
-// ---- inbound: structured mission approval (deterministic — zero model tokens) ----
-// The phone approved a proposed plan. Approval is a CODE path, not a natural-
-// language instruction the model re-interprets: we mint the mission directly
-// from the plan data. Its own supervisor then spawns and runs the workers.
-async function handlePhoneStartMission(mission: {
-  title?: string;
-  goal?: string;
-}): Promise<Record<string, unknown>> {
-  const s = useStore.getState();
-  if (!s.vaultPath) return { error: "no vault open on the box" };
-  if (!s.conversationsLoaded)
-    return { error: "box is still loading conversations — retry in a few seconds" };
-  const goal = String(mission.goal ?? "").trim();
-  const title =
-    String(mission.title ?? "").trim() || goal.split("\n")[0]!.slice(0, 60) || "Mission";
-  if (!goal) return { error: "empty mission brief" };
-  const { startMission } = await import("./offVaultRun");
-  const { id } = await startMission(s.vaultPath, goal, title);
-  return { ok: true, convId: id, mission: title };
 }
 
 // ---- inbound: status snapshot (deterministic — zero model tokens) ----
@@ -476,131 +331,12 @@ async function onRunEnded(convId: string): Promise<void> {
     if (leftover.length) queued.set(convId, leftover);
     else queued.delete(convId);
     const text = group.join("\n\n");
-    const conv = useStore.getState().conversations.find((c) => c.id === convId);
-    if (conv?.source === "mission") {
-      // Same durable disk-lock path as a direct mission message (above). A
-      // user-message flush is a direct reply (natural prose); a wake flush is
-      // background review (cleaned into the thought-chain).
-      const { runWorkerTurn } = await import("./offVaultRun");
-      void runWorkerTurn(useStore.getState().vaultPath!, convId, text, {
-        modelId: useStore.getState().supervisorModelId,
-        direct: isUserGroup,
-      }).catch((e) => console.warn("[phone-app] queued supervisor flush failed:", e));
-    } else {
-      const { sendMessage } = await import("./chat-controller");
-      void sendMessage(text, undefined, undefined, convId).catch((e) =>
-        console.warn("[phone-app] queued send failed:", e),
-      );
-    }
-    return; // the follow-up run's completion flushes any leftover wakes
-  }
-  // 2) A finished worker reports UP, not out: its completion wakes its
-  // MISSION thread, which reviews the result and decides — verify, steer,
-  // respawn, or (only when it genuinely needs the user) Notify/AskUser. The
-  // user hears from supervisors, not from every worker. Legacy workers with
-  // no mission thread keep the old direct ping as the safety net so nothing
-  // ever finishes silently.
-  const s = useStore.getState();
-  const c = s.conversations.find((x) => x.id === convId);
-  if (!c) return;
-  if (c.source === "worker") {
-    // Use the worker's last SUBSTANTIVE turn — its real deliverable — not an
-    // empty trailing turn, which produced the meaningless "Last output: finished."
-    // the user flagged (the wake reported "finished" as if that were the work).
-    const lastSubstantive = [...c.messages]
-      .reverse()
-      .find((m) => m.role === "assistant" && !m.hidden && (m.content ?? "").trim());
-    const last = [...c.messages].reverse().find((m) => m.role === "assistant" && !m.hidden);
-    // A turn flagged `failed` errored mid-run — it has NO verified deliverable, so
-    // it must never be announced as "done … completed its task" (the false "worker
-    // done" with no file on disk the user flagged). Report it honestly instead.
-    // FAILED if the persisted flag is set OR the final reply (or the substantive
-    // turn we'd otherwise show) is a crash bubble ("[object Object]" / a ⚠️ line)
-    // — historical rows and text-event errors lack the flag but are still crashes.
-    const failed = !!last?.failed || isCrashBubble(last?.content);
-    const subContent = lastSubstantive?.content ?? "";
-    // Blank a crash-bubble body so the `if (!body)` fallback below names the tools
-    // instead — a success card can never read the literal "[object Object]".
-    let body = (isCrashBubble(subContent) ? "" : subContent).trim().replace(/\s+/g, " ").slice(0, 180);
-    if (!body) {
-      // No prose anywhere — name what it last ran; never a bare "finished".
-      const names = (last?.toolCalls ?? []).map((t) => t.name);
-      body = names.length ? `ran ${[...new Set(names)].slice(0, 5).join(", ")}` : "completed its task";
-    }
-    // (a) Tell the user this worker finished — ONCE per worker (dedupe by convId;
-    // the old bug was each worker pinging several times per turn-end / wake).
-    // Frame it by OUTCOME: a clean finish is a "done" deliverable card; a crash is
-    // an honest "failed" card — never dress a crash up as a delivered result.
-    if (!notifiedWorkers.has(convId)) {
-      notifiedWorkers.add(convId);
-      if (failed) {
-        const errLine = ((last?.content || "").match(/⚠️[^\n]*/)?.[0] || body || "the run errored")
-          .replace(/^⚠️\s*/, "")
-          .slice(0, 180);
-        void notify("info", `Worker failed — ${c.title}`, errLine, convId, {
-          intention: `Worker failed${c.mission ? " · " + c.mission : ""}`,
-          summary: errLine.slice(0, 200),
-          icon: "⚠️",
-          cls: "r",
-        });
-      } else {
-        const { summarizeForAlert } = await import("./alert-summary");
-        const sum = await summarizeForAlert(last?.content ?? body, useStore.getState().apiKeys).catch(() => null);
-        void notify("info", sum?.title || `Worker done — ${c.title}`, sum?.body || body, convId, {
-          intention: `Worker deliverable${c.mission ? " · " + c.mission : ""}`,
-          summary: (sum?.body || body).slice(0, 200),
-          icon: "✓",
-          cls: "g",
-        });
-      }
-    }
-    // (b) Report UP to the mission so its supervisor reviews + continues — UNLESS
-    // the mission is already complete. A late worker-finish must not re-wake a
-    // retired mission (that's what kept the supervisor running extra turns and
-    // re-calling CompleteMission after it was already done).
-    const missionKey = (c.mission ?? "").trim();
-    const missionConv = missionKey
-      ? s.conversations.find(
-          (x) =>
-            x.source === "mission" &&
-            (x.mission ?? x.title).trim() === missionKey &&
-            x.id !== convId,
-        )
-      : undefined;
-    if (missionConv && !missionConv.completedAt) {
-      const wake = failed
-        ? `Your worker "${c.title}" (id ${convId}) FAILED its turn — it errored and produced no verified deliverable. Error: ${body}\n\n` +
-          `Do NOT treat this as done. Decide: respawn it with a fix, do the irreducible part yourself in this thread, or — only if you can't resolve it — bring the user in. Before trusting ANY claimed file, verify it exists on disk (ls/Read) — a crashed worker can report "completed" with nothing written.`
-        : `Your worker "${c.title}" (id ${convId}) just finished its turn. Last output: ${body}\n\n` +
-          `Review its thread and decide: verified done, steer it (AskWorker), respawn with learnings, or — only if you can't resolve it yourself — bring the user in. Before marking done, verify any claimed deliverable exists on disk.`;
-      // Decide queue-vs-run on the mission's CURRENT status, not the snapshot
-      // `s` captured at the top of this function — there is an `await`
-      // (summarizeForAlert) between that snapshot and here, and the mission's OWN
-      // setup turn can go running→idle during it. Using the stale "running"
-      // status queued the wake AFTER the mission's idle transition had already
-      // fired onRunEnded and flushed an empty queue, so the queued wake never
-      // flushed and a failed worker never woke its supervisor to recover (the
-      // worker-recover deadlock, surfaced by G3 when a quota-fallback pushed the
-      // worker's finish into that race window).
-      const missionNow =
-        useStore.getState().conversations.find((x) => x.id === missionConv.id) ?? missionConv;
-      if (isThreadBusy(missionNow)) {
-        // Mission is mid-turn (likely the very AskWorker that drove this
-        // worker). Queue the wake — it flushes when the mission's run ends.
-        const { queueMissionWake } = await import("./offVaultRun");
-        await queueMissionWake(useStore.getState().vaultPath!, missionConv.id, wake, "wake");
-      } else {
-        // Durable disk-lock path (same as a phone message / queued flush to a
-        // mission) so the wake can't be clobbered by a concurrent refresh.
-        const { runWorkerTurn } = await import("./offVaultRun");
-        void runWorkerTurn(useStore.getState().vaultPath!, missionConv.id, wake, {
-          modelId: useStore.getState().supervisorModelId,
-        }).catch((e) => console.warn("[phone-app] mission wake failed:", e));
-      }
-    }
+    const { sendMessage } = await import("./chat-controller");
+    void sendMessage(text, undefined, undefined, convId).catch((e) =>
+      console.warn("[phone-app] queued send failed:", e),
+    );
   }
 }
-
 // ---- the agent→you channel: record + push + live-update, one call ----
 // Every notification is (a) appended to <vault>/.vault-chat/notifications.jsonl
 // (the Alerts tab reads this), (b) delivered as Web Push, and (c) broadcast so
@@ -685,12 +421,6 @@ export async function notify(
   // so the title carries the signal instead of junk.
   if (rec.body === "[object Object]") rec.body = "";
   if (rec.summary === "[object Object]") rec.summary = "";
-  // [ask redesign] Every ask gets its OWN conversation, minted here — isolated
-  // from the mission thread by construction (the spillover fix). The phone's
-  // deliberation sheet attaches THIS thread; the notification keeps convId (the
-  // mission) as the deterministic /answer relay target and gains askConvId (the
-  // conversation surface). Mint failure is non-fatal: the card still renders
-  // and options still answer; only the talk-it-through surface degrades.
   // Coalesce a byte-identical re-fire inside the 60s window (dark-alarm
   // triple-fire, parallel worker pings) before it hits feed + push. Key on
   // kind+convId+title+body — NOT title+body alone: two different threads asking
@@ -702,31 +432,6 @@ export async function notify(
   // the mint didn't).
   const dupKey = `${kind} ${convId ?? ""} ${rec.title as string} ${rec.body as string}`;
   if (isDuplicateNotif(dupKey, rec.ts as number)) return;
-  if (kind === "ask") {
-    try {
-      const { mintAskConversation } = await import("./offVaultRun");
-      const missionLabel = convId
-        ? useStore.getState().conversations.find((c) => c.id === convId)?.mission ||
-          useStore.getState().conversations.find((c) => c.id === convId)?.title
-        : undefined;
-      const dlbMin = Number(extra?.deliberation?.timeoutMin);
-      rec.askConvId = await mintAskConversation(vault, {
-        missionConvId: convId,
-        notifId: rec.id as string,
-        title: (title || "Needs your call").slice(0, 90),
-        mission: missionLabel,
-        question: body,
-        options: extra?.deliberation?.options,
-        stakes: extra?.deliberation?.stakes,
-        onDefer: extra?.deliberation?.onDefer,
-        // Arm a self-defer deadline only when the ask gave a positive timeout.
-        deadlineAt: Number.isFinite(dlbMin) && dlbMin > 0 ? Date.now() + dlbMin * 60_000 : undefined,
-        kind: "ask",
-      });
-    } catch (e) {
-      console.warn("[notify] ask-conversation mint failed (non-fatal):", e);
-    }
-  }
   // Latest ask wins, BY CONSTRUCTION: a conversation has at most ONE pending ask.
   // A new "ask" retires any earlier unanswered asks for the same thread (append
   // read markers — same append-only shape the phone's swipe writes). Without this
@@ -765,16 +470,8 @@ export async function notify(
   // deep-links to the asking thread (the service worker + phone.html read
   // ?conv=), instead of just re-focusing whatever chat was open last — the
   // wrong-conversation bug the PROXY spend-fork surfaced.
-  // [ask redesign] An ask's push deep-links to the ASK surface (?ask=<notifId>
-  // → the deliberation sheet over its own thread) — never to the mission thread,
-  // which silently re-bound the main composer (spillover vector B3). Info
-  // pushes keep the ?conv deep-link.
-  const pushUrl =
-    kind === "ask"
-      ? `/phone?ask=${encodeURIComponent(rec.id as string)}`
-      : convId
-        ? `/phone?conv=${encodeURIComponent(convId)}`
-        : "/phone";
+  // An ask is answered in its own conversation, so every push opens that.
+  const pushUrl = convId ? `/phone?conv=${encodeURIComponent(convId)}` : "/phone";
   await sendPush(rec.title as string, (rec.body as string).slice(0, 180), pushUrl).catch(() => {});
 }
 
@@ -1150,16 +847,10 @@ export async function startPhoneAppHost(): Promise<void> {
     convId?: string | null;
     text?: string;
     supervisor?: boolean;
-    mission?: { title?: string; goal?: string };
     clientMsgId?: string;
   }>("phone:msg", async (event) => {
-    const { reqId, convId, text, supervisor, mission, clientMsgId } = event.payload;
+    const { reqId, convId, text, supervisor, clientMsgId } = event.payload;
     try {
-      // Structured approval payload → mint the mission deterministically.
-      if (mission && (mission.goal || mission.title)) {
-        respond(reqId, await handlePhoneStartMission(mission));
-        return;
-      }
       respond(
         reqId,
         await dedupedPhoneMessage(clientMsgId, convId ?? null, String(text ?? ""), !!supervisor),
@@ -1169,34 +860,28 @@ export async function startPhoneAppHost(): Promise<void> {
     }
   });
 
-  // [AskUser redesign] The TAGGED answer channel: a tapped option or a committed
-  // free-form reply to a "Needs you" ask. Distinct from /message so a plain chat
-  // message (probing / talking it through) can NOT accidentally resolve the ask —
-  // only a tagged answer clears AWAITING_USER and resumes the executor with the
-  // answer fed in. Routes through the SAME deduped handler with answer=true.
+  // The answer to a "Needs you" ask: a tapped option or a committed reply, sent
+  // as the next message in the asking conversation, with the decision recorded
+  // on the notification (answeredWith) for the archive.
   await listen<{
     reqId: string;
     convId?: string | null;
     text?: string;
     clientMsgId?: string;
     notifId?: string;
-    askConvId?: string;
     defer?: boolean;
     onDefer?: string;
   }>("phone:answer", async (event) => {
-    const { reqId, convId, text, clientMsgId, notifId, askConvId, defer, onDefer } = event.payload;
+    const { reqId, convId, text, clientMsgId, notifId, defer, onDefer } = event.payload;
     try {
       const t = String(text ?? "").trim();
       if (!convId || (!t && !defer)) {
         respond(reqId, { error: "answer needs a convId and non-empty text" });
         return;
       }
-      // [ask-object] "Not now" is the ask's single terminal ALONGSIDE answering:
-      // it ends the ask without picking an option and — crucially — RESUMES the
-      // parked mission (clears AWAITING_USER) instead of stranding it forever the
-      // way a swiped-away card used to. The injected turn tells the executor to
-      // fall back to what it declared when it raised the ask (act on a named
-      // default, or stand down for anything high-stakes/irreversible). The
+      // "Not now" ends the ask without picking an option: the injected turn
+      // tells the agent to fall back to what it declared when it raised the ask
+      // (act on a named default, or stand down for anything high-stakes). The
       // recorded decision is the short "Not now" for the card + archive.
       const onDeferTxt = String(onDefer ?? "").trim();
       const injected = defer
@@ -1206,17 +891,14 @@ export async function startPhoneAppHost(): Promise<void> {
             : "Fall back to what you decided when you raised it: if you named a default action for no-answer, take it now; if this needs my explicit go and I haven't given it (a spend, or anything irreversible or high-stakes), do NOT act — stand down or hold, and say plainly what you're doing.")
         : t;
       const recorded = defer ? "Not now" : t;
-      const res = await dedupedPhoneMessage(clientMsgId, convId, injected, false, /* answer */ true);
+      const res = await dedupedPhoneMessage(clientMsgId, convId, injected, false);
       // Durably record WHICH answer settled this ask — an append-only "answered"
       // marker keyed to the notification id. notifications_json folds it into the
       // card as answeredWith/answeredAt (and treats it as read), so the Archive
       // shows the decision that was made, not just that an ask once existed.
       // Skipped when the send failed or deduped to an error — a phantom "decided"
-      // stamp on an ask whose answer never ran would lie to the archive. ALSO
-      // skipped when the mission was already complete (missionDone): the tap
-      // was downgraded to a plain steer — a "decision" record for a closed
-      // mission would be a lie too.
-      if (notifId && !(res as { error?: unknown }).error && !(res as { missionDone?: boolean }).missionDone) {
+      // stamp on an ask whose answer never ran would lie to the archive.
+      if (notifId && !(res as { error?: unknown }).error) {
         const vault = useStore.getState().vaultPath;
         if (vault) {
           await invoke("notification_add", {
@@ -1226,76 +908,7 @@ export async function startPhoneAppHost(): Promise<void> {
           broadcast({ type: "notif" });
         }
       }
-      // [ask redesign] Pin the decision receipt into the ask's own thread —
-      // after the answer was accepted, same no-phantom-stamp rule as the
-      // marker above. [unified ask] The thread stays talkable after; the stamp
-      // is the record, not a freeze. No receipt for a missionDone downgrade.
-      if (askConvId && !(res as { error?: unknown }).error && !(res as { missionDone?: boolean }).missionDone) {
-        const vault = useStore.getState().vaultPath;
-        if (vault) {
-          const { stampAskDecided } = await import("./offVaultRun");
-          await stampAskDecided(vault, askConvId, recorded).catch((e) =>
-            console.warn("[phone-app] ask-decided stamp failed:", e),
-          );
-        }
-      }
       respond(reqId, res);
-    } catch (e) {
-      respond(reqId, { error: String(e) });
-    }
-  });
-
-  // [ask redesign] Lazy follow-up thread for an INFO alert: minted on the
-  // user's FIRST message about that alert, then reused (a "followup" marker in
-  // notifications.jsonl records the binding; notifications_json folds it into
-  // the card as followupConvId). The first message runs the ask agent
-  // immediately, so one round-trip both creates the thread and answers.
-  await listen<{
-    reqId: string;
-    notifId?: string;
-    title?: string;
-    body?: string;
-    convId?: string;
-    text?: string;
-  }>("phone:alert-followup", async (event) => {
-    const { reqId, notifId, title, body, convId, text } = event.payload;
-    try {
-      const s = useStore.getState();
-      if (!s.vaultPath) {
-        respond(reqId, { error: "no vault open on the box" });
-        return;
-      }
-      const t = String(text ?? "").trim();
-      if (!notifId) {
-        respond(reqId, { error: "follow-up needs a notifId" });
-        return;
-      }
-      const { mintAskConversation, runAskTurn } = await import("./offVaultRun");
-      const missionLabel = convId
-        ? s.conversations.find((c) => c.id === convId)?.mission ||
-          s.conversations.find((c) => c.id === convId)?.title
-        : undefined;
-      const askConvId = await mintAskConversation(s.vaultPath, {
-        missionConvId: convId || undefined,
-        notifId,
-        title: `Re: ${(title || "alert").slice(0, 80)}`,
-        mission: missionLabel,
-        question: [title, body].filter(Boolean).join(" — ").slice(0, 1200),
-        kind: "info",
-      });
-      await invoke("notification_add", {
-        vault: s.vaultPath,
-        json: JSON.stringify({ type: "followup", id: notifId, convId: askConvId, ts: Date.now() }),
-      }).catch(() => {});
-      broadcast({ type: "notif" });
-      // Mint-only when no text: the phone attaches the fresh thread and sends
-      // the first message through the normal /message path.
-      if (t) {
-        void runAskTurn(s.vaultPath, askConvId, t).catch((e) =>
-          console.warn("[phone-app] alert follow-up turn failed:", e),
-        );
-      }
-      respond(reqId, { ok: true, convId: askConvId });
     } catch (e) {
       respond(reqId, { error: String(e) });
     }
@@ -1668,18 +1281,6 @@ export async function startPhoneAppHost(): Promise<void> {
         // prematurely here was the bug: the phone flipped between stopped and
         // running and the user couldn't tell whether it was truly off.
         if (!hit) broadcast({ type: "status", convId, status: "idle" });
-        // Stopping a MISSION tears the whole thing down — supervisor, its
-        // workers, its scheduled wakes — and tombstone-deletes them so it
-        // actually disappears for every client and can't resurrect (via a
-        // worker-finish wake, a scheduled wake, or a git-sync pull).
-        const stopped = useStore.getState().conversations.find((c) => c.id === convId);
-        const vault = useStore.getState().vaultPath;
-        if (stopped?.source === "mission" && vault) {
-          const { stopAndDeleteMission } = await import("./offVaultRun");
-          await stopAndDeleteMission(vault, convId).catch((e) =>
-            console.warn("[phone-app] stop mission failed:", e),
-          );
-        }
         respond(reqId, {
           ok: true,
           result: hit
@@ -1702,8 +1303,8 @@ export async function startPhoneAppHost(): Promise<void> {
     }
   });
 
-  // Purge the chats list: tombstone-delete every idle assistant chat. Workers
-  // and missions are untouched (Activity owns them), as is anything mid-run.
+  // Purge the chats list: tombstone-delete every idle assistant chat. Archived
+  // mission threads are untouched (they are history), as is anything mid-run.
   await listen<{ reqId: string }>("phone:clearchats", async (event) => {
     try {
       const s = useStore.getState();
@@ -1713,8 +1314,7 @@ export async function startPhoneAppHost(): Promise<void> {
       }
       const victims = s.conversations.filter(
         (c) =>
-          c.source !== "worker" &&
-          c.source !== "mission" &&
+          !isArchivedThread(c) &&
           c.status !== "running" &&
           !(s.busy && s.activeConversationId === c.id),
       );

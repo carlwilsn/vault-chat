@@ -6,8 +6,8 @@ import { z } from "zod";
 import { buildModel, findModel, supportsVision, createCostMeter, DEFAULT_MODEL_ID } from "./providers";
 import { buildTools } from "./tools";
 import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
-import { loadSessionContext, buildLiveStateBlock } from "./context";
-import { loadVaultSystemPrompt, loadVaultTools, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock, loadVaultSupervisorPrompt, loadVaultAssistantPrompt, loadVaultAskPrompt } from "./meta";
+import { loadSessionContext } from "./context";
+import { loadVaultSystemPrompt, loadVaultTools, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock, loadVaultAssistantPrompt } from "./meta";
 import { harnessV2Enabled } from "./harness";
 
 export type TokenUsage = {
@@ -52,12 +52,8 @@ The user keeps a scratchpad of notes at <vault>/.vault-chat/notes.jsonl — quic
 // (or the user emptied) `.vault-chat/agent/assistant.md`. The seeded file is the
 // editable source of truth — kept in sync with defaults/assistant.md. Distilled
 // to the load-bearing behaviors; the full guidance lives in the seeded file.
-const FALLBACK_ASSISTANT = `## Assistant\n\nYou are the light, conversational chat the user talks to directly — the same assistant on their phone and in the desktop app. You answer, look things up, read/write this vault, take notes, set reminders. You do NOT grind long jobs here and you cannot spawn workers.\n\n- Talk like a person. A greeting gets a short human reply — never a status dump of what's running or what you read. Give a briefing only when asked, and keep it tight.\n- Read whose task it is: "walk me through / help me understand / I'm implementing" = coach and let them hold the pen; "do X for me / a task that'd take YOU 20 minutes / go research X" = own it yourself or propose a mission. Don't hand work back when they asked you to take it.\n- Missions are the heart of the workflow: almost anything where the user wants you to actually DO / build / run / figure out something is a mission, not this chat — only quick answers, lookups, notes, and "check in on X" aren't. Lean toward missions when unsure. When they're heading toward real work, either propose it or OFFER first ("want me to set this up as a mission?") when they haven't committed — don't silently fire the tool, and don't let a real task dissolve into chat. To propose, call \`ProposeMission\` with a \`title\` (the goal, briefly stated) and \`tasks\` — the sub-components that DEFINE IT DONE (each a concrete sub-result that'll likely become a worker; the supervisor decides how to split). Approval mints the mission; you can't start one or spawn workers yourself.\n- Don't claim you "started" something you only proposed, and don't narrate mission progress you haven't verified by reading its thread.`;
+const FALLBACK_ASSISTANT = `## Assistant\n\nYou are the conversational chat the user talks to directly — the same assistant on their phone and in the desktop app. You answer, look things up, read/write this vault, take notes, set reminders.\n\n- Talk like a person. A greeting gets a short human reply — never a status dump. Give a briefing only when asked, and keep it tight.\n- Read whose task it is: "walk me through / help me understand / I'm implementing" = coach and let them hold the pen; "do X for me / go research X" = own it yourself. Don't hand work back when they asked you to take it.\n- Don't claim you did something you haven't verified.`;
 
-// [ask redesign] Compiled-in fallback for the ask agent, used when a vault
-// hasn't seeded `.vault-chat/agent/ask.md` yet. Kept in sync with
-// defaults/ask.md (the editable, seeded source of truth).
-const FALLBACK_ASK = `## The ask conversation\n\nYou are the dedicated agent for ONE notification — a decision (or alert) a mission surfaced to the user. This thread exists so the user can deliberate without touching the mission thread. You are not the mission's supervisor and you never act on the mission.\n\n- The ask's question and its original options are pinned above this conversation — don't restate them at length.\n- You start with the mission's context (provided below) and you may READ live ground truth (files, logs, remote state) when the user asks how things stand NOW — hindsight is allowed and encouraged.\n- When the deliberation genuinely moves the fork — pushback, a new constraint, a middle path — call ProposeOptions with a tighter option set. The cards stack under your reply; the originals stay. Tapping any card sends that option as the user's FORMAL answer to the waiting mission.\n- You cannot answer for the user, notify anyone, or change the mission. Your only output is conversation and proposed option cards.\n- Be concise and concrete. This is a decision surface, not a status feed.`;
 
 function detectPlatform(): "windows" | "mac" | "linux" {
   const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
@@ -195,35 +191,17 @@ export async function runAgent(params: {
   strictVault?: boolean;
   bashDisabled?: boolean;
   voiceMode?: boolean;
-  // Supervisor role: the always-on orchestrator prompt (persistent mind, goal
-  // loop, worker steering) used by mission threads.
-  supervisorMode?: boolean;
   // The interactive assistant persona — the chat the user talks to directly,
-  // on the phone OR the desktop ChatPane. A light, conversational role that
-  // proposes missions via plan cards and doesn't orchestrate; loads
-  // assistant.md instead of the heavy supervisor.md. Same agent on both
-  // surfaces, per the user — no second-class phone brain. Takes precedence
-  // over supervisorMode (the phone cockpit thread is role "supervisor", so
-  // supervisorMode is also set there).
+  // on the phone OR the desktop ChatPane; loads assistant.md.
   assistantMode?: boolean;
-  // [ask redesign] The dedicated ask agent — a notification's own conversation.
-  // Read+converse only, with ProposeOptions as its one unique tool; loads
-  // ask.md. Takes precedence over assistant/supervisor modes.
-  askMode?: boolean;
-  // [unified ask] The user drove this very turn (they just typed the message
-  // it answers) — presence-gates an AskUser to inline option cards instead of
-  // the push + "Needs you" card. Background turns (scheduled, executor wakes)
-  // leave this unset and keep the full async ask treatment.
+  // The user drove this very turn (they just typed the message it answers):
+  // an AskUser is asked in prose. Background turns (scheduled) leave this
+  // unset and fetch the user with a "Needs you" card + push.
   interactive?: boolean;
   conversationId?: string;
   reasoningEffort?: import("./store").ReasoningEffort;
-  // [harness v2] Run this supervisor turn on FRESH CONTEXT: drop the accumulated
-  // thread history (keeping only the mission brief) and re-hydrate from mind.md +
-  // the live-state block. Set by the caller for autonomous supervisor wakes (NOT
-  // foreground user chat, which keeps continuity), gated by harnessV2Enabled().
-  freshContext?: boolean;
 }) {
-  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, supervisorMode, assistantMode, askMode, interactive, conversationId, freshContext } = params;
+  const { modelId, apiKey, vault, history, userMessage, userAttachments, onEvent, abortSignal, tavilyKey, strictVault, bashDisabled, voiceMode, assistantMode, interactive, conversationId } = params;
   const reasoningEffort = params.reasoningEffort ?? "medium";
   // Meters every OpenRouter call made with `model` below (the turn, its
   // auto-continues, mid-run compaction, sub-agents) — see providers.ts.
@@ -243,7 +221,7 @@ export async function runAgent(params: {
     if (!spec) throw new Error(`unknown model: ${modelId}`);
     const model = buildModel(spec, apiKey, { meter });
 
-    const [sessionContext, skills, vaultSystem, vaultTools, northStar, memoryIndex, shellKind, vaultSupervisor, vaultAssistant, vaultAsk] = await Promise.all([
+    const [sessionContext, skills, vaultSystem, vaultTools, northStar, memoryIndex, shellKind, vaultAssistant] = await Promise.all([
       loadSessionContext(vault),
       loadSkills(vault),
       loadVaultSystemPrompt(vault),
@@ -251,17 +229,8 @@ export async function runAgent(params: {
       loadVaultNorthStar(vault),
       loadVaultMemoryIndex(vault),
       getShellKind(),
-      // The supervisor role layers an always-on orchestrator (persistent mind,
-      // goal loop, worker steering) onto the agent. Loaded for mission threads
-      // (supervisorMode) — but NOT the interactive assistant, which gets the
-      // lighter assistant prompt.
-      supervisorMode && !assistantMode && !askMode
-        ? loadVaultSupervisorPrompt(vault)
-        : Promise.resolve(""),
       // The light assistant prompt for the interactive chat (phone + desktop).
-      assistantMode && !askMode ? loadVaultAssistantPrompt(vault) : Promise.resolve(""),
-      // [ask redesign] The ask-agent role for a notification's own conversation.
-      askMode ? loadVaultAskPrompt(vault) : Promise.resolve(""),
+      assistantMode ? loadVaultAssistantPrompt(vault) : Promise.resolve(""),
     ]);
 
     const { body: expandedMessage } = expandSkillInvocation(userMessage, skills);
@@ -316,27 +285,14 @@ export async function runAgent(params: {
     const northStarBlock = northStarPromptBlock(northStar);
     const memoryBlock = vaultMemoryPromptBlock(memoryIndex);
 
-    // Supervisor role: an always-on orchestrator applied to mission threads, but
-    // NOT the interactive assistant (it gets the lighter assistant prompt below).
-    // A vault that doesn't want a supervisor leaves the file empty and stays a
-    // plain agent.
-    const supervisorNote =
-      supervisorMode && !assistantMode && vaultSupervisor.trim()
-        ? `\n${vaultSupervisor.trim()}`
-        : "";
-
     // Assistant role: the light, conversational chat prompt the user talks to
     // directly — same on the phone and the desktop ChatPane. Falls back to the
     // compiled-in baseline when the vault hasn't seeded assistant.md (e.g. an
     // existing vault on a fresh update, before the seed/git-sync runs) so the
     // assistant is never left with no role at all.
-    const assistantNote = assistantMode && !askMode
+    const assistantNote = assistantMode
       ? `\n${vaultAssistant.trim() || FALLBACK_ASSISTANT}`
       : "";
-
-    // [ask redesign] Ask-agent role: the notification's own conversation. Falls
-    // back to the compiled-in baseline when the vault hasn't seeded ask.md yet.
-    const askNote = askMode ? `\n${vaultAsk.trim() || FALLBACK_ASK}` : "";
 
     const system = [
       baseSystem,
@@ -354,9 +310,7 @@ export async function runAgent(params: {
         : "",
 
       voiceNote,
-      supervisorNote,
       assistantNote,
-      askNote,
     ]
       .filter(Boolean)
       .join("\n");
@@ -405,17 +359,7 @@ export async function runAgent(params: {
     // empty assistant turn at the tail of history; an unconfigured
     // system prompt can also be "". Only stamp the cacheControl
     // breakpoint on a content block that actually has text.
-    // [harness v2] Fresh-context supervisor wake: drop the accumulated middle of
-    // the thread and keep ONLY the mission brief (history[0] = the first user turn
-    // = the success criteria). Everything else is re-hydrated from mind.md + the
-    // live-state block on the user turn below, so the supervisor reasons at a
-    // small, near-constant context instead of degrading in a 100–200K-token thread.
-    // Legacy path (and foreground user chat) keeps full history untouched.
-    const effectiveHistory =
-      freshContext && history.length > 0 && history[0]!.role === "user"
-        ? [history[0]!]
-        : history;
-    const historyMessages: ModelMessage[] = effectiveHistory
+    const historyMessages: ModelMessage[] = history
       .filter((h) => h.content.trim().length > 0)
       .map<ModelMessage>((h, i, arr) => {
         const isLast = i === arr.length - 1;
@@ -441,44 +385,7 @@ export async function runAgent(params: {
     const finalUserText = scrub(expandedMessage);
     const attachableImages = vision ? userAttachments ?? [] : [];
 
-    // Live-state ground truth (read-path = write-path). Inject the actual
-    // current mission/run state — read from the SAME in-memory store the UI and
-    // the run/notification records are written from — so a status question
-    // ("how's it going?") is answered from reality instead of a reconstructed
-    // story. Goes on the UNCACHED user turn (never the cached system prefix) so
-    // the 1h system cache is untouched. Only for the chat/orchestration tiers;
-    // a bare worker doesn't field status questions. Empty for a quiet vault.
-    let liveStateBlock = "";
-    if (assistantMode || supervisorMode) {
-      try {
-        const { useStore } = await import("./store");
-        const { activeRuns } = await import("./runRegistry");
-        liveStateBlock = buildLiveStateBlock(
-          useStore.getState().conversations,
-          new Set(activeRuns()),
-          Date.now(),
-        );
-      } catch {
-        liveStateBlock = "";
-      }
-    }
-    // [harness v2] On a fresh-context wake, re-hydrate the supervisor's working
-    // memory (mind.md) onto the user turn — so dropping history above loses
-    // nothing that isn't already in mind.md + the kept brief + live-state.
-    let missionMemoryBlock = "";
-    if (freshContext) {
-      try {
-        const { loadMissionMemory } = await import("./context");
-        missionMemoryBlock = await loadMissionMemory(vault);
-      } catch {
-        missionMemoryBlock = "";
-      }
-    }
-    const baseUserText = finalUserText.trim() ? finalUserText : "(no message text)";
-    const preBlocks = [missionMemoryBlock, liveStateBlock].filter(Boolean);
-    const safeUserText = preBlocks.length
-      ? `${preBlocks.join("\n\n---\n\n")}\n\n---\n\n${baseUserText}`
-      : baseUserText;
+    const safeUserText = finalUserText.trim() ? finalUserText : "(no message text)";
     const finalUserMessage: ModelMessage =
       attachableImages.length > 0
         ? {
@@ -520,47 +427,11 @@ export async function runAgent(params: {
       finalUserMessage,
     ];
 
-    // Which layer this thread sits in (assistant → missions → workers): the
-    // toolset is hard-gated by it. Resolved from the conversation's source —
-    // store first (hot path), disk as fallback for headless off-vault runs —
-    // so every caller gets the right tools without wiring it through.
-    let tier: "assistant" | "mission" | "worker" | "ask" = "assistant";
-    if (conversationId) {
-      let src: string | undefined;
-      try {
-        const { useStore } = await import("./store");
-        src = useStore.getState().conversations.find((c) => c.id === conversationId)?.source;
-      } catch {
-        /* store unavailable */
-      }
-      if (!src) {
-        try {
-          const { readConversations } = await import("./conversations");
-          src = (await readConversations(vault)).find((c) => c.id === conversationId)?.source;
-        } catch {
-          /* default assistant */
-        }
-      }
-      if (src === "mission") tier = "mission";
-      else if (src === "worker") tier = "worker";
-      else if (src === "ask") tier = "ask";
-    }
-    // The assistant persona is ALWAYS assistant-tier, even when it runs on a
-    // mission thread. The two-lane conversational front answers the user from a
-    // mission thread (so `conversationId` is a mission → source resolves to
-    // "mission" above), but it must read/answer only — never orchestrate. Assistant
-    // tier drops StartWorker/CompleteMission/MarkDoneWhen, so it cannot spawn or
-    // mutate the mission's work concurrently with the executor that owns it.
-    if (assistantMode && !askMode) tier = "assistant";
-    // [ask redesign] The ask agent is always ask-tier — read+converse+propose.
-    if (askMode) tier = "ask";
-
     const builtinTools = buildTools(vault, {
       tavilyKey,
       strictVault: strictVault ?? false,
       bashDisabled: bashDisabled ?? false,
       conversationId,
-      tier,
       interactive: interactive ?? false,
       abortSignal,
     });

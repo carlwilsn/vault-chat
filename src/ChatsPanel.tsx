@@ -287,7 +287,7 @@ function FolderRow({
   const working = project.items.filter((c) => ongoingWork(c)).length;
   return (
     <div className="border-b border-border/40 hover:bg-accent/40 flex items-center gap-2 group">
-      <button onClick={onToggle} className="flex-1 text-left px-4 py-2.5 flex items-center gap-2 min-w-0">
+      <button onClick={onToggle} aria-expanded={open} className="flex-1 text-left px-4 py-2.5 flex items-center gap-2 min-w-0">
         <ChevronRight className={cn("h-3 w-3 text-muted-foreground shrink-0 transition-transform", open && "rotate-90")} />
         <Folder className="h-3 w-3 text-muted-foreground shrink-0" />
         <span className="text-[12.5px] text-foreground truncate flex-1">{project.name}</span>

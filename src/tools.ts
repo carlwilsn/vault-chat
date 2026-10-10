@@ -5,8 +5,6 @@ import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useStore, type TodoItem } from "./store";
 import { buildNote } from "./notes";
-import { harnessV2Enabled } from "./harness";
-import { errToString } from "./errfmt";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -267,13 +265,6 @@ export type BuildToolsOptions = {
   // schedules to this conversation, so when the schedule fires the
   // reply lands in (and routes from) the right chat.
   conversationId?: string;
-  // Which layer this conversation sits in — assistant → missions → workers,
-  // plus the ask agent (a notification's own conversation). The layers are
-  // enforced HERE, not by prompt discipline: assistants mint missions but
-  // cannot spawn workers; only a mission thread holds StartWorker; workers
-  // hold neither (they do the task, not orchestration); the ask tier is
-  // read+converse only, with ProposeOptions as its ONE unique ability.
-  tier?: "assistant" | "mission" | "worker" | "ask";
   // [unified ask] True when this turn is a LIVE conversation the user is
   // driving right now (they just typed the message this turn answers).
   // Presence gates an ask's WEIGHT, not the ability (note ff31231e): an
@@ -391,30 +382,12 @@ async function assertNotDenied(absPath: string, vault: string): Promise<void> {
   }
 }
 
-// [ask redesign] Options the ask agent staged this turn via ProposeOptions,
-// keyed by ask-conversation id. The ask turn runner (runAskTurn) takes them
-// after the agent finishes and attaches them to the persisted reply message,
-// so the cards land in-order WITH the prose that argues for them (a tool that
-// appended its own message mid-turn would render before the reply text).
-const pendingAskOptions = new Map<
-  string,
-  { answer: string; title: string; body: string; primary?: boolean }[]
->();
-export function takePendingAskOptions(
-  conversationId: string,
-): { answer: string; title: string; body: string; primary?: boolean }[] {
-  const list = pendingAskOptions.get(conversationId) ?? [];
-  pendingAskOptions.delete(conversationId);
-  return list;
-}
-
 export function buildTools(vault: string, options: BuildToolsOptions = {}) {
   const {
     tavilyKey,
     strictVault = false,
     bashDisabled = false,
     conversationId,
-    tier = "assistant",
     interactive = false,
     abortSignal,
   } = options;
@@ -1055,320 +1028,6 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         return lines.join("\n\n");
       },
     }),
-    AskWorker: tool({
-      description:
-        "Relay a message to ANOTHER thread in this vault and get its reply back — a long-running WORKER, or a MISSION's SUPERVISOR. Use this to ask a supervisor something for the user (\"what's the status of the BitNet mission?\", \"tell it to deprioritize seed 3\") and report its answer, or to hand a worker an instruction. Find the thread's id with ListConversations (a mission is source 'mission'). NOTE: on an idle thread this runs a FULL model turn and blocks until it answers — so for a plain status/progress check, prefer ReadConversation (its thread tells you what it did) and the heartbeat; reserve this for steering, correcting, or genuinely asking it something. By default it does NOT interrupt a busy thread: if it's mid-run you'll get its current status instead of forcing an answer. Set interrupt=true to abort its current turn and make it act on your message NOW. Returns the thread's reply, or its status when busy and not interrupted.",
-      inputSchema: z.object({
-        conversation_id: z
-          .string()
-          .describe("The worker conversation id (from ListConversations)."),
-        message: z
-          .string()
-          .describe("What to say to the worker — phrase it as you'd speak to that agent."),
-        interrupt: z
-          .boolean()
-          .optional()
-          .describe(
-            "If true, abort the worker's current turn and make it handle your message now. Default false — don't disrupt a busy worker.",
-          ),
-      }),
-      execute: async ({ conversation_id, message, interrupt }) => {
-        if (conversationId && conversation_id === conversationId) {
-          return "Refused: that id is THIS conversation. AskWorker targets a different thread.";
-        }
-        const { readConversations } = await import("./conversations");
-        const list = await readConversations(vault);
-        const conv = list.find((c) => c.id === conversation_id);
-        if (!conv) return `Worker thread not found: ${conversation_id}`;
-        const busy = conv.status === "running";
-        if (busy && !interrupt) {
-          const tail = conv.messages
-            .slice(-6)
-            .map((m) => `[${m.role}] ${(m.content ?? "").slice(0, 400)}`)
-            .join("\n");
-          return `Worker "${conv.title || conversation_id}" is BUSY (mid-run) — not interrupted. Recent activity:\n${tail}\n\n(To make it act on your message now, call again with interrupt=true.)`;
-        }
-        if (busy && interrupt) {
-          const { abortRun } = await import("./runRegistry");
-          abortRun(conversation_id);
-          await new Promise((r) => setTimeout(r, 600)); // let the abort unwind
-        }
-        const { runWorkerTurn } = await import("./offVaultRun");
-        // Don't let a long/stuck worker hold the caller hostage. The user watched
-        // a supervisor block on AskWorker for ~2 hours waiting on a worker that
-        // wasn't answering. Time-box the wait: on timeout we do NOT abort the
-        // worker (its turn keeps running in the background) — we stop waiting and
-        // report back so the caller's turn can END and it can check in later.
-        // [harness v2] For a mission caller the primitive is fully non-blocking:
-        // a short grace window catches quick answers inline, then the ask
-        // DETACHES and the worker's eventual reply is DELIVERED as a wake turn
-        // on the caller — fire-and-continue, never fire-and-hover.
-        const v2Async = harnessV2Enabled() && tier === "mission" && !!conversationId;
-        const ASK_TIMEOUT_MS = v2Async ? 45_000 : 3 * 60_000;
-        const runP = runWorkerTurn(vault, conversation_id, message, {});
-        const outcome = await Promise.race([
-          runP.then((r) => ({ timedOut: false as const, ...r })),
-          new Promise<{ timedOut: true }>((res) =>
-            setTimeout(() => res({ timedOut: true }), ASK_TIMEOUT_MS),
-          ),
-        ]);
-        if (outcome.timedOut) {
-          if (v2Async) {
-            const callerId = conversationId!;
-            const workerTitle = conv.title || conversation_id;
-            // Deliver the late reply as a fresh wake on the caller once BOTH
-            // turns are done — wait for the caller to go idle so the wake can't
-            // interleave with its still-running turn.
-            void runP
-              .then(async ({ reply, error }) => {
-                const { useStore } = await import("./store");
-                for (let i = 0; i < 40; i++) {
-                  const cur = useStore.getState().conversations.find((c) => c.id === callerId);
-                  if (!cur || cur.status !== "running") break;
-                  await new Promise((r) => setTimeout(r, 15_000));
-                }
-                const note = error && !(reply ?? "").trim() ? `The worker's turn ERRORED: ${error}` : (reply ?? "").slice(0, 6000);
-                await runWorkerTurn(
-                  vault,
-                  callerId,
-                  `Reply from worker "${workerTitle}" (answering your earlier AskWorker, delivered asynchronously):\n\n${note}`,
-                  { modelId: useStore.getState().supervisorModelId },
-                );
-              })
-              .catch((e) => console.warn("[askworker] async reply delivery failed:", e));
-            return `Worker "${workerTitle}" is still mid-turn after 45s — the ask is DETACHED. You'll be WOKEN with its reply when it lands; do not wait or poll. End your turn (after securing your next tick as usual).`;
-          }
-          runP.catch(() => {}); // keeps running in the background; swallow late rejection
-          return `Worker "${conv.title || conversation_id}" is still working after 3 min — it keeps running in the background. Don't block on it: end your turn now. You'll be woken when it finishes, or check it with ReadConversation (id ${conversation_id}).`;
-        }
-        const { reply, error } = outcome;
-        if (error && !reply.trim()) return `Worker run failed: ${error}`;
-        return `Worker "${conv.title || conversation_id}" replied:\n${reply}`;
-      },
-    }),
-    StopMission: tool({
-      description:
-        "STOP and clear a mission the user asks you to end. Full teardown: aborts its supervisor and every worker on it, cancels their scheduled wakes, and removes the mission from the user's Activity board — not a pause. Find the mission's id with ListConversations (source 'mission'). Use when the user says to kill/stop/cancel/scrap a mission. To merely PAUSE or redirect it, don't use this — relay to its supervisor with AskWorker instead.",
-      inputSchema: z.object({
-        conversation_id: z
-          .string()
-          .describe("The mission's conversation id (source 'mission', from ListConversations)."),
-      }),
-      execute: async ({ conversation_id }) => {
-        const { readConversations } = await import("./conversations");
-        const list = await readConversations(vault);
-        const conv = list.find((c) => c.id === conversation_id);
-        if (!conv) return `Mission thread not found: ${conversation_id}`;
-        if (conv.source !== "mission")
-          return `That thread isn't a mission (source: ${conv.source ?? "?"}). StopMission only stops missions; for a worker, steer its supervisor instead.`;
-        const { stopAndDeleteMission } = await import("./offVaultRun");
-        await stopAndDeleteMission(vault, conversation_id);
-        return `Mission "${conv.mission || conv.title || conversation_id}" stopped and cleared — its supervisor and all its workers are aborted and removed from Activity.`;
-      },
-    }),
-    StartWorker: tool({
-      description:
-        "Spawn a NEW worker (a subagent) for YOUR mission and kick its task off in the background. Only mission threads hold this tool: you spawn however many workers the goal needs — in parallel or in sequence — and spawn MORE later when monitoring teaches you something new. Returns the new worker's conversation id + title; afterward you watch it (heartbeat / ReadConversation) and steer it (AskWorker). The worker starts FRESH with no other context, so make the task self-contained. Don't use this for quick things you can just do yourself in this turn.",
-      inputSchema: z.object({
-        task: z
-          .string()
-          .describe(
-            "The full, self-contained task for the worker — be specific; it starts with no other context.",
-          ),
-        title: z
-          .string()
-          .optional()
-          .describe("Short title for the worker chat. Defaults to a slug of the task."),
-        mission: z
-          .string()
-          .optional()
-          .describe(
-            "The North Star this worker serves — the short name of the user-approved goal (e.g. the plan title, or the goal slug). EVERY worker belongs to a mission. If THIS chat is itself a mission thread, omit it — the worker joins your mission automatically. Otherwise it's required; workers for the same goal share the same mission string so Activity groups them.",
-          ),
-      }),
-      execute: async ({ task, title, mission }) => {
-        // Workers are never standalone: a mission thread's workers inherit its
-        // mission automatically; any other caller must name one.
-        let effectiveMission = mission?.trim() || "";
-        if (!effectiveMission && conversationId) {
-          const caller = useStore
-            .getState()
-            .conversations.find((c) => c.id === conversationId);
-          effectiveMission = caller?.mission?.trim() || "";
-        }
-        if (!effectiveMission) {
-          return "Refused: every worker belongs to a mission. You're inside one, so this should inherit automatically — pass `mission` (this goal's short name) if it didn't. Workers only ever run under a mission; nothing spawns them standalone.";
-        }
-        const { startWorker } = await import("./offVaultRun");
-        const { id, title: t } = await startWorker(vault, task, title, undefined, effectiveMission);
-        return `Spawned worker "${t}" (id ${id}) under mission "${effectiveMission}" — it's running the task in the background. It runs independently; keep talking to the user. Check on it with ReadConversation (id ${id}) or the run heartbeat, and relay to it with AskWorker.`;
-      },
-    }),
-    CompleteMission: tool({
-      description:
-        "Mark THIS mission FINISHED — call it once the goal is met. You decide; you must say WHY: pass `evidence` (artifact paths, numbers, which checks passed, where the deliverables live). It stamps the mission complete so it drops off the user's Activity page, stops leftover workers, cancels its wakes, and sends the user a final wrap-up from `summary`. An independent auditor reviews your evidence against the 'Done when' criteria; its verdict is ADVISORY — recorded on the mission and shown to the user next to your summary, never blocking. So be honest: if a criterion is unmet or was dropped, say so in the evidence. Only call it when the work is genuinely DONE — not to pause, abandon, or hand back. After calling it, end your turn: the mission is over.",
-      inputSchema: z.object({
-        summary: z
-          .string()
-          .describe(
-            "The final wrap-up for the user: what was accomplished and where the deliverables live. One short, headline-worthy paragraph.",
-          ),
-        evidence: z
-          .string()
-          .describe(
-            "Why the goal is met, checkably: the files that hold the deliverables (vault paths), the numbers/results, the checks that passed — and any criterion that is NOT met or was dropped, and why.",
-          ),
-      }),
-      execute: async ({ summary, evidence }) => {
-        if (!conversationId) return "No mission context — can't complete.";
-        // completeMission atomically stamps completedAt and returns ok only on
-        // the call that actually retired the mission — so the "Mission complete"
-        // notification fires exactly once, even if this tool is called twice.
-        const { completeMission } = await import("./offVaultRun");
-        const res = await completeMission(vault, conversationId, evidence).catch((e) => {
-          console.warn("[mission] complete failed:", e);
-          return { ok: false as const, failed: errToString(e) };
-        });
-        if (!res.ok) {
-          if ("failed" in res) return `CompleteMission failed: ${res.failed}. The mission is NOT complete; retry once, or tell the user.`;
-          if ("needEvidence" in res && res.needEvidence)
-            return "NOT completed — pass `evidence`: the files, numbers and checks that show the goal is met (and anything that isn't). Then call CompleteMission again.";
-          return "This mission is already complete — nothing more to do. End your turn.";
-        }
-        const audit = "audit" in res ? res.audit : undefined;
-        const unchecked = ("unchecked" in res && res.unchecked) || [];
-        const auditLine =
-          audit?.pass === true
-            ? "Auditor: evidence substantiates the criteria."
-            : audit?.pass === false
-              ? `Auditor flagged: ${audit.reason || "the evidence does not substantiate every criterion"}`
-              : `Auditor: ${audit?.reason || "not run"}`;
-        const { notify } = await import("./phoneApp");
-        const body = audit?.pass === false ? `${summary}\n\n⚠️ ${auditLine}` : summary;
-        await notify("info", "Mission complete", body, conversationId, {
-          intention: "Mission complete",
-          summary: summary.slice(0, 200),
-          icon: audit?.pass === false ? "⚠️" : "✓",
-          cls: audit?.pass === false ? "a" : "g",
-        });
-        return (
-          "Mission marked complete, the user notified, and it's cleared from Activity. " +
-          `${auditLine}${unchecked.length ? ` (${unchecked.length} 'Done when' item(s) were never checked off: ${unchecked.join("; ")})` : ""} ` +
-          "The verdict is recorded on the mission for the user. End your turn — the mission is done."
-        );
-      },
-    }),
-    MarkDoneWhen: tool({
-      description:
-        "Check off ONE of this mission's 'Done when' criteria — call it the moment you've VERIFIED that specific criterion is met (by the success test / on disk, not on a worker's word). The bullet turns green in the user's mission spec, so they watch progress accrue one criterion at a time. Pass the criterion as it reads in the brief (a close paraphrase is fine — it's fuzzy-matched) and the `evidence`. It is always checked off — your call — and an independent auditor's ADVISORY verdict is recorded next to it and returned to you: if it doubts the claim, look again (and fix the record if it's right). This is NOT completing the mission (use CompleteMission for that). Mission-tier only.",
-      inputSchema: z.object({
-        criterion: z
-          .string()
-          .describe("The 'Done when' item you've just verified, roughly as it reads in the brief."),
-        evidence: z
-          .string()
-          .optional()
-          .describe("What proves it: the file path(s), the number, the command output or check that passed."),
-      }),
-      execute: async ({ criterion, evidence }) => {
-        if (!conversationId) return "No mission context — can't mark a criterion.";
-        const { markDoneWhen } = await import("./offVaultRun");
-        const res = await markDoneWhen(vault, conversationId, criterion, evidence).catch(
-          (e) => ({ matched: null, verified: false, reason: errToString(e) }) as const,
-        );
-        if (!res.verified) return `Could not check off "${criterion}": ${res.reason || "internal error"}.`;
-        const audit = "audit" in res ? res.audit : undefined;
-        const name = res.matched ?? criterion;
-        const auditNote =
-          audit?.pass === false
-            ? ` The auditor DOUBTS it (advisory): ${audit.reason}. Re-check the ground truth; if it's right, fix the work or the record — the doubt is visible to the user.`
-            : audit?.pass === true
-              ? " The auditor agrees with the evidence."
-              : audit
-                ? ` (${audit.reason})`
-                : "";
-        return `Checked off "${name}" — the user sees that criterion go green.${auditNote}`;
-      },
-    }),
-    MissionCost: tool({
-      description:
-        "What a mission has cost so far in model spend (USD, as billed by OpenRouter): the total and the breakdown — the mission's own thread, each of its workers, and its ask threads. Omit `mission` for the mission this thread belongs to; otherwise pass a mission conversation id or its title (ListConversations shows them).",
-      inputSchema: z.object({
-        mission: z.string().optional().describe("Mission conversation id or title. Default: this thread's mission."),
-      }),
-      execute: async ({ mission }) => {
-        const { readConversations, computeMissionCost, formatUsd, missionKeyOf } = await import("./conversations");
-        const list = await readConversations(vault);
-        const missions = list.filter((c) => c.source === "mission");
-        let target = mission?.trim()
-          ? missions.find((c) => c.id === mission.trim()) ??
-            missions.find((c) => missionKeyOf(c).toLowerCase() === mission.trim().toLowerCase())
-          : undefined;
-        if (!mission?.trim() && conversationId) {
-          const me = list.find((c) => c.id === conversationId);
-          if (me?.source === "mission") target = me;
-          else if (me?.source === "ask" && me.askOf) target = missions.find((c) => c.id === me.askOf);
-          else if (me?.mission) target = missions.find((c) => missionKeyOf(c) === me.mission!.trim());
-        }
-        if (!target) return mission ? `No mission matches "${mission}".` : "This thread isn't part of a mission — pass `mission` (id or title).";
-        const b = computeMissionCost(list, target.id)!;
-        const lines = b.parts.map(
-          (p) =>
-            `- ${p.kind} "${p.title}" (${p.id}): ${formatUsd(p.costUsd)}${p.missingCalls ? ` (+${p.missingCalls} call(s) with no reported cost)` : ""}`,
-        );
-        return (
-          `Mission "${b.title}" (${b.missionId}) — total ${formatUsd(b.totalUsd)}` +
-          `${b.missingCalls ? `; ${b.missingCalls} model call(s) reported no cost, so the true total is higher` : ""}.\n` +
-          lines.join("\n")
-        );
-      },
-    }),
-    RecordJudgment: tool({
-      description:
-        "Put ONE significant judgment on the durable record — a decision you made, a conclusion you reached, or a soft read that should outlive this turn (\"user prefers stopping early over overspending\", \"seed 3's divergence is real — holding it\", \"bf16 is the top suspect because the latent loop is precision-sensitive\"). Your conversation history is NOT carried between wakes; anything load-bearing that isn't in mind.md, the goal file, or this log is LOST. Call it AT DECISION TIME, in the same turn you decide — not later. This appends to the vault's decision log (audit trail, not re-read automatically); ALSO reflect the current-state consequence in mind.md. For a reversible fork you resolved yourself, this is the required receipt: decide, record, move — don't AskUser.",
-      inputSchema: z.object({
-        claim: z.string().describe("The judgment itself, one plain sentence."),
-        why: z.string().describe("The reasoning/evidence behind it, 1-3 sentences."),
-        confidence: z.enum(["low", "medium", "high"]).describe("How sure you are."),
-        what_would_change_it: z
-          .string()
-          .optional()
-          .describe("What observation would overturn this judgment, if any."),
-      }),
-      execute: async ({ claim, why, confidence, what_would_change_it }) => {
-        if (!conversationId) return "No thread context — can't record a judgment.";
-        const { recordJudgment } = await import("./offVaultRun");
-        await recordJudgment(vault, conversationId, {
-          claim,
-          why,
-          confidence,
-          whatWouldChangeIt: what_would_change_it,
-        }).catch((e) => console.warn("[judgment] record failed:", e));
-        return "Recorded to the decision log. Reflect the consequence in mind.md before you end the turn if it changes your current picture.";
-      },
-    }),
-    ProposeMission: tool({
-      description:
-        "Propose a mission to the user as an Approve card — the ONLY way you (the assistant) put real work in motion. Call this for any substantial ask instead of grinding it in this chat. A mission is a briefly-stated GOAL plus the sub-results that DEFINE IT DONE. It does NOT start anything: it renders a card the user taps to approve, and approval mints the mission deterministically. You can't start a mission or spawn workers — proposing is your job; running is the mission's. After calling it, tell the user it's ready to approve and stay conversational — do NOT claim you started anything.",
-      inputSchema: z.object({
-        title: z
-          .string()
-          .describe("The mission, briefly stated — the goal in a short phrase. Heads the card and groups its workers in Activity. e.g. 'Fix BitNet gamma-scale and rerun the A/B'."),
-        tasks: z
-          .array(z.string())
-          .min(1)
-          .describe(
-            "The sub-components that define the mission DONE — each a concrete sub-result, not a vague aim. Together they ARE the success criterion. Each is likely to become its own worker, but you're describing what 'complete' means, not assigning workers — the supervisor decides how to break the work down (it may merge or split). Prefer 2-4; each should be checkable.",
-          ),
-      }),
-      execute: async ({ title, tasks }) => {
-        // The card itself is rendered client-side from this call (chat-controller
-        // injects the canonical plan block into the cockpit reply). Here we only
-        // confirm back to the model so it doesn't re-propose or claim it started.
-        const n = Array.isArray(tasks) ? tasks.length : 0;
-        return `Proposed mission "${title}" — ${n} done-when component${n === 1 ? "" : "s"}, shown to the user as an Approve card. Nothing has started: if they approve, the mission is created and runs itself. Don't repeat the proposal or start work yourself; tell them it's ready to approve and stay conversational.`;
-      },
-    }),
     Notify: tool({
       description:
         "Proactively surface something to the user on their phone — it lands as a card in the Alerts feed AND as a push notification. Use it to tell them, without being asked, about something worth their attention: a mission or worker you finished, an action you took on your own (e.g. 'stopped an idle box'), a heads-up they'd want. This is ONE-WAY — it informs, it doesn't ask. For a decision you need back from them, use AskUser. Keep `title` to a short headline and `body` to one or two sentences (the essential update — depth goes to a file you point at). Don't notify for trivial chatter or for replies in a chat the user is actively having with you; reserve it for things that earn an interruption.",
@@ -1428,137 +1087,11 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
       }),
       execute: async ({ about, question, options, stakes, onDefer, timeoutMin }) => {
         const opts = Array.isArray(options) ? options.filter((o) => o?.label?.trim()) : [];
-        // [unified ask] Presence gates the WEIGHT, not the ability (note
-        // ff31231e): in a LIVE conversation (the user drove this very turn) the
-        // fork renders as tappable option cards INLINE with this reply — no
-        // push, no "Needs you" card. A push about the conversation the user is
-        // literally looking at is noise; the tap still becomes their next
-        // message, and the cockpit records the decision to the Alerts archive.
-        // Background turns (scheduled wakes, the mission executor) keep the
-        // full async treatment below — that's what fetches an absent user.
-        // The mission tier is EXCLUDED even on an interactive turn: an
-        // executor ask parks the mission AWAITING_USER, and only the tagged
-        // /answer relay (which rides the notification) can clear that wait —
-        // an inline tap would post a plain message, i.e. a probe, and the
-        // mission would park forever.
-        if (interactive && conversationId && tier !== "mission") {
-          // Inline decision cards exist ONLY where the decision has a
-          // STAKEHOLDER — the conversational front of a mission, where a tap
-          // steers the executor doing real work. A plain assistant chat has
-          // nobody waiting on the answer: options there are just talk, so ask
-          // in prose (user feedback 2026-07-12: "there is no purpose for the
-          // general assistant to give me decision cards").
-          const { useStore } = await import("./store");
-          const mc = useStore.getState().conversations.find((c) => c.id === conversationId);
-          if (mc?.source !== "mission")
-            return "You're in a live conversation with nobody blocked on the answer — decision cards don't apply here. Ask the question directly in your reply prose, then end your turn; the user answers by typing. (No card or notification was sent.)";
-          // ONE decision surface per fork: while a formal ask is pending, the
-          // "Needs you" card IS the surface — an inline tap here posts a plain
-          // message (a probe) that can NOT clear AWAITING_USER. So refined
-          // options born from this deliberation are ROUTED TO THE PENDING ASK:
-          // they stack under its original pinned options in the decision
-          // sheet, where a tap rides the real /answer relay and resumes the
-          // executor — and the decision record stays in one place (the user:
-          // "I need to see the options the supervisor generated inline inside
-          // the conversation with the ask").
-          if (mc.missionState === "AWAITING_USER") {
-            if (opts.length) {
-              const { appendOptionsToPendingAsk } = await import("./offVaultRun");
-              let primarySeen = false;
-              const landed = await appendOptionsToPendingAsk(
-                vault,
-                conversationId,
-                opts.map((o) => {
-                  const primary = !!o.recommended && !primarySeen;
-                  if (primary) primarySeen = true;
-                  return {
-                    answer: o.label.trim().slice(0, 200),
-                    title: o.label.trim().slice(0, 120),
-                    body: (o.detail || "").trim().slice(0, 800),
-                    ...(primary ? { primary: true } : {}),
-                  };
-                }),
-                question ? `Refined from the deliberation — ${String(question).slice(0, 200)}` : "Refined options from the deliberation:",
-              ).catch(() => null);
-              if (landed)
-                return "This mission is parked on a formal ask, so your refined options were added to THAT ask's decision sheet — they stack under its original options as tappable cards, and a tap there is the real answer that resumes the executor. Tell the user in prose that the tightened options are waiting on the ask card; do not restate them as if tappable here.";
-            }
-            return "This mission is ALREADY parked on a formal ask — its 'Needs you' card is the one decision surface, and only answering THERE resumes the executor. Do NOT stage a second option set here (an inline tap cannot clear the wait). Discuss in prose and point the user at the pending card.";
-          }
-          if (!opts.length)
-            return "The user is present in this live conversation — no card or notification was sent (none is needed; they're here). Ask the question directly in your reply prose, then end your turn; their answer arrives as the next message.";
-          const list = pendingAskOptions.get(conversationId) ?? [];
-          let primarySeen = list.some((o) => o.primary);
-          list.push(
-            ...opts.map((o) => {
-              const primary = !!o.recommended && !primarySeen;
-              if (primary) primarySeen = true;
-              return {
-                answer: o.label.trim().slice(0, 200),
-                title: o.label.trim().slice(0, 120),
-                body: (o.detail || "").trim().slice(0, 800),
-                ...(primary ? { primary: true } : {}),
-              };
-            }),
-          );
-          pendingAskOptions.set(conversationId, list.slice(0, 6));
-          return "The user is present, so these options will render as tappable cards INLINE with your reply — no push/notification was sent (they're already here). State the fork and the tradeoffs in your reply prose (the cards carry the tap action; your prose carries the why), then end your turn and wait for their pick or typed answer.";
-        }
-        // [unified ask] A COMPLETE mission has no decisions left to ask for —
-        // a "Needs you" card from a closed run is a phantom stakeholder. If
-        // something genuinely needs the user post-completion, it's a Notify
-        // (information), not an ask (a decision).
-        if (tier === "mission" && conversationId) {
-          const { useStore } = await import("./store");
-          const mc = useStore.getState().conversations.find((c) => c.id === conversationId);
-          if (mc && (mc.missionState === "DONE" || mc.missionState === "KILLED" || mc.completedAt))
-            return "This mission is COMPLETE — do not ask the user for decisions on it (there is no pending work their answer would steer). If they should know something, use Notify; if they asked you a question, answer it in prose.";
-        }
-        // [ask-object] ONE open ask per mission (no nesting). If this
-        // conversation already has an open ask the user hasn't decided, a
-        // re-raise must UPDATE that same object — never mint a second card +
-        // thread. This is the structural fix for the duplicate-thread bug (the
-        // notif-surface self-test spawned four "pick a color" threads for one
-        // decision because the executor re-fired AskUser every turn). Refined
-        // options stack under the open ask's original ones; nothing new hits the
-        // feed. A normal chat has no ask threads pointing at it, so findLiveAsk
-        // returns null there and this is a no-op.
-        if (conversationId) {
-          const { findLiveAsk, appendOptionsToPendingAsk, recentDecidedAsk } = await import("./offVaultRun");
-          // Re-asking the SAME decision moments after it was answered = the
-          // re-confirm loop that spawned four threads in the self-test. Tell the
-          // executor to use the answer it already has, don't reopen the fork.
-          const recent = about ? await recentDecidedAsk(vault, conversationId, about) : null;
-          if (recent) {
-            return `You already asked "${about}" and the user answered "${recent.answer}" moments ago — take THAT as the decision and proceed. Do NOT re-raise the same ask; it would open a duplicate. Only ask again if you genuinely need a DIFFERENT decision.`;
-          }
-          const open = await findLiveAsk(vault, conversationId);
-          if (open) {
-            if (opts.length) {
-              let primarySeen = false;
-              await appendOptionsToPendingAsk(
-                vault,
-                conversationId,
-                opts.map((o) => {
-                  const primary = !!o.recommended && !primarySeen;
-                  if (primary) primarySeen = true;
-                  return {
-                    answer: o.label.trim().slice(0, 200),
-                    title: o.label.trim().slice(0, 120),
-                    body: (o.detail || "").trim().slice(0, 800),
-                    ...(primary ? { primary: true } : {}),
-                  };
-                }),
-                question ? `Refined from the deliberation — ${String(question).slice(0, 200)}` : "Refined options from the deliberation:",
-              ).catch(() => null);
-            }
-            return (
-              "This mission already has ONE open ask — its 'Needs you' card is the single decision surface, so I updated that same ask" +
-              (opts.length ? " (your refined options stack under its original ones)" : "") +
-              " instead of opening a second one. Do NOT raise another ask until this one is answered or deferred; end your turn and wait."
-            );
-          }
-        }
+        // A live conversation: the user is here — ask in prose, no card, no push.
+        // A background turn (a scheduled run) fetches them with a "Needs you"
+        // card + push; the answer arrives as the next message here.
+        if (interactive && conversationId)
+          return "You're in a live conversation — ask the question directly in your reply prose, then end your turn; the user answers by typing. (No card or notification was sent.)";
         const { notify } = await import("./phoneApp");
         // With real options, carry the structured deliberation payload so the
         // cockpit renders the "Needs you" deliberation card + inline-option sheet
@@ -1590,77 +1123,6 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         return opts.length > 0
           ? "Asked the user with tappable options — their pick (or a typed answer) will arrive as the next message in this conversation. End your turn now and wait; do not guess the answer."
           : "Asked the user — their reply will arrive as the next message in this conversation. End your turn now and wait for it; do not guess the answer.";
-      },
-    }),
-    // [ask redesign] The ask agent's ONE unique ability: put a fresh option set
-    // in front of the user, as tappable cards in the ask conversation. The cards
-    // STACK — the ask's original options stay pinned at the top; a proposed set
-    // never replaces anything. Tapping any card relays that option as the
-    // TAGGED answer to the mission supervisor waiting on this ask — the same
-    // deterministic /answer path as the original options. Only the ask tier
-    // holds this tool.
-    ProposeOptions: tool({
-      description:
-        "Propose a new set of options for the decision the user is deliberating with you. Use it when the conversation has genuinely moved the fork — the user pushed back on the original options, surfaced a constraint, or asked for a middle path — and you can now offer tighter choices. Each option becomes a tappable card; tapping one SENDS IT AS THE USER'S FORMAL ANSWER to the mission that is waiting, exactly like the ask's original options. The original options remain available above — your set stacks, it never replaces. Don't re-propose the original options unchanged, and don't propose options the deliberation hasn't earned.",
-      inputSchema: z.object({
-        options: z
-          .array(
-            z.object({
-              label: z
-                .string()
-                .describe("The choice, as a short tappable phrase. This verbatim text is what gets sent as the user's answer when they tap it."),
-              detail: z
-                .string()
-                .describe("The case for this option — reasoning, tradeoffs, cost, consequence (1-4 sentences). Rendered as the card's explanation."),
-              recommended: z
-                .boolean()
-                .optional()
-                .describe("Set true on AT MOST ONE option to mark your lean."),
-            }),
-          )
-          .min(1)
-          .max(5)
-          .describe("The proposed choices, 1-5 of them."),
-      }),
-      execute: async ({ options }) => {
-        const opts = (options || []).filter((o) => o?.label?.trim());
-        if (!opts.length) return "No usable options — every option needs a non-empty label.";
-        if (!conversationId) return "No conversation to attach options to.";
-        // [unified ask] Decision cards need a STAKEHOLDER: a tapped card relays
-        // a FORMAL answer to the mission behind this thread. If that mission is
-        // complete (or there is no mission), nothing is waiting to consume a
-        // decision — a card would fire an answer into a closed run and stamp a
-        // phantom "decided" record (user: "a decision for a complete mission
-        // doesn't make sense"). Talk in prose instead.
-        {
-          const { useStore } = await import("./store");
-          const convs = useStore.getState().conversations;
-          const askOf = convs.find((c) => c.id === conversationId)?.askOf;
-          const mission = askOf ? convs.find((c) => c.id === askOf) : undefined;
-          if (!mission)
-            return "This thread has no live mission behind it — nothing is waiting on a formal answer, so do NOT propose option cards. Answer in prose.";
-          if (mission.missionState === "DONE" || mission.missionState === "KILLED" || mission.completedAt)
-            return "The source mission is COMPLETE — there is no waiting decision to relay an answer to, so do NOT propose option cards (a tap would fire a formal answer into a closed mission). Discuss in prose; if the user wants new work, that's a new mission.";
-        }
-        const list = pendingAskOptions.get(conversationId) ?? [];
-        let primarySeen = list.some((o) => o.primary);
-        list.push(
-          ...opts.map((o) => {
-            const primary = !!o.recommended && !primarySeen;
-            if (primary) primarySeen = true;
-            return {
-              // 200, not 80: this verbatim text IS the user's relayed answer —
-              // an 80-char cap delivered "…then t" to a waiting supervisor
-              // (truncated mid-word) and the supervisor had to guess the rest.
-              answer: o.label.trim().slice(0, 200),
-              title: o.label.trim().slice(0, 120),
-              body: (o.detail || "").trim().slice(0, 800),
-              ...(primary ? { primary: true } : {}),
-            };
-          }),
-        );
-        pendingAskOptions.set(conversationId, list.slice(0, 6));
-        return "Options staged — they'll render as tappable answer cards with your reply. Present them naturally in your reply text too (the cards carry the tap action; your prose carries the why).";
       },
     }),
     ListSchedules: tool({
@@ -1831,16 +1293,6 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
             JSON.stringify(s.recurrence) === JSON.stringify(recurrence),
         );
         if (dupSched) return `Already scheduled (${fireDescription}) in this conversation — not duplicating it.`;
-        // [harness v2] A supervisor/mission self-scheduling a wake is SILENT by
-        // default: the wake fires a turn in the mission thread, but its result
-        // reaches the user's Alerts feed only if that turn's reply explicitly
-        // begins with `ALERT:` (see scheduleDelivery.ts). Without this, a routine
-        // "check again in N min" loop posts an Alert on EVERY fire — the
-        // heartbeat-ping firehose (a 60-min silent watch spammed ~21 alerts even
-        // though the agent never called a notify tool). A top-level assistant chat
-        // keeps the noisy default: the user asked for that reminder, so they want
-        // to see it land.
-        const missionQuiet = tier === "mission";
         const fresh = {
           ...emptySchedule(store.modelId),
           name: description ?? prompt.split(/\s+/).slice(0, 6).join(" "),
@@ -1850,12 +1302,11 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           date,
           target: { kind: "existing" as const, conversationId },
           enabled: true,
-          markUnreadOnFinish: !missionQuiet,
-          quietUnlessAlert: missionQuiet,
+          markUnreadOnFinish: true,
+          quietUnlessAlert: false,
         };
         await writeSchedules(vault, [...list, fresh]);
-        // Write-after-verify. A self-schedule is a mission's ONLY liveness
-        // lifeline: if this write silently no-ops (it has — the box's file writes
+        // Write-after-verify: if this write silently no-ops (it has — the box's file writes
         // can resolve without landing), the mission strands at a "parked" phase
         // with nothing to wake it, while the tool cheerily reports "Scheduled".
         // Read the row back and confirm it's really on disk; retry once; only
@@ -1867,210 +1318,13 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           landed = (await readSchedules(vault)).some((s) => s.id === fresh.id);
         }
         if (!landed) {
-          return `SCHEDULE FAILED TO PERSIST: the wake (${fireDescription}) did not land on disk after two writes. Do NOT assume you have a next tick — this mission will stall silently. Take a concrete next action NOW (retry Schedule, StartWorker, AskUser, or CompleteMission); do not end your turn on this.`;
+          return `SCHEDULE FAILED TO PERSIST: the wake (${fireDescription}) did not land on disk after two writes. Do NOT assume you have a next tick — nothing will wake this conversation. Retry Schedule or tell the user; do not end your turn on this.`;
         }
-        return missionQuiet
-          ? `Scheduled ${fireDescription}. This wake is SILENT — it fires a turn in this mission thread but posts NOTHING to the user's Alerts feed unless that turn's reply begins with "ALERT:". So run your loop quietly; prefix a reply with ALERT: only when something genuinely needs the user's attention.`
-          : `Scheduled ${fireDescription}. Will fire as a turn in this conversation; its result lands in the Alerts feed.`;
-      },
-    }),
-    WatchRun: tool({
-      description:
-        "Hand a LONG-RUNNING EXTERNAL job (a training run on rented GPU, a batch eval, an overnight sweep — anything that outlives this turn) to the run-watcher so it's polled deterministically, even after your turn ends and across app restarts. YOU launch the job first, detached (e.g. `ssh box 'cd run && nohup python train.py >train.log 2>&1 &'`), THEN call this with a `check_command` the watcher runs on a timer to learn the job's state. The watcher pings the user and wakes THIS thread the moment the job finishes, fails, or stalls — so no one has to remember to check back, and a dead run never sits silent. Don't use this for a quick command you can just run now; it's for jobs measured in hours/days.",
-      inputSchema: z.object({
-        title: z
-          .string()
-          .describe("Short human label for the run, e.g. 'BitNet 160M seed 3'. Heads the alert card."),
-        check_command: z
-          .string()
-          .describe(
-            "Shell command the watcher runs on a timer to learn the job's state. It MUST print a status token as its FIRST word — RUNNING, DONE, or FAILED — followed while RUNNING by a CHANGING progress metric (e.g. `RUNNING step 12000 loss 2.31`, pulling the LATEST step/loss each check). The token is liveness; the metric after it is progress — and stall detection watches the metric, so a check that prints a bare constant `RUNNING` with no changing number gets flagged STALLED even while the job is advancing fine. Typically an ssh into the rented box that tails the log for the latest step / inspects the process / checks a sentinel file. If the command itself can't run (host unreachable) several times running, the watcher flags the run STALLED on its own.",
-          ),
-        pull_command: z
-          .string()
-          .optional()
-          .describe(
-            "Optional shell command run EVERY cycle to copy artifacts off the remote box (e.g. `rsync -az box:run/ ./runs/seed3/`). Protects results against spot reclaim — at most one cadence of progress is ever at risk. Also run once more on completion.",
-          ),
-        cadence_minutes: z
-          .number()
-          .int()
-          .optional()
-          .describe("How often to check, in minutes. Default 10."),
-        stall_minutes: z
-          .number()
-          .int()
-          .optional()
-          .describe(
-            "If the progress note doesn't change for this long while still RUNNING, flag the run STALLED (catches a hung/wedged job). Default 45.",
-          ),
-        cwd: z
-          .string()
-          .optional()
-          .describe("Working directory for the check/pull commands. Defaults to the vault root."),
-        host: z.string().optional().describe("Informational label for which rented box this run is on."),
-        terminate_command: z
-          .string()
-          .optional()
-          .describe(
-            "COST GUARD — arm this on EVERY watch of a billing resource (a rented GPU box). A shell command the watcher itself runs to KILL the resource (e.g. the lambda tool's terminate) when the check reports sustained idle billing. For this to work your check_command must speak the billing tokens: print `WORKING <metric>` while the resource is earning its keep, `IDLE <note>` when it is billing with no work, and `GONE` once no billing resource exists. The guard is pure code — it fires with no agent turn, survives app restarts and a sleeping laptop, retires itself with proof when the check reports GONE, and pings the user once when it pulls the trigger. This replaces scheduling yourself as a cost watchdog: don't arm a recurring Schedule to babysit a box, arm this.",
-          ),
-        idle_kill_minutes: z
-          .number()
-          .int()
-          .optional()
-          .describe(
-            "How long the check may report IDLE before terminate_command fires. Default 15. Set higher only if the run has legitimate long quiet phases that your check can't distinguish from idle.",
-          ),
-        env_keys: z
-          .array(z.string())
-          .optional()
-          .describe(
-            "Secret names (keychain user keys, e.g. [\"lambda_api_key\"]) injected into the check/pull/terminate commands' environment. Required when those commands call a metered API — the watcher passes no secrets by default.",
-          ),
-      }),
-      execute: async ({ title, check_command, pull_command, cadence_minutes, stall_minutes, cwd, host, terminate_command, idle_kill_minutes, env_keys }) => {
-        const { registerJob } = await import("./runWatcher");
-        // Best-effort: tag the job with the mission it belongs to, for the alert.
-        let mission: string | undefined;
-        try {
-          const { readConversations } = await import("./conversations");
-          const conv = (await readConversations(vault)).find((c) => c.id === conversationId);
-          mission = (conv?.mission ?? (conv?.source === "mission" ? conv.title : undefined)) || undefined;
-        } catch {
-          // no grouping — fine
-        }
-        const job = await registerJob(vault, {
-          title,
-          ownerConvId: conversationId ?? "",
-          checkCmd: check_command,
-          pullCmd: pull_command,
-          cwd: cwd || undefined,
-          host: host || undefined,
-          mission,
-          cadenceMs: Math.max(1, cadence_minutes ?? 10) * 60_000,
-          stallMs: Math.max(1, stall_minutes ?? 45) * 60_000,
-          terminateCmd: terminate_command || undefined,
-          idleKillMs: idle_kill_minutes ? Math.max(1, idle_kill_minutes) * 60_000 : undefined,
-          envKeys: env_keys && env_keys.length ? env_keys : undefined,
-        });
-        const everyM = Math.round(job.cadenceMs / 60_000);
-        return (
-          `Watching run "${title}" (id ${job.id}) — checking every ${everyM}m via your check_command. ` +
-          `I'll ping the user and wake this thread the moment it finishes, fails, or stalls` +
-          `${job.pullCmd ? "; artifacts sync off the box each cycle" : ""}` +
-          `${job.terminateCmd ? `; COST GUARD ARMED — sustained IDLE past ${Math.round((job.idleKillMs ?? 15 * 60_000) / 60_000)}m auto-terminates the box in code, no agent turn needed` : ""}. ` +
-          `Nothing else to do here — end your turn and keep working; the watcher carries it.`
-        );
-      },
-    }),
-    ListRuns: tool({
-      description:
-        "List the long external jobs the run-watcher is tracking (training runs, batch evals) with their LIVE status — running / done / failed / stalled — last progress note, and when each was last checked. Use to answer the user's 'what's still running', 'did any runs die overnight', 'how far along is seed 3'. Read-only; this is how you report on background runs without the user opening anything. As a worker you see only the runs YOU started — use it to find the id of a watcher you registered so you can CancelRun a bad one and re-register a corrected watcher (self-healing).",
-      inputSchema: z.object({}),
-      execute: async () => {
-        const { readJobs } = await import("./runWatcher");
-        const all = await readJobs(vault);
-        // A worker sees only the runs IT registered (its own thread), so it can
-        // find the id of a watcher it set up and CancelRun it — self-healing a
-        // bad watcher — without surveying other threads' runs.
-        const list =
-          tier === "worker" ? all.filter((j) => j.ownerConvId === conversationId) : all;
-        if (list.length === 0) return "(no watched runs)";
-        const ago = (ts?: number) =>
-          ts ? `${Math.max(0, Math.round((Date.now() - ts) / 60_000))}m ago` : "not yet";
-        return list
-          .sort((a, b) => b.startedAt - a.startedAt)
-          .map((j) =>
-            JSON.stringify({
-              id: j.id,
-              title: j.title,
-              status: j.status,
-              mission: j.mission,
-              host: j.host,
-              lastProgress: j.lastProgress,
-              reason: j.status === "failed" || j.status === "stalled" ? j.terminalReason : undefined,
-              lastChecked: ago(j.lastCheckedAt),
-              started: ago(j.startedAt),
-            }),
-          )
-          .join("\n");
-      },
-    }),
-    CancelRun: tool({
-      description:
-        "Stop watching a run, and optionally KILL it. Use when a run is finished-and-handled, was a mistake, or you're tearing down the rented box to stop billing. Pass kill_command to actually stop the remote process (e.g. `ssh box 'pkill -f train.py'`); omit it to just stop watching. Find the id with ListRuns.",
-      inputSchema: z.object({
-        id: z.string().describe("The run id from ListRuns."),
-        kill_command: z
-          .string()
-          .optional()
-          .describe("Optional shell command to stop the remote job before un-watching it."),
-      }),
-      execute: async ({ id, kill_command }) => {
-        const { readJobs, removeJob } = await import("./runWatcher");
-        const job = (await readJobs(vault)).find((j) => j.id === id);
-        if (!job) return `No watched run with id ${id} (see ListRuns).`;
-        if (kill_command) {
-          await invoke("bash_exec", {
-            command: kill_command,
-            cwd: job.cwd || vault,
-            timeoutMs: 60_000,
-            cancelId: `runkill_${id}_${Date.now().toString(36)}`,
-          }).catch(() => {});
-        }
-        await removeJob(vault, id);
-        return `Stopped watching run "${job.title}" (id ${id})${kill_command ? " and ran the kill command" : ""}.`;
+        return `Scheduled ${fireDescription}. Will fire as a turn in this conversation; its result lands in the Alerts feed.`;
       },
     }),
   };
 
-  // Enforce the layers in the toolset itself — prompt discipline is a
-  // suggestion; a missing tool is a guarantee. No agent can START a mission:
-  // the assistant PROPOSES (ProposeMission → an Approve card) and the user's
-  // approval mints it deterministically (Approve → startMission in code), so a
-  // mission only ever exists because the user said so.
-  //   assistant — has ProposeMission; can ask a worker/supervisor (AskWorker) and
-  //               STOP a mission for the user (StopMission); can't spawn a worker
-  //               or complete a mission. This is the user's main interface: they
-  //               mostly talk to the assistant, which relays to and tears down
-  //               missions on their behalf.
-  //   mission   — spawns/steers ITS workers (StartWorker) and decides when the
-  //               goal is met (CompleteMission); can't propose or StopMission (it
-  //               ends itself via CompleteMission, not by killing missions).
-  //   worker    — does the task, nothing else. No orchestration, and no direct
-  //               line to the user (Notify/AskUser): a worker reports by ENDING
-  //               its turn with a clear report — its mission is woken with the
-  //               result and decides what reaches the user.
-  // CompleteMission belongs ONLY to the mission tier: the supervisor is the one
-  // that decides the goal is done, so it's the one that retires the mission.
-  const drop = (names: string[]) => {
-    for (const n of names) delete (full as Record<string, unknown>)[n];
-  };
-  // Run-watcher tools: a mission (supervisor) gets all three over the whole
-  // fleet — it launches, monitors, and tears down long jobs. A worker can
-  // launch+watch, list ITS OWN runs, and cancel them — enough to self-heal a
-  // watcher it registered (find the id, CancelRun the bad one, re-register a
-  // fixed one) without surveying other threads' runs. The assistant only READS
-  // the fleet (ListRuns) so it can answer "what's running / did anything die"
-  // for the user; it doesn't launch or kill runs itself.
-  // RecordJudgment is for the working tiers (mission + worker) — the assistant
-  // chats with the user directly and has no between-wake state to protect.
-  if (tier === "mission") drop(["ProposeMission", "StopMission", "ProposeOptions"]);
-  else if (tier === "worker")
-    drop(["StartWorker", "AskWorker", "Notify", "AskUser", "ProposeMission", "CompleteMission", "MarkDoneWhen", "StopMission", "ProposeOptions"]);
-  else if (tier === "ask")
-    // [ask redesign] The ask agent reads + converses + proposes option cards —
-    // nothing else. It must not orchestrate (no workers/missions), must not
-    // notify or re-ask (it IS the notification's conversation), and must not
-    // touch schedules or runs. Read tools + Bash stay so it can fetch live
-    // ground truth ("what's the spend NOW?") the way any tier does.
-    drop([
-      "StartWorker", "AskWorker", "CompleteMission", "MarkDoneWhen", "StopMission",
-      "ProposeMission", "Notify", "AskUser", "WatchRun", "CancelRun", "RecordJudgment",
-      "Schedule", "CancelSchedule", "Write", "Edit", "Delete", "NotebookEdit",
-    ]);
-  else drop(["StartWorker", "CompleteMission", "MarkDoneWhen", "WatchRun", "CancelRun", "RecordJudgment", "ProposeOptions"]);
   return full;
 }
 

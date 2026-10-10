@@ -186,7 +186,7 @@ export const phase3Scenarios: Scenario[] = [
     notes: "Option B (folders): one row per project with its count and how many are working; click to open it in place. Same archive and lines as option A.",
     localStorage: { vc_chat_grouping: "folders" },
     build,
-    open: open("p-seed44", [{ click: "[title^='Chats — switch']" }, { sleep: 300 }, { click: "button", text: /^BitNet 160M/ }]),
+    open: open("p-seed44", [{ click: "[title^='Chats — switch']" }, { sleep: 300 }, { click: "button[aria-expanded]", text: /BitNet 160M/ }]),
   },
   {
     id: "p3-archived",
