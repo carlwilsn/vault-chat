@@ -5,7 +5,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { Encrypter } from "age-encryption";
 
 export const ROOT = resolve(__dirname, "..", "..");
@@ -59,18 +59,22 @@ export async function makeKeyStore(dir: string, map: Record<string, string>): Pr
   return dir;
 }
 
+export type ScriptStep = { text?: string; toolCall?: { name: string; args: unknown } };
+
 export type FakeOpenRouter = {
   url: string;
   calls: any[];
   close: () => Promise<void>;
   /** Text the next completions reply with. */
   reply: string;
+  /** Consumed one per completion before falling back to `reply`. */
+  script: ScriptStep[];
 };
 
 /** Scripted OpenRouter: every chat completion answers `reply`, streamed or
  * not, with a usage block. /models returns a tiny catalog. */
 export async function fakeOpenRouter(reply = "Acknowledged. Mission started."): Promise<FakeOpenRouter> {
-  const state: FakeOpenRouter = { url: "", calls: [], close: async () => {}, reply };
+  const state: FakeOpenRouter = { url: "", calls: [], close: async () => {}, reply, script: [] };
   const server: Server = createServer((req, res) => {
     let body = "";
     req.on("data", (d) => (body += d));
@@ -96,6 +100,21 @@ export async function fakeOpenRouter(reply = "Acknowledged. Mission started."): 
       const id = `gen-${state.calls.length}`;
       const model = parsed.model ?? "openai/gpt-5.6-sol";
       const usage = { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, cost: 0.001 };
+      const step = state.script.shift();
+      if (step?.toolCall && parsed.stream) {
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        const tc = { index: 0, id: `call_${state.calls.length}`, type: "function", function: { name: step.toolCall.name, arguments: JSON.stringify(step.toolCall.args) } };
+        const ch = (delta: any, finish: string | null, extra: any = {}) =>
+          `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}
+
+`;
+        res.write(ch({ role: "assistant", content: null, tool_calls: [tc] }, null));
+        res.write(ch({}, "tool_calls", { usage }));
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
+      if (step?.text !== undefined) state.reply = step.text;
       if (parsed.stream) {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
         const chunk = (delta: any, finish: string | null, extra: any = {}) =>
@@ -125,6 +144,45 @@ export async function fakeOpenRouter(reply = "Acknowledged. Mission started."): 
   state.url = `http://127.0.0.1:${port}/api/v1`;
   state.close = () => new Promise((r) => server.close(() => r()));
   return state;
+}
+
+/** A one-page PDF whose only text is `text` (ASCII), with a correct xref. */
+export function tinyPdf(text: string): Buffer {
+  const objs = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+    "",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  const stream = `BT /F1 18 Tf 20 60 Td (${text}) Tj ET`;
+  objs[3] = `<< /Length ${stream.length} >>
+stream
+${stream}
+endstream`;
+  let out = "%PDF-1.4\n";
+  const offs: number[] = [];
+  objs.forEach((o, i) => {
+    offs.push(out.length);
+    out += `${i + 1} 0 obj
+${o}
+endobj
+`;
+  });
+  const xref = out.length;
+  out += `xref
+0 ${objs.length + 1}
+0000000000 65535 f 
+`;
+  for (const o of offs) out += `${String(o).padStart(10, "0")} 00000 n 
+`;
+  out += `trailer
+<< /Size ${objs.length + 1} /Root 1 0 R >>
+startxref
+${xref}
+%%EOF
+`;
+  return Buffer.from(out, "latin1");
 }
 
 export function freePort(): Promise<number> {
@@ -157,8 +215,9 @@ export type ServerEnv = {
 };
 
 /** Spawn the built bundle; resolves once it is listening (or exited). */
-export async function startServer(e: ServerEnv): Promise<Running> {
-  if (!existsSync(BUNDLE)) throw new Error("bundle missing — run `npm run build:server`");
+export async function startServer(e: ServerEnv & { bundle?: string }): Promise<Running> {
+  const bundle = e.bundle ?? BUNDLE;
+  if (!existsSync(bundle)) throw new Error("bundle missing — run `npm run build:server`");
   const port = await freePort();
   const tokenFile = join(e.home, "phone-token");
   if (e.token) writeFileSync(tokenFile, e.token);
@@ -179,7 +238,7 @@ export async function startServer(e: ServerEnv): Promise<Running> {
     ...(e.openrouter ? { VC_OPENROUTER_BASE: e.openrouter } : {}),
     ...(e.extra ?? {}),
   };
-  const proc = spawn(process.execPath, [BUNDLE], { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const proc = spawn(process.execPath, [bundle], { cwd: dirname(bundle), env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   let out = "";
   proc.stdout!.on("data", (d) => (out += d));
   proc.stderr!.on("data", (d) => (out += d));
