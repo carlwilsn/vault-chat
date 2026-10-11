@@ -261,9 +261,24 @@
   async function reveal(w, ready, my, what) {
     const lt = setTimeout(() => my === token && $("#tour-loading").classList.add("on"), 15000);
     let v;
+    // A frame that hasn't rendered in 25 s (a cold dev server can answer a
+    // module 504 and the page never mounts) is reloaded, up to three times.
+    let tries = 0;
+    const kick = setInterval(() => {
+      if (my !== token || tries >= 3) return;
+      tries++;
+      for (const f of w.querySelectorAll("iframe")) {
+        try {
+          f.contentWindow.location.reload();
+        } catch {
+          /* gone */
+        }
+      }
+    }, 25000);
     try {
-      v = await until(ready, 60000, my, what);
+      v = await until(ready, 120000, my, what);
     } finally {
+      clearInterval(kick);
       clearTimeout(lt);
       $("#tour-loading").classList.remove("on");
     }

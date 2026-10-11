@@ -32,6 +32,10 @@ const server = await vite.createServer({
   clearScreen: false,
   logLevel: "warn",
   base,
+  // Before and after usually share one node_modules (a junction): each side
+  // keeps its own optimized-deps cache, or the two servers overwrite each
+  // other's and a cold frame gets 504 "outdated optimize dep" and never mounts.
+  cacheDir: resolve(tree, "node_modules", `.vite-preview-${side}`),
   plugins: [react(), previewPlugin({ side, tree, label, base })],
   server: {
     port,
@@ -40,6 +44,9 @@ const server = await vite.createServer({
     // node_modules may be a junction to another checkout's (shared deps): allow its real path too.
     fs: { allow: [tree, harness, ...[tree, harness].map((d) => resolve(d, "node_modules")).filter(existsSync).map((d) => realpathSync(d))] },
     watch: { ignored: ["**/src-tauri/target/**", "**/preview/.cache/**", "**/preview/out/**", "**/node_modules/**"] },
+    // Transform the app at startup, so the first frame (the
+    // Tour's first phase, say) is not the one that waits for a cold compile.
+    warmup: { clientFiles: ["./src/main.tsx"] },
   },
   optimizeDeps: { entries: ["index.html"] },
 });
