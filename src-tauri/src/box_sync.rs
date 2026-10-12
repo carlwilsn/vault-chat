@@ -199,9 +199,9 @@ fn classify_error(stderr: &str) -> &'static str {
         "network is unreachable",
         "no route to host",
         "could not read from remote",
-        "502",
-        "503",
-        "504",
+        "returned error: 502",
+        "returned error: 503",
+        "returned error: 504",
         "does not appear to be a git repository",
         "unable to access",
     ];

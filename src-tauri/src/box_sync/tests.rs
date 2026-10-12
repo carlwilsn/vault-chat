@@ -423,3 +423,10 @@ fn github_failure_stays_reported_between_debounced_attempts() {
     assert_eq!(second.github_warning, first.github_warning);
     r.done();
 }
+
+#[test]
+fn classify_error_ignores_hex_and_names_that_contain_5xx() {
+    assert_eq!(classify_error("CONFLICT in notes/a1b502c.md at 9f503e8d"), "git");
+    assert_eq!(classify_error("fatal: unable to access 'x': The requested URL returned error: 503"), "unreachable");
+    assert_eq!(classify_error("fatal: Could not resolve host: box"), "unreachable");
+}
