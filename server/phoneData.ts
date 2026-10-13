@@ -112,6 +112,8 @@ function phoneExtras(m: any): Record<string, unknown> {
   const spawns = (Array.isArray(m.toolCalls) ? m.toolCalls : []).flatMap((t: any) => (Array.isArray(t?.subagents) ? t.subagents : []));
   if (spawns.length) out.spawns = spawns;
   if (m.failed === true) out.failed = true;
+  const imgs = (Array.isArray(m.attachments) ? m.attachments : []).map((a: any) => a?.capturedFilePath ?? a?.sourcePath).filter((p: unknown) => typeof p === "string" && p);
+  if (imgs.length) out.images = imgs;
   return out;
 }
 

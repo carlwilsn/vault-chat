@@ -247,6 +247,22 @@ function toolNames(m: ChatMessage): string[] {
   return (m.toolCalls ?? []).map((t) => t.name);
 }
 
+/** What a live message event carries beyond the text, like the phone's
+ *  /conversation detail (server/phoneData.ts phoneExtras). */
+function liveExtras(m: ChatMessage): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (m.thinking?.trim()) out.thinking = m.thinking.slice(0, 8_000);
+  const cost = m.costUsd ?? m.usage?.costUsd;
+  if (typeof cost === "number") out.costUsd = cost;
+  const summary = m.compaction?.summary ?? m.rollover?.recap;
+  if (m.system && typeof summary === "string") out.divider = summary.slice(0, 12_000);
+  const spawns = (m.toolCalls ?? []).flatMap((t) => t.subagents ?? []);
+  if (spawns.length) out.spawns = spawns;
+  const imgs = (m.attachments ?? []).map((a) => a.capturedFilePath ?? a.sourcePath).filter((x): x is string => !!x);
+  if (imgs.length) out.images = imgs;
+  return out;
+}
+
 function runDiff(): void {
   diffTimer = null;
   const s = useStore.getState();
@@ -265,13 +281,14 @@ function runDiff(): void {
           convId: c.id,
           role: m.role,
           content: (m.content ?? "").slice(0, MSG_CAP),
-          tools: toolNames(m),
+          tools: toolNames(m).filter((n, i) => !(n === "Subagent" && String(m.toolCalls?.[i]?.id ?? "").startsWith("sub-"))),
           // [unified ask] Inline option cards ride the live message event too,
           // so a presence-gated ask renders its tappable cards the moment the
           // reply lands — not only on a thread reopen.
           ...(m.askOptions && m.askOptions.length ? { askOptions: m.askOptions } : {}),
           ...(m.decision ? { decision: true } : {}),
           ...(m.system ? { system: true } : {}),
+          ...liveExtras(m),
         });
       }
     }

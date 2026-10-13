@@ -883,3 +883,55 @@ body.page-chat #pChat,body.page-activity #pAct,body.page-alerts #pAl,body.page-n
    children, as in phone.html. */
 #root{display:contents}
 .csec.pnew{width:100%;text-align:left;color:var(--label-2)}
+
+/* The thread beside the text (extras.ts): thinking, cost, the summarized-earlier
+   divider, subagents, the plan, the Done verdict; photos in the composer. */
+.xblk{margin:0 0 9px}
+.xblk .xh{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--dim)}
+.xblk .xcv{width:12px;height:12px;transition:transform .15s;transform:rotate(-90deg)}
+.xblk.open .xcv{transform:none}
+.xblk .xbody{display:none;margin-top:7px;padding-left:10px;border-left:1px solid var(--line);font-size:12.5px;line-height:1.5;color:var(--text-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
+.xblk.open .xbody{display:block}
+.xblk.pdiv{align-self:stretch;margin:6px 0 14px;text-align:center}
+.xblk.pdiv .xh{font-style:italic;font-size:12px;width:100%;justify-content:center}
+.xblk.pdiv .pl{display:inline-block;width:28px;height:1px;background:var(--line)}
+.xblk.pdiv .xbody{text-align:left;white-space:normal}
+.thought-x{display:none;margin:0 0 9px;padding-left:10px;border-left:1px solid var(--line);font-size:12.5px;line-height:1.5;color:var(--text-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
+body.show-thinking .thought-x{display:block}
+#thinkRow{display:none}
+body.thinking-toggle #thinkRow{display:flex}
+.rcost{margin-top:7px;font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+.pcard{border:1px solid var(--line);background:var(--fill);border-radius:12px;padding:9px 11px;margin:10px 0 2px;font-size:12.5px}
+.pc-h{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);margin-bottom:5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.sa{padding:4px 0}
+.sa-h{display:flex;align-items:flex-start;gap:8px;min-width:0}
+.sa-t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-body)}
+.sd{width:6px;height:6px;border-radius:50%;flex:none;margin-top:6px;background:var(--faint)}
+.sd.run{background:var(--primary);animation:pul 1.4s ease-in-out infinite}
+.sd.ok{background:var(--text-secondary)}
+.sd.bad{background:var(--err)}
+.sa-m{display:flex;align-items:center;gap:12px;padding-left:14px;font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+.sa-b{font-size:11px;color:var(--text-secondary);text-decoration:underline;text-underline-offset:2px}
+.sa-s{padding:3px 0 0 14px;font-size:12px;line-height:1.45;color:var(--text-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+#pinned{padding:0 14px;max-height:30vh;overflow:auto}
+#pinned:empty{display:none}
+#pinned .pcard{margin:4px 0}
+.td{display:flex;align-items:flex-start;gap:8px;padding:2px 0;color:var(--text-secondary)}
+.td .tdd{width:6px;height:6px;border-radius:50%;flex:none;margin-top:6px;background:var(--faint)}
+.td.in_progress{color:var(--text)}
+.td.in_progress .tdd{background:var(--primary);animation:pul 1.4s ease-in-out infinite}
+.td.completed{text-decoration:line-through;color:var(--dim)}
+.td.completed .tdd{background:var(--text-secondary)}
+.pverdict{display:flex;align-items:center;justify-content:center;gap:7px;margin:8px 0 14px;font-size:12px;color:var(--dim);text-align:center}
+.pverdict.fail{color:var(--err-text)}
+.od.done{background:var(--text-secondary)}
+.imgbtn{position:absolute;left:5px;bottom:5px;width:33px;height:33px;border-radius:50%;color:var(--dim);display:flex;align-items:center;justify-content:center;z-index:1}
+.imgbtn svg{width:19px;height:19px}
+#pChat .composer textarea{padding-left:42px}
+#pendImgs{display:none;gap:8px;padding:2px 20px 4px}
+#pendImgs.on{display:flex}
+.pimg{position:relative}
+.pimg img{height:52px;border-radius:9px;border:1px solid var(--line);display:block}
+.pimg .px{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--panel);border:1px solid var(--line-2);color:var(--text);font-size:13px;line-height:1}
+.mimgs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.mimgs img{max-height:120px;max-width:100%;border-radius:9px;display:block}
