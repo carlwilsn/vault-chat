@@ -100,7 +100,7 @@ const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v20-scribe2-turnv3";
+const AGENT_CONFIG_VERSION = "v21-askagent";
 const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
 // Signature of the per-vault custom tools baked into the cached agent. Custom
 // tools are part of the agent's tool schema (provisioned at create time), so a
@@ -133,6 +133,12 @@ function voiceToolsSignature(tools: VaultVoiceTool[]): string {
 // handlers will use. Degrades to [] (built-ins only) on any failure.
 async function refreshVoiceTools(): Promise<VaultVoiceTool[]> {
   const vault = useStore.getState().vaultPath;
+  // On the box (headless) the voice tools run in server/voice.ts, which does
+  // not run the vault's custom scripts: the box's agent is provisioned without them.
+  if ((globalThis as { __VC_HEADLESS__?: unknown }).__VC_HEADLESS__) {
+    voiceToolCache = { vault, tools: [] };
+    return [];
+  }
   try {
     const tools = await loadVaultVoiceTools(vault);
     voiceToolCache = { vault, tools };
@@ -615,7 +621,42 @@ const CLIENT_TOOL_DEFINITIONS = [
       required: ["conversation_id"],
     },
   },
+  // Hand-off to the box's main agent (server/voice.ts; only when the vault runs
+  // on a box — elsewhere these answer that there is no box).
+  {
+    name: "AskAgent",
+    description:
+      "Hand a task to the main agent on the box (it has a shell, the whole vault, subagents and hours of compute). Use for long or heavy work: research, multi-step edits, runs, anything over a minute. Starts a new chat with the task, or continues one when conversationId is given. Returns the conversationId — keep it to check on the work with AgentStatus.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        task: { type: "string", description: "What the agent should do, in full — it does not hear this voice conversation." },
+        project: { type: "string", description: "Optional. The project the chat belongs to (its name)." },
+        conversationId: { type: "string", description: "Optional. Continue this agent chat instead of starting a new one." },
+      },
+      required: ["task"],
+    },
+  },
+  {
+    name: "AgentStatus",
+    description:
+      "How a chat handed to the main agent is going: its state (working, waiting for an answer, sleeping, idle), what it is doing now, and its last reply.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        conversationId: { type: "string", description: "The conversationId AskAgent returned." },
+      },
+      required: ["conversationId"],
+    },
+  },
 ];
+
+/** The built-in voice tools by name (custom vault tools are not among them). */
+export const BUILTIN_VOICE_TOOL_NAMES: string[] = CLIENT_TOOL_DEFINITIONS.map((t) => t.name);
+/** Tools that act on the viewer: they stay in the client even when the vault runs on a box. */
+export const LOCAL_VOICE_TOOLS = new Set(["ScrollTo"]);
+/** A voice tool run elsewhere (the box): name + args -> the result the agent hears. */
+export type RemoteVoiceTool = (name: string, args: any) => Promise<string>;
 
 // Decide which conversation a starting voice session should run in.
 // Voice always wants its own thread, so a session never appends onto a
@@ -767,7 +808,10 @@ export async function startElevenLabsSession(): Promise<void> {
   const customHeader = await loadVaultVoicePrompt(voiceState.vaultPath);
   const northStar = await loadVaultNorthStar(voiceState.vaultPath);
   const promptContext = await loadVoicePromptContext(voiceState.vaultPath);
-  const systemPrompt = buildSystemPrompt(voiceState, customHeader, northStar, promptContext);
+  // Box mode: the vault's tools run on the box, and AskAgent reaches its agent.
+  const { boxVoiceTool } = await import("./voiceBox");
+  const remote = await boxVoiceTool(voiceState.vaultPath);
+  const systemPrompt = buildSystemPrompt(voiceState, customHeader, northStar, promptContext, undefined, !!remote);
   const dynamicVariables = buildDynamicVariables(voiceState);
 
   try {
@@ -785,7 +829,7 @@ export async function startElevenLabsSession(): Promise<void> {
         },
       },
       dynamicVariables,
-      clientTools: buildClientToolHandlers(),
+      clientTools: buildClientToolHandlers(remote ?? undefined),
       // Linux: the webview can't play Web Audio, so play the agent's voice
       // natively. Harmless no-op elsewhere (the webview plays it normally and
       // playAgentAudioNative/stopAgentAudioNative short-circuit off Linux).
@@ -1566,7 +1610,7 @@ function buildVaultIndex(
  * fresh voice thread gets minted at session start, so the honest history is
  * none at all — not some other thread's.
  */
-export async function buildPhoneVoiceContext(convId?: string): Promise<{
+export async function buildPhoneVoiceContext(convId?: string, opts?: { agentOnBox?: boolean }): Promise<{
   elKey: string;
   agentId: string;
   voiceId: string;
@@ -1605,7 +1649,7 @@ export async function buildPhoneVoiceContext(convId?: string): Promise<{
     elKey,
     agentId,
     voiceId: localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
-    systemPrompt: buildSystemPrompt(state, customHeader, northStar, promptContext, historyMessages),
+    systemPrompt: buildSystemPrompt(state, customHeader, northStar, promptContext, historyMessages, opts?.agentOnBox),
     dynamicVariables: buildDynamicVariables(state),
     toolNames: Object.keys(buildClientToolHandlers()),
     vault: state.vaultPath,
@@ -1695,6 +1739,8 @@ function buildSystemPrompt(
   // — buildPhoneVoiceContext resolves that thread and passes it here so the
   // agent sees the history of the thread its transcripts land in.
   historyMessages?: ChatMessage[],
+  // The vault runs on a box: the tools run there and AskAgent hands work to its agent.
+  agentOnBox?: boolean,
 ): string {
   const vault = state.vaultPath ?? "(no vault)";
   const recentHistory = formatRecentHistory(historyMessages ?? state.messages, 32);
@@ -1755,6 +1801,15 @@ function buildSystemPrompt(
     "- WebSearch for current info or to find a URL. Requires a Tavily key; if missing the tool returns an error you can relay to the user.",
     "",
     customToolsBlock ? `${customToolsBlock}\n` : "",
+    agentOnBox
+      ? [
+          "The main agent (the vault runs on a box):",
+          "- Your tools run on the box, against its copy of the vault; your writes sync like any agent edit.",
+          "- For long or heavy work (research, many edits, builds, anything over a minute), don't grind through it yourself: hand it to the agent with AskAgent (a full task description — it doesn't hear this call), tell the user it's on it, and offer to report back. Keep the conversationId.",
+          "- When the user asks how it's going, or you offered to report back, call AgentStatus and summarise it in a sentence or two.",
+          "",
+        ].join("\n")
+      : "",
     "Shell:",
     "- Bash runs commands with the vault as cwd. Default timeout 20s; hard ceiling ~25s because the platform cuts off tool responses at 30s. For long-running things (cloning big repos, training runs, long installs), background with `nohup <cmd> > /tmp/run.log 2>&1 &` and poll the log file in later Bash calls.",
     "- Bash may be disabled in settings — if it returns an error to that effect, relay it to the user instead of trying to work around it.",
@@ -2127,7 +2182,7 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
   }
 }
 
-async function getSignedUrl(apiKey: string, agentId: string): Promise<string | null> {
+export async function getSignedUrl(apiKey: string, agentId: string): Promise<string | null> {
   try {
     const res = await fetch(
       `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${encodeURIComponent(agentId)}`,
@@ -2304,7 +2359,7 @@ function withTracking<A>(
   };
 }
 
-export function buildClientToolHandlers(): Record<
+export function buildClientToolHandlers(remote?: RemoteVoiceTool): Record<
   string,
   (parameters: any) => Promise<string>
 > {
@@ -2548,7 +2603,9 @@ export function buildClientToolHandlers(): Record<
       "ScrollTo",
       async (args: { page?: number; anchor?: string; path?: string }) => {
         const state = useStore.getState();
-        const targetPath = args.path ?? state.currentFile;
+        // A vault-relative path (the box's tools answer with those) is joined to this vault.
+        const rel = args.path && !/^([a-z]:[\\/]|[\\/])/i.test(args.path) && state.vaultPath;
+        const targetPath = rel ? `${state.vaultPath!.replace(/[\\/]+$/, "")}/${args.path}` : (args.path ?? state.currentFile);
         if (!targetPath) return "Error: no file is currently open.";
         let anchor: string;
         if (typeof args.page === "number" && Number.isFinite(args.page)) {
@@ -2844,6 +2901,19 @@ export function buildClientToolHandlers(): Record<
   // in withTracking so they show in the cockpit pill and chat log like built-ins.
   // A custom tool sharing a built-in's name overrides it — matching both the
   // text agent's merge order and the agent schema filter in ensureAgent.
+  const noBox = async () => "Error: the vault isn't connected to a box, so there is no main agent to hand work to. Do it here, or ask the user to connect the box.";
+  handlers.AskAgent = withTracking("AskAgent", noBox);
+  handlers.AgentStatus = withTracking("AgentStatus", noBox);
+
+  // Box mode: every built-in that reads or writes the vault runs on the box
+  // (server/voice.ts); the ones that move the user's screen stay here.
+  if (remote) {
+    for (const name of BUILTIN_VOICE_TOOL_NAMES) {
+      if (LOCAL_VOICE_TOOLS.has(name) || !handlers[name]) continue;
+      handlers[name] = withTracking(name, (args: unknown) => remote(name, args));
+    }
+  }
+
   for (const t of voiceToolCache.tools) {
     handlers[t.name] = withTracking(t.name, (args: unknown) => t.execute(args));
   }
