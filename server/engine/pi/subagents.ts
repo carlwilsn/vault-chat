@@ -170,8 +170,10 @@ export class Subagents {
     };
     this.children.set(id, child);
     this.files.set(id, file);
-    this.b.ev({ kind: "subagents", threadId: parentId, itemId: `sub-${id}`, children: [id], op: "spawnAgent", prompt: task, model, done: false, ok: false });
-    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: "running", path: file, patch: { task: task.slice(0, 500), agent: child.agent, model, state: "running", startedAt: child.startedAt, sessionFile: file, costUsd: 0 } });
+    // One entry per spawn: the parent's own `subagent` tool call (its toolCallId) carries the children.
+    const itemId = typeof a?.toolCallId === "string" && a.toolCallId ? a.toolCallId : `sub-${id}`;
+    this.b.ev({ kind: "subagents", threadId: parentId, itemId, children: [id], op: "spawnAgent", prompt: task, model, done: false, ok: false });
+    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: "running", path: file, patch: { task: task.slice(0, 500), agent: child.agent, model, state: "running", startedAt: child.startedAt, sessionFile: file, costUsd: 0, toolCallId: itemId } });
 
     proc.on("event", (e: any) => {
       // Any child activity keeps the parent's turn alive for the watchdog.
@@ -211,8 +213,8 @@ export class Subagents {
     const costUsd = round(this.b.usageCalls(file).reduce((s, c) => s + (typeof c.cost === "number" ? c.cost : 0), 0));
     const report = text || child.summary || "";
     const ok = state === "completed";
-    this.b.ev({ kind: "subagents", threadId: parentId, itemId: `sub-${id}`, children: [id], op: "spawnAgent", prompt: task, model, done: true, ok });
-    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: state, patch: { state, costUsd, endedAt: Date.now(), ...(child.summary ? { summary: child.summary.slice(0, 500) } : {}) } });
+    this.b.ev({ kind: "subagents", threadId: parentId, itemId, children: [id], op: "spawnAgent", prompt: task, model, done: true, ok });
+    this.b.ev({ kind: "subagentStatus", threadId: parentId, child: id, status: state, patch: { state, costUsd, endedAt: Date.now(), ...(child.summary || report ? { summary: (child.summary || report).slice(0, 500) } : {}) } });
     this.log(`subagent ${id} (${child.agent}, ${model}) ${state}, $${costUsd}`);
     const failText = state === "timeout" ? "The subagent ran out of time and was stopped." : state === "stopped" ? "The subagent was stopped." : state === "killed" ? "The subagent's process ended unexpectedly." : child.error ?? "";
     return { ok, state, text: ok ? report || "(no output)" : [failText, report].filter(Boolean).join("\n\n"), childId: id, model, costUsd, sessionFile: file };

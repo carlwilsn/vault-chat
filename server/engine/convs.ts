@@ -97,12 +97,18 @@ export function setLive(id: string, running: boolean): void {
   if (!running) useStore.getState().clearConvRuntime(id);
 }
 
-export function setRuntime(id: string, rt: { text: string; tools: { id?: string; name: string; input?: any; result?: string }[]; startedAt: number }): void {
+export function setRuntime(
+  id: string,
+  rt: { text: string; reasoning?: string; tools: { id?: string; name: string; input?: any; result?: string }[]; startedAt: number; context?: number; window?: number },
+): void {
   const liveTools = rt.tools.map((t, i) => ({ id: t.id ?? String(i), name: t.name, input: t.input, result: t.result })) as any;
+  const prev = useStore.getState().convRuntime[id];
   useStore.getState().setConvRuntime(id, {
     streamingText: rt.text,
-    streamingReasoning: "",
+    streamingReasoning: rt.reasoning ?? "",
     liveTools,
     startedAt: rt.startedAt,
+    ...(rt.context ? { lastContext: rt.context } : prev?.lastContext ? { lastContext: prev.lastContext } : {}),
+    ...(rt.window ? { contextWindow: rt.window } : prev?.contextWindow ? { contextWindow: prev.contextWindow } : {}),
   });
 }

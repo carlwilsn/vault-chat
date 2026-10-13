@@ -20,6 +20,8 @@ import { projectForSend } from "./projects";
 import { useStore, type ChatMessage, type ChatAttachment, type LiveTool } from "./store";
 import { readBoxConfig } from "./vaultSync";
 import type { Conversation } from "./conversations";
+import { applyStream, type StreamState } from "./streamWire";
+import { lastReportedContext } from "./chatContext";
 
 export const BOX_UNREACHABLE = "Box unreachable — agent runs on the box";
 
@@ -325,6 +327,8 @@ class BoxChatSession {
   private cacheTimer: ReturnType<typeof setTimeout> | null = null;
   private unsub: (() => void) | null = null;
   private wake: (() => void) | null = null;
+  /** The live reply per conversation, rebuilt whole from the stream events. */
+  private streams = new Map<string, StreamState>();
 
   constructor(
     readonly vault: string,
@@ -544,6 +548,14 @@ class BoxChatSession {
         else this.pending.delete(id);
       }
       const next: Conversation = { ...base, messages };
+      // The dial reads the box model's window (the latest turn's usage.window).
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const w = messages[i]!.usage?.window;
+        if (typeof w === "number" && w > 0) {
+          next.contextWindow = w;
+          break;
+        }
+      }
       if (d.title && d.title !== base.title) next.title = d.title;
       if (d.full && d.meta) {
         for (const k of META_KEYS) {
@@ -573,6 +585,8 @@ class BoxChatSession {
           patch.streamingText = "";
           patch.streamingReasoning = "";
           patch.liveTools = [];
+          const ctx = lastReportedContext(messages);
+          if (ctx > 0 && ctx !== s.lastContext) patch.lastContext = ctx;
         }
       }
       if (!wantRunning && id in s.convRuntime) {
@@ -600,20 +614,30 @@ class BoxChatSession {
       case "status": {
         if (!id) return;
         const running = e.status === "running";
+        if (!running) this.streams.delete(id);
         this.setStatus(id, running);
         this.scheduleDetail(id, running ? 250 : 0);
         return;
       }
       case "runtime": {
         if (!id) return;
-        this.setRuntime(id, String(e.text ?? ""), String(e.tool ?? ""), e.steps, Number(e.startedAt) || undefined);
+        this.setLive(id, e);
+        this.setRuntime(id, this.streamText(id, e), String(e.tool ?? ""), e.steps, Number(e.startedAt) || undefined, false, typeof e.reasoning === "string" ? e.reasoning : undefined);
         return;
       }
       case "message": {
         if (!id) return;
         // A finalized assistant message replaces the live stream.
-        if (e.role === "assistant") this.setRuntime(id, "", "", undefined, undefined, true);
+        if (e.role === "assistant") {
+          this.streams.delete(id);
+          this.setRuntime(id, "", "", undefined, undefined, true);
+        }
         this.scheduleDetail(id, 150);
+        return;
+      }
+      case "meta": {
+        // State, wake, cost, verdict, to-dos or subagents changed: re-read.
+        if (id) this.scheduleDetail(id, 0);
         return;
       }
       case "title": {
@@ -626,15 +650,38 @@ class BoxChatSession {
       case "chat": {
         // ENGINE's start/stream/end kinds, if the ring carries them.
         if (!id) return;
-        if (e.phase === "start") this.setStatus(id, true);
-        else if (e.phase === "stream" || e.phase === "delta")
-          this.setRuntime(id, String(e.text ?? ""), String(e.tool ?? ""), undefined, undefined);
+        if (e.phase === "start") {
+          this.streams.delete(id);
+          this.setStatus(id, true);
+        } else if (e.phase === "stream" || e.phase === "delta")
+          this.setRuntime(id, this.streamText(id, e), String(e.tool ?? ""), undefined, undefined);
         else if (e.phase === "end") this.setStatus(id, false);
         this.scheduleDetail(id, 150);
         return;
       }
       default:
         if (id) this.scheduleDetail(id, 500);
+    }
+  }
+
+  /** The whole live text after one stream event (src/streamWire.ts). */
+  private streamText(id: string, e: any): string {
+    const next = applyStream(this.streams.get(id), e);
+    this.streams.set(id, next);
+    return next.whole || !next.text ? next.text : `…${next.text}`;
+  }
+
+  /** The live context size and the box model's window, for the dial. */
+  private setLive(id: string, e: any): void {
+    const ctx = Number(e.context);
+    const win = Number(e.window);
+    const s = useStore.getState();
+    if (ctx > 0 && s.activeConversationId === id && s.lastContext !== ctx) s.setLastContext(ctx);
+    if (win > 0) {
+      const c = s.conversations.find((x) => x.id === id);
+      if (c && c.contextWindow !== win) {
+        useStore.setState((st) => ({ conversations: st.conversations.map((x) => (x.id === id ? { ...x, contextWindow: win } : x)) }));
+      }
     }
   }
 
@@ -672,17 +719,19 @@ class BoxChatSession {
     steps: unknown,
     startedAt: number | undefined,
     clearOnly = false,
+    reasoning?: string,
   ): void {
     const liveTools: LiveTool[] = tool ? [{ id: `box-live-${tool}`, name: tool, input: {} }] : [];
     const s = useStore.getState();
     if (!clearOnly && !s.conversations.some((c) => c.id === id && c.status === "running")) this.setStatus(id, true);
     if (s.activeConversationId === id) {
       if (clearOnly) {
-        if (s.streamingText || s.liveTools.length) useStore.setState({ streamingText: "", liveTools: [] });
+        if (s.streamingText || s.streamingReasoning || s.liveTools.length) useStore.setState({ streamingText: "", streamingReasoning: "", liveTools: [] });
         return;
       }
       useStore.setState({
         streamingText: text,
+        ...(reasoning !== undefined ? { streamingReasoning: reasoning } : {}),
         liveTools,
         busy: true,
         ...(s.busyStartedAt ? {} : { busyStartedAt: startedAt ?? Date.now() }),
@@ -690,13 +739,13 @@ class BoxChatSession {
     } else {
       if (clearOnly) {
         const rt = s.convRuntime[id];
-        if (rt) s.setConvRuntime(id, { ...rt, streamingText: "", liveTools: [] });
+        if (rt) s.setConvRuntime(id, { ...rt, streamingText: "", streamingReasoning: "", liveTools: [] });
         return;
       }
       s.setConvRuntime(id, {
         ...(s.convRuntime[id] ?? { streamingReasoning: "" }),
         streamingText: text,
-        streamingReasoning: "",
+        streamingReasoning: reasoning ?? s.convRuntime[id]?.streamingReasoning ?? "",
         liveTools,
         liveSteps: Array.isArray(steps) ? (steps as { thought: string; action: string }[]) : undefined,
         startedAt: startedAt ?? s.convRuntime[id]?.startedAt ?? Date.now(),
@@ -836,15 +885,13 @@ export async function boxSend(opts: {
   const trimmed = opts.text.trim();
   let convId = opts.convId ?? s.activeConversationId;
   if (!convId) convId = s.newConversation();
-  if (!trimmed) return true;
-  if (opts.attachments && opts.attachments.length) {
-    appendTo(convId, {
-      role: "assistant",
-      system: true,
-      content: "⚠️ Images can't be sent to the box yet — the message was NOT sent. Send it as text.",
-    });
-    return true;
-  }
+  // Images go along as {name, mime, dataBase64}; the box saves them under
+  // .vault-chat/captures/ and, when its model can't see, runs the turn on its
+  // vision model (server/engine/engine.ts).
+  const images = boxImages(opts.attachments);
+  if (!trimmed && !images.length) return true;
+  // What the box shows for the turn: its text, or "(image)" for an image alone.
+  const shown = trimmed || "(image)";
   if (s.boxChat?.reachable === false) {
     sess.kick();
     appendTo(convId, {
@@ -862,8 +909,8 @@ export async function boxSend(opts: {
   const answer = knownToBox && waitingOnUser(conv);
 
   // Optimistic: the user's turn shows at once and the thread reads running.
-  sess.addPending(convId, trimmed);
-  appendTo(convId, { role: "user", content: trimmed, boxPending: true });
+  sess.addPending(convId, shown);
+  appendTo(convId, { role: "user", content: shown, boxPending: true, ...(opts.attachments?.length ? { attachments: opts.attachments } : {}) });
   useStore.getState().setConversationStatus(convId, "running");
   if (useStore.getState().activeConversationId === convId) {
     const cur = useStore.getState();
@@ -878,6 +925,7 @@ export async function boxSend(opts: {
   const payload: Record<string, unknown> = {
     text: relativize(trimmed, vault),
     clientMsgId: newClientMsgId(),
+    ...(images.length ? { images } : {}),
   };
   if (knownToBox) payload.convId = convId;
   if (ctx) payload.context = relativize(ctx, vault);
@@ -885,11 +933,11 @@ export async function boxSend(opts: {
   const r = await sess_post(sess, answer ? "/answer" : "/message", payload);
 
   if (!r.ok) {
-    sess.dropPending(convId, trimmed);
+    sess.dropPending(convId, shown);
     useStore.setState((st) => {
       const strip = (ms: ChatMessage[]) => {
-        const i = ms.map((m) => !!m.boxPending && m.content === trimmed).lastIndexOf(true);
-        return i < 0 ? ms : [...ms.slice(0, i), { role: "user" as const, content: trimmed }, ...ms.slice(i + 1)];
+        const i = ms.map((m) => !!m.boxPending && m.content === shown).lastIndexOf(true);
+        return i < 0 ? ms : [...ms.slice(0, i), { ...ms[i]!, boxPending: undefined }, ...ms.slice(i + 1)];
       };
       return {
         conversations: st.conversations.map((c) => (c.id === convId ? { ...c, messages: strip(c.messages) } : c)),
@@ -919,6 +967,18 @@ export async function boxSend(opts: {
   sess.markKnown(boxId);
   sess.scheduleDetail(boxId, 400);
   return true;
+}
+
+/** Pasted / captured images as the box's /message takes them. */
+export function boxImages(atts: ChatAttachment[] | undefined): { name?: string; mime: string; dataBase64: string }[] {
+  const out: { name?: string; mime: string; dataBase64: string }[] = [];
+  for (const a of atts ?? []) {
+    const m = /^data:([^;,]+)?(?:;[^,]*)?;base64,(.*)$/s.exec(a.imageDataUrl ?? "");
+    if (!m || !m[2]) continue;
+    const name = a.capturedFilePath?.split("/").pop() ?? a.sourcePath?.split("/").pop();
+    out.push({ ...(name ? { name } : {}), mime: m[1] || "image/png", dataBase64: m[2] });
+  }
+  return out.slice(0, 8);
 }
 
 function sess_post(sess: BoxChatSession, path: string, payload: Record<string, unknown>) {

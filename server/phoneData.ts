@@ -90,6 +90,31 @@ export function conversationsSummary(vault: string): unknown {
   return { vault: basename(vault.replace(/[\\/]+$/, "")) || vault, conversations: rows };
 }
 
+/** A tool call the phone lists. The legacy per-child "Subagent" records (an
+ *  engine before 2026-10-13 added one beside the `subagent` call itself) are
+ *  dropped: one entry per spawn. */
+function shownTool(t: any): boolean {
+  return !(t?.name === "Subagent" && typeof t?.id === "string" && t.id.startsWith("sub-"));
+}
+
+/** What the phone needs beyond the text: thinking, cost, the context size,
+ *  a summarized-earlier divider (compaction or roll-over) and the subagents a
+ *  turn spawned. Absent when empty, so old clients see the same shape. */
+function phoneExtras(m: any): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (typeof m.thinking === "string" && m.thinking.trim()) out.thinking = truncateChars(m.thinking, 8_000);
+  const cost = typeof m.costUsd === "number" ? m.costUsd : typeof m.usage?.costUsd === "number" ? m.usage.costUsd : undefined;
+  if (typeof cost === "number") out.costUsd = cost;
+  if (typeof m.usage?.context === "number" && m.usage.context > 0) out.context = m.usage.context;
+  if (typeof m.usage?.window === "number" && m.usage.window > 0) out.window = m.usage.window;
+  const summary = typeof m.compaction?.summary === "string" ? m.compaction.summary : typeof m.rollover?.recap === "string" ? m.rollover.recap : null;
+  if (m.system === true && summary !== null) out.divider = truncateChars(summary, 12_000);
+  const spawns = (Array.isArray(m.toolCalls) ? m.toolCalls : []).flatMap((t: any) => (Array.isArray(t?.subagents) ? t.subagents : []));
+  if (spawns.length) out.spawns = spawns;
+  if (m.failed === true) out.failed = true;
+  return out;
+}
+
 /** voice_server.rs:2168 conversation_json. */
 export function conversationDetail(vault: string, id: string, n: number, full = false): unknown | null {
   const c = readConversationObjects(vault).find((x) => x.id === id);
@@ -116,15 +141,19 @@ export function conversationDetail(vault: string, id: string, n: number, full = 
     askDecided: str(c.askDecided),
     askDecidedAt: int(c.askDecidedAt),
     ...ongoingMeta(c, msgs),
+    ...(c.verdict && typeof c.verdict === "object" ? { verdict: c.verdict } : {}),
+    ...(Array.isArray(c.todos) && c.todos.length ? { todos: c.todos } : {}),
+    ...(Array.isArray(c.subagents) && c.subagents.length ? { subagents: c.subagents.map((x: any) => ({ threadId: x.threadId, task: x.task ?? x.prompt, agent: x.agent, model: x.model, state: x.state ?? x.status, costUsd: x.costUsd, summary: x.summary, toolCallId: x.toolCallId, startedAt: x.startedAt, endedAt: x.endedAt })) } : {}),
     messages: visible.map((m) => ({
       role: str(m.role, "assistant"),
       content: truncateChars(str(m.content), 20_000),
       system: m.system === true,
-      tools: Array.isArray(m.toolCalls) ? m.toolCalls.map((t: any) => t?.name).filter((x: unknown) => typeof x === "string") : [],
+      tools: Array.isArray(m.toolCalls) ? m.toolCalls.filter(shownTool).map((t: any) => t?.name).filter((x: unknown) => typeof x === "string") : [],
       timeline: m.timeline ?? null,
       direct: m.direct === true,
       decision: m.decision === true,
       askOptions: m.askOptions ?? null,
+      ...phoneExtras(m),
     })),
   };
 }

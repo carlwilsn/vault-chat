@@ -101,7 +101,7 @@ async function mapWithConcurrencyLimit(items, concurrency, fn) {
 }
 
 /** One child, run by the host. Never throws: a failure is a failed result. */
-async function runSingleAgent(ctx, agents, agentName, task, cwd, model, step, mode) {
+async function runSingleAgent(ctx, agents, agentName, task, cwd, model, step, mode, toolCallId) {
   const agent = agents.find((a) => a.name === agentName);
   if (!agent) {
     const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
@@ -111,7 +111,7 @@ async function runSingleAgent(ctx, agents, agentName, task, cwd, model, step, mo
     "vc:host-call",
     JSON.stringify({
       tool: "__subagent",
-      args: { agent: { name: agent.name, tools: agent.tools ?? null, model: agent.model ?? null, systemPrompt: agent.systemPrompt }, task, cwd: cwd ?? null, model: model ?? null, step: step ?? null, mode },
+      args: { agent: { name: agent.name, tools: agent.tools ?? null, model: agent.model ?? null, systemPrompt: agent.systemPrompt }, task, cwd: cwd ?? null, model: model ?? null, step: step ?? null, mode, toolCallId: toolCallId ?? null },
     }),
   );
   let r;
@@ -159,7 +159,7 @@ export function registerSubagentTool(pi) {
     ].join(" "),
     parameters: SubagentParams,
 
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
       const agents = discoverAgents();
       const hasChain = (params.chain?.length ?? 0) > 0;
       const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -174,7 +174,7 @@ export function registerSubagentTool(pi) {
         const results = [];
         for (let i = 0; i < params.chain.length; i++) {
           const s = params.chain[i];
-          const r = await runSingleAgent(ctx, agents, s.agent, s.task.replace(/\{previous\}/g, previous), s.cwd, s.model, i + 1, "chain");
+          const r = await runSingleAgent(ctx, agents, s.agent, s.task.replace(/\{previous\}/g, previous), s.cwd, s.model, i + 1, "chain", toolCallId);
           results.push(r);
           if (isFailed(r)) return { content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${s.agent}): ${r.text}` }], details: { mode: "chain", results }, isError: true };
           previous = r.text;
@@ -185,13 +185,13 @@ export function registerSubagentTool(pi) {
       if (hasTasks) {
         if (params.tasks.length > MAX_PARALLEL_TASKS)
           return { content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` }], details: undefined, isError: true };
-        const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, (t) => runSingleAgent(ctx, agents, t.agent, t.task, t.cwd, t.model, undefined, "parallel"));
+        const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, (t) => runSingleAgent(ctx, agents, t.agent, t.task, t.cwd, t.model, undefined, "parallel", toolCallId));
         const ok = results.filter((r) => !isFailed(r)).length;
         const summaries = results.map((r) => `### [${r.agent}] ${isFailed(r) ? `failed${r.state ? ` (${r.state})` : ""}` : "completed"}\n\n${truncateOutput(r.text || "(no output)")}`);
         return { content: [{ type: "text", text: `Parallel: ${ok}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}` }], details: { mode: "parallel", results } };
       }
 
-      const r = await runSingleAgent(ctx, agents, params.agent, params.task, params.cwd, params.model, undefined, "single");
+      const r = await runSingleAgent(ctx, agents, params.agent, params.task, params.cwd, params.model, undefined, "single", toolCallId);
       if (isFailed(r)) return { content: [{ type: "text", text: `Agent ${r.state || "failed"}: ${r.text}` }], details: { mode: "single", results: [r] }, isError: true };
       return { content: [{ type: "text", text: r.text || "(no output)" }], details: { mode: "single", results: [r] } };
     },

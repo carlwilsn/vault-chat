@@ -25,8 +25,15 @@ export function windowFor(modelId: string | null | undefined): ContextWindow {
   return w ? { tokens: w, known: true } : { tokens: FALLBACK_CONTEXT_WINDOW, known: false };
 }
 
+/** A compaction divider — or the box's roll-over marker, which is the same
+ *  thing to the reader: the earlier conversation was summarized here. */
 export function isCompactionDivider(m: ChatMessage | undefined): boolean {
-  return !!m && !!m.system && typeof m.compaction?.summary === "string";
+  return !!m && !!m.system && (typeof m.compaction?.summary === "string" || typeof m.rollover?.recap === "string");
+}
+
+/** The summary a divider carries (a compaction's summary, a roll-over's recap). */
+export function dividerSummary(m: ChatMessage): string {
+  return m.compaction?.summary ?? m.rollover?.recap ?? "";
 }
 
 /** Index of the newest compaction divider, or -1. */
@@ -40,7 +47,7 @@ export function lastCompactionIndex(messages: ChatMessage[]): number {
 export function activeWindow(messages: ChatMessage[]): { summary: string | null; messages: ChatMessage[] } {
   const i = lastCompactionIndex(messages);
   if (i < 0) return { summary: null, messages };
-  return { summary: messages[i].compaction!.summary, messages: messages.slice(i + 1) };
+  return { summary: dividerSummary(messages[i]!), messages: messages.slice(i + 1) };
 }
 
 /** Insert a divider carrying `summary` before the last `keep` messages. */
