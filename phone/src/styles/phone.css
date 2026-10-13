@@ -882,3 +882,4 @@ body.page-chat #pChat,body.page-activity #pAct,body.page-alerts #pAl,body.page-n
 /* The React root is not a box: the shell's parts are laid out as body's own
    children, as in phone.html. */
 #root{display:contents}
+.csec.pnew{width:100%;text-align:left;color:var(--label-2)}

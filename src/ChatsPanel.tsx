@@ -5,7 +5,7 @@ import { conversationPreview, isArchivedThread, type Conversation } from "./conv
 import { OngoingLine } from "./OngoingLine";
 import { ongoingWork } from "./ongoingWork";
 import { useProjects } from "./ProjectChip";
-import { newChatInProject, projectName, type ProjectInfo } from "./projects";
+import { newChatInProject, projectName, slugify, type ProjectInfo } from "./projects";
 import { cn } from "./lib/utils";
 
 // How the list groups by project — a preview switch while Carl picks:
@@ -78,7 +78,6 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
   const projects = useProjects();
   const sections = useMemo(() => groupConversations(conversations, query, projects), [conversations, query, projects]);
   const [style] = useState(groupingStyle);
-  const [archiveOpen, setArchiveOpen] = useState(false);
   const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set());
 
   if (!open) return null;
@@ -182,6 +181,7 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
                     {p.items.map(row)}
                   </Section>
                 ))}
+              {!query.trim() && <NewProjectRow onCreate={(name) => newInProject(slugify(name))} />}
               {style === "folders" && sections.projects.length > 0 && (
                 <Section label="Projects">
                   {sections.projects.map((p) => {
@@ -210,25 +210,10 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
               {sections.running.length > 0 && <Section label="Running">{sections.running.map(row)}</Section>}
               {sections.recent.length > 0 && <Section label="Recent">{sections.recent.map(row)}</Section>}
               {sections.earlier.length > 0 && <Section label="Earlier">{sections.earlier.map(row)}</Section>}
-              {sections.archived.length > 0 && (
-                <>
-                  <button
-                    onClick={() => setArchiveOpen((v) => !v)}
-                    className="w-full px-4 pt-3 pb-1 flex items-center gap-1 text-[10.5px] uppercase tracking-wider text-muted-foreground/80 font-medium hover:text-foreground/90"
-                    title="Threads from the old missions system — kept as read-only history"
-                  >
-                    <ChevronRight className={cn("h-3 w-3 transition-transform", archiveOpen && "rotate-90")} />
-                    <span>Archived missions</span>
-                    <span className="normal-case tracking-normal tabular-nums">· {sections.archived.length}</span>
-                  </button>
-                  {archiveOpen && sections.archived.map(row)}
-                </>
-              )}
               {sections.projects.length === 0 &&
                 sections.running.length === 0 &&
                 sections.recent.length === 0 &&
-                sections.earlier.length === 0 &&
-                sections.archived.length === 0 && (
+                sections.earlier.length === 0 && (
                   <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
                     No matches.
                   </div>
@@ -237,6 +222,41 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** "New project": name it, and a chat in it opens. The project is made when
+ *  that chat is first sent, like a project picked from the chat's chip. */
+function NewProjectRow({ onCreate }: { onCreate: (name: string) => void }) {
+  const [name, setName] = useState<string | null>(null);
+  if (name === null)
+    return (
+      <button
+        onClick={() => setName("")}
+        className="w-full px-4 pt-3 pb-1 flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider text-muted-foreground/70 hover:text-foreground font-medium"
+      >
+        <Plus className="h-3 w-3" />
+        New project
+      </button>
+    );
+  return (
+    <div className="px-4 pt-3 pb-1">
+      <input
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && name.trim() && slugify(name)) onCreate(name.trim());
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            setName(null);
+          }
+        }}
+        onBlur={() => !name.trim() && setName(null)}
+        placeholder="Project name, then Enter"
+        className="w-full h-6 px-2 rounded bg-background border border-border text-[11.5px] placeholder:text-muted-foreground/60 focus:outline-none focus:border-ring/40"
+      />
     </div>
   );
 }
@@ -259,7 +279,7 @@ function Section({
         {onAdd && (
           <button
             onClick={onAdd}
-            className="opacity-0 group-hover/sec:opacity-100 transition-opacity h-5 w-5 -my-1 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
+            className="opacity-60 hover:opacity-100 transition-opacity h-5 w-5 -my-1 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
             title={addTitle}
           >
             <Plus className="h-3 w-3" />

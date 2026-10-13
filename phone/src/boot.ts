@@ -207,7 +207,6 @@ export function boot(): void {
   let page = "chat";
   // Phase 3. Threads from the old missions system: archived, read-only.
   const ARCHIVED_SOURCES = new Set(["mission", "worker", "ask"]);
-  let archOpen = false;
   // The vault's projects (GET /projects), for names and the project sheet.
   let projects = [];
   // The open conversation's meta (project + ongoing work), from /conversation.
@@ -453,11 +452,10 @@ export function boot(): void {
       const convs = d.conversations || [];
       void loadProjects();
       // The drawer is your conversations, grouped by project. Threads from the
-      // old missions system (mission/worker/ask) are archived: kept, readable,
-      // folded away at the bottom. The cosmetic hidden set (cleared "from this
+      // old missions system (mission/worker/ask) stay on disk but aren't
+      // listed. The cosmetic hidden set (cleared "from this
       // view") is filtered out, except the chat you're currently in.
       const hidden = hiddenChats();
-      const archived = convs.filter((c) => ARCHIVED_SOURCES.has(c.source || ""));
       // Feed the dot's eligibility map — the icon needs sources to tell your
       // chats from harness threads.
       for (const c of convs) convSourceById.set(c.id, c.source);
@@ -496,20 +494,15 @@ export function boot(): void {
         box.appendChild(h);
         for (const c of list) box.appendChild(convRow(c, runIds.has(c.id)));
       }
+      // New project: a new chat, with the project sheet open to name it.
+      const np = el('<button class="csec proj pnew"><span class="pn">+ New project</span></button>');
+      np.onclick = () => { closeConvs(); newChat(); openProjectSheet(); };
+      box.appendChild(np);
       if (loose.length) {
         const h = document.createElement("div"); h.className = "csec"; h.textContent = "Chats"; box.appendChild(h);
         for (const c of loose) box.appendChild(convRow(c, runIds.has(c.id)));
       }
-      if (archived.length) {
-        const t = el('<button class="csec wsec"><span></span><span class="chv"></span></button>');
-        const label = () => { t.querySelector("span").textContent = "Archived missions · " + archived.length; t.querySelector(".chv").innerHTML = chevT(archOpen); };
-        const holder = document.createElement("div"); holder.style.display = archOpen ? "" : "none";
-        for (const c of archived) holder.appendChild(convRow(c, false));
-        label();
-        t.onclick = () => { archOpen = !archOpen; holder.style.display = archOpen ? "" : "none"; label(); };
-        box.appendChild(t); box.appendChild(holder);
-      }
-      if (!chats.length && !archived.length) box.innerHTML = '<div class="empty">No conversations yet. Tap New to start.</div>';
+      if (!chats.length) box.innerHTML = '<div class="empty">No conversations yet. Tap New to start.</div>';
     } catch (e) {
       box.innerHTML = '<div class="empty">Couldn’t load: ' + esc(String(e.message || e)) + "</div>";
     }
