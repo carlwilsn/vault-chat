@@ -62,6 +62,10 @@ export type BoxChatScript = {
    *  the box like the engine does: the turn appended, its poll events queued.
    *  The reply itself stays the script's (boxNext). */
   live?: boolean;
+  /** Voice on the box (server/voice.ts): POST /api/v1/voice/tool answers
+   *  `results[name]` (else "(ran <name> on the box)"); AskAgent starts a box
+   *  chat (running, the task as its first message) and AgentStatus reads it. */
+  voice?: { results?: Record<string, string> };
 };
 export type BoxPost = { path: string; body: any };
 
@@ -139,6 +143,34 @@ function fakeBox(u: URL): FakeBox {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** The fake box's voice tools (the real ones: server/voice.ts). */
+function boxVoiceTool(name: string, args: any): string {
+  if (name === "AskAgent") {
+    const task = String(args.task ?? "").trim();
+    let id = String(args.conversationId ?? "");
+    const started = !id || !boxConvs[id];
+    if (started) {
+      // Deterministic, so a scenario's box steps can name it: v-agent-1, v-agent-2 …
+      id = `v-agent-${Object.keys(boxConvs).filter((k) => k.startsWith("v-agent-")).length + 1}`;
+      const title = task.length > 48 ? task.slice(0, 47) + "…" : task;
+      boxConvs[id] = { title, source: "phone", status: "running", meta: { state: "running", lastActivityAt: Date.now(), ...(args.project ? { project: String(args.project) } : {}) }, messages: [{ role: "user", content: task }] };
+    } else {
+      boxConvs[id]!.messages = [...boxConvs[id]!.messages, { role: "user", content: task, direct: true }];
+      boxConvs[id]!.status = "running";
+    }
+    boxQueue.push({ type: "status", convId: id, status: "running" });
+    return JSON.stringify({ conversationId: id, started });
+  }
+  if (name === "AgentStatus") {
+    const id = String(args.conversationId ?? "");
+    const c = boxConvs[id];
+    if (!c) return `No conversation ${id}.`;
+    const last = [...c.messages].reverse().find((m: any) => m.role === "assistant" && !m.system) as any;
+    return JSON.stringify({ conversationId: id, title: c.title, state: c.status === "running" ? "working" : String(c.meta?.state ?? "idle"), ...(last ? { lastReply: String(last.content).slice(0, 800) } : {}) });
+  }
+  return cfg.sync?.boxChat?.voice?.results?.[name] ?? `(ran ${name} on the box)`;
+}
 
 export const hostCommands: Record<string, (a: Record<string, any>) => unknown> = {
   // ---- sync ----
@@ -252,6 +284,7 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       b = {};
     }
     boxPosts.push({ path, body: b });
+    if (path === "/api/v1/voice/tool") return { status: 200, body: JSON.stringify({ result: boxVoiceTool(String(b.name ?? ""), b.args ?? {}) }) };
     if (cfg.sync?.boxChat?.live) {
       const id = String(b.convId ?? "");
       const c = boxConvs[id];
