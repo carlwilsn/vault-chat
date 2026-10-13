@@ -413,7 +413,11 @@ export async function answerModelRequest(url: URL, init: RequestInit | undefined
   if (host === "openrouter.ai") {
     if (path.endsWith("/models") && method === "GET") return json(catalog);
     if (path.endsWith("/chat/completions")) {
-      const p = parseOpenAI(JSON.parse(bodyText || "{}"));
+      const raw = JSON.parse(bodyText || "{}");
+      // Settings' short model test (an image plus a required "ok" tool): a
+      // model whose catalog entry takes no images answers like OpenRouter does.
+      if (raw.tool_choice === "required" && raw.tools?.[0]?.function?.name === "ok") return answerModelTest(raw.model, raw);
+      const p = parseOpenAI(raw);
       const { id, step, index } = pick(p);
       llmLog.push({ at: Date.now(), url: url.href, model: p.model, script: id, step: index, stream: p.stream });
       return serveOpenAI(p, step, signal);
@@ -421,6 +425,12 @@ export async function answerModelRequest(url: URL, init: RequestInit | undefined
     if (path.includes("/generation")) return json({ data: { total_cost: 0.0012 } });
     if (path.endsWith("/key") || path.endsWith("/auth/key")) return json({ data: { label: "sk-or-PREVIEW", usage: 1.23, limit: null } });
     if (path.endsWith("/credits")) return json({ data: { total_credits: 50, total_usage: 12.34 } });
+    return null;
+  }
+  if (host === "api.elevenlabs.io") {
+    if (path === "/v1/voices") return json({ voices: EL_VOICES });
+    if (path.startsWith("/v1/text-to-speech/")) return new Response(chime(), { headers: { "content-type": "audio/wav" } });
+    if (path === "/v1/convai/agents/create") return json({ agent_id: "preview-agent" });
     return null;
   }
   if (host === "api.anthropic.com") {
@@ -452,4 +462,48 @@ export async function answerModelRequest(url: URL, init: RequestInit | undefined
   if (host === "generativelanguage.googleapis.com" && path.endsWith("/models"))
     return json({ models: [{ name: "models/gemini-2.5-pro", displayName: "Gemini 2.5 Pro", supportedGenerationMethods: ["generateContent"] }, { name: "models/gemini-2.5-flash", displayName: "Gemini 2.5 Flash", supportedGenerationMethods: ["generateContent"] }] });
   return null;
+}
+
+// ---- Settings: the model test, ElevenLabs voices -------------------------------
+
+function answerModelTest(model: string, raw: any): Response {
+  const m = (catalog as any).data.find((x: any) => x.id === model);
+  const images = m ? (m.architecture?.input_modalities ?? []).includes("image") : !/deepseek/.test(model);
+  const hasImage = JSON.stringify(raw.messages ?? []).includes("image_url");
+  if (!images && hasImage)
+    return json({ error: { code: 400, message: "No endpoints found that support image input" } }, 400);
+  return json({
+    choices: [{ message: { role: "assistant", content: null, tool_calls: [{ id: "t1", type: "function", function: { name: "ok", arguments: '{"colour":"red"}' } }] } }],
+  });
+}
+
+const EL_VOICES = [
+  ["nPczCjzI2devNBz1zQrb", "Brian", "american", "male", "deep"],
+  ["JBFqnCBsd6RMkjVDRZzb", "George", "british", "male", "warm"],
+  ["EXAVITQu4vr4xnSDxMaL", "Sarah", "american", "female", "soft"],
+  ["XB0fDUnXU5powFXDhCwa", "Charlotte", "swedish", "female", "seductive"],
+  ["onwK4e9ZLuTAKqWW03F9", "Daniel", "british", "male", "authoritative"],
+  ["pFZP5JQG7iQjIQuC4Bku", "Lily", "british", "female", "warm"],
+  ["TX3LPaxmHKxFdv7VOQHJ", "Liam", "american", "male", "articulate"],
+  ["XrExE9yKIg1WjnnlVkGX", "Matilda", "american", "female", "friendly"],
+].map(([voice_id, name, accent, gender, description]) => ({ voice_id, name, category: "premade", labels: { accent, gender, description } }));
+
+/** A short two-note chime as a WAV: what "Test" plays in the preview. */
+function chime(): Blob {
+  const rate = 22050;
+  const n = Math.floor(rate * 0.7);
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const str = (o: number, t: string) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    const t = i / rate;
+    const f = t < 0.35 ? 660 : 880;
+    const env = Math.exp(-((t % 0.35) * 6));
+    v.setInt16(44 + i * 2, Math.sin(2 * Math.PI * f * t) * env * 9000, true);
+  }
+  return new Blob([buf], { type: "audio/wav" });
 }

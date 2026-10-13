@@ -13,7 +13,6 @@ import {
 } from "./voice-elevenlabs";
 import { VoiceCockpit } from "./VoiceCockpit";
 import { HistoryRoot } from "./HistoryInline";
-import { NotificationsButton } from "./NotificationsPanel";
 import { subscribeBoxSync, type BoxSyncState } from "./vaultSync";
 
 export function Titlebar() {
@@ -246,7 +245,6 @@ export function Titlebar() {
                 <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
               )}
             </button>
-            <NotificationsButton />
             <div
               ref={micGroupRef}
               className="relative flex items-center group"

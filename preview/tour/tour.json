@@ -66,11 +66,24 @@
       }
     },
     {
-      "id": "settings-caps",
+      "id": "settings-check",
       "group": "Settings",
-      "title": "What each model can do — pick a layout",
-      "caption": "A small capability view for the models your roles use: tools, images, PDFs, caching, helpers, and where we know it from (learned on the box, the catalog, or untested). Three layouts are built; pick one.",
-      "scenario": "settings-caps-table",
+      "title": "Pick a model, it's checked for its role",
+      "caption": "No capability table: each picker opens the chat's search-and-scroll menu, and the model you pick is checked for what its role needs (Chat: tools and images; Background: tools; Voice: images and PDFs). One line says Passed, or what's missing.",
+      "scenario": "settings-check",
+      "steps": [
+        {
+          "hold": 700
+        },
+        {
+          "highlight": "section",
+          "text": "/^Models/",
+          "label": "Passed · or what's missing"
+        },
+        {
+          "hold": 3800
+        }
+      ],
       "beforeSide": {
         "steps": [
           {
@@ -85,61 +98,7 @@
             "hold": 2500
           }
         ]
-      },
-      "options": [
-        {
-          "label": "Option A — a table under the pickers",
-          "scenario": "settings-caps-table",
-          "steps": [
-            {
-              "hold": 700
-            },
-            {
-              "highlight": "div.rounded-md",
-              "text": "/source[\\s\\S]*(learned|untested)/",
-              "label": "Option A"
-            },
-            {
-              "hold": 3500
-            }
-          ]
-        },
-        {
-          "label": "Option B — one line under each picker",
-          "scenario": "settings-caps-inline",
-          "steps": [
-            {
-              "hold": 700
-            },
-            {
-              "highlight": "p",
-              "text": "/— (learned|catalog|untested)/",
-              "all": true,
-              "label": "Option B"
-            },
-            {
-              "hold": 3500
-            }
-          ]
-        },
-        {
-          "label": "Option C — folded into one Capabilities row",
-          "scenario": "settings-caps-fold",
-          "steps": [
-            {
-              "hold": 700
-            },
-            {
-              "highlight": "details",
-              "text": "/^Capabilities/",
-              "label": "Option C"
-            },
-            {
-              "hold": 3500
-            }
-          ]
-        }
-      ]
+      }
     },
     {
       "id": "settings-keys",
@@ -708,8 +667,8 @@
     {
       "id": "removals-titlebar",
       "group": "Removals",
-      "title": "Mission Control is gone — the bell is in its place",
-      "caption": "The Rocket opened Mission Control (missions, schedules, notifications). Missions are gone; the bell in its place opens one notification list.",
+      "title": "Mission Control is gone",
+      "caption": "The Rocket opened Mission Control (missions, schedules, notifications). Missions are gone, and so is the bell: notifications live on the phone.",
       "scenario": "p3-titlebar",
       "steps": [
         {
@@ -854,28 +813,6 @@
       "steps": [
         {
           "hold": 1500
-        }
-      ]
-    },
-    {
-      "id": "notifications",
-      "group": "Notifications",
-      "title": "One notification list — pick a frame",
-      "caption": "Questions, finished work and failures in one list behind the bell; each opens its conversation and marks itself read.",
-      "scenario": "p3-notifs",
-      "steps": [
-        {
-          "hold": 1500
-        }
-      ],
-      "options": [
-        {
-          "label": "Option A — a popover",
-          "scenario": "p3-notifs"
-        },
-        {
-          "label": "Option B — a side panel",
-          "scenario": "p3-notifs-panel"
         }
       ]
     },

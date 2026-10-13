@@ -210,12 +210,12 @@ export const phase3Scenarios: Scenario[] = [
   // ----- desktop: removed -----
   {
     id: "p3-titlebar",
-    title: "Mission Control is gone — the bell is in the Rocket's place",
+    title: "Mission Control is gone",
     group: "P3 · Removals",
     notes:
-      "Plays: click the titlebar button between Notes and the mic. Before: the Rocket opens Mission Control (Missions / Schedules / Notifications). After: there is no Rocket; the bell in its place opens the notification list.",
+      "Plays: click the titlebar button between Notes and the mic. Before: the Rocket opens Mission Control (Missions / Schedules / Notifications). After: there is no Rocket and no bell — notifications are the phone's.",
     build,
-    open: [...open("c-spectral"), pause(), tryClick("[title='Mission control']"), tryClick("[title='Notifications']"), pause(2500)],
+    open: [...open("c-spectral"), pause(), tryClick("[title='Mission control']"), pause(2500)],
   },
   {
     id: "p3-approve-gone",
@@ -302,33 +302,6 @@ export const phase3Scenarios: Scenario[] = [
       { click: CHATS }, pause(900), { click: "button", text: /^Sweep the repos/ }, pause(2000),
       { click: CHATS }, pause(900), { click: "button", text: /^Render the thesis figures/ }, pause(2200),
     ],
-  },
-  // ----- desktop: notifications -----
-  {
-    id: "p3-notifs",
-    title: "Notifications — one list, each opens its conversation",
-    group: "P3 · Notifications",
-    notes:
-      "Plays: open the list, click the question. Before: Rocket → Mission Control → its Notifications tab. After (option A, popover): the bell's list — questions (?), finished work (✓), failures (!), unread dotted; a click marks it read and opens its conversation (here PS3 problem 5, waiting for you).",
-    build,
-    open: [
-      ...open("p-seed44"),
-      pause(),
-      tryClick("[title='Mission control']"), pause(800), tryClick("button", /^Notifications/),
-      tryClick("[title='Notifications']"),
-      pause(2200),
-      tryClick("button", /^Needs you: PS3 problem 5/),
-      pause(2200),
-    ],
-  },
-  {
-    id: "p3-notifs-panel",
-    title: "Notifications — option B: a side panel",
-    group: "P3 · Notifications",
-    notes: "Plays: the bell opens the same list in the Chats panel's right-hand sheet instead of a popover.",
-    localStorage: { vc_notif_style: "panel" },
-    build,
-    open: [...open("p-seed44"), pause(), tryClick("[title='Notifications']"), pause(2500)],
   },
   // ----- phone -----
   {

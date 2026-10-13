@@ -2,15 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Check, X, Plus, ChevronDown } from "lucide-react";
 import { useStore } from "./store";
 import { PROVIDER_LABEL, AUTO_MODEL_ID, type ModelSpec, type ProviderId } from "./providers";
-import { Button, Input, MenuSelect, type MenuGroup } from "./ui";
+import { Button, Input, MenuSelect } from "./ui";
 import { SUPPORTED_VOICE_LLMS, DEFAULT_LLM } from "./voice-elevenlabs";
-import {
-  readVoiceLibraryCache,
-  readVoiceLibrary,
-  writeVoiceLibrary,
-  DEFAULT_VOICES,
-  type SavedVoice,
-} from "./voiceLibrary";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
 import {
   readVaultSyncConfig,
@@ -32,9 +25,9 @@ import {
   type BoxSyncState,
 } from "./vaultSync";
 import { ROLE_LABEL, type RoleId } from "./roles";
-import { CAP_KEYS, loadModelCaps, type CapKey, type ModelCaps } from "./modelCaps";
+import { checkModel, checkVoiceModel, NEED_LABEL, type Check as ModelCheck } from "./modelCaps";
 
-// Six sections: Models, Keys, Voice, Box, Safety, Appearance.
+// Five sections: Models, Keys, Voice, Box, Appearance.
 
 const KEY_PLACEHOLDER: Record<ProviderId, string> = {
   anthropic: "sk-ant-…",
@@ -78,8 +71,6 @@ export function SettingsPane() {
         <Divider />
         <BoxSection />
         <Divider />
-        <SafetySection />
-        <Divider />
         <AppearanceSection />
       </div>
     </div>
@@ -88,49 +79,157 @@ export function SettingsPane() {
 
 // ---- Models ------------------------------------------------------------------
 
-const shortName = (label: string) => label.replace(/^[^:]+:\s*/, "");
-
-const VOICE_GROUPS: MenuGroup[] = [
-  {
-    label: "Gemini (default — native PDF vision)",
-    options: [
-      { value: "gemini-3.5-flash", label: "gemini-3.5-flash (default)" },
-      { value: "gemini-2.5-flash", label: "gemini-2.5-flash (older)" },
-    ],
-  },
-  {
-    label: "Claude — Sonnet",
-    options: [
-      { value: "claude-sonnet-4-6", label: "claude-sonnet-4-6 (newest)" },
-      { value: "claude-sonnet-4-5@20250929", label: "claude-sonnet-4-5" },
-      { value: "claude-sonnet-4@20250514", label: "claude-sonnet-4" },
-      { value: "claude-3-7-sonnet", label: "claude-3-7-sonnet" },
-    ],
-  },
-  {
-    label: "Claude — Haiku (fastest)",
-    options: [{ value: "claude-haiku-4-5-20251001", label: "claude-haiku-4-5" }],
-  },
+const VOICE_OPTIONS: PickOption[] = [
+  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+  { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+  { value: "claude-sonnet-4-5@20250929", label: "Claude Sonnet 4.5" },
+  { value: "claude-sonnet-4@20250514", label: "Claude Sonnet 4" },
+  { value: "claude-3-7-sonnet", label: "Claude 3.7 Sonnet" },
+  { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
 ];
 
-/** Which capability layout to draw. A preview switch while Carl picks one;
- *  the losing layouts go once he has. */
-type CapsView = "table" | "inline" | "fold";
-function capsView(): CapsView {
-  try {
-    const v = localStorage.getItem("vault_chat_caps_view");
-    return v === "inline" || v === "fold" ? v : "table";
-  } catch {
-    return "table";
-  }
+type PickOption = { value: string; label: string; hint?: string };
+
+/** The chat pane's model menu, as a Settings field: one tight row; open it and
+ *  type to search, or scroll. */
+function Picker({
+  value,
+  label,
+  options,
+  onChange,
+  placeholder = "Search…",
+}: {
+  value: string;
+  label?: string;
+  options: PickOption[];
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const q = query.trim().toLowerCase();
+  const shown = q
+    ? options.filter((o) => {
+        const hay = `${o.label} ${o.value} ${o.hint ?? ""}`.toLowerCase();
+        return q.split(/\s+/).every((t) => hay.includes(t));
+      })
+    : options;
+  useEffect(() => {
+    if (!open) {
+      setQuery("");
+      return;
+    }
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    requestAnimationFrame(() => searchRef.current?.focus());
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+  const pick = (v: string) => {
+    onChange(v);
+    setOpen(false);
+  };
+  const current = label ?? options.find((o) => o.value === value)?.label ?? value;
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full h-7 px-2.5 flex items-center justify-between gap-2 rounded-md border border-input bg-background text-[12px] hover:border-border transition-colors"
+      >
+        <span className="truncate">{current}</span>
+        <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/60" />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border border-border bg-card shadow-lg z-50 flex flex-col">
+          <div className="p-1.5 border-b border-border/60">
+            <input
+              ref={searchRef}
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setOpen(false);
+                } else if (e.key === "Enter" && shown.length > 0) {
+                  e.preventDefault();
+                  pick(shown[0].value);
+                }
+              }}
+              placeholder={placeholder}
+              className="w-full bg-transparent outline-none text-[11px] px-2 py-1 rounded border border-transparent focus:border-border placeholder:text-muted-foreground/60"
+            />
+          </div>
+          <div className="py-1 max-h-64 overflow-auto">
+            {shown.length === 0 ? (
+              <div className="px-3 py-2 text-[11px] text-muted-foreground italic">No matches</div>
+            ) : (
+              shown.map((o) => (
+                <button
+                  key={o.value}
+                  onClick={() => pick(o.value)}
+                  className={`block w-full text-left px-3 py-1.5 text-[11px] hover:bg-accent transition-colors truncate ${
+                    o.value === value ? "text-foreground font-medium" : "text-muted-foreground"
+                  }`}
+                  title={o.value}
+                >
+                  {o.label}
+                  {o.hint && <span className="ml-1.5 opacity-60 text-[10px]">{o.hint}</span>}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One quiet line under a role's picker: the model passed, or what it can't do. */
+function CheckLine({ check }: { check: ModelCheck | null }) {
+  if (!check) return null;
+  if (check.state === "checking") return <p className="text-[10.5px] text-muted-foreground/60 px-0.5">Checking…</p>;
+  if (check.state === "passed")
+    return (
+      <p className="text-[10.5px] text-muted-foreground/70 px-0.5 flex items-center gap-1">
+        <Check className="h-3 w-3" /> Passed
+      </p>
+    );
+  if (check.state === "missing")
+    return (
+      <p className="text-[10.5px] text-amber-500/90 px-0.5">
+        Can't {check.missing.map((n) => NEED_LABEL[n]).join(" or ")}. Pick another.
+      </p>
+    );
+  return <p className="text-[10.5px] text-muted-foreground/60 px-0.5">Not checked: {check.why}</p>;
+}
+
+/** Re-check whenever the picked model changes. */
+function useCheck(run: () => Promise<ModelCheck> | ModelCheck, dep: string): ModelCheck | null {
+  const [check, setCheck] = useState<ModelCheck | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const r = run();
+    if (r instanceof Promise) {
+      setCheck({ state: "checking" });
+      void r.then((c) => alive && setCheck(c));
+    } else setCheck(r);
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dep]);
+  return check;
 }
 
 function ModelsSection() {
   const catalog = useStore((s) => s.catalog);
-  const catalogRefreshing = useStore((s) => s.catalogRefreshing);
   const catalogErrors = useStore((s) => s.catalogErrors);
-  const refreshCatalog = useStore((s) => s.refreshCatalog);
-  const hasOpenRouter = useStore((s) => !!s.apiKeys.openrouter);
+  const orKey = useStore((s) => s.apiKeys.openrouter);
   const modelId = useStore((s) => s.modelId);
   const setModelId = useStore((s) => s.setModelId);
   const setAssistantModelId = useStore((s) => s.setAssistantModelId);
@@ -138,8 +237,6 @@ function ModelsSection() {
   const setBackgroundModelId = useStore((s) => s.setBackgroundModelId);
   const autoRouterCostBias = useStore((s) => s.autoRouterCostBias);
   const setAutoRouterCostBias = useStore((s) => s.setAutoRouterCostBias);
-  const reasoningEffort = useStore((s) => s.reasoningEffort);
-  const setReasoningEffort = useStore((s) => s.setReasoningEffort);
 
   const [voiceLlm, setVoiceLlm] = useState(() => {
     // A stored model ElevenLabs no longer runs falls back to the default, so
@@ -152,96 +249,69 @@ function ModelsSection() {
     setVoiceLlm(v);
   };
 
-  const [search, setSearch] = useState("");
-  const filtered = (() => {
-    const terms = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    if (!terms.length) return catalog;
-    return catalog.filter((m) => {
-      const hay = `${m.provider} ${m.id} ${m.label}`.toLowerCase();
-      return terms.every((t) => hay.includes(t));
-    });
-  })();
-  const labelOf = (id: string) => {
-    if (id === AUTO_MODEL_ID) return "Auto — smart routing";
-    const m = catalog.find((c) => c.id === id);
-    return m ? `[${PROVIDER_LABEL[m.provider]}] ${m.label}` : id;
-  };
-  const groups = (withAuto: boolean): MenuGroup[] => [
-    ...(withAuto ? [{ options: [{ value: AUTO_MODEL_ID, label: "Auto — smart routing" }] }] : []),
-    ...(filtered.length
-      ? [{ options: filtered.map((m: ModelSpec) => ({ value: m.id, label: `[${PROVIDER_LABEL[m.provider]}] ${m.label}` })) }]
-      : []),
+  const options = (withAuto: boolean): PickOption[] => [
+    ...(withAuto ? [{ value: AUTO_MODEL_ID, label: "Auto", hint: "— smart routing" }] : []),
+    ...catalog.map((m: ModelSpec) => ({ value: m.id, label: m.label })),
   ];
+  const labelOf = (id: string) => (id === AUTO_MODEL_ID ? "Auto" : (catalog.find((c) => c.id === id)?.label ?? id));
 
-  // The capability view covers the models these roles run (voice runs on
-  // ElevenLabs, so it has no OpenRouter row).
-  const used: Array<[RoleId, string]> = (
-    [
-      ["chat", modelId],
-      ["background", backgroundModelId],
-    ] as Array<[RoleId, string]>
-  ).filter(([, id]) => id !== AUTO_MODEL_ID);
-  const usedKey = used.map(([, id]) => id).join("|");
-  const [caps, setCaps] = useState<ModelCaps[]>([]);
-  useEffect(() => {
-    let alive = true;
-    void loadModelCaps([...new Set(used.map(([, id]) => id))]).then((c) => alive && setCaps(c));
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [usedKey]);
-  const view = capsView();
-  const capsOf = (id: string) => caps.find((c) => c.id === id);
+  // Auto routes per message, so there's no one model to check.
+  const chatCheck = useCheck(
+    () => (modelId === AUTO_MODEL_ID ? Promise.resolve<ModelCheck>({ state: "passed" }) : checkModel("chat", modelId, orKey)),
+    `${modelId}|${!!orKey}`,
+  );
+  const bgCheck = useCheck(() => checkModel("background", backgroundModelId, orKey), `${backgroundModelId}|${!!orKey}`);
+  const voiceCheck = useCheck(() => checkVoiceModel(voiceLlm), voiceLlm);
 
-  const rows: Array<{ role: RoleId; value: string; onChange: (v: string) => void; groups: MenuGroup[]; mono?: boolean }> = [
+  const rows: Array<{ role: RoleId; picker: ReactNode; check: ModelCheck | null }> = [
     {
       role: "chat",
-      value: modelId,
-      onChange: (v) => {
-        setModelId(v);
-        setAssistantModelId(v);
-      },
-      groups: groups(true),
+      picker: (
+        <Picker
+          value={modelId}
+          label={labelOf(modelId)}
+          options={options(true)}
+          placeholder="Search models…"
+          onChange={(v) => {
+            setModelId(v);
+            setAssistantModelId(v);
+          }}
+        />
+      ),
+      check: chatCheck,
     },
-    { role: "background", value: backgroundModelId, onChange: setBackgroundModelId, groups: groups(false) },
-    { role: "voice", value: voiceLlm, onChange: saveVoiceLlm, groups: VOICE_GROUPS, mono: true },
+    {
+      role: "background",
+      picker: (
+        <Picker
+          value={backgroundModelId}
+          label={labelOf(backgroundModelId)}
+          options={options(false)}
+          placeholder="Search models…"
+          onChange={setBackgroundModelId}
+        />
+      ),
+      check: bgCheck,
+    },
+    {
+      role: "voice",
+      picker: <Picker value={voiceLlm} options={VOICE_OPTIONS} placeholder="Search models…" onChange={saveVoiceLlm} />,
+      check: voiceCheck,
+    },
   ];
 
   return (
     <section className="space-y-2">
-      <SectionHead
-        title="Models"
-        hint="One model per role, from the live OpenRouter list."
-        right={
-          <Button size="sm" variant="outline" onClick={() => refreshCatalog()} disabled={catalogRefreshing}>
-            {catalogRefreshing ? "Refreshing…" : `Refresh (${catalog.length})`}
-          </Button>
-        }
-      />
-      <Input type="search" placeholder="Search models…" value={search} onChange={(e) => setSearch(e.target.value)} />
-      {rows.map((r) => {
-        const c = view === "inline" && r.role !== "voice" ? capsOf(r.value) : undefined;
-        return (
-          <div key={r.role} className="flex items-start justify-between gap-3">
-            <span className="text-[12px] text-foreground/90 shrink-0 pt-1.5">{ROLE_LABEL[r.role]}</span>
-            <div className="min-w-0 flex-1 max-w-[62%] space-y-1">
-              <MenuSelect
-                value={r.value}
-                onChange={r.onChange}
-                mono={r.mono}
-                triggerLabel={r.role === "voice" ? undefined : labelOf(r.value)}
-                emptyHint={search ? `No models match "${search}"` : undefined}
-                groups={r.groups}
-              />
-              {c && <CapsLine caps={c} />}
-            </div>
+      <SectionHead title="Models" hint="One model per role. Each is checked for what its role needs when you pick it." />
+      {rows.map((r) => (
+        <div key={r.role} className="flex items-start justify-between gap-3">
+          <span className="text-[12px] text-foreground/90 shrink-0 pt-1">{ROLE_LABEL[r.role]}</span>
+          <div className="min-w-0 flex-1 max-w-[62%] space-y-0.5">
+            {r.picker}
+            <CheckLine check={r.check} />
           </div>
-        );
-      })}
-      {view !== "inline" && caps.length > 0 && (
-        <CapsTable caps={caps} name={(id) => (id === AUTO_MODEL_ID ? id : shortName(labelOf(id).replace(/^\[[^\]]+\]\s*/, "")))} fold={view === "fold"} />
-      )}
+        </div>
+      ))}
       {Object.entries(catalogErrors).length > 0 && (
         <p className="text-[11px] text-amber-500/90">
           {Object.entries(catalogErrors)
@@ -249,7 +319,7 @@ function ModelsSection() {
             .join(" · ")}
         </p>
       )}
-      {modelId === AUTO_MODEL_ID && hasOpenRouter && (
+      {modelId === AUTO_MODEL_ID && orKey && (
         <div className="rounded-md border border-border/60 bg-accent/20 p-3 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[11.5px] font-medium text-foreground">Auto cost ⇄ quality</span>
@@ -268,91 +338,7 @@ function ModelsSection() {
           />
         </div>
       )}
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-[12px] text-foreground/90">Reasoning effort</span>
-        <select
-          className="vc-select shrink-0 text-[12px] rounded-md border border-border bg-background px-2 py-1"
-          value={reasoningEffort}
-          onChange={(e) => setReasoningEffort(e.target.value as typeof reasoningEffort)}
-        >
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
-        </select>
-      </div>
     </section>
-  );
-}
-
-const CAP_LABEL: Record<CapKey, string> = { tools: "tools", images: "images", pdf: "pdf", caching: "caching", helpers: "helpers" };
-
-function Mark({ v }: { v: boolean | undefined }) {
-  if (v === true) return <Check className="h-3 w-3 text-foreground/70 inline" />;
-  if (v === false) return <span className="text-muted-foreground/40">–</span>;
-  return <span className="text-muted-foreground/50">?</span>;
-}
-
-/** Option A (table) and C (fold): one compact row per model in use. */
-function CapsTable({ caps, name, fold }: { caps: ModelCaps[]; name: (id: string) => string; fold: boolean }) {
-  const table = (
-    <div className="rounded-md border border-border/60 text-[11px]">
-      <div className="grid grid-cols-[minmax(0,1fr)_repeat(5,3.25rem)_3.75rem] items-center px-2.5 py-1 text-[10px] text-muted-foreground/70 border-b border-border/40">
-        <span />
-        {CAP_KEYS.map((k) => (
-          <span key={k} className="text-center">
-            {CAP_LABEL[k]}
-          </span>
-        ))}
-        <span className="text-right">source</span>
-      </div>
-      {caps.map((c) => (
-        <div key={c.id} className="grid grid-cols-[minmax(0,1fr)_repeat(5,3.25rem)_3.75rem] items-center px-2.5 py-1" title={c.id}>
-          <span className="truncate text-foreground/90">{name(c.id)}</span>
-          {CAP_KEYS.map((k) => (
-            <span key={k} className="text-center">
-              <Mark v={c.caps[k]} />
-            </span>
-          ))}
-          <span className="text-right text-muted-foreground">{c.source}</span>
-        </div>
-      ))}
-    </div>
-  );
-  if (!fold) return table;
-  const untested = caps.filter((c) => c.source === "untested").length;
-  return (
-    <details className="group">
-      <summary className="flex items-center justify-between cursor-pointer list-none text-[12px] text-foreground/90 py-0.5">
-        <span>Capabilities</span>
-        <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          {caps.length} model{caps.length === 1 ? "" : "s"}
-          {untested > 0 && ` · ${untested} untested`}
-          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/60 group-open:rotate-180 transition-transform" />
-        </span>
-      </summary>
-      <div className="pt-1.5">{table}</div>
-    </details>
-  );
-}
-
-/** Option B (inline): one quiet line under each role's picker. */
-function CapsLine({ caps }: { caps: ModelCaps }) {
-  return (
-    <p className="text-[10.5px] text-muted-foreground/70 px-0.5">
-      {CAP_KEYS.map((k, i) => {
-        const v = caps.caps[k];
-        return (
-          <span key={k}>
-            {i > 0 && " · "}
-            <span className={v === true ? "text-foreground/75" : v === false ? "line-through text-muted-foreground/40" : "text-muted-foreground/50"}>
-              {CAP_LABEL[k]}
-              {v === undefined && "?"}
-            </span>
-          </span>
-        );
-      })}
-      <span className="text-muted-foreground/50"> — {caps.source}</span>
-    </p>
   );
 }
 
@@ -531,185 +517,107 @@ function KeysSection() {
         )}
         <p className="text-[11px] text-muted-foreground/80">
           Vault tools get these as environment variables (
-          <code className="font-mono bg-muted px-1 rounded text-[10.5px]">requires_keys</code> in TOOL.md). On this
-          machine the agent's shell can still read the keychain.
+          <code className="font-mono bg-muted px-1 rounded text-[10.5px]">requires_keys</code> in TOOL.md).
         </p>
       </div>
-      <details className="group">
-        <summary className="flex items-center justify-between cursor-pointer list-none text-[12px] text-foreground/90 py-0.5">
-          <span>Other providers (optional)</span>
-          <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            {(() => {
-              const n = (["anthropic", "openai", "google"] as ProviderId[]).filter((p) => apiKeys[p]).length;
-              return n ? `${n} set` : "";
-            })()}
-            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/60 group-open:rotate-180 transition-transform" />
-          </span>
-        </summary>
-        <div className="space-y-2.5 pt-2">{(["anthropic", "openai", "google"] as ProviderId[]).map(provider)}</div>
-      </details>
     </section>
   );
 }
 
 // ---- Voice -------------------------------------------------------------------
 
+type ElVoice = { voice_id: string; name: string; category?: string; labels?: Record<string, string> };
+
+const TEST_LINE = "Hi Carl. This is how I'll sound when we talk in vault-chat.";
+
 function VoiceSection() {
-  const vaultPath = useStore((s) => s.vaultPath);
-  const hasKey = useStore((s) => !!s.serviceKeys.elevenlabs);
+  const key = useStore((s) => s.serviceKeys.elevenlabs);
   const [voiceId, setVoiceId] = useState(
     localStorage.getItem("vault_chat_elevenlabs_voice") ?? "nPczCjzI2devNBz1zQrb",
   );
-  const [library, setLibrary] = useState<SavedVoice[]>(() => {
-    const cached = readVoiceLibraryCache();
-    return cached.length ? cached : DEFAULT_VOICES;
-  });
-  // The saved voices are git-synced via <vault>/.vault-chat/voices.json. On
-  // open, load them from the vault; if the vault has none yet, seed it from
-  // what's local so it starts syncing.
+  // The voices on the ElevenLabs account (its default voices plus any added
+  // from the library or cloned), straight from the API.
+  const [voices, setVoices] = useState<ElVoice[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    if (!vaultPath) return;
-    let cancelled = false;
-    (async () => {
-      const fromVault = await readVoiceLibrary(vaultPath);
-      if (cancelled) return;
-      if (fromVault) setLibrary(fromVault);
-      else await writeVoiceLibrary(vaultPath, library);
+    if (!key) return;
+    let alive = true;
+    setError(null);
+    void (async () => {
+      try {
+        const res = await fetch("https://api.elevenlabs.io/v1/voices", { headers: { "xi-api-key": key } });
+        if (!res.ok) throw new Error(`ElevenLabs ${res.status}`);
+        const j = (await res.json()) as { voices: ElVoice[] };
+        if (alive) setVoices([...j.voices].sort((a, b) => a.name.localeCompare(b.name)));
+      } catch (e) {
+        if (alive) setError(e instanceof Error ? e.message : String(e));
+      }
     })();
     return () => {
-      cancelled = true;
+      alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vaultPath]);
-  const pickerRef = useRef<HTMLDetailsElement | null>(null);
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      const el = pickerRef.current;
-      if (el?.open && e.target instanceof Node && !el.contains(e.target)) el.open = false;
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, []);
-  const [newName, setNewName] = useState("");
-  const [newId, setNewId] = useState("");
+  }, [key]);
 
   const choose = (id: string) => {
-    const v = id.trim();
-    if (!v) return;
-    localStorage.setItem("vault_chat_elevenlabs_voice", v);
-    setVoiceId(v);
-    if (pickerRef.current) pickerRef.current.open = false;
+    localStorage.setItem("vault_chat_elevenlabs_voice", id);
+    setVoiceId(id);
   };
-  const addVoice = () => {
-    const name = newName.trim();
-    const id = newId.trim();
-    if (!name || !id) return;
-    const next = [...library.filter((v) => v.id !== id), { name, id }];
-    setLibrary(next);
-    void writeVoiceLibrary(vaultPath, next);
-    setNewName("");
-    setNewId("");
-    choose(id);
+
+  // Test: speak one short line in the picked voice (about 60 characters of
+  // the ElevenLabs quota).
+  const [testing, setTesting] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const test = async () => {
+    if (!key) return;
+    audioRef.current?.pause();
+    setTesting(true);
+    setError(null);
+    try {
+      const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
+        method: "POST",
+        headers: { "xi-api-key": key, "content-type": "application/json", accept: "audio/mpeg" },
+        body: JSON.stringify({ text: TEST_LINE, model_id: "eleven_flash_v2_5" }),
+      });
+      if (!res.ok) throw new Error(`ElevenLabs ${res.status}`);
+      const url = URL.createObjectURL(await res.blob());
+      const a = new Audio(url);
+      audioRef.current = a;
+      a.onended = () => {
+        URL.revokeObjectURL(url);
+        setTesting(false);
+      };
+      await a.play();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setTesting(false);
+    }
   };
-  const removeVoice = (id: string) => {
-    const next = library.filter((v) => v.id !== id);
-    setLibrary(next);
-    void writeVoiceLibrary(vaultPath, next);
-  };
+  useEffect(() => () => audioRef.current?.pause(), []);
+
+  const describe = (v: ElVoice) =>
+    [v.labels?.accent, v.labels?.gender, v.labels?.description ?? v.labels?.descriptive].filter(Boolean).join(", ");
+  const options: PickOption[] = (voices ?? []).map((v) => ({ value: v.voice_id, label: v.name, hint: describe(v) }));
+  const current = voices?.find((v) => v.voice_id === voiceId)?.name ?? (voices ? "Pick a voice" : "Loading voices…");
 
   return (
     <section className="space-y-2">
-      <SectionHead
-        title="Voice"
-        hint={hasKey ? "The voice ElevenLabs speaks with. The voice model is under Models." : "Needs an ElevenLabs key (Keys)."}
-      />
-      <details ref={pickerRef} className="w-full rounded-md border border-input bg-background group">
-        <summary className="h-8 px-2.5 flex items-center justify-between cursor-pointer text-[12px] font-mono list-none">
-          <span className="truncate">
-            {library.find((v) => v.id === voiceId)?.name ?? "(unsaved)"}
-            <span className="ml-2 text-muted-foreground/60">{voiceId}</span>
-          </span>
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60 group-open:rotate-180 transition-transform" />
-        </summary>
-        <div className="border-t border-border max-h-48 overflow-y-auto">
-          {library.length === 0 && (
-            <div className="px-2 py-2 text-[11px] text-muted-foreground/70">No saved voices yet. Add one below.</div>
-          )}
-          {library.map((v) => (
-            <div
-              key={v.id}
-              className={`flex items-center justify-between px-2 py-1.5 text-[12px] cursor-pointer hover:bg-muted/40 ${v.id === voiceId ? "bg-muted/60" : ""}`}
-              onClick={() => choose(v.id)}
-            >
-              <span className="truncate flex-1">
-                <span className="font-medium text-foreground/90">{v.name}</span>
-                <span className="ml-2 font-mono text-muted-foreground/60">{v.id}</span>
-              </span>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  removeVoice(v.id);
-                }}
-                title="Remove from library"
-              >
-                <X className="h-3 w-3" />
-              </Button>
-            </div>
-          ))}
+      <SectionHead title="Voice" hint={key ? "The voice ElevenLabs speaks with." : "Needs an ElevenLabs key (Keys)."} />
+      {key && (
+        <div className="flex gap-2">
+          <div className="flex-1 min-w-0">
+            <Picker value={voiceId} label={current} options={options} placeholder="Search voices…" onChange={choose} />
+          </div>
+          <Button size="sm" variant="outline" onClick={() => void test()} disabled={testing || !voiceId}>
+            {testing ? "Playing…" : "Test"}
+          </Button>
         </div>
-      </details>
-      <div className="flex gap-2">
-        <Input type="text" placeholder="Name (e.g. Rachel)" value={newName} onChange={(e) => setNewName(e.target.value)} className="flex-[2]" />
-        <Input
-          type="text"
-          placeholder="Voice ID"
-          value={newId}
-          onChange={(e) => setNewId(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") addVoice();
-          }}
-          className="flex-[3] font-mono"
-        />
-        <Button size="sm" onClick={addVoice} disabled={!newName.trim() || !newId.trim()}>
-          Add
-        </Button>
-      </div>
-      <p className="text-[11px] text-muted-foreground/80">Voice IDs are on elevenlabs.io/app/voice-library.</p>
-    </section>
-  );
-}
-
-// ---- Safety, Appearance ------------------------------------------------------
-
-function SafetySection() {
-  const strictVaultMode = useStore((s) => s.strictVaultMode);
-  const bashDisabled = useStore((s) => s.bashDisabled);
-  const setStrictVaultMode = useStore((s) => s.setStrictVaultMode);
-  const setBashDisabled = useStore((s) => s.setBashDisabled);
-  const toggle = (checked: boolean, set: (v: boolean) => void, title: string, hint: string) => (
-    <label className="flex items-start gap-2.5 cursor-pointer">
-      <input type="checkbox" className="vc-checkbox mt-0.5" checked={checked} onChange={(e) => set(e.target.checked)} />
-      <div className="flex-1">
-        <div className="text-[12px]">{title}</div>
-        <p className="text-[11px] text-muted-foreground/80">{hint}</p>
-      </div>
-    </label>
-  );
-  return (
-    <section className="space-y-3">
-      <SectionHead title="Safety" hint="Limit what the agent can touch." />
-      {toggle(
-        strictVaultMode,
-        setStrictVaultMode,
-        "Strict vault mode",
-        "File tools refuse paths outside this vault. Turns Bash off too, since the shell would get around it.",
       )}
-      {toggle(bashDisabled, setBashDisabled, "Disable Bash", "Removes the shell tool from the agent.")}
+      {error && <p className="text-[11px] text-amber-500/90">{error}</p>}
     </section>
   );
 }
+
+// ---- Appearance --------------------------------------------------------------
 
 function AppearanceSection() {
   const theme = useStore((s) => s.theme);

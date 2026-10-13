@@ -83,7 +83,7 @@ export function setHostConfig(c: HostConfig, now: () => number): void {
   boxQueue = [];
   boxStep = 0;
   keys.clear();
-  const defaults: Record<string, string> = { "api.openrouter": "sk-or-PREVIEW-0000000000000000000000000000000000000000" };
+  const defaults: Record<string, string> = { "api.openrouter": "sk-or-PREVIEW-0000000000000000000000000000000000000000", "service.elevenlabs": "sk_PREVIEW0000000000000000000000000000000000" };
   for (const [k, v] of Object.entries({ ...defaults, ...(cfg.keys ?? {}) })) if (v) keys.set(k, v);
   void now;
 }

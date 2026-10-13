@@ -570,7 +570,9 @@ Be terse. If the task is research, return findings as a structured list with fil
             },
           };
     } else if (
-      (spec.provider === "openai" || spec.provider === "openrouter") &&
+      // OpenRouter models run at their own default effort (Carl's call:
+      // not every model takes the setting, so there is no setting).
+      spec.provider === "openai" &&
       // OpenAI reasoning families, by bare id (direct) or `openai/…`
       // (OpenRouter). gpt-5 / gpt-6 (and later) / o1 / o3 / o4.
       /(^|\/)(o[134]|gpt-[5-9])/i.test(spec.id)
