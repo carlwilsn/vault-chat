@@ -20,6 +20,17 @@ type Call = [name: string, args: Record<string, unknown> | ((prev: string[], vau
 
 /** Results of the last turn's tools, kept for the next turn (AgentStatus needs AskAgent's id). */
 let lastResults: string[] = [];
+/** After: the session's lines saved on the box (voiceBox.ts voiceTranscriptMirror), and how many went. */
+let mirror: { push: (m: any) => unknown } | null = null;
+let sent = 0;
+
+/** Save the voice thread's new lines on the box, as the app does in box mode. */
+async function saveLines(): Promise<void> {
+  if (!mirror) return;
+  const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+  const msgs = useStore.getState().messages;
+  for (; sent < msgs.length; sent++) mirror.push(msgs[sent]);
+}
 
 /** One scripted ElevenLabs turn: heard → tool calls → spoken reply. */
 const voiceTurn = (heard: string, calls: Call[], reply: (results: string[]) => string): Step => ({
@@ -45,6 +56,7 @@ const voiceTurn = (heard: string, calls: Call[], reply: (results: string[]) => s
     }
     lastResults = results;
     useStore.getState().appendMessage({ role: "assistant", content: reply(results) });
+    await saveLines();
   },
 });
 
@@ -54,8 +66,16 @@ const startVoice: Step = {
     lastResults = [];
     const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
     const v: any = await import(/* @vite-ignore */ "/src/voice-elevenlabs.ts");
+    const from = useStore.getState().activeConversationId;
     useStore.getState().newConversation();
-    v.ensureVoiceConversation();
+    const local = v.ensureVoiceConversation();
+    mirror = null;
+    sent = 0;
+    if (v.LOCAL_VOICE_TOOLS) {
+      const vb = await import(/* @vite-ignore */ `${import.meta.env.BASE_URL}src/voiceBox.ts`);
+      const box = await vb.boxVoice(useStore.getState().vaultPath);
+      if (box) mirror = vb.voiceTranscriptMirror(box, local, from);
+    }
   },
 };
 
@@ -78,7 +98,7 @@ export const voiceScenarios: Scenario[] = [
     title: "Voice on the box — its tools run there, long work goes to the agent",
     group: "Voice · Box",
     notes:
-      "The ElevenLabs side is scripted (no mic in the preview). Plays three spoken turns in a fresh voice thread: (1) “what token budget does the writeup give?” — the agent reads the writeup; after: the Read runs on the box (“· on the box” on the marker, a box POST in the log). (2) “re-run the eval across the three seeds and update the table” — after: the agent hands it to the box's agent (AskAgent); a new running chat shows in Chats. The box finishes it. (3) “how's that going?” — AgentStatus reads the box chat's last reply. Before: every tool runs on the laptop and there is no AskAgent, so voice has to say it can't take the long job.",
+      "The ElevenLabs side is scripted (no mic in the preview). After: the session's lines are saved on the box as a voice conversation of its own (the thread moves to the box's id; open Chats: it is there, in BitNet 160M, like any chat). Plays three spoken turns in a fresh voice thread: (1) “what token budget does the writeup give?” — the agent reads the writeup; after: the Read runs on the box (“· on the box” on the marker, a box POST in the log). (2) “re-run the eval across the three seeds and update the table” — after: the agent hands it to the box's agent (AskAgent); a new running chat shows in Chats. The box finishes it. (3) “how's that going?” — AgentStatus reads the box chat's last reply. Before: every tool runs on the laptop and there is no AskAgent, so voice has to say it can't take the long job.",
     build: (ctx) => P3.build(ctx),
     host: (now) => ({
       sync: {

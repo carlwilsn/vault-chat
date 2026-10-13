@@ -149,6 +149,22 @@ function fakeBox(u: URL): FakeBox {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** A voice session's line saved on the box (server/voice.ts voiceTranscript):
+ *  a voice conversation of its own, tagged with the project it came from. */
+function boxVoiceLine(b: any): { ok: true; convId: string } {
+  let id = String(b.convId ?? "");
+  if (!boxConvs[id] || boxConvs[id]!.source !== "voice") {
+    const from = boxConvs[String(b.fromConvId ?? "")];
+    id = `v-voice-${Object.keys(boxConvs).filter((k) => k.startsWith("v-voice-")).length + 1}`;
+    const first = String(b.text ?? "");
+    boxConvs[id] = { title: b.role === "user" ? (first.length > 48 ? first.slice(0, 47) + "…" : first) : "Voice", source: "voice", status: "idle", meta: { lastActivityAt: Date.now(), ...(from?.meta?.project ? { project: from.meta.project } : {}) }, messages: [] };
+  }
+  boxConvs[id]!.messages = [...boxConvs[id]!.messages, { role: b.role === "user" ? "user" : "assistant", content: String(b.text ?? ""), ...(b.system ? { system: true } : {}) }];
+  boxConvs[id]!.meta = { ...(boxConvs[id]!.meta ?? {}), lastActivityAt: Date.now() };
+  boxQueue.push({ type: "message", convId: id, role: b.role === "user" ? "user" : "assistant" });
+  return { ok: true, convId: id };
+}
+
 /** The fake box's voice tools (the real ones: server/voice.ts). */
 function boxVoiceTool(name: string, args: any): string {
   if (name === "AskAgent") {
@@ -239,6 +255,10 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
         body: JSON.stringify({ ok: true, app: "vault-chat-server", name: b.name, version: b.version, hasKey: has("api.openrouter"), keyNames: names, keys: { openrouter: has("api.openrouter"), elevenlabs: has("service.elevenlabs") } }),
       };
     }
+    if (u.pathname.endsWith("/api/v1/voice/session")) {
+      // The box's session (server/voice.ts): no ElevenLabs in the preview, so a URL nothing dials.
+      return { status: 200, body: JSON.stringify({ signedUrl: "wss://preview.invalid/voice", systemPrompt: "(the box's voice prompt)", toolNames: [], vaultRoot: "/home/carl/vaults/summer-demo", onBox: true }) };
+    }
     const p = u.pathname.replace(/^.*?(\/(poll|conversations|conversation|status|api\/v1\/models))/, "$1");
     if (p === "/api/v1/models" && cfg.sync?.boxChat?.models) return { status: 200, body: JSON.stringify(cfg.sync.boxChat.models) };
     const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });
@@ -290,6 +310,7 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     }
     boxPosts.push({ path, body: b });
     if (path === "/api/v1/voice/tool") return { status: 200, body: JSON.stringify({ result: boxVoiceTool(String(b.name ?? ""), b.args ?? {}) }) };
+    if (path === "/api/v1/voice/transcript") return { status: 200, body: JSON.stringify(boxVoiceLine(b)) };
     if (cfg.sync?.boxChat?.live) {
       const id = String(b.convId ?? "");
       const c = boxConvs[id];
