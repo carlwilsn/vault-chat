@@ -113,6 +113,7 @@ describe("POST /api/v1/voice/tool", () => {
     expect(await tool("Read", { path: join(root, "outside.md") })).toMatch(/outside the vault/);
     expect(await tool("Write", { path: ".git/config", contents: "x" })).toMatch(/\.git/);
     expect(await tool("Read", { path: "private/s.md" })).toMatch(/restricted/);
+    expect(await tool("GitLog", { subdir: ".." })).toMatch(/outside the vault/);
     // Grep never surfaces a denied file.
     const g = await tool("Grep", { pattern: "quick" });
     expect(g).toContain("notes/a.md:2: the quick fox");

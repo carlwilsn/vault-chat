@@ -151,7 +151,7 @@ function runShell(d: VoiceDeps, command: string, timeoutMs: number): Promise<str
 
 // ---------------------------------------------------------------- the agent
 
-function agentStatus(vault: string, id: string): string {
+function agentStatus(vault: string, id: string, live: any): string {
   if (!id) return "Error: AgentStatus needs a conversationId.";
   const d = conversationDetail(vault, id, 12) as any;
   if (!d) return `No conversation ${id}.`;
@@ -160,7 +160,7 @@ function agentStatus(vault: string, id: string): string {
   let running = d.status === "running" || d.state === "running";
   try {
     // The live run, when this process has one (the store mirrors the engine's turn).
-    const rt = (globalThis as any).__vcStore?.getState?.().convRuntime?.[id];
+    const rt = live?.getState?.().convRuntime?.[id];
     if (rt) {
       running = true;
       const tool = Array.isArray(rt.liveTools) && rt.liveTools.length ? rt.liveTools[rt.liveTools.length - 1] : null;
@@ -186,9 +186,7 @@ function agentStatus(vault: string, id: string): string {
 // ---------------------------------------------------------------- the tools
 
 async function store(): Promise<any> {
-  const { useStore } = await import("../src/store");
-  (globalThis as any).__vcStore = useStore;
-  return useStore;
+  return (await import("../src/store")).useStore;
 }
 
 async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
@@ -215,7 +213,8 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
     case "GitLog":
     case "ListConversations":
     case "ReadConversation":
-      // The phone's read-only set (vault-confined already).
+      // The phone's read-only set (vault-confined; GitLog's subdir checked here).
+      if (name === "GitLog") voicePath(vault, s(a.subdir) || ".", "read");
       return dispatchVoiceTool(vault, JSON.stringify({ name, arguments: a }));
     case "Grep": {
       const { abs } = voicePath(vault, a.path, "read");
@@ -325,7 +324,7 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
       return JSON.stringify({ conversationId: out.convId, started: !convId, ...(out.steered ? { steered: true } : {}), ...(out.answered ? { answered: true } : {}) });
     }
     case "AgentStatus":
-      return agentStatus(vault, s(a.conversationId).trim());
+      return agentStatus(vault, s(a.conversationId).trim(), await store().catch(() => null));
     default:
       if (VOICE_LOCAL_TOOLS.has(name)) return `${name} moves a screen; there is none on the box, so nothing moved.`;
       return `Error: tool "${name}" is not available on the box.`;
