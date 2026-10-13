@@ -26,6 +26,7 @@ import {
 } from "./vaultSync";
 import { ROLE_LABEL, type RoleId } from "./roles";
 import { checkModel, checkVoiceModel, NEED_LABEL, type Check as ModelCheck } from "./modelCaps";
+import { BoxModelChecks } from "./BoxModelChecks";
 
 // Five sections: Models, Keys, Voice, Box, Appearance.
 
@@ -312,6 +313,7 @@ function ModelsSection() {
           </div>
         </div>
       ))}
+      <BoxModelChecks />
       {Object.entries(catalogErrors).length > 0 && (
         <p className="text-[11px] text-amber-500/90">
           {Object.entries(catalogErrors)

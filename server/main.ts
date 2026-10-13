@@ -79,7 +79,7 @@ async function main(): Promise<void> {
   // stays in the bundle for legacy mission threads until Phase 3 removes it.
   const { notificationAppend } = await import("./commands/phone");
   const { startEngine } = await import("./engine");
-  const { modelsList } = await import("./engine/capabilities");
+  const { modelsList, boxModelChecks } = await import("./engine/capabilities");
   const engine = process.env.VC_ENGINE === "0"
     ? { engine: null, error: "disabled (VC_ENGINE=0): turns run on the old in-process loop", health: () => ({}) }
     : await startEngine({
@@ -148,6 +148,7 @@ async function main(): Promise<void> {
     engine: engine.engine
       ? {
           models: () => modelsList(),
+          boxModels: () => ("roles" in engine && engine.roles ? boxModelChecks(engine.roles()) : undefined),
           message: (b) => engine.engine!.message(b),
           answer: (b) => engine.engine!.answerRoute(b),
           kill: (b) => engine.engine!.kill(b),

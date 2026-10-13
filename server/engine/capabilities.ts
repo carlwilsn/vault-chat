@@ -93,3 +93,35 @@ export function capabilityNote(model: string): string {
   if (!c.images) lines.push("This model cannot see images.");
   return lines.length ? `<capabilities model="${model}">\n${lines.join("\n")}\n</capabilities>` : "";
 }
+
+/** What each model the box itself runs needs (the box's side of Settings →
+ *  Models): the chat agent (tools; images go to the vision model), the vision
+ *  fallback for turns that carry images (a full turn: tools and images), and
+ *  the subagent child model. Free: the catalog plus what real use taught. */
+const CONTEXT_FLOOR = 64_000;
+type BoxNeed = "tools" | "toolChoice" | "images" | "context";
+const BOX_NEEDS: Record<"chat" | "vision" | "subagent", BoxNeed[]> = {
+  chat: ["tools", "toolChoice", "context"],
+  vision: ["tools", "toolChoice", "images", "context"],
+  subagent: ["tools", "context"],
+};
+
+export type BoxModelCheck = { id: string; state: "passed" | "missing" | "unknown"; missing?: BoxNeed[]; context?: number };
+
+export function boxModelChecks(ids: { chat: string; vision: string; subagent: string }): Record<"chat" | "vision" | "subagent", BoxModelCheck> {
+  const one = (role: "chat" | "vision" | "subagent"): BoxModelCheck => {
+    const id = ids[role];
+    const m = modelMeta(id);
+    const c = capabilitiesOf(id);
+    if (!m && c.source === "untested") return { id, state: "unknown" };
+    const have: Record<BoxNeed, boolean | undefined> = {
+      tools: c.tools,
+      toolChoice: m?.supportedParameters ? m.supportedParameters.includes("tool_choice") : undefined,
+      images: c.images,
+      context: c.context > 0 ? c.context >= CONTEXT_FLOOR : undefined,
+    };
+    const missing = BOX_NEEDS[role].filter((n) => have[n] === false);
+    return { id, state: missing.length ? "missing" : "passed", ...(missing.length ? { missing } : {}), ...(c.context ? { context: c.context } : {}) };
+  };
+  return { chat: one("chat"), vision: one("vision"), subagent: one("subagent") };
+}
