@@ -2317,6 +2317,12 @@ function formatToolMarker(name: string, args: any): string {
       return `Fetched ${args.url ?? ""}`;
     case "WebSearch":
       return `Searched web for "${args.query ?? ""}"`;
+    case "AskAgent": {
+      const task = String(args.task ?? "").trim().replace(/\s+/g, " ");
+      return `Handed to the agent: "${task.length > 70 ? task.slice(0, 67) + "…" : task}"`;
+    }
+    case "AgentStatus":
+      return `Checked on the agent`;
     case "Bash": {
       const cmd = String(args.command ?? "").trim().replace(/\s+/g, " ");
       const snip = cmd.length > 80 ? cmd.slice(0, 77) + "…" : cmd;
@@ -2327,13 +2333,13 @@ function formatToolMarker(name: string, args: any): string {
   }
 }
 
-function logToolCall(name: string, args: any, result: string): void {
+function logToolCall(name: string, args: any, result: string, where = ""): void {
   const argsStr = JSON.stringify(args);
   const summary = result.length > 200 ? result.slice(0, 200) + "…" : result;
   console.log(`[voice-eleven] tool ${name}(${argsStr}) →`, summary);
   useStore.getState().appendMessage({
     role: "assistant",
-    content: formatToolMarker(name, args),
+    content: formatToolMarker(name, args) + where,
     system: true,
   });
 }
@@ -2345,6 +2351,8 @@ function logToolCall(name: string, args: any, result: string): void {
 function withTracking<A>(
   name: string,
   impl: (args: A) => Promise<string>,
+  // Shown after the marker: where the tool ran when it was not here (" · on the box").
+  where = "",
 ): (args: A) => Promise<string> {
   return async (args: A) => {
     useStore.getState().setVoiceCurrentTool(name);
@@ -2354,7 +2362,7 @@ function withTracking<A>(
     } finally {
       useStore.getState().setVoiceCurrentTool(null);
     }
-    logToolCall(name, args, result);
+    logToolCall(name, args, result, where);
     return result;
   };
 }
@@ -2910,7 +2918,7 @@ export function buildClientToolHandlers(remote?: RemoteVoiceTool): Record<
   if (remote) {
     for (const name of BUILTIN_VOICE_TOOL_NAMES) {
       if (LOCAL_VOICE_TOOLS.has(name) || !handlers[name]) continue;
-      handlers[name] = withTracking(name, (args: unknown) => remote(name, args));
+      handlers[name] = withTracking(name, (args: unknown) => remote(name, args), " · on the box");
     }
   }
 
