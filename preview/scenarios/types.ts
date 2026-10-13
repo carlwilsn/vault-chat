@@ -67,6 +67,9 @@ export type Scenario = {
   build?: (ctx: BuildCtx) => void;
   /** Steps run after the app has mounted. */
   open?: Step[];
+  /** Stages a check plays one at a time (__preview.play(i)), asserting
+   *  between them; `open` usually runs them all. */
+  drive?: Step[][];
   /** The conversation open on load. */
   activeConversation?: string;
   /** Phone scenario: adjust the phone's MockDB (built from the same world). */

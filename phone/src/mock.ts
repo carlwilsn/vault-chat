@@ -219,7 +219,13 @@ export function installMock() {
     }
     if (DB.script && /^\/api\/v1\/conversations\/[^/]+\/subagents\/[^/]+\/(steer|stop)$/.test(u)) return reply({ ok: true });
     if (u === "/conversations") return reply({ vault: DB.vault, conversations: DB.convs });
-    if (u === "/conversation") { const t = DB.threads[q.get("id")]; return t ? reply(t) : reply({ error: "not found" }); }
+    if (u === "/conversation") {
+      const t = DB.threads[q.get("id")];
+      if (!t) return reply({ error: "not found" });
+      // The box's last-n window (refreshConvMeta asks for n=1).
+      const n = Number(q.get("n")) || 0;
+      return reply(n > 0 ? { ...t, messages: t.messages.slice(-n) } : t);
+    }
     if (u === "/status") return reply({ vault: DB.vault, model: DB.model, version: "0.4.21-mock", runs: DB.runs });
     if (u === "/schedules") return reply({ schedules: DB.schedules });
     if (u === "/notifications") { const ct = DB.notifClearTs || 0; const ns = DB.notifs.filter((n) => !(n.read && n.ts <= ct)); return reply({ unread: ns.filter((n) => !n.read).length, notifications: ns }); }

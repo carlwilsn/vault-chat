@@ -5,6 +5,7 @@ import type { BuildCtx, Scenario, Step } from "./types";
 import * as W from "./world";
 import { phase3Scenarios } from "./phase3";
 import { phase2Scenarios } from "./phase2";
+import { convFullScenarios } from "./convFull";
 import type { Script } from "../runtime/llm";
 
 const MIN = 60_000;
@@ -776,6 +777,7 @@ export const scenarios: Scenario[] = [
   },
   ...phase3Scenarios,
   ...phase2Scenarios,
+  ...convFullScenarios,
 ];
 
 // ---- History (P3-history) ------------------------------------------------------
