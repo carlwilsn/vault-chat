@@ -12,6 +12,10 @@ interface Window {
   webkitAudioContext?: typeof AudioContext;
   /** preview harness: the scenario's MockDB (see mock.ts) */
   __VC_PREVIEW_DB__?: MockDB;
+  /** preview: play the scripted box's next step (mock.ts) */
+  __vcPhoneNext?: () => boolean;
+  /** preview: what the page sent to the scripted box */
+  __vcPhonePosts?: { url: string; method: string; body: any }[];
   /** KaTeX auto-render (bundled; set in main.tsx) */
   renderMathInElement?: (el: Element, opts?: unknown) => void;
 }
@@ -141,6 +145,15 @@ interface ThreadMsg {
   askOptions?: DeliberationOption[];
   hidden?: boolean;
   system?: boolean;
+  /** server/phoneData.ts phoneExtras */
+  thinking?: string;
+  costUsd?: number;
+  context?: number;
+  window?: number;
+  divider?: string;
+  spawns?: string[];
+  images?: string[];
+  failed?: boolean;
 }
 
 interface ChatThread {
@@ -179,6 +192,22 @@ interface PollEvent {
   /** message events: an ask turn's inline options and decision flag */
   askOptions?: DeliberationOption[];
   decision?: boolean;
+  /** message events: a system line, the reply's thinking and cost, a
+      summarized-earlier divider's summary, the subagents it spawned, images */
+  system?: boolean;
+  thinking?: string;
+  costUsd?: number;
+  divider?: string;
+  spawns?: string[];
+  images?: string[];
+  /** runtime events: the reply in pieces (src/streamWire.ts), the thinking's
+      tail, the live context size and the model's window */
+  offset?: number;
+  delta?: string;
+  len?: number;
+  reasoning?: string;
+  context?: number;
+  window?: number;
 }
 
 /** The mock box (?mock=1) — fixture data behind a stubbed fetch. */
@@ -194,4 +223,18 @@ interface MockDB {
   notifClearTs?: number;
   /** The vault's projects (GET /projects). */
   projects?: Array<{ slug: string; name: string }>;
+  /** preview: localStorage entries set before the page reads them (the UI choices) */
+  ls?: Record<string, string>;
+  /** preview: a scripted box — each __vcPhoneNext() applies one step and
+      delivers its poll events (like the desktop's boxNext) */
+  script?: PhoneStep[];
+}
+
+interface PhoneStep {
+  events?: PollEvent[];
+  /** messages the box now has at the end of a thread */
+  append?: Record<string, ThreadMsg[]>;
+  /** thread-level fields (state, verdict, todos, subagents, costUsd …) */
+  meta?: Record<string, Record<string, unknown>>;
+  runs?: RunInfo[];
 }

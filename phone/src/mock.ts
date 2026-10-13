@@ -176,12 +176,56 @@ export function installMock() {
   };
   const reply = (obj) => new Response(JSON.stringify(obj), { status: 200, headers: { "Content-Type": "application/json" } });
   let pollWaited = false, pollTick = 0;
+  // The preview's UI choices (localStorage switches), before the page reads them.
+  for (const [k, v] of Object.entries(DB.ls ?? {})) {
+    try { localStorage.setItem(k, v); } catch {}
+  }
+  // A scripted box (preview): each __vcPhoneNext() applies one step — messages
+  // appended, thread meta changed — and queues its poll events, like the
+  // desktop harness's boxNext(). /poll then hands the queue out at once.
+  const scriptQueue: PollEvent[] = [];
+  let scriptAt = 0;
+  window.__vcPhonePosts = [];
+  window.__vcPhoneNext = () => {
+    const st = DB.script?.[scriptAt];
+    if (!st) return false;
+    scriptAt++;
+    for (const [id, msgs] of Object.entries(st.append ?? {})) if (DB.threads[id]) DB.threads[id].messages.push(...msgs);
+    for (const [id, m] of Object.entries(st.meta ?? {})) {
+      if (DB.threads[id]) Object.assign(DB.threads[id], m);
+      const row = DB.convs.find((c) => c.id === id);
+      if (row) Object.assign(row, m);
+    }
+    if (st.runs) DB.runs = st.runs;
+    scriptQueue.push(...(st.events ?? []));
+    return true;
+  };
   window.fetch = async (url, opts) => {
     const u = String(url).split("?")[0];
     const q = new URLSearchParams(String(url).split("?")[1] || "");
     const body = opts && opts.body ? JSON.parse(opts.body as string) : {};
+    if (DB.script && u !== "/poll") window.__vcPhonePosts.push({ url: String(url), method: (opts && opts.method) || "GET", body });
+    if (DB.script && u === "/poll") {
+      if (!pollWaited) { pollWaited = true; return reply({ events: [], next: "0" }); }
+      for (let t = 0; t < 12 && !scriptQueue.length; t++) await new Promise((r) => setTimeout(r, 200));
+      return reply({ events: scriptQueue.splice(0), next: String(++pollTick) });
+    }
+    if (DB.script && u === "/message") {
+      // The scripted box records the turn (photos included) and leaves the reply to the script.
+      const th = body.convId && DB.threads[body.convId];
+      const shown = String(body.text || "").trim() || "(image)";
+      if (th) th.messages.push({ role: "user", content: shown, ...(Array.isArray(body.images) && body.images.length ? { images: body.images.map((i) => "data:" + i.mime + ";base64," + i.dataBase64) } : {}) });
+      return reply({ ok: true, convId: body.convId });
+    }
+    if (DB.script && /^\/api\/v1\/conversations\/[^/]+\/subagents\/[^/]+\/(steer|stop)$/.test(u)) return reply({ ok: true });
     if (u === "/conversations") return reply({ vault: DB.vault, conversations: DB.convs });
-    if (u === "/conversation") { const t = DB.threads[q.get("id")]; return t ? reply(t) : reply({ error: "not found" }); }
+    if (u === "/conversation") {
+      const t = DB.threads[q.get("id")];
+      if (!t) return reply({ error: "not found" });
+      // The box's last-n window (refreshConvMeta asks for n=1).
+      const n = Number(q.get("n")) || 0;
+      return reply(n > 0 ? { ...t, messages: t.messages.slice(-n) } : t);
+    }
     if (u === "/status") return reply({ vault: DB.vault, model: DB.model, version: "0.4.21-mock", runs: DB.runs });
     if (u === "/schedules") return reply({ schedules: DB.schedules });
     if (u === "/notifications") { const ct = DB.notifClearTs || 0; const ns = DB.notifs.filter((n) => !(n.read && n.ts <= ct)); return reply({ unread: ns.filter((n) => !n.read).length, notifications: ns }); }

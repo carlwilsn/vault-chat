@@ -3,6 +3,7 @@
 // bundled imports (ElevenLabs from npm instead of esm.sh). It drives the shell
 // that React renders (App.tsx) through element ids, exactly as before.
 import { installMock } from "./mock";
+import * as X from "./extras";
 
 export function boot(): void {
   const qs = new URLSearchParams(location.search);
@@ -182,10 +183,15 @@ export function boot(): void {
   let mathSeq = 0;
   const md = (src) => {
     const id = ++mathSeq, math = [];
+    // \[…\] and \(…\) too: unprotected, the markdown pass ate their
+    // backslashes and underscores (emphasis) before KaTeX ever saw them.
     const s = String(src == null ? "" : src)
+      .replace(/\\\[([\s\S]+?)\\\]/g, (m, x) => { math.push("\\[" + x + "\\]"); return "@@M" + id + "_" + (math.length - 1) + "@@"; })
+      .replace(/\\\(([\s\S]+?)\\\)/g, (m, x) => { math.push("\\(" + x + "\\)"); return "@@M" + id + "_" + (math.length - 1) + "@@"; })
       .replace(/\$\$([\s\S]+?)\$\$/g, (m, x) => { math.push("$$" + x + "$$"); return "@@M" + id + "_" + (math.length - 1) + "@@"; })
       .replace(/\$([^\s\d$][^\n$]*?[^\s$]|[^\s\d$])\$/g, (m, x) => { math.push("\\(" + x + "\\)"); return "@@M" + id + "_" + (math.length - 1) + "@@"; });
-    return mdCore(s).replace(new RegExp("@@M" + id + "_(\\d+)@@", "g"), (m, i) => math[+i]);
+    // Escaped back in (KaTeX reads the text, so `a<b` stays math, never markup).
+    return mdCore(s).replace(new RegExp("@@M" + id + "_(\\d+)@@", "g"), (m, i) => esc(math[+i]));
   };
   function typeset(elm) {
     if (elm && window.renderMathInElement) {
@@ -353,7 +359,8 @@ export function boot(): void {
       else { tx.textContent = ""; }
       // The project chip: the project's name beside the title; tap the title to change it.
       const pj = convId ? convMeta.project : newChatProject;
-      sub.textContent = pj ? projectName(pj) : "";
+      const total = convId && X.choice("cost") === "total" ? X.fmtCost(convMeta.costUsd) : "";
+      sub.innerHTML = esc(pj ? projectName(pj) : "") + (total ? (pj ? " · " : "") + '<span data-el="total-cost">' + total + "</span>" : "");
     } else { tx.textContent = page === "notes" ? "Notes" : "Alerts"; sub.textContent = ""; }
     const mAl = $("mAl"); mAl.textContent = unreadN; mAl.classList.toggle("zero", unreadN === 0);
     $("menudot").classList.toggle("on", unreadN > 0 && page !== "alerts");
@@ -546,7 +553,8 @@ export function boot(): void {
   // the last ScheduleWake's reason. Null when the conversation isn't doing long work.
   function ongoingOf(c) {
     if (!c || !c.state) return null;
-    const cost = typeof c.costUsd === "number" && c.costUsd > 0 ? (c.costUsd < 0.01 ? "<$0.01" : "$" + c.costUsd.toFixed(2)) : "";
+    // With the total in the header (the "total" option) the line doesn't repeat it.
+    const cost = X.choice("cost") === "total" ? "" : typeof c.costUsd === "number" && c.costUsd > 0 ? (c.costUsd < 0.01 ? "<$0.01" : "$" + c.costUsd.toFixed(2)) : "";
     let tone = "", label = "", next = "";
     if (c.state === "running") { tone = "running"; label = "Working"; }
     else if (c.state === "sleeping") {
@@ -557,6 +565,7 @@ export function boot(): void {
     }
     else if (c.state === "waiting_user") { tone = "you"; label = "Waiting for you"; }
     else if (c.state === "blocked") { tone = "blocked"; label = "Blocked"; }
+    else if (c.state === "done" && c.verdict && X.choice("verdict") === "ongoing") { tone = c.verdict.verdict === "pass" ? "done" : c.verdict.verdict === "fail" ? "blocked" : "waiting"; label = X.verdictLabel(c.verdict); }
     else return null;
     return { tone, text: [label, next, cost].filter(Boolean).join(" · ") };
   }
@@ -568,8 +577,47 @@ export function boot(): void {
   function renderOngoing() {
     const node = $("ongoing");
     const og = convId ? ongoingOf(convMeta) : null;
-    if (!og) { node.className = "ongoing"; node.innerHTML = ""; return; }
+    if (!og) { node.className = "ongoing"; node.innerHTML = ""; node.removeAttribute("data-el"); return; }
     setOngoing(node, og, "ongoing on");
+    if (convMeta.state === "done") node.setAttribute("data-el", "verdict"); else node.removeAttribute("data-el");
+  }
+  // The open conversation's meta: project, ongoing work, cost, and what the
+  // thread shows beside the text (the Done verdict, the to-dos, the subagents).
+  function metaOf(d) {
+    return { project: d.project, state: d.state, nextWakeAt: d.nextWakeAt, costUsd: d.costUsd, wakeReason: d.wakeReason, verdict: d.verdict, todos: d.todos, subagents: d.subagents };
+  }
+  // The thread's tail (subagents no reply carries yet, the to-dos, the verdict
+  // line) and the pinned area above the composer, per Carl's open choices.
+  let tailEl = null;
+  function renderExtras() {
+    const subs = convId ? convMeta.subagents || [] : [];
+    const placed = new Set();
+    msgsEl.querySelectorAll('[data-el="subagent"]').forEach((e) => { if (!e.closest("#xtail")) placed.add(e.dataset.sid); });
+    const inline = X.choice("subagents") === "inline";
+    const tail = (inline ? X.subagentsHtml(subs.filter((x) => !placed.has(x.threadId)), "inline") : "")
+      + (X.choice("todos") === "inline" ? X.todosHtml(convId ? convMeta.todos || [] : []) : "")
+      + X.verdictHtml(convId ? convMeta.verdict : undefined, convMeta.state);
+    if (tail && !msgsEl.querySelector(".hint")) {
+      if (!tailEl) { tailEl = document.createElement("div"); tailEl.id = "xtail"; }
+      tailEl.innerHTML = tail;
+      const before = streamEl || runlineEl;
+      if (before && before.parentNode === msgsEl) msgsEl.insertBefore(tailEl, before); else msgsEl.appendChild(tailEl);
+    } else if (tailEl) { tailEl.remove(); }
+    // In-place updates of the inline cards already in replies (state, cost, summary).
+    if (inline) msgsEl.querySelectorAll(".amsg").forEach((a) => {
+      const card = a.querySelector(':scope > [data-el="subagents"]');
+      if (!card) return;
+      const ids = [...card.querySelectorAll('[data-el="subagent"]')].map((e) => e.dataset.sid);
+      const fresh = subs.filter((x) => ids.includes(x.threadId));
+      if (fresh.length) card.outerHTML = X.subagentsHtml(fresh, "inline");
+    });
+    const pin = $("pinned");
+    // The strip: the newest spawn (one call's children). The pinned plan: while it has work left.
+    const last = subs[subs.length - 1];
+    const latest = last ? subs.filter((x) => (x.toolCallId || "") === (last.toolCallId || "")) : [];
+    const todos = convId ? convMeta.todos || [] : [];
+    const planOpen = running || todos.some((t) => t.status !== "completed");
+    if (pin) pin.innerHTML = (!inline ? X.subagentsHtml(latest, "strip") : "") + (X.choice("todos") === "pinned" && planOpen ? X.todosHtml(todos) : "");
   }
   // Fresh meta for the open conversation (state flips arrive as status/message events).
   async function refreshConvMeta() {
@@ -578,8 +626,13 @@ export function boot(): void {
     try {
       const d = await (await api("/conversation?id=" + encodeURIComponent(id) + "&n=1")).json();
       if (id !== convId || d.error) return;
-      convMeta = { project: d.project, state: d.state, nextWakeAt: d.nextWakeAt, costUsd: d.costUsd, wakeReason: d.wakeReason };
-      renderOngoing(); setHeader();
+      // A reply's cost lands a moment after the reply: fill it in.
+      const last = (d.messages || [])[0];
+      const amsgs = msgsEl.querySelectorAll(".amsg:not(.stream)");
+      const lastEl = amsgs[amsgs.length - 1];
+      if (last && last.role === "assistant" && lastEl && !lastEl.querySelector(".rcost")) lastEl.insertAdjacentHTML("beforeend", X.costHtml(last.costUsd));
+      convMeta = metaOf(d);
+      renderOngoing(); setHeader(); renderExtras();
     } catch {}
   }
   setInterval(() => { renderOngoing(); }, 60000);
@@ -657,14 +710,27 @@ export function boot(): void {
       div.innerHTML = '<span class="td-l">Your call</span>' + esc(content);
       return div;
     }
+    // A compaction / roll-over: "Earlier conversation summarized", tap for the summary.
+    if (typeof opts.divider === "string") {
+      div.innerHTML = X.dividerHtml(md(opts.divider));
+      const d = div.firstElementChild as HTMLElement;
+      typeset(d);
+      return d;
+    }
     // Agent replies are bubble-free (full-width markdown); user + system keep
     // their bubbles.
     const asst = role !== "user" && !opts.system;
     div.className = (asst ? "amsg" : "m " + (role === "user" ? "user" : "sys")) + (opts.queued ? " queued" : "");
     if (!asst) div.textContent = content;
-    else div.innerHTML = '<div class="md">' + md(content) + "</div>";
+    else div.innerHTML = X.thoughtHtml(opts.thinking) + '<div class="md">' + md(Array.isArray(opts.askOptions) && opts.askOptions.length ? X.withoutOptionList(content, opts.askOptions) : content) + "</div>";
+    // Images sent with a user turn: thumbnails above its text.
+    if (!asst && Array.isArray(opts.images) && opts.images.length)
+      div.insertAdjacentHTML("afterbegin", '<div class="mimgs">' + opts.images.map((u) => '<img src="' + esc(u) + '" alt="">').join("") + "</div>");
     // Finished-turn tool calls collapse to a "Ran N steps" summary at the end.
     if (asst) div.insertAdjacentHTML("beforeend", stepsStr(tools));
+    // The subagents this turn spawned (inline option), and what the turn cost.
+    if (asst && X.choice("subagents") === "inline") div.insertAdjacentHTML("beforeend", X.subagentsHtml(X.spawnsOf(opts.spawns, convMeta.subagents || []), "inline"));
+    if (asst) div.insertAdjacentHTML("beforeend", X.costHtml(opts.costUsd));
     // [unified ask] Tappable option cards land WITH the reply that argues for
     // them (a presence-gated AskUser — no push was sent, you're here).
     if (asst && Array.isArray(opts.askOptions) && opts.askOptions.length)
@@ -733,6 +799,7 @@ export function boot(): void {
     if (!streamText) { if (streamEl) { streamEl.remove(); streamEl = null; } renderRunline(); return; }
     if (!streamEl) { streamEl = document.createElement("div"); streamEl.className = "amsg stream"; msgsEl.appendChild(streamEl); }
     streamEl.innerHTML = '<div class="md">' + md(streamText) + '</div>';
+    typeset(streamEl);
     renderRunline(); scrollDown(false);
   }
   function clearThreadUi() { running = false; stopping = false; streamText = ""; streamTool = ""; streamEl = null; runlineEl = null; msgsEl.innerHTML = ""; syncSendBtn(); }
@@ -764,7 +831,7 @@ export function boot(): void {
       const d = await r.json();
       convTitle = d.title;
       convSource = d.source || null;
-      convMeta = { project: d.project, state: d.state, nextWakeAt: d.nextWakeAt, costUsd: d.costUsd, wakeReason: d.wakeReason };
+      convMeta = metaOf(d);
       clearThreadUi(); renderOngoing(); syncArchived();
       // /conversation reads the on-disk (idle) status, so trust the live signals
       // too: the activity sets seeded from /status, plus any per-conv live state
@@ -781,7 +848,7 @@ export function boot(): void {
         const msgs = d.messages;
         for (let i = 0; i < msgs.length; i++) {
           const m = msgs[i];
-          const o: Record<string, any> = { system: m.system, decision: m.decision };
+          const o: Record<string, any> = { system: m.system, decision: m.decision, thinking: m.thinking, costUsd: m.costUsd, divider: m.divider, spawns: m.spawns, images: (m.images || []).map((p) => (/^(data|blob|https?):/.test(p) ? p : fileUrl(p))) };
           if (Array.isArray(m.askOptions) && m.askOptions.length) {
             o.askOptions = m.askOptions;
             let chosen = "";
@@ -795,7 +862,7 @@ export function boot(): void {
         }
       }
       if (running && live) { streamText = live.text || ""; streamTool = live.tool || ""; streamStartedAt = live.startedAt ?? null; }
-      renderStream(); renderRunline(); setHeader(); scrollDown(true); rememberConv();
+      renderExtras(); renderStream(); renderRunline(); setHeader(); scrollDown(true); rememberConv();
     } catch (e) {
       if (/not found/i.test(String(e.message || e))) { newChat(); return; }
       toast("Load failed: " + (e.message || e));
@@ -814,21 +881,26 @@ export function boot(): void {
   // busy flags) — that's how a tapped inline option card becomes your message.
   async function send(forced?) {
     if (sending) return;
-    const text = (forced !== undefined ? String(forced) : input.value).trim(); if (!text) return;
+    const typed = (forced !== undefined ? String(forced) : input.value).trim();
+    // Photos ride with a typed send (not with a tapped option).
+    const imgs = forced === undefined ? pendingImgs.slice() : [];
+    if (!typed && !imgs.length) return;
+    // The box records a photo-only turn as "(image)".
+    const text = typed || "(image)";
     if (convSource && ARCHIVED_SOURCES.has(convSource)) { toast("Archived mission thread — start a new chat."); return; }
     sending = true;
-    if (forced === undefined) { input.value = ""; input.style.height = "auto"; }
+    if (forced === undefined) { input.value = ""; input.style.height = "auto"; pendingImgs = []; renderPending(); }
     lastSentText = text;
     // Idempotency key: a flaky network or the PWA service worker can deliver the
     // same POST twice. The box collapses duplicate ids to a single turn (one
     // conversation, one run) — the "my message got sent twice" bug.
     const clientMsgId = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
     if (msgsEl.querySelector(".hint")) msgsEl.innerHTML = "";
-    msgsEl.appendChild(bubble("user", text, null)); scrollDown(true);
+    msgsEl.appendChild(bubble("user", text, null, { images: imgs.map((x) => x.url) })); scrollDown(true);
     const mine = msgsEl.lastChild;
     try {
       if (convId) userEngaged.add(convId); // you're conversing here → the dot may track it
-      const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, text, clientMsgId, supervisor: convId ? undefined : true, ...(!convId && newChatProject ? { project: projects.find((x) => x.slug === newChatProject)?.name || newChatProject } : {}) }) });
+      const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, text: typed, clientMsgId, supervisor: convId ? undefined : true, ...(imgs.length ? { images: imgs.map((x) => ({ name: x.name, mime: x.mime, dataBase64: x.url.slice(x.url.indexOf(",") + 1) })) } : {}), ...(!convId && newChatProject ? { project: projects.find((x) => x.slug === newChatProject)?.name || newChatProject } : {}) }) });
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || r.status);
       if (!convId && d.convId) { convId = d.convId; convTitle = text.split("\n")[0].slice(0, 60); if (newChatProject) convMeta.project = newChatProject; newChatProject = ""; rememberConv(); }
@@ -884,7 +956,97 @@ export function boot(): void {
     toast(d.result || "Stop sent.");
   }
 
+  // ---------- photos in the composer ----------
+  // Picked from the library or taken with the camera (the OS offers both),
+  // shown as thumbnails above the composer, sent as images[] with the message.
+  let pendingImgs: { url: string; mime: string; name: string }[] = [];
+  function renderPending() {
+    const el = $("pendImgs");
+    if (!el) return;
+    el.className = pendingImgs.length ? "on" : "";
+    el.innerHTML = pendingImgs.map((x, i) => '<span class="pimg" data-i="' + i + '"><img src="' + esc(x.url) + '" alt=""><button class="px" aria-label="remove">×</button></span>').join("");
+  }
+  // Big photos are scaled down (longest side 1600 px, JPEG) before they go.
+  function shrink(file: File): Promise<{ url: string; mime: string; name: string }> {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onerror = () => reject(r.error);
+      r.onload = () => {
+        const url = String(r.result || "");
+        const img = new Image();
+        img.onload = () => {
+          const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+          if (k >= 1 && file.size < 1_500_000) return resolve({ url, mime: file.type || "image/png", name: file.name || "photo" });
+          const c = document.createElement("canvas");
+          c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+          c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+          resolve({ url: c.toDataURL("image/jpeg", 0.85), mime: "image/jpeg", name: (file.name || "photo").replace(/\.\w+$/, "") + ".jpg" });
+        };
+        img.onerror = () => resolve({ url, mime: file.type || "image/png", name: file.name || "photo" });
+        img.src = url;
+      };
+      r.readAsDataURL(file);
+    });
+  }
+  const imgInput = $("imgInput");
+  wireTap($("imgBtn"), () => imgInput && imgInput.click());
+  if (imgInput) imgInput.addEventListener("change", async () => {
+    const files = [...(imgInput.files || [])].filter((f: File) => f.type.startsWith("image/")).slice(0, 4);
+    imgInput.value = "";
+    for (const f of files) { try { pendingImgs.push(await shrink(f)); } catch {} }
+    pendingImgs = pendingImgs.slice(0, 4);
+    renderPending();
+  });
+  const pendEl = $("pendImgs");
+  if (pendEl) pendEl.addEventListener("click", (e) => {
+    const x = (e.target as HTMLElement).closest(".px");
+    if (!x) return;
+    const i = Number((x.closest(".pimg") as HTMLElement).dataset.i);
+    pendingImgs.splice(i, 1); renderPending();
+  });
+
+  // ---------- thinking toggle (the "toggle" option) ----------
+  const THINK_KEY = "vc_show_thinking";
+  function syncThinking() {
+    const tog = X.choice("thinking") === "toggle";
+    let on = false; try { on = localStorage.getItem(THINK_KEY) === "1"; } catch {}
+    document.body.classList.toggle("thinking-toggle", tog);
+    document.body.classList.toggle("show-thinking", tog && on);
+    const st = $("thinkState"); if (st) { st.textContent = on ? "on" : "off"; st.classList.toggle("zero", !on); }
+  }
+  syncThinking();
+  const thinkRow = $("thinkRow");
+  if (thinkRow) thinkRow.onclick = () => {
+    let on = false; try { on = localStorage.getItem(THINK_KEY) === "1"; } catch {}
+    try { localStorage.setItem(THINK_KEY, on ? "0" : "1"); } catch {}
+    syncThinking();
+  };
+
+  // Steer / stop a running subagent (its card in the thread or the strip).
+  async function subagentOp(sid: string, op: "steer" | "stop") {
+    if (!convId || !sid) return;
+    let text = "";
+    if (op === "steer") { text = (prompt("Tell the subagent…") || "").trim(); if (!text) return; }
+    try {
+      const r = await api("/api/v1/conversations/" + encodeURIComponent(convId) + "/subagents/" + encodeURIComponent(sid) + "/" + op, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(op === "steer" ? { text } : {}) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || d.ok === false) throw new Error(d.error || r.status);
+      toast(op === "stop" ? "Stopping the subagent." : "Sent to the subagent.");
+      void refreshConvMeta();
+    } catch (err) { toast("Couldn't reach the subagent: " + (err.message || err)); }
+  }
+  function extrasClick(e) {
+    const h = e.target.closest(".xblk > .xh");
+    if (h) { h.parentElement.classList.toggle("open"); return true; }
+    const b = e.target.closest(".sa-b");
+    if (b) { const row = b.closest('[data-el="subagent"]'); void subagentOp(row?.dataset.sid || "", b.dataset.op); return true; }
+    return false;
+  }
+  const pinnedEl = $("pinned");
+  if (pinnedEl) pinnedEl.addEventListener("click", extrasClick);
+
   msgsEl.addEventListener("click", (e) => {
+    if (extrasClick(e)) return;
     // [unified ask] Tap an inline option card → it becomes YOUR message (the
     // same send pipeline as typing it), the set goes inert, and the decision
     // lands in the Alerts ARCHIVE as a decided card (/decision-record) — the
@@ -931,7 +1093,10 @@ export function boot(): void {
       // frames must not light the conversations icon (note 8c84fc31).
       if (dotEligible(d.convId)) { convRunning.add(d.convId); convUnseen.delete(d.convId); }
       const prev = liveByConv.get(d.convId);
-      liveByConv.set(d.convId, { running: true, text: d.text || "", tool: d.tool || "", startedAt: d.startedAt ?? (prev && prev.startedAt) ?? null });
+      // The whole reply, rebuilt from its pieces (offset + delta); before the
+      // first keyframe of a stream joined midway, its tail.
+      const st = X.applyStream(prev && prev.stream, d);
+      liveByConv.set(d.convId, { running: true, stream: st, text: st.whole || !st.text || typeof d.offset !== "number" ? st.text : "…" + st.text, tool: d.tool || "", startedAt: d.startedAt ?? (prev && prev.startedAt) ?? null });
       updateConvDot();
     } else if (d.type === "status" && d.convId) {
       // The dot sets (convRunning/convUnseen) track YOUR chats only — the
@@ -954,7 +1119,7 @@ export function boot(): void {
       updateConvDot();
     }
 
-    if (d.type === "runtime" && d.convId === convId) { running = true; streamText = d.text || ""; streamTool = d.tool || ""; streamStartedAt = d.startedAt ?? streamStartedAt; renderStream(); setHeader(); }
+    if (d.type === "runtime" && d.convId === convId) { running = true; streamText = liveByConv.get(convId)?.text || ""; streamTool = d.tool || ""; streamStartedAt = d.startedAt ?? streamStartedAt; renderStream(); setHeader(); }
     else if (d.type === "message" && d.convId === convId) {
       markSeen(convId);
       if (d.role === "user" && lastSentText !== null && d.content === lastSentText) { lastSentText = null; return; }
@@ -963,14 +1128,16 @@ export function boot(): void {
       // the newest fork is the one that counts (latest wins, same as sheets).
       if (Array.isArray(d.askOptions) && d.askOptions.length)
         msgsEl.querySelectorAll(".delib-opt.inline:not(.dead)").forEach((x) => x.classList.add("dead"));
-      msgsEl.appendChild(bubble(d.role, d.content, d.tools, { askOptions: d.askOptions, decision: d.decision, optionsLive: !!(d.askOptions && d.askOptions.length) })); scrollDown(false);
+      msgsEl.appendChild(bubble(d.role, d.content, d.tools, { askOptions: d.askOptions, decision: d.decision, optionsLive: !!(d.askOptions && d.askOptions.length), system: d.system, thinking: d.thinking, costUsd: d.costUsd, divider: d.divider, spawns: d.spawns, images: (d.images || []).map((p) => (/^(data|blob|https?):/.test(p) ? p : fileUrl(p))) })); scrollDown(false);
+      renderExtras();
       void refreshConvMeta();
     } else if (d.type === "status") {
-      if (d.convId === convId) { running = d.status === "running"; stopping = false; if (!running) { streamText = ""; streamTool = ""; streamStartedAt = null; renderStream(); } renderRunline(); }
+      if (d.convId === convId) { running = d.status === "running"; stopping = false; if (!running) { streamText = ""; streamTool = ""; streamStartedAt = null; renderStream(); } renderRunline(); renderExtras(); }
       if (d.convId === convId) void refreshConvMeta();
       void refreshState();
       if (cdraw.classList.contains("on")) void loadConvs();
     } else if (d.type === "title" && d.convId === convId) { convTitle = d.title; setHeader(); }
+    else if (d.type === "meta" && d.convId === convId) void refreshConvMeta();
     else if (d.type === "project") { if (d.convId === convId) { convMeta.project = (d as any).project || undefined; void loadProjects(); setHeader(); } if (cdraw.classList.contains("on")) void loadConvs(); }
     else if (d.type === "notif") { void refreshBadge(); if (page === "alerts") softReload(loadAlerts); }
   }

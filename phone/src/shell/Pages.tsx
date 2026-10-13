@@ -1,14 +1,20 @@
 // The three pages; `body.page-*` (set by setPage) picks the visible one.
-import { SendArrow } from "./icons";
+import { Photo, SendArrow } from "./icons";
 
 export function Pages() {
   return (
     <div className="body">
       <section className="page" id="pChat">
         <div id="msgs"></div>
+        <div id="pinned"></div>
         <div className="ongoing" id="ongoing"></div>
+        <div id="pendImgs"></div>
         <div className="composer">
           <div className="field">
+            <button className="imgbtn" id="imgBtn" aria-label="photo">
+              <Photo />
+            </button>
+            <input type="file" id="imgInput" accept="image/*" multiple hidden />
             <textarea id="input" rows={1} placeholder="Message…" enterKeyHint="enter" autoComplete="off"></textarea>
             <button className="send" id="sendBtn" aria-label="send">
               <SendArrow />

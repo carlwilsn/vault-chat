@@ -274,6 +274,8 @@ export async function sendMessage(
   // Reasoning accumulated locally too (not just pushed to the global
   // view) so a backgrounded run can mirror it into its replay buffer.
   let bgReasoning = "";
+  // Every thinking block of the turn, kept with the reply (message.thinking).
+  const thoughts: string[] = [];
   // Text emitted AFTER the last tool call — the turn's true closing message with
   // the inter-tool narration stripped. Used to clean a scheduled briefing's
   // delivery (the daily coach) so the phone gets the check-in, not the "let me
@@ -321,6 +323,7 @@ export async function sendMessage(
       } else if (e.kind === "context") {
         if (live) store.setLastContext(e.context);
       } else if (e.kind === "reasoning_start") {
+        if (bgReasoning.trim()) thoughts.push(bgReasoning.trim());
         bgReasoning = "";
         if (live) store.clearStreamingReasoning();
       } else if (e.kind === "reasoning") {
@@ -391,11 +394,15 @@ export async function sendMessage(
           store.addTokenUsage(e.usage);
           store.setLastContext(e.usage.context);
         }
+        const thinking = [...thoughts, bgReasoning.trim()].filter(Boolean).join("\n\n");
         const assistantMsg: ChatMessage = {
           role: "assistant",
           content: acc,
           toolCalls: tools.length ? tools : undefined,
           usage: e.usage,
+          ...(thinking ? { thinking: thinking.slice(0, 8_000) } : {}),
+          ...(askOptionsOf(tools) ?? {}),
+          ...(typeof e.usage?.costUsd === "number" ? { costUsd: e.usage.costUsd } : {}),
         };
         if (live) {
           // User is still watching this conversation — write to the
@@ -598,6 +605,22 @@ export async function sendMessage(
     // the in-flight latch so the next genuine turn on this thread can start.
     if (targetConvId) inFlightSends.delete(targetConvId);
   }
+}
+
+/** A live AskUser with options this turn: its options ride on the reply as
+ *  tappable cards (askOptions; a tap sends the pick as the next message). */
+function askOptionsOf(tools: LiveTool[]): Pick<ChatMessage, "askOptions"> | null {
+  for (let i = tools.length - 1; i >= 0; i--) {
+    const t = tools[i]!;
+    if (t.name !== "AskUser") continue;
+    const opts = Array.isArray(t.input?.options) ? t.input.options : [];
+    const out = opts
+      .filter((o: any) => typeof o?.label === "string" && o.label.trim())
+      .slice(0, 6)
+      .map((o: any) => ({ answer: o.label.trim(), title: o.label.trim(), body: String(o.detail ?? "").trim(), ...(o.recommended ? { primary: true } : {}) }));
+    return out.length ? { askOptions: out } : null;
+  }
+  return null;
 }
 
 /** Box mode → hand the turn to the box. False = not box mode (run here). */

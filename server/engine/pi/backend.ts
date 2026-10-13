@@ -28,6 +28,10 @@ export type BackendEvent =
   /** A tool the runtime ran (shell, file edit, our dynamic tools …); `result` once finished. */
   | { kind: "tool"; threadId: string; itemId: string; name: string; input: unknown; result?: string }
   | { kind: "reasoning"; threadId: string; text: string }
+  /** Thinking as it streams (the finished block arrives as `reasoning`). */
+  | { kind: "reasoningDelta"; threadId: string; delta: string }
+  /** The runtime summarized the thread's earlier context (pi auto-compaction). */
+  | { kind: "compaction"; threadId: string; summary: string }
   | { kind: "usage"; threadId: string; usage: ThreadTokenUsage }
   /** The parent spawned/messaged subagents. */
   | { kind: "subagents"; threadId: string; itemId: string; children: string[]; op: string; prompt?: string; model?: string | null; done: boolean; ok: boolean }
@@ -513,6 +517,7 @@ export class PiBackend extends EventEmitter {
         const itemId = `${turn}:${t.msgIndex}:${ev.contentIndex ?? 0}`;
         if (ev.type === "text_delta") this.ev({ kind: "textDelta", threadId, itemId, delta: String(ev.delta ?? "") });
         else if (ev.type === "text_end" && typeof ev.content === "string") this.ev({ kind: "text", threadId, itemId, text: ev.content });
+        else if (ev.type === "thinking_delta" && typeof ev.delta === "string" && ev.delta) this.ev({ kind: "reasoningDelta", threadId, delta: ev.delta });
         else if (ev.type === "thinking_end" && typeof ev.content === "string" && ev.content.trim()) this.ev({ kind: "reasoning", threadId, text: ev.content.trim() });
         return;
       }
@@ -543,7 +548,8 @@ export class PiBackend extends EventEmitter {
         return this.ev({ kind: "tool", threadId, itemId: String(e.toolCallId), name: TOOL_NAMES[e.toolName] ?? String(e.toolName ?? "tool"), input: undefined, result: cap(`${e.isError ? "[error] " : ""}${txt}`) });
       }
       case "compaction_end":
-        if (e.result) this.ev({ kind: "tool", threadId, itemId: `compaction-${Date.now()}`, name: "Compaction", input: { reason: e.reason }, result: "context compacted" });
+        // Shown as the transcript's "Earlier conversation summarized" divider, not a tool step.
+        if (e.result) this.ev({ kind: "compaction", threadId, summary: typeof e.result.summary === "string" ? e.result.summary : "" });
         return;
       case "extension_error":
         this.log(`extension error (${e.event}): ${String(e.error ?? "").slice(0, 300)}`);

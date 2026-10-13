@@ -33,6 +33,8 @@ export type ServerHooks = {
    * request to the legacy relay (old mission threads). */
   engine?: {
     models: () => unknown;
+    /** The box's own models (chat, vision fallback, subagent child) and their checks. */
+    boxModels?: () => unknown;
     message: (b: any) => Promise<Record<string, unknown> | null>;
     answer: (b: any) => Promise<Record<string, unknown> | null>;
     kill: (b: any) => Promise<Record<string, unknown> | null>;
@@ -275,7 +277,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
 
   // Model capabilities for Settings → Models.
   if (path === "/api/v1/models" && method === "GET") {
-    return hooks.engine ? json(res, 200, { models: hooks.engine.models() }) : json(res, 503, { error: "engine not running" });
+    return hooks.engine ? json(res, 200, { models: hooks.engine.models(), ...(hooks.engine.boxModels ? { box: hooks.engine.boxModels() } : {}) }) : json(res, 503, { error: "engine not running" });
   }
   // Steer or stop one running subagent of a conversation.
   const subM = /^\/api\/v1\/conversations\/([^/]+)\/subagents\/([^/]+)\/(steer|stop)$/.exec(path);

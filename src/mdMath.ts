@@ -56,7 +56,14 @@ function maskAll(src: string): Mask {
 }
 
 function unmask(s: string, placeholders: string[]): string {
-  return s.replace(MASK_RE, (_m, i) => placeholders[Number(i)]);
+  // Masks nest (a `$$…$$` mask can hold a table-line mask: display math whose
+  // line starts with `|x|`), so unmask until none is left.
+  for (let n = 0; n < 4; n++) {
+    const next = s.replace(MASK_RE, (_m, i) => placeholders[Number(i)]);
+    if (next === s) break;
+    s = next;
+  }
+  return s;
 }
 
 // Does the content between two `$` signs look like math, or like
@@ -146,9 +153,25 @@ function isolateDisplayMath(masked: string): string {
   });
 }
 
+// 3. latexDelimiters: `\(…\)` and `\[…\]` (what many models write) become
+//    `$…$` and a display `$$…$$` — remark-math knows only dollars, so they
+//    rendered as "(n)" with their backslashes eaten. Code spans and fences
+//    are left alone.
+function latexDelimiters(src: string): string {
+  if (src.indexOf("\\(") === -1 && src.indexOf("\\[") === -1) return src;
+  const { masked, placeholders } = maskFencesAndTables(src);
+  const code: string[] = [];
+  const inline = masked.replace(/`[^`\n]+`/g, (m) => `${MASK_OPEN}c${code.push(m) - 1}${MASK_CLOSE}`);
+  const out = inline
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_m, body: string) => `\n\n$$\n${body.trim()}\n$$\n\n`)
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_m, body: string) => `$${body.trim()}$`);
+  return unmask(out.replace(/\u0001c(\d+)\u0002/g, (_m, i) => code[Number(i)]!), placeholders);
+}
+
 // Full preprocessing pass every ReactMarkdown caller runs before
 // feeding source to remark-math.
 export function preprocessMarkdownMath(src: string): string {
+  src = latexDelimiters(src);
   if (src.indexOf("$") === -1) return src;
   // Pass A: reshape stand-alone $$…$$ into multi-line form.
   const passA = maskFencesAndTables(src);

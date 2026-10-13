@@ -5,7 +5,7 @@
 // from text.
 import type { Conversation } from "./conversations";
 
-export type OngoingTone = "running" | "waiting" | "you" | "blocked";
+export type OngoingTone = "running" | "waiting" | "you" | "blocked" | "done";
 export type Ongoing = { tone: OngoingTone; label: string; next?: string; cost?: string };
 
 /** "3:40" today, "Tue 9:00" within a week, else "Oct 14". */
@@ -41,14 +41,23 @@ function lower(s: string): string {
   return s ? s[0]!.toLowerCase() + s.slice(1) : s;
 }
 
-/** Null when the conversation is not doing long work. */
+/** Null when the conversation is not doing long work. `verdict`: a finished
+ *  conversation's Done verdict shows here too (one of Carl's open choices). */
 export function ongoingWork(
-  c: Pick<Conversation, "state" | "nextWakeAt" | "costUsd" | "messages">,
+  c: Pick<Conversation, "state" | "nextWakeAt" | "costUsd" | "messages"> & { verdict?: Conversation["verdict"] },
   now = Date.now(),
   reason?: string,
+  verdict = false,
 ): Ongoing | null {
   const cost = formatCost(c.costUsd);
   switch (c.state) {
+    case "done": {
+      const v = verdict ? c.verdict : undefined;
+      if (!v) return null;
+      const note = (v.notes ?? []).find((n) => n && n.trim());
+      const word = v.verdict === "pass" ? "verifier passed" : v.verdict === "fail" ? "verifier failed" : "verifier unsure";
+      return { tone: v.verdict === "pass" ? "done" : v.verdict === "fail" ? "blocked" : "waiting", label: `Done · ${word}${note ? ` — ${note.trim()}` : ""}`, cost };
+    }
     case "running":
       return { tone: "running", label: "Working", cost };
     case "sleeping": {

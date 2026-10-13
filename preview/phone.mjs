@@ -109,7 +109,8 @@ export async function renderPhone({ tree, server, scenario, side, scenariosEntry
   const bootClose = html.indexOf("</script>", bootIdx) + "</script>".length;
   html = html.slice(0, bootOpen) + `<script>\n${js.replace(/<\/script/gi, "<\\/script")}\n//# sourceURL=phone.ts\n</script>` + html.slice(bootClose);
 
-  html = html.replace(/<head>/i, `<head>\n${head}`);
-  html = html.replace(/<\/body>/i, `${driver}</body>`);
+  // Replacement functions: a `$$` in the scenario's DB (display math) must not turn into `$`.
+  html = html.replace(/<head>/i, () => `<head>\n${head}`);
+  html = html.replace(/<\/body>/i, () => `${driver}</body>`);
   return html;
 }

@@ -82,7 +82,8 @@ async function buildPage() {
 export async function renderPhoneApp({ head, tail }) {
   let html = await buildPage();
   const mockOn = `<script>if(!/[?&]mock=1(&|$)/.test(location.search))history.replaceState(null,"",location.pathname+(location.search?location.search+"&":"?")+"mock=1"+location.hash)</script>`;
-  html = html.replace(/<head>/i, `<head>\n${head}\n${mockOn}`);
-  html = html.replace(/<\/body>/i, `${tail}</body>`);
+  // Replacement functions: a `$$` in the scenario's DB (display math) must not turn into `$`.
+  html = html.replace(/<head>/i, () => `<head>\n${head}\n${mockOn}`);
+  html = html.replace(/<\/body>/i, () => `${tail}</body>`);
   return html;
 }

@@ -248,15 +248,6 @@ export const phase3Scenarios: Scenario[] = [
     build,
     open: [...open("p-seed44"), pause(), { click: CHATS }, pause(1500), tryClick("button[aria-expanded]", /BitNet 160M/), pause(2000)],
   },
-  {
-    id: "p3-archived",
-    title: "An archived mission thread — readable, read-only",
-    group: "P3 · Chats",
-    notes:
-      "Plays: Chats → Archived missions → the BitNet mission. Before: the mission thread with a live composer (a message would drive the supervisor). After: the history renders as before; the composer is off — “Archived mission thread — read only”.",
-    build,
-    open: [...open("c-spectral"), pause(), { click: CHATS }, pause(1000), tryClick("button", /^Archived missions/), pause(800), { click: "button", text: /^BitNet 160M MVP/ }, pause(2500)],
-  },
   // ----- desktop: the chat -----
   {
     id: "p3-chat-chip",

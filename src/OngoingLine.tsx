@@ -16,7 +16,7 @@ function Dot({ tone }: { tone: OngoingTone }) {
       </span>
     );
   }
-  const color = tone === "blocked" ? "bg-destructive" : tone === "you" ? "bg-primary" : "bg-muted-foreground/50";
+  const color = tone === "blocked" ? "bg-destructive" : tone === "you" ? "bg-primary" : tone === "done" ? "bg-emerald-600" : "bg-muted-foreground/50";
   return <span className={cn("inline-flex h-1.5 w-1.5 rounded-full shrink-0", color)} />;
 }
 
@@ -34,13 +34,16 @@ export function OngoingLine({
   conversation,
   size = "row",
   className,
+  verdict = false,
 }: {
-  conversation: Pick<Conversation, "state" | "nextWakeAt" | "costUsd" | "messages">;
+  conversation: Pick<Conversation, "state" | "nextWakeAt" | "costUsd" | "messages" | "verdict">;
   size?: "row" | "chat";
   className?: string;
+  /** Show a finished conversation's Done verdict here. */
+  verdict?: boolean;
 }) {
   const now = useMinute();
-  const o = ongoingWork(conversation, now);
+  const o = ongoingWork(conversation, now, undefined, verdict);
   if (!o) return null;
   return (
     <div
@@ -51,6 +54,7 @@ export function OngoingLine({
         className,
       )}
       data-ongoing={o.tone}
+      {...(o.tone === "done" || conversation.state === "done" ? { "data-el": "verdict" } : {})}
     >
       <Dot tone={o.tone} />
       <span className="truncate tabular-nums">{ongoingText(o)}</span>

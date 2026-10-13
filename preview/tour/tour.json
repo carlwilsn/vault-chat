@@ -748,29 +748,6 @@
       ]
     },
     {
-      "id": "chats-archived",
-      "group": "Chats",
-      "title": "Old mission threads: readable, read-only",
-      "caption": "A mission thread from before keeps its history, but its composer is off — “Archived mission thread — read only”.",
-      "scenario": "p3-archived",
-      "steps": [
-        {
-          "highlight": "textarea",
-          "label": "read only"
-        },
-        {
-          "hold": 2500
-        }
-      ],
-      "beforeSide": {
-        "steps": [
-          {
-            "hold": 2500
-          }
-        ]
-      }
-    },
-    {
       "id": "project-chip",
       "group": "Chats",
       "title": "A project chip on every chat — pick where it sits",

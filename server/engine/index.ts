@@ -35,6 +35,8 @@ export type EngineHandle = {
   engine: Engine | null;
   error: string | null;
   health: () => Record<string, unknown>;
+  /** The models the box runs: the chat agent, the vision fallback, the subagent child's default. */
+  roles?: () => { chat: string; vision: string; subagent: string };
 };
 
 export function engineModel(): string {
@@ -228,5 +230,11 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   });
   engine.start();
   backend.start();
-  return { engine, error: null, health: () => ({ ...engine.health(), model, version: install.version }) };
+  return {
+    engine,
+    error: null,
+    health: () => ({ ...engine.health(), model, version: install.version }),
+    // A child runs on its agent's model, else VC_PI_SUBAGENT_MODEL, else the parent's (subagents.ts).
+    roles: () => ({ chat: engineModel(), vision: visionModel, subagent: process.env.VC_PI_SUBAGENT_MODEL || engineModel() }),
+  };
 }

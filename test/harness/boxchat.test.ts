@@ -119,14 +119,16 @@ class FakeBox {
             }
             const c = this.convs.get(id);
             if (!c) return send(404, { error: "no such conversation" });
-            c.messages.push({ role: "user", content: body.text });
+            // Like the engine: an image alone is recorded as "(image)".
+            const shown = String(body.text ?? "").trim() || (body.images?.length ? "(image)" : "");
+            c.messages.push({ role: "user", content: shown });
             c.lastActivityAt = Date.now();
             if (c.status !== "running") {
               c.status = "running";
               c.runStartedAt = Date.now();
               this.emit({ type: "status", convId: id, status: "running" });
             }
-            this.emit({ type: "message", convId: id, role: "user", content: body.text, tools: [] });
+            this.emit({ type: "message", convId: id, role: "user", content: shown, tools: [] });
             this.emit({ type: "runtime", convId: id, text: "Working on it", tool: "Read", steps: [], startedAt: c.runStartedAt });
             return send(200, { ok: true, convId: id });
           }
@@ -331,6 +333,47 @@ test("a server without full=1: the phone shape merges onto the local full copy",
   } finally {
     box.full = true;
   }
+});
+
+test("a long reply streams whole, with its thinking and the box's context; meta re-reads; images go to the box", async () => {
+  S().selectConversation("box1");
+  const c = box.conv("box1");
+  c.status = "running";
+  c.runStartedAt = Date.now();
+  box.emit({ type: "status", convId: "box1", status: "running" });
+  // 9,000 characters in three pieces (offset + delta): the old 6,000 tail lost the start.
+  const full = Array.from({ length: 150 }, (_, i) => `line ${i} of the reply.`).join("\n").padEnd(9000, ".");
+  for (const [a, b] of [[0, 2000], [2000, 6500], [6500, 9000]] as const) {
+    box.emit({ type: "runtime", convId: "box1", text: full.slice(0, b).slice(-6000), offset: a, delta: full.slice(a, b), len: b, tool: "", reasoning: "weighing the two bounds", context: 182_000, window: 200_000 });
+  }
+  await waitFor("the whole text", () => S().streamingText === full);
+  assert.equal(S().streamingReasoning, "weighing the two bounds");
+  assert.equal(S().lastContext, 182_000);
+  assert.equal(active().contextWindow, 200_000);
+  // The plan and the subagents change on the box: one meta event, the laptop re-reads.
+  (c as any).todos = [{ content: "Read", status: "completed" }, { content: "Write", status: "in_progress" }];
+  (c as any).subagents = [{ threadId: "sa1", task: "read pp. 40-80", state: "completed", costUsd: 0.09, summary: "six methods", toolCallId: "call_s" }];
+  box.emit({ type: "meta", convId: "box1" });
+  await waitFor("meta", () => active().todos?.length === 2 && active().subagents?.[0]?.summary === "six methods");
+  box.finish("box1", "done long");
+  await waitFor("idle", () => !S().busy && S().messages.at(-1)?.content === "done long");
+
+  // An image with text, then an image alone: images[] in /message, nothing refused.
+  const png = "data:image/png;base64,iVBORw0KGgo=";
+  await bc.boxSend({ text: "what is this?", attachments: [{ imageDataUrl: png, capturedFilePath: ".vault-chat/captures/c1.png" }], convId: "box1" });
+  let p = box.posts.at(-1)!;
+  assert.equal(p.path, "/message");
+  assert.deepEqual(p.body.images, [{ name: "c1.png", mime: "image/png", dataBase64: "iVBORw0KGgo=" }]);
+  assert.ok(S().messages.some((m) => m.role === "user" && m.content === "what is this?" && m.attachments?.length === 1));
+  box.finish("box1", "a chart");
+  await waitFor("answered", () => !S().busy && S().messages.at(-1)?.content === "a chart");
+  await bc.boxSend({ text: "", attachments: [{ imageDataUrl: png }], convId: "box1" });
+  p = box.posts.at(-1)!;
+  assert.equal(p.body.text, "");
+  assert.equal(p.body.images.length, 1);
+  box.finish("box1", "another chart");
+  await waitFor("answered alone", () => !S().busy && S().messages.at(-1)?.content === "another chart");
+  assert.ok(!S().messages.some((m) => /can't be sent to the box/.test(m.content)));
 });
 
 test("box unreachable: composer state says why, a send is refused honestly, it recovers", async () => {

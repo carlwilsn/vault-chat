@@ -414,9 +414,9 @@ export async function answerModelRequest(url: URL, init: RequestInit | undefined
     if (path.endsWith("/models") && method === "GET") return json(catalog);
     if (path.endsWith("/chat/completions")) {
       const raw = JSON.parse(bodyText || "{}");
-      // Settings' short model test (an image plus a required "ok" tool): a
-      // model whose catalog entry takes no images answers like OpenRouter does.
-      if (raw.tool_choice === "required" && raw.tools?.[0]?.function?.name === "ok") return answerModelTest(raw.model, raw);
+      // Settings' one model test (two tools to call at once, usage on; an
+      // image when the catalog doesn't know the model): answered like OpenRouter.
+      if (raw.tools?.[0]?.function?.name === "vc_check_a") return answerModelTest(raw.model, raw);
       const p = parseOpenAI(raw);
       const { id, step, index } = pick(p);
       llmLog.push({ at: Date.now(), url: url.href, model: p.model, script: id, step: index, stream: p.stream });
@@ -472,8 +472,21 @@ function answerModelTest(model: string, raw: any): Response {
   const hasImage = JSON.stringify(raw.messages ?? []).includes("image_url");
   if (!images && hasImage)
     return json({ error: { code: 400, message: "No endpoints found that support image input" } }, 400);
+  // Qwen3 Coder answers one tool at a time (the preview's "can't call tools in parallel").
+  const names = /qwen3-coder/.test(model) ? ["vc_check_a"] : ["vc_check_a", "vc_check_b"];
+  const reasons = !!raw.reasoning && !!m && (m.supported_parameters ?? []).includes("reasoning");
   return json({
-    choices: [{ message: { role: "assistant", content: null, tool_calls: [{ id: "t1", type: "function", function: { name: "ok", arguments: '{"colour":"red"}' } }] } }],
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          ...(reasons ? { reasoning: "Two tools to call; calling both at once." } : {}),
+          tool_calls: names.map((name, i) => ({ id: `t${i}`, type: "function", function: { name, arguments: '{"ok":true}' } })),
+        },
+      },
+    ],
+    usage: { prompt_tokens: 180, completion_tokens: 40, total_tokens: 220, cost: 0.00031 },
   });
 }
 

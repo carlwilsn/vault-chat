@@ -41,3 +41,9 @@ export const Plus = ({ w = "2", join = false }: { w?: string; join?: boolean }) 
     <path d="M12 5v14M5 12h14" />
   </Ico>
 );
+export const Photo = () => (
+  <Ico>
+    <rect x="3" y="5" width="18" height="14" rx="2.5" />
+    <circle cx="12" cy="12" r="3.2" />
+  </Ico>
+);

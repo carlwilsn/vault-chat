@@ -12,6 +12,7 @@ node preview/record.mjs chat-tools --side both   # video → preview/out/videos/
 node preview/inventory.mjs --runtime    # computed-style pass for the style inventory
 node preview/fixtures/build.mjs --vault C:\Users\wada2\github\school2   # private fixture + REDACTION-REPORT.md
 node preview/tools/tour-check.mjs http://127.0.0.1:1500   # play the whole Tour; shots + result.json → preview/proof/tour/
+node preview/conv-check.mjs [--url http://127.0.0.1:1521/after]   # the full test conversation (A box, B local, C phone; both option sets): every element asserted, shots → preview-proof/
 ```
 
 **Tour**: the ▶ Tour button (or `http://localhost:1500/#tour`) plays every new thing full screen: a title card, then the steps live on the before tree ("Before · today"), then the same steps on the after tree ("After · new"; once per option where there is a choice to make), then the next change. It autoplays; Space pauses, ←/→ step through phases, R replays the phase, Esc exits. Slides: `tour/tour.json`. The paced player is `runtime/tour.ts` (a pointer that glides to what it clicks, typing a character at a time, key badges, tooltips, a pulse on what changed — after side only).

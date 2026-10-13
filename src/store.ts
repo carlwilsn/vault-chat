@@ -74,13 +74,21 @@ export type ChatAttachment = {
 export type ChatMessage = {
   role: ChatRole;
   content: string;
-  toolCalls?: { id?: string; name: string; input: any; result?: string }[];
+  // `subagents` (box mode): the children a `subagent` call spawned — their
+  // threadIds; their state, cost and summary live in Conversation.subagents.
+  toolCalls?: { id?: string; name: string; input: any; result?: string; subagents?: string[] }[];
   system?: boolean;
   // Excluded from the UI but still sent to the agent. Used for inline-ask
   // context preambles that the user didn't type.
   hidden?: boolean;
   // Token usage reported by the model for this turn (assistant only).
-  usage?: { prompt: number; completion: number; total: number; context: number };
+  // `window` (box mode): the box model's context window the turn ran in.
+  usage?: { prompt: number; completion: number; total: number; context: number; window?: number; costUsd?: number };
+  // The model's thinking for this turn (box: pi's thinking blocks; laptop: the
+  // reasoning stream), kept with the reply.
+  thinking?: string;
+  // What this turn cost (USD, OpenRouter's own figure), when known.
+  costUsd?: number;
   // Images attached to this turn via the chat pane's Capture button.
   // Render as thumbnails under the bubble; sent to the agent as
   // structured image parts on that turn.
@@ -131,6 +139,9 @@ export type ChatMessage = {
   // the divider; the chat shows a quiet divider whose summary expands. See
   // chatContext.ts.
   compaction?: { summary: string; at?: number };
+  // [box] A roll-over marker (server/context/rollover.ts): the conversation
+  // moved to a fresh session here, with this recap. Shown like a compaction.
+  rollover?: { at?: number; fromThread?: string; recap?: string };
 };
 
 // Shallow content-compare for the chat message list. The popout
@@ -181,6 +192,8 @@ export type ConvRuntime = {
   agentTodos?: TodoItem[];
   tokenUsage?: { prompt: number; completion: number; total: number };
   lastContext?: number;
+  // [box] The box model's context window, reported with the live usage.
+  contextWindow?: number;
   startedAt?: number;
 };
 
@@ -702,6 +715,8 @@ type State = {
   updateLiveToolResult: (id: string, result: string) => void;
   setLiveToolEta: (id: string, seconds: number) => void;
   setAgentTodos: (todos: TodoItem[]) => void;
+  // The to-do list of one conversation (saved with it).
+  setConversationTodos: (id: string, todos: TodoItem[]) => void;
   loadNotes: () => Promise<void>;
   addNote: (note: Note) => Promise<void>;
   deleteNote: (id: string) => Promise<void>;
@@ -1590,6 +1605,8 @@ export const useStore = create<State>((set) => ({
       ),
     })),
   setAgentTodos: (todos) => set({ agentTodos: todos }),
+  setConversationTodos: (id, todos) =>
+    set((s) => ({ conversations: s.conversations.map((c) => (c.id === id ? { ...c, todos } : c)) })),
   loadNotes: async () => {
     const vault = useStore.getState().vaultPath;
     if (!vault) return;

@@ -30,6 +30,8 @@ import { startJob, jobStatus, type PiJobEnv } from "./pi/jobs";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { join } from "node:path";
+import { StreamWire } from "../../src/streamWire";
+import { COMPACTION_DIVIDER_TEXT } from "../../src/chatContext";
 
 export type EngineDeps = {
   vault: string;
@@ -50,7 +52,8 @@ export type EngineDeps = {
   visionModel?: string;
 };
 
-type ToolRec = { id?: string; name: string; input: any; result?: string };
+/** `subagents`: the children a `subagent` call spawned (their threadIds; state and cost live in conv.subagents). */
+type ToolRec = { id?: string; name: string; input: any; result?: string; subagents?: string[] };
 type TurnKind = "user" | "wake" | "nudge" | "resume";
 
 type Live = {
@@ -65,6 +68,8 @@ type Live = {
   tools: ToolRec[];
   toolIndex: Map<string, number>;
   reasoning: string[];
+  /** The thinking block streaming now (thinking_delta), before it is final. */
+  reasoningLive: string;
   usage: ThreadTokenUsage | null;
   flags: { wake: boolean; done: boolean; blocked: boolean };
   ask: { resolve: (answer: string) => void; question: string } | null;
@@ -179,6 +184,28 @@ export const ENGINE_TOOL_SPECS = [
     name: "JobStatus",
     description: "State and last output lines of a job started with StartJob.",
     inputSchema: { type: "object", properties: { id: { type: "string" }, tail: { type: "number" } }, required: ["id"], additionalProperties: false },
+  },
+  {
+    type: "function",
+    name: "TodoWrite",
+    description:
+      "Keep a short to-do list Carl sees in the chat while you work on a task with 3+ steps: lay out the plan at the start, then call again after each step with the updated statuses. Each item: content (imperative), status (pending | in_progress | completed), optional activeForm (\"Reading the file\") shown while in progress. At most one in progress.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        todos: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { content: { type: "string" }, status: { type: "string", enum: ["pending", "in_progress", "completed"] }, activeForm: { type: "string" } },
+            required: ["content", "status"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["todos"],
+      additionalProperties: false,
+    },
   },
   {
     type: "function",
@@ -481,6 +508,7 @@ export class Engine {
         tools: [],
         toolIndex: new Map(),
         reasoning: [],
+        reasoningLive: "",
         usage: null,
         flags: { wake: false, done: false, blocked: false },
         ask: null,
@@ -570,8 +598,16 @@ export class Engine {
   }
 
   private pushRuntime(l: Live): void {
-    const txt = l.order.map((k) => l.texts.get(k) ?? "").filter((s) => s.trim()).join("\n\n");
-    setRuntime(l.convId, { text: txt.slice(-6000), tools: l.tools, startedAt: l.startedAt });
+    // The whole text: the /poll events carry it in pieces (src/streamWire.ts).
+    const reasoning = [...l.reasoning, l.reasoningLive].filter((s) => s.trim()).join("\n\n");
+    const last = l.usage?.last;
+    setRuntime(l.convId, {
+      text: this.turnContent(l),
+      reasoning: reasoning.slice(-4000),
+      tools: l.tools,
+      startedAt: l.startedAt,
+      ...(last ? { context: last.inputTokens ?? 0, window: l.usage?.modelContextWindow ?? undefined } : {}),
+    });
   }
 
   private onEvent(e: BackendEvent): void {
@@ -607,8 +643,18 @@ export class Engine {
         l.texts.set(e.itemId, e.text);
         this.pushRuntime(l);
         return;
+      case "reasoningDelta":
+        l.reasoningLive += e.delta;
+        this.pushRuntime(l);
+        return;
       case "reasoning":
         l.reasoning.push(e.text);
+        l.reasoningLive = "";
+        this.pushRuntime(l);
+        return;
+      case "compaction":
+        // pi summarized the thread's earlier context: the same quiet divider as a local compaction.
+        void appendMessage(this.d.vault, l.convId, { role: "assistant", system: true, content: COMPACTION_DIVIDER_TEXT, compaction: { summary: e.summary, at: Date.now() } });
         return;
       case "tool":
         this.upsertTool(l, e.itemId, { name: e.name, input: e.input, result: e.result });
@@ -616,6 +662,7 @@ export class Engine {
         return;
       case "usage":
         l.usage = e.usage;
+        this.pushRuntime(l);
         return;
       case "subagents": {
         for (const t of e.children) {
@@ -624,7 +671,8 @@ export class Engine {
             void this.updateSubagent(l.convId, t, { prompt: String(e.prompt ?? "").slice(0, 300), model: e.model ?? this.d.model(), status: "running", startedAt: Date.now() });
           }
         }
-        this.upsertTool(l, e.itemId, { name: "Subagent", input: { tool: e.op, prompt: e.prompt, agents: e.children.length }, result: e.done ? (e.ok ? "completed" : "failed") : undefined });
+        // One entry per spawn: the children ride on the parent's own `subagent` tool call.
+        this.attachChildren(l, e.itemId, e.children);
         if (e.done && e.ok && e.op === "spawnAgent" && e.children.length) {
           if (learn(this.d.model(), "subagents", true, `spawned ${e.children.length} subagent(s) in a real turn`)) this.log(`learned: ${this.d.model()} subagents on`);
         }
@@ -654,15 +702,37 @@ export class Engine {
 
   /** Live streaming for clients that want it: /poll `chat` start/stream/end (throttled). */
   private lastStream = new Map<string, number>();
+  private wire = new StreamWire();
   private chatEvent(convId: string, phase: "start" | "end"): void {
     this.lastStream.delete(convId);
+    this.wire.reset(convId);
     this.d.broadcast?.({ type: "chat", convId, phase });
   }
   private chatStream(l: Live): void {
     const now = Date.now();
     if (now - (this.lastStream.get(l.convId) ?? 0) < 250) return;
     this.lastStream.set(l.convId, now);
-    this.d.broadcast?.({ type: "chat", convId: l.convId, phase: "stream", text: this.turnContent(l).slice(-6000) });
+    this.d.broadcast?.({ type: "chat", convId: l.convId, phase: "stream", ...this.wire.next(l.convId, this.turnContent(l), now) });
+  }
+
+  /** Children onto the `subagent` call that spawned them (by its toolCallId; an
+   *  older extension without it: the newest unfinished `subagent` call). Never a
+   *  tool entry of their own. */
+  private attachChildren(l: Live, itemId: string, children: string[]): void {
+    let i = l.toolIndex.get(itemId);
+    if (i === undefined) {
+      for (let j = l.tools.length - 1; j >= 0; j--) {
+        if (l.tools[j]!.name === "subagent" && l.tools[j]!.result === undefined) {
+          i = j;
+          break;
+        }
+      }
+    }
+    if (i === undefined) return;
+    const cur = l.tools[i]!;
+    const have = cur.subagents ?? [];
+    const add = children.filter((c) => !have.includes(c));
+    if (add.length) l.tools[i] = { ...cur, subagents: [...have, ...add] };
   }
 
   private upsertTool(l: Live, id: string, t: Omit<ToolRec, "id">): void {
@@ -672,7 +742,7 @@ export class Engine {
       l.tools.push({ id, ...t });
     } else {
       const cur = l.tools[i]!;
-      l.tools[i] = { ...cur, ...t, result: t.result ?? cur.result };
+      l.tools[i] = { ...cur, ...t, input: t.input ?? cur.input, result: t.result ?? cur.result };
     }
   }
 
@@ -712,7 +782,7 @@ export class Engine {
       ...(l.tools.length ? { toolCalls: l.tools } : {}),
       ...(l.reasoning.length ? { thinking: capStr(l.reasoning.join("\n\n"), 8_000) } : {}),
       ...(usage
-        ? { usage: { prompt: usage.inputTokens ?? 0, completion: usage.outputTokens ?? 0, total: usage.totalTokens ?? 0, context: usage.inputTokens ?? 0 } }
+        ? { usage: { prompt: usage.inputTokens ?? 0, completion: usage.outputTokens ?? 0, total: usage.totalTokens ?? 0, context: usage.inputTokens ?? 0, ...(l.usage?.modelContextWindow ? { window: l.usage.modelContextWindow } : {}) } }
         : {}),
       ...(failed ? { failed: true } : {}),
     };
@@ -910,6 +980,19 @@ export class Engine {
           return text(startJob(this.d.jobEnv, vault, a));
         case "JobStatus":
           return text(jobStatus(this.d.jobEnv, a));
+        case "TodoWrite": {
+          const todos = (Array.isArray(a.todos) ? a.todos : [])
+            .slice(0, 30)
+            .map((t: any) => ({
+              content: String(t?.content ?? "").slice(0, 300),
+              status: t?.status === "completed" || t?.status === "in_progress" ? t.status : "pending",
+              ...(t?.activeForm ? { activeForm: String(t.activeForm).slice(0, 300) } : {}),
+            }))
+            .filter((t: { content: string }) => t.content.trim());
+          await patchMeta(vault, convId, { todos });
+          const n = (st: string) => todos.filter((t: { status: string }) => t.status === st).length;
+          return text(`updated: ${todos.length} items (${n("completed")} done, ${n("in_progress")} active, ${n("pending")} pending)`);
+        }
         case "Cost": {
           if (a.project) {
             const pc = projectCost(String(a.project), (await allConvs(vault)) as any);

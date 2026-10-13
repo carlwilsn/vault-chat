@@ -53,7 +53,17 @@ export type BoxStep = {
   meta?: Record<string, Record<string, unknown>>;
   status?: Record<string, "running" | "idle">;
 };
-export type BoxChatScript = { convs: Record<string, BoxConv>; steps?: BoxStep[] };
+export type BoxChatScript = {
+  convs: Record<string, BoxConv>;
+  steps?: BoxStep[];
+  /** /api/v1/models (Settings' box model checks). */
+  models?: unknown;
+  /** Record what the laptop sends (/message, /answer, subagent steer/stop) on
+   *  the box like the engine does: the turn appended, its poll events queued.
+   *  The reply itself stays the script's (boxNext). */
+  live?: boolean;
+};
+export type BoxPost = { path: string; body: any };
 
 export type BashRule = { match: RegExp; stdout?: string; stderr?: string; code?: number; delayMs?: number };
 
@@ -83,6 +93,11 @@ export function boxNext(): boolean {
   return true;
 }
 let boxCalls = 0;
+const boxPosts: BoxPost[] = [];
+/** What the laptop POSTed to the fake box (scenario checks). */
+export function boxPostLog(): BoxPost[] {
+  return boxPosts;
+}
 const keys = new Map<string, string>();
 
 export function setHostConfig(c: HostConfig, now: () => number): void {
@@ -92,6 +107,7 @@ export function setHostConfig(c: HostConfig, now: () => number): void {
   boxConvs = JSON.parse(JSON.stringify(cfg.sync?.boxChat?.convs ?? {}));
   boxQueue = [];
   boxStep = 0;
+  boxPosts.length = 0;
   keys.clear();
   const defaults: Record<string, string> = { "api.openrouter": "sk-or-PREVIEW-0000000000000000000000000000000000000000", "service.elevenlabs": "sk_PREVIEW0000000000000000000000000000000000" };
   for (const [k, v] of Object.entries({ ...defaults, ...(cfg.keys ?? {}) })) if (v) keys.set(k, v);
@@ -186,7 +202,8 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
         body: JSON.stringify({ ok: true, app: "vault-chat-server", name: b.name, version: b.version, hasKey: has("api.openrouter"), keyNames: names, keys: { openrouter: has("api.openrouter"), elevenlabs: has("service.elevenlabs") } }),
       };
     }
-    const p = u.pathname.replace(/^.*?(\/(poll|conversations|conversation|status))/, "$1");
+    const p = u.pathname.replace(/^.*?(\/(poll|conversations|conversation|status|api\/v1\/models))/, "$1");
+    if (p === "/api/v1/models" && cfg.sync?.boxChat?.models) return { status: 200, body: JSON.stringify(cfg.sync.boxChat.models) };
     const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });
     if (p === "/poll") {
       const after = u.searchParams.get("after");
@@ -227,6 +244,36 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       return { status: 200, body: JSON.stringify({ ok: true, name: j.name, created }) };
     }
     report("info", `box POST ${url} (answered by the preview)`);
+    const path = new URL(String(url)).pathname.replace(/^.*?(\/(message|answer|kill|api\/v1\/.*))$/, "$1");
+    let b: any = {};
+    try {
+      b = JSON.parse(String(body ?? "{}"));
+    } catch {
+      b = {};
+    }
+    boxPosts.push({ path, body: b });
+    if (cfg.sync?.boxChat?.live) {
+      const id = String(b.convId ?? "");
+      const c = boxConvs[id];
+      if (c && (path === "/message" || path === "/answer")) {
+        const imgs = Array.isArray(b.images) ? b.images : [];
+        const text = String(b.text ?? "").trim() || "(image)";
+        c.messages = [
+          ...c.messages,
+          {
+            role: "user",
+            content: text,
+            direct: true,
+            ...(path === "/answer" ? { decision: true } : {}),
+            ...(imgs.length ? { attachments: imgs.map((i: any) => ({ imageDataUrl: `data:${i.mime};base64,${i.dataBase64}`, capturedFilePath: `.vault-chat/captures/${i.name ?? "image.png"}` })) } : {}),
+          },
+        ];
+        c.status = "running";
+        c.meta = { ...(c.meta ?? {}), state: "running" };
+        boxQueue.push({ type: "message", convId: id, role: "user" }, { type: "status", convId: id, status: "running" });
+        return { status: 200, body: JSON.stringify({ ok: true, convId: id, ...(path === "/answer" ? { answered: true } : {}) }) };
+      }
+    }
     return { status: 200, body: "{\"ok\":true}" };
   },
 
