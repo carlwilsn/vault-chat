@@ -549,6 +549,19 @@ export const convFullScenarios: Scenario[] = [
     ),
   ),
   {
+    id: "settings-box-models",
+    title: "Settings — the box's own models checked",
+    group: "Settings",
+    notes:
+      "Box mode: Settings → Models also checks the models the box runs (its chat agent, the vision model it falls back to for images, the subagent child model), from /api/v1/models → box. Here the subagent model's context is under the 64k floor: one quiet line under the pickers says so. Nothing shows while they all pass. The pickers' own lines now also cover tool_choice, context, parallel tool calls and usage (one remembered request per model; faked here — Qwen3 Coder answers one tool at a time).",
+    clock: "2026-10-13T10:00:00",
+    build: buildA,
+    host: hostA,
+    localStorage: { vault_chat_background_model: "qwen/qwen3-coder" },
+    open: [{ click: "[title='Settings']" }, { sleep: 1500 }],
+    surfaces: ["desktop"],
+  },
+  {
     id: "conv-b",
     title: "Full conversation — laptop local",
     group: "Full conversation",

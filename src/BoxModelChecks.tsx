@@ -7,7 +7,7 @@ import { useStore } from "./store";
 import { boxGet, boxLinkFor } from "./boxChat";
 
 type BoxCheck = { id: string; state: "passed" | "missing" | "unknown"; missing?: string[] };
-const ROLE = { chat: "Box chat", vision: "Box vision (images)", subagent: "Box subagents" } as const;
+const ROLE = { chat: "Its chat model", vision: "Its vision model", subagent: "Its subagent model" } as const;
 const NEED: Record<string, string> = { tools: "use tools", toolChoice: "take a tool choice", images: "see images", context: "hold a long chat (under 64k context)" };
 
 export function BoxModelChecks() {
@@ -33,13 +33,17 @@ export function BoxModelChecks() {
   if (!box) return null;
   const failing = (Object.keys(ROLE) as (keyof typeof ROLE)[]).filter((k) => box[k]?.state === "missing");
   if (!failing.length) return null;
+  // A row like the pickers' (label, then the quiet line in the picker column).
   return (
-    <div className="space-y-0.5" data-el="box-model-checks">
-      {failing.map((k) => (
-        <p key={k} className="text-[10.5px] text-amber-500/90 px-0.5">
-          {ROLE[k]} ({box[k]!.id.split("/").pop()}) can't {(box[k]!.missing ?? []).map((n) => NEED[n] ?? n).join(" or ")}.
-        </p>
-      ))}
+    <div className="flex items-start justify-between gap-3" data-el="box-model-checks">
+      <span className="text-[12px] text-foreground/90 shrink-0">Box</span>
+      <div className="min-w-0 flex-1 max-w-[62%] space-y-0.5">
+        {failing.map((k) => (
+          <p key={k} className="text-[10.5px] text-amber-500/90 px-0.5">
+            {ROLE[k]} ({box[k]!.id.split("/").pop()}) can't {(box[k]!.missing ?? []).map((n) => NEED[n] ?? n).join(" or ")}.
+          </p>
+        ))}
+      </div>
     </div>
   );
 }
