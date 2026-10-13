@@ -78,8 +78,8 @@ test("runAgent: a multi-call turn reports the summed cost (cost event + done.usa
     assert.equal(cost.cost.usd, 0.03);
     const done = events.find((e) => e.kind === "done");
     assert.equal(done.usage.costUsd, 0.03);
-    // GPT-6.x gets the reasoning-effort option.
-    assert.ok(or2.requests[0].reasoning_effort || or2.requests[0].reasoning, "reasoning effort passed for gpt-6");
+    // OpenRouter models run at their own default effort: no reasoning option.
+    assert.ok(!or2.requests[0].reasoning_effort && !or2.requests[0].reasoning, "no reasoning effort sent through OpenRouter");
   } finally {
     providers.setOpenRouterBaseURL(or.url);
     await or2.close();
