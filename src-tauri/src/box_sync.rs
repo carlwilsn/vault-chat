@@ -56,6 +56,8 @@ pub struct BoxConfig {
     pub box_url: String,
     /// The vault's name on the box (`<box>/git/<vault>.git`).
     pub vault: String,
+    /// The box's display name (its hostname), when Settings wrote one.
+    pub name: Option<String>,
 }
 
 impl BoxConfig {
@@ -82,14 +84,20 @@ pub fn box_config(vault: &str) -> Option<BoxConfig> {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
         })?;
-    Some(BoxConfig { box_url, vault: name })
+    let display = v
+        .get("name")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    Some(BoxConfig { box_url, vault: name, name: display })
 }
 
 /// `box_config(vault).is_some()` behind a short cache, for hot paths
 /// (every conversations autosave, every commit).
+static BOX_MODE_CACHE: Mutex<Option<HashMap<String, (bool, Instant)>>> = Mutex::new(None);
+
 pub fn box_mode_cached(vault: &str) -> bool {
-    static CACHE: Mutex<Option<HashMap<String, (bool, Instant)>>> = Mutex::new(None);
-    let mut guard = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    let mut guard = BOX_MODE_CACHE.lock().unwrap_or_else(|p| p.into_inner());
     let map = guard.get_or_insert_with(HashMap::new);
     if let Some((v, at)) = map.get(vault) {
         if at.elapsed().as_secs() < 30 {
@@ -99,6 +107,181 @@ pub fn box_mode_cached(vault: &str) -> bool {
     let v = box_config(vault).is_some();
     map.insert(vault.to_string(), (v, Instant::now()));
     v
+}
+
+// ---------- connect / disconnect (Settings → Box) ----------
+
+fn sync_json_path(vault: &str) -> PathBuf {
+    PathBuf::from(vault).join(".vault-chat").join("sync.json")
+}
+
+fn forget_box_mode(vault: &str) {
+    let mut guard = BOX_MODE_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(map) = guard.as_mut() {
+        map.remove(vault);
+    }
+}
+
+fn json_object(raw: Option<&str>) -> serde_json::Map<String, serde_json::Value> {
+    raw.and_then(|r| serde_json::from_str::<serde_json::Value>(r.trim_start_matches('\u{feff}')).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+}
+
+fn pretty(o: serde_json::Map<String, serde_json::Value>) -> String {
+    serde_json::to_string_pretty(&serde_json::Value::Object(o)).unwrap_or_default() + "\n"
+}
+
+/// The box's name for a vault: `^[A-Za-z0-9._-]{1,64}$`, not starting with a dot.
+pub fn valid_box_vault_name(n: &str) -> bool {
+    !n.is_empty()
+        && n.len() <= 64
+        && !n.starts_with('.')
+        && !n.ends_with(".git")
+        && n.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+}
+
+/// sync.json naming this box; any other fields are kept.
+pub fn sync_json_with_box(existing: Option<&str>, box_url: &str, vault: &str, name: &str) -> Result<String, String> {
+    let url = box_url.trim().trim_end_matches('/');
+    if !(url.starts_with("https://") || url.starts_with("http://")) || url.len() < 10 {
+        return Err(format!("not a box address: {}", box_url));
+    }
+    if !valid_box_vault_name(vault) {
+        return Err(format!("not a valid vault name for the box: {}", vault));
+    }
+    let mut o = json_object(existing);
+    o.insert("hub".into(), "laptop".into());
+    o.insert("box".into(), url.into());
+    o.insert("vault".into(), vault.into());
+    match name.trim() {
+        "" => o.remove("name"),
+        n => o.insert("name".into(), n.into()),
+    };
+    Ok(pretty(o))
+}
+
+/// sync.json without its box (`box`, `hub`, `name` go; the rest stays).
+pub fn sync_json_without_box(existing: &str) -> String {
+    let mut o = json_object(Some(existing));
+    for k in ["box", "hub", "name"] {
+        o.remove(k);
+    }
+    pretty(o)
+}
+
+/// Point this vault at a box. The next sync cycle pushes master to it.
+pub fn connect_box(vault: &str, box_url: &str, vault_name: &str, name: &str) -> Result<(), String> {
+    let p = sync_json_path(vault);
+    let next = sync_json_with_box(std::fs::read_to_string(&p).ok().as_deref(), box_url, vault_name, name)?;
+    std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(&p, next).map_err(|e| e.to_string())?;
+    forget_box_mode(vault);
+    Ok(())
+}
+
+/// Stop using the box for this vault. The box keeps its copy.
+pub fn disconnect_box(vault: &str) -> Result<(), String> {
+    let p = sync_json_path(vault);
+    if let Ok(cur) = std::fs::read_to_string(&p) {
+        std::fs::write(&p, sync_json_without_box(&cur)).map_err(|e| e.to_string())?;
+    }
+    forget_box_mode(vault);
+    Ok(())
+}
+
+// ---------- discovery: tailnet machines that answer as a vault-chat server ----------
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct FoundBox {
+    pub name: String,
+    pub url: String,
+    pub version: Option<String>,
+    pub online: bool,
+    #[serde(rename = "hasKey")]
+    pub has_key: bool,
+}
+
+/// Online peers in `tailscale status --json`: (host name, `https://<DNSName>`).
+pub fn online_peers(status_json: &str) -> Vec<(String, String)> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(status_json) else {
+        return vec![];
+    };
+    let mut out = vec![];
+    for p in v.get("Peer").and_then(|p| p.as_object()).into_iter().flat_map(|m| m.values()) {
+        if p.get("Online").and_then(|x| x.as_bool()) != Some(true) {
+            continue;
+        }
+        let dns = p.get("DNSName").and_then(|x| x.as_str()).unwrap_or("").trim_end_matches('.');
+        if dns.is_empty() {
+            continue;
+        }
+        let host = p
+            .get("HostName")
+            .and_then(|x| x.as_str())
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| dns.split('.').next().unwrap_or(dns));
+        out.push((host.to_string(), format!("https://{}", dns)));
+    }
+    out.sort();
+    out
+}
+
+/// A `/api/v1/health` body → the box, if it is a vault-chat server.
+pub fn parse_health(host: &str, url: &str, body: &str) -> Option<FoundBox> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let is_server = v.get("app").and_then(|x| x.as_str()) == Some("vault-chat-server")
+        || (v.get("ok").and_then(|x| x.as_bool()) == Some(true) && v.get("version").is_some() && v.get("keys").is_some());
+    if !is_server {
+        return None;
+    }
+    Some(FoundBox {
+        name: v.get("name").and_then(|x| x.as_str()).filter(|s| !s.is_empty()).unwrap_or(host).to_string(),
+        url: url.to_string(),
+        version: v.get("version").and_then(|x| x.as_str()).map(String::from),
+        online: true,
+        has_key: v
+            .get("hasKey")
+            .and_then(|x| x.as_bool())
+            .or_else(|| v.pointer("/keys/openrouter").and_then(|x| x.as_bool()))
+            .unwrap_or(false),
+    })
+}
+
+fn tailscale_status() -> Result<String, String> {
+    let mut last = String::new();
+    for exe in ["tailscale", r"C:\Program Files\Tailscale\tailscale.exe"] {
+        let mut c = std::process::Command::new(exe);
+        c.args(["status", "--json"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x08000000);
+        }
+        match c.output() {
+            Ok(o) if o.status.success() => return Ok(String::from_utf8_lossy(&o.stdout).to_string()),
+            Ok(o) => last = String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            Err(e) => last = e.to_string(),
+        }
+    }
+    Err(format!("tailscale status failed: {}", last))
+}
+
+/// Probe every online tailnet peer's `/api/v1/health` in parallel (3 s each).
+pub fn discover_boxes() -> Result<Vec<FoundBox>, String> {
+    let handles: Vec<_> = online_peers(&tailscale_status()?)
+        .into_iter()
+        .map(|(host, url)| {
+            std::thread::spawn(move || {
+                let (status, body) = get_json(&format!("{}/api/v1/health", url), None, 3_000).ok()?;
+                if status != 200 {
+                    return None;
+                }
+                parse_health(&host, &url, &body)
+            })
+        })
+        .collect();
+    Ok(handles.into_iter().filter_map(|h| h.join().ok().flatten()).collect())
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]

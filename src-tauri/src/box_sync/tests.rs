@@ -473,3 +473,68 @@ fn box_mode_never_writes_conversations() {
     no_sidecars(&r.laptop);
     r.done();
 }
+
+#[test]
+fn connect_writes_sync_json_and_keeps_other_fields() {
+    let out = sync_json_with_box(Some("{\"extra\":1,\"box\":\"https://old.example\"}"), "https://thinkbox.tailbb647d.ts.net/", "school2", "thinkbox").unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hub"], "laptop");
+    assert_eq!(v["box"], "https://thinkbox.tailbb647d.ts.net");
+    assert_eq!(v["vault"], "school2");
+    assert_eq!(v["name"], "thinkbox");
+    assert_eq!(v["extra"], 1);
+    // No file yet, no name: just the three fields.
+    let v: serde_json::Value = serde_json::from_str(&sync_json_with_box(None, "https://b.example", "a_b-c.1", " ").unwrap()).unwrap();
+    assert_eq!(v.as_object().unwrap().len(), 3);
+    // Bad addresses and names are refused.
+    assert!(sync_json_with_box(None, "thinkbox", "school2", "").is_err());
+    for bad in ["", "..", ".hidden", "a/b", r"a\b", "x.git", "has space", &"x".repeat(65)] {
+        assert!(sync_json_with_box(None, "https://b.example", bad, "").is_err(), "{bad:?} accepted");
+    }
+}
+
+#[test]
+fn disconnect_removes_only_the_box() {
+    let out = sync_json_without_box("{\"hub\":\"laptop\",\"box\":\"https://b.example\",\"vault\":\"school2\",\"name\":\"b\",\"extra\":true}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v.get("box").is_none() && v.get("hub").is_none() && v.get("name").is_none());
+    assert_eq!(v["vault"], "school2");
+    assert_eq!(v["extra"], true);
+    // Garbage in → an empty object, never a panic.
+    assert_eq!(sync_json_without_box("not json").trim(), "{}");
+}
+
+#[test]
+fn connect_then_disconnect_flips_box_mode_at_once() {
+    let base = std::env::temp_dir().join(format!("vc_boxsync_connect_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let v = s(&base);
+    assert!(!box_mode_cached(&v));
+    connect_box(&v, "https://thinkbox.tailbb647d.ts.net", "school2", "thinkbox").unwrap();
+    let c = box_config(&v).expect("connected");
+    assert_eq!(c.remote_url(), "https://thinkbox.tailbb647d.ts.net/git/school2.git");
+    assert_eq!(c.name.as_deref(), Some("thinkbox"));
+    assert!(box_mode_cached(&v), "the cache forgets on connect");
+    disconnect_box(&v).unwrap();
+    assert!(box_config(&v).is_none());
+    assert!(!box_mode_cached(&v), "the cache forgets on disconnect");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn discovery_parses_tailscale_status_and_health() {
+    let status = r#"{"Self":{"HostName":"laptop","DNSName":"laptop.t.ts.net.","Online":true},
+      "Peer":{"k1":{"HostName":"thinkbox","DNSName":"thinkbox.t.ts.net.","Online":true},
+              "k2":{"HostName":"tower","DNSName":"tower.t.ts.net.","Online":false},
+              "k3":{"HostName":"phone","DNSName":"","Online":true}}}"#;
+    assert_eq!(online_peers(status), vec![("thinkbox".to_string(), "https://thinkbox.t.ts.net".to_string())]);
+    assert!(online_peers("garbage").is_empty());
+    let b = parse_health("thinkbox", "https://thinkbox.t.ts.net", r#"{"ok":true,"app":"vault-chat-server","name":"thinkbox","version":"1.2.0","hasKey":false}"#).unwrap();
+    assert_eq!((b.name.as_str(), b.version.as_deref(), b.online, b.has_key), ("thinkbox", Some("1.2.0"), true, false));
+    // An older server (no app field) still counts; its key comes from keys.openrouter.
+    let old = parse_health("tb", "https://tb", r#"{"ok":true,"version":"1.0.0","keys":{"openrouter":true}}"#).unwrap();
+    assert!(old.has_key && old.name == "tb");
+    assert!(parse_health("x", "https://x", r#"{"status":"ok"}"#).is_none());
+    assert!(parse_health("x", "https://x", "<html>").is_none());
+}

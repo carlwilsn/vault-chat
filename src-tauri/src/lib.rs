@@ -5065,12 +5065,34 @@ struct BoxConfigOut {
     #[serde(rename = "box")]
     box_url: String,
     vault: String,
+    name: Option<String>,
 }
 
 /// The box this vault syncs with, from `.vault-chat/sync.json` (None = old mode).
 #[tauri::command]
 fn vault_box_config(vault: String) -> Option<BoxConfigOut> {
-    box_sync::box_config(&vault).map(|c| BoxConfigOut { box_url: c.box_url, vault: c.vault })
+    box_sync::box_config(&vault).map(|c| BoxConfigOut { box_url: c.box_url, vault: c.vault, name: c.name })
+}
+
+/// Settings → Box: the tailnet machines that answer as a vault-chat server.
+#[tauri::command]
+async fn box_discover() -> Result<Vec<box_sync::FoundBox>, String> {
+    tauri::async_runtime::spawn_blocking(box_sync::discover_boxes)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Settings → Box: this vault syncs with (and chats on) `box_url` from now on.
+/// The frontend restarts its sync loop, whose first cycle pushes master.
+#[tauri::command]
+fn vault_box_connect(vault: String, box_url: String, box_vault: String, name: String) -> Result<(), String> {
+    box_sync::connect_box(&vault, &box_url, &box_vault, &name)
+}
+
+/// Settings → Box: back to this laptop (the box keeps its copy).
+#[tauri::command]
+fn vault_box_disconnect(vault: String) -> Result<(), String> {
+    box_sync::disconnect_box(&vault)
 }
 
 #[derive(Serialize)]
@@ -7119,6 +7141,9 @@ pub fn run() {
             vault_sync_role,
             vault_box_sync,
             vault_box_config,
+            box_discover,
+            vault_box_connect,
+            vault_box_disconnect,
             box_post_json,
             box_get_json,
             run_script,
