@@ -305,6 +305,15 @@ export const phase3Scenarios: Scenario[] = [
   },
   // ----- phone -----
   {
+    id: "p3-phone",
+    title: "Phone — the whole app, nothing pre-tapped",
+    group: "P3 · Phone",
+    notes: "Opens on the chat home with the full Phase 3 world (projects, ongoing work, alerts). Tap around freely.",
+    build,
+    surfaces: ["phone"],
+    phone: { clicks: [], db: phoneDb },
+  },
+  {
     id: "p3-phone-menu",
     title: "Phone — the menu without Activity",
     group: "P3 · Phone",
