@@ -81,12 +81,19 @@ async function main(): Promise<void> {
   // Every agent turn runs in pi (server/engine). The old in-process loop
   // stays in the bundle for legacy mission threads until Phase 3 removes it.
   const { notificationAppend } = await import("./commands/phone");
-  const { startEngine } = await import("./engine");
+  const { startEngine, engineModel } = await import("./engine");
+  const { startBoxSync, syncStatus, syncSummary, triggerSync, listVaults, addVault, vaultPaths } = await import("./sync");
+  // Every vault on the box; the main one keeps its own paths (config).
+  const vaultRefs = () =>
+    listVaults().map((v) => (v.main ? { name: v.name, path: cfg.vault, bare: cfg.bareRepo, main: true } : { name: v.name, path: vaultPaths(v.name).vault, bare: vaultPaths(v.name).bare, main: false }));
   const { modelsList, boxModelChecks } = await import("./engine/capabilities");
   const engine = process.env.VC_ENGINE === "0"
     ? { engine: null, error: "disabled (VC_ENGINE=0): turns run on the old in-process loop", health: () => ({}) }
     : await startEngine({
     vault: cfg.vault,
+    vaultName: cfg.vaultName,
+    vaults: vaultRefs,
+    onTurnEnded: (name) => triggerSync(name),
     stateDir: cfg.stateDir,
     secretsDir: cfg.secretsDir,
     tokenPath: cfg.tokenPath,
@@ -104,7 +111,14 @@ async function main(): Promise<void> {
   });
 
   const { activeRuns } = await import("../src/runRegistry");
-  const { startBoxSync, syncStatus, syncSummary, triggerSync, listVaults, addVault } = await import("./sync");
+  // Each vault's own engine (conversations, wakes, ledger, projects, rules,
+  // sandbox), started on first use; every vault already on the box at boot.
+  const engineOf = async (v: { name: string; path: string; bare: string; main: boolean }) =>
+    v.main || !("open" in engine) || !engine.open ? engine.engine! : await engine.open(v);
+  const vaultOf = (name: string | null) => {
+    if (!name || name === cfg.vaultName) return { name: cfg.vaultName, path: cfg.vault, bare: cfg.bareRepo, main: true };
+    return vaultRefs().find((v) => v.name === name) ?? null;
+  };
   // The tag becomes the Web Push tag, so a repeat alert replaces the last one.
   const alert = async (title: string, body: string, tag?: string) => {
     try {
@@ -152,7 +166,26 @@ async function main(): Promise<void> {
     syncStatus,
     alert,
     onGitPushed: (name) => triggerSync(name),
-    vaults: { list: listVaults, add: addVault },
+    vaults: {
+      list: listVaults,
+      add: async (name) => {
+        const out = await addVault(name);
+        const v = vaultOf(name);
+        if (v && !v.main && engine.engine) await engineOf(v).catch((e) => console.error(`[engine] vault ${name}:`, e));
+        return out;
+      },
+    },
+    vault: vaultOf,
+    vaultStatus: async (v) => {
+      const h: any = engine.engine ? (await engineOf(v)).health() : {};
+      return {
+        vault: v.name,
+        model: engineModel(),
+        version: SERVER_VERSION,
+        runs: (h.liveTurns ?? []).filter((l: any) => !l.waitingUser).map((l: any) => ({ convId: l.convId, source: "phone" })),
+        schedules: [],
+      };
+    },
     setKeys: async (keys) => {
       const changed = await saveKeys(cfg.secretsDir, keys);
       if (changed) {
@@ -165,10 +198,10 @@ async function main(): Promise<void> {
       ? {
           models: () => modelsList(),
           boxModels: () => ("roles" in engine && engine.roles ? boxModelChecks(engine.roles()) : undefined),
-          message: (b) => engine.engine!.message(b),
-          answer: (b) => engine.engine!.answerRoute(b),
-          kill: (b) => engine.engine!.kill(b),
-          subagent: (c, sid, op, b) => engine.engine!.subagent(c, sid, op, b),
+          message: async (v, b) => (await engineOf(v)).message(b),
+          answer: async (v, b) => (await engineOf(v)).answerRoute(b),
+          kill: async (v, b) => (await engineOf(v)).kill(b),
+          subagent: async (v, c, sid, op, b) => (await engineOf(v)).subagent(c, sid, op, b),
         }
       : undefined,
   });
@@ -179,6 +212,11 @@ async function main(): Promise<void> {
   void startSchedulerLoop(cfg.vault);
 
   await startBoxSync(alert);
+
+  // Wakes, the watchdog and cut turns of every vault come back with the server.
+  if (engine.engine) {
+    for (const v of vaultRefs()) if (!v.main) await engineOf(v).catch((e) => console.error(`[engine] vault ${v.name}:`, e));
+  }
 
   const shutdown = (sig: string) => {
     console.log(`[vault-chat-server] ${sig} — shutting down`);

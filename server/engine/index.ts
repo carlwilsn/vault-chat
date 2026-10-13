@@ -13,11 +13,21 @@ import { Ledger } from "./ledger";
 import { excludeLocalDir } from "./wakes";
 import { initCapabilities } from "./capabilities";
 import { ensurePi, findBwrap, type PiInstall } from "./pi/install";
-import { listPiModels, modelWindow, piPaths, writePiConfig } from "./pi/config";
-import { PiBackend, type PiSandbox } from "./pi/backend";
+import { listPiModels, modelWindow, piPaths, vaultPiPaths, writePiConfig, type PiPaths } from "./pi/config";
+import { PiBackend, outerWith, type PiSandbox } from "./pi/backend";
+import { allConvs, openMirror } from "./convs";
+
+/** A vault on this box: its working copy and bare repo. The main one keeps the paths it always had. */
+export type VaultRef = { name: string; path: string; bare: string; main: boolean };
 
 export type EngineBoot = {
   vault: string;
+  /** The main vault's name. */
+  vaultName?: string;
+  /** Every vault on the box, the main one included (sync.ts listVaults). */
+  vaults?: () => VaultRef[];
+  /** A turn ended in a vault other than the main one (a sync cycle brings the result to the laptop). */
+  onTurnEnded?: (name: string) => void;
   stateDir: string;
   secretsDir: string;
   tokenPath: string;
@@ -37,6 +47,8 @@ export type EngineHandle = {
   health: () => Record<string, unknown>;
   /** The models the box runs: the chat agent, the vision fallback, the subagent child's default. */
   roles?: () => { chat: string; vision: string; subagent: string };
+  /** The engine of a vault, started on first use (the main one is `engine`). */
+  open?: (v: VaultRef) => Promise<Engine>;
 };
 
 export function engineModel(): string {
@@ -49,8 +61,11 @@ export function engineModel(): string {
   return process.env.VC_ENGINE_MODEL || ls || "openai/gpt-6.1-sol";
 }
 
-/** Web Push + notifications.jsonl + the /poll "notif" event, . */
-export function engineNotify(b: EngineBoot) {
+/** Web Push + notifications.jsonl + the /poll "notif" event, . A vault other
+ * than the main one: its own feed, and the push opens the phone on that vault. */
+export function engineNotify(b: EngineBoot, v?: VaultRef) {
+  const vault = v?.path ?? b.vault;
+  const q = v && !v.main ? `&vault=${encodeURIComponent(v.name)}` : "";
   return async (n: { kind: "info" | "ask"; title: string; body: string; convId: string; options?: string[] }): Promise<string | null> => {
     const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
     const rec: Record<string, unknown> = { id, ts: Date.now(), kind: n.kind, title: n.title.slice(0, 90), body: n.body.slice(0, 2000), convId: n.convId };
@@ -61,13 +76,13 @@ export function engineNotify(b: EngineBoot) {
       };
     }
     try {
-      b.notificationAppend(b.vault, JSON.stringify(rec));
+      b.notificationAppend(vault, JSON.stringify(rec));
     } catch {
       /* feed is best effort */
     }
-    b.broadcast({ type: "notif" });
+    b.broadcast(v && !v.main ? { vault: v.name, type: "notif" } : { type: "notif" });
     // One push per conversation: the tag is the conversation id (a newer push replaces the older one).
-    const sent = await b.sendPush(n.title.slice(0, 90), n.body.slice(0, 180), `/phone?conv=${encodeURIComponent(n.convId)}`, n.convId).catch(() => 0);
+    const sent = await b.sendPush(n.title.slice(0, 90), n.body.slice(0, 180), `/phone?conv=${encodeURIComponent(n.convId)}${q}`, n.convId).catch(() => 0);
     return sent ? id : null;
   };
 }
@@ -162,11 +177,10 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   const win = modelWindow(model, piCat);
   setModelWindow(model, win);
   configureContext({ vault: b.vault, agentModel: model, apiKey: b.apiKey, verifierDeny: [b.stateDir, b.tokenPath, b.localStoragePath, b.pushSubsPath] });
-  excludeLocalDir(b.vault);
 
-  const paths = piPaths(b.stateDir);
+  const base = piPaths(b.stateDir);
   const baseUrl = b.openrouterBase ? b.openrouterBase.replace(/\/+$/, "") : undefined;
-  writePiConfig({ paths, install, catalog: piCat, models: [model, visionModel], baseUrl });
+  writePiConfig({ paths: base, install, catalog: piCat, models: [model, visionModel], baseUrl });
   console.log(`[engine:pi] model ${model} (window ${win}${modelMeta(model) ? "" : piCat.has(model) ? ", pi catalog" : ", defined in models.json"}); sandbox ${bwrap ?? "OFF"}`);
 
   const home = process.env.HOME || homedir();
@@ -177,64 +191,125 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       return -1;
     }
   })();
-  // The sandbox read-only-binds these; they must exist when it is built.
-  for (const d of [join(b.vault, ".vault-chat", "conversations"), join(b.vault, ".vault-chat", "local"), join(b.stateDir, "jobs")]) mkdirSync(d, { recursive: true });
-  const sandbox = buildSandbox({
-    bwrap,
-    home,
-    stateDir: b.stateDir,
-    secretsDir: b.secretsDir,
-    hideFiles: [b.tokenPath, b.localStoragePath, b.pushSubsPath],
-    sessionsDir: paths.sessionsDir,
-    agentDir: paths.agentDir,
-    vault: b.vault,
-    uid,
-  });
-  const backend = new PiBackend({
-    install,
-    paths,
-    catalog: piCat,
-    sandbox,
-    apiKey: b.apiKey,
-    thinking: process.env.VC_PI_THINKING || "medium",
-    idleMs: Number(process.env.VC_PI_IDLE_MS) || 10 * 60_000,
-    maxProcs: Number(process.env.VC_PI_MAX_PROCS) || 6,
-    subagents: {
-      agentsDirs: [paths.agentsDir, join(b.vault, ".vault-chat", "agents")],
-      concurrency: Number(process.env.VC_PI_SUBAGENT_CONCURRENCY) || 4,
-      maxTasks: Number(process.env.VC_PI_SUBAGENT_MAX_TASKS) || 8,
-      hostMax: Number(process.env.VC_PI_SUBAGENT_HOST_MAX) || 8,
-      timeoutMs: Number(process.env.VC_PI_SUBAGENT_TIMEOUT_MS) || 30 * 60_000,
-      graceMs: Number(process.env.VC_PI_SUBAGENT_GRACE_MS) || 5_000,
-      defaultModel: process.env.VC_PI_SUBAGENT_MODEL || null,
-    },
-  });
-  const jobEnv = {
-    logDir: join(b.stateDir, "jobs"),
-    // Jobs outlive turns: the same hiding as pi's sandbox, without its pid namespace.
-    wrap: sandbox.outer ? sandbox.outer.filter((x) => x !== "--unshare-pid" && x !== "--die-with-parent") : null,
-    env: { PATH: process.env.PATH ?? "/run/current-system/sw/bin", HOME: home },
+
+  const mainRef: VaultRef = { name: b.vaultName ?? "main", path: b.vault, bare: "", main: true };
+  const vaults = (): VaultRef[] => b.vaults?.() ?? [mainRef];
+  const stateOf = (v: VaultRef) => vaultState(b.stateDir, base, v);
+
+  const make = (v: VaultRef): Engine => {
+    const st = stateOf(v);
+    excludeLocalDir(v.path);
+    // The sandbox read-only-binds these; they must exist when it is built.
+    for (const d of [join(v.path, ".vault-chat", "conversations"), join(v.path, ".vault-chat", "local"), st.jobs, st.pi.sessionsDir, st.pi.instrDir]) mkdirSync(d, { recursive: true });
+    const others = () => otherVaultPaths(v, vaults(), (w) => stateOf(w).walls);
+    const sandbox: PiSandbox = {
+      ...buildSandbox({
+        bwrap,
+        home,
+        stateDir: b.stateDir,
+        secretsDir: b.secretsDir,
+        hideFiles: [b.tokenPath, b.localStoragePath, b.pushSubsPath],
+        sessionsDir: st.pi.sessionsDir,
+        agentDir: st.pi.agentDir,
+        vault: v.path,
+        uid,
+      }),
+      others,
+    };
+    const backend = new PiBackend({
+      install,
+      paths: st.pi,
+      catalog: piCat,
+      sandbox,
+      apiKey: b.apiKey,
+      thinking: process.env.VC_PI_THINKING || "medium",
+      idleMs: Number(process.env.VC_PI_IDLE_MS) || 10 * 60_000,
+      maxProcs: Number(process.env.VC_PI_MAX_PROCS) || 6,
+      subagents: {
+        agentsDirs: [st.pi.agentsDir, join(v.path, ".vault-chat", "agents")],
+        concurrency: Number(process.env.VC_PI_SUBAGENT_CONCURRENCY) || 4,
+        maxTasks: Number(process.env.VC_PI_SUBAGENT_MAX_TASKS) || 8,
+        hostMax: Number(process.env.VC_PI_SUBAGENT_HOST_MAX) || 8,
+        timeoutMs: Number(process.env.VC_PI_SUBAGENT_TIMEOUT_MS) || 30 * 60_000,
+        graceMs: Number(process.env.VC_PI_SUBAGENT_GRACE_MS) || 5_000,
+        defaultModel: process.env.VC_PI_SUBAGENT_MODEL || null,
+      },
+      ...(v.main ? {} : { log: (m: string) => console.log(`[pi:${v.name}] ${m}`) }),
+    });
+    const jobEnv = {
+      logDir: st.jobs,
+      // Jobs outlive turns: the same hiding as pi's sandbox (the other vaults included), without its pid namespace.
+      get wrap() {
+        const outer = outerWith(sandbox);
+        return outer ? outer.filter((x) => x !== "--unshare-pid" && x !== "--die-with-parent") : null;
+      },
+      env: { PATH: process.env.PATH ?? "/run/current-system/sw/bin", HOME: home },
+    };
+    const engine = new Engine({
+      vault: v.path,
+      backend,
+      ledger: new Ledger(st.ledger, b.apiKey, baseUrl ?? "https://openrouter.ai/api/v1"),
+      jobEnv,
+      model: engineModel,
+      webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
+      apiKey: b.apiKey,
+      broadcast: v.main ? b.broadcast : (ev) => b.broadcast({ vault: v.name, ...ev }),
+      visionModel,
+      stallMs: Number(process.env.VC_ENGINE_STALL_MS) || 30 * 60_000,
+      notify: engineNotify(b, v.main ? undefined : v),
+      ...(v.main ? {} : { log: (m: string) => console.log(`[engine:${v.name}] ${m}`) }),
+      deny: others,
+    });
+    engine.start();
+    backend.start();
+    return engine;
   };
-  const engine = new Engine({
-    vault: b.vault,
-    backend,
-    ledger: new Ledger(join(b.stateDir, "ledger.json"), b.apiKey, baseUrl ?? "https://openrouter.ai/api/v1"),
-    jobEnv,
-    model: engineModel,
-    webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
-    apiKey: b.apiKey,
-    broadcast: b.broadcast,
-    visionModel,
-    stallMs: Number(process.env.VC_ENGINE_STALL_MS) || 30 * 60_000,
-    notify: engineNotify(b),
-  });
-  engine.start();
-  backend.start();
+
+  const engine = make(mainRef);
+  const engines = new Map<string, Engine>([[mainRef.name, engine]]);
+  const opening = new Map<string, Promise<Engine>>();
+  const open = (v: VaultRef): Promise<Engine> => {
+    if (v.main || v.path === b.vault) return Promise.resolve(engine);
+    const hit = opening.get(v.name);
+    if (hit) return hit;
+    const p = (async () => {
+      // Its conversations in a mirror of their own (never the store: its persist writes the main vault).
+      const seed = await allConvs(v.path).catch(() => []);
+      openMirror(v.path, seed, (ev) => b.broadcast({ vault: v.name, ...ev }), () => b.onTurnEnded?.(v.name));
+      const e = make(v);
+      engines.set(v.name, e);
+      console.log(`[engine:pi] vault ${v.name}: engine started (${seed.length} conversation(s))`);
+      return e;
+    })();
+    opening.set(v.name, p);
+    p.catch(() => opening.delete(v.name));
+    return p;
+  };
   return {
     engine,
     error: null,
-    health: () => ({ ...engine.health(), model, version: install.version }),
+    health: () => ({
+      ...engine.health(),
+      model,
+      version: install.version,
+      ...(engines.size > 1 ? { vaults: Object.fromEntries([...engines].filter(([n]) => n !== mainRef.name).map(([n, e]) => [n, e.health()])) } : {}),
+    }),
     // A child runs on its agent's model, else VC_PI_SUBAGENT_MODEL, else the parent's (subagents.ts).
     roles: () => ({ chat: engineModel(), vision: visionModel, subagent: process.env.VC_PI_SUBAGENT_MODEL || engineModel() }),
+    open,
   };
+}
+
+/** Where a vault's engine state lives: the main vault's where it always was (no
+ * data moves); another vault's pi sessions and jobs under <state>/vaults/<name>/,
+ * its ledger beside its wakes. `walls`: what the other vaults' agents may not see. */
+export function vaultState(stateDir: string, base: PiPaths, v: VaultRef): { pi: PiPaths; jobs: string; ledger: string; walls: string[] } {
+  if (v.main) return { pi: base, jobs: join(stateDir, "jobs"), ledger: join(stateDir, "ledger.json"), walls: [base.sessionsDir, base.instrDir, join(stateDir, "jobs")] };
+  const root = join(stateDir, "vaults", v.name);
+  return { pi: vaultPiPaths(base, join(root, "pi")), jobs: join(root, "jobs"), ledger: join(v.path, ".vault-chat", "local", "ledger.json"), walls: [root] };
+}
+
+/** What one vault's agent may not read or write: every other vault's working copy, bare repo and engine state. */
+export function otherVaultPaths(v: VaultRef, all: VaultRef[], walls: (w: VaultRef) => string[]): string[] {
+  return all.filter((w) => w.path !== v.path).flatMap((w) => [w.path, ...(w.bare ? [w.bare] : []), ...walls(w)]);
 }

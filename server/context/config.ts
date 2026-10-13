@@ -1,6 +1,7 @@
 // CONTEXT's settings. ENGINE calls configureContext() once at boot; tests point
 // it at temp vaults and a fake model server. Every function also works with the
 // defaults, except that `vault` must be set.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { keychainCommands } from "../keys";
 
 export type ContextConfig = {
@@ -64,7 +65,18 @@ export function resetContextConfig(): void {
   cfg = defaults();
 }
 
+/** A box with several vaults: each vault's engine runs its calls inside
+ * withVault(), so CONTEXT reads that vault's `.vault-chat/` (projects, rules,
+ * the verifier's working directory) and the verifier is denied the other
+ * vaults. Outside it, the configured (main) vault. */
+const scope = new AsyncLocalStorage<{ vault: string; deny?: () => string[] }>();
+export function withVault<T>(vault: string, fn: () => T, deny?: () => string[]): T {
+  return scope.run({ vault, deny }, fn);
+}
+
 export function ctxConfig(): ContextConfig {
+  const s = scope.getStore();
+  if (s) return { ...cfg, vault: s.vault, verifierDeny: [...cfg.verifierDeny, ...(s.deny?.() ?? [])] };
   if (!cfg.vault) throw new Error("context: configureContext({vault}) was not called");
   return cfg;
 }

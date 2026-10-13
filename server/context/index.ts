@@ -1,6 +1,6 @@
 // CONTEXT (Order C): projects, memory tools, the developer-instructions builder,
 // rolling sessions, the Done verifier and cost by project. See README.md.
-export { configureContext, resetContextConfig, ctxConfig, type ContextConfig } from "./config";
+export { configureContext, resetContextConfig, ctxConfig, withVault, type ContextConfig } from "./config";
 export type {
   ContextConv,
   ContextMessage,
