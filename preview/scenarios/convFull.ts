@@ -574,7 +574,8 @@ export const convFullScenarios: Scenario[] = [
     llm: { scripts: localScripts, chunkMs: 8 },
     localStorage: lsFor(DEFAULTS),
     drive: driveB,
-    open: driveB.flat(),
+    // Opens through the answered AskUser (the self-test's 30 s); the check plays every stage.
+    open: driveB.slice(0, 4).flat(),
     surfaces: ["desktop"],
   },
   ...[

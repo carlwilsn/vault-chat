@@ -34,14 +34,12 @@ function setShowThinking(v: boolean): void {
   }
   for (const l of listeners) l();
 }
+function subscribeThinking(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
 export function useShowThinking(): boolean {
-  return useSyncExternalStore(
-    (cb) => {
-      listeners.add(cb);
-      return () => listeners.delete(cb);
-    },
-    () => showThinking,
-  );
+  return useSyncExternalStore(subscribeThinking, () => showThinking);
 }
 
 /** The reply's thinking: a collapsed "Thought" line ("line"), or hidden until
