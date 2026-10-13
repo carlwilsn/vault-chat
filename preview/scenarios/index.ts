@@ -215,6 +215,22 @@ function boxConnectScenarios(): Scenario[] {
       open: [{ click: "[title='Settings']" }, { sleep: 600 }, showBox],
     },
     {
+      id: "box-connect-second",
+      title: "Settings → Box — connect a second vault to the same box",
+      group: "Settings",
+      notes:
+        "thinkbox already runs another vault (school2) and has its keys. Click Connect a box → thinkbox → Sync this vault with thinkbox: the box adds summer-demo beside school2 (the harness toast lists the box's vaults: school2, summer-demo) and gives it an agent of its own; Box says “Runs on thinkbox”. From here every request the laptop sends names summer-demo, so its chat never runs in school2.",
+      build: (c: BuildCtx) => world(c),
+      host: {
+        sync: {
+          box: null,
+          discover: [{ name: "thinkbox", url: THINKBOX, version: "0.6.33", online: true, hasKey: true }],
+          boxes: { [THINKBOX]: { ...thinkbox, keys: { "api.openrouter": "sk-or-PREVIEW-0000000000000000000000000000000000000000" }, vaults: ["school2"] }, [TOWER]: { ...tower } },
+        },
+      },
+      open: [{ click: "[title='Settings']" }, { sleep: 600 }, showBox],
+    },
+    {
       id: "box-connected",
       title: "Settings → Box — connected, disconnect",
       group: "Settings",
@@ -713,6 +729,35 @@ export const scenarios: Scenario[] = [
     build: (c) => world(c),
     surfaces: ["phone"],
     phone: { clicks: ["#menuBtn", "#settingsRow"] },
+  },
+  {
+    id: "phone-vaults",
+    title: "Phone — a box with two vaults",
+    group: "Phone",
+    notes:
+      "This box has two vaults, summer-demo (its main one) and physics, each with its own agent. The menu lists both at the top, the open one marked. Tap physics: the page reopens on physics' own conversations (Conversations shows “Optics — problem set 4”); the menu marks physics. A box with one vault shows no vault rows (phone-settings).",
+    build: (c) => world(c),
+    surfaces: ["phone"],
+    phone: {
+      clicks: ["#menuBtn"],
+      db: (db, now) => {
+        const msgs = [
+          { role: "user", content: "Set up problem 3: the thin-lens equation with the object inside f." },
+          { role: "assistant", content: "With the object inside f the image is virtual and upright: 1/d_i = 1/f - 1/d_o is negative." },
+        ];
+        db.vaults = {
+          physics: {
+            convs: [{ id: "p1", title: "Optics — problem set 4", source: "phone", role: "", lastActivityAt: now - 600_000, msgCount: 2, preview: "With the object inside f the image is virtual and upright", goal: "" }],
+            threads: { p1: { id: "p1", title: "Optics — problem set 4", source: "phone", status: "idle", messages: msgs } },
+            runs: [],
+            notifs: [],
+            notes: [],
+            schedules: [],
+            projects: [],
+          },
+        };
+      },
+    },
   },
 
   // ===== Sync =====

@@ -223,6 +223,8 @@ interface MockDB {
   notifClearTs?: number;
   /** The vault's projects (GET /projects). */
   projects?: Array<{ slug: string; name: string }>;
+  /** The box's other vaults (GET /api/v1/vaults lists them; ?vault=<name> shows one). */
+  vaults?: Record<string, Partial<MockDB>>;
   /** preview: localStorage entries set before the page reads them (the UI choices) */
   ls?: Record<string, string>;
   /** preview: a scripted box — each __vcPhoneNext() applies one step and
