@@ -88,3 +88,61 @@ test("relativeArgs: only paths under the vault change", () => {
   assert.deepEqual(relativeArgs({ path: "/etc/passwd" }, vault), { path: "/etc/passwd" });
   assert.deepEqual(relativeArgs({ path: "C:\\V\\notes\\a.md" }, "C:/v"), { path: "notes/a.md" });
 });
+
+test("box mode: the box's own vault tools (named by its session) are forwarded too", async () => {
+  const h = voice.buildClientToolHandlers((await boxVoiceTool(vault))!, ["EchoKey"]);
+  posts.length = 0;
+  assert.equal(await h.EchoKey({ word: "hi" }), "box ran EchoKey");
+  assert.equal(posts[0]?.body.vault, "v", "the box's name for the vault rides along");
+});
+
+test("the session is the box's; unreachable and no-voice-for-this-vault are told apart", async () => {
+  const { boxVoice, boxVoiceSession } = await import("../../src/voiceBox.ts");
+  const b = (await boxVoice(vault))!;
+  const seen: string[] = [];
+  const ok = await boxVoiceSession(b, "c1", async (_l, path) => {
+    seen.push(path);
+    return { signedUrl: "wss://fake/x", systemPrompt: "box prompt", toolNames: ["Read", "EchoKey"], vaultRoot: "/home/carl/vaults/v" };
+  });
+  assert.equal(ok.session?.signedUrl, "wss://fake/x");
+  assert.deepEqual(seen, ["/api/v1/voice/session?convId=c1&vault=v"]);
+  const down = await boxVoiceSession(b, null, async () => {
+    throw "error sending request: connection refused";
+  });
+  assert.equal(down.unreachable, true);
+  const other = await boxVoiceSession(b, null, async () => {
+    throw Object.assign(new Error('HTTP 503: {"error":"voice is not set up for vault \\"v\\" on this box (only main)"}'), { status: 503 });
+  });
+  assert.equal(other.unsupported, true);
+  const noKey = await boxVoiceSession(b, null, async () => {
+    throw Object.assign(new Error("HTTP 503: no ElevenLabs key"), { status: 503 });
+  });
+  assert.ok(noKey.error && !noKey.unreachable && !noKey.unsupported);
+});
+
+test("the transcript is saved on the box in order, and the local thread moves to the box's id", async () => {
+  const { boxVoice, voiceTranscriptMirror } = await import("../../src/voiceBox.ts");
+  const b = (await boxVoice(vault))!;
+  const localId = useStore.getState().newConversation();
+  const sent: any[] = [];
+  const post = async (_l: any, path: string, body: any) => {
+    sent.push({ path, ...body });
+    await new Promise((r) => setTimeout(r, body.role === "user" ? 30 : 0)); // the first answers slowest
+    return { ok: true, data: { ok: true, convId: "box-voice-1" } };
+  };
+  const m = voiceTranscriptMirror(b, localId, "p-seed44", post);
+  m.push({ role: "user", content: "what's the budget?" });
+  m.push({ role: "assistant", content: "Read writeup.md · on the box", system: true });
+  m.push({ role: "assistant", content: "3.2B tokens." });
+  await m.done();
+  assert.deepEqual(
+    sent.map((x) => [x.path, x.convId, x.role, x.text, !!x.system, x.fromConvId ?? null]),
+    [
+      ["/api/v1/voice/transcript", localId, "user", "what's the budget?", false, "p-seed44"],
+      ["/api/v1/voice/transcript", "box-voice-1", "assistant", "Read writeup.md · on the box", true, "p-seed44"],
+      ["/api/v1/voice/transcript", "box-voice-1", "assistant", "3.2B tokens.", false, "p-seed44"],
+    ],
+  );
+  assert.equal(useStore.getState().activeConversationId, "box-voice-1");
+  assert.ok(!useStore.getState().conversations.some((c) => c.id === localId));
+});

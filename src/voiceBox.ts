@@ -1,9 +1,14 @@
-// Voice in box mode: when the vault runs on a box, the voice agent's vault
-// tools run there (POST /api/v1/voice/tool, server/voice.ts) — the box's
-// working copy, its sandbox, its agent. Paths the agent builds from the
-// laptop's vault root are sent vault-relative, so they mean the same file on
-// the box. Tools that move the user's screen never come here (LOCAL_VOICE_TOOLS).
-import { boxLinkFor, boxPost, type Link } from "./boxChat";
+// Voice in box mode: when the vault runs on a box, voice is the box's — one
+// agent, one key place. The box mints the session (GET /api/v1/voice/session:
+// its agent, its prompt with its vault index), the vault tools run there
+// (POST /api/v1/voice/tool — the box's working copy, its sandbox, its agent),
+// and the session's transcript is saved there as a conversation of its own
+// (POST /api/v1/voice/transcript). Paths the agent builds from this laptop's
+// vault root are sent vault-relative, so they mean the same file on the box.
+// Tools that move the user's screen never go there (LOCAL_VOICE_TOOLS).
+import { boxGet, boxLinkFor, boxPost, type Link } from "./boxChat";
+import { readBoxConfig } from "./vaultSync";
+import { useStore, type ChatMessage } from "./store";
 
 const PATH_KEYS = ["path", "cwd", "source_path"];
 
@@ -22,20 +27,94 @@ export function relativeArgs(args: unknown, vault: string): Record<string, unkno
   return a;
 }
 
-type Post = (link: Link, path: string, payload: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }>;
+type Post = (link: Link, path: string, payload: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; data?: Record<string, unknown>; network?: boolean }>;
+
+/** This vault's box: the link, the vault's name there, and the tool runner. */
+export type BoxVoice = { link: Link; vault: string; boxVault?: string; tool: (name: string, args: unknown) => Promise<string> };
 
 /** The remote runner for one link. */
-export function voiceToolVia(link: Link, vault: string, post: Post = boxPost) {
+export function voiceToolVia(link: Link, vault: string, post: Post = boxPost, boxVault?: string) {
   return async (name: string, args: unknown): Promise<string> => {
-    const r = await post(link, "/api/v1/voice/tool", { name, args: relativeArgs(args, vault) });
+    const r = await post(link, "/api/v1/voice/tool", { name, args: relativeArgs(args, vault), ...(boxVault ? { vault: boxVault } : {}) });
     if (!r.ok) return `Error: the box did not run ${name} (${r.error ?? "unreachable"}).`;
     return typeof r.data?.result === "string" ? r.data.result : JSON.stringify(r.data ?? {});
   };
 }
 
-/** The remote runner when `vault` runs on a box, else null (tools run here). */
-export async function boxVoiceTool(vault: string | null): Promise<((name: string, args: unknown) => Promise<string>) | null> {
+/** The box `vault` runs on, or null (voice runs here). */
+export async function boxVoice(vault: string | null, post: Post = boxPost): Promise<BoxVoice | null> {
   if (!vault) return null;
   const link = await boxLinkFor(vault).catch(() => null);
-  return link ? voiceToolVia(link, vault) : null;
+  if (!link) return null;
+  const boxVault = (await readBoxConfig(vault).catch(() => null))?.vault || undefined;
+  return { link, vault, boxVault, tool: voiceToolVia(link, vault, post, boxVault) };
+}
+
+/** The remote runner when `vault` runs on a box, else null (tools run here). */
+export async function boxVoiceTool(vault: string | null): Promise<((name: string, args: unknown) => Promise<string>) | null> {
+  return (await boxVoice(vault))?.tool ?? null;
+}
+
+export type BoxVoiceSession = {
+  signedUrl: string;
+  systemPrompt: string;
+  voiceId?: string;
+  toolNames: string[];
+  vaultRoot?: string;
+  dynamicVariables?: Record<string, string>;
+};
+
+/** The box's session for this vault. `unreachable`: the box did not answer
+ * (the caller may fall back to its own agent); `unsupported`: the box has no
+ * voice for this vault (voice runs here, as without a box). */
+export async function boxVoiceSession(
+  b: BoxVoice,
+  convId: string | null,
+  get: (link: Link, path: string, timeoutMs?: number) => Promise<any> = boxGet,
+): Promise<{ session?: BoxVoiceSession; error?: string; unreachable?: boolean; unsupported?: boolean }> {
+  const q = new URLSearchParams();
+  if (convId) q.set("convId", convId);
+  if (b.boxVault) q.set("vault", b.boxVault);
+  const qs = q.toString();
+  try {
+    const s = await get(b.link, `/api/v1/voice/session${qs ? `?${qs}` : ""}`, 20_000);
+    if (!s || typeof s.signedUrl !== "string") return { error: "the box sent no signed URL" };
+    return { session: { ...s, toolNames: Array.isArray(s.toolNames) ? s.toolNames : [] } };
+  } catch (e) {
+    const status = (e as { status?: number }).status;
+    const msg = String((e as Error)?.message ?? e);
+    if (!status) return { unreachable: true, error: msg };
+    if (status === 503 && /not set up for vault/.test(msg)) return { unsupported: true, error: msg };
+    return { error: msg };
+  }
+}
+
+/** Save a voice session's lines on the box, in order. The first line names
+ * the local thread (`localId`); the box answers with its conversation's id and
+ * the local thread moves to it (rekeyConversation), so the list shows the
+ * box's copy like any box chat. */
+export function voiceTranscriptMirror(b: BoxVoice, localId: string, fromConvId: string | null, post: Post = boxPost) {
+  let id = localId;
+  let chain: Promise<unknown> = Promise.resolve();
+  const push = (m: ChatMessage): Promise<unknown> => {
+    const text = String(m.content ?? "").trim();
+    if (!text) return chain;
+    chain = chain.then(async () => {
+      const r = await post(b.link, "/api/v1/voice/transcript", {
+        convId: id,
+        ...(fromConvId && fromConvId !== id ? { fromConvId } : {}),
+        role: m.role === "user" ? "user" : "assistant",
+        text,
+        ...(m.system ? { system: true } : {}),
+        ...(b.boxVault ? { vault: b.boxVault } : {}),
+      });
+      const next = typeof r.data?.convId === "string" ? r.data.convId : null;
+      if (r.ok && next && next !== id) {
+        useStore.getState().rekeyConversation(id, next);
+        id = next;
+      }
+    });
+    return chain;
+  };
+  return { push, id: () => id, done: () => chain };
 }

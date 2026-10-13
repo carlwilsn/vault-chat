@@ -36,6 +36,17 @@ function stopAgentAudioNative(): void {
 }
 
 const AGENT_NAME = "vault-chat";
+
+// Box mode: the session's lines are saved on the box as they land (voiceBox.ts
+// voiceTranscriptMirror). Null when voice runs here.
+let transcriptMirror: { push: (m: ChatMessage) => unknown } | null = null;
+// The box's vault root (absolute paths in the box's prompt) — mapped back to
+// this vault for ScrollTo.
+let boxVaultRoot: string | null = null;
+function voiceAppend(m: ChatMessage): void {
+  useStore.getState().appendMessage(m);
+  transcriptMirror?.push(m);
+}
 // Default — overridable via Settings → ElevenLabs → Voice model.
 // Stored in localStorage as `vault_chat_elevenlabs_llm`. ElevenLabs Agents
 // accept both bare aliases (claude-sonnet-4-6) and dated forms
@@ -133,12 +144,8 @@ function voiceToolsSignature(tools: VaultVoiceTool[]): string {
 // handlers will use. Degrades to [] (built-ins only) on any failure.
 async function refreshVoiceTools(): Promise<VaultVoiceTool[]> {
   const vault = useStore.getState().vaultPath;
-  // On the box (headless) the voice tools run in server/voice.ts, which does
-  // not run the vault's custom scripts: the box's agent is provisioned without them.
-  if ((globalThis as { __VC_HEADLESS__?: unknown }).__VC_HEADLESS__) {
-    voiceToolCache = { vault, tools: [] };
-    return [];
-  }
+  // (On the box the same tools are provisioned; server/voice.ts runs them in
+  // its sandbox with only their declared keys — these execute()s run nowhere there.)
   try {
     const tools = await loadVaultVoiceTools(vault);
     voiceToolCache = { vault, tools };
@@ -195,7 +202,7 @@ async function drainAgentQueue(): Promise<void> {
       if (activeConversation !== ownerConv) break;
       const next = pendingAgentQueue.shift();
       if (next === undefined) break;
-      useStore.getState().appendMessage({ role: "assistant", content: next });
+      voiceAppend({ role: "assistant", content: next });
     }
   } finally {
     agentQueueDraining = false;
@@ -206,7 +213,7 @@ function flushAgentQueueImmediate(): void {
   while (pendingAgentQueue.length > 0) {
     const text = pendingAgentQueue.shift();
     if (text === undefined) break;
-    useStore.getState().appendMessage({ role: "assistant", content: text });
+    voiceAppend({ role: "assistant", content: text });
   }
 }
 
@@ -727,7 +734,11 @@ export async function startElevenLabsSession(): Promise<void> {
   if (activeConversation) return;
   const state = useStore.getState();
   const apiKey = state.serviceKeys.elevenlabs;
-  if (!apiKey) {
+  // Box mode: the box's agent and key (one agent, one key place); its tools
+  // run there. This laptop's own agent only when the box doesn't answer.
+  const { boxVoice, boxVoiceSession, voiceTranscriptMirror } = await import("./voiceBox");
+  let box = await boxVoice(state.vaultPath);
+  if (!box && !apiKey) {
     reportVoiceError(
       "Voice mode needs an ElevenLabs API key. Add one in Settings.",
     );
@@ -752,10 +763,30 @@ export async function startElevenLabsSession(): Promise<void> {
     return;
   }
 
+  let boxSession: import("./voiceBox").BoxVoiceSession | null = null;
+  if (box) {
+    const r = await boxVoiceSession(box, state.activeConversationId);
+    if (r.session) boxSession = r.session;
+    else if (r.unsupported) box = null; // no voice for this vault on the box: voice runs here
+    else if (!r.unreachable || !apiKey) {
+      useStore.getState().setVoiceConnecting(false);
+      reportVoiceError(`The box couldn't start voice: ${r.error ?? "no answer"}.${r.unreachable ? " (It isn't reachable, and this laptop has no ElevenLabs key of its own.)" : ""}`);
+      return;
+    } else console.warn("[voice-eleven] box unreachable; voice runs on this laptop's agent:", r.error);
+  }
+  if (!box && !apiKey) {
+    useStore.getState().setVoiceConnecting(false);
+    reportVoiceError("Voice mode needs an ElevenLabs API key. Add one in Settings.");
+    return;
+  }
+
+  let signedUrl: string;
+  if (boxSession) signedUrl = boxSession.signedUrl;
+  else {
   // A desktop mic-tap is user intent — always clear a tripped breaker so the
   // user can retry after fixing the config, even if the box heartbeat left it open.
   resetAgentCreateBreaker();
-  const agentId = await ensureAgent(apiKey);
+  const agentId = await ensureAgent(apiKey!);
   if (!agentId) {
     useStore.getState().setVoiceConnecting(false);
     const err = getLastAgentCreateError();
@@ -776,13 +807,15 @@ export async function startElevenLabsSession(): Promise<void> {
     return;
   }
 
-  const signedUrl = await getSignedUrl(apiKey, agentId);
-  if (!signedUrl) {
+  const own = await getSignedUrl(apiKey!, agentId);
+  if (!own) {
     useStore.getState().setVoiceConnecting(false);
     reportVoiceError(
       "Couldn't get a signed conversation URL from ElevenLabs. The agent ID may be stale (try clearing localStorage `vault_chat_elevenlabs_agent_id`) or your account may have hit a rate limit.",
     );
     return;
+  }
+  signedUrl = own;
   }
 
   lastViewportSent = null;
@@ -797,7 +830,16 @@ export async function startElevenLabsSession(): Promise<void> {
   // empty. Otherwise a voice session would tack its turns onto whatever
   // text chat happened to be open. Must run before the prompt build below
   // so the system prompt's recent-history reflects the chosen thread.
-  ensureVoiceConversation();
+  // Box mode: voice gets a thread of its own (never an engine chat), saved on
+  // the box line by line; a voice thread the box already has is continued.
+  const fromConvId = useStore.getState().activeConversationId;
+  if (box) {
+    const cur = useStore.getState().conversations.find((c) => c.id === fromConvId);
+    if (!cur || cur.source !== "voice") useStore.getState().newConversation();
+  }
+  const voiceConvId = ensureVoiceConversation();
+  transcriptMirror = box ? voiceTranscriptMirror(box, voiceConvId, fromConvId) : null;
+  boxVaultRoot = boxSession?.vaultRoot ?? null;
   startViewportWatch();
 
   // Re-read after the possible conversation swap.
@@ -809,9 +851,8 @@ export async function startElevenLabsSession(): Promise<void> {
   const northStar = await loadVaultNorthStar(voiceState.vaultPath);
   const promptContext = await loadVoicePromptContext(voiceState.vaultPath);
   // Box mode: the vault's tools run on the box, and AskAgent reaches its agent.
-  const { boxVoiceTool } = await import("./voiceBox");
-  const remote = await boxVoiceTool(voiceState.vaultPath);
-  const systemPrompt = buildSystemPrompt(voiceState, customHeader, northStar, promptContext, undefined, !!remote);
+  const remote = box?.tool ?? null;
+  const systemPrompt = boxSession?.systemPrompt ?? buildSystemPrompt(voiceState, customHeader, northStar, promptContext, undefined, !!remote);
   const dynamicVariables = buildDynamicVariables(voiceState);
 
   try {
@@ -825,11 +866,11 @@ export async function startElevenLabsSession(): Promise<void> {
         },
         tts: {
           voiceId:
-            localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
+            boxSession?.voiceId ?? localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
         },
       },
       dynamicVariables,
-      clientTools: buildClientToolHandlers(remote ?? undefined),
+      clientTools: buildClientToolHandlers(remote ?? undefined, boxSession?.toolNames),
       // Linux: the webview can't play Web Audio, so play the agent's voice
       // natively. Harmless no-op elsewhere (the webview plays it normally and
       // playAgentAudioNative/stopAgentAudioNative short-circuit off Linux).
@@ -861,11 +902,12 @@ export async function startElevenLabsSession(): Promise<void> {
         // before stamping the "session ended" marker — preserves
         // ordering between the last spoken turn and the end notice.
         flushAgentQueueImmediate();
-        useStore.getState().appendMessage({
+        voiceAppend({
           role: "assistant",
           content: "Voice session ended.",
           system: true,
         });
+        transcriptMirror = null;
         activeConversation = null;
         stopViewportWatch();
         // Flip the mic-button source of truth off so it matches
@@ -895,7 +937,7 @@ export async function startElevenLabsSession(): Promise<void> {
         // there's no spam — one append per turn boundary.
         if (role === "user") {
           if (sessionFirstUserText === null) sessionFirstUserText = text;
-          useStore.getState().appendMessage({ role: "user", content: text });
+          voiceAppend({ role: "user", content: text });
           // User finished a turn — agent is now thinking until TTS
           // audio arrives. Drives the sine-wave visualizer; cleared
           // in onModeChange when mode flips to "speaking" (first
@@ -952,7 +994,7 @@ export async function startElevenLabsSession(): Promise<void> {
         // Surface to the chat pane so a silent drop has SOMETHING the
         // user can show us — otherwise "the convo dropped" is impossible
         // to diagnose without a dev console open.
-        useStore.getState().appendMessage({
+        voiceAppend({
           role: "assistant",
           content: `Voice session error: ${message}`,
           system: true,
@@ -1091,7 +1133,7 @@ function looksLikeEnd(text: string): boolean {
 
 function reportVoiceError(message: string): void {
   console.warn("[voice-eleven]", message);
-  useStore.getState().appendMessage({
+  voiceAppend({
     role: "assistant",
     content: `⚠️ Voice mode: ${message}`,
     system: true,
@@ -1387,7 +1429,7 @@ export function sendVoiceUserText(text: string): boolean {
     return false;
   }
   if (sessionFirstUserText === null) sessionFirstUserText = trimmed;
-  useStore.getState().appendMessage({ role: "user", content: trimmed });
+  voiceAppend({ role: "user", content: trimmed });
   useStore.getState().setVoiceThinking(true);
   armThinkingSafetyTimeout();
   return true;
@@ -1420,7 +1462,7 @@ export async function sendVoiceUserMultimodal(
   }
   const display = trimmed || "[image]";
   if (sessionFirstUserText === null) sessionFirstUserText = display;
-  useStore.getState().appendMessage({ role: "user", content: display });
+  voiceAppend({ role: "user", content: display });
   useStore.getState().setVoiceThinking(true);
   armThinkingSafetyTimeout();
   return true;
@@ -1572,12 +1614,14 @@ const VAULT_INDEX_CAP = 250;
 
 function buildVaultIndex(
   state: ReturnType<typeof useStore.getState>,
+  // Vault-relative paths from elsewhere (the box has no file tree: git's list).
+  given?: string[],
 ): string {
   const vault = state.vaultPath;
   if (!vault) return "";
   const nv = vault.replace(/\\/g, "/").replace(/\/+$/, "");
-  const rels: string[] = [];
-  for (const f of state.files) {
+  const rels: string[] = given ? [...given] : [];
+  for (const f of given ? [] : state.files) {
     if (f.is_dir || f.hidden || f.denied) continue;
     const np = f.path.replace(/\\/g, "/");
     const rel = np.startsWith(nv + "/") ? np.slice(nv.length + 1) : np;
@@ -1610,7 +1654,7 @@ function buildVaultIndex(
  * fresh voice thread gets minted at session start, so the honest history is
  * none at all — not some other thread's.
  */
-export async function buildPhoneVoiceContext(convId?: string, opts?: { agentOnBox?: boolean }): Promise<{
+export async function buildPhoneVoiceContext(convId?: string, opts?: { agentOnBox?: boolean; fileIndex?: string[] }): Promise<{
   elKey: string;
   agentId: string;
   voiceId: string;
@@ -1649,7 +1693,7 @@ export async function buildPhoneVoiceContext(convId?: string, opts?: { agentOnBo
     elKey,
     agentId,
     voiceId: localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
-    systemPrompt: buildSystemPrompt(state, customHeader, northStar, promptContext, historyMessages, opts?.agentOnBox),
+    systemPrompt: buildSystemPrompt(state, customHeader, northStar, promptContext, historyMessages, opts?.agentOnBox, opts?.fileIndex),
     dynamicVariables: buildDynamicVariables(state),
     toolNames: Object.keys(buildClientToolHandlers()),
     vault: state.vaultPath,
@@ -1741,6 +1785,7 @@ function buildSystemPrompt(
   historyMessages?: ChatMessage[],
   // The vault runs on a box: the tools run there and AskAgent hands work to its agent.
   agentOnBox?: boolean,
+  fileIndex?: string[],
 ): string {
   const vault = state.vaultPath ?? "(no vault)";
   const recentHistory = formatRecentHistory(historyMessages ?? state.messages, 32);
@@ -1749,7 +1794,7 @@ function buildSystemPrompt(
     : "Follow-along is off. The user is not asking about a specific document unless they name one.";
   const header = customHeader.trim() || DEFAULT_VOICE_PROMPT_HEADER;
   const northStarBlock = northStarPromptBlock(northStar);
-  const vaultIndex = buildVaultIndex(state);
+  const vaultIndex = buildVaultIndex(state, fileIndex);
   const gemini = isGeminiLlm(getCurrentLlm());
   // For Gemini the PDF blob is in the multimodal context — no
   // PdfExtract tool is registered, so the agent shouldn't be told
@@ -2337,7 +2382,7 @@ function logToolCall(name: string, args: any, result: string, where = ""): void 
   const argsStr = JSON.stringify(args);
   const summary = result.length > 200 ? result.slice(0, 200) + "…" : result;
   console.log(`[voice-eleven] tool ${name}(${argsStr}) →`, summary);
-  useStore.getState().appendMessage({
+  voiceAppend({
     role: "assistant",
     content: formatToolMarker(name, args) + where,
     system: true,
@@ -2367,7 +2412,7 @@ function withTracking<A>(
   };
 }
 
-export function buildClientToolHandlers(remote?: RemoteVoiceTool): Record<
+export function buildClientToolHandlers(remote?: RemoteVoiceTool, remoteNames?: string[]): Record<
   string,
   (parameters: any) => Promise<string>
 > {
@@ -2612,6 +2657,9 @@ export function buildClientToolHandlers(remote?: RemoteVoiceTool): Record<
       async (args: { page?: number; anchor?: string; path?: string }) => {
         const state = useStore.getState();
         // A vault-relative path (the box's tools answer with those) is joined to this vault.
+        if (args.path && boxVaultRoot && state.vaultPath && args.path.startsWith(boxVaultRoot)) {
+          args = { ...args, path: args.path.slice(boxVaultRoot.length).replace(/^[\\/]+/, "") };
+        }
         const rel = args.path && !/^([a-z]:[\\/]|[\\/])/i.test(args.path) && state.vaultPath;
         const targetPath = rel ? `${state.vaultPath!.replace(/[\\/]+$/, "")}/${args.path}` : (args.path ?? state.currentFile);
         if (!targetPath) return "Error: no file is currently open.";
@@ -2915,15 +2963,18 @@ export function buildClientToolHandlers(remote?: RemoteVoiceTool): Record<
 
   // Box mode: every built-in that reads or writes the vault runs on the box
   // (server/voice.ts); the ones that move the user's screen stay here.
+  // The vault's own tools: here, or on the box (in its sandbox) in box mode —
+  // together with any the box's agent offers that this laptop hasn't loaded.
+  const customs = new Set<string>([...voiceToolCache.tools.map((t) => t.name), ...(remote ? (remoteNames ?? []) : [])]);
   if (remote) {
-    for (const name of BUILTIN_VOICE_TOOL_NAMES) {
-      if (LOCAL_VOICE_TOOLS.has(name) || !handlers[name]) continue;
+    for (const name of new Set([...BUILTIN_VOICE_TOOL_NAMES, ...customs])) {
+      if (LOCAL_VOICE_TOOLS.has(name)) continue;
       handlers[name] = withTracking(name, (args: unknown) => remote(name, args), " · on the box");
     }
-  }
-
-  for (const t of voiceToolCache.tools) {
-    handlers[t.name] = withTracking(t.name, (args: unknown) => t.execute(args));
+  } else {
+    for (const t of voiceToolCache.tools) {
+      handlers[t.name] = withTracking(t.name, (args: unknown) => t.execute(args));
+    }
   }
 
   return handlers;
