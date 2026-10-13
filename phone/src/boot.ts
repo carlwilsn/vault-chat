@@ -1096,7 +1096,7 @@ export function boot(): void {
       // The whole reply, rebuilt from its pieces (offset + delta); before the
       // first keyframe of a stream joined midway, its tail.
       const st = X.applyStream(prev && prev.stream, d);
-      liveByConv.set(d.convId, { running: true, stream: st, text: st.whole || !st.text ? st.text : "…" + st.text, tool: d.tool || "", startedAt: d.startedAt ?? (prev && prev.startedAt) ?? null });
+      liveByConv.set(d.convId, { running: true, stream: st, text: st.whole || !st.text || typeof d.offset !== "number" ? st.text : "…" + st.text, tool: d.tool || "", startedAt: d.startedAt ?? (prev && prev.startedAt) ?? null });
       updateConvDot();
     } else if (d.type === "status" && d.convId) {
       // The dot sets (convRunning/convUnseen) track YOUR chats only — the

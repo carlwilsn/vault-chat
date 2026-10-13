@@ -674,6 +674,8 @@ class BoxChatSession {
 
   /** The whole live text after one stream event (src/streamWire.ts). */
   private streamText(id: string, e: any): string {
+    // A box from before the pieces: its `text` is all there is.
+    if (typeof e.offset !== "number") return String(e.text ?? "");
     const next = applyStream(this.streams.get(id), e);
     this.streams.set(id, next);
     return next.whole || !next.text ? next.text : `…${next.text}`;
