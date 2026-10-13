@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -10,7 +10,7 @@ import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, Messa
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
-import { COMPACT_THRESHOLD, windowFor, isCompactionDivider } from "./chatContext";
+import { COMPACT_THRESHOLD, COMPACTION_DIVIDER_TEXT, windowFor, isCompactionDivider, dividerSummary } from "./chatContext";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
 import { buildViewportContextText } from "./voice-elevenlabs";
 import { findModel, AUTO_MODEL_ID } from "./providers";
@@ -19,12 +19,28 @@ import { isUnreadableAsText } from "./fileKind";
 import { SettingsPane } from "./SettingsPane";
 import { Button, Textarea } from "./ui";
 import { cn } from "./lib/utils";
-import { BOX_UNREACHABLE } from "./boxChat";
+import { BOX_UNREACHABLE, boxAnswer, boxChatOn, boxSubagent } from "./boxChat";
+import {
+  AskOptions,
+  ReplyCost,
+  Subagents,
+  Thought,
+  ThinkingToggle,
+  VerdictLine,
+  chosenAnswer,
+  isLegacySubagentRecord,
+  subagentsOfMessage,
+  useShowThinking,
+  type SubagentRec,
+} from "./chatExtras";
+import { uiChoice } from "./uiChoices";
+import { formatCost } from "./ongoingWork";
 import { ProjectChip } from "./ProjectChip";
 import { OngoingLine } from "./OngoingLine";
 import { isArchivedThread, ARCHIVED_THREAD } from "./conversations";
 
 type MentionHit = { path: string; name: string; rel: string };
+const NO_SUBAGENTS: SubagentRec[] = [];
 
 // Lenient KaTeX options shared across every renderer in the app:
 // `strict: "ignore"` silences unicode-in-math-mode and similar
@@ -305,7 +321,9 @@ export function ChatPane() {
   const lastContext = useStore((s) => s.lastContext);
   // Re-read the window when the catalog (re)loads — it carries the windows.
   const catalog = useStore((s) => s.catalog);
-  const ctxWindow = useMemo(() => windowFor(modelId), [modelId, catalog]);
+  const boxWindow = useStore((s) => (s.boxChat?.on ? s.conversations.find((c) => c.id === s.activeConversationId)?.contextWindow : undefined));
+  // Box mode: the box's model window (reported with its usage), not the laptop's pick.
+  const ctxWindow = useMemo(() => (boxWindow ? { tokens: boxWindow, known: true } : windowFor(modelId)), [modelId, catalog, boxWindow]);
   const compacting = useStore((s) => s.compacting);
   const setSkills = useStore((s) => s.setSkills);
   const setShowSettings = useStore((s) => s.setShowSettings);
@@ -345,6 +363,32 @@ export function ChatPane() {
       : null;
   const toggleChatsPanel = () => setShowChatsPanel(!showChatsPanel);
   const activeConv = conversations.find((c) => c.id === activeConversationId);
+  const showThinking = useShowThinking();
+  // What the thread shows beside the text (chatExtras.tsx; uiChoices.ts picks
+  // where each goes while Carl decides). Stable props, so the bubbles' memo
+  // holds while a reply streams.
+  const subagents = activeConv?.subagents ?? NO_SUBAGENTS;
+  const subagentsInline = uiChoice("subagents") === "inline";
+  const spawnsAt = useMemo(
+    () => messages.map((m) => {
+      const r = subagentsOfMessage(m, subagents);
+      return r.length ? r : undefined;
+    }),
+    [messages, subagents],
+  );
+  const unplacedSubagents = useMemo(() => {
+    const placed = new Set(spawnsAt.flatMap((r) => (r ?? []).map((x) => x.threadId)));
+    return subagents.filter((x) => !placed.has(x.threadId));
+  }, [spawnsAt, subagents]);
+  const answerAsk = useCallback((answer: string) => {
+    const id = useStore.getState().activeConversationId;
+    if (boxChatOn() && id) void boxAnswer(id, answer);
+    else dispatchChatAction({ kind: "send", text: answer });
+  }, []);
+  const controlSubagent = useCallback((sid: string, op: "steer" | "stop", text?: string) => {
+    const id = useStore.getState().activeConversationId;
+    return id ? boxSubagent(id, sid, op, text) : Promise.resolve<string | null>("No conversation.");
+  }, []);
   // Where the project chip sits — a preview switch while Carl picks
   // ("top": a quiet line over the thread; "footer": beside the model picker).
   const [chipAt] = useState<"top" | "footer">(() => {
@@ -516,6 +560,12 @@ export function ChatPane() {
       </div>
     );
   }
+
+  const todos: TodoItem[] = activeConv?.todos?.length ? activeConv.todos : agentTodos;
+  const verdict = activeConv?.state === "done" ? activeConv.verdict : undefined;
+  const totalCost = uiChoice("cost") === "total" ? formatCost(activeConv?.costUsd ?? messages.reduce((n, m) => n + (m.costUsd ?? m.usage?.costUsd ?? 0), 0)) : undefined;
+  let lastVisible = -1;
+  for (let i = messages.length - 1; i >= 0; i--) if (!messages[i]!.hidden && !messages[i]!.system) { lastVisible = i; break; }
 
   const send = async () => {
     if (!ready) return;
@@ -770,10 +820,15 @@ export function ChatPane() {
 
   return (
     <div className="h-full flex flex-col bg-card border-l border-border relative">
-      {chipAt === "top" && !isPopout && (
+      {((chipAt === "top" && !isPopout) || totalCost) && (
         <div className="shrink-0 px-3 pt-2">
           <div className="max-w-[820px] mx-auto flex items-center">
-            <ProjectChip placement="down" />
+            {chipAt === "top" && !isPopout && <ProjectChip placement="down" />}
+            {totalCost && (
+              <span className="ml-auto text-[11px] text-muted-foreground tabular-nums" data-el="total-cost" title="What this conversation has cost so far">
+                {totalCost}
+              </span>
+            )}
           </div>
         </div>
       )}
@@ -790,8 +845,20 @@ export function ChatPane() {
         )}
 
         {messages.map((m, i) =>
-          m.hidden ? null : <MessageBubble key={i} message={m} />,
+          m.hidden ? null : (
+            <MessageBubble
+              key={i}
+              message={m}
+              askLive={!!m.askOptions?.length && i === lastVisible && !busy}
+              askChosen={m.askOptions?.length ? chosenAnswer(messages, i) : undefined}
+              onAsk={answerAsk}
+              spawns={subagentsInline ? spawnsAt[i] : undefined}
+              onSubagent={controlSubagent}
+            />
+          ),
         )}
+
+        {subagentsInline && unplacedSubagents.length > 0 && <Subagents list={unplacedSubagents} variant="inline" onControl={controlSubagent} />}
 
         {compacting && (
           <div className="flex items-center justify-center gap-2 py-2 text-[11.5px] text-muted-foreground">
@@ -799,12 +866,14 @@ export function ChatPane() {
           </div>
         )}
 
-        {agentTodos.length > 0 && <AgentTodoList todos={agentTodos} />}
+        {todos.length > 0 && uiChoice("todos") === "inline" && <AgentTodoList todos={todos} />}
+
+        {verdict && uiChoice("verdict") === "thread" && <VerdictLine verdict={verdict} />}
 
         {(streamingText || streamingReasoning || liveTools.length > 0) && (
           <div className="space-y-2">
             {liveTools.length > 0 && <LiveToolTicker tools={liveTools} />}
-            {streamingReasoning && !streamingText && (
+            {streamingReasoning && !streamingText && (uiChoice("thinking") !== "toggle" || showThinking) && (
               <ReasoningStream text={streamingReasoning} />
             )}
             {streamingText && (
@@ -870,8 +939,14 @@ export function ChatPane() {
         )}
 
         <div className="p-3 max-w-[820px] mx-auto w-full">
+          {!subagentsInline && subagents.length > 0 && <Subagents list={subagents} variant="strip" onControl={controlSubagent} />}
+          {todos.length > 0 && uiChoice("todos") === "pinned" && (
+            <div className="mb-1.5 max-h-40 overflow-auto" data-el="todos-pinned">
+              <AgentTodoList todos={todos} />
+            </div>
+          )}
           {activeConv && (
-            <OngoingLine conversation={{ ...activeConv, messages }} size="chat" className="px-1 pb-1.5" />
+            <OngoingLine conversation={{ ...activeConv, messages }} size="chat" className="px-1 pb-1.5" verdict={uiChoice("verdict") === "ongoing"} />
           )}
           <div className="relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors">
             {skillMention && filteredSkills.length > 0 && (
@@ -1044,6 +1119,7 @@ export function ChatPane() {
               {chipAt === "footer" && !isPopout && <ProjectChip placement="up" />}
             </div>
             <div className="flex items-center gap-2">
+              <ThinkingToggle visible={!!streamingReasoning || messages.some((m) => !!m.thinking)} />
               {busy && <ElapsedTimer />}
               {lastContext > 0 && (
                 <div
@@ -1134,9 +1210,22 @@ function stripAttachedFooter(src: string): string {
 
 export const MessageBubble = memo(function MessageBubble({
   message,
+  askLive = false,
+  askChosen = "",
+  onAsk,
+  spawns,
+  onSubagent,
 }: {
   message: ChatMessage;
+  /** AskUser options on this reply: still the open fork, and the answer given. */
+  askLive?: boolean;
+  askChosen?: string;
+  onAsk?: (answer: string) => void;
+  /** The subagents this reply's `subagent` call spawned (inline option). */
+  spawns?: SubagentRec[];
+  onSubagent?: (sid: string, op: "steer" | "stop", text?: string) => Promise<string | null>;
 }) {
+  const calls = (message.toolCalls ?? []).filter((t) => !isLegacySubagentRecord(t));
   if (isCompactionDivider(message)) {
     return <CompactionDivider message={message} />;
   }
@@ -1187,6 +1276,7 @@ export const MessageBubble = memo(function MessageBubble({
         </div>
       ) : (
         <div className="w-full space-y-2">
+          {message.thinking && <Thought text={message.thinking} />}
           <div className="prose-chat text-foreground/95">
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath]}
@@ -1197,15 +1287,16 @@ export const MessageBubble = memo(function MessageBubble({
               {preprocessMarkdownMath(message.content)}
             </ReactMarkdown>
           </div>
-          {message.toolCalls && message.toolCalls.length > 0 && (
-            <details className="group">
+          {onAsk && message.askOptions && message.askOptions.length > 0 && <AskOptions options={message.askOptions} live={askLive} chosen={askChosen} onPick={onAsk} />}
+          {calls.length > 0 && (
+            <details className="group" data-el="tool-calls">
               <summary className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer hover:text-foreground list-none select-none">
                 <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-0 -rotate-90" />
                 <Wrench className="h-3 w-3" />
-                <span>{message.toolCalls.length} tool call{message.toolCalls.length === 1 ? "" : "s"}</span>
+                <span>{calls.length} tool call{calls.length === 1 ? "" : "s"}</span>
               </summary>
               <div className="mt-2 space-y-2 pl-4 border-l border-border">
-                {message.toolCalls.map((t, j) => (
+                {calls.map((t, j) => (
                   <div key={j} className="space-y-1">
                     <div className="text-[11px] font-mono text-primary">{t.name}</div>
                     <pre className="text-[10.5px] font-mono bg-muted/60 border border-border/40 rounded p-2 max-h-[140px] overflow-auto whitespace-pre-wrap break-all">
@@ -1221,6 +1312,8 @@ export const MessageBubble = memo(function MessageBubble({
               </div>
             </details>
           )}
+          {spawns && spawns.length > 0 && <Subagents list={spawns} variant="inline" onControl={onSubagent} />}
+          <ReplyCost m={message} />
         </div>
       )}
     </div>
@@ -1230,17 +1323,18 @@ export const MessageBubble = memo(function MessageBubble({
 // Where the earlier conversation was summarized: the quiet system-line divider,
 // whose summary expands like a tool-call list.
 function CompactionDivider({ message }: { message: ChatMessage }) {
+  // A compaction and the box's roll-over read the same: earlier, summarized here.
   return (
-    <details className="group py-2">
+    <details className="group py-2" data-el="divider">
       <summary className="flex items-center justify-center gap-2 text-[11px] text-muted-foreground cursor-pointer hover:text-foreground list-none select-none">
         <div className="h-px w-8 bg-border" />
         <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-0 -rotate-90" />
-        <span className="italic">{message.content}</span>
+        <span className="italic">{COMPACTION_DIVIDER_TEXT}</span>
         <div className="h-px w-8 bg-border" />
       </summary>
       <div className="mt-2 pl-4 border-l border-border prose-chat text-[12px] text-muted-foreground">
         <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeKatex, KATEX_OPTIONS]]} components={chatComponents}>
-          {preprocessMarkdownMath(message.compaction?.summary ?? "")}
+          {preprocessMarkdownMath(dividerSummary(message))}
         </ReactMarkdown>
       </div>
     </details>
@@ -1253,7 +1347,7 @@ function CompactionDivider({ message }: { message: ChatMessage }) {
 function AgentTodoList({ todos }: { todos: TodoItem[] }) {
   const done = todos.filter((t) => t.status === "completed").length;
   return (
-    <div className="rounded-md border border-border/60 bg-muted/30 p-2.5 space-y-1">
+    <div className="rounded-md border border-border/60 bg-muted/30 p-2.5 space-y-1" data-el="todos">
       <div className="flex items-center justify-between text-[10.5px] text-muted-foreground">
         <span>Plan</span>
         <span className="font-mono">

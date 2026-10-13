@@ -830,10 +830,11 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         // streaming handlers' `live` guard: only update the global block
         // when this run IS the active conversation. The agent still gets
         // its summary string either way, so its own planning is unaffected.
-        const live =
-          conversationId == null ||
-          useStore.getState().activeConversationId === conversationId;
-        if (live) useStore.getState().setAgentTodos(todos as TodoItem[]);
+        // A conversation's list is saved with it (Conversation.todos) and
+        // shown whenever that conversation is open; a turn with no
+        // conversation keeps the old global block.
+        if (conversationId != null) useStore.getState().setConversationTodos(conversationId, todos as TodoItem[]);
+        else useStore.getState().setAgentTodos(todos as TodoItem[]);
         const counts = todos.reduce(
           (acc, t) => {
             acc[t.status] = (acc[t.status] ?? 0) + 1;
@@ -1115,8 +1116,12 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         // A live conversation: the user is here — ask in prose, no card, no push.
         // A background turn (a scheduled run) fetches them with a "Needs you"
         // card + push; the answer arrives as the next message here.
+        // With options, they show as tappable cards under the reply (the
+        // chat controller attaches them to the message as askOptions).
         if (interactive && conversationId)
-          return "You're in a live conversation — ask the question directly in your reply prose, then end your turn; the user answers by typing. (No card or notification was sent.)";
+          return opts.length > 0
+            ? "You're in a live conversation — ask the question in your reply prose; the options show as tappable cards under your reply. End your turn now: the user's pick (or a typed answer) arrives as the next message. (No notification was sent.)"
+            : "You're in a live conversation — ask the question directly in your reply prose, then end your turn; the user answers by typing. (No card or notification was sent.)";
         const { notify } = await import("./phoneApp");
         // With real options, carry the structured deliberation payload so the
         // cockpit renders the "Needs you" deliberation card + inline-option sheet

@@ -715,6 +715,8 @@ type State = {
   updateLiveToolResult: (id: string, result: string) => void;
   setLiveToolEta: (id: string, seconds: number) => void;
   setAgentTodos: (todos: TodoItem[]) => void;
+  // The to-do list of one conversation (saved with it).
+  setConversationTodos: (id: string, todos: TodoItem[]) => void;
   loadNotes: () => Promise<void>;
   addNote: (note: Note) => Promise<void>;
   deleteNote: (id: string) => Promise<void>;
@@ -1603,6 +1605,8 @@ export const useStore = create<State>((set) => ({
       ),
     })),
   setAgentTodos: (todos) => set({ agentTodos: todos }),
+  setConversationTodos: (id, todos) =>
+    set((s) => ({ conversations: s.conversations.map((c) => (c.id === id ? { ...c, todos } : c)) })),
   loadNotes: async () => {
     const vault = useStore.getState().vaultPath;
     if (!vault) return;

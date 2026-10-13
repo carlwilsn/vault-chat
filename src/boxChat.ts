@@ -1019,3 +1019,14 @@ export async function boxAnswer(convId: string, text: string): Promise<boolean> 
   sess.scheduleDetail(convId, 300);
   return true;
 }
+
+/** Steer or stop one running subagent of a box conversation. Returns an error
+ *  line, or null on success (also null when this isn't box mode: nothing to do). */
+export async function boxSubagent(convId: string, sid: string, op: "steer" | "stop", text?: string): Promise<string | null> {
+  if (!boxChatOn() || !session) return "Subagents run on the box — it isn't connected.";
+  const sess = session;
+  const r = await httpPost(sess.link, `/api/v1/conversations/${encodeURIComponent(convId)}/subagents/${encodeURIComponent(sid)}/${op}`, op === "steer" ? { text: text ?? "" } : {});
+  if (!r.ok) return r.error ?? "the box refused";
+  sess.scheduleDetail(convId, 300);
+  return null;
+}
