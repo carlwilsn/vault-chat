@@ -151,6 +151,13 @@ export function AskOptions({ options, live, chosen, onPick }: { options: AskOpti
   );
 }
 
+/** The box writes an AskUser's options into the text too ("1. …\n2. …", for
+ *  clients that don't draw them); where they are drawn, that list goes. */
+export function withoutOptionList(content: string, options: AskOption[]): string {
+  const list = options.map((o, i) => `${i + 1}. ${o.answer}`).join("\n");
+  return content.endsWith(list) ? content.slice(0, -list.length).trimEnd() : content;
+}
+
 /** The answer a later user turn gave to the options at `i` (verbatim option text), or "". */
 export function chosenAnswer(messages: ChatMessage[], i: number): string {
   const opts = messages[i]?.askOptions ?? [];

@@ -102,6 +102,13 @@ export function verdictHtml(v: PhoneVerdict | undefined, state: string | undefin
   return '<div class="pverdict ' + esc(v.verdict) + '" data-el="verdict" data-verdict="' + esc(v.verdict) + '"><span class="od ' + (v.verdict === "pass" ? "done" : v.verdict === "fail" ? "blocked" : "waiting") + '"></span><span>' + esc(verdictLabel(v)) + "</span></div>";
 }
 
+/** The box writes an AskUser's options into the text too ("1. …\n2. …"); where
+ *  they are drawn as cards, that list goes. */
+export function withoutOptionList(content: string, options: { answer: string }[]): string {
+  const list = options.map((o, i) => `${i + 1}. ${o.answer}`).join("\n");
+  return content.endsWith(list) ? content.slice(0, -list.length).trimEnd() : content;
+}
+
 /** The subagents of one reply (by the child ids its `subagent` call carries). */
 export function spawnsOf(spawns: string[] | undefined, all: PhoneSubagent[]): PhoneSubagent[] {
   if (!spawns?.length) return [];

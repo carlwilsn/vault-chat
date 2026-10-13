@@ -262,6 +262,9 @@ const META_KEYS = [
   "nextWakeAt",
   "state",
   "verdict",
+  "todos",
+  "subagents",
+  "pendingAsk",
   "askOf",
   "askNotifId",
   "askDecided",
@@ -269,6 +272,8 @@ const META_KEYS = [
   "lastActivityAt",
   "createdAt",
 ] as const;
+
+const KEEP_IF_ABSENT = new Set<string>(["title", "source", "role", "lastActivityAt", "createdAt"]);
 
 // ---------- offline snapshot ----------
 
@@ -560,6 +565,9 @@ class BoxChatSession {
       if (d.full && d.meta) {
         for (const k of META_KEYS) {
           if (k in d.meta) (next as Record<string, unknown>)[k] = d.meta[k];
+          // The box's meta is the truth: a field it no longer has (a wake that
+          // fired, an answered ask) is gone here too.
+          else if (!KEEP_IF_ABSENT.has(k)) delete (next as Record<string, unknown>)[k];
         }
       }
       if (messages !== localMsgs && messages.length > localMsgs.length) {

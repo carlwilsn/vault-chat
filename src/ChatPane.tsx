@@ -31,6 +31,7 @@ import {
   isLegacySubagentRecord,
   subagentsOfMessage,
   useShowThinking,
+  withoutOptionList,
   type SubagentRec,
 } from "./chatExtras";
 import { uiChoice } from "./uiChoices";
@@ -376,6 +377,11 @@ export function ChatPane() {
     }),
     [messages, subagents],
   );
+  // The strip shows the newest spawn (one `subagent` call's children).
+  const latestSpawn = useMemo(() => {
+    const last = subagents[subagents.length - 1];
+    return last ? subagents.filter((x) => (x.toolCallId ?? "") === (last.toolCallId ?? "")) : NO_SUBAGENTS;
+  }, [subagents]);
   const unplacedSubagents = useMemo(() => {
     const placed = new Set(spawnsAt.flatMap((r) => (r ?? []).map((x) => x.threadId)));
     return subagents.filter((x) => !placed.has(x.threadId));
@@ -486,6 +492,18 @@ export function ChatPane() {
       el.scrollTop = el.scrollHeight;
     }
   }, [messages, streamingText, liveTools]);
+
+  // The thread's box shrinks when something appears above the composer (the
+  // pinned plan, the subagent strip): stay at the bottom if we were there.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (pinnedToBottomRef.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // When the user sends a new message, re-pin so their own turn scrolls
   // into view even if they had scrolled away during the previous stream.
@@ -877,7 +895,7 @@ export function ChatPane() {
               <ReasoningStream text={streamingReasoning} />
             )}
             {streamingText && (
-              <div className="prose-chat text-foreground/95">
+              <div className="prose-chat text-foreground/95" data-el="stream">
                 {/* While streaming, skip rehypeHighlight AND
                     remarkMath/rehypeKatex — re-tokenizing every code
                     block AND re-rendering every $$…$$ from scratch on
@@ -939,14 +957,19 @@ export function ChatPane() {
         )}
 
         <div className="p-3 max-w-[820px] mx-auto w-full">
-          {!subagentsInline && subagents.length > 0 && <Subagents list={subagents} variant="strip" onControl={controlSubagent} />}
-          {todos.length > 0 && uiChoice("todos") === "pinned" && (
+          {!subagentsInline && latestSpawn.length > 0 && <Subagents list={latestSpawn} variant="strip" onControl={controlSubagent} />}
+          {todos.length > 0 && uiChoice("todos") === "pinned" && (busy || todos.some((t) => t.status !== "completed")) && (
             <div className="mb-1.5 max-h-40 overflow-auto" data-el="todos-pinned">
               <AgentTodoList todos={todos} />
             </div>
           )}
           {activeConv && (
-            <OngoingLine conversation={{ ...activeConv, messages }} size="chat" className="px-1 pb-1.5" verdict={uiChoice("verdict") === "ongoing"} />
+            <OngoingLine
+              conversation={{ ...activeConv, messages, ...(uiChoice("cost") === "total" ? { costUsd: undefined } : {}) }}
+              size="chat"
+              className="px-1 pb-1.5"
+              verdict={uiChoice("verdict") === "ongoing"}
+            />
           )}
           <div className="relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors">
             {skillMention && filteredSkills.length > 0 && (
@@ -1284,7 +1307,7 @@ export const MessageBubble = memo(function MessageBubble({
               urlTransform={allowImageDataUrls}
               components={chatComponents}
             >
-              {preprocessMarkdownMath(message.content)}
+              {preprocessMarkdownMath(message.askOptions?.length ? withoutOptionList(message.content, message.askOptions) : message.content)}
             </ReactMarkdown>
           </div>
           {onAsk && message.askOptions && message.askOptions.length > 0 && <AskOptions options={message.askOptions} live={askLive} chosen={askChosen} onPick={onAsk} />}

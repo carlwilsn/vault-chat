@@ -553,7 +553,8 @@ export function boot(): void {
   // the last ScheduleWake's reason. Null when the conversation isn't doing long work.
   function ongoingOf(c) {
     if (!c || !c.state) return null;
-    const cost = typeof c.costUsd === "number" && c.costUsd > 0 ? (c.costUsd < 0.01 ? "<$0.01" : "$" + c.costUsd.toFixed(2)) : "";
+    // With the total in the header (the "total" option) the line doesn't repeat it.
+    const cost = X.choice("cost") === "total" ? "" : typeof c.costUsd === "number" && c.costUsd > 0 ? (c.costUsd < 0.01 ? "<$0.01" : "$" + c.costUsd.toFixed(2)) : "";
     let tone = "", label = "", next = "";
     if (c.state === "running") { tone = "running"; label = "Working"; }
     else if (c.state === "sleeping") {
@@ -611,7 +612,12 @@ export function boot(): void {
       if (fresh.length) card.outerHTML = X.subagentsHtml(fresh, "inline");
     });
     const pin = $("pinned");
-    if (pin) pin.innerHTML = (!inline ? X.subagentsHtml(subs, "strip") : "") + (X.choice("todos") === "pinned" ? X.todosHtml(convId ? convMeta.todos || [] : []) : "");
+    // The strip: the newest spawn (one call's children). The pinned plan: while it has work left.
+    const last = subs[subs.length - 1];
+    const latest = last ? subs.filter((x) => (x.toolCallId || "") === (last.toolCallId || "")) : [];
+    const todos = convId ? convMeta.todos || [] : [];
+    const planOpen = running || todos.some((t) => t.status !== "completed");
+    if (pin) pin.innerHTML = (!inline ? X.subagentsHtml(latest, "strip") : "") + (X.choice("todos") === "pinned" && planOpen ? X.todosHtml(todos) : "");
   }
   // Fresh meta for the open conversation (state flips arrive as status/message events).
   async function refreshConvMeta() {
@@ -716,7 +722,7 @@ export function boot(): void {
     const asst = role !== "user" && !opts.system;
     div.className = (asst ? "amsg" : "m " + (role === "user" ? "user" : "sys")) + (opts.queued ? " queued" : "");
     if (!asst) div.textContent = content;
-    else div.innerHTML = X.thoughtHtml(opts.thinking) + '<div class="md">' + md(content) + "</div>";
+    else div.innerHTML = X.thoughtHtml(opts.thinking) + '<div class="md">' + md(Array.isArray(opts.askOptions) && opts.askOptions.length ? X.withoutOptionList(content, opts.askOptions) : content) + "</div>";
     // Images sent with a user turn: thumbnails above its text.
     if (!asst && Array.isArray(opts.images) && opts.images.length)
       div.insertAdjacentHTML("afterbegin", '<div class="mimgs">' + opts.images.map((u) => '<img src="' + esc(u) + '" alt="">').join("") + "</div>");
@@ -1126,7 +1132,7 @@ export function boot(): void {
       renderExtras();
       void refreshConvMeta();
     } else if (d.type === "status") {
-      if (d.convId === convId) { running = d.status === "running"; stopping = false; if (!running) { streamText = ""; streamTool = ""; streamStartedAt = null; renderStream(); } renderRunline(); }
+      if (d.convId === convId) { running = d.status === "running"; stopping = false; if (!running) { streamText = ""; streamTool = ""; streamStartedAt = null; renderStream(); } renderRunline(); renderExtras(); }
       if (d.convId === convId) void refreshConvMeta();
       void refreshState();
       if (cdraw.classList.contains("on")) void loadConvs();
