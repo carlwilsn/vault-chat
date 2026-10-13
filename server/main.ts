@@ -83,9 +83,14 @@ async function main(): Promise<void> {
   const { notificationAppend } = await import("./commands/phone");
   const { startEngine } = await import("./engine");
   const { modelsList, boxModelChecks } = await import("./engine/capabilities");
-  const engine = process.env.VC_ENGINE === "0"
-    ? { engine: null, error: "disabled (VC_ENGINE=0): turns run on the old in-process loop", health: () => ({}) }
-    : await startEngine({
+  // The engine starts in the background (a first start installs pi with npm,
+  // which can take minutes): the server answers at once, health says
+  // "starting", and agent routes say so until it is up.
+  type Handle = Awaited<ReturnType<typeof startEngine>>;
+  let engine: Handle = { engine: null, error: null, health: () => ({ backend: "pi", pi: { state: "starting" } }) };
+  const engineBoot: Promise<Handle> = process.env.VC_ENGINE === "0"
+    ? Promise.resolve({ engine: null, error: "disabled (VC_ENGINE=0): turns run on the old in-process loop", health: () => ({}) })
+    : startEngine({
     vault: cfg.vault,
     stateDir: cfg.stateDir,
     secretsDir: cfg.secretsDir,
@@ -102,6 +107,19 @@ async function main(): Promise<void> {
     notificationAppend,
     broadcast: (ev) => getRing().push(JSON.stringify(ev)),
   });
+  void engineBoot
+    .then((h) => {
+      engine = h;
+      console.log(`[vault-chat-server] engine ${h.engine ? "up" : `not running: ${h.error}`}`);
+    })
+    .catch((e) => {
+      engine = { engine: null, error: String((e as Error)?.message ?? e), health: () => ({}) };
+      console.error(`[vault-chat-server] engine failed to start: ${engine.error}`);
+    });
+  const ready = () => {
+    if (engine.engine) return engine.engine;
+    throw new Error(engine.error ? `the agent engine is not running: ${engine.error}` : "the agent engine is still starting — try again in a minute");
+  };
 
   const { activeRuns } = await import("../src/runRegistry");
   const { startBoxSync, syncStatus, syncSummary, triggerSync, listVaults, addVault } = await import("./sync");
@@ -161,26 +179,33 @@ async function main(): Promise<void> {
       }
       return changed;
     },
-    engine: engine.engine
-      ? {
-          models: () => modelsList(),
-          boxModels: () => ("roles" in engine && engine.roles ? boxModelChecks(engine.roles()) : undefined),
-          message: (b) => engine.engine!.message(b),
-          answer: (b) => engine.engine!.answerRoute(b),
-          kill: (b) => engine.engine!.kill(b),
-          subagent: (c, sid, op, b) => engine.engine!.subagent(c, sid, op, b),
-        }
-      : undefined,
-    voice: {
-      vault: cfg.vault,
-      shell: engine.engine && "shell" in engine ? engine.shell : undefined,
-      message: engine.engine ? (b) => engine.engine!.message(b) : undefined,
-      onWrite: () => triggerSync(),
-      openrouterKey: () => {
-        const v = keychainCommands.keychain_get({ key: "api.openrouter" });
-        return typeof v === "string" && v ? v : null;
-      },
-      webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
+    engine: process.env.VC_ENGINE === "0"
+      ? undefined
+      : {
+          models: () => (engine.engine ? modelsList() : []),
+          boxModels: () => (engine.engine && engine.roles ? boxModelChecks(engine.roles()) : undefined),
+          message: async (b) => ready().message(b),
+          answer: async (b) => ready().answerRoute(b),
+          kill: async (b) => ready().kill(b),
+          subagent: async (c, sid, op, b) => ready().subagent(c, sid, op, b),
+        },
+    // Voice (server/voice.ts): one vault for now — the main one; a per-vault
+    // engine maps `vault` to its own working copy and engine here.
+    voice: (vault) => {
+      if (vault && vault !== cfg.vaultName) return { error: `voice is not set up for vault "${vault}" on this box (only ${cfg.vaultName})` };
+      return {
+        vault: cfg.vault,
+        get shell() {
+          return engine.engine ? engine.shell : undefined;
+        },
+        message: async (b) => ready().message(b),
+        onWrite: () => triggerSync(),
+        openrouterKey: () => {
+          const v = keychainCommands.keychain_get({ key: "api.openrouter" });
+          return typeof v === "string" && v ? v : null;
+        },
+        webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
+      };
     },
   });
   console.log(`[vault-chat-server] listening on http://${cfg.host}:${cfg.port}`);

@@ -172,6 +172,12 @@ describe("POST /api/v1/voice/tool", () => {
   it("without an engine AskAgent says so", async () => {
     const r = await voice.voiceTool({ vault }, { name: "AskAgent", args: { task: "x" } });
     expect(r.result).toMatch(/not running/);
+    // While the engine starts, main.ts's ready() throws: the agent hears why.
+    const starting = await voice.voiceTool(
+      { vault, message: async () => { throw new Error("the agent engine is still starting — try again in a minute"); } },
+      { name: "AskAgent", args: { task: "x" } },
+    );
+    expect(starting.result).toMatch(/still starting/);
   });
 });
 

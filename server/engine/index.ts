@@ -144,7 +144,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   };
   let install: PiInstall;
   try {
-    install = ensurePi(b.stateDir);
+    install = await ensurePi(b.stateDir);
   } catch (e) {
     return fail((e as Error).message);
   }

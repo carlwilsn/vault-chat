@@ -107,7 +107,7 @@ function runShell(d: VoiceDeps, command: string, timeoutMs: number): Promise<str
     } else prog = "bash";
     args = ["-lc", command];
   } else {
-    return Promise.resolve("Error: Bash is unavailable here — the box's shell sandbox is not running (the engine is off).");
+    return Promise.resolve("Error: Bash is unavailable right now — the box's shell sandbox comes with the agent engine, which is still starting or off.");
   }
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH ?? "/run/current-system/sw/bin",

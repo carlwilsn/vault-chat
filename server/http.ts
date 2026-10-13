@@ -41,8 +41,9 @@ export type ServerHooks = {
     kill: (b: any) => Promise<Record<string, unknown> | null>;
     subagent: (convId: string, sid: string, op: "steer" | "stop", b: any) => Promise<Record<string, unknown>>;
   };
-  /** Voice: the ElevenLabs agent's tools run here (server/voice.ts). */
-  voice?: VoiceDeps;
+  /** Voice: the ElevenLabs agent's tools run here (server/voice.ts), for a
+   * vault by name (none = the main vault), or why not. */
+  voice?: (vault?: string) => VoiceDeps | { error: string };
 };
 
 // Idempotency for engine sends: the phone tags each POST with clientMsgId and
@@ -294,10 +295,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // Voice (server/voice.ts): the laptop in box mode and the phone run the
   // voice agent's tools here; the session is minted with the box's key.
   if (path === "/api/v1/voice/tool" && method === "POST") {
-    if (!hooks.voice) return json(res, 503, { error: "voice tools not available" });
-    return json(res, 200, await voiceTool(hooks.voice, await jsonBody(req)));
+    const b = await jsonBody(req);
+    const d = hooks.voice?.(typeof b.vault === "string" && b.vault ? b.vault : url.searchParams.get("vault") || undefined) ?? { error: "voice tools not available" };
+    if ("error" in d) return json(res, 503, d);
+    return json(res, 200, await voiceTool(d, b));
   }
   if (path === "/api/v1/voice/session" && method === "GET") {
+    const d = hooks.voice?.(url.searchParams.get("vault") || undefined) ?? { error: "voice not available" };
+    if ("error" in d) return json(res, 503, d);
     const out = await voiceSession(url.searchParams.get("convId"));
     return json(res, out.status, out.body);
   }
@@ -427,14 +432,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "POST /tool": {
       // The old phone page's tool call: the full box set when voice is wired, else read-only.
       const raw = await readBody(req);
-      if (!hooks.voice) return send(res, 200, "text/plain; charset=utf-8", await dispatchVoiceTool(vault, raw));
+      const vd = hooks.voice?.();
+      if (!vd || "error" in vd) return send(res, 200, "text/plain; charset=utf-8", await dispatchVoiceTool(vault, raw));
       let b: any = {};
       try {
         b = JSON.parse(raw);
       } catch {
         /* empty */
       }
-      return send(res, 200, "text/plain; charset=utf-8", (await voiceTool(hooks.voice, b)).result);
+      return send(res, 200, "text/plain; charset=utf-8", (await voiceTool(vd, b)).result);
     }
     // Projects: the chat chip and "New chat in project" (desktop box mode, phone).
     case "GET /projects":
