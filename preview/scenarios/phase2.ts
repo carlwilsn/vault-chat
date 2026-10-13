@@ -20,7 +20,7 @@ import * as W from "./world";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
-const BOX = { box: "https://box.tail0a1b2.ts.net", vault: "summer-demo" };
+const BOX = { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" };
 const VERIFIER = "openai/gpt-6.1-sol";
 
 const u = (content: string, extra: Record<string, unknown> = {}) => ({ role: "user", content, ...extra });

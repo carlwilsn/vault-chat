@@ -133,7 +133,12 @@ function okBox(): BoxReport {
 
 /** The scenario's fake box behind a URL; offline (or unknown) ones don't answer. */
 function fakeBox(u: URL): FakeBox {
-  const b = cfg.sync?.boxes?.[u.origin];
+  // A scenario that starts connected (sync.box) gets that box online with an
+  // empty key store unless it lists its boxes itself.
+  const boxes = ((cfg.sync ??= {} as any).boxes ??= {}) as Record<string, FakeBox>;
+  if (!boxes[u.origin] && cfg.sync?.box && new URL(cfg.sync.box).origin === u.origin)
+    boxes[u.origin] = { name: u.hostname.split(".")[0], version: "0.6.33", online: true, keys: {}, vaults: [] } as FakeBox;
+  const b = boxes[u.origin];
   if (!b || b.online === false) throw `error sending request for url (${u.href}): operation timed out`;
   return b;
 }
