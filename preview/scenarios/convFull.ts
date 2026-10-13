@@ -23,7 +23,7 @@ import * as P3 from "./phase3";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
-const BOX = { box: "https://box.tail0a1b2.ts.net", vault: "summer-demo" };
+const BOX = { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" };
 const CONV = "x-full";
 const TITLE = "KV-cache section for the writeup";
 const F = "```";
@@ -367,16 +367,21 @@ const BOX_MODELS = {
   box: {
     chat: { id: "openai/gpt-6.1-sol", state: "passed", context: 1_050_000 },
     vision: { id: "openai/gpt-6.1-sol", state: "passed", context: 1_050_000 },
-    subagent: { id: "qwen/qwen3-32b:nitro", state: "missing", missing: ["context"], context: 40_960 },
+    subagent: { id: "anthropic/claude-haiku-5.5", state: "passed", context: 200_000 },
   },
+};
+/** settings-box-models only: a subagent model under the 64k floor, to show the line. */
+const BOX_MODELS_FAILING = {
+  ...BOX_MODELS,
+  box: { ...BOX_MODELS.box, subagent: { id: "qwen/qwen3-32b:nitro", state: "missing", missing: ["context"], context: 40_960 } },
 };
 
 function buildA(ctx: BuildCtx): void {
   P3.build(ctx);
 }
 
-const hostA = (now: number) => ({
-  sync: { box: BOX, boxChat: { convs: { ...boxConvsP3(now), [CONV]: boxConv(now) } as any, steps: boxSteps(now), live: true, models: BOX_MODELS } },
+const hostA = (now: number, models: unknown = BOX_MODELS) => ({
+  sync: { box: BOX, boxChat: { convs: { ...boxConvsP3(now), [CONV]: boxConv(now) } as any, steps: boxSteps(now), live: true, models } },
 });
 
 function boxConvsP3(now: number): Record<string, any> {
@@ -556,7 +561,7 @@ export const convFullScenarios: Scenario[] = [
       "Box mode: Settings → Models also checks the models the box runs (its chat agent, the vision model it falls back to for images, the subagent child model), from /api/v1/models → box. Here the subagent model's context is under the 64k floor: one quiet line under the pickers says so. Nothing shows while they all pass. The pickers' own lines now also cover tool_choice, context, parallel tool calls and usage (one remembered request per model; faked here — Qwen3 Coder answers one tool at a time).",
     clock: "2026-10-13T10:00:00",
     build: buildA,
-    host: hostA,
+    host: (now: number) => hostA(now, BOX_MODELS_FAILING),
     localStorage: { vault_chat_background_model: "qwen/qwen3-coder" },
     open: [{ click: "[title='Settings']" }, { sleep: 1500 }],
     surfaces: ["desktop"],

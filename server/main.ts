@@ -87,9 +87,14 @@ async function main(): Promise<void> {
   const vaultRefs = () =>
     listVaults().map((v) => (v.main ? { name: v.name, path: cfg.vault, bare: cfg.bareRepo, main: true } : { name: v.name, path: vaultPaths(v.name).vault, bare: vaultPaths(v.name).bare, main: false }));
   const { modelsList, boxModelChecks } = await import("./engine/capabilities");
-  const engine = process.env.VC_ENGINE === "0"
-    ? { engine: null, error: "disabled (VC_ENGINE=0): turns run on the old in-process loop", health: () => ({}) }
-    : await startEngine({
+  // The engine starts in the background (a first start installs pi with npm,
+  // which can take minutes): the server answers at once, health says
+  // "starting", and agent routes say so until it is up.
+  type Handle = Awaited<ReturnType<typeof startEngine>>;
+  let engine: Handle = { engine: null, error: null, health: () => ({ backend: "pi", pi: { state: "starting" } }) };
+  const engineBoot: Promise<Handle> = process.env.VC_ENGINE === "0"
+    ? Promise.resolve({ engine: null, error: "disabled (VC_ENGINE=0): turns run on the old in-process loop", health: () => ({}) })
+    : startEngine({
     vault: cfg.vault,
     vaultName: cfg.vaultName,
     vaults: vaultRefs,
@@ -109,12 +114,29 @@ async function main(): Promise<void> {
     notificationAppend,
     broadcast: (ev) => getRing().push(JSON.stringify(ev)),
   });
-
-  const { activeRuns } = await import("../src/runRegistry");
+  const ready = () => {
+    if (engine.engine) return engine.engine;
+    throw new Error(engine.error ? `the agent engine is not running: ${engine.error}` : "the agent engine is still starting — try again in a minute");
+  };
   // Each vault's own engine (conversations, wakes, ledger, projects, rules,
   // sandbox), started on first use; every vault already on the box at boot.
-  const engineOf = async (v: { name: string; path: string; bare: string; main: boolean }) =>
-    v.main || !("open" in engine) || !engine.open ? engine.engine! : await engine.open(v);
+  const engineOf = async (v: { name: string; path: string; bare: string; main: boolean }) => {
+    const main = ready();
+    return v.main || !engine.open ? main : await engine.open(v);
+  };
+  void engineBoot
+    .then((h) => {
+      engine = h;
+      console.log(`[vault-chat-server] engine ${h.engine ? "up" : `not running: ${h.error}`}`);
+      // Wakes, the watchdog and cut turns of every vault come back with the server.
+      if (h.engine) for (const v of vaultRefs()) if (!v.main) void engineOf(v).catch((e) => console.error(`[engine] vault ${v.name}:`, e));
+    })
+    .catch((e) => {
+      engine = { engine: null, error: String((e as Error)?.message ?? e), health: () => ({}) };
+      console.error(`[vault-chat-server] engine failed to start: ${engine.error}`);
+    });
+
+  const { activeRuns } = await import("../src/runRegistry");
   const vaultOf = (name: string | null) => {
     if (!name || name === cfg.vaultName) return { name: cfg.vaultName, path: cfg.vault, bare: cfg.bareRepo, main: true };
     return vaultRefs().find((v) => v.name === name) ?? null;
@@ -194,16 +216,16 @@ async function main(): Promise<void> {
       }
       return changed;
     },
-    engine: engine.engine
-      ? {
-          models: () => modelsList(),
-          boxModels: () => ("roles" in engine && engine.roles ? boxModelChecks(engine.roles()) : undefined),
+    engine: process.env.VC_ENGINE === "0"
+      ? undefined
+      : {
+          models: () => (engine.engine ? modelsList() : []),
+          boxModels: () => (engine.engine && engine.roles ? boxModelChecks(engine.roles()) : undefined),
           message: async (v, b) => (await engineOf(v)).message(b),
           answer: async (v, b) => (await engineOf(v)).answerRoute(b),
           kill: async (v, b) => (await engineOf(v)).kill(b),
           subagent: async (v, c, sid, op, b) => (await engineOf(v)).subagent(c, sid, op, b),
-        }
-      : undefined,
+        },
   });
   console.log(`[vault-chat-server] listening on http://${cfg.host}:${cfg.port}`);
 
@@ -212,11 +234,6 @@ async function main(): Promise<void> {
   void startSchedulerLoop(cfg.vault);
 
   await startBoxSync(alert);
-
-  // Wakes, the watchdog and cut turns of every vault come back with the server.
-  if (engine.engine) {
-    for (const v of vaultRefs()) if (!v.main) await engineOf(v).catch((e) => console.error(`[engine] vault ${v.name}:`, e));
-  }
 
   const shutdown = (sig: string) => {
     console.log(`[vault-chat-server] ${sig} — shutting down`);

@@ -1,4 +1,6 @@
 // The developer instructions for an engine thread, and the rules prefix for every turn.
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { ctxConfig } from "./config";
 import { cap, vcPath } from "./files";
 import { listProjects, readGlobalRules, readProject } from "./projects";
@@ -90,6 +92,32 @@ export function buildDeveloperInstructions(conv: ContextConv, opts: BuildOptions
     );
   }
 
+  const machine = machineBlock();
+  if (machine) out.push(machine);
+
   out.push(`# Before you trust any of this\n\n${RECHECK_RULE}`);
   return out.join("\n\n---\n\n") + "\n";
+}
+
+// What this machine offers beyond the tools — today, a browser. The box is
+// headless, so "seeing" a page is a headless screenshot the agent then reads.
+let machineCache: string | null | undefined;
+function machineBlock(): string | null {
+  if (machineCache !== undefined) return machineCache;
+  if (process.platform === "win32") return (machineCache = null);
+  const dirs = (process.env.PATH ?? "").split(":").filter(Boolean);
+  let chrome: string | null = null;
+  for (const n of ["chromium", "chromium-browser", "google-chrome"]) {
+    const d = dirs.find((x) => existsSync(join(x, n)));
+    if (d) {
+      chrome = join(d, n);
+      break;
+    }
+  }
+  machineCache = chrome
+    ? `# This machine\n\nA browser is installed: \`${chrome}\`. To look at a web page (a local dev server, a site, an HTML file), render it headless and read the image: ` +
+      `\`${chrome} --headless=new --no-sandbox --disable-gpu --window-size=1400,900 --screenshot=/tmp/page.png <url>\`, then Read /tmp/page.png. ` +
+      `For the page's DOM use \`--dump-dom <url>\`. Check UI work this way before calling it done.`
+    : null;
+  return machineCache;
 }

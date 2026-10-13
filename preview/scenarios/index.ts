@@ -180,7 +180,7 @@ const askScript: Script = {
 
 // ---- the box sync engine -----------------------------------------------------
 
-const BOX = { box: "https://box.tail0a1b2.ts.net", vault: "summer-demo" };
+const BOX = { box: "https://thinkbox.tail0a1b2.ts.net", vault: "summer-demo" };
 
 /** Settings → Box: connect a box from the app (discovery on the tailnet, the
  *  box's own OpenRouter key, the vault's own repo on the box) and disconnect.
@@ -794,7 +794,7 @@ export const scenarios: Scenario[] = [
           {
             ok: false,
             message: "box unreachable",
-            error: "git fetch failed (exit 128):\nfatal: unable to access 'https://box.tail0a1b2.ts.net/git/summer-demo.git/': Could not resolve host: box.tail0a1b2.ts.net",
+            error: "git fetch failed (exit 128):\nfatal: unable to access 'https://thinkbox.tail0a1b2.ts.net/git/summer-demo.git/': Could not resolve host: box.tail0a1b2.ts.net",
             error_kind: "unreachable",
             changes_waiting: 3,
           },
@@ -818,7 +818,7 @@ export const scenarios: Scenario[] = [
           {
             ok: false,
             message: "box unreachable",
-            error: "git fetch failed (exit 128):\nfatal: unable to access 'https://box.tail0a1b2.ts.net/git/summer-demo.git/': Could not resolve host: box.tail0a1b2.ts.net",
+            error: "git fetch failed (exit 128):\nfatal: unable to access 'https://thinkbox.tail0a1b2.ts.net/git/summer-demo.git/': Could not resolve host: box.tail0a1b2.ts.net",
             error_kind: "unreachable",
             changes_waiting: 1,
           },
@@ -826,8 +826,8 @@ export const scenarios: Scenario[] = [
       },
     },
     overrides: {
-      box_get_json: { error: "error sending request for url (https://box.tail0a1b2.ts.net/poll?after=latest): dns error: Could not resolve host" },
-      box_post_json: { error: "error sending request for url (https://box.tail0a1b2.ts.net/message): dns error: Could not resolve host" },
+      box_get_json: { error: "error sending request for url (https://thinkbox.tail0a1b2.ts.net/poll?after=latest): dns error: Could not resolve host" },
+      box_post_json: { error: "error sending request for url (https://thinkbox.tail0a1b2.ts.net/message): dns error: Could not resolve host" },
     },
     fastTimers: syncTimers,
     activeConversation: "c-spectral",
