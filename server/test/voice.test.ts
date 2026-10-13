@@ -7,14 +7,21 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmp, cleanup } from "./helpers";
+import { tmp, cleanup, git } from "./helpers";
 
 const root = tmp("vcv-");
 const vault = join(root, "vault");
 mkdirSync(join(vault, ".vault-chat", "conversations"), { recursive: true });
 mkdirSync(join(vault, "notes"), { recursive: true });
 mkdirSync(join(vault, "private"), { recursive: true });
-mkdirSync(join(vault, ".git"), { recursive: true });
+// A vault tool that needs one key (and must not see another).
+mkdirSync(join(vault, ".vault-chat", "tools", "echo"), { recursive: true });
+writeFileSync(
+  join(vault, ".vault-chat", "tools", "echo", "TOOL.md"),
+  "---\nname: EchoKey\ndescription: Echo the args and say which keys it sees.\nrequires_keys: [DEMO_KEY]\ninput_schema:\n  word:\n    type: string\n    description: a word\n---\n",
+);
+writeFileSync(join(vault, ".vault-chat", "tools", "echo", "run.sh"), 'cat\necho\necho "demo=${DEMO_KEY:-none} other=${OTHER_KEY:-none} pwd=$(basename "$PWD")"\n');
+git(vault, "init", "-q");
 writeFileSync(join(vault, "notes", "a.md"), "# A\nthe quick fox\n");
 writeFileSync(join(vault, "private", "s.md"), "secret quick\n");
 writeFileSync(join(vault, ".vaultchatdeny"), "private\n");
@@ -73,7 +80,10 @@ beforeAll(async () => {
   const { registerAll } = await import("../commands/registry");
   registerAll((await import("../commands/fs")).fsCommands);
   registerAll((await import("../commands/conversations")).conversationCommands);
-  registerAll((await import("../keys")).keychainCommands);
+  const keys = await import("../keys");
+  registerAll(keys.keychainCommands);
+  // The keys the laptop synced (fake values): a vault tool gets only the ones it declares.
+  await keys.saveKeys(join(root, "secrets"), { "user.DEMO_KEY": "demo-canary", "user.OTHER_KEY": "other-canary" });
   store = (await import("../../src/store")).useStore;
   store.setState({ vaultPath: vault, conversationsLoaded: true });
   const { configureContext } = await import("../context");
@@ -181,10 +191,52 @@ describe("POST /api/v1/voice/tool", () => {
   });
 });
 
+describe("the vault's own voice tools on the box", () => {
+  it("run in the sandbox runner with the args on stdin and only their declared keys", async () => {
+    const r = await tool("EchoKey", { word: "hello" });
+    expect(r).toContain('"word":"hello"');
+    expect(r).toContain("demo=demo-canary");
+    expect(r).toContain("other=none");
+    expect(r).toContain("pwd=echo");
+  });
+});
+
+describe("POST /api/v1/voice/transcript", () => {
+  it("saves a session as a voice conversation of its own, tagged with the project it came from", async () => {
+    const { readConv, createConv } = await import("../engine/convs");
+    const chat = await createConv(vault, { project: "bitnet-160m" }, "an engine chat");
+    // The first line names the laptop's local thread: the box makes its own.
+    const a = await voice.voiceTranscript(deps, { convId: "local-123", fromConvId: chat.id, role: "user", text: "What does the writeup say?" });
+    expect(a.status).toBe(200);
+    const id = String(a.body.convId);
+    expect(id).not.toBe("local-123");
+    const b = await voice.voiceTranscript(deps, { convId: id, role: "assistant", text: "Read writeup.md · on the box", system: true });
+    expect(b.body.convId).toBe(id);
+    await voice.voiceTranscript(deps, { convId: id, role: "assistant", text: "About 3.2B tokens." });
+    const c = await readConv(vault, id);
+    expect(c?.source).toBe("voice");
+    expect(c?.project).toBe("bitnet-160m");
+    expect(c?.messages.map((m: any) => [m.role, m.content, !!m.system])).toEqual([
+      ["user", "What does the writeup say?", false],
+      ["assistant", "Read writeup.md · on the box", true],
+      ["assistant", "About 3.2B tokens.", false],
+    ]);
+    // Never into an engine chat: naming one starts a voice conversation instead.
+    const d = await voice.voiceTranscript(deps, { convId: chat.id, role: "user", text: "hi" });
+    expect(d.body.convId).not.toBe(chat.id);
+    expect((await readConv(vault, chat.id))?.messages.length).toBe(0);
+    // It is in the list the clients read.
+    const { conversationsSummary } = await import("../phoneData");
+    const rows = (conversationsSummary(vault) as any).conversations;
+    expect(rows.find((r: any) => r.id === id)?.source).toBe("voice");
+    expect((await voice.voiceTranscript(deps, { role: "user", text: "  " })).status).toBe(400);
+  });
+});
+
 describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
   it("is 503 without the box's ElevenLabs key", async () => {
     store.setState({ serviceKeys: {} });
-    const out = await voice.voiceSession(null);
+    const out = await voice.voiceSession(null, vault);
     expect(out.status).toBe(503);
   });
 
@@ -201,7 +253,7 @@ describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
     }) as typeof fetch;
     try {
       store.setState({ serviceKeys: { elevenlabs: "el-canary-key" } });
-      const out = await voice.voiceSession(null);
+      const out = await voice.voiceSession(null, vault);
       expect(out.status).toBe(200);
       expect(out.body.signedUrl).toBe("wss://fake.elevenlabs/x?sig=1");
       expect(out.body.toolNames).toEqual(expect.arrayContaining(["Read", "Write", "Bash", "AskAgent", "AgentStatus", "ScrollTo"]));
@@ -210,11 +262,16 @@ describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
       const create = calls.find((c) => c.url.includes("/agents/create"))!;
       expect(create.key).toBe("el-canary-key");
       const names = create.body.conversation_config.agent.prompt.tools.map((t: any) => t.name);
-      expect(names).toEqual(expect.arrayContaining(["AskAgent", "AgentStatus"]));
+      expect(names).toEqual(expect.arrayContaining(["AskAgent", "AgentStatus", "EchoKey"]));
+      expect(out.body.toolNames).toEqual(expect.arrayContaining(["EchoKey"]));
+      // The vault index, from git's file list (the box has no file tree).
+      expect(String(out.body.systemPrompt)).toContain("notes/a.md");
+      expect(String(out.body.systemPrompt)).not.toContain("private/s.md");
+      expect(out.body.vaultRoot).toBe(vault);
       expect(calls.some((c) => c.url.includes("agent_id=agent_fake"))).toBe(true);
       // A second session reuses the provisioned agent.
       const n = calls.length;
-      expect((await voice.voiceSession(null)).status).toBe(200);
+      expect((await voice.voiceSession(null, vault)).status).toBe(200);
       expect(calls.slice(n).some((c) => c.url.includes("/agents/create"))).toBe(false);
     } finally {
       globalThis.fetch = real;

@@ -15,7 +15,7 @@ import { isGitPath, handleGitHttp } from "./gitHttp";
 import { validVaultName } from "./sync";
 import { validKeyName } from "./keys";
 import { projectsList, setProject } from "./projectRoutes";
-import { voiceTool, voiceSession, type VoiceDeps } from "./voice";
+import { voiceTool, voiceSession, voiceTranscript, type VoiceDeps } from "./voice";
 import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
 import VOICE_PAGE_INLINE from "../src-tauri/assets/voice.html";
 import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
@@ -303,7 +303,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   if (path === "/api/v1/voice/session" && method === "GET") {
     const d = hooks.voice?.(url.searchParams.get("vault") || undefined) ?? { error: "voice not available" };
     if ("error" in d) return json(res, 503, d);
-    const out = await voiceSession(url.searchParams.get("convId"));
+    const out = await voiceSession(url.searchParams.get("convId"), d.vault);
+    return json(res, out.status, out.body);
+  }
+  if (path === "/api/v1/voice/transcript" && method === "POST") {
+    const b = await jsonBody(req);
+    const d = hooks.voice?.(typeof b.vault === "string" && b.vault ? b.vault : url.searchParams.get("vault") || undefined) ?? { error: "voice not available" };
+    if ("error" in d) return json(res, 503, d);
+    const out = await voiceTranscript(d, b);
     return json(res, out.status, out.body);
   }
 
@@ -421,12 +428,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       return relayRoute(res, "phone:pushtest", {}, 15_000, "app not answering");
     case "POST /session": {
       // The old phone page's session call: the same as GET /api/v1/voice/session.
-      const out = await voiceSession(String((await jsonBody(req)).convId ?? "") || null);
+      const vd = hooks.voice?.();
+      if (!vd || "error" in vd) return json(res, 503, vd ?? { error: "voice not available" });
+      const out = await voiceSession(String((await jsonBody(req)).convId ?? "") || null, vd.vault);
       return json(res, out.status, out.body);
     }
     case "POST /voice-transcript": {
       const b = await jsonBody(req);
       if (String(b.text ?? "").trim()) emitLocal("voice:transcript", { role: b.role ?? "assistant", text: b.text });
+      // The old voice page's lines are saved too: one voice conversation per
+      // session (a new one after 30 quiet minutes), unless it names one.
+      const vd = hooks.voice?.();
+      if (vd && !("error" in vd) && String(b.text ?? "").trim()) {
+        const fresh = Date.now() - legacyVoice.at > 30 * 60_000;
+        const out = await voiceTranscript(vd, { ...b, convId: b.convId ?? (fresh ? null : legacyVoice.id) });
+        if (typeof out.body.convId === "string") legacyVoice = { id: out.body.convId, at: Date.now() };
+        return json(res, out.status, out.body);
+      }
       return json(res, 200, { ok: true });
     }
     case "POST /tool": {
@@ -455,6 +473,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       return json(res, 404, { error: "not found" });
   }
 }
+
+let legacyVoice: { id: string | null; at: number } = { id: null, at: 0 };
 
 /** voice_server.rs:884 — long-poll up to 25 s for events after `after`. */
 async function poll(res: ServerResponse, url: URL): Promise<void> {

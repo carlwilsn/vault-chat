@@ -2110,10 +2110,24 @@ export function boot(): void {
     vRafId = requestAnimationFrame(vMeter);
   }
   function vClientTools(toolNames) { const tools = {}; for (const name of toolNames || []) { tools[name] = async (params) => { try { const r = await api("/api/v1/voice/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, args: params || {} }) }); const j = await r.json(); return typeof j.result === "string" ? j.result : "error: " + (j.error || r.status); } catch (e) { return "error: " + String(e); } }; } return tools; }
+  // The session's lines are saved on the box as a voice conversation of their
+  // own (POST /api/v1/voice/transcript): the first line makes it, the rest
+  // name it; in order, one at a time. A new session makes a new one.
+  let vVoiceConv: string | null = null, vVoiceFrom: string | null = null, vLines: Promise<unknown> = Promise.resolve();
+  function vSaveLine(role: string, text: string) {
+    vLines = vLines.then(async () => {
+      try {
+        const r = await api("/api/v1/voice/transcript", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: vVoiceConv, fromConvId: vVoiceFrom, role, text }) });
+        const j = await r.json();
+        if (j && typeof j.convId === "string") vVoiceConv = j.convId;
+      } catch {}
+    });
+  }
   async function vStart() {
     if (vConnecting || vConv) return;
     if (!micAvailable()) { setVErr("This page isn't HTTPS, so the browser blocks the mic. Open the https://…ts.net link from Settings → Phone."); return; }
     vConnecting = true; setVErr(""); document.body.classList.add("vconnecting");
+    vVoiceConv = null; vVoiceFrom = convId || null;
     try {
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       try { vMicCtx = vMicCtx || new (window.AudioContext || window.webkitAudioContext!)(); vMicCtx.resume().catch(() => {}); const src = vMicCtx.createMediaStreamSource(micStream); vMicAnalyser = vMicCtx.createAnalyser(); vMicAnalyser.fftSize = 64; vMicAnalyser.smoothingTimeConstant = 0.5; src.connect(vMicAnalyser); vMicBuf = new Uint8Array(vMicAnalyser.frequencyBinCount); } catch { vMicAnalyser = null; }
@@ -2139,7 +2153,7 @@ export function boot(): void {
         onDisconnect: () => { if (!timedOut) vTeardown(); },
         onError: (m) => setVErr(typeof m === "string" ? m : (m && m.message) || "voice error"),
         onAudio: (b64) => { try { vAgentEnvPush(b64); } catch {} },
-        onMessage: ({ message, role }) => { const text = (message || "").trim(); if (!text) return; api("/voice-transcript", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role: role === "user" ? "user" : "assistant", text }) }).catch(() => {}); },
+        onMessage: ({ message, role }) => { const text = (message || "").trim(); if (text) vSaveLine(role === "user" ? "user" : "assistant", text); },
         // Mode leaving "speaking" = the playback buffer drained (or barge-in) —
         // everything that arrived was heard, so drop the queued envelope tail.
         onModeChange: ({ mode }) => { vAgentSpeaking = mode === "speaking"; if (!vAgentSpeaking) vAgentEnvReset(); },

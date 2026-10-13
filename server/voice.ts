@@ -1,8 +1,12 @@
 // Voice on the box: the ElevenLabs agent's client tools run here, against the
 // box's working copy, whichever client holds the mic (the laptop in box mode,
-// the phone). Two routes (http.ts):
-//   POST /api/v1/voice/tool    {name, args}       → {result}
-//   GET  /api/v1/voice/session ?convId=            → {signedUrl, systemPrompt, …}
+// the phone). Three routes (http.ts), each with an optional vault:
+//   POST /api/v1/voice/tool       {name, args}                → {result}
+//   GET  /api/v1/voice/session    ?convId=                    → {signedUrl, systemPrompt, …}
+//   POST /api/v1/voice/transcript {convId?, fromConvId?, role, text, system?} → {convId}
+// The vault's own voice tools (.vault-chat/tools/<name>/TOOL.md + run.*) run
+// here too, in the same sandbox as Bash, with only the keys TOOL.md's
+// requires_keys names.
 // The tools keep the engine's posture: paths stay inside the vault (realpath),
 // never .git, never the conversation files or .vault-chat/local (the server's
 // to write), never a .vaultchatdeny entry; writes also respect humanized files.
@@ -15,6 +19,8 @@ import { fsCommands } from "./commands/fs";
 import { netCommands } from "./commands/net";
 import { killTree } from "./commands/proc";
 import { readConversationObjects } from "./commands/conversations";
+import { keychainCommands } from "./keys";
+import { runGit } from "./git";
 import { conversationDetail, dispatchVoiceTool } from "./phoneData";
 
 export type VoiceDeps = {
@@ -94,20 +100,24 @@ export function voicePath(vault: string, p: unknown, mode: "read" | "write"): { 
 
 // ---------------------------------------------------------------- bash
 
-function runShell(d: VoiceDeps, command: string, timeoutMs: number): Promise<string> {
+type RunOut = { code: number; out: string; err: string; timedOut: boolean } | { refused: string };
+
+/** Run argv in the engine's per-command sandbox (bubblewrap: own pid
+ * namespace, the key store hidden) with a minimal environment plus `extraEnv`. */
+function runSandboxed(d: VoiceDeps, argv: string[], o: { cwd: string; timeoutMs: number; stdin?: string; extraEnv?: Record<string, string> }): Promise<RunOut> {
   let prog: string;
   let args: string[];
   if (d.shell && d.shell.length) {
     prog = d.shell[0]!;
-    args = [...d.shell.slice(1), "bash", "-lc", command];
+    args = [...d.shell.slice(1), ...argv];
   } else if (d.shell === null || process.platform !== "linux" || process.env.VC_PI_UNSAFE === "1") {
-    if (process.platform === "win32") {
-      const gb = ["C:/Program Files/Git/bin/bash.exe", "C:/Program Files (x86)/Git/bin/bash.exe"].find((c) => existsSync(c));
-      prog = gb ?? "bash";
-    } else prog = "bash";
-    args = ["-lc", command];
+    prog = argv[0]!;
+    if (process.platform === "win32" && prog === "bash") {
+      prog = ["C:/Program Files/Git/bin/bash.exe", "C:/Program Files (x86)/Git/bin/bash.exe"].find((c) => existsSync(c)) ?? "bash";
+    }
+    args = argv.slice(1);
   } else {
-    return Promise.resolve("Error: Bash is unavailable right now — the box's shell sandbox comes with the agent engine, which is still starting or off.");
+    return Promise.resolve({ refused: "unavailable right now — the box's sandbox comes with the agent engine, which is still starting or off." });
   }
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH ?? "/run/current-system/sw/bin",
@@ -118,6 +128,7 @@ function runShell(d: VoiceDeps, command: string, timeoutMs: number): Promise<str
     GIT_COMMITTER_NAME: "vault-chat-agent",
     GIT_COMMITTER_EMAIL: "agent@vault-chat.local",
     ...(process.platform === "win32" ? { SYSTEMROOT: process.env.SYSTEMROOT ?? "", MSYS_NO_PATHCONV: "1" } : {}),
+    ...(o.extraEnv ?? {}),
   };
   return new Promise((done) => {
     let out = "";
@@ -125,28 +136,69 @@ function runShell(d: VoiceDeps, command: string, timeoutMs: number): Promise<str
     let timedOut = false;
     let child;
     try {
-      child = spawn(prog, args, { cwd: d.vault, env, detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(prog, args, { cwd: o.cwd, env, detached: process.platform !== "win32", windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     } catch (e) {
-      return done(`Error: ${(e as Error).message}`);
+      return done({ refused: (e as Error).message });
     }
     child.stdout!.on("data", (c) => (out += c));
     child.stderr!.on("data", (c) => (err += c));
-    const t = setTimeout(() => {
+    child.stdin!.on("error", () => {});
+    child.stdin!.end(o.stdin ?? "");
+    const timer = setTimeout(() => {
       timedOut = true;
       killTree(child.pid);
-    }, timeoutMs);
+    }, o.timeoutMs);
     child.on("error", (e) => {
-      clearTimeout(t);
-      done(`Error: ${e.message}`);
+      clearTimeout(timer);
+      done({ refused: e.message });
     });
     child.on("close", (code) => {
-      clearTimeout(t);
-      const parts = [`exit: ${timedOut ? -1 : (code ?? -1)}${timedOut ? " (TIMED OUT)" : ""}`];
-      if (out) parts.push(`stdout:\n${clip(out, OUT_CAP)}`);
-      if (err) parts.push(`stderr:\n${clip(err, OUT_CAP)}`);
-      done(parts.join("\n"));
+      clearTimeout(timer);
+      done({ code: timedOut ? -1 : (code ?? -1), out, err, timedOut });
     });
   });
+}
+
+async function runShell(d: VoiceDeps, command: string, timeoutMs: number): Promise<string> {
+  const r = await runSandboxed(d, ["bash", "-lc", command], { cwd: d.vault, timeoutMs });
+  if ("refused" in r) return `Error: Bash is ${r.refused}`;
+  const parts = [`exit: ${r.code}${r.timedOut ? " (TIMED OUT)" : ""}`];
+  if (r.out) parts.push(`stdout:\n${clip(r.out, OUT_CAP)}`);
+  if (r.err) parts.push(`stderr:\n${clip(r.err, OUT_CAP)}`);
+  return parts.join("\n");
+}
+
+// ---------------------------------------------------------------- the vault's own tools
+
+/** The interpreter for a tool's run file (server/commands/proc.ts interpreterFor). */
+function interpreter(path: string): string[] | null {
+  const l = path.toLowerCase();
+  if (l.endsWith(".py")) return [process.platform === "win32" ? "python" : "python3", path];
+  if (l.endsWith(".mjs") || l.endsWith(".js")) return ["node", path];
+  if (l.endsWith(".ts")) return ["npx", "tsx", path];
+  if (l.endsWith(".sh") || l.endsWith(".bash")) return ["bash", path];
+  return null;
+}
+
+/** A vault tool (TOOL.md + run.*), run like the laptop runs it (stdin = the
+ * args as JSON, cwd = its folder, stdout = the result), but sandboxed and with
+ * only its declared keys. ElevenLabs waits 30 s for a client tool. */
+async function runVaultTool(d: VoiceDeps, name: string, args: unknown): Promise<string | null> {
+  const { vaultToolSpecs } = await import("../src/meta");
+  const hit = (await vaultToolSpecs(d.vault)).find((x) => x.spec.name === name);
+  if (!hit) return null;
+  const argv = interpreter(hit.runPath);
+  if (!argv) return `Error: no interpreter for ${hit.runPath}`;
+  const keys: Record<string, string> = {};
+  for (const k of hit.spec.requires_keys ?? []) {
+    const v = keychainCommands.keychain_get({ key: `user.${k}` });
+    if (typeof v === "string" && v) keys[k] = v;
+  }
+  const r = await runSandboxed(d, argv, { cwd: hit.toolDir, stdin: JSON.stringify(args ?? {}), timeoutMs: Math.min(hit.spec.timeout_ms ?? 25_000, 28_000), extraEnv: keys });
+  if ("refused" in r) return `Error: ${name} is ${r.refused}`;
+  if (r.timedOut) return `(timed out)\n${clip(r.err, OUT_CAP)}`;
+  if (r.code !== 0) return `exit ${r.code}\nstderr:\n${clip(r.err, OUT_CAP)}\nstdout:\n${clip(r.out, OUT_CAP)}`;
+  return clip(r.out.trim(), READ_CAP) || "(no output)";
 }
 
 // ---------------------------------------------------------------- the agent
@@ -325,10 +377,42 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
     }
     case "AgentStatus":
       return agentStatus(vault, s(a.conversationId).trim(), await store().catch(() => null));
-    default:
+    default: {
       if (VOICE_LOCAL_TOOLS.has(name)) return `${name} moves a screen; there is none on the box, so nothing moved.`;
+      const out = await runVaultTool(d, name, a);
+      if (out !== null) {
+        d.onWrite?.(); // a vault tool may have changed files
+        return out;
+      }
       return `Error: tool "${name}" is not available on the box.`;
+    }
   }
+}
+
+// ---------------------------------------------------------------- transcripts
+
+/** POST /api/v1/voice/transcript: one line of a voice session (what was said,
+ * a tool marker, "Voice session ended") saved on the box. A voice session is a
+ * conversation of its own (source "voice"): `convId` names it once the first
+ * line made it; a convId that is not a voice conversation on this box (a
+ * laptop's local id, an engine chat) starts a new one, tagged with the
+ * project of `fromConvId` (the chat the user was in). Returns the id. */
+export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: number; body: Record<string, unknown> }> {
+  const text = s(b?.text).trim();
+  if (!text) return { status: 400, body: { error: "empty transcript line" } };
+  const msg = { role: b?.role === "user" ? ("user" as const) : ("assistant" as const), content: text.slice(0, 20_000), ...(b?.system === true ? { system: true } : {}) };
+  const { readConv, createConv, appendMessage } = await import("./engine/convs");
+  let id = s(b?.convId);
+  const cur = id ? await readConv(d.vault, id) : null;
+  if (!cur || cur.source !== "voice") {
+    const from = s(b?.fromConvId) ? await readConv(d.vault, s(b.fromConvId)) : null;
+    const project = s(b?.project) || (from && typeof from.project === "string" ? from.project : "");
+    const c = await createConv(d.vault, { source: "voice", ...(project ? { project } : {}) }, msg.role === "user" ? text : "Voice");
+    id = c.id;
+  }
+  await appendMessage(d.vault, id, msg);
+  d.onWrite?.();
+  return { status: 200, body: { ok: true, convId: id } };
 }
 
 /** POST /api/v1/voice/tool {name, args}. Never throws: errors are the result the agent hears. */
@@ -348,10 +432,27 @@ export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: stri
 /** GET /api/v1/voice/session: a signed ElevenLabs URL for the box's agent
  * (provisioned with the box's key, the same builder the laptop uses), and the
  * session's prompt. The key itself never leaves the box. */
-export async function voiceSession(convId: string | null): Promise<{ status: number; body: Record<string, unknown> }> {
+/** The vault's files for the voice prompt's index, the cheap way: git's index
+ * (capped), minus .vault-chat and denied entries. Empty when git can't say. */
+export async function fileIndex(vault: string, cap = 2000): Promise<string[]> {
+  try {
+    const r = await runGit(vault, ["ls-files", "--cached", "--others", "--exclude-standard"]);
+    if (r.code !== 0) return [];
+    const deny = listLines("read_deny_lines", vault);
+    return r.stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith(".vault-chat/") && !deny.some((x) => under(l, x)))
+      .slice(0, cap);
+  } catch {
+    return [];
+  }
+}
+
+export async function voiceSession(convId: string | null, vault: string): Promise<{ status: number; body: Record<string, unknown> }> {
   const v = await import("../src/voice-elevenlabs");
   v.resetAgentCreateBreaker();
-  const ctx = await v.buildPhoneVoiceContext(convId || undefined, { agentOnBox: true });
+  const ctx = await v.buildPhoneVoiceContext(convId || undefined, { agentOnBox: true, fileIndex: await fileIndex(vault) });
   if (!ctx) {
     const err = v.getLastAgentCreateError();
     return {
@@ -370,6 +471,8 @@ export async function voiceSession(convId: string | null): Promise<{ status: num
       systemPrompt: ctx.systemPrompt,
       dynamicVariables: ctx.dynamicVariables,
       toolNames: ctx.toolNames,
+      // Where the prompt's absolute paths point (a client maps them back for ScrollTo).
+      vaultRoot: ctx.vault,
       onBox: true,
     },
   };

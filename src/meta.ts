@@ -553,6 +553,11 @@ export async function loadVaultTools(vault: string | null): Promise<Record<strin
   return loadToolsFromRoot(`${vault}/.vault-chat/tools`);
 }
 
+/** The vault's tool folders, parsed (the box runs voice's calls to them in its sandbox, server/voice.ts). */
+export async function vaultToolSpecs(vault: string): Promise<{ spec: ToolSpec; runPath: string; toolDir: string }[]> {
+  return scanToolSpecs(`${vault}/.vault-chat/tools`);
+}
+
 // A vault tool shaped for the ElevenLabs voice agent's client-tool protocol.
 // ElevenLabs needs a JSON-schema `parameters` block (every property described)
 // at agent-provision time, plus an `execute` the box runs when the agent calls
