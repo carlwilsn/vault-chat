@@ -516,9 +516,7 @@ export function boot(): void {
     b.innerHTML = '<div class="t">' + dot + '<span class="nm"></span><span class="ag"></span></div><div class="p"></div>';
     b.querySelector(".nm").textContent = c.title;
     b.querySelector(".ag").textContent = age(c.lastActivityAt);
-    const og = ongoingOf(c);
-    if (og) setOngoing(b.querySelector(".p"), og, "p og");
-    else b.querySelector(".p").textContent = c.preview || c.msgCount + " messages";
+    b.querySelector(".p").textContent = c.preview || c.msgCount + " messages";
     b.onclick = () => { closeConvs(); openThread(c.id, c.title); };
     return b;
   }
@@ -526,6 +524,10 @@ export function boot(): void {
   // ---------- projects + the ongoing-work line (Phase 3) ----------
   async function loadProjects() {
     try { const d = await (await api("/projects")).json(); if (Array.isArray(d.projects)) { projects = d.projects; setHeader(); } } catch {}
+  }
+  // The same slug rule as the server (server/context/files.ts).
+  function slugify(name) {
+    return String(name).normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
   }
   function projectName(slug) {
     const p = projects.find((x) => x.slug === slug);
@@ -602,7 +604,7 @@ export function boot(): void {
     });
   }
   async function pickProject(nameOrSlug) {
-    if (!convId) { newChatProject = nameOrSlug ? nameOrSlug.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : ""; if (nameOrSlug && !projects.some((x) => x.slug === newChatProject)) projects.push({ slug: newChatProject, name: nameOrSlug }); closeSheet(); setHeader(); return; }
+    if (!convId) { newChatProject = nameOrSlug ? (projects.find((x) => x.name.toLowerCase() === nameOrSlug.toLowerCase())?.slug ?? slugify(nameOrSlug)) : ""; if (nameOrSlug && !projects.some((x) => x.slug === newChatProject)) projects.push({ slug: newChatProject, name: nameOrSlug }); closeSheet(); setHeader(); return; }
     try {
       const r = await api("/conversation/project", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, project: nameOrSlug || null }) });
       const d = await r.json();
@@ -826,7 +828,7 @@ export function boot(): void {
     const mine = msgsEl.lastChild;
     try {
       if (convId) userEngaged.add(convId); // you're conversing here → the dot may track it
-      const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, text, clientMsgId, supervisor: convId ? undefined : true, ...(!convId && newChatProject ? { project: newChatProject } : {}) }) });
+      const r = await api("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId, text, clientMsgId, supervisor: convId ? undefined : true, ...(!convId && newChatProject ? { project: projects.find((x) => x.slug === newChatProject)?.name || newChatProject } : {}) }) });
       const d = await r.json();
       if (!r.ok || d.error) throw new Error(d.error || r.status);
       if (!convId && d.convId) { convId = d.convId; convTitle = text.split("\n")[0].slice(0, 60); if (newChatProject) convMeta.project = newChatProject; newChatProject = ""; rememberConv(); }

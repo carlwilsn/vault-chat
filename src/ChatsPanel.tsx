@@ -2,10 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MessageSquare, Plus, X as XIcon, Trash2, Mic, CheckCheck, ChevronRight, Folder } from "lucide-react";
 import { useStore } from "./store";
 import { conversationPreview, isArchivedThread, type Conversation } from "./conversations";
-import { OngoingLine } from "./OngoingLine";
 import { ongoingWork } from "./ongoingWork";
 import { useProjects } from "./ProjectChip";
-import { newChatInProject, projectName, slugify, type ProjectInfo } from "./projects";
+import { newChatInProject, projectName, type ProjectInfo } from "./projects";
 import { cn } from "./lib/utils";
 
 // How the list groups by project — a preview switch while Carl picks:
@@ -70,10 +69,6 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
     };
   }, [open, onClose]);
 
-  const runningCount = useMemo(
-    () => conversations.filter((c) => c.status === "running").length,
-    [conversations],
-  );
 
   const projects = useProjects();
   const sections = useMemo(() => groupConversations(conversations, query, projects), [conversations, query, projects]);
@@ -126,7 +121,6 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
             <span className="text-[13px] font-semibold">Chats</span>
             <span className="text-[11px] text-muted-foreground">
               {conversations.length}
-              {runningCount > 0 ? ` · ${runningCount} running` : ""}
             </span>
           </div>
           <div className="flex items-center gap-1">
@@ -181,7 +175,20 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
                     {p.items.map(row)}
                   </Section>
                 ))}
-              {!query.trim() && <NewProjectRow onCreate={(name) => newInProject(slugify(name))} />}
+              {!query.trim() && (
+                <button
+                  onClick={() => {
+                    handleNew();
+                    // The chip's picker, open on its name field: the same
+                    // find-or-name step as setting a chat's project.
+                    setTimeout(() => window.dispatchEvent(new CustomEvent("vc-open-project-picker")), 50);
+                  }}
+                  className="w-full px-4 pt-3 pb-1 flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider text-muted-foreground/70 hover:text-foreground font-medium"
+                >
+                  <Plus className="h-3 w-3" />
+                  New project
+                </button>
+              )}
               {style === "folders" && sections.projects.length > 0 && (
                 <Section label="Projects">
                   {sections.projects.map((p) => {
@@ -207,11 +214,9 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
                   })}
                 </Section>
               )}
-              {sections.running.length > 0 && <Section label="Running">{sections.running.map(row)}</Section>}
               {sections.recent.length > 0 && <Section label="Recent">{sections.recent.map(row)}</Section>}
               {sections.earlier.length > 0 && <Section label="Earlier">{sections.earlier.map(row)}</Section>}
               {sections.projects.length === 0 &&
-                sections.running.length === 0 &&
                 sections.recent.length === 0 &&
                 sections.earlier.length === 0 && (
                   <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
@@ -222,41 +227,6 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-/** "New project": name it, and a chat in it opens. The project is made when
- *  that chat is first sent, like a project picked from the chat's chip. */
-function NewProjectRow({ onCreate }: { onCreate: (name: string) => void }) {
-  const [name, setName] = useState<string | null>(null);
-  if (name === null)
-    return (
-      <button
-        onClick={() => setName("")}
-        className="w-full px-4 pt-3 pb-1 flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider text-muted-foreground/70 hover:text-foreground font-medium"
-      >
-        <Plus className="h-3 w-3" />
-        New project
-      </button>
-    );
-  return (
-    <div className="px-4 pt-3 pb-1">
-      <input
-        autoFocus
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && name.trim() && slugify(name)) onCreate(name.trim());
-          if (e.key === "Escape") {
-            e.stopPropagation();
-            setName(null);
-          }
-        }}
-        onBlur={() => !name.trim() && setName(null)}
-        placeholder="Project name, then Enter"
-        className="w-full h-6 px-2 rounded bg-background border border-border text-[11.5px] placeholder:text-muted-foreground/60 focus:outline-none focus:border-ring/40"
-      />
     </div>
   );
 }
@@ -392,11 +362,7 @@ function Row({
               {time}
             </span>
           </div>
-          {ongoingWork(c) ? (
-            <OngoingLine conversation={c} className="mt-0.5" />
-          ) : (
-            preview && <div className={previewClass}>{preview}</div>
-          )}
+          {preview && <div className={previewClass}>{preview}</div>}
         </span>
       </button>
       <button
@@ -431,7 +397,6 @@ function groupConversations(list: Conversation[], query: string, projects: Proje
   };
   const sorted = list.slice().sort((a, b) => b.lastActivityAt - a.lastActivityAt);
   const now = Date.now();
-  const running: Conversation[] = [];
   const recent: Conversation[] = [];
   const earlier: Conversation[] = [];
   const archived: Conversation[] = [];
@@ -451,16 +416,12 @@ function groupConversations(list: Conversation[], query: string, projects: Proje
       g.items.push(c);
       continue;
     }
-    if (c.status === "running" || ongoingWork(c)?.tone === "running") {
-      running.push(c);
-      continue;
-    }
     if (now - c.lastActivityAt <= DAY) recent.push(c);
     else earlier.push(c);
   }
   // The most recently active project first.
   const groups = [...byProject.values()].sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-  return { projects: groups, running, recent, earlier, archived };
+  return { projects: groups, recent, earlier, archived };
 }
 
 export function relativeTime(ts: number): string {

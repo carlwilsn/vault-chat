@@ -59,6 +59,13 @@ export function ProjectChip({ placement = "up" }: { placement?: "up" | "down" })
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
+  // "New project" in the chat list opens this picker on a fresh chat.
+  useEffect(() => {
+    const onOpen = () => setOpen(true);
+    window.addEventListener("vc-open-project-picker", onOpen);
+    return () => window.removeEventListener("vc-open-project-picker", onOpen);
+  }, []);
+
   // An archived mission thread is history: no project to set.
   if (!activeId || (conv && isArchivedThread(conv))) return null;
 

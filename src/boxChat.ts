@@ -16,6 +16,7 @@
 //
 // Never active headless (the server bundles this module and IS the box).
 import { invoke } from "@tauri-apps/api/core";
+import { projectForSend } from "./projects";
 import { useStore, type ChatMessage, type ChatAttachment, type LiveTool } from "./store";
 import { readBoxConfig } from "./vaultSync";
 import type { Conversation } from "./conversations";
@@ -880,7 +881,7 @@ export async function boxSend(opts: {
   };
   if (knownToBox) payload.convId = convId;
   if (ctx) payload.context = relativize(ctx, vault);
-  if (conv?.project) payload.project = conv.project;
+  if (conv?.project) payload.project = knownToBox ? conv.project : projectForSend(conv.project);
   const r = await sess_post(sess, answer ? "/answer" : "/message", payload);
 
   if (!r.ok) {

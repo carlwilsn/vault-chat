@@ -29,10 +29,21 @@ export function nameFromSlug(slug: string): string {
   return s ? s[0]!.toUpperCase() + s.slice(1) : slug;
 }
 
+// A project named in a chat that hasn't reached the box yet: the box creates
+// it with the first message, so the name as typed travels with that message
+// (the slug alone would lose "BitNet 160M" to "bitnet-160m").
+const pendingNames = new Map<string, string>();
+
+/** What to send as `project` with a first message: the typed name if the
+ *  project is still to be made, else the slug. */
+export function projectForSend(slug: string): string {
+  return pendingNames.get(slug) ?? slug;
+}
+
 /** The display name for a conversation's project slug. */
 export function projectName(slug: string | undefined, list: ProjectInfo[]): string {
   if (!slug) return "";
-  return list.find((p) => p.slug === slug)?.name ?? nameFromSlug(slug);
+  return list.find((p) => p.slug === slug)?.name ?? pendingNames.get(slug) ?? nameFromSlug(slug);
 }
 
 const HEADING = /^#\s+(.+?)\s*$/m;
@@ -129,7 +140,8 @@ export async function setConversationProject(
   } else if (want && !known.some((p) => p.slug === slug)) {
     // A new project. On the box it is created with the first message
     // (`/message {project}`); here the files are written now.
-    if (!link) {
+    if (link) pendingNames.set(slug!, want);
+    else {
       try {
         slug = (await createLocal(vault, want)).slug;
       } catch (e) {
