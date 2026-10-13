@@ -2,7 +2,7 @@
 // with npm into $VC_STATE_DIR/pi/<pin> on first start and runs its cli.js with
 // the server's own node. VC_PI_DIR overrides the prefix (a pre-installed copy
 // of the same pin). Also finds bubblewrap, which the pi engine requires on Linux.
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
@@ -29,7 +29,7 @@ function cliOf(prefix: string): string | null {
 }
 
 /** Ensure the pinned pi exists; install it with npm when missing. Throws a readable error. */
-export function ensurePi(stateDir: string, opts: { allowInstall?: boolean } = {}): PiInstall {
+export async function ensurePi(stateDir: string, opts: { allowInstall?: boolean } = {}): Promise<PiInstall> {
   const node = process.execPath;
   const override = process.env.VC_PI_DIR;
   if (override) {
@@ -45,11 +45,25 @@ export function ensurePi(stateDir: string, opts: { allowInstall?: boolean } = {}
     if (opts.allowInstall === false) throw new Error(`pi ${PI_VERSION} is not installed in ${dir}`);
     mkdirSync(dir, { recursive: true });
     const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-    const r = spawnSync(npm, ["install", "--prefix", dir, "--no-audit", "--no-fund", "--no-save", `${PI_PACKAGE}@${PI_VERSION}`], {
-      encoding: "utf8",
-      timeout: 600_000,
-      windowsHide: true,
-      shell: process.platform === "win32",
+    // Async, so the server answers (health: "starting") while npm runs.
+    const r = await new Promise<{ status: number | null; error?: Error; stdout: string; stderr: string }>((resolve) => {
+      const p = spawn(npm, ["install", "--prefix", dir, "--no-audit", "--no-fund", "--no-save", `${PI_PACKAGE}@${PI_VERSION}`], {
+        windowsHide: true,
+        shell: process.platform === "win32",
+      });
+      let stdout = "";
+      let stderr = "";
+      p.stdout?.on("data", (d) => (stdout += d));
+      p.stderr?.on("data", (d) => (stderr += d));
+      const t = setTimeout(() => p.kill(), 600_000);
+      p.on("error", (error) => {
+        clearTimeout(t);
+        resolve({ status: null, error, stdout, stderr });
+      });
+      p.on("close", (status) => {
+        clearTimeout(t);
+        resolve({ status, stdout, stderr });
+      });
     });
     if (r.error || r.status !== 0) {
       const why = r.error ? r.error.message : (r.stderr || r.stdout || "").trim().split("\n").slice(-5).join(" | ");

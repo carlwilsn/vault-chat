@@ -226,6 +226,10 @@ export class Engine {
   private byThread = new Map<string, string>(); // threadId → convId
   private chains = new Map<string, Promise<unknown>>();
   private nudged = new Set<string>();
+  /** Watchdog resumes in a row per conversation; a third stall ends it as blocked. */
+  private stalls = new Map<string, number>();
+  /** Notify calls per conversation in the last hour (the agent's pings are capped). */
+  private pings = new Map<string, number[]>();
   private resumeQueue = new Set<string>();
   private firstUp = true;
   private timers: NodeJS.Timeout[] = [];
@@ -803,9 +807,28 @@ export class Engine {
 
     if (l.cut || !conv) return;
 
-    // A stalled turn gets a resume turn.
+    // A stalled turn gets a resume turn — twice in a row at most; then it is
+    // blocked and Carl hears about it, instead of a silent stall loop.
     if (l.stalled && !l.stopped) {
-      void this.run(l.convId, `Your last turn made no progress for ${Math.round((this.d.stallMs ?? 0) / 60000)} minutes and was interrupted by the watchdog. ${RESUME_TEXT}`, "resume");
+      const n = (this.stalls.get(l.convId) ?? 0) + 1;
+      this.stalls.set(l.convId, n);
+      if (n <= 2) {
+        void this.run(l.convId, `Your last turn made no progress for ${Math.round((this.d.stallMs ?? 0) / 60000)} minutes and was interrupted by the watchdog. ${RESUME_TEXT}`, "resume");
+        return;
+      }
+      this.stalls.delete(l.convId);
+      await patchMeta(vault, l.convId, { state: "blocked", working: false });
+      await this.d.notify({ kind: "info", title: `Stuck: ${conv.title}`.slice(0, 90), body: "Its turns stopped making progress three times in a row, so it was stopped. Open the chat to see where.", convId: l.convId });
+      return;
+    }
+    if (status === "completed") this.stalls.delete(l.convId);
+
+    // A keep-going conversation whose turn failed (the model or its provider
+    // kept erroring after retries) ends blocked with the reason — never idle.
+    if (conv.working && status === "failed" && !l.stopped) {
+      this.nudged.delete(l.convId);
+      await patchMeta(vault, l.convId, { state: "blocked", working: false });
+      await this.d.notify({ kind: "info", title: `Failed: ${conv.title}`.slice(0, 90), body: (content.trim() || "Its last turn failed.").slice(0, 600), convId: l.convId });
       return;
     }
 
@@ -969,6 +992,15 @@ export class Engine {
           return text("Recorded as blocked; Carl has been notified. End your turn.");
         }
         case "Notify": {
+          // At most 4 pings an hour per conversation; past that they go to the
+          // feed only (a run "still training normally" 50 times a day is noise).
+          const hour = Date.now() - 3_600_000;
+          const recent = (this.pings.get(convId) ?? []).filter((t) => t > hour);
+          if (recent.length >= 4) {
+            this.pings.set(convId, recent);
+            return text("Not sent: this conversation already pinged Carl 4 times this hour. Only ping for a decision, a finish, or a real problem; batch the rest into your next reply.");
+          }
+          this.pings.set(convId, [...recent, Date.now()]);
           const sent = await this.d.notify({ kind: "info", title: String(a.title ?? "vault-chat").slice(0, 90), body: String(a.body ?? "").slice(0, 2000), convId });
           return text(sent ? "Notified." : "Recorded in the feed (no phone subscribed).");
         }
