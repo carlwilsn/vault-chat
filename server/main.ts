@@ -171,6 +171,17 @@ async function main(): Promise<void> {
           subagent: (c, sid, op, b) => engine.engine!.subagent(c, sid, op, b),
         }
       : undefined,
+    voice: {
+      vault: cfg.vault,
+      shell: engine.engine && "shell" in engine ? engine.shell : undefined,
+      message: engine.engine ? (b) => engine.engine!.message(b) : undefined,
+      onWrite: () => triggerSync(),
+      openrouterKey: () => {
+        const v = keychainCommands.keychain_get({ key: "api.openrouter" });
+        return typeof v === "string" && v ? v : null;
+      },
+      webSearchModel: process.env.VC_WEBSEARCH_MODEL || "google/gemini-2.5-flash-lite",
+    },
   });
   console.log(`[vault-chat-server] listening on http://${cfg.host}:${cfg.port}`);
 

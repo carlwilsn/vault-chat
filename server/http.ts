@@ -15,6 +15,7 @@ import { isGitPath, handleGitHttp } from "./gitHttp";
 import { validVaultName } from "./sync";
 import { validKeyName } from "./keys";
 import { projectsList, setProject } from "./projectRoutes";
+import { voiceTool, voiceSession, type VoiceDeps } from "./voice";
 import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
 import VOICE_PAGE_INLINE from "../src-tauri/assets/voice.html";
 import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
@@ -40,6 +41,8 @@ export type ServerHooks = {
     kill: (b: any) => Promise<Record<string, unknown> | null>;
     subagent: (convId: string, sid: string, op: "steer" | "stop", b: any) => Promise<Record<string, unknown>>;
   };
+  /** Voice: the ElevenLabs agent's tools run here (server/voice.ts). */
+  voice?: VoiceDeps;
 };
 
 // Idempotency for engine sends: the phone tags each POST with clientMsgId and
@@ -288,6 +291,17 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   }
 
 
+  // Voice (server/voice.ts): the laptop in box mode and the phone run the
+  // voice agent's tools here; the session is minted with the box's key.
+  if (path === "/api/v1/voice/tool" && method === "POST") {
+    if (!hooks.voice) return json(res, 503, { error: "voice tools not available" });
+    return json(res, 200, await voiceTool(hooks.voice, await jsonBody(req)));
+  }
+  if (path === "/api/v1/voice/session" && method === "GET") {
+    const out = await voiceSession(url.searchParams.get("convId"));
+    return json(res, out.status, out.body);
+  }
+
   const q = (k: string) => url.searchParams.get(k) ?? "";
 
   switch (`${method} ${path}`) {
@@ -400,19 +414,27 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     }
     case "POST /push/test":
       return relayRoute(res, "phone:pushtest", {}, 15_000, "app not answering");
-    case "POST /session":
-      // Phone voice needs the desktop voice host (ElevenLabs context); the
-      // headless server has none.
-      await readBody(req).catch(() => "");
-      return json(res, 503, { error: "voice is not available on the headless server" });
+    case "POST /session": {
+      // The old phone page's session call: the same as GET /api/v1/voice/session.
+      const out = await voiceSession(String((await jsonBody(req)).convId ?? "") || null);
+      return json(res, out.status, out.body);
+    }
     case "POST /voice-transcript": {
       const b = await jsonBody(req);
       if (String(b.text ?? "").trim()) emitLocal("voice:transcript", { role: b.role ?? "assistant", text: b.text });
       return json(res, 200, { ok: true });
     }
     case "POST /tool": {
+      // The old phone page's tool call: the full box set when voice is wired, else read-only.
       const raw = await readBody(req);
-      return send(res, 200, "text/plain; charset=utf-8", await dispatchVoiceTool(vault, raw));
+      if (!hooks.voice) return send(res, 200, "text/plain; charset=utf-8", await dispatchVoiceTool(vault, raw));
+      let b: any = {};
+      try {
+        b = JSON.parse(raw);
+      } catch {
+        /* empty */
+      }
+      return send(res, 200, "text/plain; charset=utf-8", (await voiceTool(hooks.voice, b)).result);
     }
     // Projects: the chat chip and "New chat in project" (desktop box mode, phone).
     case "GET /projects":

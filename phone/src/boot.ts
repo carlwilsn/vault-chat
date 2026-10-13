@@ -2109,7 +2109,7 @@ export function boot(): void {
     for (let i = 0; i < NUM_BARS; i++) { const decayed = vSmoothed[i] * DECAY; vSmoothed[i] = raw[i] > decayed ? raw[i] : decayed; const h = 0.16 + Math.min(1, vSmoothed[i]) * 0.84; vBars[i].style.transform = `scaleY(${h.toFixed(3)})`; }
     vRafId = requestAnimationFrame(vMeter);
   }
-  function vClientTools(toolNames) { const tools = {}; for (const name of toolNames || []) { tools[name] = async (params) => { try { const r = await api("/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, arguments: params || {} }) }); return await r.text(); } catch (e) { return "error: " + String(e); } }; } return tools; }
+  function vClientTools(toolNames) { const tools = {}; for (const name of toolNames || []) { tools[name] = async (params) => { try { const r = await api("/api/v1/voice/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, args: params || {} }) }); const j = await r.json(); return typeof j.result === "string" ? j.result : "error: " + (j.error || r.status); } catch (e) { return "error: " + String(e); } }; } return tools; }
   async function vStart() {
     if (vConnecting || vConv) return;
     if (!micAvailable()) { setVErr("This page isn't HTTPS, so the browser blocks the mic. Open the https://…ts.net link from Settings → Phone."); return; }
@@ -2120,7 +2120,7 @@ export function boot(): void {
       let cfg = null;
       let sessErr = "";
       for (let a = 0; a < 6; a++) {
-        try { const r = await api("/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: convId || null }) }); if (r.ok) { cfg = await r.json(); break; } sessErr = `session ${r.status}: ${(await r.text()).slice(0, 200)}`; }
+        try { const r = await api("/api/v1/voice/session" + (convId ? "?convId=" + encodeURIComponent(convId) : "")); if (r.ok) { cfg = await r.json(); break; } sessErr = `session ${r.status}: ${(await r.text()).slice(0, 200)}`; }
         catch (e) { sessErr = String((e && e.message) || e); }
         // Retry ANY failure (502 transient mint, network blip, 503 not-ready), not
         // just 503 — a single stray error used to kill the whole start. Backoff.

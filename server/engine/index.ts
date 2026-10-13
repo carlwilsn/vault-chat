@@ -37,6 +37,8 @@ export type EngineHandle = {
   health: () => Record<string, unknown>;
   /** The models the box runs: the chat agent, the vision fallback, the subagent child's default. */
   roles?: () => { chat: string; vision: string; subagent: string };
+  /** The per-command shell sandbox (bubblewrap argv ending "--"), null when there is none. Voice's Bash runs in it. */
+  shell?: string[] | null;
 };
 
 export function engineModel(): string {
@@ -236,5 +238,6 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     health: () => ({ ...engine.health(), model, version: install.version }),
     // A child runs on its agent's model, else VC_PI_SUBAGENT_MODEL, else the parent's (subagents.ts).
     roles: () => ({ chat: engineModel(), vision: visionModel, subagent: process.env.VC_PI_SUBAGENT_MODEL || engineModel() }),
+    shell: sandbox.shell,
   };
 }
