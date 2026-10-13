@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
 import { initRing } from "./ring";
-import { loadKeyStore, hasKey, keychainCommands } from "./keys";
+import { loadKeyStore, hasKey, keychainCommands, saveKeys, keyNames } from "./keys";
+import { hostname } from "node:os";
 import { getRing } from "./ring";
 
 function fatal(msg: string, code = 2): never {
@@ -52,10 +53,12 @@ async function main(): Promise<void> {
   // missions — refuse to start rather than run turns with zero keys.
   const ks = await loadKeyStore(cfg.secretsDir);
   if (ks.error) console.error(`[vault-chat-server] ${ks.error}`);
+  // No OpenRouter key: the server still starts (health says hasKey: false) so
+  // the laptop's Settings can send one (POST /api/v1/keys); turns fail until then.
   if (!hasKey("api.openrouter")) {
-    fatal(
-      `no "api.openrouter" key in the key store (${cfg.secretsDir}/secrets.age). ` +
-        `Missions cannot run without it. Add the key with the desktop app on this machine, then restart.`,
+    console.error(
+      `[vault-chat-server] no "api.openrouter" key in the key store (${cfg.secretsDir}/secrets.age). ` +
+        `Turns cannot run until one is added (laptop: Settings → Box → Box's OpenRouter key).`,
     );
   }
   if (cfg.openrouterBase) installOpenRouterRewrite(cfg.openrouterBase);
@@ -101,7 +104,7 @@ async function main(): Promise<void> {
   });
 
   const { activeRuns } = await import("../src/runRegistry");
-  const { startBoxSync, syncStatus, syncSummary, triggerSync } = await import("./sync");
+  const { startBoxSync, syncStatus, syncSummary, triggerSync, listVaults, addVault } = await import("./sync");
   // The tag becomes the Web Push tag, so a repeat alert replaces the last one.
   const alert = async (title: string, body: string, tag?: string) => {
     try {
@@ -132,11 +135,15 @@ async function main(): Promise<void> {
   const server = await startHttpServer({
     health: async () => ({
       ok: true,
+      app: "vault-chat-server",
+      name: hostname(),
+      hasKey: hasKey("api.openrouter"),
+      keyNames: keyNames(),
       version: SERVER_VERSION,
       rev: SERVER_REV,
       vault: cfg.vaultName,
       git: gitState,
-      keys: { openrouter: hasKey("api.openrouter") },
+      keys: { openrouter: hasKey("api.openrouter"), elevenlabs: hasKey("service.elevenlabs") },
       busy: { runs: activeRuns().length },
       conversations: useStore.getState().conversations.length,
       sync: syncSummary(),
@@ -144,7 +151,16 @@ async function main(): Promise<void> {
     }),
     syncStatus,
     alert,
-    onGitPushed: () => triggerSync(),
+    onGitPushed: (name) => triggerSync(name),
+    vaults: { list: listVaults, add: addVault },
+    setKeys: async (keys) => {
+      const changed = await saveKeys(cfg.secretsDir, keys);
+      if (changed) {
+        await store.hydrateKeychain();
+        console.log(`[vault-chat-server] keys from the laptop: ${Object.keys(keys).sort().join(", ") || "none"}`);
+      }
+      return changed;
+    },
     engine: engine.engine
       ? {
           models: () => modelsList(),

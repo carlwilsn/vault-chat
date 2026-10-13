@@ -9,8 +9,8 @@
 //   • the bare repo is what the laptop pushes `master` to / fetches `box`
 //     from, over /git (see gitHttp.ts). The box does not mirror to GitHub
 //     (its credential is gone); the laptop does the backup.
-import { existsSync, mkdirSync, writeFileSync, chmodSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, writeFileSync, chmodSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { loadConfig } from "./config";
 import { runGit, git, withRepoLock, abortStuckMergeOrRebase, stageAllExceptLarge, onLargeFilesSkipped, AGENT_IDENTITY_ARGS } from "./git";
 
@@ -229,8 +229,15 @@ exit 0
 
         const hasHead = (await runGit(vault, ["rev-parse", "--verify", "HEAD"])).code === 0;
         if (!hasHead) {
-          s.steps.push = { ok: true, at: Date.now(), detail: "no commits yet" };
-          return;
+          // A vault added from Settings starts empty: once the laptop has
+          // pushed master, box starts from it.
+          const f = await runGit(vault, ["fetch", "-q", bare, `+refs/heads/${HUB}:${HUB_REF}`]);
+          if (f.code !== 0) {
+            s.steps.push = { ok: true, at: Date.now(), detail: "no commits yet" };
+            return;
+          }
+          await git(vault, ["checkout", "-q", "-B", BRANCH, HUB_REF]);
+          s.steps.fetch = { ok: true, at: Date.now(), detail: `box started from ${HUB}` };
         }
 
         // 2. Push box → bare.
@@ -347,12 +354,79 @@ function errText(e: unknown): string {
 
 let instance: BoxSync | null = null;
 let setupError: string | null = null;
+let alertFn: Alert = async () => 0;
+/** Vaults added from Settings (POST /api/v1/vaults), beside the main one. */
+const added = new Map<string, BoxSync>();
+
+/** A vault's name on the box: `^[A-Za-z0-9._-]{1,64}$`, no leading dot, no `.git`. */
+export function validVaultName(n: unknown): n is string {
+  return typeof n === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(n) && !n.startsWith(".") && !n.endsWith(".git");
+}
+
+/** Where a vault lives: the main one from the config, the rest beside it
+ * (`~/vaults/<name>` + `~/vaults/<name>.git`). */
+export function vaultPaths(name: string): { vault: string; bare: string } {
+  const cfg = loadConfig();
+  if (name === cfg.vaultName) return { vault: cfg.vault, bare: cfg.bareRepo };
+  const root = dirname(cfg.vault);
+  return { vault: join(root, name), bare: join(root, `${name}.git`) };
+}
+
+/** Every vault this box has: the main one plus each `<name>.git` beside it
+ * that has its working copy. */
+export function listVaults(): Array<{ name: string; main: boolean; syncing: boolean }> {
+  const cfg = loadConfig();
+  const out = [{ name: cfg.vaultName, main: true, syncing: !!instance }];
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(dirname(cfg.vault));
+  } catch {
+    /* no root */
+  }
+  for (const e of entries.sort()) {
+    if (!e.endsWith(".git")) continue;
+    const name = e.slice(0, -4);
+    if (name === cfg.vaultName || !validVaultName(name)) continue;
+    const { vault, bare } = vaultPaths(name);
+    if (existsSync(join(bare, "HEAD")) && existsSync(join(vault, ".git"))) out.push({ name, main: false, syncing: added.has(name) });
+  }
+  return out;
+}
+
+/** Create `<name>.git` (bare) and its working copy on `box` if missing, and
+ * sync it. Idempotent. */
+export async function addVault(name: string): Promise<{ name: string; created: boolean }> {
+  if (!validVaultName(name)) throw new Error("invalid vault name");
+  const cfg = loadConfig();
+  if (name === cfg.vaultName || added.has(name)) return { name, created: false };
+  const { vault, bare } = vaultPaths(name);
+  const created = !existsSync(join(bare, "HEAD")) || !existsSync(join(vault, ".git"));
+  const s = new BoxSync(vault, bare, cfg.syncIntervalMs, alertFn);
+  await s.ensure(true);
+  added.set(name, s);
+  if (cfg.syncEnabled) s.start();
+  return { name, created };
+}
 
 export async function startBoxSync(alert: Alert): Promise<BoxSync | null> {
+  alertFn = alert;
   const cfg = loadConfig();
   if (!cfg.syncEnabled) {
     setupError = "disabled (VC_SYNC=0)";
     return null;
+  }
+  // Vaults added earlier come back with the server.
+  for (const v of listVaults()) {
+    if (v.main) continue;
+    const { vault, bare } = vaultPaths(v.name);
+    const s = new BoxSync(vault, bare, cfg.syncIntervalMs, alert);
+    try {
+      await s.ensure(false);
+      added.set(v.name, s);
+      s.start();
+    } catch (e) {
+      console.error(`[sync] ${v.name}:`, errText(e));
+    }
   }
   const s = new BoxSync(cfg.vault, cfg.bareRepo, cfg.syncIntervalMs, alert);
   try {
@@ -368,8 +442,10 @@ export async function startBoxSync(alert: Alert): Promise<BoxSync | null> {
   return s;
 }
 
-export function triggerSync(): void {
-  instance?.trigger();
+/** Run a cycle now: the main vault, or the named one. */
+export function triggerSync(name?: string): void {
+  if (name && added.has(name)) added.get(name)!.trigger();
+  else instance?.trigger();
 }
 
 export function syncStatus(): unknown {

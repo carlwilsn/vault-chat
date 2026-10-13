@@ -12,6 +12,8 @@ import { getRing } from "./ring";
 import { conversationsSummary, conversationDetail, notificationsFeed, notesFeed, withinVault, mimeFor, dispatchVoiceTool } from "./phoneData";
 import { notificationAppend, pushSubsAdd, pushSubsRemove, vapidPublicKey } from "./commands/phone";
 import { isGitPath, handleGitHttp } from "./gitHttp";
+import { validVaultName } from "./sync";
+import { validKeyName } from "./keys";
 import { projectsList, setProject } from "./projectRoutes";
 import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
 import VOICE_PAGE_INLINE from "../src-tauri/assets/voice.html";
@@ -23,7 +25,10 @@ export type ServerHooks = {
   health: () => Promise<Record<string, unknown>>;
   syncStatus: () => unknown;
   alert: (title: string, body: string, tag?: string) => Promise<number>;
-  onGitPushed: () => void;
+  onGitPushed: (vault: string) => void;
+  /** Settings → Box on the laptop: this box's vaults, and its own OpenRouter key. */
+  vaults?: { list: () => unknown; add: (name: string) => Promise<Record<string, unknown>> };
+  setKeys?: (keys: Record<string, string>) => Promise<boolean>;
   /** The engine takes these routes; a handler returning null hands the
    * request to the legacy relay (old mission threads). */
   engine?: {
@@ -230,6 +235,42 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     if (!title && !body) return json(res, 400, { error: "alert needs a title or body" });
     const sent = await hooks.alert(title || "vault-chat", body, typeof b.tag === "string" ? b.tag : undefined);
     return json(res, 200, { ok: true, sent });
+  }
+
+  // Settings → Box on the laptop. Each vault is added on its own; the box only
+  // has the vaults someone added.
+  if (path === "/api/v1/vaults" && method === "GET") {
+    return hooks.vaults ? json(res, 200, { vaults: hooks.vaults.list() }) : json(res, 503, { error: "vaults not available" });
+  }
+  if (path === "/api/v1/vaults" && method === "POST") {
+    if (!hooks.vaults) return json(res, 503, { error: "vaults not available" });
+    const b = await jsonBody(req);
+    if (!validVaultName(b.name)) return json(res, 400, { error: "invalid vault name (letters, digits, . _ -, up to 64; not starting with a dot)" });
+    try {
+      return json(res, 200, { ok: true, ...(await hooks.vaults.add(b.name)) });
+    } catch (e) {
+      return json(res, 500, { error: String((e as Error)?.message ?? e) });
+    }
+  }
+  // The laptop's keychain, the whole set ({name: value}); a name missing here
+  // is removed. Stored in the box's own key store. Never echoed.
+  if (path === "/api/v1/keys" && method === "POST") {
+    if (!hooks.setKeys) return json(res, 503, { error: "keys not available" });
+    const b = await jsonBody(req);
+    const keys = b.keys;
+    if (!keys || typeof keys !== "object" || Array.isArray(keys)) return json(res, 400, { error: "keys: a {name: value} map is required" });
+    const clean: Record<string, string> = {};
+    for (const [k, v] of Object.entries(keys)) {
+      if (!validKeyName(k)) return json(res, 400, { error: `invalid key name: ${k.slice(0, 80)}` });
+      if (typeof v !== "string" || !v.trim() || v.length > 4096) return json(res, 400, { error: `invalid value for ${k}` });
+      clean[k] = v.trim();
+    }
+    try {
+      const changed = await hooks.setKeys(clean);
+      return json(res, 200, { ok: true, changed, names: Object.keys(clean).sort() });
+    } catch (e) {
+      return json(res, 500, { error: String((e as Error)?.message ?? e) });
+    }
   }
 
   // Model capabilities for Settings → Models.

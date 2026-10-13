@@ -56,7 +56,7 @@ describe("boot + phone routes", () => {
     expect(h.ok).toBe(true);
     expect(h.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(h.git).toBe("ok");
-    expect(h.keys).toEqual({ openrouter: true });
+    expect(h.keys).toEqual({ openrouter: true, elevenlabs: false });
     expect(typeof h.busy.runs).toBe("number");
     expect(srv.logs()).not.toContain("sk-or-canary-not-real");
   });

@@ -4,28 +4,31 @@
 // VC_PUSHER=http so the bare repo's pre-receive hook can keep `box` box-only.
 import { spawn } from "node:child_process";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { existsSync } from "node:fs";
 import { loadConfig } from "./config";
+import { validVaultName, vaultPaths } from "./sync";
 
 export function isGitPath(pathname: string): boolean {
   return pathname.startsWith("/git/");
 }
 
-export function handleGitHttp(req: IncomingMessage, res: ServerResponse, url: URL, user: string, onPushed: () => void): void {
-  const cfg = loadConfig();
+export function handleGitHttp(req: IncomingMessage, res: ServerResponse, url: URL, user: string, onPushed: (vault: string) => void): void {
   const m = /^\/git\/([^/]+?)(?:\.git)?(\/.*)?$/.exec(url.pathname);
-  if (!m || m[1] !== cfg.vaultName || !existsSync(cfg.bareRepo)) {
+  // The main vault, or one added from Settings (~/vaults/<name>.git).
+  const name = m?.[1] ?? "";
+  const bareRepo = name === loadConfig().vaultName || validVaultName(name) ? vaultPaths(name).bare : "";
+  if (!m || !bareRepo || !existsSync(join(bareRepo, "HEAD"))) {
     res.writeHead(404, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "no such repository" }));
     return;
   }
   const rest = m[2] ?? "/";
-  const pathInfo = `/${basename(cfg.bareRepo)}${rest}`;
+  const pathInfo = `/${basename(bareRepo)}${rest}`;
   const isPush = rest === "/git-receive-pack" || url.searchParams.get("service") === "git-receive-pack";
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    GIT_PROJECT_ROOT: dirname(cfg.bareRepo),
+    GIT_PROJECT_ROOT: dirname(bareRepo),
     GIT_HTTP_EXPORT_ALL: "1",
     PATH_INFO: pathInfo,
     REQUEST_METHOD: req.method ?? "GET",
@@ -85,7 +88,7 @@ export function handleGitHttp(req: IncomingMessage, res: ServerResponse, url: UR
       return;
     }
     res.end();
-    if (isPush && req.method === "POST") onPushed();
+    if (isPush && req.method === "POST") onPushed(name);
   });
   child.on("error", (e) => {
     if (!headersDone) {

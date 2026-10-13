@@ -1,4 +1,4 @@
-// Auth, /poll continuity across a restart, and the missing-key exit.
+// Auth, /poll continuity across a restart, and starting without a key.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { join } from "node:path";
 import { tmp, cleanup, makeVault, makeKeyStore, startServer, type Running } from "./helpers";
@@ -115,26 +115,38 @@ describe("/poll sequence across a restart", () => {
 });
 
 describe("missing key", () => {
-  it("exits non-zero with a clear message when api.openrouter is missing", async () => {
+  // The box starts without a key so the laptop's Settings → Box can send one
+  // (POST /api/v1/keys); health says so.
+  it("starts without api.openrouter, says so, and never logs other keys", async () => {
     const home = tmp();
     const vault = makeVault(join(home, "vault"));
     const secrets = await makeKeyStore(join(home, "secrets"), { "api.anthropic": "sk-ant-canary" });
     const srv = await startServer({ home, vault, secrets });
-    const code = await srv.exited;
-    expect(code).not.toBe(0);
-    expect(srv.logs()).toContain('no "api.openrouter" key');
-    expect(srv.logs()).not.toContain("sk-ant-canary");
-    expect(srv.logs()).not.toContain("listening on");
-    cleanup(home);
+    try {
+      expect(srv.proc.exitCode).toBeNull();
+      expect(srv.logs()).toContain('no "api.openrouter" key');
+      expect(srv.logs()).not.toContain("sk-ant-canary");
+      const h = await (await fetch(`${srv.base}/api/v1/health`)).json();
+      expect(h.hasKey).toBe(false);
+      expect(h.keys).toEqual({ openrouter: false, elevenlabs: false });
+      expect(h.keyNames).toEqual(["api.anthropic"]);
+    } finally {
+      await srv.stop();
+      cleanup(home);
+    }
   });
 
-  it("exits non-zero when there is no key store at all", async () => {
+  it("starts when there is no key store at all", async () => {
     const home = tmp();
     const vault = makeVault(join(home, "vault"));
     const srv = await startServer({ home, vault, secrets: join(home, "nowhere") });
-    expect(await srv.exited).not.toBe(0);
-    expect(srv.logs()).toContain("key store not readable");
-    expect(srv.logs()).toContain('no "api.openrouter" key');
-    cleanup(home);
+    try {
+      expect(srv.proc.exitCode).toBeNull();
+      expect(srv.logs()).toContain("key store not readable");
+      expect(srv.logs()).toContain('no "api.openrouter" key');
+    } finally {
+      await srv.stop();
+      cleanup(home);
+    }
   });
 });
