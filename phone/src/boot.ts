@@ -496,7 +496,7 @@ export function boot(): void {
       }
       // New project: a new chat, with the project sheet open to name it.
       const np = el('<button class="csec proj pnew"><span class="pn">+ New project</span></button>');
-      np.onclick = () => { closeConvs(); newChat(); openProjectSheet(); };
+      np.onclick = () => { closeConvs(); newChat(); openProjectSheet(); setTimeout(() => ($("sheetFoot").querySelector(".rinp") as HTMLTextAreaElement | null)?.focus(), 250); };
       box.appendChild(np);
       if (loose.length) {
         const h = document.createElement("div"); h.className = "csec"; h.textContent = "Chats"; box.appendChild(h);
