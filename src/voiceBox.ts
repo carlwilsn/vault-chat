@@ -7,7 +7,6 @@
 // vault root are sent vault-relative, so they mean the same file on the box.
 // Tools that move the user's screen never go there (LOCAL_VOICE_TOOLS).
 import { boxGet, boxLinkFor, boxPost, type Link } from "./boxChat";
-import { readBoxConfig } from "./vaultSync";
 import { useStore, type ChatMessage } from "./store";
 
 const PATH_KEYS = ["path", "cwd", "source_path"];
@@ -29,13 +28,14 @@ export function relativeArgs(args: unknown, vault: string): Record<string, unkno
 
 type Post = (link: Link, path: string, payload: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; data?: Record<string, unknown>; network?: boolean }>;
 
-/** This vault's box: the link, the vault's name there, and the tool runner. */
-export type BoxVoice = { link: Link; vault: string; boxVault?: string; tool: (name: string, args: unknown) => Promise<string> };
+/** This vault's box (the link carries the vault's name there: every request
+ * runs in that vault's working copy and engine) and the tool runner. */
+export type BoxVoice = { link: Link; vault: string; tool: (name: string, args: unknown) => Promise<string> };
 
 /** The remote runner for one link. */
-export function voiceToolVia(link: Link, vault: string, post: Post = boxPost, boxVault?: string) {
+export function voiceToolVia(link: Link, vault: string, post: Post = boxPost) {
   return async (name: string, args: unknown): Promise<string> => {
-    const r = await post(link, "/api/v1/voice/tool", { name, args: relativeArgs(args, vault), ...(boxVault ? { vault: boxVault } : {}) });
+    const r = await post(link, "/api/v1/voice/tool", { name, args: relativeArgs(args, vault) });
     if (!r.ok) return `Error: the box did not run ${name} (${r.error ?? "unreachable"}).`;
     return typeof r.data?.result === "string" ? r.data.result : JSON.stringify(r.data ?? {});
   };
@@ -46,8 +46,7 @@ export async function boxVoice(vault: string | null, post: Post = boxPost): Prom
   if (!vault) return null;
   const link = await boxLinkFor(vault).catch(() => null);
   if (!link) return null;
-  const boxVault = (await readBoxConfig(vault).catch(() => null))?.vault || undefined;
-  return { link, vault, boxVault, tool: voiceToolVia(link, vault, post, boxVault) };
+  return { link, vault, tool: voiceToolVia(link, vault, post) };
 }
 
 /** The remote runner when `vault` runs on a box, else null (tools run here). */
@@ -65,8 +64,8 @@ export type BoxVoiceSession = {
 };
 
 /** The box's session for this vault. `unreachable`: the box did not answer
- * (the caller may fall back to its own agent); `unsupported`: the box has no
- * voice for this vault (voice runs here, as without a box). */
+ * (the caller may fall back to its own agent); `unsupported`: the box doesn't
+ * have this vault, or is from before voice (voice runs here, as without a box). */
 export async function boxVoiceSession(
   b: BoxVoice,
   convId: string | null,
@@ -74,7 +73,6 @@ export async function boxVoiceSession(
 ): Promise<{ session?: BoxVoiceSession; error?: string; unreachable?: boolean; unsupported?: boolean }> {
   const q = new URLSearchParams();
   if (convId) q.set("convId", convId);
-  if (b.boxVault) q.set("vault", b.boxVault);
   const qs = q.toString();
   try {
     const s = await get(b.link, `/api/v1/voice/session${qs ? `?${qs}` : ""}`, 20_000);
@@ -84,7 +82,7 @@ export async function boxVoiceSession(
     const status = (e as { status?: number }).status;
     const msg = String((e as Error)?.message ?? e);
     if (!status) return { unreachable: true, error: msg };
-    if (status === 503 && /not set up for vault/.test(msg)) return { unsupported: true, error: msg };
+    if (status === 404) return { unsupported: true, error: msg };
     return { error: msg };
   }
 }
@@ -106,7 +104,6 @@ export function voiceTranscriptMirror(b: BoxVoice, localId: string, fromConvId: 
         role: m.role === "user" ? "user" : "assistant",
         text,
         ...(m.system ? { system: true } : {}),
-        ...(b.boxVault ? { vault: b.boxVault } : {}),
       });
       const next = typeof r.data?.convId === "string" ? r.data.convId : null;
       if (r.ok && next && next !== id) {

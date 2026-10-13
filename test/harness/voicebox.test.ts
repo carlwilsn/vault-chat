@@ -53,10 +53,10 @@ test("box mode: vault tools go to the box with vault-relative paths", async () =
   assert.deepEqual(
     posts.map((p) => [p.path, p.body.name, p.body.args.path ?? p.body.args.command ?? p.body.args.task]),
     [
-      ["/api/v1/voice/tool", "Read", "notes/a.md"],
-      ["/api/v1/voice/tool", "Write", "notes/b.md"],
-      ["/api/v1/voice/tool", "Bash", "ls"],
-      ["/api/v1/voice/tool", "AskAgent", "summarise the week"],
+      ["/api/v1/voice/tool?vault=v", "Read", "notes/a.md"],
+      ["/api/v1/voice/tool?vault=v", "Write", "notes/b.md"],
+      ["/api/v1/voice/tool?vault=v", "Bash", "ls"],
+      ["/api/v1/voice/tool?vault=v", "AskAgent", "summarise the week"],
     ],
   );
   // Nothing was written on the laptop: the write is the box's.
@@ -93,7 +93,7 @@ test("box mode: the box's own vault tools (named by its session) are forwarded t
   const h = voice.buildClientToolHandlers((await boxVoiceTool(vault))!, ["EchoKey"]);
   posts.length = 0;
   assert.equal(await h.EchoKey({ word: "hi" }), "box ran EchoKey");
-  assert.equal(posts[0]?.body.vault, "v", "the box's name for the vault rides along");
+  assert.equal(posts[0]?.path, "/api/v1/voice/tool?vault=v", "the box's name for the vault rides along");
 });
 
 test("the session is the box's; unreachable and no-voice-for-this-vault are told apart", async () => {
@@ -105,13 +105,14 @@ test("the session is the box's; unreachable and no-voice-for-this-vault are told
     return { signedUrl: "wss://fake/x", systemPrompt: "box prompt", toolNames: ["Read", "EchoKey"], vaultRoot: "/home/carl/vaults/v" };
   });
   assert.equal(ok.session?.signedUrl, "wss://fake/x");
-  assert.deepEqual(seen, ["/api/v1/voice/session?convId=c1&vault=v"]);
+  assert.deepEqual(seen, ["/api/v1/voice/session?convId=c1"]);
+  assert.equal(b.link.vault, "v", "(boxGet adds ?vault= from the link)");
   const down = await boxVoiceSession(b, null, async () => {
     throw "error sending request: connection refused";
   });
   assert.equal(down.unreachable, true);
   const other = await boxVoiceSession(b, null, async () => {
-    throw Object.assign(new Error('HTTP 503: {"error":"voice is not set up for vault \\"v\\" on this box (only main)"}'), { status: 503 });
+    throw Object.assign(new Error('HTTP 404: {"error":"no vault v on this box"}'), { status: 404 });
   });
   assert.equal(other.unsupported, true);
   const noKey = await boxVoiceSession(b, null, async () => {

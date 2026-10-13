@@ -6,10 +6,11 @@
 // (server/context/projects.ts); the box authors every conversation, so the
 // tag is a locked read-modify-write of that one conversation, mirrored into
 // the headless store so its persist never writes the old value back.
-import { configureContext, ctxConfig } from "./context/config";
+import { configureContext, ctxConfig, withVault } from "./context/config";
 import { listProjects, ensureProject } from "./context/projects";
 import { useStore } from "../src/store";
 import { readConversations, writeConversations, withConvLock } from "../src/conversations";
+import { mirrorPatch } from "./engine/convs";
 
 function ready(vault: string): void {
   let v = "";
@@ -24,7 +25,7 @@ function ready(vault: string): void {
 /** The vault's projects, by name. */
 export function projectsList(vault: string): { projects: { slug: string; name: string }[] } {
   ready(vault);
-  return { projects: listProjects().map((p) => ({ slug: p.slug, name: p.name })) };
+  return withVault(vault, () => ({ projects: listProjects().map((p) => ({ slug: p.slug, name: p.name })) }));
 }
 
 export async function setProject(
@@ -38,7 +39,7 @@ export async function setProject(
   let slug: string | null = null;
   if (want) {
     try {
-      slug = ensureProject(want).project.slug;
+      slug = withVault(vault, () => ensureProject(want).project.slug);
     } catch (e) {
       return { error: String((e as Error)?.message ?? e) };
     }
@@ -49,9 +50,12 @@ export async function setProject(
     if (!cur) return false;
     const next = { ...cur, project: slug ?? undefined };
     await writeConversations(vault, [next]);
-    useStore.setState((s) => ({
-      conversations: s.conversations.map((c) => (c.id === convId ? { ...c, project: slug ?? undefined } : c)),
-    }));
+    // Only the main vault's conversations live in the headless store.
+    if (useStore.getState().vaultPath === vault) {
+      useStore.setState((s) => ({
+        conversations: s.conversations.map((c) => (c.id === convId ? { ...c, project: slug ?? undefined } : c)),
+      }));
+    } else mirrorPatch(vault, convId, { project: slug ?? undefined });
     return true;
   });
   if (!done) return { error: "conversation not found" };

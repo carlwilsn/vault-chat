@@ -22,6 +22,12 @@ writeFileSync(
 );
 writeFileSync(join(vault, ".vault-chat", "tools", "echo", "run.sh"), 'cat\necho\necho "demo=${DEMO_KEY:-none} other=${OTHER_KEY:-none} pwd=$(basename "$PWD")"\n');
 git(vault, "init", "-q");
+// A second vault on the box.
+const vault2 = join(root, "vault2");
+mkdirSync(join(vault2, ".vault-chat", "conversations"), { recursive: true });
+mkdirSync(join(vault2, "lab"), { recursive: true });
+writeFileSync(join(vault2, "lab", "plan.md"), "# Plan\nsecond vault\n");
+git(vault2, "init", "-q");
 writeFileSync(join(vault, "notes", "a.md"), "# A\nthe quick fox\n");
 writeFileSync(join(vault, "private", "s.md"), "secret quick\n");
 writeFileSync(join(vault, ".vaultchatdeny"), "private\n");
@@ -73,6 +79,7 @@ let store: any;
 let voice: typeof import("../voice");
 let writes = 0;
 let deps: import("../voice").VoiceDeps;
+let deps2: import("../voice").VoiceDeps;
 const tool = async (name: string, args: Record<string, unknown>) => (await voice.voiceTool(deps, { name, args })).result;
 
 beforeAll(async () => {
@@ -103,7 +110,8 @@ beforeAll(async () => {
   });
   engine.start();
   voice = await import("../voice");
-  deps = { vault, shell: null, message: (b) => engine.message(b), onWrite: () => writes++ };
+  deps = { vault, name: "main", main: true, shell: null, message: (b) => engine.message(b), onWrite: () => writes++ };
+  deps2 = { vault: vault2, name: "lab", main: false, shell: null, onWrite: () => writes++ };
 });
 
 afterAll(() => {
@@ -201,6 +209,19 @@ describe("the vault's own voice tools on the box", () => {
   });
 });
 
+describe("per vault", () => {
+  it("a vault's voice reads its own working copy, never the other's, and saves its lines in it", async () => {
+    const r = await voice.voiceTool(deps2, { name: "Read", args: { path: "lab/plan.md" } });
+    expect(r.result).toContain("second vault");
+    expect((await voice.voiceTool(deps2, { name: "Read", args: { path: join(vault, "notes", "a.md") } })).result).toMatch(/outside the vault/);
+    expect((await voice.voiceTool(deps2, { name: "EchoKey", args: {} })).result).toMatch(/not available/);
+    const line = await voice.voiceTranscript(deps2, { role: "user", text: "plan for the lab?" });
+    const { readConv } = await import("../engine/convs");
+    expect((await readConv(vault2, String(line.body.convId)))?.source).toBe("voice");
+    expect(await readConv(vault, String(line.body.convId))).toBeNull();
+  });
+});
+
 describe("POST /api/v1/voice/transcript", () => {
   it("saves a session as a voice conversation of its own, tagged with the project it came from", async () => {
     const { readConv, createConv } = await import("../engine/convs");
@@ -236,7 +257,7 @@ describe("POST /api/v1/voice/transcript", () => {
 describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
   it("is 503 without the box's ElevenLabs key", async () => {
     store.setState({ serviceKeys: {} });
-    const out = await voice.voiceSession(null, vault);
+    const out = await voice.voiceSession(null, deps);
     expect(out.status).toBe(503);
   });
 
@@ -253,7 +274,7 @@ describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
     }) as typeof fetch;
     try {
       store.setState({ serviceKeys: { elevenlabs: "el-canary-key" } });
-      const out = await voice.voiceSession(null, vault);
+      const out = await voice.voiceSession(null, deps);
       expect(out.status).toBe(200);
       expect(out.body.signedUrl).toBe("wss://fake.elevenlabs/x?sig=1");
       expect(out.body.toolNames).toEqual(expect.arrayContaining(["Read", "Write", "Bash", "AskAgent", "AgentStatus", "ScrollTo"]));
@@ -271,8 +292,22 @@ describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
       expect(calls.some((c) => c.url.includes("agent_id=agent_fake"))).toBe(true);
       // A second session reuses the provisioned agent.
       const n = calls.length;
-      expect((await voice.voiceSession(null, vault)).status).toBe(200);
+      expect((await voice.voiceSession(null, deps)).status).toBe(200);
       expect(calls.slice(n).some((c) => c.url.includes("/agents/create"))).toBe(false);
+
+      // Another vault: its own working copy and index, its own agent (no EchoKey: that tool is the first vault's).
+      const m = calls.length;
+      const other = await voice.voiceSession(null, deps2);
+      expect(other.status).toBe(200);
+      expect(other.body.vaultRoot).toBe(vault2);
+      expect(String(other.body.systemPrompt)).toContain("lab/plan.md");
+      expect(String(other.body.systemPrompt)).not.toContain("notes/a.md");
+      expect(other.body.toolNames).not.toContain("EchoKey");
+      expect(calls.slice(m).filter((c) => c.url.includes("/agents/create")).length).toBe(1);
+      // …and the first vault's agent is still its own (no re-provision ping-pong).
+      const k = calls.length;
+      expect((await voice.voiceSession(null, deps)).status).toBe(200);
+      expect(calls.slice(k).some((c) => c.url.includes("/agents/create"))).toBe(false);
     } finally {
       globalThis.fetch = real;
     }

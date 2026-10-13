@@ -4,6 +4,7 @@ import type { Conversation } from "../../src/conversations";
 
 export {
   configureContext,
+  withVault,
   contextToolSpecs,
   handleContextTool,
   isContextTool,

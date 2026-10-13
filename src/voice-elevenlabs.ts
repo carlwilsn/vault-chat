@@ -59,7 +59,7 @@ function voiceAppend(m: ChatMessage): void {
 // LLM list (2026-07).
 export const DEFAULT_LLM = "gemini-3.5-flash";
 const LLM_STORAGE = "vault_chat_elevenlabs_llm";
-const AGENT_LLM_AT_PROVISION = "vault_chat_elevenlabs_agent_llm";
+const AGENT_LLM_KEY = "vault_chat_elevenlabs_agent_llm";
 
 // Models ElevenLabs Agents can actually run for voice — NOT every model the rest
 // of the app supports. Agents runs no Claude Opus, and only specific Gemini tiers
@@ -106,19 +106,19 @@ function getCurrentLlm(): string {
 function isGeminiLlm(llm: string): boolean {
   return llm.toLowerCase().startsWith("gemini");
 }
-const AGENT_ID_STORAGE = "vault_chat_elevenlabs_agent_id";
+const AGENT_ID_KEY = "vault_chat_elevenlabs_agent_id";
 // Bump whenever the agent-create body changes in a way that affects
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
 const AGENT_CONFIG_VERSION = "v21-askagent";
-const AGENT_VERSION_STORAGE = "vault_chat_elevenlabs_agent_config_version";
+const AGENT_VERSION_KEY = "vault_chat_elevenlabs_agent_config_version";
 // Signature of the per-vault custom tools baked into the cached agent. Custom
 // tools are part of the agent's tool schema (provisioned at create time), so a
 // tool added/removed/edited in the vault must force a re-provision the same way
 // an LLM or config-version change does — otherwise voice keeps offering the old
 // set. Mismatch with the live signature triggers a rebuild on next ensureAgent.
-const AGENT_TOOLS_SIG_STORAGE = "vault_chat_elevenlabs_agent_tools_sig";
+const AGENT_TOOLS_SIG_KEY = "vault_chat_elevenlabs_agent_tools_sig";
 
 // Custom voice tools for the active vault, refreshed on every ensureAgent (the
 // provisioning authority). buildClientToolHandlers / buildSystemPrompt read this
@@ -142,8 +142,8 @@ function voiceToolsSignature(tools: VaultVoiceTool[]): string {
 // Load the active vault's custom tools and refresh the module cache. Returns the
 // list so callers can build the agent's tool schema from the same snapshot the
 // handlers will use. Degrades to [] (built-ins only) on any failure.
-async function refreshVoiceTools(): Promise<VaultVoiceTool[]> {
-  const vault = useStore.getState().vaultPath;
+async function refreshVoiceTools(vaultOverride?: string): Promise<VaultVoiceTool[]> {
+  const vault = vaultOverride ?? useStore.getState().vaultPath;
   // (On the box the same tools are provisioned; server/voice.ts runs them in
   // its sandbox with only their declared keys — these execute()s run nowhere there.)
   try {
@@ -1654,7 +1654,12 @@ function buildVaultIndex(
  * fresh voice thread gets minted at session start, so the honest history is
  * none at all — not some other thread's.
  */
-export async function buildPhoneVoiceContext(convId?: string, opts?: { agentOnBox?: boolean; fileIndex?: string[] }): Promise<{
+export async function buildPhoneVoiceContext(
+  convId?: string,
+  // On the box: `vault` another vault than the store's (its working copy, with
+  // `history` read from its own conversations), `slot` its agent's cache slot.
+  opts?: { agentOnBox?: boolean; fileIndex?: string[]; vault?: string; history?: ChatMessage[]; slot?: string },
+): Promise<{
   elKey: string;
   agentId: string;
   voiceId: string;
@@ -1663,7 +1668,11 @@ export async function buildPhoneVoiceContext(convId?: string, opts?: { agentOnBo
   toolNames: string[];
   vault: string;
 } | null> {
-  const state = useStore.getState();
+  const live = useStore.getState();
+  const other = !!opts?.vault && opts.vault !== live.vaultPath;
+  const state = other
+    ? ({ ...live, vaultPath: opts!.vault!, files: [], messages: [], conversations: [], activeConversationId: null } as typeof live)
+    : live;
   const elKey = state.serviceKeys.elevenlabs;
   if (!elKey || !state.vaultPath) return null;
   // Run the agent check and the prompt-context file reads CONCURRENTLY — this
@@ -1671,7 +1680,7 @@ export async function buildPhoneVoiceContext(convId?: string, opts?: { agentOnBo
   // serializing a network call behind a fan-out of vault reads is what made
   // voice start flaky when the box was busy.
   const [agentId, customHeader, northStar, promptContext] = await Promise.all([
-    ensureAgent(elKey),
+    ensureAgent(elKey, { vault: state.vaultPath, slot: opts?.slot }),
     loadVaultVoicePrompt(state.vaultPath),
     loadVaultNorthStar(state.vaultPath),
     loadVoicePromptContext(state.vaultPath),
@@ -1684,11 +1693,13 @@ export async function buildPhoneVoiceContext(convId?: string, opts?: { agentOnBo
   const attached = convId
     ? state.conversations.find((c) => c.id === convId)
     : undefined;
-  const historyMessages = attached
-    ? attached.id === state.activeConversationId
-      ? state.messages
-      : attached.messages
-    : [];
+  const historyMessages = opts?.history
+    ? opts.history
+    : attached
+      ? attached.id === state.activeConversationId
+        ? state.messages
+        : attached.messages
+      : [];
   return {
     elKey,
     agentId,
@@ -2013,11 +2024,19 @@ function isTransientStatus(status: number): boolean {
   return status === 408 || status === 429;
 }
 
-async function ensureAgent(apiKey: string): Promise<string | null> {
+// One provisioned agent per slot: the box keeps one per vault (each vault's own
+// tools), so switching vaults never re-creates an agent. No slot: the laptop's.
+const slotKey = (name: string, slot?: string) => (slot ? `${name}:${slot}` : name);
+
+async function ensureAgent(apiKey: string, opts?: { vault?: string; slot?: string }): Promise<string | null> {
+  const AGENT_ID_STORAGE = slotKey(AGENT_ID_KEY, opts?.slot);
+  const AGENT_LLM_AT_PROVISION = slotKey(AGENT_LLM_KEY, opts?.slot);
+  const AGENT_VERSION_STORAGE = slotKey(AGENT_VERSION_KEY, opts?.slot);
+  const AGENT_TOOLS_SIG_STORAGE = slotKey(AGENT_TOOLS_SIG_KEY, opts?.slot);
   // Refresh the custom-tool snapshot first — this also warms the cache that
   // buildClientToolHandlers / buildSystemPrompt read synchronously, and the
   // signature joins the staleness check so adding a vault tool re-provisions.
-  const customTools = await refreshVoiceTools();
+  const customTools = await refreshVoiceTools(opts?.vault);
   const toolsSig = voiceToolsSignature(customTools);
   const cached = localStorage.getItem(AGENT_ID_STORAGE);
   const provisionedWith = localStorage.getItem(AGENT_LLM_AT_PROVISION);
@@ -2227,7 +2246,7 @@ async function ensureAgent(apiKey: string): Promise<string | null> {
   }
 }
 
-export async function getSignedUrl(apiKey: string, agentId: string): Promise<string | null> {
+export async function getSignedUrl(apiKey: string, agentId: string, slot?: string): Promise<string | null> {
   try {
     const res = await fetch(
       `https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${encodeURIComponent(agentId)}`,
@@ -2240,7 +2259,7 @@ export async function getSignedUrl(apiKey: string, agentId: string): Promise<str
       console.error("[voice-eleven] signed url failed:", res.status, body);
       // Stale cached agent ID → clear it so the next start re-creates.
       if (res.status === 404 || res.status === 403) {
-        localStorage.removeItem(AGENT_ID_STORAGE);
+        localStorage.removeItem(slotKey(AGENT_ID_KEY, slot));
       }
       return null;
     }

@@ -9,6 +9,7 @@ import type { ChatMessage } from "../../src/store";
 import { registerRun, unregisterRun } from "../../src/runRegistry";
 import type { BackendEvent, PiBackend } from "./pi/backend";
 import {
+  withVault,
   contextToolSpecs,
   handleContextTool,
   isContextTool,
@@ -50,6 +51,8 @@ export type EngineDeps = {
   broadcast?: (ev: Record<string, unknown>) => void;
   /** Model for a turn that carries images when the default can't see. */
   visionModel?: string;
+  /** The other vaults on this box (and their state): the verifier may not read them. */
+  deny?: () => string[];
 };
 
 /** `subagents`: the children a `subagent` call spawned (their threadIds; state and cost live in conv.subagents). */
@@ -236,7 +239,19 @@ export class Engine {
   private firing = new Set<string>();
   private childOf = new Map<string, string>(); // subagent threadId → parent conversation id
 
-  constructor(private d: EngineDeps) {}
+  constructor(private d: EngineDeps) {
+    // Everything this engine does runs scoped to its vault (CONTEXT reads that
+    // vault's projects and rules): the public entry points here, the backend's
+    // events, handlers and timers in start().
+    for (const k of ["message", "answerRoute", "subagent", "kill"] as const) {
+      const f = (this as any)[k].bind(this);
+      (this as any)[k] = (...a: unknown[]) => this.scoped(() => f(...a));
+    }
+  }
+
+  private scoped<T>(fn: () => T): T {
+    return withVault(this.d.vault, fn, this.d.deny);
+  }
 
   private log(s: string): void {
     (this.d.log ?? ((m) => console.log(`[engine] ${m}`)))(s);
@@ -246,17 +261,18 @@ export class Engine {
 
   start(): void {
     const b = this.d.backend;
-    b.on("event", (e: BackendEvent) => this.onEvent(e));
-    b.on("up", () => void this.onUp());
+    b.on("event", (e: BackendEvent) => this.scoped(() => this.onEvent(e)));
+    b.on("up", () => this.scoped(() => void this.onUp()));
     b.setHandlers({
-      toolCall: async (threadId, name, args) => {
-        const r: any = await this.onToolCall({ threadId, tool: name, arguments: args });
-        return { ok: r?.success !== false, text: (r?.contentItems ?? []).map((c: any) => c?.text ?? "").join("\n") };
-      },
-      userInput: (threadId, question, options) => this.waitForAnswer(threadId, question, options),
+      toolCall: (threadId, name, args) =>
+        this.scoped(async () => {
+          const r: any = await this.onToolCall({ threadId, tool: name, arguments: args });
+          return { ok: r?.success !== false, text: (r?.contentItems ?? []).map((c: any) => c?.text ?? "").join("\n") };
+        }),
+      userInput: (threadId, question, options) => this.scoped(() => this.waitForAnswer(threadId, question, options)),
     });
-    this.timers.push(setInterval(() => void this.tickWakes(), 2_000));
-    this.timers.push(setInterval(() => this.tickWatchdog(), 15_000));
+    this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), 2_000));
+    this.timers.push(setInterval(() => this.scoped(() => this.tickWatchdog()), 15_000));
   }
 
   stop(): void {
@@ -528,7 +544,7 @@ export class Engine {
       live.controller.signal.addEventListener("abort", () => void this.interrupt(convId, true));
       this.live.set(convId, live);
       registerRun(convId, live.controller);
-      setLive(convId, true);
+      setLive(this.d.vault, convId, true);
       await patchMeta(this.d.vault, convId, { state: "running" });
       // A legacy chat (history from the old loop) carries its transcript into the first turn.
       let body = input;
@@ -548,7 +564,7 @@ export class Engine {
         live.finished = true;
         this.live.delete(convId);
         unregisterRun(convId, live.controller);
-        setLive(convId, false);
+        setLive(this.d.vault, convId, false);
         await appendMessage(this.d.vault, convId, { role: "assistant", content: `⚠️ The engine could not start this turn: ${(e as Error).message}`, failed: true }, { state: "idle" });
       }
     });
@@ -605,7 +621,7 @@ export class Engine {
     // The whole text: the /poll events carry it in pieces (src/streamWire.ts).
     const reasoning = [...l.reasoning, l.reasoningLive].filter((s) => s.trim()).join("\n\n");
     const last = l.usage?.last;
-    setRuntime(l.convId, {
+    setRuntime(this.d.vault, l.convId, {
       text: this.turnContent(l),
       reasoning: reasoning.slice(-4000),
       tools: l.tools,
@@ -695,7 +711,7 @@ export class Engine {
         if (l.ask) {
           this.live.delete(l.convId);
           unregisterRun(l.convId, l.controller);
-          setLive(l.convId, false);
+          setLive(this.d.vault, l.convId, false);
           return;
         }
         l.cut = true;
@@ -799,7 +815,7 @@ export class Engine {
     let conv = hasBody
       ? await appendMessage(vault, l.convId, msg, { state, nextWakeAt: wakeAt })
       : await patchMeta(vault, l.convId, { state, nextWakeAt: wakeAt });
-    setLive(l.convId, false);
+    setLive(this.d.vault, l.convId, false);
     this.log(`turn ${l.kind} on ${l.convId} ${status}${l.cut ? " (cut)" : ""} → ${state}`);
 
     // Cost, from the rollout's response ids (async; lands a few seconds later).
@@ -1066,7 +1082,7 @@ export class Engine {
       l.ask = { resolve, question };
     });
     await appendMessage(vault, convId, msg, { state: "waiting_user", pendingAsk: { question, options, at: Date.now() } });
-    setLive(convId, false);
+    setLive(this.d.vault, convId, false);
     await this.d.notify({ kind: "ask", title: (conv?.title ? `Needs you: ${conv.title}` : "Needs your call").slice(0, 90), body: question, convId, options });
     return p;
   }
@@ -1081,7 +1097,7 @@ export class Engine {
       const a = l.ask;
       l.ask = null;
       l.lastEventAt = Date.now();
-      setLive(convId, true);
+      setLive(this.d.vault, convId, true);
       a.resolve(answer);
       return;
     }

@@ -67,7 +67,8 @@ export type BoxChatScript = {
    *  chat (running, the task as its first message) and AgentStatus reads it. */
   voice?: { results?: Record<string, string> };
 };
-export type BoxPost = { path: string; body: any };
+/** `vault`: the vault the laptop named (?vault=), as the real box scopes it. */
+export type BoxPost = { path: string; body: any; vault?: string | null };
 
 export type BashRule = { match: RegExp; stdout?: string; stderr?: string; code?: number; delayMs?: number };
 
@@ -136,6 +137,13 @@ function okBox(): BoxReport {
 }
 
 /** The scenario's fake box behind a URL; offline (or unknown) ones don't answer. */
+/** Like the real box: a request naming a vault this box doesn't have is 404 (only for a fake box that lists its vaults). */
+function unknownVault(u: URL): { status: number; body: string } | null {
+  const v = u.searchParams.get("vault");
+  const list = cfg.sync?.boxes?.[u.origin]?.vaults;
+  return v && list && !list.includes(v) ? { status: 404, body: JSON.stringify({ error: `no vault ${v} on this box` }) } : null;
+}
+
 function fakeBox(u: URL): FakeBox {
   // A scenario that starts connected (sync.box) gets that box online with an
   // empty key store unless it lists its boxes itself.
@@ -259,6 +267,12 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       // The box's session (server/voice.ts): no ElevenLabs in the preview, so a URL nothing dials.
       return { status: 200, body: JSON.stringify({ signedUrl: "wss://preview.invalid/voice", systemPrompt: "(the box's voice prompt)", toolNames: [], vaultRoot: "/home/carl/vaults/summer-demo", onBox: true }) };
     }
+    if (u.pathname === "/api/v1/vaults") {
+      const b = fakeBox(u);
+      return { status: 200, body: JSON.stringify({ vaults: (b.vaults ?? []).map((name, i) => ({ name, main: i === 0, syncing: true })) }) };
+    }
+    const miss = unknownVault(u);
+    if (miss) return miss;
     const p = u.pathname.replace(/^.*?(\/(poll|conversations|conversation|status|api\/v1\/models))/, "$1");
     if (p === "/api/v1/models" && cfg.sync?.boxChat?.models) return { status: 200, body: JSON.stringify(cfg.sync.boxChat.models) };
     const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });
@@ -298,8 +312,12 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       }
       const created = !(b.vaults ??= []).includes(j.name);
       if (created) b.vaults.push(j.name);
+      // Each vault on the box gets its own agent there; the laptop names it on every request.
+      report("info", `fake box ${b.name} vaults: ${b.vaults.join(", ")}`);
       return { status: 200, body: JSON.stringify({ ok: true, name: j.name, created }) };
     }
+    const miss = unknownVault(u);
+    if (miss) return miss;
     report("info", `box POST ${url} (answered by the preview)`);
     const path = new URL(String(url)).pathname.replace(/^.*?(\/(message|answer|kill|api\/v1\/.*))$/, "$1");
     let b: any = {};
@@ -308,7 +326,7 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     } catch {
       b = {};
     }
-    boxPosts.push({ path, body: b });
+    boxPosts.push({ path, body: b, vault: u.searchParams.get("vault") });
     if (path === "/api/v1/voice/tool") return { status: 200, body: JSON.stringify({ result: boxVoiceTool(String(b.name ?? ""), b.args ?? {}) }) };
     if (path === "/api/v1/voice/transcript") return { status: 200, body: JSON.stringify(boxVoiceLine(b)) };
     if (cfg.sync?.boxChat?.live) {

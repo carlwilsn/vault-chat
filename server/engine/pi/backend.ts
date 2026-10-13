@@ -6,7 +6,7 @@
 // every model call is OpenRouter's own figure, which the extension writes into
 // the session as `vc-cost` entries (usageCalls reads them back).
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CallRecord } from "../ledger";
 import type { ThreadTokenUsage } from "../context";
@@ -57,7 +57,32 @@ export type PiSandbox = {
   /** Paths pi's in-process tools may not read or write / may not write. */
   denyRead: string[];
   denyWrite: string[];
+  /** The other vaults on the box (working copies, bare repos, their engine state), read at each
+   * spawn so a vault added later is walled off too: hidden in the outer layer, denied to the guard. */
+  others?: () => string[];
 };
+
+/** bubblewrap args hiding each path that exists (a dir behind an empty tmpfs, a file behind /dev/null). */
+export function hideArgs(paths: string[]): string[] {
+  const out: string[] = [];
+  for (const p of paths) {
+    try {
+      const st = statSync(p);
+      if (st.isDirectory()) out.push("--tmpfs", p);
+      else if (st.isFile()) out.push("--ro-bind", "/dev/null", p);
+    } catch {
+      /* missing: nothing to hide */
+    }
+  }
+  return out;
+}
+
+/** The outer bubblewrap argv with the other vaults hidden (null without a sandbox). */
+export function outerWith(sb: PiSandbox): string[] | null {
+  if (!sb.outer) return null;
+  const extra = hideArgs(sb.others?.() ?? []);
+  return extra.length ? [...sb.outer.slice(0, -1), ...extra, "--"] : sb.outer;
+}
 
 export type PiBackendOptions = {
   install: PiInstall;
@@ -233,7 +258,7 @@ export class PiBackend extends EventEmitter {
             VC_PI_SUBAGENT_MAX_TASKS: String(this.o.subagents.maxTasks),
           }
         : {}),
-      VC_PI_DENY_READ: JSON.stringify(this.o.sandbox.denyRead),
+      VC_PI_DENY_READ: JSON.stringify([...this.o.sandbox.denyRead, ...(this.o.sandbox.others?.() ?? [])]),
       VC_PI_DENY_WRITE: JSON.stringify(this.o.sandbox.denyWrite),
       ...(this.o.sandbox.shell ? { VC_PI_SHELL_WRAP: JSON.stringify(this.o.sandbox.shell) } : {}),
       ...(process.env.VC_PI_SHELL_TIMEOUT_S ? { VC_PI_SHELL_TIMEOUT_S: process.env.VC_PI_SHELL_TIMEOUT_S } : {}),
@@ -259,7 +284,8 @@ export class PiBackend extends EventEmitter {
       ...(o.builtins ? ["--tools", o.builtins.join(",")] : []),
       ...(o.file ? ["--session", o.file] : []),
     ];
-    const argv = this.o.sandbox.outer ? [...this.o.sandbox.outer, this.o.install.node, ...args] : [this.o.install.node, ...args];
+    const outer = outerWith(this.o.sandbox);
+    const argv = outer ? [...outer, this.o.install.node, ...args] : [this.o.install.node, ...args];
     const proc = new PiProc({ argv, cwd: o.cwd, env: this.piEnv(o.tools, !!o.subagents), key: this.o.apiKey() });
     proc.start();
     this.stats.spawns++;

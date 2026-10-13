@@ -42,6 +42,12 @@ export function piPaths(stateDir: string): PiPaths {
   };
 }
 
+/** Another vault's pi files: its own sessions, instruction files and pids under
+ * `root`; the agent dir, the extension and the built-in agents are shared. */
+export function vaultPiPaths(base: PiPaths, root: string): PiPaths {
+  return { ...base, root, sessionsDir: join(root, "sessions"), instrDir: join(root, "instr"), pidsFile: join(root, "pids.json") };
+}
+
 function writeAtomic(p: string, s: string): void {
   writeFileSync(p + ".tmp", s);
   renameRetry(p + ".tmp", p);

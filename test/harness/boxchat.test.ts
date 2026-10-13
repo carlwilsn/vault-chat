@@ -18,6 +18,8 @@ class FakeBox {
   ring: { seq: number; ev: any }[] = [];
   seq = 100;
   posts: { path: string; body: any }[] = [];
+  /** Every request's route and the vault it named (`?vault=`). */
+  seen: { route: string; vault: string | null }[] = [];
   down = false;
   full = true; // honours /conversation?full=1
   autoReply = true;
@@ -62,6 +64,7 @@ class FakeBox {
       req.on("end", async () => {
         const body = raw ? JSON.parse(raw) : {};
         const route = `${req.method} ${u.pathname}`;
+        this.seen.push({ route, vault: u.searchParams.get("vault") });
         if (req.method === "POST") this.posts.push({ path: u.pathname, body });
         switch (route) {
           case "GET /poll": {
@@ -408,4 +411,11 @@ test("the laptop never wrote a conversation and never called a model", () => {
   // No fetch went anywhere but the fake box (the harness guard refuses
   // non-loopback; a model call would also have needed a key, and there is none).
   assert.deepEqual(S().apiKeys, {});
+});
+
+test("every request to the box names this vault (sync.json's), so the box runs it in that vault's engine", () => {
+  const routes = new Set(box.seen.map((r) => r.route));
+  for (const r of ["GET /poll", "GET /conversations", "GET /conversation", "POST /message", "POST /kill", "POST /answer"]) assert.ok(routes.has(r), `saw ${r}`);
+  const unscoped = box.seen.filter((r) => r.vault !== "v");
+  assert.deepEqual(unscoped, [], "a request without the vault would run in the box's main vault");
 });

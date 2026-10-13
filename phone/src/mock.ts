@@ -5,7 +5,7 @@ export function installMock() {
   // to "waiting". Re-arm any time from a test with `window.__m1seq = 1`.
   if (typeof window.__m1seq === "undefined") window.__m1seq = 1;
   // The preview harness (preview/phone.mjs) hands in a scenario DB here.
-  const DB: MockDB = window.__VC_PREVIEW_DB__ || {
+  const ROOT: MockDB = window.__VC_PREVIEW_DB__ || {
     vault: "summer", model: "claude-opus-4-8",
     convs: [
       { id: "m1", title: "BitNet 160M MVP", source: "mission", role: "supervisor", mission: "BitNet 160M MVP", lastActivityAt: now - 120000, msgCount: 9, preview: "seeds 1 & 3 verified; seed 2 rerunning", goal: "MISSION BRIEF (user-approved). Reproduce the BitNet 160M MVP.\n\nDone when (each defines completion — likely one worker each):\n- All 3 seeds trained, eval.loss committed for each\n- The three seeds land within 0.005 nat of each other\n- A short writeup lands under docs/", taskSummary: "Reproduce the BitNet 160M MVP across 3 seeds", statusSummary: "Seeds 1 & 3 verified; seed 2 rerunning", thinkingDigest: "Seeds 1 and 3 landed within tolerance, but seed 2 came in 0.13 nat high — likely an LR mismatch, so it respawned that worker at seed 1's learning rate rather than accept the gap. Holding the eval/writeup worker until seed 2 confirms.", doneWhenDone: ["All 3 seeds trained, eval.loss committed for each"] },
@@ -174,6 +174,15 @@ export function installMock() {
       ] },
     },
   };
+  // A box with more than one vault (MockDB.vaults): the page shows the vault it names (?vault=).
+  const pick = (() => {
+    try {
+      return new URLSearchParams(location.search).get("vault") || localStorage.getItem("vc_phone_vault") || "";
+    } catch {
+      return "";
+    }
+  })();
+  const DB: MockDB = pick && ROOT.vaults?.[pick] ? ({ ...ROOT, ...ROOT.vaults[pick], vault: pick } as MockDB) : ROOT;
   const reply = (obj) => new Response(JSON.stringify(obj), { status: 200, headers: { "Content-Type": "application/json" } });
   let pollWaited = false, pollTick = 0;
   // The preview's UI choices (localStorage switches), before the page reads them.
@@ -219,6 +228,7 @@ export function installMock() {
     }
     if (DB.script && /^\/api\/v1\/conversations\/[^/]+\/subagents\/[^/]+\/(steer|stop)$/.test(u)) return reply({ ok: true });
     if (u === "/conversations") return reply({ vault: DB.vault, conversations: DB.convs });
+    if (u === "/api/v1/vaults") return reply({ vaults: [{ name: ROOT.vault, main: true, syncing: true }, ...Object.keys(ROOT.vaults ?? {}).map((name) => ({ name, main: false, syncing: true }))] });
     if (u === "/conversation") {
       const t = DB.threads[q.get("id")];
       if (!t) return reply({ error: "not found" });

@@ -32,7 +32,8 @@ export type BoxChatState = {
   reason: string;
 };
 
-export type Link = { url: string; token: string | null };
+/** `vault`: this vault's name on the box (sync.json); every request carries it, so the box runs it in that vault's own engine. */
+export type Link = { url: string; token: string | null; vault?: string | null };
 type HttpResult = { status: number; body: string };
 
 const POLL_TIMEOUT_MS = 35_000;
@@ -57,12 +58,18 @@ export async function boxLinkFor(vault: string | null): Promise<Link | null> {
   if (!vault || headless()) return null;
   const cfg = await readBoxConfig(vault);
   if (!cfg?.box) return null;
-  return { url: cfg.box.replace(/\/+$/, ""), token: useStore.getState().boxToken || null };
+  return { url: cfg.box.replace(/\/+$/, ""), token: useStore.getState().boxToken || null, vault: cfg.vault || null };
+}
+
+/** `path` scoped to the link's vault (`?vault=`). A box from before vaults ignores it. */
+export function vaultPath(link: Link, path: string): string {
+  if (!link.vault) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}vault=${encodeURIComponent(link.vault)}`;
 }
 
 async function httpGet(link: Link, path: string, timeoutMs = 20_000): Promise<any> {
   const r = await invoke<HttpResult>("box_get_json", {
-    url: `${link.url}${path}`,
+    url: `${link.url}${vaultPath(link, path)}`,
     token: link.token,
     timeoutMs,
   });
@@ -82,7 +89,7 @@ async function httpPost(
   let r: HttpResult;
   try {
     r = await invoke<HttpResult>("box_post_json", {
-      url: `${link.url}${path}`,
+      url: `${link.url}${vaultPath(link, path)}`,
       body: JSON.stringify(payload),
       token: link.token,
     });

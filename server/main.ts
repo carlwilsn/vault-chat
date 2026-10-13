@@ -81,7 +81,11 @@ async function main(): Promise<void> {
   // Every agent turn runs in pi (server/engine). The old in-process loop
   // stays in the bundle for legacy mission threads until Phase 3 removes it.
   const { notificationAppend } = await import("./commands/phone");
-  const { startEngine } = await import("./engine");
+  const { startEngine, engineModel } = await import("./engine");
+  const { startBoxSync, syncStatus, syncSummary, triggerSync, listVaults, addVault, vaultPaths } = await import("./sync");
+  // Every vault on the box; the main one keeps its own paths (config).
+  const vaultRefs = () =>
+    listVaults().map((v) => (v.main ? { name: v.name, path: cfg.vault, bare: cfg.bareRepo, main: true } : { name: v.name, path: vaultPaths(v.name).vault, bare: vaultPaths(v.name).bare, main: false }));
   const { modelsList, boxModelChecks } = await import("./engine/capabilities");
   // The engine starts in the background (a first start installs pi with npm,
   // which can take minutes): the server answers at once, health says
@@ -92,6 +96,9 @@ async function main(): Promise<void> {
     ? Promise.resolve({ engine: null, error: "disabled (VC_ENGINE=0): turns run on the old in-process loop", health: () => ({}) })
     : startEngine({
     vault: cfg.vault,
+    vaultName: cfg.vaultName,
+    vaults: vaultRefs,
+    onTurnEnded: (name) => triggerSync(name),
     stateDir: cfg.stateDir,
     secretsDir: cfg.secretsDir,
     tokenPath: cfg.tokenPath,
@@ -107,22 +114,33 @@ async function main(): Promise<void> {
     notificationAppend,
     broadcast: (ev) => getRing().push(JSON.stringify(ev)),
   });
+  const ready = () => {
+    if (engine.engine) return engine.engine;
+    throw new Error(engine.error ? `the agent engine is not running: ${engine.error}` : "the agent engine is still starting — try again in a minute");
+  };
+  // Each vault's own engine (conversations, wakes, ledger, projects, rules,
+  // sandbox), started on first use; every vault already on the box at boot.
+  const engineOf = async (v: { name: string; path: string; bare: string; main: boolean }) => {
+    const main = ready();
+    return v.main || !engine.open ? main : await engine.open(v);
+  };
   void engineBoot
     .then((h) => {
       engine = h;
       console.log(`[vault-chat-server] engine ${h.engine ? "up" : `not running: ${h.error}`}`);
+      // Wakes, the watchdog and cut turns of every vault come back with the server.
+      if (h.engine) for (const v of vaultRefs()) if (!v.main) void engineOf(v).catch((e) => console.error(`[engine] vault ${v.name}:`, e));
     })
     .catch((e) => {
       engine = { engine: null, error: String((e as Error)?.message ?? e), health: () => ({}) };
       console.error(`[vault-chat-server] engine failed to start: ${engine.error}`);
     });
-  const ready = () => {
-    if (engine.engine) return engine.engine;
-    throw new Error(engine.error ? `the agent engine is not running: ${engine.error}` : "the agent engine is still starting — try again in a minute");
-  };
 
   const { activeRuns } = await import("../src/runRegistry");
-  const { startBoxSync, syncStatus, syncSummary, triggerSync, listVaults, addVault } = await import("./sync");
+  const vaultOf = (name: string | null) => {
+    if (!name || name === cfg.vaultName) return { name: cfg.vaultName, path: cfg.vault, bare: cfg.bareRepo, main: true };
+    return vaultRefs().find((v) => v.name === name) ?? null;
+  };
   // The tag becomes the Web Push tag, so a repeat alert replaces the last one.
   const alert = async (title: string, body: string, tag?: string) => {
     try {
@@ -170,7 +188,26 @@ async function main(): Promise<void> {
     syncStatus,
     alert,
     onGitPushed: (name) => triggerSync(name),
-    vaults: { list: listVaults, add: addVault },
+    vaults: {
+      list: listVaults,
+      add: async (name) => {
+        const out = await addVault(name);
+        const v = vaultOf(name);
+        if (v && !v.main && engine.engine) await engineOf(v).catch((e) => console.error(`[engine] vault ${name}:`, e));
+        return out;
+      },
+    },
+    vault: vaultOf,
+    vaultStatus: async (v) => {
+      const h: any = engine.engine ? (await engineOf(v)).health() : {};
+      return {
+        vault: v.name,
+        model: engineModel(),
+        version: SERVER_VERSION,
+        runs: (h.liveTurns ?? []).filter((l: any) => !l.waitingUser).map((l: any) => ({ convId: l.convId, source: "phone" })),
+        schedules: [],
+      };
+    },
     setKeys: async (keys) => {
       const changed = await saveKeys(cfg.secretsDir, keys);
       if (changed) {
@@ -184,22 +221,25 @@ async function main(): Promise<void> {
       : {
           models: () => (engine.engine ? modelsList() : []),
           boxModels: () => (engine.engine && engine.roles ? boxModelChecks(engine.roles()) : undefined),
-          message: async (b) => ready().message(b),
-          answer: async (b) => ready().answerRoute(b),
-          kill: async (b) => ready().kill(b),
-          subagent: async (c, sid, op, b) => ready().subagent(c, sid, op, b),
+          message: async (v, b) => (await engineOf(v)).message(b),
+          answer: async (v, b) => (await engineOf(v)).answerRoute(b),
+          kill: async (v, b) => (await engineOf(v)).kill(b),
+          subagent: async (v, c, sid, op, b) => (await engineOf(v)).subagent(c, sid, op, b),
         },
-    // Voice (server/voice.ts): one vault for now — the main one; a per-vault
-    // engine maps `vault` to its own working copy and engine here.
-    voice: (vault) => {
-      if (vault && vault !== cfg.vaultName) return { error: `voice is not set up for vault "${vault}" on this box (only ${cfg.vaultName})` };
+    // Voice (server/voice.ts) in the request's vault: its working copy, its
+    // engine (AskAgent), its sandbox (Bash, vault tools), its sync.
+    voice: async (v) => {
+      // Its engine opens its conversation mirror, so voice's lines reach the clients' /poll.
+      if (!v.main && engine.engine) await engineOf(v).catch((e) => console.error(`[voice] vault ${v.name}:`, e));
       return {
-        vault: cfg.vault,
+        vault: v.path,
+        name: v.name,
+        main: v.main,
         get shell() {
-          return engine.engine ? engine.shell : undefined;
+          return engine.engine ? engine.shellFor?.(v.name) : undefined;
         },
-        message: async (b) => ready().message(b),
-        onWrite: () => triggerSync(),
+        message: async (b) => (await engineOf(v)).message(b),
+        onWrite: () => triggerSync(v.main ? undefined : v.name),
         openrouterKey: () => {
           const v = keychainCommands.keychain_get({ key: "api.openrouter" });
           return typeof v === "string" && v ? v : null;

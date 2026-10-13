@@ -22,6 +22,9 @@ import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
 import ICON_PNG_INLINE from "../src-tauri/assets/icon-apple-touch.png";
 import PHONE_APP from "vc:phone-app";
 
+/** A vault on this box, as the routes see it (engine/index.ts VaultRef). */
+export type VaultScope = { name: string; path: string; bare: string; main: boolean };
+
 export type ServerHooks = {
   health: () => Promise<Record<string, unknown>>;
   syncStatus: () => unknown;
@@ -30,20 +33,25 @@ export type ServerHooks = {
   /** Settings → Box on the laptop: this box's vaults, and its own OpenRouter key. */
   vaults?: { list: () => unknown; add: (name: string) => Promise<Record<string, unknown>> };
   setKeys?: (keys: Record<string, string>) => Promise<boolean>;
+  /** The vault a request names (`?vault=` or `X-VC-Vault`), null when this box
+   * has no such vault. No name = the main vault (older laptops, the phone). */
+  vault?: (name: string | null) => VaultScope | null;
+  /** /status for a vault other than the main one (the main one's comes from the app). */
+  vaultStatus?: (v: VaultScope) => Promise<Record<string, unknown>>;
   /** The engine takes these routes; a handler returning null hands the
    * request to the legacy relay (old mission threads). */
   engine?: {
     models: () => unknown;
     /** The box's own models (chat, vision fallback, subagent child) and their checks. */
     boxModels?: () => unknown;
-    message: (b: any) => Promise<Record<string, unknown> | null>;
-    answer: (b: any) => Promise<Record<string, unknown> | null>;
-    kill: (b: any) => Promise<Record<string, unknown> | null>;
-    subagent: (convId: string, sid: string, op: "steer" | "stop", b: any) => Promise<Record<string, unknown>>;
+    message: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
+    answer: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
+    kill: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
+    subagent: (v: VaultScope, convId: string, sid: string, op: "steer" | "stop", b: any) => Promise<Record<string, unknown>>;
   };
-  /** Voice: the ElevenLabs agent's tools run here (server/voice.ts), for a
-   * vault by name (none = the main vault), or why not. */
-  voice?: (vault?: string) => VoiceDeps | { error: string };
+  /** Voice (server/voice.ts) for the request's vault: its working copy, its
+   * engine and sandbox — or why not. */
+  voice?: (v: VaultScope) => Promise<VoiceDeps | { error: string }>;
 };
 
 // Idempotency for engine sends: the phone tags each POST with clientMsgId and
@@ -62,10 +70,11 @@ function dedupe(id: unknown, fn: () => Promise<Record<string, unknown> | null>):
   return p;
 }
 
-/** Engine first; null → the legacy relay. */
+/** Engine first; null → the legacy relay (the main vault's app; another vault has none). */
 async function engineRoute(
   res: ServerResponse,
-  handler: ((b: any) => Promise<Record<string, unknown> | null>) | undefined,
+  v: VaultScope,
+  handler: ((v: VaultScope, b: any) => Promise<Record<string, unknown> | null>) | undefined,
   body: any,
   event: string,
   timeoutMs: number,
@@ -73,13 +82,20 @@ async function engineRoute(
   after?: (out: Record<string, unknown>) => void,
 ): Promise<void> {
   if (handler) {
-    const out = await dedupe(body?.clientMsgId, () => handler(body)).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
+    const out = await dedupe(body?.clientMsgId, () => handler(v, body)).catch((e) => ({ error: String((e as Error)?.message ?? e) }));
     if (out) {
       if (!(out as any).error) after?.(out);
       return json(res, 200, out);
     }
   }
+  if (!v.main) return json(res, handler ? 404 : 503, { error: handler ? "not found in this vault" : "engine not running" });
   return relayRoute(res, event, body, timeoutMs, fail);
+}
+
+/** A /poll event's vault: the name a vault other than the main one puts first ({"vault":"<name>",…}), else the main one. */
+const VAULT_TAG = /^\{"vault":"([A-Za-z0-9._-]+)"/;
+export function eventVault(line: string, main: string): string {
+  return VAULT_TAG.exec(line)?.[1] ?? main;
 }
 
 // voice_server.rs:45 PHONE_MANIFEST / 62 ICON_SVG
@@ -198,7 +214,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
   const method = req.method ?? "GET";
-  const vault = cfg.vault;
 
   // ---- token-free routes (voice_server.rs:783-823) ----
   if (path === "/health") return json(res, 200, { ok: true });
@@ -279,6 +294,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     }
   }
 
+  // Everything below is one vault's: the one the request names, else the main one.
+  const want = url.searchParams.get("vault") || String(req.headers["x-vc-vault"] ?? "") || null;
+  const scope: VaultScope | null = hooks.vault ? hooks.vault(want) : !want || want === cfg.vaultName ? { name: cfg.vaultName, path: cfg.vault, bare: cfg.bareRepo, main: true } : null;
+  if (!scope) return json(res, 404, { error: `no vault ${String(want).slice(0, 64)} on this box` });
+  const vault = scope.path;
+  // Another vault's /poll events carry its name first; the main vault's carry none.
+  const tagged = (ev: Record<string, unknown>) => JSON.stringify(scope.main ? ev : { vault: scope.name, ...ev });
+  // The old app (the relay) knows only the main vault.
+  const mainOnly = () => json(res, 409, { error: `only on the box's main vault (${cfg.vaultName})` });
+
   // Model capabilities for Settings → Models.
   if (path === "/api/v1/models" && method === "GET") {
     return hooks.engine ? json(res, 200, { models: hooks.engine.models(), ...(hooks.engine.boxModels ? { box: hooks.engine.boxModels() } : {}) }) : json(res, 503, { error: "engine not running" });
@@ -287,7 +312,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   const subM = /^\/api\/v1\/conversations\/([^/]+)\/subagents\/([^/]+)\/(steer|stop)$/.exec(path);
   if (subM && method === "POST") {
     if (!hooks.engine) return json(res, 503, { error: "engine not running" });
-    const out = await hooks.engine.subagent(decodeURIComponent(subM[1]!), decodeURIComponent(subM[2]!), subM[3] as "steer" | "stop", await jsonBody(req));
+    const out = await hooks.engine.subagent(scope, decodeURIComponent(subM[1]!), decodeURIComponent(subM[2]!), subM[3] as "steer" | "stop", await jsonBody(req));
     return json(res, out.ok ? 200 : 409, out);
   }
 
@@ -296,19 +321,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   // voice agent's tools here; the session is minted with the box's key.
   if (path === "/api/v1/voice/tool" && method === "POST") {
     const b = await jsonBody(req);
-    const d = hooks.voice?.(typeof b.vault === "string" && b.vault ? b.vault : url.searchParams.get("vault") || undefined) ?? { error: "voice tools not available" };
+    const d = (await hooks.voice?.(scope)) ?? { error: "voice tools not available" };
     if ("error" in d) return json(res, 503, d);
     return json(res, 200, await voiceTool(d, b));
   }
   if (path === "/api/v1/voice/session" && method === "GET") {
-    const d = hooks.voice?.(url.searchParams.get("vault") || undefined) ?? { error: "voice not available" };
+    const d = (await hooks.voice?.(scope)) ?? { error: "voice not available" };
     if ("error" in d) return json(res, 503, d);
-    const out = await voiceSession(url.searchParams.get("convId"), d.vault);
+    const out = await voiceSession(url.searchParams.get("convId"), d);
     return json(res, out.status, out.body);
   }
   if (path === "/api/v1/voice/transcript" && method === "POST") {
     const b = await jsonBody(req);
-    const d = hooks.voice?.(typeof b.vault === "string" && b.vault ? b.vault : url.searchParams.get("vault") || undefined) ?? { error: "voice not available" };
+    const d = (await hooks.voice?.(scope)) ?? { error: "voice not available" };
     if ("error" in d) return json(res, 503, d);
     const out = await voiceTranscript(d, b);
     return json(res, out.status, out.body);
@@ -325,7 +350,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       return json(res, 200, conversationsSummary(vault));
     case "GET /surface": {
       const id = q("id");
-      if (id) void relay("phone:surface", { convId: id }, 4000);
+      if (id && scope.main) void relay("phone:surface", { convId: id }, 4000);
       return json(res, 200, { ok: true });
     }
     case "GET /conversation": {
@@ -336,21 +361,25 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "GET /file":
       return serveVaultFile(res, vault, url);
     case "GET /poll":
-      return poll(res, url);
+      return poll(res, url, scope.name, cfg.vaultName);
     case "GET /notifications":
       return json(res, 200, notificationsFeed(vault));
     case "GET /notes":
       return json(res, 200, notesFeed(vault));
     case "POST /notes":
+      if (!scope.main) return mainOnly();
       return relayRoute(res, "phone:note", await jsonBody(req), 10_000, "app not answering");
     case "POST /client-event":
-      await relay("phone:client-event", await jsonBody(req), 5000);
+      if (scope.main) await relay("phone:client-event", await jsonBody(req), 5000);
       return json(res, 200, { ok: true });
     case "POST /notes/status":
+      if (!scope.main) return mainOnly();
       return relayRoute(res, "phone:note-status", await jsonBody(req), 10_000, "app not answering");
     case "POST /notes/edit":
+      if (!scope.main) return mainOnly();
       return relayRoute(res, "phone:note-edit", await jsonBody(req), 10_000, "app not answering");
     case "POST /notes/clear-resolved":
+      if (!scope.main) return mainOnly();
       return relayRoute(res, "phone:notes-clear-resolved", await jsonBody(req), 10_000, "app not answering");
     case "POST /notifications/read":
     case "POST /notifications/hide": {
@@ -384,29 +413,33 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       return json(res, 200, { ok: true });
     }
     case "GET /schedules":
+      if (!scope.main) return json(res, 200, { schedules: [] });
       return relayRoute(res, "phone:schedules", {}, 10_000, "app not answering — is a vault open?");
     case "POST /schedule":
+      if (!scope.main) return mainOnly();
       return relayRoute(res, "phone:schedule", await jsonBody(req), 10_000, "app not answering");
     case "GET /status":
+      if (!scope.main) return hooks.vaultStatus ? json(res, 200, await hooks.vaultStatus(scope)) : json(res, 503, { error: "engine not running" });
       return relayRoute(res, "phone:status", {}, 10_000, "app not answering — is a vault open?");
     case "POST /message": {
       const b = await jsonBody(req);
-      return engineRoute(res, hooks.engine?.message, b, "phone:msg", 15_000, "app not answering — is a vault open?");
+      return engineRoute(res, scope, hooks.engine?.message, b, "phone:msg", 15_000, "app not answering — is a vault open?");
     }
     case "POST /answer": {
       const b = await jsonBody(req);
-      return engineRoute(res, hooks.engine?.answer, b, "phone:answer", 15_000, "app not answering — is a vault open?", () => {
+      return engineRoute(res, scope, hooks.engine?.answer, b, "phone:answer", 15_000, "app not answering — is a vault open?", () => {
         // The alert card's decision record, as the old /answer wrote it.
         if (typeof b.notifId === "string" && b.notifId) {
           const answer = b.defer ? "Not now" : String(b.text ?? "");
           notificationAppend(vault, JSON.stringify({ type: "answered", id: b.notifId, answer: [...answer].slice(0, 160).join(""), ts: Date.now() }));
-          getRing().push(JSON.stringify({ type: "notif" }));
+          getRing().push(tagged({ type: "notif" }));
         }
       });
     }
     case "POST /kill":
-      return engineRoute(res, hooks.engine?.kill, await jsonBody(req), "phone:kill", 10_000, "app not answering");
+      return engineRoute(res, scope, hooks.engine?.kill, await jsonBody(req), "phone:kill", 10_000, "app not answering");
     case "POST /chats/clear":
+      if (!scope.main) return mainOnly();
       return relayRoute(res, "phone:clearchats", {}, 15_000, "app not answering");
     case "GET /push/vapid": {
       const k = vapidPublicKey();
@@ -428,9 +461,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       return relayRoute(res, "phone:pushtest", {}, 15_000, "app not answering");
     case "POST /session": {
       // The old phone page's session call: the same as GET /api/v1/voice/session.
-      const vd = hooks.voice?.();
+      const vd = await hooks.voice?.(scope);
       if (!vd || "error" in vd) return json(res, 503, vd ?? { error: "voice not available" });
-      const out = await voiceSession(String((await jsonBody(req)).convId ?? "") || null, vd.vault);
+      const out = await voiceSession(String((await jsonBody(req)).convId ?? "") || null, vd);
       return json(res, out.status, out.body);
     }
     case "POST /voice-transcript": {
@@ -438,11 +471,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
       if (String(b.text ?? "").trim()) emitLocal("voice:transcript", { role: b.role ?? "assistant", text: b.text });
       // The old voice page's lines are saved too: one voice conversation per
       // session (a new one after 30 quiet minutes), unless it names one.
-      const vd = hooks.voice?.();
+      const vd = await hooks.voice?.(scope);
       if (vd && !("error" in vd) && String(b.text ?? "").trim()) {
-        const fresh = Date.now() - legacyVoice.at > 30 * 60_000;
-        const out = await voiceTranscript(vd, { ...b, convId: b.convId ?? (fresh ? null : legacyVoice.id) });
-        if (typeof out.body.convId === "string") legacyVoice = { id: out.body.convId, at: Date.now() };
+        const last = legacyVoice.get(scope.name) ?? { id: null, at: 0 };
+        const fresh = Date.now() - last.at > 30 * 60_000;
+        const out = await voiceTranscript(vd, { ...b, convId: b.convId ?? (fresh ? null : last.id) });
+        if (typeof out.body.convId === "string") legacyVoice.set(scope.name, { id: out.body.convId, at: Date.now() });
         return json(res, out.status, out.body);
       }
       return json(res, 200, { ok: true });
@@ -450,7 +484,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "POST /tool": {
       // The old phone page's tool call: the full box set when voice is wired, else read-only.
       const raw = await readBody(req);
-      const vd = hooks.voice?.();
+      const vd = await hooks.voice?.(scope);
       if (!vd || "error" in vd) return send(res, 200, "text/plain; charset=utf-8", await dispatchVoiceTool(vault, raw));
       let b: any = {};
       try {
@@ -466,7 +500,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     case "POST /conversation/project": {
       const b = await jsonBody(req);
       const out = await setProject(vault, b);
-      if ("ok" in out) getRing().push(JSON.stringify({ type: "project", convId: b.convId, project: out.project }));
+      if ("ok" in out) getRing().push(tagged({ type: "project", convId: b.convId, project: out.project }));
       return json(res, "ok" in out ? 200 : 400, out);
     }
     default:
@@ -474,10 +508,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   }
 }
 
-let legacyVoice: { id: string | null; at: number } = { id: null, at: 0 };
+/** The old voice page's current voice conversation, per vault. */
+const legacyVoice = new Map<string, { id: string | null; at: number }>();
 
-/** voice_server.rs:884 — long-poll up to 25 s for events after `after`. */
-async function poll(res: ServerResponse, url: URL): Promise<void> {
+/** voice_server.rs:884 — long-poll up to 25 s for events after `after`. One
+ * ring for the box; a client gets its own vault's events (`want`). */
+async function poll(res: ServerResponse, url: URL, want: string, main: string): Promise<void> {
   const ring = getRing();
   const raw = url.searchParams.get("after") ?? "";
   if (raw === "" || raw === "latest") return json(res, 200, `{"next":${ring.latest()},"events":[]}`);
@@ -490,10 +526,12 @@ async function poll(res: ServerResponse, url: URL): Promise<void> {
   let closed = false;
   res.on("close", () => (closed = true));
   for (;;) {
-    const { events, next } = ring.after(after);
+    const got = ring.after(after);
+    const events = got.events.filter((l) => eventVault(l, main) === want);
     if (events.length || Date.now() >= deadline || closed) {
-      return json(res, 200, `{"next":${next},"events":[${events.join(",")}]}`);
+      return json(res, 200, `{"next":${got.next},"events":[${events.join(",")}]}`);
     }
+    after = got.next;
     await ring.wait(Math.min(1000, deadline - Date.now()));
   }
 }

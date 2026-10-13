@@ -24,7 +24,10 @@ import { runGit } from "./git";
 import { conversationDetail, dispatchVoiceTool } from "./phoneData";
 
 export type VoiceDeps = {
+  /** The vault's working copy, its name on the box, and whether it is the main one (the store's). */
   vault: string;
+  name?: string;
+  main?: boolean;
   /** The engine's per-command sandbox argv (ends with "--"); null = the engine
    * runs without one (not Linux, or VC_PI_UNSAFE); undefined = no engine. */
   shell?: string[] | null;
@@ -449,10 +452,22 @@ export async function fileIndex(vault: string, cap = 2000): Promise<string[]> {
   }
 }
 
-export async function voiceSession(convId: string | null, vault: string): Promise<{ status: number; body: Record<string, unknown> }> {
+export async function voiceSession(convId: string | null, d: VoiceDeps): Promise<{ status: number; body: Record<string, unknown> }> {
   const v = await import("../src/voice-elevenlabs");
   v.resetAgentCreateBreaker();
-  const ctx = await v.buildPhoneVoiceContext(convId || undefined, { agentOnBox: true, fileIndex: await fileIndex(vault) });
+  // Another vault than the store's: its working copy, its own conversation for
+  // the history, and an agent of its own (its own tools).
+  const other = d.main === false;
+  let history: any[] | undefined;
+  if (other && convId) {
+    const { readConv } = await import("./engine/convs");
+    history = ((await readConv(d.vault, convId).catch(() => null))?.messages ?? []) as any[];
+  }
+  const ctx = await v.buildPhoneVoiceContext(convId || undefined, {
+    agentOnBox: true,
+    fileIndex: await fileIndex(d.vault),
+    ...(other ? { vault: d.vault, history: history ?? [], slot: `vault:${d.name ?? d.vault}` } : {}),
+  });
   if (!ctx) {
     const err = v.getLastAgentCreateError();
     return {
@@ -460,7 +475,7 @@ export async function voiceSession(convId: string | null, vault: string): Promis
       body: { error: err ? `ElevenLabs agent could not be provisioned (HTTP ${err.status})` : "voice is not ready on the box (no ElevenLabs key — the laptop's Settings sends it)" },
     };
   }
-  const signedUrl = await v.getSignedUrl(ctx.elKey, ctx.agentId);
+  const signedUrl = await v.getSignedUrl(ctx.elKey, ctx.agentId, other ? `vault:${d.name ?? d.vault}` : undefined);
   if (!signedUrl) return { status: 502, body: { error: "ElevenLabs refused a signed URL" } };
   return {
     status: 200,
