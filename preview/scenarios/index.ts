@@ -181,6 +181,56 @@ const askScript: Script = {
 
 const BOX = { box: "https://box.tail0a1b2.ts.net", vault: "summer-demo" };
 
+/** Settings → Box: connect a box from the app (discovery on the tailnet, the
+ *  box's own OpenRouter key, the vault's own repo on the box) and disconnect.
+ *  The fake is stateful for the page session, so the flow works by clicking. */
+const THINKBOX = "https://thinkbox.tail0a1b2.ts.net";
+const TOWER = "https://tower.tail0a1b2.ts.net";
+const showBox: Step = { run: () => [...document.querySelectorAll("h3")].find((h) => h.textContent === "Box")?.scrollIntoView({ block: "start" }) };
+function boxConnectScenarios(): Scenario[] {
+  const thinkbox = { name: "thinkbox", version: "0.6.33" };
+  const tower = { name: "tower", version: "0.6.30", online: false };
+  return [
+    {
+      id: "box-connect",
+      title: "Settings → Box — connect a box",
+      group: "Settings",
+      notes:
+        "This vault has no box: Box says “Runs on this laptop”, and Phone says the phone app runs on a box. Click Connect a box: the tailnet has thinkbox (a vault-chat server, online, no keys yet) and tower (seen before, offline now). Pick thinkbox → Sync this vault with thinkbox. Connecting also sends this laptop's keys (OpenRouter, ElevenLabs, Tavily, lambda_api_key) to thinkbox — nothing about keys shows; the harness toast lists the names the fake box received. It becomes connected: the status rows, “Runs on thinkbox”, and Phone shows thinkbox's fixed link (no token). Change or remove a key under Keys: it is pushed again (toast). Picking tower says it didn't answer; “Or enter an address” checks any URL.",
+      build: (c: BuildCtx) => world(c),
+      host: {
+        sync: {
+          box: null,
+          discover: [{ name: "thinkbox", url: THINKBOX, version: "0.6.33", online: true, hasKey: false }],
+          boxes: { [THINKBOX]: { ...thinkbox }, [TOWER]: { ...tower } },
+        },
+        keys: { "service.tavily": "tvly-PREVIEW-0000", "user.lambda_api_key": "PREVIEW-lambda-0000" },
+      },
+      // tower answered once before; the app remembers the boxes it has seen.
+      localStorage: {
+        "vault-chat:known-boxes": JSON.stringify([{ name: "tower", url: TOWER, version: "0.6.30", online: false, hasKey: true }]),
+        vault_chat_user_keys: JSON.stringify(["lambda_api_key"]),
+      },
+      open: [{ click: "[title='Settings']" }, { sleep: 600 }, showBox],
+    },
+    {
+      id: "box-connected",
+      title: "Settings → Box — connected, disconnect",
+      group: "Settings",
+      notes:
+        "This vault syncs with thinkbox and its chat runs there: Box says “Runs on thinkbox” over the status rows; Phone shows thinkbox's fixed https link, no token. Click disconnect → confirm: sync.json loses its box (thinkbox keeps its copy) and Box flips back to “Runs on this laptop” with Connect a box; Phone says the phone app runs on a box.",
+      build: (c: BuildCtx) => world(c),
+      host: {
+        sync: {
+          box: { box: THINKBOX, vault: "summer-demo", name: "thinkbox" },
+          boxes: { [THINKBOX]: { ...thinkbox, keys: { "api.openrouter": "sk-or-PREVIEW-0000000000000000000000000000000000000000" }, vaults: ["summer-demo"] }, [TOWER]: { ...tower } },
+        },
+      },
+      open: [{ click: "[title='Settings']" }, { sleep: 600 }, showBox],
+    },
+  ];
+}
+
 /** Settings with every role set: Chat Claude Sonnet 5.5 (in the catalog:
  *  passes), Background a model missing from the catalog (so the short real
  *  test runs; the preview answers it like OpenRouter: no images, tools yes —
@@ -380,6 +430,7 @@ export const scenarios: Scenario[] = [
     build: () => {},
     open: [{ click: "[title='Settings']" }],
   },
+  ...boxConnectScenarios(),
   {
     id: "history",
     title: "History (Ctrl+H)",

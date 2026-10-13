@@ -658,7 +658,17 @@ export function activeSyncVaults(): string[] {
 // src-tauri/src/box_sync.rs. This loop only schedules cycles, keeps the
 // attention state for the Titlebar chip, and sends the one phone alert.
 
-export type BoxConfig = { box: string; vault: string };
+export type BoxConfig = { box: string; vault: string; name?: string | null };
+
+/** The box's short name: sync.json's name, else the first label of its host. */
+export function boxName(cfg: { box: string; name?: string | null }): string {
+  if (cfg.name) return cfg.name;
+  try {
+    return new URL(cfg.box).hostname.split(".")[0] || cfg.box;
+  } catch {
+    return cfg.box;
+  }
+}
 
 export type BoxSyncReport = {
   configured: boolean;
@@ -723,6 +733,56 @@ export async function readBoxConfig(vault: string): Promise<BoxConfig | null> {
   }
   boxConfigCache.set(vault, { cfg, at: Date.now() });
   return cfg;
+}
+
+/** A machine on the tailnet that answers as a vault-chat server. */
+export type FoundBox = { name: string; url: string; version: string | null; online: boolean; hasKey: boolean };
+
+const KNOWN_BOXES_KEY = "vault-chat:known-boxes";
+
+function knownBoxes(): FoundBox[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(KNOWN_BOXES_KEY) ?? "[]");
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Boxes on the tailnet: the ones answering now, plus ones seen before that
+ * don't answer (shown offline; an offline machine can't say what it is). */
+export async function discoverBoxes(): Promise<FoundBox[]> {
+  const live = await invoke<FoundBox[]>("box_discover");
+  const seen = new Set(live.map((b) => b.url));
+  const merged = [...live, ...knownBoxes().filter((b) => !seen.has(b.url)).map((b) => ({ ...b, online: false }))];
+  try {
+    localStorage.setItem(KNOWN_BOXES_KEY, JSON.stringify(merged.map((b) => ({ ...b, online: false }))));
+  } catch {
+    /* storage full / blocked */
+  }
+  return merged.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
+}
+
+/** The vault's name on a box: its folder name, made safe for `/git/<name>.git`. */
+export function boxVaultName(vault: string): string {
+  const base = vault.split(/[\\/]/).filter(Boolean).pop() ?? "vault";
+  const n = base.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "").replace(/\.git$/, "").slice(0, 64);
+  return n || "vault";
+}
+
+/** Point this vault at a box (sync.json) and run the first sync now; chat moves
+ * to the box. The box must already have the vault (POST /api/v1/vaults). */
+export async function connectBox(vault: string, url: string, name: string): Promise<void> {
+  await invoke("vault_box_connect", { vault, boxUrl: url, boxVault: boxVaultName(vault), name });
+  boxConfigCache.delete(vault);
+  await startVaultSyncLoop(vault);
+}
+
+/** Back to this laptop: sync.json loses its box (the box keeps its copy). */
+export async function disconnectBox(vault: string): Promise<void> {
+  await invoke("vault_box_disconnect", { vault });
+  boxConfigCache.delete(vault);
+  await startVaultSyncLoop(vault);
 }
 
 export function subscribeBoxSync(fn: BoxListener): () => void {

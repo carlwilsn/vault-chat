@@ -23,7 +23,15 @@ import {
   fmtSize,
   type BoxConfig,
   type BoxSyncState,
+  boxName,
+  boxVaultName,
+  discoverBoxes,
+  connectBox,
+  disconnectBox,
+  type FoundBox,
 } from "./vaultSync";
+import { boxGet, boxPost } from "./boxChat";
+import { pushKeysToBox, keysChanged, subscribeKeyPush } from "./boxKeys";
 import { ROLE_LABEL, type RoleId } from "./roles";
 import { checkModel, checkVoiceModel, NEED_LABEL, type Check as ModelCheck } from "./modelCaps";
 
@@ -99,14 +107,16 @@ function Picker({
   options,
   onChange,
   placeholder = "Search…",
+  defaultOpen = false,
 }: {
   value: string;
   label?: string;
   options: PickOption[];
   onChange: (v: string) => void;
   placeholder?: string;
+  defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -439,6 +449,18 @@ function KeysSection() {
     setNames(listUserKeys());
     setAdd(null);
   };
+  // Any add / change / removal here goes to the connected box too (the whole
+  // set; see boxKeys.ts). Not on first render: connecting already pushed.
+  const firstRun = useRef(true);
+  useEffect(() => {
+    if (firstRun.current) {
+      firstRun.current = false;
+      return;
+    }
+    const t = window.setTimeout(() => void keysChanged(), 400);
+    return () => window.clearTimeout(t);
+  }, [apiKeys, serviceKeys, names]);
+
   const service: Array<{ name: string; note?: string; remove: () => void }> = [
     ...(serviceKeys.tavily ? [{ name: "tavily", note: "web search", remove: () => clearServiceKey("tavily") }] : []),
     ...names.map((n) => ({
@@ -647,6 +669,7 @@ function BoxSection() {
   const vaultPath = useStore((s) => s.vaultPath);
   const [config, setConfig] = useState<VaultSyncConfig | null>(null);
   const [box, setBox] = useState<BoxConfig | null>(null);
+  const [rev, setRev] = useState(0);
   useEffect(() => {
     if (!vaultPath) {
       setConfig(null);
@@ -659,23 +682,180 @@ function BoxSection() {
     return () => {
       cancelled = true;
     };
-  }, [vaultPath]);
+  }, [vaultPath, rev]);
+  // Connect / disconnect: re-read sync.json, and move the chat (box mode is
+  // decided when the conversations load).
+  const changed = async (connected: boolean) => {
+    if (!connected) (await import("./boxChat")).stopBoxChat();
+    setRev((n) => n + 1);
+    void useStore.getState().loadConversations();
+  };
 
   return (
     <section className="space-y-3">
       <SectionHead
         title="Box"
-        hint={
-          !vaultPath || !config
-            ? "Open a vault to see its sync."
-            : box
-              ? "This vault syncs with the box: this laptop writes master, the box writes box."
-              : "No box for this vault. It syncs with its git remote."
-        }
+        hint={!vaultPath || !config ? "Open a vault to see its sync." : box ? `Runs on ${boxName(box)}` : "Runs on this laptop"}
       />
-      {vaultPath && config && (box ? <BoxSyncPanel vault={vaultPath} box={box} /> : <GitSync vault={vaultPath} config={config} setConfig={setConfig} />)}
-      <PhoneLink />
+      {vaultPath &&
+        config &&
+        (box ? (
+          <BoxSyncPanel vault={vaultPath} box={box} onDisconnected={() => void changed(false)} />
+        ) : (
+          <>
+            <BoxConnect vault={vaultPath} onConnected={() => void changed(true)} />
+            <div className="space-y-1.5">
+              <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">Git remote</h4>
+              <GitSync vault={vaultPath} config={config} setConfig={setConfig} />
+            </div>
+          </>
+        ))}
+      <PhoneLink box={box} />
     </section>
+  );
+}
+
+type BoxHealth = { name: string; version: string | null };
+
+/** Not connected: find a box on the tailnet (or type its address), then sync
+ *  this vault with it — which also gives it this laptop's keys (boxKeys.ts). */
+function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [found, setFound] = useState<FoundBox[] | null>(null);
+  const [address, setAddress] = useState("");
+  const [picked, setPicked] = useState<string | null>(null);
+  const [health, setHealth] = useState<BoxHealth | null>(null);
+  const laptopKey = useStore((s) => s.apiKeys.openrouter);
+  const [busy, setBusy] = useState<null | "checking" | "sync">(null);
+  const [error, setError] = useState<string | null>(null);
+  const link = (url: string) => ({ url, token: useStore.getState().boxToken || null });
+
+  const start = async () => {
+    setOpen(true);
+    setFound(null);
+    setError(null);
+    try {
+      setFound(await discoverBoxes());
+    } catch (e) {
+      setFound([]);
+      setError(`Couldn't list the tailnet: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  const check = async (raw: string) => {
+    let url = raw.trim().replace(/\/+$/, "");
+    if (!url) return;
+    if (!/^https?:\/\//.test(url)) url = `https://${url}`;
+    const fallback = found?.find((b) => b.url === url)?.name ?? url.replace(/^https?:\/\//, "").split(".")[0];
+    setPicked(url);
+    setHealth(null);
+    setError(null);
+    setBusy("checking");
+    try {
+      const h = await boxGet(link(url), "/api/v1/health", 6000);
+      const isServer = h?.app === "vault-chat-server" || (h?.ok === true && h?.version && h?.keys);
+      if (!isServer) throw new Error("it doesn't answer as a vault-chat server");
+      setHealth({ name: h.name || fallback, version: h.version ?? null });
+    } catch (e) {
+      setError(`${fallback} didn't answer: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const sync = async () => {
+    if (!picked || !health) return;
+    setBusy("sync");
+    setError(null);
+    try {
+      const r = await boxPost(link(picked), "/api/v1/vaults", { name: boxVaultName(vault) });
+      if (!r.ok) throw new Error(r.error ?? "the box refused");
+      const keyErr = await pushKeysToBox(picked);
+      if (keyErr) throw new Error(`your keys didn't reach it (${keyErr})`);
+      await connectBox(vault, picked, health.name);
+      onConnected();
+    } catch (e) {
+      setError(`Couldn't sync with ${health.name}: ${e instanceof Error ? e.message : String(e)}`);
+      setBusy(null);
+    }
+  };
+
+  if (!open) {
+    return (
+      <Button size="sm" variant="outline" onClick={() => void start()}>
+        Connect a box
+      </Button>
+    );
+  }
+  const options: PickOption[] = (found ?? []).map((b) => ({
+    value: b.url,
+    label: b.name,
+    hint: b.online ? `online${b.version ? ` · v${b.version}` : ""}` : "offline",
+  }));
+  return (
+    <div className="space-y-2 rounded-md border border-border/60 px-2.5 py-2">
+      {!health ? (
+        <>
+          <Picker
+            value={picked ?? ""}
+            label={found === null ? "Looking for boxes…" : found.length ? "Pick a box" : "No box answered on your tailnet"}
+            options={options}
+            placeholder="Search boxes…"
+            onChange={(v) => void check(v)}
+            defaultOpen
+          />
+          <div className="flex gap-2">
+            <Input
+              type="text"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void check(address)}
+              placeholder="Or enter an address"
+              className="font-mono text-[11.5px]"
+            />
+            <Button size="sm" variant="outline" onClick={() => void check(address)} disabled={!address.trim() || busy === "checking"}>
+              Check
+            </Button>
+          </div>
+          {busy === "checking" && <p className="text-[10.5px] text-muted-foreground/70">Checking…</p>}
+        </>
+      ) : (
+        <>
+          <div className="flex items-center justify-between gap-2 text-[11.5px]">
+            <span className="min-w-0 truncate">
+              <span className="text-foreground/90">{health.name}</span>
+              <span className="text-muted-foreground">{health.version ? ` · v${health.version}` : ""}</span>
+            </span>
+            <button onClick={() => setHealth(null)} className="text-[10.5px] text-muted-foreground hover:text-foreground underline shrink-0">
+              change
+            </button>
+          </div>
+          {!laptopKey && <p className="text-[11px] text-muted-foreground/80">Add your OpenRouter key under Keys first.</p>}
+          <Button size="sm" onClick={() => void sync()} disabled={!laptopKey || busy === "sync"}>
+            {busy === "sync" ? "Syncing…" : `Sync this vault with ${health.name}`}
+          </Button>
+        </>
+      )}
+      {error && (
+        <p className="text-[11px] text-amber-500/90 break-words">
+          {error}
+          {health && busy === null && (
+            <button onClick={() => void sync()} className="ml-1.5 underline hover:text-foreground">
+              Retry
+            </button>
+          )}
+        </p>
+      )}
+      <button
+        onClick={() => {
+          setOpen(false);
+          setHealth(null);
+          setPicked(null);
+          setError(null);
+        }}
+        className="block text-[10.5px] text-muted-foreground hover:text-foreground underline"
+      >
+        cancel
+      </button>
+    </div>
   );
 }
 
@@ -805,9 +985,24 @@ function GitSync({ vault, config, setConfig }: { vault: string; config: VaultSyn
 
 // Read-only status of the box sync, plus "Sync now". Everything here comes
 // from the last cycle's report (src-tauri/src/box_sync.rs).
-function BoxSyncPanel({ vault, box }: { vault: string; box: BoxConfig }) {
+function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxConfig; onDisconnected: () => void }) {
   const [st, setSt] = useState<BoxSyncState | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [discError, setDiscError] = useState<string | null>(null);
+  const [keyFail, setKeyFail] = useState<string | null>(null);
+  useEffect(() => subscribeKeyPush(setKeyFail), []);
+  const disconnect = async () => {
+    setBusy(true);
+    setDiscError(null);
+    try {
+      await disconnectBox(vault);
+      onDisconnected();
+    } catch (e) {
+      setDiscError(String(e instanceof Error ? e.message : e));
+      setBusy(false);
+    }
+  };
   const [, tick] = useState(0);
   useEffect(() => subscribeBoxSync(setSt), []);
   useEffect(() => {
@@ -871,7 +1066,7 @@ function BoxSyncPanel({ vault, box }: { vault: string; box: BoxConfig }) {
           {[r?.error, r?.github_warning].filter(Boolean).join("\n\n")}
         </pre>
       )}
-      <div className="pt-1">
+      <div className="pt-1 flex items-center gap-2">
         <button
           onClick={syncNow}
           disabled={busy || !!st?.running}
@@ -879,7 +1074,39 @@ function BoxSyncPanel({ vault, box }: { vault: string; box: BoxConfig }) {
         >
           {busy || st?.running ? "syncing…" : "sync now"}
         </button>
+        <span className="text-[10.5px] text-muted-foreground/70">·</span>
+        <button
+          onClick={() => setConfirming(true)}
+          disabled={busy}
+          className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          disconnect
+        </button>
       </div>
+      {confirming && (
+        <div className="space-y-1.5 pt-1">
+          <p className="text-[11px] text-foreground/90">
+            Disconnect {boxName(box)}? Chat goes back to running on this laptop. {boxName(box)} keeps its copy of this vault.
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="destructive" onClick={() => void disconnect()} disabled={busy}>
+              Disconnect
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setConfirming(false)} disabled={busy}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      {discError && <p className="text-[11px] text-destructive">{discError}</p>}
+      {keyFail && (
+        <p className="text-[11px] text-amber-500/90 break-words pt-1">
+          Your keys didn't reach {boxName(box)}: {keyFail}
+          <button onClick={() => void pushKeysToBox(box.box)} className="ml-1.5 underline hover:text-foreground">
+            Retry
+          </button>
+        </p>
+      )}
     </div>
   );
 }
@@ -966,43 +1193,34 @@ function relativeAgo(ts: number): string {
   return `${day}d`;
 }
 
-function PhoneLink() {
-  const [link, setLink] = useState<string | null>(null);
+/** The phone app's one home is the box (always on): its fixed https link, no
+ *  token — the box knows the phone by its Tailscale login. */
+function PhoneLink({ box }: { box: BoxConfig | null }) {
   const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    void (async () => {
-      const { getPhoneChatLink } = await import("./phoneVoice");
-      const c = await getPhoneChatLink().catch(() => null);
-      if (alive) setLink(c);
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const link = box ? `${box.box.replace(/\/+$/, "")}/phone` : null;
   return (
     <div className="space-y-1.5">
       <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">Phone</h4>
       {link ? (
-        <div className="flex items-center gap-2">
-          <code className="text-[11px] font-mono bg-muted px-2 py-1 rounded truncate flex-1 min-w-0">{link}</code>
-          <button
-            className="text-[11px] px-2.5 py-1 rounded border border-border hover:bg-muted shrink-0"
-            onClick={() => {
-              void navigator.clipboard?.writeText(link);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            }}
-          >
-            {copied ? "copied" : "copy"}
-          </button>
-        </div>
+        <>
+          <div className="flex items-center gap-2">
+            <code className="text-[11px] font-mono bg-muted px-2 py-1 rounded truncate flex-1 min-w-0">{link}</code>
+            <button
+              className="text-[11px] px-2.5 py-1 rounded border border-border hover:bg-muted shrink-0"
+              onClick={() => {
+                void navigator.clipboard?.writeText(link);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+            >
+              {copied ? "copied" : "copy"}
+            </button>
+          </div>
+          <p className="text-[11px] text-muted-foreground/70">Open it on your phone (signed in to Tailscale) and add it to the Home Screen.</p>
+        </>
       ) : (
-        <p className="text-[11px] text-muted-foreground/60">The link appears once Tailscale is up.</p>
+        <p className="text-[11px] text-muted-foreground/70">The phone app runs on a box — connect one above.</p>
       )}
-      <p className="text-[11px] text-muted-foreground/70">
-        Open it on your phone and add it to the Home Screen. Voice needs the <span className="font-mono">https://</span> link.
-      </p>
     </div>
   );
 }

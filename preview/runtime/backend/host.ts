@@ -21,8 +21,13 @@ export type BoxReport = {
 };
 
 export type SyncScript = {
-  /** `.vault-chat/sync.json`'s box, or null for the plain git-remote loop. */
-  box?: { box: string; vault: string } | null;
+  /** `.vault-chat/sync.json`'s box, or null for the plain git-remote loop.
+   *  Settings → Box changes it (vault_box_connect / vault_box_disconnect). */
+  box?: { box: string; vault: string; name?: string } | null;
+  /** Settings → Box: what `box_discover` finds (machines answering now). */
+  discover?: { name: string; url: string; version: string | null; online: boolean; hasKey: boolean }[];
+  /** The fake boxes behind those URLs: health, key, vaults. Offline ones never answer. */
+  boxes?: Record<string, FakeBox>;
   /** vault_box_sync replies, in order; the last one repeats. */
   reports?: Partial<BoxReport>[];
   remote?: string | null;
@@ -34,6 +39,10 @@ export type SyncScript = {
    *  script of what happens next, one step per boxNext() (a scenario step). */
   boxChat?: BoxChatScript;
 };
+
+/** A fake box. `keys` is what the laptop pushed to it (fake values; the
+ *  health route shows only the names, like the real box). */
+export type FakeBox = { name: string; version: string; keys?: Record<string, string>; online?: boolean; vaults?: string[] };
 
 export type BoxConv = { title: string; source?: string; status?: "running" | "idle"; meta?: Record<string, unknown>; messages: unknown[] };
 export type BoxStep = {
@@ -77,7 +86,8 @@ let boxCalls = 0;
 const keys = new Map<string, string>();
 
 export function setHostConfig(c: HostConfig, now: () => number): void {
-  cfg = c ?? {};
+  cfg = c ? { ...c, sync: c.sync ? JSON.parse(JSON.stringify({ ...c.sync, boxChat: undefined, reports: undefined })) : undefined } : {};
+  if (cfg.sync && c.sync) Object.assign(cfg.sync, { boxChat: c.sync.boxChat, reports: c.sync.reports });
   boxCalls = 0;
   boxConvs = JSON.parse(JSON.stringify(cfg.sync?.boxChat?.convs ?? {}));
   boxQueue = [];
@@ -105,6 +115,13 @@ function okBox(): BoxReport {
   };
 }
 
+/** The scenario's fake box behind a URL; offline (or unknown) ones don't answer. */
+function fakeBox(u: URL): FakeBox {
+  const b = cfg.sync?.boxes?.[u.origin];
+  if (!b || b.online === false) throw `error sending request for url (${u.href}): operation timed out`;
+  return b;
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export const hostCommands: Record<string, (a: Record<string, any>) => unknown> = {
@@ -117,6 +134,18 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     await sleep(250);
     if (!cfg.sync?.box) return { ...okBox(), configured: false };
     return { ...okBox(), ...r };
+  },
+  box_discover: async () => {
+    await sleep(700);
+    return cfg.sync?.discover ?? [];
+  },
+  vault_box_connect: ({ boxUrl, boxVault, name }) => {
+    cfg.sync = { ...(cfg.sync ?? {}), box: { box: String(boxUrl).replace(/\/+$/, ""), vault: boxVault, name } };
+    return null;
+  },
+  vault_box_disconnect: () => {
+    cfg.sync = { ...(cfg.sync ?? {}), box: null };
+    return null;
   },
   vault_sync_role: () => cfg.sync?.role ?? "writer",
   vault_sync_status: ({ vault }) => ({
@@ -147,6 +176,16 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
   // scenario overrides them to make it unreachable.
   box_get_json: async ({ url }) => {
     const u = new URL(String(url));
+    if (u.pathname === "/api/v1/health") {
+      const b = fakeBox(u);
+      await sleep(400);
+      const names = Object.keys(b.keys ?? {}).sort();
+      const has = (n: string) => names.includes(n);
+      return {
+        status: 200,
+        body: JSON.stringify({ ok: true, app: "vault-chat-server", name: b.name, version: b.version, hasKey: has("api.openrouter"), keyNames: names, keys: { openrouter: has("api.openrouter"), elevenlabs: has("service.elevenlabs") } }),
+      };
+    }
     const p = u.pathname.replace(/^.*?(\/(poll|conversations|conversation|status))/, "$1");
     const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });
     if (p === "/poll") {
@@ -170,7 +209,23 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     }
     return { status: 404, body: JSON.stringify({ error: "not found" }) };
   },
-  box_post_json: ({ url }) => {
+  box_post_json: async ({ url, body }) => {
+    const u = new URL(String(url));
+    if (u.pathname === "/api/v1/keys" || u.pathname === "/api/v1/vaults") {
+      const b = fakeBox(u);
+      const j = JSON.parse(String(body || "{}"));
+      await sleep(500);
+      if (u.pathname === "/api/v1/keys") {
+        // The whole set: a name the laptop no longer has is removed.
+        if (!j.keys || typeof j.keys !== "object") return { status: 400, body: JSON.stringify({ error: "keys: a {name: value} map is required" }) };
+        b.keys = { ...j.keys };
+        report("info", `fake box ${b.name} received keys: ${Object.keys(b.keys).sort().join(", ")}`);
+        return { status: 200, body: JSON.stringify({ ok: true, changed: true, names: Object.keys(b.keys).sort() }) };
+      }
+      const created = !(b.vaults ??= []).includes(j.name);
+      if (created) b.vaults.push(j.name);
+      return { status: 200, body: JSON.stringify({ ok: true, name: j.name, created }) };
+    }
     report("info", `box POST ${url} (answered by the preview)`);
     return { status: 200, body: "{\"ok\":true}" };
   },
