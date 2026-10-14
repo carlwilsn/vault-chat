@@ -27,6 +27,7 @@ import {
   readVaultSyncConfig,
 } from "./vaultSync";
 import { startSchedulerLoop, stopSchedulerLoop } from "./schedulerLoop";
+import { startActivityWatch } from "./activity";
 import "./App.css";
 
 export default function App() {
@@ -55,6 +56,9 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     applyHljsTheme(theme);
   }, [theme]);
+
+  // The shared context stream: the file open, the PDF page, selections and captures (src/activity.ts).
+  useEffect(() => startActivityWatch(), []);
 
   const setFiles = useStore((s) => s.setFiles);
   useEffect(() => {

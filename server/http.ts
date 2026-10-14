@@ -16,6 +16,7 @@ import { validVaultName } from "./sync";
 import { validKeyName } from "./keys";
 import { projectsList, setProject } from "./projectRoutes";
 import { voiceTool, voiceSession, voiceTranscript, type VoiceDeps } from "./voice";
+import { activityPost, activitySummaryRoute } from "./activity";
 import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
 import VOICE_PAGE_INLINE from "../src-tauri/assets/voice.html";
 import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
@@ -350,6 +351,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   }
 
   const q = (k: string) => url.searchParams.get(k) ?? "";
+
+  // The shared context stream (server/activity.ts): this vault's log only.
+  if (path === "/api/v1/activity" && method === "POST") {
+    const out = activityPost(vault, await jsonBody(req));
+    return json(res, out.status, out.body);
+  }
+  if (path === "/api/v1/activity/summary" && method === "GET") {
+    return json(res, 200, await activitySummaryRoute(vault, q));
+  }
 
   switch (`${method} ${path}`) {
     case "GET /voice":

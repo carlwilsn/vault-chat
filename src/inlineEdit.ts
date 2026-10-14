@@ -8,6 +8,18 @@ function prependNorthStar(base: string, northStar?: string): string {
   return block ? `${block}\n\n${base}` : base;
 }
 
+/** The shared context (src/activity.ts: the project's memory and rules, what
+ *  Carl did lately on every surface), after the surface's own rules. */
+export function withSharedContext(system: string, shared?: string): string {
+  const t = (shared ?? "").trim();
+  if (!t) return system;
+  return (
+    `${system}\n\n# Context from Carl's other surfaces\n` +
+    `Reference only: the project's memory and rules, and what he did lately in the editor, Ctrl+K, Ctrl+L, voice and chats. ` +
+    `Use it to resolve "this", "that", "what I just did". The rules above still decide your output.\n\n${t}`
+  );
+}
+
 const SYSTEM = `You are an inline editor inside a text/code file. The user presses Ctrl+K and gives you an instruction plus context from the surrounding file.
 
 Your output replaces the SELECTION they had highlighted, or — when SELECTION is empty — is inserted at the cursor.
@@ -41,6 +53,8 @@ export type InlineEditParams = {
   /** Per-vault north-star brief, prepended to the system prompt so the
    *  inline editor honors the vault's declared mode. */
   northStar?: string;
+  /** The shared context stream's block (src/activity.ts sharedContextText). */
+  sharedContext?: string;
 };
 
 export type CapturedExtra = {
@@ -98,7 +112,7 @@ export async function* runInlineEdit(
 
   const result = streamText({
     model,
-    system: prependNorthStar(SYSTEM, p.northStar),
+    system: withSharedContext(prependNorthStar(SYSTEM, p.northStar), p.sharedContext),
     messages,
     abortSignal: p.abortSignal,
   });
@@ -281,7 +295,7 @@ export async function* runInlineAsk(
 
   const result = streamText({
     model,
-    system: prependNorthStar(ASK_SYSTEM, p.northStar),
+    system: withSharedContext(prependNorthStar(ASK_SYSTEM, p.northStar), p.sharedContext),
     messages,
     tools: tools as any,
     stopWhen: stepCountIs(8),
