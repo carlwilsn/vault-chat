@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Plus, X as XIcon, Trash2, Mic, CheckCheck, ChevronRight, Folder } from "lucide-react";
+import { MessageSquare, Plus, X as XIcon, Trash2, Mic, CheckCheck, ChevronRight, Folder, PanelLeftClose } from "lucide-react";
 import { useStore } from "./store";
 import { conversationPreview, isArchivedThread, type Conversation } from "./conversations";
 import { ongoingWork } from "./ongoingWork";
@@ -24,18 +24,12 @@ type Props = {
   onFocusComposer?: () => void;
 };
 
+/** The Chats overlay (the docked layout): a 380px slide-over on the right. */
 export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
-  const conversations = useStore((s) => s.conversations);
-  const activeId = useStore((s) => s.activeConversationId);
-  const newConversation = useStore((s) => s.newConversation);
-  const selectConversation = useStore((s) => s.selectConversation);
-  const deleteConversation = useStore((s) => s.deleteConversation);
-  const markAllRead = useStore((s) => s.markAllRead);
-  const unreadCount = useMemo(
-    () => conversations.filter((c) => c.unread).length,
-    [conversations],
-  );
+  // The filter and open folders live here, not in the list, so they survive
+  // the overlay closing (the list unmounts with it).
   const [query, setQuery] = useState("");
+  const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set());
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -69,13 +63,102 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
     };
   }, [open, onClose]);
 
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-30 flex justify-end pointer-events-none">
+      <div
+        ref={panelRef}
+        className="h-full w-[380px] max-w-[92vw] bg-card border-l border-border shadow-xl flex flex-col pointer-events-auto"
+      >
+        <ChatsList
+          query={query}
+          setQuery={setQuery}
+          openFolders={openFolders}
+          setOpenFolders={setOpenFolders}
+          onPicked={onClose}
+          onFocusComposer={onFocusComposer}
+          trailing={
+            <button
+              onClick={onClose}
+              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
+              title="Close (Esc)"
+            >
+              <XIcon className="h-3.5 w-3.5" />
+            </button>
+          }
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Fullscreen chat's left sidebar: the same list, docked, collapsible. */
+export function ChatsSidebar({ onFocusComposer }: { onFocusComposer?: () => void }) {
+  const [query, setQuery] = useState("");
+  const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set());
+  const toggle = useStore((s) => s.toggleChatSidebar);
+  return (
+    <aside data-el="chats-sidebar" className="h-full w-[272px] shrink-0 bg-background flex flex-col">
+      <ChatsList
+        query={query}
+        setQuery={setQuery}
+        openFolders={openFolders}
+        setOpenFolders={setOpenFolders}
+        onFocusComposer={onFocusComposer}
+        compact
+        trailing={
+          <button
+            onClick={toggle}
+            className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
+            title="Hide chats (Ctrl+B)"
+          >
+            <PanelLeftClose className="h-3.5 w-3.5" />
+          </button>
+        }
+      />
+    </aside>
+  );
+}
+
+/** The conversations: header (count, mark all read, New), the filter, and
+ *  the list grouped by project. Shared by the overlay and the sidebar. */
+function ChatsList({
+  query,
+  setQuery,
+  openFolders,
+  setOpenFolders,
+  onPicked,
+  onFocusComposer,
+  trailing,
+  compact = false,
+}: {
+  query: string;
+  setQuery: (q: string) => void;
+  openFolders: Set<string>;
+  setOpenFolders: React.Dispatch<React.SetStateAction<Set<string>>>;
+  /** after a chat is picked or started (the overlay closes; the sidebar stays) */
+  onPicked?: () => void;
+  onFocusComposer?: () => void;
+  /** the header's last control: close (overlay) or hide (sidebar) */
+  trailing: React.ReactNode;
+  /** the narrow sidebar: "Mark all read" as its icon alone */
+  compact?: boolean;
+}) {
+  const conversations = useStore((s) => s.conversations);
+  const activeId = useStore((s) => s.activeConversationId);
+  const newConversation = useStore((s) => s.newConversation);
+  const selectConversation = useStore((s) => s.selectConversation);
+  const deleteConversation = useStore((s) => s.deleteConversation);
+  const markAllRead = useStore((s) => s.markAllRead);
+  const unreadCount = useMemo(
+    () => conversations.filter((c) => c.unread).length,
+    [conversations],
+  );
 
   const projects = useProjects();
   const sections = useMemo(() => groupConversations(conversations, query, projects), [conversations, query, projects]);
   const [style] = useState(groupingStyle);
-  const [openFolders, setOpenFolders] = useState<Set<string>>(() => new Set());
-
-  if (!open) return null;
 
   const row = (c: Conversation) => (
     <Row
@@ -84,7 +167,7 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
       active={c.id === activeId}
       onSelect={() => {
         selectConversation(c.id);
-        onClose();
+        onPicked?.();
       }}
       onDelete={() => deleteConversation(c.id)}
     />
@@ -93,7 +176,7 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
   const newInProject = (slug: string) => {
     newChatInProject(slug);
     setQuery("");
-    onClose();
+    onPicked?.();
     const store = useStore.getState();
     if (store.rightCollapsed) store.toggleRight();
     setTimeout(() => onFocusComposer?.(), 0);
@@ -102,7 +185,7 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
   const handleNew = () => {
     newConversation();
     setQuery("");
-    onClose();
+    onPicked?.();
     const store = useStore.getState();
     if (store.rightCollapsed) store.toggleRight();
     // Defer so the chat pane is fully visible before focus moves.
@@ -110,124 +193,112 @@ export function ChatsPanel({ open, onClose, onFocusComposer }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-30 flex justify-end pointer-events-none">
-      <div
-        ref={panelRef}
-        className="h-full w-[380px] max-w-[92vw] bg-card border-l border-border shadow-xl flex flex-col pointer-events-auto"
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border/60">
-          <div className="flex items-center gap-2">
-            <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-[13px] font-semibold">Chats</span>
-            <span className="text-[11px] text-muted-foreground">
-              {conversations.length}
-            </span>
-          </div>
-          <div className="flex items-center gap-1">
-            {unreadCount > 0 && (
-              <button
-                onClick={() => markAllRead()}
-                className="h-7 px-2 flex items-center gap-1 rounded hover:bg-accent/60 text-[11.5px] text-muted-foreground hover:text-foreground/90"
-                title="Mark all chats read"
-              >
-                <CheckCheck className="h-3 w-3" />
-                <span>Mark all read</span>
-              </button>
-            )}
-            <button
-              onClick={handleNew}
-              className="h-7 px-2 flex items-center gap-1 rounded hover:bg-accent/60 text-[11.5px] text-foreground/90"
-              title="New chat (Ctrl+T)"
-            >
-              <Plus className="h-3 w-3" />
-              <span>New</span>
-            </button>
-            <button
-              onClick={onClose}
-              className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground"
-              title="Close (Esc)"
-            >
-              <XIcon className="h-3.5 w-3.5" />
-            </button>
-          </div>
+    <>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border/60">
+        <div className="flex items-center gap-2">
+          <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-[13px] font-semibold">Chats</span>
+          <span className="text-[11px] text-muted-foreground">
+            {conversations.length}
+          </span>
         </div>
-
-        <div className="flex items-center gap-2 px-4 py-2 border-b border-border/60">
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Filter chats…"
-            className="flex-1 h-6 px-2 rounded bg-background border border-border text-[11.5px] placeholder:text-muted-foreground/60 focus:outline-none focus:border-ring/40"
-          />
-        </div>
-
-        <div className="flex-1 overflow-auto">
-          {conversations.length === 0 ? (
-            <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
-              No chats yet.
-            </div>
-          ) : (
-            <>
-              {style === "sections" &&
-                sections.projects.map((p) => (
-                  <Section key={p.slug} label={p.name} onAdd={() => newInProject(p.slug)} addTitle={`New chat in ${p.name}`}>
-                    {p.items.map(row)}
-                  </Section>
-                ))}
-              {!query.trim() && (
-                <button
-                  onClick={() => {
-                    handleNew();
-                    // The chip's picker, open on its name field: the same
-                    // find-or-name step as setting a chat's project.
-                    setTimeout(() => window.dispatchEvent(new CustomEvent("vc-open-project-picker")), 50);
-                  }}
-                  className="w-full px-4 pt-3 pb-1 flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider text-muted-foreground/70 hover:text-foreground font-medium"
-                >
-                  <Plus className="h-3 w-3" />
-                  New project
-                </button>
-              )}
-              {style === "folders" && sections.projects.length > 0 && (
-                <Section label="Projects">
-                  {sections.projects.map((p) => {
-                    const isOpen = openFolders.has(p.slug) || !!query.trim();
-                    return (
-                      <div key={p.slug}>
-                        <FolderRow
-                          project={p}
-                          open={isOpen}
-                          onToggle={() =>
-                            setOpenFolders((cur) => {
-                              const next = new Set(cur);
-                              if (next.has(p.slug)) next.delete(p.slug);
-                              else next.add(p.slug);
-                              return next;
-                            })
-                          }
-                          onAdd={() => newInProject(p.slug)}
-                        />
-                        {isOpen && <div className="pl-3">{p.items.map(row)}</div>}
-                      </div>
-                    );
-                  })}
-                </Section>
-              )}
-              {sections.recent.length > 0 && <Section label="Recent">{sections.recent.map(row)}</Section>}
-              {sections.earlier.length > 0 && <Section label="Earlier">{sections.earlier.map(row)}</Section>}
-              {sections.projects.length === 0 &&
-                sections.recent.length === 0 &&
-                sections.earlier.length === 0 && (
-                  <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
-                    No matches.
-                  </div>
-                )}
-            </>
+        <div className="flex items-center gap-1">
+          {unreadCount > 0 && (
+            <button
+              onClick={() => markAllRead()}
+              className="h-7 px-2 flex items-center gap-1 rounded hover:bg-accent/60 text-[11.5px] text-muted-foreground hover:text-foreground/90"
+              title="Mark all chats read"
+            >
+              <CheckCheck className="h-3 w-3" />
+              {!compact && <span>Mark all read</span>}
+            </button>
           )}
+          <button
+            onClick={handleNew}
+            className="h-7 px-2 flex items-center gap-1 rounded hover:bg-accent/60 text-[11.5px] text-foreground/90"
+            title="New chat (Ctrl+T)"
+          >
+            <Plus className="h-3 w-3" />
+            <span>New</span>
+          </button>
+          {trailing}
         </div>
       </div>
-    </div>
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border/60">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Filter chats…"
+          className="flex-1 h-6 px-2 rounded bg-background border border-border text-[11.5px] placeholder:text-muted-foreground/60 focus:outline-none focus:border-ring/40"
+        />
+      </div>
+
+      <div className="flex-1 overflow-auto">
+        {conversations.length === 0 ? (
+          <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
+            No chats yet.
+          </div>
+        ) : (
+          <>
+            {style === "sections" &&
+              sections.projects.map((p) => (
+                <Section key={p.slug} label={p.name} onAdd={() => newInProject(p.slug)} addTitle={`New chat in ${p.name}`}>
+                  {p.items.map(row)}
+                </Section>
+              ))}
+            {!query.trim() && (
+              <button
+                onClick={() => {
+                  handleNew();
+                  // The chip's picker, open on its name field: the same
+                  // find-or-name step as setting a chat's project.
+                  setTimeout(() => window.dispatchEvent(new CustomEvent("vc-open-project-picker")), 50);
+                }}
+                className="w-full px-4 pt-3 pb-1 flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider text-muted-foreground/70 hover:text-foreground font-medium"
+              >
+                <Plus className="h-3 w-3" />
+                New project
+              </button>
+            )}
+            {style === "folders" && sections.projects.length > 0 && (
+              <Section label="Projects">
+                {sections.projects.map((p) => {
+                  const isOpen = openFolders.has(p.slug) || !!query.trim();
+                  return (
+                    <div key={p.slug}>
+                      <FolderRow
+                        project={p}
+                        open={isOpen}
+                        onToggle={() =>
+                          setOpenFolders((cur) => {
+                            const next = new Set(cur);
+                            if (next.has(p.slug)) next.delete(p.slug);
+                            else next.add(p.slug);
+                            return next;
+                          })
+                        }
+                        onAdd={() => newInProject(p.slug)}
+                      />
+                      {isOpen && <div className="pl-3">{p.items.map(row)}</div>}
+                    </div>
+                  );
+                })}
+              </Section>
+            )}
+            {sections.recent.length > 0 && <Section label="Recent">{sections.recent.map(row)}</Section>}
+            {sections.earlier.length > 0 && <Section label="Earlier">{sections.earlier.map(row)}</Section>}
+            {sections.projects.length === 0 &&
+              sections.recent.length === 0 &&
+              sections.earlier.length === 0 && (
+                <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
+                  No matches.
+                </div>
+              )}
+          </>
+        )}
+      </div>
+    </>
   );
 }
 

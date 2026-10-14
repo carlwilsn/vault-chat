@@ -542,6 +542,15 @@ const NOTES_A =
 export const convFullScenarios: Scenario[] = [
   scenarioA("conv-a", "Full conversation — laptop with a box (first options)", NOTES_A + " Every open choice on its first option.", lsFor(DEFAULTS)),
   scenarioA("conv-a-alt", "Full conversation — laptop with a box (second options)", NOTES_A + " Every open choice on its second option.", lsFor(ALTS)),
+  (() => {
+    const sc = scenarioA(
+      "conv-a-fullscreen",
+      "Full conversation — fullscreen chat with the chats sidebar",
+      "conv-a's world in fullscreen chat (Ctrl+Shift+F), laid out like Claude Code desktop / Codex: the conversations on the left, grouped by project exactly like the Chats overlay (project sections with +, New project, Recent / Earlier, the filter, New), the chat beside it at reading width. Ctrl+B or the sidebar's toggle hides and shows it (remembered); the Chats button in the composer row toggles it too. Cost on the app's default now: the conversation's total, none per reply.",
+      lsFor({ ...DEFAULTS, cost: "total" }),
+    );
+    return { ...sc, open: [...(sc.open ?? []), { key: "ctrl+shift+F" }, { wait: "[data-el='chats-sidebar']" }, { sleep: 400 }] };
+  })(),
   ...Object.entries(CHOICE_OPTIONS).flatMap(([choice, opts]) =>
     opts.map((opt) =>
       scenarioA(
