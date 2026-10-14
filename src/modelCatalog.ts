@@ -68,6 +68,11 @@ async function fetchGoogle(apiKey: string): Promise<ModelSpec[]> {
     });
 }
 
+/** OpenRouter names models "Anthropic: Claude Sonnet 5.5"; show just the model. */
+export function bareModelName(name: string): string {
+  return name.replace(/^[^:]{1,40}:\s+/, "");
+}
+
 async function fetchOpenRouter(apiKey: string): Promise<ModelSpec[]> {
   const res = await fetch("https://openrouter.ai/api/v1/models", {
     headers: { authorization: `Bearer ${apiKey}` },
@@ -77,7 +82,7 @@ async function fetchOpenRouter(apiKey: string): Promise<ModelSpec[]> {
   return json.data.map((m) => ({
     provider: "openrouter" as const,
     id: m.id,
-    label: m.name ?? m.id,
+    label: bareModelName(m.name ?? m.id),
     ...(typeof m.context_length === "number" ? { contextLength: m.context_length } : {}),
   }));
 }
@@ -217,7 +222,7 @@ export function loadCatalogFromLocalStorage(): ModelSpec[] | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return null;
-    return parsed as ModelSpec[];
+    return (parsed as ModelSpec[]).map((m) => (m.provider === "openrouter" ? { ...m, label: bareModelName(m.label) } : m));
   } catch {
     return null;
   }
