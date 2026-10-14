@@ -12,6 +12,8 @@ Type=simple
 # not /run/current-system/sw/bin/node (that path does not exist on the box).
 ExecStart=/usr/bin/env node %h/.local/state/vault-chat-server/current/vault-chat-server.mjs
 EnvironmentFile=%h/.config/vault-chat-server.env
+# The agent sandbox hides this file (it can hold tokens); systemd does not tell the process its path.
+Environment=VC_ENV_FILE=%h/.config/vault-chat-server.env
 Environment=PATH=/run/wrappers/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin
 Environment=NODE_ENV=production
 WorkingDirectory=%h

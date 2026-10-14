@@ -174,3 +174,30 @@ export function costFromStreamEvent(data) {
   if (!Number.isFinite(c)) return null;
   return { cost: c, id: typeof data.id === "string" ? data.id : null };
 }
+
+/**
+ * After ScheduleWake the turn is over: every later tool call in it (pi's own
+ * tools included) is refused, except Done and Blocked. `onResult` reads the
+ * host's answer to ScheduleWake ("Wake scheduled for <ISO> …"); `check` gives
+ * the refusal for a call, or null; `reset` at the end of the turn.
+ */
+export function wakeGate() {
+  let at = null;
+  return {
+    onResult(toolName, text, isError) {
+      if (toolName !== "ScheduleWake" || isError) return;
+      const m = /Wake scheduled for (\S+)/.exec(String(text ?? ""));
+      if (m) at = m[1];
+    },
+    check(toolName) {
+      if (!at || toolName === "Done" || toolName === "Blocked") return null;
+      return `You scheduled a wake for ${at}. End your turn now; you'll be woken then.`;
+    },
+    reset() {
+      at = null;
+    },
+    get at() {
+      return at;
+    },
+  };
+}

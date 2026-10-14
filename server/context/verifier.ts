@@ -20,7 +20,8 @@ const INSTRUCTIONS = `You are an independent verifier. An agent says it has fini
 
 - Check every claim in the summary against the evidence: read the files it names with your tools (read-only), and compare against the command outputs quoted in the evidence. You cannot run commands.
 - A claim about a file passes only if the file says so. A claim about a command passes only if its quoted output supports it and nothing in the files contradicts it.
-- verdict "pass": every material claim is backed. "fail": a claim is contradicted, or a file it depends on is missing or wrong. "unsure": something material could not be checked.
+- Check the task's explicit constraints, not just that the work exists. List every constraint Carl stated — timing and intervals ("every 2 minutes", "after 10 s"), counts ("5 checks", "3 files"), spacing and ordering, formats (units, file types, naming), limits — and check each one against the evidence: compare the timestamps in files, logs and tool results (subtract them), count the entries, read the formats. A run that did the right thing at the wrong times, the wrong number of times or in the wrong format violated the task: verdict "fail", with a note giving the stated constraint and what the evidence shows (e.g. "asked for checks 2 minutes apart; the log shows 12:00:01, 12:00:04, 12:00:09"). If a stated constraint cannot be checked from the evidence, the verdict is at best "unsure", never "pass".
+- verdict "pass": every material claim is backed and every stated constraint is met. "fail": a claim is contradicted, a stated constraint is violated, or a file it depends on is missing or wrong. "unsure": something material could not be checked.
 - Be brief. Use a few tool calls, not dozens.
 
 Reply with JSON only, no prose around it:
@@ -170,7 +171,8 @@ export async function verifyDone(args: { conv: ContextConv; summary: string; evi
     (project ? `# The project's "done when" (${project.name})\n\n${cap(project.project, 3_000, "project.md is longer")}\n\n` : "") +
     `# The agent's summary\n\n${args.summary}\n\n# The agent's evidence\n\n` +
     (args.evidence.length ? args.evidence.map((e, i) => `${i + 1}. ${cap(String(e), 6_000, "evidence cut")}`).join("\n") : "(none given)") +
-    `\n\nThe vault (working directory) is ${cfg.vault}.`;
+    `\n\nThe vault (working directory) is ${cfg.vault}.` +
+    `\n\nBefore your verdict, check every explicit constraint in what Carl asked (timing, intervals, counts, spacing, formats) against the evidence — timestamps in files and tool results included — and fail the run if one is violated.`;
 
   const work = async (): Promise<Verdict> => {
     const input: any[] = [{ role: "user", content: [{ type: "input_text", text: task }] }];

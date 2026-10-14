@@ -21,7 +21,7 @@ import { closeSync, readFileSync } from "node:fs";
 import { Type } from "typebox";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { registerSubagentTool } from "./subagent.mjs";
-import { addCacheMarkers, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox } from "./policy.mjs";
+import { addCacheMarkers, costFromStreamEvent, guardToolCall, resolveList, scrubEnv, shq, toTypebox, wakeGate } from "./policy.mjs";
 
 const E = process.env;
 const HOME = E.HOME || "/";
@@ -87,7 +87,11 @@ export default function vaultChat(pi) {
   // ---- path guard for the in-process tools ------------------------------------------
   const denyRead = resolveList(json(E.VC_PI_DENY_READ, []), HOME);
   const denyWrite = resolveList(json(E.VC_PI_DENY_WRITE, []), HOME);
+  // After ScheduleWake, the turn's only move left is to end (Done/Blocked may still end it differently).
+  const gate = wakeGate();
   pi.on("tool_call", async (event, ctx) => {
+    const after = gate.check(event.toolName);
+    if (after) return { block: true, reason: after };
     const why = guardToolCall(event.toolName, event.input, { cwd: ctx?.cwd || process.cwd(), home: HOME, denyRead, denyWrite });
     return why ? { block: true, reason: why } : undefined;
   });
@@ -106,6 +110,7 @@ export default function vaultChat(pi) {
         const v = await ctx.ui.editor("vc:host-call", JSON.stringify({ tool: s.name, args: params ?? {}, toolCallId }));
         if (v === undefined) return { content: [{ type: "text", text: `${s.name}: vault-chat did not answer.` }], details: undefined, isError: true };
         const r = json(v, { text: String(v) });
+        gate.onResult(s.name, r.text, !!r.isError);
         return { content: [{ type: "text", text: String(r.text ?? "") }], details: undefined, ...(r.isError ? { isError: true } : {}) };
       },
     });
@@ -147,5 +152,8 @@ export default function vaultChat(pi) {
   pi.on("message_end", (event) => {
     if (event?.message?.role === "assistant") flush();
   });
-  pi.on("agent_settled", () => flush());
+  pi.on("agent_settled", () => {
+    flush();
+    gate.reset();
+  });
 }

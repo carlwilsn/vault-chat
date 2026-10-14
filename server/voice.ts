@@ -32,7 +32,7 @@ export type VoiceDeps = {
    * runs without one (not Linux, or VC_PI_UNSAFE); undefined = no engine. */
   shell?: string[] | null;
   /** The engine's /message (start or continue a box chat). */
-  message?: (b: { text: string; project?: string; convId?: string | null }) => Promise<Record<string, unknown> | null>;
+  message?: (b: { text: string; project?: string; convId?: string | null; source?: "voice" }) => Promise<Record<string, unknown> | null>;
   /** After a write: run a sync cycle so it reaches the laptop. */
   onWrite?: () => void;
   openrouterKey?: () => string | null;
@@ -374,7 +374,8 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
       const task = s(a.task).trim();
       if (!task) return "Error: AskAgent needs a task.";
       const convId = s(a.conversationId).trim() || null;
-      const out = await d.message({ text: task, convId, ...(s(a.project).trim() ? { project: s(a.project).trim() } : {}) });
+      // A conversation the voice agent started is a voice conversation (its source), not a phone chat.
+      const out = await d.message({ text: task, convId, source: "voice", ...(s(a.project).trim() ? { project: s(a.project).trim() } : {}) });
       if (!out || out.error) return `Error: ${s(out?.error) || "the agent did not take it"}`;
       return JSON.stringify({ conversationId: out.convId, started: !convId, ...(out.steered ? { steered: true } : {}), ...(out.answered ? { answered: true } : {}) });
     }
