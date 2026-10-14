@@ -4,7 +4,7 @@
 // repo (fast-forward, else a merge); a conflict aborts the merge and the task
 // goes back to the queue. The server runs git itself, on paths it has checked.
 import { spawnSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, rmdirSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 
@@ -78,4 +78,11 @@ export function removeWorktree(repo: string, worker: string): void {
   const { path, branch } = worktreeOf(repo, worker);
   git(repo, ["worktree", "remove", "--force", path]);
   git(repo, ["branch", "-D", branch]);
+  // The last worker out removes the empty <repo>.worktrees/ folder too.
+  const dir = `${repo}.worktrees`;
+  try {
+    if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
+  } catch {
+    /* another worker is still there */
+  }
 }

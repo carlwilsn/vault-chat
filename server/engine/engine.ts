@@ -1332,11 +1332,11 @@ export class Engine {
           const scope = a.scope === "project" ? "project" : "conversation";
           if (!(usd > 0)) return text("SetBudget needs usd > 0.");
           if (scope === "project" && !conv.project) return text("This conversation has no project; use scope conversation or SetProject first.");
-          const q = `Set a $${usd.toFixed(2)} budget on this ${scope === "project" ? `project (${conv.project})` : "conversation"}?${a.reason ? ` ${String(a.reason).slice(0, 300)}` : ""}`;
+          const q = `Set a ${money(usd)} budget on this ${scope === "project" ? `project (${conv.project})` : "conversation"}?${a.reason ? ` ${String(a.reason).slice(0, 300)}` : ""}`;
           const ans = await this.waitForAnswer(p.threadId, q, ["Approve", "Decline"]);
           if (!/^\s*(approve|yes|y|ok|okay|sure)\b/i.test(ans)) return text(`Carl did not approve the budget (he said: ${ans.slice(0, 200)}).`);
           await this.control(scope === "project" ? { project: conv.project } : { convId }, "budget", { usd });
-          return text(`Budget set: $${usd.toFixed(2)} on this ${scope}. You'll be told at 80%; at 100% the work stops.`);
+          return text(`Budget set: ${money(usd)} on this ${scope}. You'll be told at 80%; at 100% the work stops.`);
         }
         case "PdfRead":
           return text(await pdfRead(vault, a));
@@ -1535,7 +1535,7 @@ export class Engine {
       const spec = readLong(this.d.vault, slug).metric ?? (this.pinned(slug, "metric") as MetricSpec | null);
       if (!spec) continue;
       const last = this.metricSeries(slug).at(-1);
-      if (last && now - last.at < (spec.everyMin ?? 15) * 60_000) continue;
+      if (last && now - last.at < (spec.everyMin ?? 15) * 60_000 - 5_000) continue; // a tick a few ms early still samples
       void this.sampleMetric(slug).catch((e) => this.log(`metric ${slug}: ${e}`));
     }
   }
@@ -1775,7 +1775,7 @@ export class Engine {
   private async budgetReached(conv: EngineConv, bud: { scope: string; spent: number; cap: number }): Promise<void> {
     const already = conv.state === "blocked" && conv.long?.budgetHit;
     removeWakes(this.d.vault, (w) => w.conv === conv.id);
-    const what = `$${bud.spent.toFixed(2)} of the ${bud.scope}'s $${bud.cap.toFixed(2)} budget`;
+    const what = `${money(bud.spent)} of the ${bud.scope}'s ${money(bud.cap)} budget`;
     await appendMessage(
       this.d.vault,
       conv.id,
@@ -1793,8 +1793,8 @@ export class Engine {
     if (bud && bud.frac >= 0.8) {
       notes.push(
         bud.frac >= 1
-          ? `Budget reached: $${bud.spent.toFixed(2)} of the ${bud.scope}'s $${bud.cap.toFixed(2)}. Answer Carl; start no new work unless he raises it.`
-          : `Budget: $${bud.spent.toFixed(2)} of the ${bud.scope}'s $${bud.cap.toFixed(2)} spent (${Math.round(bud.frac * 100)}%). At 100% the work stops. Spend what is left on what matters most, and write down where you are.`,
+          ? `Budget reached: ${money(bud.spent)} of the ${bud.scope}'s ${money(bud.cap)}. Answer Carl; start no new work unless he raises it.`
+          : `Budget: ${money(bud.spent)} of the ${bud.scope}'s ${money(bud.cap)} spent (${Math.round(bud.frac * 100)}%). At 100% the work stops. Spend what is left on what matters most, and write down where you are.`,
       );
     }
     const pl = conv.project ? readLong(this.d.vault, conv.project).plateau : undefined;
@@ -2097,3 +2097,9 @@ function errText(e: any): string {
   return String(e.message ?? JSON.stringify(e)).slice(0, 500);
 }
 
+
+/** Dollars for people: cents normally, more digits for sub-dollar amounts so a $0.002 cap doesn't read "$0.00". */
+function money(usd: number): string {
+  if (usd >= 1 || usd === 0) return `$${usd.toFixed(2)}`;
+  return `$${usd < 0.01 ? usd.toFixed(4) : usd.toFixed(3)}`;
+}
