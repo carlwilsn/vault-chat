@@ -31,6 +31,7 @@ import { Ledger } from "./ledger";
 import { pdfRead, webSearch } from "./extraTools";
 import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "./pi/jobs";
 import { addTasks, claimTask, finishTask, readTasks, taskCounts, type Task } from "./tasks";
+import { mergeWorktree, prepareWorktree, removeWorktree, resolveRepo } from "./worktree";
 import { appendJsonl, declaredCommand, longDir, metricLine, parseMetric, pinCommand, plateauOf, readJsonl, readLong, runCommand, saveRunLog, tailOf, tampered, writeLong, type CommandSpec, type MetricSpec, type Sample } from "./long";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
@@ -308,7 +309,16 @@ export const ENGINE_TOOL_SPECS = [
     name: "RunWorkers",
     description:
       "Start `count` workers (at most 8) on this project's task queue. Each is a conversation of its own that takes a task, works it in a fresh session under its deadline, marks it done or failed, shares a learning, and takes the next — until the queue is empty or the budget is spent. You see their progress in TaskList; you get a wake when they are all finished. model: the workers' model (default the project's cheap one).",
-    inputSchema: { type: "object", properties: { count: { type: "number" }, model: { type: "string" } }, required: ["count"], additionalProperties: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        count: { type: "number" },
+        model: { type: "string" },
+        repo: { type: "string", description: "A git repo (in the vault or ~/agent-work/<vault>/): each worker gets its own worktree and branch; a done task is merged back (a conflict sends it back to the queue)." },
+      },
+      required: ["count"],
+      additionalProperties: false,
+    },
   },
   {
     type: "function",
@@ -1335,7 +1345,7 @@ export class Engine {
           return text(`${c.done}/${c.total} done, ${c.doing} in progress, ${c.todo} to do, ${c.gave_up} given up.\n${rows.join("\n")}${list.length > 60 ? `\n… ${list.length - 60} more` : ""}`);
         }
         case "RunWorkers":
-          return text(await this.runWorkers(conv, Number(a.count) || 1, a.model ? String(a.model) : undefined));
+          return text(await this.runWorkers(conv, Number(a.count) || 1, a.model ? String(a.model) : undefined, a.repo ? String(a.repo) : undefined));
         case "TodoWrite": {
           const todos = (Array.isArray(a.todos) ? a.todos : [])
             .slice(0, 30)
@@ -1401,6 +1411,7 @@ export class Engine {
     if (bad) return { ok: false, why: `the project's check was changed (${bad}); it was not run, and only Carl can re-set it`, out: "", code: null, command: spec.command };
     let command = spec.command;
     if (extraEnv?.VC_TASK) command = command.split("{task}").join(extraEnv.VC_TASK);
+    if (extraEnv?.VC_WORKTREE) command = command.split("{worktree}").join(extraEnv.VC_WORKTREE);
     const r = await runCommand(this.d.jobEnv, { command, cwd: this.d.vault, timeoutMs: checkTimeoutMs(spec), passRegex: spec.passRegex, extraEnv });
     if (r.refused) return { ok: false, why: `the check could not run: ${r.refused}`, out: "", code: null, command };
     const log = saveRunLog(this.d.vault, slug, "check", r, command);
@@ -1538,8 +1549,9 @@ export class Engine {
     if (status === "done") {
       // The project's oracle, per task: a check whose command names {task}.
       const spec = this.checkSpec(slug);
+      const wt = typeof conv.long?.cwd === "string" && conv.long.repo ? conv.long.cwd : undefined;
       if (spec?.command.includes("{task}")) {
-        const g = await this.runCheck(slug, { VC_TASK: t.id });
+        const g = await this.runCheck(slug, { VC_TASK: t.id, ...(wt ? { VC_WORKTREE: wt } : {}) });
         if (g && !g.ok) {
           const tail = g.out ? `\n--- check output (tail) ---\n${tailOf(g.out, 3000)}` : "";
           return { success: false, contentItems: [{ type: "inputText", text: `Not done: ${g.why} for ${t.id}. Fix it and call TaskUpdate done again, or mark it failed.${tail}` }] };
@@ -1548,6 +1560,20 @@ export class Engine {
     }
     if (typeof a.learning === "string" && a.learning.trim()) this.appendLearning(slug, t.id, a.learning);
     const max = readLong(vault, slug).maxAttempts ?? 3;
+    // A worker on a code repo: its worktree's work is committed and merged back; a conflict sends the task back.
+    const repo = typeof conv.long?.repo === "string" ? conv.long.repo : "";
+    if (status === "done" && repo && conv.parent) {
+      const m = mergeWorktree(repo, conv.id, `task ${t.id}: ${t.title}`.slice(0, 200));
+      if (!m.ok && m.conflict) {
+        finishTask(vault, slug, t.id, "todo", `merge conflict with the repo (${m.out}); redo it on the current HEAD`, max);
+        this.workerNudged.delete(conv.id);
+        this.workerDeadline.delete(conv.id);
+        await this.refreshParent(conv.parent);
+        return text(`Task ${t.id} could not be merged: ${m.out}. It is back in the queue (to redo on the current code). Stop now.`);
+      }
+      if (!m.ok) return { success: false, contentItems: [{ type: "inputText", text: `Not done: merging the worktree failed (${m.out}).` }] };
+      note = `${note}${note ? " " : ""}(${m.merged ? `merged: ${m.out}` : "no changes to merge"})`;
+    }
     const after = finishTask(vault, slug, t.id, status, note, max);
     this.workerNudged.delete(conv.id);
     this.workerDeadline.delete(conv.id);
@@ -1557,10 +1583,16 @@ export class Engine {
   }
 
   /** RunWorkers: start worker conversations on the project's queue. */
-  async runWorkers(parent: EngineConv, count: number, model?: string): Promise<string> {
+  async runWorkers(parent: EngineConv, count: number, model?: string, repoPath?: string): Promise<string> {
     const vault = this.d.vault;
     const slug = parent.project;
     if (!slug) return "RunWorkers needs a project: call SetProject first.";
+    let repo: string | undefined;
+    if (repoPath) {
+      const r = resolveRepo(vault, repoPath);
+      if ("error" in r) return `Not started: ${r.error}.`;
+      repo = r.repo;
+    }
     if (parent.parent) return "A worker cannot start workers.";
     const c = taskCounts(readTasks(vault, slug));
     if (!c.todo) return "The task queue has nothing to do: add tasks with TaskAdd first.";
@@ -1572,20 +1604,21 @@ export class Engine {
     const p = readProject(slug);
     const ids: string[] = [];
     for (let i = 0; i < n; i++) {
-      const w = await createConv(vault, { source: "worker" as any, parent: parent.id, project: slug, working: true, long: { cheap } }, `Worker ${mine.length + i + 1} · ${p?.name ?? slug}`);
+      const w = await createConv(vault, { source: "worker" as any, parent: parent.id, project: slug, working: true, long: { cheap, ...(repo ? { repo } : {}) } }, `Worker ${mine.length + i + 1} · ${p?.name ?? slug}`);
       ids.push(w.id);
     }
     for (const id of ids) await this.workerNext(id);
     await this.refreshParent(parent.id);
-    return `Started ${n} worker(s) on ${c.todo} task(s) (model ${cheap}). They work until the queue is empty or the budget is spent; you get a wake when they are all finished. TaskList shows progress.`;
+    return `Started ${n} worker(s) on ${c.todo} task(s) (model ${cheap}${repo ? `; each in its own git worktree of ${repo}, merged back per task` : ""}). They work until the queue is empty or the budget is spent; you get a wake when they are all finished. TaskList shows progress.`;
   }
 
-  private taskPrompt(slug: string, t: Task, max: number): string {
+  private taskPrompt(slug: string, t: Task, max: number, wt?: { path: string; repo: string }): string {
     const p = readProject(slug);
     const learned = this.learningsTail(slug);
     return [
       `You are a worker on project "${p?.name ?? slug}", one of several working through its task queue. This is a fresh session for one task.`,
       `Task ${t.id} (attempt ${t.attempts} of ${max}; deadline ${t.deadline_min} min): ${t.title}`,
+      wt ? `Work in ${wt.path}: your own git worktree of ${wt.repo}, on the repo's latest code. Don't touch ${wt.repo} itself; when you mark the task done the server commits your changes and merges them in.` : "",
       t.notes ? `Notes (from Carl and earlier attempts):\n${t.notes}` : "",
       learned ? `What other workers learned (learnings.md, latest):\n${learned}` : "",
       `Do the task. Then call TaskUpdate {id:"${t.id}", status:"done" or "failed", note: what you did or why it failed, learning: one line the other workers should know}. Then stop: the server gives you the next task in a fresh session. Do not work on other tasks.`,
@@ -1606,17 +1639,27 @@ export class Engine {
     const st = readLong(vault, conv.project);
     const max = st.maxAttempts ?? 3;
     const model = this.taskModel(conv, t, max);
+    const repo = typeof conv.long?.repo === "string" ? conv.long.repo : "";
+    let cwd: string | undefined;
+    if (repo) {
+      const w = prepareWorktree(repo, wid);
+      if ("error" in w) {
+        finishTask(vault, conv.project, t.id, "todo", "", max);
+        return this.endWorker(conv, `its worktree failed: ${w.error}`);
+      }
+      cwd = w.path;
+    }
     const from = conv.threadId;
     await mutateConv(vault, wid, (c) => {
       c.threadId = undefined;
       c.threadPath = undefined;
-      c.long = { ...(c.long ?? {}), model, task: t.id };
+      c.long = { ...(c.long ?? {}), model, task: t.id, ...(cwd ? { cwd } : {}) };
     });
     if (from) this.byThread.delete(from);
     this.workerNudged.delete(wid);
     this.workerDeadline.set(wid, (t.claimedAt ?? Date.now()) + t.deadline_min * 60_000);
     if (conv.parent) await this.refreshParent(conv.parent);
-    void this.run(wid, this.taskPrompt(conv.project, t, max), "task").catch((e) => this.log(`worker ${wid}: ${e}`));
+    void this.run(wid, this.taskPrompt(conv.project, t, max, cwd ? { path: cwd, repo } : undefined), "task").catch((e) => this.log(`worker ${wid}: ${e}`));
   }
 
   /** The model for a task's attempt: the worker's cheap one (item 7 escalates). */
@@ -1626,6 +1669,7 @@ export class Engine {
 
   private async endWorker(conv: EngineConv, why: string): Promise<void> {
     this.workerDeadline.delete(conv.id);
+    if (typeof conv.long?.repo === "string") removeWorktree(conv.long.repo, conv.id);
     await appendMessage(this.d.vault, conv.id, { role: "assistant", system: true, content: `Worker finished: ${why}.` }, { state: "done", working: false, nextWakeAt: undefined });
     removeWakes(this.d.vault, (w) => w.conv === conv.id);
     if (!conv.parent) return;

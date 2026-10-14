@@ -451,3 +451,70 @@ describe("5. Task queue with fresh worker sessions", () => {
     rig.backend.end(s.tid);
   });
 });
+
+describe("6. A git worktree per worker", () => {
+  it("each worker works in its own worktree; done merges back (fast-forward or merge); a conflict sends the task back to the queue; the next attempt starts on the new HEAD", async () => {
+    const { sh } = await import("./helpers");
+    const repo = join(rig.vault, "code");
+    mkdirSync(repo, { recursive: true });
+    sh(repo, "git", ["init", "-q", "-b", "main"]);
+    sh(repo, "git", ["config", "core.autocrlf", "false"]);
+    writeFileSync(join(repo, "shared.txt"), "base\n");
+    sh(repo, "git", ["add", "-A"]);
+    sh(repo, "git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "base"]);
+    const s = await rig.start("Port the functions.");
+    await rig.backend.call(s.tid, "SetProject", { name: "Iota" });
+    await rig.backend.call(s.tid, "TaskAdd", { tasks: [{ title: "edit shared one way" }, { title: "edit shared another way" }, { title: "add a file" }] });
+    const bad = await rig.backend.call(s.tid, "RunWorkers", { count: 2, repo: "../.." });
+    expect(out(bad)).toMatch(/Not started: .* (outside|not a git repo)/);
+    const rw = await rig.backend.call(s.tid, "RunWorkers", { count: 2, repo: "code" });
+    expect(out(rw)).toMatch(/own git worktree/);
+    rig.backend.end(s.tid);
+    const [A, B] = await workersOf(s.convId);
+    await until(async () => !!(await workerTurn(A.id)).text && !!(await workerTurn(B.id)).text);
+    const a = await rig.readConv(A.id);
+    const b = await rig.readConv(B.id);
+    expect(a.long.cwd).not.toBe(b.long.cwd);
+    expect(a.long.cwd).toMatch(/code\.worktrees/);
+    // The fresh thread opened in the worktree, and the prompt says so.
+    expect(rig.backend.threads.find((t) => t.threadId === a.threadId).cwd).toBe(a.long.cwd);
+    expect((await workerTurn(A.id)).text).toMatch(/your own git worktree/);
+    // Both edit the same line.
+    writeFileSync(join(a.long.cwd, "shared.txt"), "A was here\n");
+    writeFileSync(join(b.long.cwd, "shared.txt"), "B was here\n");
+    const ra = await rig.backend.call(a.threadId, "TaskUpdate", { status: "done" });
+    expect(out(ra)).toMatch(/t1: done/);
+    expect(readFileSync(join(repo, "shared.txt"), "utf8")).toBe("A was here\n");
+    const rb = await rig.backend.call(b.threadId, "TaskUpdate", { status: "done" });
+    expect(out(rb)).toMatch(/t2 could not be merged: conflict in shared\.txt\. It is back in the queue/);
+    // The repo is clean (the merge was aborted) and still has A's change.
+    expect(sh(repo, "git", ["status", "--porcelain"]).trim()).toBe("");
+    expect(readFileSync(join(repo, "shared.txt"), "utf8")).toBe("A was here\n");
+    const { readTasks } = await import("../engine/tasks");
+    const t2 = readTasks(rig.vault, "iota").find((t) => t.id === "t2")!;
+    expect(t2.status).toBe("todo");
+    expect(t2.notes).toMatch(/merge conflict/);
+    // A takes t2 next (the first to do), on the new HEAD: its worktree shows A's change; this time it merges.
+    rig.backend.end(a.threadId);
+    await until(async () => /Task t2/.test((await workerTurn(A.id)).text));
+    const a2 = await rig.readConv(A.id);
+    expect(readFileSync(join(a2.long.cwd, "shared.txt"), "utf8")).toBe("A was here\n");
+    writeFileSync(join(a2.long.cwd, "shared.txt"), "A was here\nand B's idea too\n");
+    expect(out(await rig.backend.call(a2.threadId, "TaskUpdate", { status: "done" }))).toMatch(/t2: done/);
+    expect(readFileSync(join(repo, "shared.txt"), "utf8")).toBe("A was here\nand B's idea too\n");
+    // B takes t3 and adds a file while main moved on: a real merge.
+    rig.backend.end(b.threadId);
+    await until(async () => /Task t3/.test((await workerTurn(B.id)).text));
+    const b2 = await rig.readConv(B.id);
+    writeFileSync(join(b2.long.cwd, "new.txt"), "new\n");
+    expect(out(await rig.backend.call(b2.threadId, "TaskUpdate", { status: "done" }))).toMatch(/t3: done/);
+    expect(readFileSync(join(repo, "new.txt"), "utf8")).toBe("new\n");
+    expect(sh(repo, "git", ["log", "--oneline"])).toMatch(/task t1: edit shared one way/);
+    // Queue empty: the workers end and their worktrees are removed.
+    rig.backend.end(a2.threadId);
+    rig.backend.end(b2.threadId);
+    await until(async () => (await rig.readConv(A.id)).state === "done" && (await rig.readConv(B.id)).state === "done");
+    expect(sh(repo, "git", ["worktree", "list"]).trim().split("\n")).toHaveLength(1);
+    rig.backend.end(s.tid);
+  });
+});
