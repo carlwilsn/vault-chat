@@ -120,15 +120,17 @@ const AGENT_VERSION_KEY = "vault_chat_elevenlabs_agent_config_version";
 // set. Mismatch with the live signature triggers a rebuild on next ensureAgent.
 const AGENT_TOOLS_SIG_KEY = "vault_chat_elevenlabs_agent_tools_sig";
 
-// Custom voice tools for the active vault, refreshed on every ensureAgent (the
-// provisioning authority). buildClientToolHandlers / buildSystemPrompt read this
-// synchronously — ensureAgent always runs first on every voice path (desktop
-// session start, phone /session context build, launch + heartbeat), so it's warm
-// by the time tools are called. Empty until the first load.
-let voiceToolCache: { vault: string | null; tools: VaultVoiceTool[] } = {
-  vault: null,
-  tools: [],
-};
+// Custom voice tools per vault, refreshed on every ensureAgent (the
+// provisioning authority). buildClientToolHandlers / buildSystemPrompt read
+// them synchronously — ensureAgent always runs first on every voice path
+// (desktop session start, phone /session context build, launch + heartbeat), so
+// they're warm by the time tools are called. Keyed by vault: the box builds
+// sessions for several vaults at once, and one vault's tools must never reach
+// another's session.
+const voiceToolCache = new Map<string, VaultVoiceTool[]>();
+function toolsFor(vault: string | null | undefined): VaultVoiceTool[] {
+  return (vault && voiceToolCache.get(vault)) || [];
+}
 
 // A stable fingerprint of the custom tool set — names + parameter shapes — so a
 // changed vault re-provisions the agent. Order-independent: sort by name.
@@ -148,11 +150,11 @@ async function refreshVoiceTools(vaultOverride?: string): Promise<VaultVoiceTool
   // its sandbox with only their declared keys — these execute()s run nowhere there.)
   try {
     const tools = await loadVaultVoiceTools(vault);
-    voiceToolCache = { vault, tools };
+    if (vault) voiceToolCache.set(vault, tools);
     return tools;
   } catch (e) {
     console.warn("[voice-eleven] custom tool load failed:", e);
-    voiceToolCache = { vault, tools: [] };
+    if (vault) voiceToolCache.set(vault, []);
     return [];
   }
 }
@@ -1686,6 +1688,8 @@ export async function buildPhoneVoiceContext(
     loadVoicePromptContext(state.vaultPath),
   ]);
   if (!agentId) return null;
+  // This vault's tools, by name of the vault (never whichever vault loaded last).
+  const vaultTools = toolsFor(state.vaultPath);
   // Resolve the attached thread's messages. The ACTIVE conversation's stored
   // entry only mirrors the live top-level `messages` buffer on certain sync
   // points, so when the phone is attached to the box's active thread, read the
@@ -1704,9 +1708,9 @@ export async function buildPhoneVoiceContext(
     elKey,
     agentId,
     voiceId: localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
-    systemPrompt: buildSystemPrompt(state, customHeader, northStar, promptContext, historyMessages, opts?.agentOnBox, opts?.fileIndex),
+    systemPrompt: buildSystemPrompt(state, customHeader, northStar, promptContext, historyMessages, opts?.agentOnBox, opts?.fileIndex, vaultTools),
     dynamicVariables: buildDynamicVariables(state),
-    toolNames: Object.keys(buildClientToolHandlers()),
+    toolNames: Object.keys(buildClientToolHandlers(undefined, undefined, vaultTools)),
     vault: state.vaultPath,
   };
 }
@@ -1797,6 +1801,8 @@ function buildSystemPrompt(
   // The vault runs on a box: the tools run there and AskAgent hands work to its agent.
   agentOnBox?: boolean,
   fileIndex?: string[],
+  // The vault's own tools (default: the store vault's).
+  tools?: VaultVoiceTool[],
 ): string {
   const vault = state.vaultPath ?? "(no vault)";
   const recentHistory = formatRecentHistory(historyMessages ?? state.messages, 32);
@@ -1817,10 +1823,11 @@ function buildSystemPrompt(
   // The user's per-vault custom tools — same set the text agent loads. List them
   // by name + description so voice discovers them the way the text agent does;
   // their full schemas reach the model via the agent provisioning in ensureAgent.
-  const customToolsBlock = voiceToolCache.tools.length
+  const vaultTools = tools ?? toolsFor(state.vaultPath);
+  const customToolsBlock = vaultTools.length
     ? [
         "Custom tools for THIS vault (added by the user — call them exactly like the built-ins above):",
-        ...voiceToolCache.tools.map((t) => `- ${t.name}: ${t.description}`),
+        ...vaultTools.map((t) => `- ${t.name}: ${t.description}`),
       ].join("\n")
     : "";
   return [
@@ -2431,7 +2438,12 @@ function withTracking<A>(
   };
 }
 
-export function buildClientToolHandlers(remote?: RemoteVoiceTool, remoteNames?: string[]): Record<
+export function buildClientToolHandlers(
+  remote?: RemoteVoiceTool,
+  remoteNames?: string[],
+  // The vault's own tools (default: the store vault's).
+  vaultTools: VaultVoiceTool[] = toolsFor(useStore.getState().vaultPath),
+): Record<
   string,
   (parameters: any) => Promise<string>
 > {
@@ -2984,14 +2996,14 @@ export function buildClientToolHandlers(remote?: RemoteVoiceTool, remoteNames?: 
   // (server/voice.ts); the ones that move the user's screen stay here.
   // The vault's own tools: here, or on the box (in its sandbox) in box mode —
   // together with any the box's agent offers that this laptop hasn't loaded.
-  const customs = new Set<string>([...voiceToolCache.tools.map((t) => t.name), ...(remote ? (remoteNames ?? []) : [])]);
+  const customs = new Set<string>([...vaultTools.map((t) => t.name), ...(remote ? (remoteNames ?? []) : [])]);
   if (remote) {
     for (const name of new Set([...BUILTIN_VOICE_TOOL_NAMES, ...customs])) {
       if (LOCAL_VOICE_TOOLS.has(name)) continue;
       handlers[name] = withTracking(name, (args: unknown) => remote(name, args), " · on the box");
     }
   } else {
-    for (const t of voiceToolCache.tools) {
+    for (const t of vaultTools) {
       handlers[t.name] = withTracking(t.name, (args: unknown) => t.execute(args));
     }
   }

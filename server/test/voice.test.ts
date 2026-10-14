@@ -27,6 +27,9 @@ const vault2 = join(root, "vault2");
 mkdirSync(join(vault2, ".vault-chat", "conversations"), { recursive: true });
 mkdirSync(join(vault2, "lab"), { recursive: true });
 writeFileSync(join(vault2, "lab", "plan.md"), "# Plan\nsecond vault\n");
+mkdirSync(join(vault2, ".vault-chat", "tools", "lab"), { recursive: true });
+writeFileSync(join(vault2, ".vault-chat", "tools", "lab", "TOOL.md"), "---\nname: LabTool\ndescription: The lab vault's own tool.\n---\n");
+writeFileSync(join(vault2, ".vault-chat", "tools", "lab", "run.sh"), "echo lab\n");
 git(vault2, "init", "-q");
 writeFileSync(join(vault, "notes", "a.md"), "# A\nthe quick fox\n");
 writeFileSync(join(vault, "private", "s.md"), "secret quick\n");
@@ -303,11 +306,58 @@ describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
       expect(String(other.body.systemPrompt)).toContain("lab/plan.md");
       expect(String(other.body.systemPrompt)).not.toContain("notes/a.md");
       expect(other.body.toolNames).not.toContain("EchoKey");
+      expect(other.body.toolNames).toContain("LabTool");
       expect(calls.slice(m).filter((c) => c.url.includes("/agents/create")).length).toBe(1);
       // …and the first vault's agent is still its own (no re-provision ping-pong).
       const k = calls.length;
       expect((await voice.voiceSession(null, deps)).status).toBe(200);
       expect(calls.slice(k).some((c) => c.url.includes("/agents/create"))).toBe(false);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  it("two vaults' sessions started at once each get only their own tools", async () => {
+    const creates: { slotTools: string[] }[] = [];
+    const real = globalThis.fetch;
+    let slow = "EchoKey";
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = String(typeof input === "string" ? input : input.url);
+      if (!url.startsWith("https://api.elevenlabs.io/")) return real(input, init);
+      if (url.includes("/convai/agents/create")) {
+        const b = JSON.parse(init.body);
+        // One vault's provisioning answers late: the other vault's session is
+        // built (and its tools loaded) while this one waits — both orders.
+        if (b.conversation_config.agent.prompt.tools.some((x: any) => x.name === slow)) await new Promise((r) => setTimeout(r, 120));
+        creates.push({ slotTools: b.conversation_config.agent.prompt.tools.map((x: any) => x.name) });
+        return new Response(JSON.stringify({ agent_id: `agent_${creates.length}` }), { status: 200 });
+      }
+      if (url.includes("/get_signed_url")) return new Response(JSON.stringify({ signed_url: `wss://fake/${url.split("agent_id=")[1]}` }), { status: 200 });
+      return new Response("{}", { status: 404 });
+    }) as typeof fetch;
+    try {
+      store.setState({ serviceKeys: { elevenlabs: "el-canary-key" } });
+      for (let round = 0; round < 4; round++) {
+        slow = round % 2 ? "LabTool" : "EchoKey";
+        // Fresh agents for both (a changed config version forces both to provision now).
+        localStorage.setItem("vault_chat_elevenlabs_agent_config_version", "old");
+        localStorage.setItem("vault_chat_elevenlabs_agent_config_version:vault:lab", "old");
+        const [a, b] = await Promise.all([voice.voiceSession(null, deps), voice.voiceSession(null, deps2)]);
+        expect(a.status).toBe(200);
+        expect(b.status).toBe(200);
+        expect(a.body.toolNames).toContain("EchoKey");
+        expect(a.body.toolNames).not.toContain("LabTool");
+        expect(b.body.toolNames).toContain("LabTool");
+        expect(b.body.toolNames).not.toContain("EchoKey");
+        expect(String(a.body.systemPrompt)).toContain("EchoKey");
+        expect(String(a.body.systemPrompt)).not.toContain("LabTool");
+        expect(String(b.body.systemPrompt)).toContain("LabTool");
+        expect(String(b.body.systemPrompt)).not.toContain("EchoKey");
+        expect(a.body.signedUrl).not.toBe(b.body.signedUrl);
+      }
+      // Each provisioned agent carries exactly its own vault's tool.
+      expect(creates.length).toBe(8);
+      for (const c of creates) expect(c.slotTools.includes("EchoKey") !== c.slotTools.includes("LabTool")).toBe(true);
     } finally {
       globalThis.fetch = real;
     }
