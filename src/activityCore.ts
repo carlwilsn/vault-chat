@@ -328,7 +328,10 @@ export function voiceToolEntry(name: string, args: unknown, result: string, vaul
     if (root && s.toLowerCase().startsWith(root.toLowerCase() + "/")) s = s.slice(root.length + 1);
     return s;
   };
-  const failed = /^(Error|Refused)/.test(result.trim());
+  const res = result.trim();
+  // A refusal changed nothing, and its args may name a denied path: never logged.
+  if (/^Refused/.test(res)) return null;
+  const failed = /^Error/.test(res);
   const status = failed ? ` — failed: ${clean(result, 120)}` : "";
   switch (name) {
     case "Write":
@@ -362,7 +365,8 @@ export function voiceToolEntry(name: string, args: unknown, result: string, vaul
     }
     default:
       // A vault's own tool: it may have changed things.
-      if (VOICE_WRITES.has(name)) return null;
+      // A tool this vault lacks (another vault's) or one that failed: nothing happened here.
+      if (VOICE_WRITES.has(name) || failed) return null;
       return { kind: "voice", modality: "voice", text: `Voice ran the vault tool ${clean(name, 60)}${status}` };
   }
 }

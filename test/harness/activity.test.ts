@@ -199,5 +199,8 @@ test("voice on this laptop: tool calls that change things become entries, reads 
   assert.equal(e.text, "Voice edited notes/a.md");
   assert.equal(e.detail, '"long" → "short"');
   assert.match(core.voiceToolEntry("Write", { path: "x.md", contents: "y" }, "Error: nope")!.text, /failed: Error: nope/);
+  // A refusal changed nothing and may name a denied path; another vault's tool did nothing here.
+  assert.equal(core.voiceToolEntry("Bash", { command: "cat private/s.md" }, "Refused: command references restricted path 'private'."), null);
+  assert.equal(core.voiceToolEntry("EchoKey", {}, 'Error: tool "EchoKey" is not available on the box.'), null);
   assert.equal(core.voiceLineEntry("user", "make it shorter", "v1")!.text, 'Carl said: "make it shorter"');
 });
