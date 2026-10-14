@@ -20,6 +20,7 @@ import {
   verifyDone,
   formatVerdict,
   projectCost,
+  readProject,
   type EngineConv,
   type ThreadTokenUsage,
 } from "./context";
@@ -28,6 +29,7 @@ import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } f
 import { Ledger } from "./ledger";
 import { pdfRead, webSearch } from "./extraTools";
 import { startJob, jobStatus, type PiJobEnv } from "./pi/jobs";
+import { declaredCommand, pinCommand, readLong, runCommand, saveRunLog, tailOf, tampered, writeLong, type CommandSpec } from "./long";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { join } from "node:path";
@@ -232,6 +234,18 @@ export const ENGINE_TOOL_SPECS = [
         },
       },
       required: ["todos"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "SetCheck",
+    description:
+      "Set this project's check: the command whose passing gates Done (the server runs it on Done; a failing or changed check refuses Done). Passing = exit 0, or the output matching pass_regex. Pinned when set: you can set it once; after that only Carl can change it (propose a new one with AskUser). A fenced command block in project.md's \"## Done when\" is the same.",
+    inputSchema: {
+      type: "object",
+      properties: { command: { type: "string" }, pass_regex: { type: "string" }, timeout_s: { type: "number" } },
+      required: ["command"],
       additionalProperties: false,
     },
   },
@@ -1088,21 +1102,33 @@ export class Engine {
           return text(on ? "Keep-going mode on. End every turn with ScheduleWake, AskUser, Done or Blocked." : "Keep-going mode off.");
         }
         case "Done": {
-          if (l) l.flags.done = true;
           const summary = String(a.summary ?? "").trim();
           const evidence = Array.isArray(a.evidence) ? a.evidence.map(String) : [];
-          const v = await verifyDone({ conv: conv as any, summary, evidence });
+          // The project's check gates Done: the server runs it; a failing or changed check refuses Done and the work goes on.
+          const g = conv.project ? await this.runCheck(conv.project) : null;
+          if (g && !g.ok) {
+            await mutateConv(vault, convId, (c) => {
+              c.working = true;
+              c.long = { ...(c.long ?? {}), lastCheck: { ok: false, at: Date.now(), why: g.why } };
+            });
+            this.nudged.delete(convId);
+            const tail = g.out ? `\n--- check output (tail) ---\n${tailOf(g.out, 3000)}` : "";
+            return { success: false, contentItems: [{ type: "inputText", text: `Done refused: ${g.why}. Keep-going stays on: fix it, then call Done again (the server reruns the check).${tail}` }] };
+          }
+          if (l) l.flags.done = true;
+          const v = await verifyDone({ conv: conv as any, summary, evidence, ...(g ? { check: { command: g.command, exit: g.code, output: g.out, log: g.log } } : {}) });
           const line = formatVerdict(v);
           // Done ends the work: no wake of it may run a turn later.
           removeWakes(vault, (w) => w.conv === convId);
           await mutateConv(vault, convId, (c) => {
             c.working = false;
             c.nextWakeAt = undefined;
+            if (g) c.long = { ...(c.long ?? {}), lastCheck: { ok: true, at: Date.now() } };
             c.verdict = { verdict: v.verdict, notes: v.notes, at: v.at, summary };
             if (typeof v.costUsd === "number") c.costUsd = round((c.costUsd ?? 0) + v.costUsd);
           });
           await this.d.notify({ kind: "info", title: `Done: ${conv.title}`.slice(0, 90), body: `${summary.slice(0, 300)}\n${line}`, convId });
-          return text(`Recorded as done. ${line}\nTell Carl the verdict in your reply.`);
+          return text(`Recorded as done.${g ? " The project's check passed." : ""} ${line}\nTell Carl the verdict in your reply.`);
         }
         case "Blocked": {
           if (l) l.flags.blocked = true;
@@ -1124,6 +1150,20 @@ export class Engine {
           this.pings.set(convId, [...recent, Date.now()]);
           const sent = await this.d.notify({ kind: "info", title: String(a.title ?? "vault-chat").slice(0, 90), body: String(a.body ?? "").slice(0, 2000), convId });
           return text(sent ? "Notified." : "Recorded in the feed (no phone subscribed).");
+        }
+        case "SetCheck": {
+          if (!conv.project) return { success: false, contentItems: [{ type: "inputText", text: "SetCheck needs a project: call SetProject first." }] };
+          const cur = this.checkSpec(conv.project);
+          if (cur) {
+            const who = cur.source === "carl" ? "Carl" : cur.source === "agent" ? "you, earlier" : "project.md";
+            return { success: false, contentItems: [{ type: "inputText", text: `This project's check is already set (by ${who}): \`${cur.command}\`. Only Carl can change it now; propose a new one with AskUser and he sets it.` }] };
+          }
+          const command = String(a.command ?? "").trim();
+          if (!command) return text("SetCheck needs a command.");
+          const spec = pinCommand({ command, passRegex: a.pass_regex ? String(a.pass_regex) : undefined, timeoutS: Number(a.timeout_s) > 0 ? Number(a.timeout_s) : undefined, cwd: vault, source: "agent" });
+          writeLong(vault, conv.project, (st) => ({ ...st, check: spec }));
+          const files = Object.keys(spec.files);
+          return text(`Check set and pinned: \`${command}\`${files.length ? ` (with ${files.join(", ")})` : ""}. Done now runs it on the server; a changed command or file refuses Done.`);
         }
         case "PdfRead":
           return text(await pdfRead(vault, a));
@@ -1166,6 +1206,71 @@ export class Engine {
     } catch (e) {
       return { success: false, contentItems: [{ type: "inputText", text: `${name} failed: ${(e as Error).message}` }] };
     }
+  }
+
+  // ---------------------------------------------------------------- long-run controls
+
+  /** The project's check: as stored, or project.md's "## Done when" block, pinned the first time it is seen. */
+  checkSpec(slug: string): CommandSpec | null {
+    const st = readLong(this.d.vault, slug);
+    if (st.check) return st.check;
+    const p = readProject(slug);
+    const dec = p ? declaredCommand(p.project, "Done when") : null;
+    if (!dec) return null;
+    const spec = pinCommand({ command: dec.command, passRegex: dec.passRegex, cwd: this.d.vault, source: "project.md" });
+    writeLong(this.d.vault, slug, (s) => ({ ...s, check: s.check ?? spec }));
+    this.log(`project ${slug}: check pinned from project.md`);
+    return spec;
+  }
+
+  /** Run the project's check (null: it has none). Refused, not run, when its command or files changed since it was set. */
+  async runCheck(slug: string, extraEnv?: Record<string, string>): Promise<{ ok: boolean; why: string; out: string; code: number | null; command: string; log?: string } | null> {
+    const spec = this.checkSpec(slug);
+    if (!spec) return null;
+    const p = readProject(slug);
+    const declared = spec.source === "project.md" ? (p ? (declaredCommand(p.project, "Done when")?.command ?? "") : "") : null;
+    const bad = tampered(spec, declared);
+    if (bad) return { ok: false, why: `the project's check was changed (${bad}); it was not run, and only Carl can re-set it`, out: "", code: null, command: spec.command };
+    let command = spec.command;
+    if (extraEnv?.VC_TASK) command = command.split("{task}").join(extraEnv.VC_TASK);
+    const r = await runCommand(this.d.jobEnv, { command, cwd: this.d.vault, timeoutMs: checkTimeoutMs(spec), passRegex: spec.passRegex, extraEnv });
+    if (r.refused) return { ok: false, why: `the check could not run: ${r.refused}`, out: "", code: null, command };
+    const log = saveRunLog(this.d.vault, slug, "check", r, command);
+    const why = r.ok
+      ? "passed"
+      : r.timedOut
+        ? "the project's check timed out"
+        : spec.passRegex
+          ? `the project's check output did not match ${spec.passRegex} (exit ${r.code})`
+          : `the project's check failed (exit ${r.code})`;
+    return { ok: r.ok, why, out: r.out, code: r.code, command, log };
+  }
+
+  /**
+   * Carl's controls (the API, never the agent): POST /api/v1/projects/:slug/:op
+   * and /api/v1/conversations/:id/:op.
+   *   check {command | null, pass_regex?, timeout_s?}   — set (pinned) or remove the project's check
+   */
+  async control(target: { project?: string; convId?: string }, op: string, b: any): Promise<Record<string, unknown>> {
+    return this.scoped(async () => {
+      const vault = this.d.vault;
+      const slug = target.project ? String(target.project) : "";
+      if (slug && !readProject(slug)) return { ok: false, error: `no project ${slug}` };
+      if (op === "check" && slug) {
+        if (b?.command === null || b?.command === "") {
+          writeLong(vault, slug, (st) => {
+            delete st.check;
+          });
+          return { ok: true, check: null };
+        }
+        const command = String(b?.command ?? "").trim();
+        if (!command) return { ok: false, error: "check needs a command (or null to remove it)" };
+        const spec = pinCommand({ command, passRegex: b?.pass_regex ? String(b.pass_regex) : undefined, timeoutS: Number(b?.timeout_s) > 0 ? Number(b.timeout_s) : undefined, cwd: vault, source: "carl" });
+        writeLong(vault, slug, (st) => ({ ...st, check: spec }));
+        return { ok: true, check: { command: spec.command, files: Object.keys(spec.files) } };
+      }
+      return { ok: false, error: `unknown control ${op}` };
+    });
   }
 
   /** Park the turn on a question until Carl answers (via /message or /answer). */
@@ -1289,6 +1394,8 @@ export class Engine {
     const stall = this.d.stallMs ?? 30 * 60_000;
     let limit = stall;
     for (const t of l.open.values()) {
+      // Done runs the project's check on the server.
+      if (t.name === "Done") limit = Math.max(limit, checkTimeoutMs() + 2 * TOOL_MARGIN_MS);
       if (t.name !== "Bash") continue;
       const def = Number(process.env.VC_PI_SHELL_TIMEOUT_S) || 1800;
       const max = Number(process.env.VC_PI_SHELL_MAX_TIMEOUT_S) || 4 * 3600;
@@ -1320,6 +1427,12 @@ export class Engine {
       }
     }
   }
+}
+
+/** A check's time limit: its own, else VC_CHECK_TIMEOUT_S (30 min); at most 4 h. */
+function checkTimeoutMs(spec?: CommandSpec): number {
+  const s = spec?.timeoutS ?? (Number(process.env.VC_CHECK_TIMEOUT_S) || 1800);
+  return Math.min(s, 4 * 3600) * 1000;
 }
 
 function capStr(s: string, n: number): string {

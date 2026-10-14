@@ -168,6 +168,21 @@ export type Conversation = {
   todos?: import("./store").TodoItem[];
   // [box mode, in memory] The box model's context window (for the dial).
   contextWindow?: number;
+  // [engine, long runs] The server's long-run state for this conversation (the
+  // last check, budget, progress line, workers, a worker's task). Carried
+  // through readConversations below (same strip-trap as `mission`).
+  long?: ConvLong;
+  // A worker conversation's parent (RunWorkers): hidden from the chat lists, shown as the parent's "N workers" line.
+  parent?: string;
+};
+
+export type ConvLong = {
+  lastCheck?: { ok: boolean; at: number; why?: string };
+  budgetUsd?: number;
+  budgetWarned?: boolean;
+  /** The quiet line under the ongoing-work line: "62.4% · +1.8 today", "4 workers · 37/120 done". */
+  line?: string;
+  [k: string]: unknown;
 };
 
 
@@ -304,6 +319,8 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         recap: parsed.recap,
         subagents: parsed.subagents,
         todos: parsed.todos,
+        long: parsed.long,
+        parent: parsed.parent,
       });
     } catch {
       // skip
