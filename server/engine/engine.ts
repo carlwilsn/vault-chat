@@ -251,6 +251,18 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
+    name: "SetBudget",
+    description:
+      "Ask Carl to cap the model spend (USD) of this conversation or its project. He approves or declines. Past 80% you are told before each turn; at 100% the work stops (blocked) until he raises it.",
+    inputSchema: {
+      type: "object",
+      properties: { usd: { type: "number" }, scope: { type: "string", enum: ["conversation", "project"] }, reason: { type: "string" } },
+      required: ["usd"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
     name: "Cost",
     description: "Model spend in USD: this conversation by default, or a project's total.",
     inputSchema: {
@@ -539,6 +551,12 @@ export class Engine {
       if (!(await this.d.backend.ready(120_000))) throw new Error(`the ${this.d.backend.name} runtime is not up`);
       let conv = await readConv(this.d.vault, convId);
       if (!conv) throw new Error(`conversation ${convId} not found`);
+      // Past its budget, only Carl's own messages still run a turn.
+      const bud = this.budgetOf(conv);
+      if (bud && bud.frac >= 1 && kind !== "user") {
+        await this.budgetReached(conv, bud);
+        return;
+      }
       if (!opts.alreadyAppended) {
         const visible: ChatMessage =
           kind === "user"
@@ -598,7 +616,7 @@ export class Engine {
       if (prior) body = `${prior}\n\n${input}`;
       const rules = rulesPrefixForTurn(conv as any);
       if (opts.context) body = `${opts.context}\n\n${body}`;
-      const texts = [rules, kind === "wake" ? input : body].filter(Boolean);
+      const texts = [rules, this.turnNotes(conv), kind === "wake" ? input : body].filter(Boolean);
       // Images on a model that can't see: this turn (silently) uses the vision model.
       let model = this.d.model();
       if (opts.images?.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
@@ -1024,6 +1042,10 @@ export class Engine {
         if (i >= 0) c.messages[i] = { ...c.messages[i]!, costUsd: round(((c.messages[i] as any).costUsd ?? 0) + res.usd) } as any;
       }
     });
+    // Past its budget: long work stops here (a turn that is running finishes; its wake never runs).
+    const conv = await readConv(this.d.vault, convId);
+    const bud = conv ? this.budgetOf(conv) : null;
+    if (conv && bud && bud.frac >= 1 && (conv.working || conv.state === "sleeping") && !this.live.has(convId)) await this.budgetReached(conv, bud);
   }
 
   /** At boot: cost any model call a restart cut off before its lookup finished
@@ -1165,6 +1187,17 @@ export class Engine {
           const files = Object.keys(spec.files);
           return text(`Check set and pinned: \`${command}\`${files.length ? ` (with ${files.join(", ")})` : ""}. Done now runs it on the server; a changed command or file refuses Done.`);
         }
+        case "SetBudget": {
+          const usd = Number(a.usd);
+          const scope = a.scope === "project" ? "project" : "conversation";
+          if (!(usd > 0)) return text("SetBudget needs usd > 0.");
+          if (scope === "project" && !conv.project) return text("This conversation has no project; use scope conversation or SetProject first.");
+          const q = `Set a $${usd.toFixed(2)} budget on this ${scope === "project" ? `project (${conv.project})` : "conversation"}?${a.reason ? ` ${String(a.reason).slice(0, 300)}` : ""}`;
+          const ans = await this.waitForAnswer(p.threadId, q, ["Approve", "Decline"]);
+          if (!/^\s*(approve|yes|y|ok|okay|sure)\b/i.test(ans)) return text(`Carl did not approve the budget (he said: ${ans.slice(0, 200)}).`);
+          await this.control(scope === "project" ? { project: conv.project } : { convId }, "budget", { usd });
+          return text(`Budget set: $${usd.toFixed(2)} on this ${scope}. You'll be told at 80%; at 100% the work stops.`);
+        }
         case "PdfRead":
           return text(await pdfRead(vault, a));
         case "WebSearch":
@@ -1246,10 +1279,53 @@ export class Engine {
     return { ok: r.ok, why, out: r.out, code: r.code, command, log };
   }
 
+  /** The tightest of the conversation's and its project's budgets: spent, cap, fraction. Null without one. */
+  budgetOf(conv: EngineConv): { scope: "conversation" | "project"; spent: number; cap: number; frac: number } | null {
+    const out: { scope: "conversation" | "project"; spent: number; cap: number; frac: number }[] = [];
+    const cc = conv.long?.budgetUsd;
+    if (typeof cc === "number" && cc > 0) out.push({ scope: "conversation", spent: conv.costUsd ?? 0, cap: cc, frac: (conv.costUsd ?? 0) / cc });
+    const pc = conv.project ? readLong(this.d.vault, conv.project).budgetUsd : undefined;
+    if (conv.project && typeof pc === "number" && pc > 0) {
+      const spent = projectCost(conv.project)?.totalUsd ?? 0;
+      out.push({ scope: "project", spent, cap: pc, frac: spent / pc });
+    }
+    return out.sort((a, b) => b.frac - a.frac)[0] ?? null;
+  }
+
+  /** The budget is spent: the conversation ends blocked (its wakes cancelled) and Carl hears it once. */
+  private async budgetReached(conv: EngineConv, bud: { scope: string; spent: number; cap: number }): Promise<void> {
+    const already = conv.state === "blocked" && conv.long?.budgetHit;
+    removeWakes(this.d.vault, (w) => w.conv === conv.id);
+    const what = `$${bud.spent.toFixed(2)} of the ${bud.scope}'s $${bud.cap.toFixed(2)} budget`;
+    await appendMessage(
+      this.d.vault,
+      conv.id,
+      { role: "assistant", system: true, content: `Budget reached: ${what}. The work stopped; raise the budget or send a message to go on.` },
+      { state: "blocked", working: false, nextWakeAt: undefined, long: { ...(conv.long ?? {}), budgetHit: true } },
+    );
+    this.log(`budget reached on ${conv.id}: ${what}`);
+    if (!already) await this.d.notify({ kind: "info", title: `Budget reached: ${conv.title}`.slice(0, 90), body: `Spent ${what}. It stopped.`, convId: conv.id });
+  }
+
+  /** What the agent is told in front of a turn (besides the rules): budget past 80%, a plateau. */
+  turnNotes(conv: EngineConv): string {
+    const notes: string[] = [];
+    const bud = this.budgetOf(conv);
+    if (bud && bud.frac >= 0.8) {
+      notes.push(
+        bud.frac >= 1
+          ? `Budget reached: $${bud.spent.toFixed(2)} of the ${bud.scope}'s $${bud.cap.toFixed(2)}. Answer Carl; start no new work unless he raises it.`
+          : `Budget: $${bud.spent.toFixed(2)} of the ${bud.scope}'s $${bud.cap.toFixed(2)} spent (${Math.round(bud.frac * 100)}%). At 100% the work stops. Spend what is left on what matters most, and write down where you are.`,
+      );
+    }
+    return notes.length ? `<status>\n${notes.join("\n")}\n</status>\n\n` : "";
+  }
+
   /**
    * Carl's controls (the API, never the agent): POST /api/v1/projects/:slug/:op
    * and /api/v1/conversations/:id/:op.
    *   check {command | null, pass_regex?, timeout_s?}   — set (pinned) or remove the project's check
+   *   budget {usd | null}                               — a project's or a conversation's dollar cap
    */
   async control(target: { project?: string; convId?: string }, op: string, b: any): Promise<Record<string, unknown>> {
     return this.scoped(async () => {
@@ -1268,6 +1344,26 @@ export class Engine {
         const spec = pinCommand({ command, passRegex: b?.pass_regex ? String(b.pass_regex) : undefined, timeoutS: Number(b?.timeout_s) > 0 ? Number(b.timeout_s) : undefined, cwd: vault, source: "carl" });
         writeLong(vault, slug, (st) => ({ ...st, check: spec }));
         return { ok: true, check: { command: spec.command, files: Object.keys(spec.files) } };
+      }
+      if (op === "budget") {
+        const usd = b?.usd === null ? null : Number(b?.usd);
+        if (usd !== null && !(usd > 0)) return { ok: false, error: "budget needs usd > 0 (or null to remove it)" };
+        if (slug) {
+          writeLong(vault, slug, (st) => {
+            if (usd === null) delete st.budgetUsd;
+            else st.budgetUsd = usd;
+          });
+          return { ok: true, project: slug, budgetUsd: usd };
+        }
+        const id = String(target.convId ?? "");
+        const c = await mutateConv(vault, id, (c) => {
+          const lg = { ...(c.long ?? {}) };
+          if (usd === null) delete lg.budgetUsd;
+          else lg.budgetUsd = usd;
+          delete lg.budgetHit;
+          c.long = lg;
+        });
+        return c ? { ok: true, convId: id, budgetUsd: usd } : { ok: false, error: `no conversation ${id}` };
       }
       return { ok: false, error: `unknown control ${op}` };
     });

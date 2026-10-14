@@ -122,3 +122,73 @@ describe("1. Done is gated by an executable check the agent cannot edit", () => 
     rig.backend.end(s.tid);
   });
 });
+
+describe("2. Budget caps", () => {
+  it("80%: the agent is told before its turn; 100%: the conversation ends blocked with one push, its wake never runs", async () => {
+    const s = await rig.start("Grind through it, keep going.");
+    const set = await rig.engine.control({ convId: s.convId }, "budget", { usd: 10 });
+    expect(set.ok).toBe(true);
+    rig.backend.end(s.tid);
+    await until(async () => (await rig.readConv(s.convId))?.state !== "running");
+    // $8.50 spent: the next turn's input carries the 80% line.
+    const { mutateConv } = await import("../engine/convs");
+    await mutateConv(rig.vault, s.convId, (c) => {
+      c.costUsd = 8.5;
+    });
+    const n = rig.backend.turns.length;
+    await rig.engine.run(s.convId, "Wake: next step", "wake");
+    await until(() => rig.backend.turns.length === n + 1);
+    const t = rig.backend.turns[n].texts.join("\n");
+    expect(t).toMatch(/Budget: \$8\.50 of the conversation's \$10\.00 spent \(85%\)/);
+    await rig.backend.call(s.tid, "KeepWorking", { on: true });
+    await rig.backend.call(s.tid, "ScheduleWake", { in: "1h", reason: "next step" });
+    rig.backend.end(s.tid);
+    await until(async () => (await rig.readConv(s.convId))?.state === "sleeping");
+    // $10.20: the wake fires but runs no turn; blocked, one push.
+    await mutateConv(rig.vault, s.convId, (c) => {
+      c.costUsd = 10.2;
+    });
+    await rig.engine.run(s.convId, "Wake: next step", "wake");
+    const c = await rig.readConv(s.convId);
+    expect(rig.backend.turns.length).toBe(n + 1);
+    expect(c.state).toBe("blocked");
+    expect(c.working).toBe(false);
+    expect(c.nextWakeAt).toBeUndefined();
+    expect(c.messages.at(-1).content).toMatch(/Budget reached/);
+    await rig.engine.run(s.convId, "Wake: again", "wake");
+    expect(rig.pings.filter((p) => p.convId === s.convId && /^Budget reached/.test(p.title))).toHaveLength(1);
+    // Carl's own message still runs a turn, told the budget is spent.
+    await rig.engine.message({ convId: s.convId, text: "What's the state?" });
+    await until(() => rig.backend.turns.length === n + 2);
+    expect(rig.backend.turns[n + 1].texts.join("\n")).toMatch(/Budget reached: \$10\.20/);
+    rig.backend.end(s.tid);
+  });
+
+  it("a project budget counts every conversation of the project; SetBudget needs Carl's approval", async () => {
+    const s = await rig.start("Project budget");
+    await rig.backend.call(s.tid, "SetProject", { name: "Epsilon" });
+    const pending = rig.backend.call(s.tid, "SetBudget", { usd: 5, scope: "project", reason: "a long grind" });
+    await until(async () => !!(await rig.readConv(s.convId))?.pendingAsk);
+    expect((await rig.readConv(s.convId)).pendingAsk.question).toMatch(/\$5\.00 budget on this project \(epsilon\)/);
+    await rig.engine.answerRoute({ convId: s.convId, text: "Approve" });
+    const r = await pending;
+    expect(out(r)).toMatch(/Budget set/);
+    // A second conversation in the project spends $4.20: the first one is past 80%.
+    const s2 = await rig.start("Other work", { project: "Epsilon" });
+    const { mutateConv } = await import("../engine/convs");
+    await mutateConv(rig.vault, s2.convId, (c) => {
+      c.costUsd = 4.2;
+    });
+    const b = rig.engine.budgetOf(await rig.readConv(s.convId));
+    expect(b.scope).toBe("project");
+    expect(b.frac).toBeCloseTo(0.84, 2);
+    // Declined: nothing set.
+    const p2 = rig.backend.call(s2.tid, "SetBudget", { usd: 50 });
+    await until(async () => !!(await rig.readConv(s2.convId))?.pendingAsk);
+    await rig.engine.answerRoute({ convId: s2.convId, text: "Decline" });
+    expect(out(await p2)).toMatch(/did not approve/);
+    expect((await rig.readConv(s2.convId)).long?.budgetUsd).toBeUndefined();
+    rig.backend.end(s.tid);
+    rig.backend.end(s2.tid);
+  });
+});
