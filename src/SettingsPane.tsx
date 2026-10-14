@@ -264,7 +264,7 @@ function ModelsSection() {
     ...(withAuto ? [{ value: AUTO_MODEL_ID, label: "Auto", hint: "— smart routing" }] : []),
     ...catalog.map((m: ModelSpec) => ({ value: m.id, label: m.label })),
   ];
-  const labelOf = (id: string) => (id === AUTO_MODEL_ID ? "Auto" : (catalog.find((c) => c.id === id)?.label ?? id));
+  const labelOf = (id: string) => (id === AUTO_MODEL_ID ? "Auto" : (catalog.find((c) => c.id === id)?.label ?? id.split("/").pop()!));
 
   // Auto routes per message, so there's no one model to check.
   const chatCheck = useCheck(
