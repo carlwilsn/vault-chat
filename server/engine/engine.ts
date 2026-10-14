@@ -1662,9 +1662,13 @@ export class Engine {
     void this.run(wid, this.taskPrompt(conv.project, t, max, cwd ? { path: cwd, repo } : undefined), "task").catch((e) => this.log(`worker ${wid}: ${e}`));
   }
 
-  /** The model for a task's attempt: the worker's cheap one (item 7 escalates). */
-  private taskModel(conv: EngineConv, _t: Task, _max: number): string {
-    return (conv.long?.cheap as string) || this.d.model();
+  /** The model for a task's attempt: the worker's cheap one; after `escalateAfter` (2) failed attempts, the project's strong one. */
+  private taskModel(conv: EngineConv, t: Task, _max: number): string {
+    const cheap = (conv.long?.cheap as string) || this.d.model();
+    const m = conv.project ? readLong(this.d.vault, conv.project).models : undefined;
+    const after = m?.escalateAfter ?? 2;
+    if (after > 0 && (t.failures ?? 0) >= after) return m?.strong || process.env.VC_WORKER_STRONG_MODEL || this.d.model();
+    return cheap;
   }
 
   private async endWorker(conv: EngineConv, why: string): Promise<void> {
@@ -1778,6 +1782,9 @@ export class Engine {
    * and /api/v1/conversations/:id/:op.
    *   check {command | null, pass_regex?, timeout_s?}   — set (pinned) or remove the project's check
    *   budget {usd | null}                               — a project's or a conversation's dollar cap
+   *   metric {command | null, every_min?, window_h?}    — the project's progress metric
+   *   models {cheap?, strong?, escalate_after?, max_attempts?} — workers' models: a task that failed
+   *                                                       escalate_after (2) times runs on the strong one
    */
   async control(target: { project?: string; convId?: string }, op: string, b: any): Promise<Record<string, unknown>> {
     return this.scoped(async () => {
@@ -1810,6 +1817,17 @@ export class Engine {
         const spec: MetricSpec = { ...pinCommand({ command, timeoutS: Number(b?.timeout_s) > 0 ? Number(b.timeout_s) : undefined, cwd: vault, source: "carl" }), ...metricOpts(b) };
         writeLong(vault, slug, (st) => ({ ...st, metric: spec }));
         return { ok: true, metric: { command: spec.command, files: Object.keys(spec.files), everyMin: spec.everyMin ?? 15, windowH: spec.windowH ?? 6 } };
+      }
+      if (op === "models" && slug) {
+        const st = writeLong(vault, slug, (s) => {
+          const m = { ...(s.models ?? {}) };
+          if (typeof b?.cheap === "string") m.cheap = b.cheap || undefined;
+          if (typeof b?.strong === "string") m.strong = b.strong || undefined;
+          if (Number(b?.escalate_after) >= 0 && b?.escalate_after !== undefined) m.escalateAfter = Number(b.escalate_after);
+          s.models = m;
+          if (Number(b?.max_attempts) > 0) s.maxAttempts = Math.min(Number(b.max_attempts), 10);
+        });
+        return { ok: true, models: st.models, maxAttempts: st.maxAttempts ?? 3 };
       }
       if (op === "budget") {
         const usd = b?.usd === null ? null : Number(b?.usd);

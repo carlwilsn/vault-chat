@@ -518,3 +518,39 @@ describe("6. A git worktree per worker", () => {
     rig.backend.end(s.tid);
   });
 });
+
+describe("7. Model tiering", () => {
+  it("workers start on the project's cheap model; a task that failed twice runs its last attempt on the strong one", async () => {
+    const s = await rig.start("Kappa grind");
+    await rig.backend.call(s.tid, "SetProject", { name: "Kappa" });
+    const m = await rig.engine.control({ project: "kappa" }, "models", { cheap: "deepseek/deepseek-v4.1-flash", strong: "anthropic/claude-opus-5.5" });
+    expect(m.ok).toBe(true);
+    await rig.backend.call(s.tid, "TaskAdd", { tasks: [{ title: "hard one" }] });
+    await rig.backend.call(s.tid, "RunWorkers", { count: 1 });
+    rig.backend.end(s.tid);
+    const [W] = await workersOf(s.convId);
+    const models: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      await until(async () => new RegExp(`attempt ${i + 1} of 3`).test((await workerTurn(W.id)).text));
+      const c = await rig.readConv(W.id);
+      const turn = [...rig.backend.turns].reverse().find((x) => x.threadId === c.threadId);
+      models.push(turn.model);
+      // The fresh thread was opened on the same model.
+      expect(rig.backend.threads.find((t) => t.threadId === c.threadId).model).toBe(turn.model);
+      await rig.backend.call(c.threadId, "TaskUpdate", { status: "failed", note: `try ${i + 1}` });
+      rig.backend.end(c.threadId);
+    }
+    expect(models).toEqual(["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash", "anthropic/claude-opus-5.5"]);
+    await until(async () => (await rig.readConv(W.id)).state === "done");
+    // RunWorkers' own model overrides the cheap one.
+    await rig.backend.call(s.tid, "TaskAdd", { tasks: [{ title: "easy" }] });
+    await rig.backend.call(s.tid, "RunWorkers", { count: 1, model: "google/gemini-3.8-flash" });
+    const W2 = (await workersOf(s.convId)).find((w) => w.id !== W.id)!;
+    await until(async () => /Task t2/.test((await workerTurn(W2.id)).text));
+    const c2 = await rig.readConv(W2.id);
+    expect([...rig.backend.turns].reverse().find((x) => x.threadId === c2.threadId).model).toBe("google/gemini-3.8-flash");
+    await rig.backend.call(c2.threadId, "TaskUpdate", { status: "done" });
+    rig.backend.end(c2.threadId);
+    await until(async () => (await rig.readConv(W2.id)).state === "done");
+  });
+});
