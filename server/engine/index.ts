@@ -125,7 +125,17 @@ export const HOME_CREDENTIALS = [
   ".local/share/keyrings",
   ".config/rclone",
   ".local/state/thinkbox",
+  // The default key store and server env file, hidden even when this server is configured elsewhere
+  // (a second instance — the test one — must not expose the live box's).
+  ".config/vault-chat",
+  ".config/vault-chat-server.env",
 ];
+
+/** A job's sandbox: the agent's outer layer with its own pid namespace (a job cannot see or signal the
+ *  server, pi or other jobs) but not tied to the turn — the systemd unit is its parent, not pi. */
+export function jobWrap(outer: string[] | null): string[] | null {
+  return outer ? outer.filter((x) => x !== "--die-with-parent") : null;
+}
 
 /** The server's own environment file (systemd's EnvironmentFile holds tokens): VC_ENV_FILE, else the unit's default. */
 export function serverEnvFile(home: string): string {
@@ -208,7 +218,7 @@ export function buildSandbox(o: {
     hide(`/tmp/tmux-${o.uid}`);
   }
   const head = [o.bwrap, "--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--die-with-parent"];
-  return { outer: [...head, ...mounts, "--"], shell: [...head, ...mounts, "--"], denyRead, denyWrite };
+  return { outer: [...head, ...mounts, "--"], shell: [...head, ...mounts, "--"], denyRead, denyWrite, roots };
 }
 
 /** Boot the engine on pi. */
@@ -308,10 +318,9 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     });
     const jobEnv = {
       logDir: st.jobs,
-      // Jobs outlive turns: the same hiding as pi's sandbox (the other vaults included), without its pid namespace.
+      // Jobs outlive turns: the same hiding as pi's sandbox (the other vaults included), in a pid namespace of their own.
       get wrap() {
-        const outer = outerWith(sandbox);
-        return outer ? outer.filter((x) => x !== "--unshare-pid" && x !== "--die-with-parent") : null;
+        return jobWrap(outerWith(sandbox));
       },
       env: { PATH: process.env.PATH ?? "/run/current-system/sw/bin", HOME: home },
     };

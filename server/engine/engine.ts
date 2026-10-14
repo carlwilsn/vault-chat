@@ -1141,7 +1141,7 @@ export class Engine {
             l.wakeAt = new Date(at).toISOString();
           }
           await patchMeta(vault, convId, { nextWakeAt: nextWakeFor(vault, convId) });
-          return text(`Wake scheduled for ${new Date(at).toISOString()} ("${reason}"). End your turn now; you'll be woken then.`);
+          return text(`Wake set for ${new Date(at).toISOString()} ("${reason}"). Stop now: do not call any more tools this turn.`);
         }
         case "KeepWorking": {
           const on = a.on !== false;

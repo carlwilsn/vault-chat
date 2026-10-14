@@ -195,7 +195,8 @@ describe("B: wakes end with the work, and ScheduleWake ends the turn", () => {
     const { convId, tid, turnId } = await startTurn(engine, backend, "Start the check.");
     backend.ev(tid, { kind: "tool", itemId: "c-wake", name: "ScheduleWake", input: { in: "30m", reason: "look" } });
     const w = await backend.h.toolCall(tid, "ScheduleWake", { in: "30m", reason: "look" });
-    const at = /Wake scheduled for (\S+)/.exec(text(w))![1];
+    expect(text(w)).toMatch(/Stop now: do not call any more tools this turn\.$/);
+    const at = /Wake set for (\S+) /.exec(text(w))![1];
     backend.ev(tid, { kind: "tool", itemId: "c-wake", name: "ScheduleWake", input: undefined, result: text(w) });
     const n = await backend.h.toolCall(tid, "Notify", { title: "still here" });
     expect(n.ok).toBe(false);

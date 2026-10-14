@@ -7,7 +7,7 @@
 // the session as `vc-cost` entries (usageCalls reads them back).
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import type { CallRecord } from "../ledger";
 import type { ThreadTokenUsage } from "../context";
 import { PiProc } from "./proc";
@@ -62,6 +62,8 @@ export type PiSandbox = {
   /** The other vaults on the box (working copies, bare repos, their engine state), read at each
    * spawn so a vault added later is walled off too: hidden in the outer layer, denied to the guard. */
   others?: () => string[];
+  /** The vault roots the sandbox empties (tmpfs): another vault under one is already gone, never re-walled. */
+  roots?: string[];
 };
 
 /** bubblewrap args hiding each path that exists (a dir behind an empty tmpfs, a file behind /dev/null). */
@@ -82,7 +84,14 @@ export function hideArgs(paths: string[]): string[] {
 /** The outer bubblewrap argv with the other vaults hidden (null without a sandbox). */
 export function outerWith(sb: PiSandbox): string[] | null {
   if (!sb.outer) return null;
-  const extra = hideArgs(sb.others?.() ?? []);
+  // A path under an emptied vault root does not exist in the sandbox; a --tmpfs on it would create an
+  // empty stub named after that vault. Only what lies elsewhere (e.g. its engine state) is walled.
+  const gone = (p: string) =>
+    (sb.roots ?? []).some((r) => {
+      const rel = relative(r, p);
+      return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
+    });
+  const extra = hideArgs((sb.others?.() ?? []).filter((p) => !gone(p)));
   return extra.length ? [...sb.outer.slice(0, -1), ...extra, "--"] : sb.outer;
 }
 

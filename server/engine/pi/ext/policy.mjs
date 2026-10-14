@@ -186,7 +186,7 @@ export function wakeGate() {
   return {
     onResult(toolName, text, isError) {
       if (toolName !== "ScheduleWake" || isError) return;
-      const m = /Wake scheduled for (\S+)/.exec(String(text ?? ""));
+      const m = /Wake (?:scheduled|set) for (\d{4}-\d\d-\d\dT[\d:.]+Z)/.exec(String(text ?? ""));
       if (m) at = m[1];
     },
     check(toolName) {

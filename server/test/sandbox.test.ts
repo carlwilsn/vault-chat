@@ -5,6 +5,7 @@
 // and the own vault bound back; credentials, the server's env file and the key
 // store are hidden. The per-command shell layer gets the same mounts.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmp, cleanup } from "./helpers";
@@ -52,6 +53,11 @@ beforeAll(async () => {
   ({ outerWith } = await import("../engine/pi/backend"));
 });
 afterAll(() => cleanup(home));
+
+function bwrapPath(): string | null {
+  const r = spawnSync("sh", ["-c", "command -v bwrap"], { encoding: "utf8" });
+  return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+}
 
 /** Index of a mount (flag + its args) in argv, -1 if absent. */
 function at(argv: string[], ...m: string[]): number {
@@ -128,11 +134,35 @@ describe("the agent sandbox (bubblewrap argv)", () => {
     // The outer layer with the other vaults' state walled off, as voice/jobs/subagent children get it.
     const others = join(state, "vaults", "physics");
     mkdirSync(others, { recursive: true });
-    const o = outerWith({ ...sb, others: () => [join(vaults, "physics"), others] })!;
+    const o = outerWith({ ...sb, others: () => [join(vaults, "physics"), join(vaults, "physics.git"), others] })!;
     expect(at(o, "--tmpfs", others)).toBeGreaterThan(0);
     expect(o.slice(0, sb.outer!.length - 1)).toEqual(sb.outer!.slice(0, -1));
-    expect(at(o, "--tmpfs", join(vaults, "physics"))).toBeGreaterThan(sb.outer!.length - 2);
+    // The other vaults live under the emptied vaults root: already gone. A --tmpfs on them would
+    // create empty stubs named after them; their names never appear in the sandbox.
+    expect(o.some((x) => x.includes("physics") && x !== others)).toBe(false);
     expect(o[o.length - 1]).toBe("--");
+  });
+
+  it("always hides the default key store and server env file, even when this server's are elsewhere (a second instance)", () => {
+    const o = buildSandbox({ ...base(), secretsDir: join(home, "other-secrets"), envFile: join(home, "other.env") }).outer!;
+    expect(at(o, "--tmpfs", secrets)).toBeGreaterThan(0);
+    expect(at(o, "--ro-bind", "/dev/null", envFile)).toBeGreaterThan(0);
+  });
+
+  it("a job gets its own pid namespace, not tied to the turn (the systemd unit is its parent)", async () => {
+    const { jobWrap } = await import("../engine/index");
+    const w = jobWrap(outerWith(buildSandbox(base())))!;
+    expect(w).toContain("--unshare-pid");
+    expect(w).not.toContain("--die-with-parent");
+    expect(w.at(-1)).toBe("--");
+    expect(jobWrap(null)).toBeNull();
+  });
+
+  it.skipIf(process.platform !== "linux" || !bwrapPath())("in a real job sandbox, ps sees only the job's own tree", () => {
+    const r = spawnSync(bwrapPath()!, ["--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--", "sh", "-c", "ls /proc | grep -c '^[0-9]'"], { encoding: "utf8" });
+    expect(r.status).toBe(0);
+    // bwrap's init, sh, ls/grep: a handful, not the box's hundreds.
+    expect(Number(r.stdout.trim())).toBeLessThan(8);
   });
 
   it("reads the server's env file path from VC_ENV_FILE", async () => {
