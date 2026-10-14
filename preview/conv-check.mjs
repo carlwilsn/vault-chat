@@ -92,7 +92,7 @@ async function desktop(id, alt) {
   const run = id;
   const { browser, page, log } = await launch({ width: 1400, height: 900 });
   try {
-    await page.goto(`${ORIGIN}/?scenario=${id}&side=after&base=synthetic&steps=0`, { timeout: 30000 });
+    await page.goto(`${ORIGIN}/?scenario=${id}&side=after&base=synthetic&steps=0&narrate=0`, { timeout: 30000 });
     await page.waitForFunction(() => window.__preview?.ready, null, { timeout: 30000 });
     const play = async (i) => {
       await page.evaluate((n) => window.__preview.play(n), i);
@@ -240,7 +240,7 @@ async function phone(id, alt) {
   const run = id;
   const { browser, page, log } = await launch({ width: 390, height: 844, isMobile: true, deviceScaleFactor: 2 });
   try {
-    await page.goto(`${ORIGIN}/phone?scenario=${id}&base=synthetic&conv=x-full`, { timeout: 30000 });
+    await page.goto(`${ORIGIN}/phone?scenario=${id}&base=synthetic&conv=x-full&narrate=0`, { timeout: 30000 });
     await page.waitForFunction(() => window.__previewPhone?.ready && document.querySelector("#msgs .amsg"), null, { timeout: 30000 });
     await page.waitForTimeout(800);
     const snap = () =>

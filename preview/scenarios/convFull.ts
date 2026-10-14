@@ -17,7 +17,7 @@
 // between them; `open` plays them all for a person looking at the scenario.
 // The presentation choices still open (src/uiChoices.ts) each get a scenario
 // per option: conv-a-<choice>-<option>, phone conv-c-<choice>-<option>.
-import type { BuildCtx, Scenario, Step, StepApi } from "./types";
+import type { Beat, BuildCtx, PhoneStep, Scenario, Step, StepApi } from "./types";
 import type { Script } from "../runtime/llm";
 import * as P3 from "./phase3";
 
@@ -343,23 +343,102 @@ export const pasteChart: Step = {
 };
 export const IMAGE_ASK = "Does this loss curve look right?";
 
+/** Which option of a presentation choice a scenario is on (second = true). */
+type Opts = Record<string, string>;
+const second = (o: Opts, choice: string) => o[choice] !== undefined && o[choice] === CHOICE_OPTIONS[choice]?.[1];
+
+/** A's stages, as narrated beats: each stage (a list of beats) ends where the
+ *  check asserts, and `drive` is just the beats' steps. The captions describe
+ *  what the stage shows on the scenario's options; `show` steps are for the
+ *  narrated play only (the check never runs them). */
+function beatsA(o: Opts): Beat[][] {
+  const th = second(o, "thinking"), sa = second(o, "subagents"), co = second(o, "cost"), td = second(o, "todos"), vd = second(o, "verdict"), ak = second(o, "ask");
+  return [
+    // 0: open the conversation (the roll-over divider is at its top)
+    [
+      {
+        title: "A chat that runs on the box",
+        text: "The laptop is linked to a box: this conversation runs on the box's agent, and the laptop shows it live — the note on the left, the chat on the right.",
+        steps: [{ file: NOTE }, { chat: true }, { conversation: CONV }, { sleep: 900 }],
+      },
+      {
+        title: "The conversation rolled over",
+        text: "It outgrew one session and continued in a fresh one — “Earlier conversation summarized” opens the recap the agent carried over.",
+        spot: "[data-el='divider']",
+        steps: [],
+        show: [{ click: "[data-el='divider'] summary" }, { sleep: 600 }],
+      },
+    ],
+    // 1: Carl asks; thinking, the plan, two subagents start; one finishes
+    [
+      { title: "You ask", text: "A request for a KV-cache section, typed and sent; the box picks it up and starts a turn.", spot: ".prose-user", steps: typeSend(FIRST_ASK) },
+      th
+        ? { title: "The agent thinks first", text: "Its reasoning stays out of the way in this layout — the brain toggle in the composer row shows it.", spot: "[data-el='thinking-toggle']", steps: next(1) }
+        : { title: "The agent thinks first", text: "Its reasoning streams live under “Thinking…”; when the reply lands it folds into a collapsed “Thought” line.", spot: { sel: "span", text: "^Thinking…$" }, steps: next(1) },
+      {
+        title: "Then it plans",
+        text: td ? "A to-do list pinned above the composer: 4 steps, the first in progress. It updates as the work moves." : "A to-do list in the thread: 4 steps, the first in progress. It updates as the work moves.",
+        spot: td ? "[data-el='todos-pinned']" : "[data-el='todos']",
+        steps: [],
+      },
+      {
+        title: "Two helper agents start in parallel",
+        text: sa ? "One subagent call starts two helpers — a compact strip above the composer, one chip each with its state." : "One subagent call starts two helpers — one card under the reply, a row each with its state and cost.",
+        spot: "[data-el='subagents']",
+        steps: next(1),
+      },
+      { title: "One helper finishes", text: "Its row turns done with what it cost ($0.09) and a one-line summary; the other is still reading.", spot: "[data-el='subagent'][data-state='completed']", steps: next(1) },
+    ],
+    // 2: the reply streams whole (past 6,000 characters)
+    [{ title: "The reply streams in", text: "The answer arrives live — over 6,000 characters with a table, code and math — while the plan moves to 2 of 4.", spot: "[data-el='stream']", steps: next(1, 1200) }],
+    // 3: it lands; then the AskUser
+    [
+      th
+        ? {
+            title: "The reply lands",
+            text: "Both helpers are done and the plan reads 4/4. The reply's reasoning is hidden here: the brain toggle shows every reply's thinking — flipped on now.",
+            spot: "[data-el='thinking']",
+            steps: next(1, 1200),
+            show: [{ click: "[data-el='thinking-toggle']" }, { sleep: 600 }],
+          }
+        : { title: "The reply lands", text: "Both helpers are done and the plan reads 4/4. The reasoning is now the collapsed “Thought” line on the reply — click it to read.", spot: "[data-el='thinking']", steps: next(1, 1200) },
+      co
+        ? { title: "What it cost", text: "Its five tool calls fold into one row above the text. Cost shows only as the conversation's total, top right.", spot: "[data-el='total-cost']", steps: [] }
+        : { title: "What it cost", text: "Its five tool calls fold into one row above the text; the reply's cost ($0.34) sits quietly under it.", spot: "[data-el='reply-cost']", steps: [] },
+      {
+        title: "The agent asks you to choose",
+        text: ak ? "A question with numbered buttons under it — click one to answer. The conversation waits for you." : "A question with two option cards, the recommended one marked — tap a card to answer. The conversation waits for you.",
+        spot: "[data-el='ask-options']",
+        steps: next(1, 1000),
+      },
+    ],
+    // 4: Carl picks an option; the wake is scheduled (sleeping, next h:mm)
+    [
+      { title: "You pick “Only 4-bit KV”", text: "The pick goes back to the agent as your answer, and the options go quiet so it can't be answered twice.", spot: "[data-el='ask-options']", steps: [clickByText("[data-el='ask-option']", /Only 4-bit KV/), { sleep: 900 }] },
+      { title: "It schedules a check and sleeps", text: "It trims the section, then sets a wake for later; the working line shows it sleeping, with the next wake time.", spot: "[data-ongoing='waiting']", steps: next(1, 1000) },
+    ],
+    // 5: the wake fires; the turn errors
+    [
+      { title: "The wake fires", text: "At the set time it wakes on its own — “Wake: Checking the writeup build” — and gets back to work.", spot: { sel: "div, p, span", text: "Wake: Checking the writeup build" }, steps: next(1, 900) },
+      { title: "A turn fails", text: "The provider answered 502. The error shows in the thread as it is — nothing hidden, nothing retried behind your back.", spot: { sel: "div, p, span", text: "The turn failed" }, steps: next(1, 1000) },
+    ],
+    // 6: Carl retries; it works; he sends an image; Done with the verdict
+    [
+      { title: "You retry", text: "“Try again” re-runs it, and this time the writeup builds — make writeup, 0 warnings.", spot: { sel: "div, p, span", text: "^Retried: the writeup builds" }, steps: [...typeSend("Try again"), ...next(1, 1000)] },
+      { title: "You send an image", text: "A chart pasted into the composer goes to the box with the question, and shows in your message.", spot: "img[alt^='captured']", steps: [pasteChart, { sleep: 700 }, ...typeSend(IMAGE_ASK)] },
+      {
+        title: "Done — a second model verified it",
+        text: vd ? "The agent calls Done with its evidence; a separate verifier model checks it, and the verdict shows in the working line above the composer." : "The agent calls Done with its evidence; a separate verifier model checks it, and its verdict closes the thread.",
+        spot: "[data-el='verdict']",
+        steps: next(1, 1500),
+      },
+      { title: "How full the context is", text: "The dial by the composer reads the box's context window: 183k of 200,000 tokens, past 90% — close to full. That's the whole conversation.", spot: "[title^='Context:']", steps: [] },
+    ],
+  ];
+}
+
 /** A's stages; each ends where the check asserts. */
-const driveA: Step[][] = [
-  // 0: open the conversation (the roll-over divider is at its top)
-  [{ file: NOTE }, { chat: true }, { conversation: CONV }, { sleep: 900 }],
-  // 1: Carl asks; thinking, the plan, two subagents start; one finishes
-  [...typeSend(FIRST_ASK), ...next(3)],
-  // 2: the reply streams whole (past 6,000 characters)
-  [...next(1, 1200)],
-  // 3: it lands; then the AskUser
-  [...next(1, 1200), ...next(1, 1000)],
-  // 4: Carl picks an option; the wake is scheduled (sleeping, next h:mm)
-  [clickByText("[data-el='ask-option']", /Only 4-bit KV/), { sleep: 900 }, ...next(1, 1000)],
-  // 5: the wake fires; the turn errors
-  [...next(1, 900), ...next(1, 1000)],
-  // 6: Carl retries; it works; he sends an image; Done with the verdict
-  [...typeSend("Try again"), ...next(1, 1000), pasteChart, { sleep: 700 }, ...typeSend(IMAGE_ASK), ...next(1, 1500)],
-];
+const driveA: Step[][] = beatsA({}).map((stage) => stage.flatMap((b) => b.steps));
 
 /** The box's own model checks (Settings → Models, box mode). */
 const BOX_MODELS = {
@@ -494,6 +573,52 @@ function phoneDbC(db: any, now: number, ls: Record<string, string> = {}): void {
   db.ls = { vc_phone_conv: JSON.stringify({ id: CONV, title: TITLE }), ...ls };
 }
 
+/** C's narrated beats: the same conversation played on the phone by its mock
+ *  box (one __vcPhoneNext() per box step), the way preview/conv-check.mjs
+ *  plays it. Plain data — the phone page gets it as JSON. */
+function beatsC(o: Opts): Beat<PhoneStep>[] {
+  const th = second(o, "thinking"), sa = second(o, "subagents"), co = second(o, "cost"), td = second(o, "todos"), vd = second(o, "verdict");
+  return [
+    { title: "The same chat, on the phone", text: "The box conversation from the laptop, on the phone: every piece the laptop shows, sized for a thumb.", steps: [] },
+    { title: "The conversation rolled over", text: "It continued in a fresh session — the “Earlier conversation summarized” line opens the recap.", spot: "[data-el='divider']", steps: [], show: [{ tap: "[data-el='divider'] .xh" }, { sleep: 500 }] },
+    { title: "You ask", text: "A request for a KV-cache section, sent from the phone; the box picks it up and starts a turn.", spot: ".m.user", steps: [{ send: FIRST_ASK }] },
+    {
+      title: "It thinks, then plans",
+      text: td ? "The agent reasons first, then a to-do list appears, pinned above the composer: 4 steps, the first in progress." : "The agent reasons first, then a to-do list appears in the thread: 4 steps, the first in progress.",
+      spot: "[data-el='todos']",
+      steps: [{ next: 1 }],
+    },
+    { title: "Two helper agents start in parallel", text: sa ? "Two helpers from one call — a compact strip above the composer, one chip each." : "Two helpers from one call — one card in the thread, a row each with its state.", spot: "[data-el='subagents']", steps: [{ next: 1 }] },
+    { title: "One helper finishes", text: "Its row turns done with its cost ($0.09) and a one-line summary; the other is still reading.", spot: "[data-el='subagent'][data-state='completed']", steps: [{ next: 1 }] },
+    { title: "The reply streams in", text: "Over 6,000 characters arrive live — a table, code, and math typeset as it streams.", spot: ".amsg.stream", steps: [{ next: 1 }] },
+    th
+      ? {
+          title: "The reply lands",
+          text: "The plan reads 4/4. Its reasoning is hidden in this layout — the menu's thinking toggle shows it, flipped on now.",
+          spot: "[data-el='thinking']",
+          steps: [{ next: 1 }],
+          show: [{ tap: "#menuBtn" }, { sleep: 500 }, { tap: "#thinkRow" }, { sleep: 500 }, { tap: "#menuBtn", optional: true }, { sleep: 300 }],
+        }
+      : { title: "The reply lands", text: "The plan reads 4/4. The reasoning is a collapsed “Thought” line on the reply — tap to read; the tool calls fold into “5 steps”.", spot: "[data-el='thinking']", steps: [{ next: 1 }] },
+    co
+      ? { title: "What it cost", text: "Cost shows only as the conversation's total, in the header.", spot: "[data-el='total-cost']", steps: [] }
+      : { title: "What it cost", text: "The reply's cost ($0.34) sits quietly under it.", spot: "[data-el='reply-cost']", steps: [] },
+    { title: "The agent asks you to choose", text: "A question with two option cards, the recommended one marked — tap a card. The conversation waits for you.", spot: ".delib-opt.inline", steps: [{ next: 1 }] },
+    { title: "You pick “Only 4-bit KV”", text: "The pick goes back as your answer, and the cards go quiet.", spot: ".delib-opt.inline.chosen", steps: [{ tap: ".delib-opt.inline[data-ans='Only 4-bit KV']" }, { sleep: 700 }] },
+    { title: "It schedules a check and sleeps", text: "It sets a wake for later; the working line above the composer shows it sleeping, with the next wake time.", spot: "#ongoing", steps: [{ next: 1 }] },
+    { title: "The wake fires", text: "At the set time it wakes on its own — “Wake: Checking the writeup build”.", spot: { sel: "#msgs div, #msgs p, #msgs span", text: "Wake: Checking the writeup build" }, steps: [{ next: 1 }] },
+    { title: "A turn fails", text: "The provider answered 502; the error shows in the thread as it is.", spot: { sel: "#msgs div, #msgs p, #msgs span", text: "The turn failed" }, steps: [{ next: 1 }] },
+    { title: "You retry", text: "“Try again” re-runs it, and this time the writeup builds.", spot: { sel: "#msgs div, #msgs p, #msgs span", text: "^Retried: the writeup builds" }, steps: [{ send: "Try again" }, { next: 1 }] },
+    { title: "You send a photo", text: "A chart picked with the photo button shows above the composer, then goes to the box with the question.", spot: ".m.user .mimgs img", steps: [{ photo: true }, { sleep: 600 }, { send: IMAGE_ASK }] },
+    {
+      title: "Done — a second model verified it",
+      text: vd ? "The agent calls Done; a separate verifier model checks its evidence, and the verdict shows in the working line." : "The agent calls Done; a separate verifier model checks its evidence, and its verdict closes the thread.",
+      spot: "[data-el='verdict']",
+      steps: [{ next: 1 }],
+    },
+  ];
+}
+
 // ---- the scenarios ------------------------------------------------------------------
 
 const CHOICE_OPTIONS: Record<string, [string, string]> = {
@@ -519,8 +644,9 @@ const lsFor = (opts: Record<string, string>) => Object.fromEntries(Object.entrie
 const DEFAULTS = Object.fromEntries(Object.entries(CHOICE_OPTIONS).map(([k, [a1]]) => [k, a1]));
 const ALTS = Object.fromEntries(Object.entries(CHOICE_OPTIONS).map(([k, [, b1]]) => [k, b1]));
 
-function scenarioA(id: string, title: string, notes: string, ls: Record<string, string>, upto = driveA.length - 1): Scenario {
+function scenarioA(id: string, title: string, notes: string, ls: Record<string, string>, upto = driveA.length - 1, narrate?: Opts): Scenario {
   return {
+    ...(narrate ? { narrate: beatsA(narrate).flat() } : {}),
     id,
     title,
     group: "Full conversation",
@@ -536,12 +662,13 @@ function scenarioA(id: string, title: string, notes: string, ls: Record<string, 
   };
 }
 
+const NARRATED = " Plays narrated (a caption per step; Space pauses, ←/→ step, −/+ speed); &narrate=0 plays it at full speed without captions.";
 const NOTES_A =
   "Laptop with a box: one conversation with every element, played from the fake box's poll events — the roll-over divider (recap) at the top, Carl's ask, thinking, the plan (updated twice), two subagents from one call (one done with cost and summary while the other runs), the reply streamed whole past 6,000 characters (table, code, $ and \\(\\) inline math, $$ and \\[\\] display math), an AskUser answered, a wake (sleeping with its next time, then waking), an error and a retry, an image sent, Done with the verifier's verdict, cost, the context dial at 91%.";
 
 export const convFullScenarios: Scenario[] = [
-  scenarioA("conv-a", "Full conversation — laptop with a box (first options)", NOTES_A + " Every open choice on its first option.", lsFor(DEFAULTS)),
-  scenarioA("conv-a-alt", "Full conversation — laptop with a box (second options)", NOTES_A + " Every open choice on its second option.", lsFor(ALTS)),
+  scenarioA("conv-a", "Full conversation — laptop with a box (first options)", NOTES_A + NARRATED + " Every open choice on its first option.", lsFor(DEFAULTS), undefined, DEFAULTS),
+  scenarioA("conv-a-alt", "Full conversation — laptop with a box (second options)", NOTES_A + NARRATED + " Every open choice on its second option.", lsFor(ALTS), undefined, ALTS),
   ...Object.entries(CHOICE_OPTIONS).flatMap(([choice, opts]) =>
     opts.map((opt) =>
       scenarioA(
@@ -592,10 +719,10 @@ export const convFullScenarios: Scenario[] = [
       title: `Full conversation — phone (${which} options)`,
       group: "Full conversation",
       notes:
-        "The phone, on the same conversation as conv-a, played by its mock box (__vcPhoneNext). The check (preview/conv-check.mjs) plays it step by step; the page opens on the conversation as it stands before Carl's ask.",
+        "The phone, on the same conversation as conv-a, played by its mock box (__vcPhoneNext). Opened directly it plays narrated (a caption per step; Space pauses, ←/→ step, −/+ speed); &narrate=0 opens on the conversation as it stands before Carl's ask, which is where the check (preview/conv-check.mjs) plays it step by step.",
       clock: "2026-10-13T10:00:00",
       build: buildA,
-      phone: { db: (db, now) => phoneDbC(db, now, lsFor(opts as Record<string, string>)) },
+      phone: { db: (db, now) => phoneDbC(db, now, lsFor(opts as Record<string, string>)), narrate: beatsC(opts as Opts) },
       surfaces: ["phone"],
     }),
   ),

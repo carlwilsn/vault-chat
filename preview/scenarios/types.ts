@@ -25,6 +25,25 @@ export type Step =
   | { emit: string; payload?: unknown }
   | { run: (api: StepApi) => unknown | Promise<unknown> };
 
+/** What a caption points at: a selector (the last visible match, i.e. the
+ *  newest), or elements of `sel` whose text matches `text` (a RegExp source). */
+export type Spot = string | { sel?: string; text: string };
+
+/** One narrated beat: a caption, the steps it explains (part of the
+ *  scenario's drive), and narrated-only steps (`show`: open a recap, flip a
+ *  toggle) that the check never plays. */
+export type Beat<S = Step> = { title: string; text: string; spot?: Spot; steps: S[]; show?: S[] };
+
+/** The phone's narrated steps (plain data: the page gets them as JSON). */
+export type PhoneStep =
+  | { send: string }
+  /** __vcPhoneNext() n times, `ms` after each */
+  | { next: number; ms?: number }
+  | { tap: string; optional?: boolean }
+  /** pick a photo (a small rendered chart) with the photo button's input */
+  | { photo: true }
+  | { sleep: number };
+
 export type StepApi = {
   vault: string;
   q: (sel: string) => HTMLElement | null;
@@ -70,10 +89,13 @@ export type Scenario = {
   /** Stages a check plays one at a time (__preview.play(i)), asserting
    *  between them; `open` usually runs them all. */
   drive?: Step[][];
+  /** Narrated mode (the default when opened directly; `&narrate=0` = `open`
+   *  at full speed): the beats played with captions instead of `open`. */
+  narrate?: Beat[];
   /** The conversation open on load. */
   activeConversation?: string;
   /** Phone scenario: adjust the phone's MockDB (built from the same world). */
-  phone?: { page?: string; clicks?: string[]; db?: (db: any, now: number) => void };
+  phone?: { page?: string; clicks?: string[]; db?: (db: any, now: number) => void; narrate?: Beat<PhoneStep>[] };
   /** Surfaces this scenario is meant for. */
   surfaces?: Array<"desktop" | "phone">;
 };
