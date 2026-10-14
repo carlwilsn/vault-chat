@@ -1,6 +1,7 @@
 // The developer instructions for an engine thread, and the rules prefix for every turn.
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 import { ctxConfig } from "./config";
 import { cap, vcPath } from "./files";
 import { listProjects, readGlobalRules, readProject } from "./projects";
@@ -99,25 +100,55 @@ export function buildDeveloperInstructions(conv: ContextConv, opts: BuildOptions
   return out.join("\n\n---\n\n") + "\n";
 }
 
-// What this machine offers beyond the tools — today, a browser. The box is
-// headless, so "seeing" a page is a headless screenshot the agent then reads.
-let machineCache: string | null | undefined;
-function machineBlock(): string | null {
-  if (machineCache !== undefined) return machineCache;
-  if (process.platform === "win32") return (machineCache = null);
+/** The vault's work area outside the vault (the sandbox makes it writable; engine/index.ts agentWorkDir). */
+export function agentWorkArea(vault: string): string {
+  const home = process.env.HOME || homedir();
+  return join(home, "agent-work", basename(vault.replace(/[\\/]+$/, "")));
+}
+
+/**
+ * The machine section: what the sandbox lets the agent write, and what the box
+ * offers beyond the tools (a browser). The box is headless, so "seeing" a page
+ * is a headless screenshot the agent then reads. `--headless=new` hangs in the
+ * sandbox (it wants the session dbus under /run/user, which is hidden); the old
+ * headless mode with its own profile in /tmp works, and `timeout` bounds it.
+ */
+export function machineText(o: { chrome: string | null; work: string | null }): string {
+  const parts = ["# This machine"];
+  if (o.work) {
+    parts.push(
+      `Your sandbox: your home directory is read-only, and credentials (SSH keys, tokens, other vaults) are not visible. ` +
+        `You can write to this vault's working copy, to /tmp, and to your work area \`${o.work}/\` — use it for code checkouts, builds, ` +
+        `virtualenvs and scratch that don't belong in the vault (point caches there or at /tmp, e.g. \`npm_config_cache=/tmp/npm-cache\`).`,
+    );
+  }
+  if (o.chrome) {
+    const flags = `--headless=old --no-sandbox --disable-gpu --no-first-run --user-data-dir=/tmp/chrome-agent`;
+    parts.push(
+      `A browser is installed: \`${o.chrome}\`. To look at a web page (a local dev server, a site, an HTML file), render it headless and read the image: ` +
+        `\`timeout 60 ${o.chrome} ${flags} --window-size=1400,900 --screenshot=/tmp/page.png <url>\`, then Read /tmp/page.png. ` +
+        `For the page's DOM: \`timeout 60 ${o.chrome} ${flags} --dump-dom <url>\`. Use exactly these flags (\`--headless=new\` hangs here). Check UI work this way before calling it done.`,
+    );
+  }
+  return parts.join("\n\n");
+}
+
+let chromeCache: string | null | undefined;
+function findChrome(): string | null {
+  if (chromeCache !== undefined) return chromeCache;
   const dirs = (process.env.PATH ?? "").split(":").filter(Boolean);
-  let chrome: string | null = null;
+  chromeCache = null;
   for (const n of ["chromium", "chromium-browser", "google-chrome"]) {
     const d = dirs.find((x) => existsSync(join(x, n)));
     if (d) {
-      chrome = join(d, n);
+      chromeCache = join(d, n);
       break;
     }
   }
-  machineCache = chrome
-    ? `# This machine\n\nA browser is installed: \`${chrome}\`. To look at a web page (a local dev server, a site, an HTML file), render it headless and read the image: ` +
-      `\`${chrome} --headless=new --no-sandbox --disable-gpu --window-size=1400,900 --screenshot=/tmp/page.png <url>\`, then Read /tmp/page.png. ` +
-      `For the page's DOM use \`--dump-dom <url>\`. Check UI work this way before calling it done.`
-    : null;
-  return machineCache;
+  return chromeCache;
+}
+
+function machineBlock(): string | null {
+  if (process.platform === "win32") return null;
+  return machineText({ chrome: findChrome(), work: agentWorkArea(ctxConfig().vault) });
 }

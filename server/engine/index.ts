@@ -5,10 +5,11 @@
 // engine.ts; pi itself is pi/backend.ts.
 import { mkdirSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { loadCatalog, modelMeta } from "./catalog";
 import { configureContext, setModelWindow } from "./context";
 import { Engine } from "./engine";
+export { engineShuttingDown } from "./engine";
 import { Ledger } from "./ledger";
 import { excludeLocalDir } from "./wakes";
 import { initCapabilities } from "./capabilities";
@@ -106,14 +107,55 @@ const isFile = (p: string) => {
   }
 };
 
+/** Credential locations in the user's home the agent never sees (hidden in both layers, denied to pi's own tools). */
+export const HOME_CREDENTIALS = [
+  ".ssh",
+  ".gnupg",
+  ".config/gh",
+  ".config/hub",
+  ".config/git/credentials",
+  ".git-credentials",
+  ".netrc",
+  ".npmrc",
+  ".pypirc",
+  ".docker",
+  ".aws",
+  ".kube",
+  ".password-store",
+  ".local/share/keyrings",
+  ".config/rclone",
+  ".local/state/thinkbox",
+];
+
+/** The server's own environment file (systemd's EnvironmentFile holds tokens): VC_ENV_FILE, else the unit's default. */
+export function serverEnvFile(home: string): string {
+  return process.env.VC_ENV_FILE || join(home, ".config", "vault-chat-server.env");
+}
+
+/** A vault's work area outside the vault (code checkouts, builds, scratch): `~/agent-work/<vault>/`, writable in the sandbox. */
+export function agentWorkDir(home: string, vault: string): string {
+  return join(home, "agent-work", basename(vault.replace(/[\\/]+$/, "")));
+}
+
+const under = (p: string, dir: string) => {
+  const r = relative(dir, p);
+  return r === "" || (!!r && !r.startsWith("..") && !isAbsolute(r));
+};
+
 /**
  * The two bubblewrap layers. pi itself runs in the outer one: its own pid
- * namespace (killing it kills every descendant, detached or not), the key
- * store and the phone token / VAPID keys / push subscriptions hidden, the
- * user's systemd and tmux sockets hidden (both would run commands outside),
- * the server's state read-only except pi's sessions and agent dir. Each shell
- * command runs in the inner one: a pid namespace of its own (it cannot see
- * pi's process) and the key store hidden again.
+ * namespace (killing it kills every descendant, detached or not). The home
+ * directory is read-only; writable are only the vault's own working copy, pi's
+ * sessions and agent dir, the vault's jobs dir, its work area
+ * (`~/agent-work/<vault>/`) and /tmp. Every vault root is hidden (all vaults
+ * and bare repos on the box, known to this server or not) and the own vault is
+ * bound back in. Hidden: the key store, the phone token / VAPID keys / push
+ * subscriptions, the server's env file, credential dirs (HOME_CREDENTIALS),
+ * the user's systemd and tmux sockets (both would run commands outside). The
+ * conversation files and wakes stay the server's (read-only). Each shell
+ * command runs in the inner layer: the same mounts again (it inherits the
+ * outer view anyway) and a pid namespace of its own (it cannot see pi's process).
+ * Network and the nix store are untouched.
  */
 export function buildSandbox(o: {
   bwrap: string | null;
@@ -125,32 +167,48 @@ export function buildSandbox(o: {
   agentDir: string;
   vault: string;
   uid: number;
+  /** Directories holding vaults and bare repos (default: the vault's parent and ~/vaults). */
+  vaultRoots?: string[];
+  /** The vault's jobs dir (StartJob logs). */
+  jobsDir?: string;
+  /** The vault's work area (default agentWorkDir(home, vault)). */
+  workDir?: string;
+  /** The server's env file (default serverEnvFile(home)). */
+  envFile?: string;
 }): PiSandbox {
-  const denyRead = [o.secretsDir, ...o.hideFiles, "/proc", ...(o.uid >= 0 ? [`/run/user/${o.uid}`] : [])];
+  const creds = HOME_CREDENTIALS.map((p) => join(o.home, p));
+  const envFile = o.envFile ?? serverEnvFile(o.home);
+  const denyRead = [o.secretsDir, ...o.hideFiles, envFile, ...creds, "/proc", ...(o.uid >= 0 ? [`/run/user/${o.uid}`] : [])];
   const denyWrite = [o.stateDir, join(o.vault, ".vault-chat", "conversations"), join(o.vault, ".vault-chat", "local")];
   if (!o.bwrap) return { outer: null, shell: null, denyRead, denyWrite };
-  const outer: string[] = [o.bwrap, "--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--die-with-parent"];
-  // Later mounts win: the read-only state first, then pi's own writable dirs, then what is hidden.
-  if (isDir(o.stateDir)) outer.push("--ro-bind", o.stateDir, o.stateDir);
-  for (const d of [o.sessionsDir, o.agentDir]) if (isDir(d)) outer.push("--bind", d, d);
-  for (const f of ["settings.json", "models.json"]) if (isFile(join(o.agentDir, f))) outer.push("--ro-bind", join(o.agentDir, f), join(o.agentDir, f));
+  const work = o.workDir ?? agentWorkDir(o.home, o.vault);
+  const roots = [...new Set((o.vaultRoots ?? [dirname(o.vault), join(o.home, "vaults")]).map((r) => r.replace(/[\\/]+$/, "")))]
+    // Never the home itself (or above it), never a root that holds the server's state.
+    .filter((r) => isDir(r) && !under(o.home, r) && !under(o.stateDir, r));
+  const mounts: string[] = [];
+  // Later mounts win: home read-only, the vault roots emptied, the state read-only,
+  // then the writable dirs, then the server's files inside them read-only, then what is hidden.
+  if (isDir(o.home)) mounts.push("--ro-bind", o.home, o.home);
+  for (const r of roots) mounts.push("--tmpfs", r);
+  if (isDir(o.stateDir)) mounts.push("--ro-bind", o.stateDir, o.stateDir);
+  for (const d of [o.vault, o.sessionsDir, o.agentDir, ...(o.jobsDir ? [o.jobsDir] : []), work]) if (isDir(d)) mounts.push("--bind", d, d);
+  for (const f of ["settings.json", "models.json"]) if (isFile(join(o.agentDir, f))) mounts.push("--ro-bind", join(o.agentDir, f), join(o.agentDir, f));
   // The conversation files and wakes are the server's to write.
-  for (const d of [join(o.vault, ".vault-chat", "conversations"), join(o.vault, ".vault-chat", "local")]) if (isDir(d)) outer.push("--ro-bind", d, d);
+  for (const d of [join(o.vault, ".vault-chat", "conversations"), join(o.vault, ".vault-chat", "local")]) if (isDir(d)) mounts.push("--ro-bind", d, d);
   const hide = (p: string) => {
-    if (isDir(p)) outer.push("--tmpfs", p);
-    else if (isFile(p)) outer.push("--ro-bind", "/dev/null", p);
+    if (isDir(p)) mounts.push("--tmpfs", p);
+    else if (isFile(p)) mounts.push("--ro-bind", "/dev/null", p);
   };
   hide(o.secretsDir);
   for (const f of o.hideFiles) hide(f);
+  hide(envFile);
+  for (const c of creds) hide(c);
   if (o.uid >= 0) {
     hide(`/run/user/${o.uid}`);
     hide(`/tmp/tmux-${o.uid}`);
   }
-  outer.push("--");
-  const shell = [o.bwrap, "--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--die-with-parent"];
-  if (isDir(o.secretsDir)) shell.push("--tmpfs", o.secretsDir);
-  shell.push("--");
-  return { outer, shell, denyRead, denyWrite };
+  const head = [o.bwrap, "--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--die-with-parent"];
+  return { outer: [...head, ...mounts, "--"], shell: [...head, ...mounts, "--"], denyRead, denyWrite };
 }
 
 /** Boot the engine on pi. */
@@ -206,6 +264,9 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
     excludeLocalDir(v.path);
     // The sandbox read-only-binds these; they must exist when it is built.
     for (const d of [join(v.path, ".vault-chat", "conversations"), join(v.path, ".vault-chat", "local"), st.jobs, st.pi.sessionsDir, st.pi.instrDir]) mkdirSync(d, { recursive: true });
+    // Its work area outside the vault, writable in the sandbox (the rest of the home is read-only there).
+    const workDir = agentWorkDir(home, v.path);
+    if (bwrap) mkdirSync(workDir, { recursive: true });
     const others = () => otherVaultPaths(v, vaults(), (w) => stateOf(w).walls);
     const sandbox: PiSandbox = {
       ...buildSandbox({
@@ -218,6 +279,9 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
         agentDir: st.pi.agentDir,
         vault: v.path,
         uid,
+        jobsDir: st.jobs,
+        workDir,
+        vaultRoots: [...new Set([dirname(b.vault), dirname(v.path), join(home, "vaults")])],
       }),
       others,
     };
