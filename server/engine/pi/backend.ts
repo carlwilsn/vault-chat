@@ -27,6 +27,8 @@ export type BackendEvent =
   | { kind: "text"; threadId: string; itemId: string; text: string }
   /** A tool the runtime ran (shell, file edit, our dynamic tools …); `result` once finished. */
   | { kind: "tool"; threadId: string; itemId: string; name: string; input: unknown; result?: string }
+  /** A running tool reported progress (pi's tool_execution_update: streamed output): the turn is alive. */
+  | { kind: "toolProgress"; threadId: string; itemId: string }
   | { kind: "reasoning"; threadId: string; text: string }
   /** Thinking as it streams (the finished block arrives as `reasoning`). */
   | { kind: "reasoningDelta"; threadId: string; delta: string }
@@ -569,6 +571,8 @@ export class PiBackend extends EventEmitter {
       }
       case "tool_execution_start":
         return this.ev({ kind: "tool", threadId, itemId: String(e.toolCallId), name: TOOL_NAMES[e.toolName] ?? String(e.toolName ?? "tool"), input: e.args ?? {} });
+      case "tool_execution_update":
+        return this.ev({ kind: "toolProgress", threadId, itemId: String(e.toolCallId) });
       case "tool_execution_end": {
         const txt = (e.result?.content ?? []).map((c: any) => (c?.type === "text" ? c.text : "")).join("\n");
         return this.ev({ kind: "tool", threadId, itemId: String(e.toolCallId), name: TOOL_NAMES[e.toolName] ?? String(e.toolName ?? "tool"), input: undefined, result: cap(`${e.isError ? "[error] " : ""}${txt}`) });

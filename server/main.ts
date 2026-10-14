@@ -81,7 +81,7 @@ async function main(): Promise<void> {
   // Every agent turn runs in pi (server/engine). The old in-process loop
   // stays in the bundle for legacy mission threads until Phase 3 removes it.
   const { notificationAppend } = await import("./commands/phone");
-  const { startEngine, engineModel } = await import("./engine");
+  const { startEngine, engineModel, engineShuttingDown } = await import("./engine");
   const { startBoxSync, syncStatus, syncSummary, triggerSync, listVaults, addVault, vaultPaths } = await import("./sync");
   // Every vault on the box; the main one keeps its own paths (config).
   const vaultRefs = () =>
@@ -258,6 +258,8 @@ async function main(): Promise<void> {
 
   const shutdown = (sig: string) => {
     console.log(`[vault-chat-server] ${sig} — shutting down`);
+    // pi's processes die with the server: not a crash. Their turns stay "running" for the next boot to resume once.
+    engineShuttingDown();
     server.close();
     setTimeout(() => process.exit(0), 300).unref();
   };

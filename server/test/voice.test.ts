@@ -178,6 +178,8 @@ describe("POST /api/v1/voice/tool", () => {
     const conv = await readConv(vault, r.conversationId);
     expect(conv?.messages.some((m: any) => m.role === "user" && m.content.includes("Summarise notes/a.md"))).toBe(true);
     expect(conv?.project).toBeTruthy();
+    // The voice agent started it: a voice conversation, not a phone chat.
+    expect(conv?.source).toBe("voice");
     for (let i = 0; i < 100 && backend.turns.length < 1; i++) await new Promise((r) => setTimeout(r, 50));
     expect(backend.turns.length).toBe(1);
     const st = JSON.parse(await tool("AgentStatus", { conversationId: r.conversationId }));
