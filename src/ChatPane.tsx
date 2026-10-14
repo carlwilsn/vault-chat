@@ -362,7 +362,13 @@ export function ChatPane() {
     : offscreenChats.some((c) => c.unread)
       ? "unseen"
       : null;
-  const toggleChatsPanel = () => setShowChatsPanel(!showChatsPanel);
+  // Fullscreen chat shows the chats as its left sidebar (App.tsx), so the
+  // button opens and closes that; the docked layout keeps the overlay.
+  const chatFullscreen = useStore((s) => s.chatFullscreen && !s.popoutOpen);
+  const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
+  const chatsShown = chatFullscreen ? chatSidebarOpen : showChatsPanel;
+  const toggleChatsPanel = () =>
+    chatFullscreen ? useStore.getState().toggleChatSidebar() : setShowChatsPanel(!showChatsPanel);
   const activeConv = conversations.find((c) => c.id === activeConversationId);
   const showThinking = useShowThinking();
   // What the thread shows beside the text (chatExtras.tsx; uiChoices.ts picks
@@ -1157,7 +1163,7 @@ export function ChatPane() {
                 <button
                   onClick={toggleChatsPanel}
                   className={`relative flex items-center gap-1 text-[11px] hover:text-foreground transition-colors ${
-                    showChatsPanel ? "text-foreground font-medium" : "text-muted-foreground"
+                    chatsShown ? "text-foreground font-medium" : "text-muted-foreground"
                   }`}
                   title="Chats — switch, see history, see what's running"
                 >

@@ -8,7 +8,7 @@
 const CHOICES = {
   thinking: ["vc_ui_thinking", "line", "toggle"],
   subagents: ["vc_ui_subagents", "inline", "strip"],
-  cost: ["vc_ui_cost", "reply", "total"],
+  cost: ["vc_ui_cost", "total", "reply"], // the total by default (Carl: no per-turn spend)
   todos: ["vc_ui_todos", "inline", "pinned"],
   verdict: ["vc_ui_verdict", "thread", "ongoing"],
 } as const;

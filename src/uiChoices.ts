@@ -6,8 +6,8 @@
 //              "toggle"  hidden; a small toggle in the composer row shows all
 //   subagents  "inline"  a card per spawn in the thread, under its reply
 //              "strip"   a compact strip above the composer
-//   cost       "reply"   each reply's cost under it
-//              "total"   only the conversation's total, at the top
+//   cost       "total"   only the conversation's total, at the top (Carl: no per-turn spend)
+//              "reply"   each reply's cost under it
 //   todos      "inline"  the list in the thread
 //              "pinned"  pinned above the composer
 //   verdict    "thread"  a line at the end of the thread
@@ -18,7 +18,7 @@
 export const UI_CHOICES = {
   thinking: { key: "vc_ui_thinking", options: ["line", "toggle"] },
   subagents: { key: "vc_ui_subagents", options: ["inline", "strip"] },
-  cost: { key: "vc_ui_cost", options: ["reply", "total"] },
+  cost: { key: "vc_ui_cost", options: ["total", "reply"] },
   todos: { key: "vc_ui_todos", options: ["inline", "pinned"] },
   verdict: { key: "vc_ui_verdict", options: ["thread", "ongoing"] },
   ask: { key: "vc_ui_ask", options: ["cards", "buttons"] },

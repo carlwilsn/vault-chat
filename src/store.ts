@@ -244,6 +244,16 @@ const MODEL_STORAGE = "vault_chat_model";
 // mission spawn paths.
 const ASSISTANT_MODEL_STORAGE = "vault_chat_assistant_model";
 const THEME_STORAGE = "vault_chat_theme";
+const CHAT_SIDEBAR_STORAGE = "vc_chat_sidebar";
+
+/** Fullscreen chat's sidebar: open unless it was last closed. */
+function readChatSidebarOpen(): boolean {
+  try {
+    return localStorage.getItem(CHAT_SIDEBAR_STORAGE) !== "0";
+  } catch {
+    return true;
+  }
+}
 const VAULT_STORAGE = "vault_chat_last_vault";
 const CHAT_STORAGE = "vault_chat_history";
 const STRICT_VAULT_STORAGE = "vault_chat_strict_vault";
@@ -504,6 +514,9 @@ type State = {
   // pane covers the entire window — no titlebar, no file tree, no
   // viewer. Same toggle exits. Not persisted; resets on app start.
   chatFullscreen: boolean;
+  // Fullscreen chat's left sidebar (the conversations, like Claude Code
+  // desktop / Codex). Ctrl+B or its toggle; remembered across launches.
+  chatSidebarOpen: boolean;
   // Resets to false on app start — never persisted.
   voiceMode: boolean;
   // Always-on: the active document and viewport are sent as context
@@ -693,6 +706,7 @@ type State = {
   toggleRight: () => void;
   setPopoutOpen: (b: boolean) => void;
   toggleChatFullscreen: () => void;
+  toggleChatSidebar: () => void;
   toggleVoiceMode: () => void;
   toggleFollowAlong: () => void;
   setVoiceListening: (b: boolean) => void;
@@ -958,6 +972,7 @@ export const useStore = create<State>((set) => ({
   rightCollapsed: true,
   popoutOpen: false,
   chatFullscreen: false,
+  chatSidebarOpen: readChatSidebarOpen(),
   voiceMode: false,
   followAlong: true,
   voiceListening: false,
@@ -1516,6 +1531,16 @@ export const useStore = create<State>((set) => ({
     set((s) => (s.popoutOpen ? s : { rightCollapsed: !s.rightCollapsed })),
   setPopoutOpen: (b) => set({ popoutOpen: b }),
   toggleChatFullscreen: () => set((s) => ({ chatFullscreen: !s.chatFullscreen })),
+  toggleChatSidebar: () =>
+    set((s) => {
+      const next = !s.chatSidebarOpen;
+      try {
+        localStorage.setItem(CHAT_SIDEBAR_STORAGE, next ? "1" : "0");
+      } catch {
+        /* localStorage unavailable — the toggle still works this session */
+      }
+      return { chatSidebarOpen: next };
+    }),
   toggleVoiceMode: () => set((s) => ({ voiceMode: !s.voiceMode })),
   toggleFollowAlong: () => set((s) => ({ followAlong: !s.followAlong })),
   setVoiceListening: (b) => set({ voiceListening: b }),

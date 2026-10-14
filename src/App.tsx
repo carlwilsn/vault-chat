@@ -11,7 +11,8 @@ import { Titlebar } from "./Titlebar";
 import { NotePopup } from "./NotePopup";
 import { VoiceTextPanel } from "./VoiceTextPanel";
 import { NotesPanel } from "./NotesPanel";
-import { ChatsPanel } from "./ChatsPanel";
+import { ChatsPanel, ChatsSidebar } from "./ChatsPanel";
+import { PanelLeftOpen } from "lucide-react";
 import { UpdateBanner } from "./UpdateBanner";
 import { fileKind } from "./fileKind";
 import type { NoteAnchor } from "./notes";
@@ -84,6 +85,8 @@ export default function App() {
   const rightCollapsed = useStore((s) => s.rightCollapsed);
   const popoutOpen = useStore((s) => s.popoutOpen);
   const chatFullscreen = useStore((s) => s.chatFullscreen);
+  const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
+  const toggleChatSidebar = useStore((s) => s.toggleChatSidebar);
   const showSettings = useStore((s) => s.showSettings);
   const chatHidden = rightCollapsed || popoutOpen;
   const files = useStore((s) => s.files);
@@ -198,7 +201,10 @@ export default function App() {
         }
       } else if (k === "b" && !e.shiftKey) {
         e.preventDefault();
-        toggleLeft();
+        // Fullscreen chat has no file tree: its left panel is the chats.
+        const st = useStore.getState();
+        if (st.chatFullscreen && !st.popoutOpen) st.toggleChatSidebar();
+        else toggleLeft();
       } else if (k === "b" && e.shiftKey) {
         e.preventDefault();
         toggleRight();
@@ -427,9 +433,33 @@ export default function App() {
 
   useGlobalAnchorClickHandler();
 
-  // Fullscreen chat mode: ChatPane takes over the entire window — no
-  // titlebar, no Allotment, no viewer. Same Ctrl+Shift+F exits. Skipped
-  // when the chat is popped out (the popout window owns its own surface).
+  const focusComposer = () => {
+    // Composer focus is owned by ChatPane; emit a custom event so
+    // we don't have to thread a ref through the Allotment tree.
+    window.dispatchEvent(new CustomEvent("vc-focus-composer"));
+  };
+  // What floats over either layout (the note composer, Notes, voice text,
+  // the update banner). Fullscreen chat used to drop them all with the
+  // titlebar, so Ctrl+N, Notes and voice did nothing there.
+  const overlays = (
+    <>
+      <NotePopup
+        open={noteComposer.open}
+        initialDraft={noteComposer.initialDraft}
+        initialAnchors={noteComposer.initialAnchors}
+        initialTurns={noteComposer.initialTurns}
+        onClose={closeNoteComposer}
+      />
+      <NotesPanel open={showNotesPanel} onClose={() => setShowNotesPanel(false)} />
+      <VoiceTextPanel />
+      <UpdateBanner />
+    </>
+  );
+
+  // Fullscreen chat mode: like Claude Code desktop / Codex — the chats in a
+  // collapsible left sidebar (Ctrl+B), the chat beside it. No titlebar, no
+  // Allotment, no viewer. Same Ctrl+Shift+F exits. Skipped when the chat is
+  // popped out (the popout window owns its own surface).
   if (chatFullscreen && !popoutOpen) {
     return (
       <div className="h-full w-full bg-background flex flex-col">
@@ -438,9 +468,24 @@ export default function App() {
           className="h-1.5 shrink-0 bg-background"
           title="Drag to move window — Ctrl+Shift+F to exit fullscreen chat"
         />
-        <div className="flex-1 min-h-0">
-          <ChatPane />
+        <div className="flex-1 min-h-0 flex relative">
+          {chatSidebarOpen ? (
+            <ChatsSidebar onFocusComposer={focusComposer} />
+          ) : (
+            <button
+              onClick={toggleChatSidebar}
+              data-el="chats-sidebar-open"
+              className="absolute left-2 top-1.5 z-10 h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
+              title="Show chats (Ctrl+B)"
+            >
+              <PanelLeftOpen className="h-3.5 w-3.5" />
+            </button>
+          )}
+          <div className="flex-1 min-w-0">
+            <ChatPane />
+          </div>
         </div>
+        {overlays}
       </div>
     );
   }
@@ -465,25 +510,12 @@ export default function App() {
           )}
         </Allotment>
       </div>
-      <NotePopup
-        open={noteComposer.open}
-        initialDraft={noteComposer.initialDraft}
-        initialAnchors={noteComposer.initialAnchors}
-        initialTurns={noteComposer.initialTurns}
-        onClose={closeNoteComposer}
-      />
-      <NotesPanel open={showNotesPanel} onClose={() => setShowNotesPanel(false)} />
+      {overlays}
       <ChatsPanel
         open={showChatsPanel}
         onClose={() => setShowChatsPanel(false)}
-        onFocusComposer={() => {
-          // Composer focus is owned by ChatPane; emit a custom event so
-          // we don't have to thread a ref through the Allotment tree.
-          window.dispatchEvent(new CustomEvent("vc-focus-composer"));
-        }}
+        onFocusComposer={focusComposer}
       />
-      <VoiceTextPanel />
-      <UpdateBanner />
     </div>
   );
 }
