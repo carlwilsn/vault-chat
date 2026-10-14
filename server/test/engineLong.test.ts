@@ -334,3 +334,120 @@ describe("4. Job control", () => {
     }
   });
 });
+
+/** A worker conversation's current thread and the input of its latest turn. */
+async function workerTurn(id: string): Promise<{ tid: string; text: string }> {
+  const c = await rig.readConv(id);
+  const t = [...rig.backend.turns].reverse().find((x) => x.threadId === c.threadId);
+  return { tid: c.threadId, text: t ? t.texts.join("\n") : "" };
+}
+const workersOf = async (parent: string) => (await rig.allConvs()).filter((c) => c.parent === parent).sort((a, b) => a.title.localeCompare(b.title));
+
+describe("5. Task queue with fresh worker sessions", () => {
+  it("workers claim tasks, each in a fresh session; learnings are shared; failures retry then give up; the parent sees the count and is woken at the end", async () => {
+    const s = await rig.start("Decompile the overlay functions in parallel.");
+    await rig.backend.call(s.tid, "SetProject", { name: "Eta" });
+    const add = await rig.backend.call(s.tid, "TaskAdd", { tasks: [{ title: "fn_a" }, { title: "fn_b", notes: "tricky jump table" }, { title: "fn_c" }] });
+    expect(out(add)).toMatch(/Added 3 task\(s\): t1, t2, t3/);
+    const threads0 = rig.backend.threads.length;
+    const rw = await rig.backend.call(s.tid, "RunWorkers", { count: 2 });
+    expect(out(rw)).toMatch(/Started 2 worker\(s\) on 3 task\(s\)/);
+    rig.backend.end(s.tid);
+    const [A, B] = await workersOf(s.convId);
+    expect(A.source).toBe("worker");
+    expect(A.project).toBe("eta");
+    await until(async () => !!(await workerTurn(A.id)).text && !!(await workerTurn(B.id)).text);
+    expect(rig.backend.threads.length).toBe(threads0 + 2);
+    const a1 = await workerTurn(A.id);
+    const b1 = await workerTurn(B.id);
+    expect(a1.text).toMatch(/Task t1 \(attempt 1 of 3; deadline 60 min\): fn_a/);
+    expect(b1.text).toMatch(/Task t2 .*fn_b[\s\S]*tricky jump table/);
+    expect((await rig.readConv(s.convId)).long.workers).toBe("2 workers · 0/3 done");
+    // A worker may not call Done.
+    expect(out(await rig.backend.call(a1.tid, "Done", { summary: "x" }))).toMatch(/TaskUpdate/);
+    // A finishes t1 with a learning; its next task starts in a fresh thread that carries it.
+    expect(out(await rig.backend.call(a1.tid, "TaskUpdate", { id: "t1", status: "done", note: "matched", learning: "the overlay is compiled with -O2" }))).toMatch(/t1: done. Stop now/);
+    rig.backend.end(a1.tid);
+    await until(async () => (await workerTurn(A.id)).tid !== a1.tid);
+    const a2 = await workerTurn(A.id);
+    expect(a2.text).toMatch(/Task t3/);
+    expect(a2.text).toMatch(/the overlay is compiled with -O2/);
+    expect(readFileSync(join(rig.vault, ".vault-chat", "projects", "eta", "learnings.md"), "utf8")).toMatch(/- \[t1\] the overlay is compiled with -O2/);
+    // B ends without TaskUpdate: one nudge, then the attempt fails and t2 goes back to the queue.
+    const n = rig.backend.turns.length;
+    rig.backend.end(b1.tid);
+    await until(() => rig.backend.turns.length > n);
+    expect((await workerTurn(B.id)).text).toMatch(/Task t2 is still open/);
+    rig.backend.end(b1.tid);
+    await until(async () => (await workerTurn(B.id)).tid !== b1.tid);
+    const b2 = await workerTurn(B.id);
+    expect(b2.text).toMatch(/Task t2 \(attempt 2 of 3/);
+    expect(b2.text).toMatch(/ended twice without TaskUpdate/);
+    // A finishes t3 and, with nothing left to claim, ends.
+    await rig.backend.call(a2.tid, "TaskUpdate", { status: "done" });
+    rig.backend.end(a2.tid);
+    await until(async () => (await rig.readConv(A.id)).state === "done");
+    expect((await rig.readConv(A.id)).working).toBe(false);
+    // B fails t2 twice more (Blocked counts as a failed attempt): given up; B ends; the parent wakes.
+    await rig.backend.call(b2.tid, "TaskUpdate", { id: "t2", status: "failed", note: "jump table unresolved" });
+    rig.backend.end(b2.tid);
+    await until(async () => (await workerTurn(B.id)).tid !== b2.tid);
+    const b3 = await workerTurn(B.id);
+    expect(b3.text).toMatch(/attempt 3 of 3/);
+    const pTurns = rig.backend.turns.length;
+    await rig.backend.call(b3.tid, "Blocked", { reason: "needs the symbol map" });
+    rig.backend.end(b3.tid);
+    await until(async () => (await rig.readConv(B.id)).state === "done");
+    await until(() => rig.backend.turns.some((t, i) => i >= pTurns && t.threadId === s.tid));
+    const wake = rig.backend.turns.filter((t) => t.threadId === s.tid).at(-1).texts.join("\n");
+    expect(wake).toMatch(/Workers finished \(the queue is empty\): 2\/3 done, 1 given up, 0 left to do/);
+    expect((await rig.readConv(s.convId)).long.workers).toBe("workers done · 2/3 done · 1 given up");
+    const { readTasks } = await import("../engine/tasks");
+    const t2 = readTasks(rig.vault, "eta").find((t) => t.id === "t2")!;
+    expect(t2.status).toBe("gave_up");
+    expect(t2.attempts).toBe(3);
+    expect(t2.notes).toMatch(/blocked: needs the symbol map/);
+    // Workers are not chats of their own in the phone's list.
+    const { conversationsSummary } = await import("../phoneData");
+    const rows = (conversationsSummary(rig.vault) as any).conversations.map((r: any) => r.id);
+    expect(rows).toContain(s.convId);
+    expect(rows).not.toContain(A.id);
+    rig.backend.end(s.tid);
+  });
+
+  it("the per-task check gates done; a task past its deadline is stopped and fails the attempt", async () => {
+    const s = await rig.start("Theta tasks");
+    await rig.backend.call(s.tid, "SetProject", { name: "Theta" });
+    writeFileSync(join(rig.vault, "theta-check.js"), `process.exit(process.argv[2] === "t1" ? 0 : 1)`);
+    await rig.engine.control({ project: "theta" }, "check", { command: "node theta-check.js {task}" });
+    const { writeLong } = await import("../engine/long");
+    writeLong(rig.vault, "theta", (st) => ({ ...st, maxAttempts: 1 }));
+    await rig.backend.call(s.tid, "TaskAdd", { tasks: [{ title: "good" }, { title: "slow", deadline_min: 0.01 }, { title: "bad" }] });
+    await rig.backend.call(s.tid, "RunWorkers", { count: 1 });
+    rig.backend.end(s.tid);
+    const [W] = await workersOf(s.convId);
+    await until(async () => /Task t1/.test((await workerTurn(W.id)).text));
+    const w1 = await workerTurn(W.id);
+    expect(out(await rig.backend.call(w1.tid, "TaskUpdate", { status: "done" }))).toMatch(/t1: done/);
+    rig.backend.end(w1.tid);
+    // t2 runs out of time: the watchdog stops the turn; the attempt fails (given up at 1 attempt).
+    await until(async () => /Task t2/.test((await workerTurn(W.id)).text));
+    await new Promise((ok) => setTimeout(ok, 800));
+    rig.engine.tickWatchdog();
+    await until(async () => /Task t3/.test((await workerTurn(W.id)).text));
+    const { readTasks } = await import("../engine/tasks");
+    const t2 = readTasks(rig.vault, "theta").find((t) => t.id === "t2")!;
+    expect(t2.status).toBe("gave_up");
+    expect(t2.notes).toMatch(/deadline \(0\.01 min\) passed/);
+    // t3: the check fails for it, so done is refused and the task stays in progress.
+    const w3 = await workerTurn(W.id);
+    const r = await rig.backend.call(w3.tid, "TaskUpdate", { status: "done" });
+    expect(r.ok).toBe(false);
+    expect(out(r)).toMatch(/Not done: the project's check failed \(exit 1\) for t3/);
+    expect(readTasks(rig.vault, "theta").find((t) => t.id === "t3")!.status).toBe("doing");
+    await rig.backend.call(w3.tid, "TaskUpdate", { status: "failed", note: "check fails" });
+    rig.backend.end(w3.tid);
+    await until(async () => (await rig.readConv(W.id)).state === "done");
+    rig.backend.end(s.tid);
+  });
+});

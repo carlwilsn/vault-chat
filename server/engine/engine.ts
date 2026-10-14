@@ -21,6 +21,7 @@ import {
   formatVerdict,
   projectCost,
   readProject,
+  projectDir,
   type EngineConv,
   type ThreadTokenUsage,
 } from "./context";
@@ -29,6 +30,7 @@ import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } f
 import { Ledger } from "./ledger";
 import { pdfRead, webSearch } from "./extraTools";
 import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "./pi/jobs";
+import { addTasks, claimTask, finishTask, readTasks, taskCounts, type Task } from "./tasks";
 import { appendJsonl, declaredCommand, longDir, metricLine, parseMetric, pinCommand, plateauOf, readJsonl, readLong, runCommand, saveRunLog, tailOf, tampered, writeLong, type CommandSpec, type MetricSpec, type Sample } from "./long";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
@@ -59,7 +61,7 @@ export type EngineDeps = {
 
 /** `subagents`: the children a `subagent` call spawned (their threadIds; state and cost live in conv.subagents). */
 type ToolRec = { id?: string; name: string; input: any; result?: string; subagents?: string[] };
-type TurnKind = "user" | "wake" | "nudge" | "resume";
+type TurnKind = "user" | "wake" | "nudge" | "resume" | "task";
 
 type Live = {
   convId: string;
@@ -263,6 +265,53 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
+    name: "TaskAdd",
+    description: "Add tasks to this project's task queue (for RunWorkers): tasks [{title, notes?, deadline_min? (default 60)}].",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tasks: {
+          type: "array",
+          items: { type: "object", properties: { title: { type: "string" }, notes: { type: "string" }, deadline_min: { type: "number" } }, required: ["title"], additionalProperties: false },
+        },
+      },
+      required: ["tasks"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "TaskClaim",
+    description: "Claim the next task of the project's queue (or get the one you are on).",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    type: "function",
+    name: "TaskUpdate",
+    description:
+      "Finish a task: status done (the server runs the project's check for it, when one is declared with {task}), failed (back to the queue; given up after 3 attempts) or todo (release it). note: what you did or why it failed. learning: one line for the other workers (shared learnings.md).",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" }, status: { type: "string", enum: ["done", "failed", "todo"] }, note: { type: "string" }, learning: { type: "string" } },
+      required: ["status"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "TaskList",
+    description: "The project's task queue: counts, and the tasks (optionally of one status).",
+    inputSchema: { type: "object", properties: { status: { type: "string", enum: ["todo", "doing", "done", "failed", "gave_up"] } }, additionalProperties: false },
+  },
+  {
+    type: "function",
+    name: "RunWorkers",
+    description:
+      "Start `count` workers (at most 8) on this project's task queue. Each is a conversation of its own that takes a task, works it in a fresh session under its deadline, marks it done or failed, shares a learning, and takes the next — until the queue is empty or the budget is spent. You see their progress in TaskList; you get a wake when they are all finished. model: the workers' model (default the project's cheap one).",
+    inputSchema: { type: "object", properties: { count: { type: "number" }, model: { type: "string" } }, required: ["count"], additionalProperties: false },
+  },
+  {
+    type: "function",
     name: "SetMetric",
     description:
       "Set this project's progress metric: a cheap command that prints a number (e.g. the % of functions matched). The server samples it every every_min minutes (default 15) while the project has work going, shows it to Carl, and alerts him when it has not risen in window_h hours of work (default 6). Pinned like the check: once set, only Carl changes it. A fenced command block under \"## Progress metric\" in project.md is the same.",
@@ -419,7 +468,7 @@ export class Engine {
     if (body.convId) {
       conv = await readConv(this.d.vault, body.convId);
       if (!conv) return { error: `conversation ${body.convId} not found` };
-      if (LEGACY_SOURCES.has(conv.source)) return null;
+      if (LEGACY_SOURCES.has(conv.source) && !conv.parent) return null;
     } else {
       conv = await createConv(this.d.vault, body.source === "voice" ? { source: "voice" } : {}, textIn || "Image");
       // Let the phone host's store diff see the new (empty) conversation first,
@@ -493,7 +542,7 @@ export class Engine {
     const id = String(body?.convId ?? "");
     if (!id) return null;
     const conv = await readConv(this.d.vault, id);
-    if (!conv || LEGACY_SOURCES.has(conv.source)) return null;
+    if (!conv || (LEGACY_SOURCES.has(conv.source) && !conv.parent)) return null;
     const t = body.defer
       ? "Not now — I'm not picking an option. Take the default you named if there is a safe one; otherwise hold, and don't do anything irreversible or that spends money."
       : String(body?.text ?? "").trim();
@@ -523,7 +572,7 @@ export class Engine {
       return n ? { ok: true, result: `Stopped ${n} run(s).` } : null;
     }
     const conv = await readConv(this.d.vault, id);
-    if (!conv || LEGACY_SOURCES.has(conv.source)) return null;
+    if (!conv || (LEGACY_SOURCES.has(conv.source) && !conv.parent)) return null;
     const hit = await this.interrupt(id, true);
     return { ok: true, result: hit ? "Stopped — interrupting now (an in-flight command is killed)." : "Nothing running on that thread." };
   }
@@ -587,7 +636,7 @@ export class Engine {
         const visible: ChatMessage =
           kind === "user"
             ? { role: "user", content: input, direct: true, ...(opts.attachments?.length ? { attachments: opts.attachments } : {}) }
-            : { role: "user", content: kind === "wake" ? `⏰ ${input}` : kind === "nudge" ? `↻ ${input}` : `↻ ${input}`, system: true };
+            : { role: "user", content: kind === "wake" ? `⏰ ${input}` : kind === "task" ? `▶ ${input}` : `↻ ${input}`, system: true };
         conv = (await appendMessage(this.d.vault, convId, visible)) ?? conv;
       }
       if (!existsSync(this.d.vault) || !statSync(this.d.vault).isDirectory()) {
@@ -644,7 +693,7 @@ export class Engine {
       if (opts.context) body = `${opts.context}\n\n${body}`;
       const texts = [rules, this.turnNotes(conv), kind === "wake" ? input : body].filter(Boolean);
       // Images on a model that can't see: this turn (silently) uses the vision model.
-      let model = this.d.model();
+      let model = this.modelOf(conv);
       if (opts.images?.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
       this.chatEvent(convId, "start");
       try {
@@ -661,7 +710,7 @@ export class Engine {
   }
 
   private async ensureThread(conv: EngineConv): Promise<string> {
-    const model = this.d.model();
+    const model = this.modelOf(conv);
     // Subagents only for models where they work (learned from use; see capabilities.ts).
     const subagents = capabilitiesOf(model).subagents;
     if (conv.threadId) {
@@ -680,7 +729,7 @@ export class Engine {
     const note = capabilityNote(model);
     const instructions = buildDeveloperInstructions(conv as any, { rolePrompt: ENGINE_ROLE_PROMPT + (note ? `\n\n${note}` : "") });
     const { threadId, ref } = await this.d.backend.startThread({
-      cwd: this.d.vault,
+      cwd: typeof conv.long?.cwd === "string" ? conv.long.cwd : this.d.vault,
       model,
       instructions,
       tools: [...ENGINE_TOOL_SPECS, ...contextToolSpecs] as any,
@@ -689,7 +738,8 @@ export class Engine {
     this.byThread.set(threadId, conv.id);
     // History from before this thread (a legacy chat, or a retry on a fresh thread): hand it over once.
     const old = conv.messages.filter((m) => !m.hidden && !m.system && (m.content ?? "").trim()).slice(0, -1);
-    if (old.length && !conv.messages.some((m: any) => m.rollover)) {
+    // (A worker's thread is fresh per task: nothing is handed over.)
+    if (old.length && !conv.messages.some((m: any) => m.rollover) && !conv.parent) {
       const t = old.slice(-30).map((m) => `${m.role}: ${(m.content ?? "").slice(0, 1500)}`).join("\n");
       (conv as any).__legacyHistory = `<earlier_conversation>\n${t.slice(-12_000)}\n</earlier_conversation>`;
     }
@@ -998,6 +1048,12 @@ export class Engine {
     }
     if (status === "completed") this.stalls.delete(l.convId);
 
+    // A worker (RunWorkers) runs its own loop — the next task, in a fresh session — not the keep-going rule.
+    if (conv.parent && conv.source === "worker") {
+      await this.workerAfterTurn(conv, l, status);
+      return;
+    }
+
     if (failedKeepGoing) {
       this.nudged.delete(l.convId);
       await this.d.notify({ kind: "info", title: `Failed: ${conv.title}`.slice(0, 90), body: (content.trim() || "Its last turn failed.").slice(0, 600), convId: l.convId });
@@ -1150,6 +1206,7 @@ export class Engine {
           return text(on ? "Keep-going mode on. End every turn with ScheduleWake, AskUser, Done or Blocked." : "Keep-going mode off.");
         }
         case "Done": {
+          if (conv.parent && conv.source === "worker") return text("A worker finishes its task with TaskUpdate (done or failed), not Done.");
           const summary = String(a.summary ?? "").trim();
           const evidence = Array.isArray(a.evidence) ? a.evidence.map(String) : [];
           // The project's check gates Done: the server runs it; a failing or changed check refuses Done and the work goes on.
@@ -1180,6 +1237,8 @@ export class Engine {
           return text(`Recorded as done.${g ? " The project's check passed." : ""} ${line}\nTell Carl the verdict in your reply.`);
         }
         case "Blocked": {
+          // A worker stuck on its task: the attempt fails (with the reason); the loop goes on.
+          if (conv.parent && conv.source === "worker") return await this.taskUpdate(conv, { status: "failed", note: `blocked: ${String(a.reason ?? "")}` });
           if (l) l.flags.blocked = true;
           const reason = String(a.reason ?? "").trim();
           removeWakes(vault, (w) => w.conv === convId);
@@ -1254,6 +1313,29 @@ export class Engine {
           return text(jobList(this.d.jobEnv, convId, a.all === true));
         case "JobStop":
           return text(jobStop(this.d.jobEnv, String(a.id ?? "").trim(), convId));
+        case "TaskAdd": {
+          if (!conv.project) return text("TaskAdd needs a project: call SetProject first.");
+          const items = Array.isArray(a.tasks) ? a.tasks : [a];
+          const added = addTasks(vault, conv.project, items);
+          const c = taskCounts(readTasks(vault, conv.project));
+          return text(`Added ${added.length} task(s): ${added.map((t) => t.id).join(", ")}. Queue: ${c.todo} to do, ${c.doing} in progress, ${c.done} done of ${c.total}.`);
+        }
+        case "TaskClaim": {
+          if (!conv.project) return text("TaskClaim needs a project.");
+          const t = claimTask(vault, conv.project, convId);
+          return text(t ? `Claimed ${t.id} (attempt ${t.attempts}, ${t.deadline_min} min): ${t.title}${t.notes ? `\nNotes: ${t.notes}` : ""}` : "No task left to claim.");
+        }
+        case "TaskUpdate":
+          return await this.taskUpdate(conv, a);
+        case "TaskList": {
+          if (!conv.project) return text("TaskList needs a project.");
+          const list = readTasks(vault, conv.project).filter((t) => !a.status || t.status === a.status);
+          const c = taskCounts(readTasks(vault, conv.project));
+          const rows = list.slice(0, 60).map((t) => `- ${t.id} [${t.status}${t.attempts ? `, ${t.attempts} attempt(s)` : ""}] ${t.title}`);
+          return text(`${c.done}/${c.total} done, ${c.doing} in progress, ${c.todo} to do, ${c.gave_up} given up.\n${rows.join("\n")}${list.length > 60 ? `\n… ${list.length - 60} more` : ""}`);
+        }
+        case "RunWorkers":
+          return text(await this.runWorkers(conv, Number(a.count) || 1, a.model ? String(a.model) : undefined));
         case "TodoWrite": {
           const todos = (Array.isArray(a.todos) ? a.todos : [])
             .slice(0, 30)
@@ -1413,6 +1495,187 @@ export class Engine {
       if (last && now - last.at < (spec.everyMin ?? 15) * 60_000) continue;
       void this.sampleMetric(slug).catch((e) => this.log(`metric ${slug}: ${e}`));
     }
+  }
+
+  // ---------------------------------------------------------------- the task queue and its workers
+
+  private workerNudged = new Set<string>();
+  /** A live worker's task deadline (ms). */
+  private workerDeadline = new Map<string, number>();
+
+  /** The model a conversation's turns run on: a worker's own (its task's tier), else the box's. */
+  private modelOf(conv: EngineConv): string {
+    return typeof conv.long?.model === "string" && conv.long.model ? conv.long.model : this.d.model();
+  }
+
+  private appendLearning(slug: string, taskId: string, line: string): void {
+    const p = join(projectDir(slug), "learnings.md");
+    mkdirSync(projectDir(slug), { recursive: true });
+    const head = existsSync(p) ? "" : "# Learnings\n\nOne line per task, from the workers.\n\n";
+    appendFileSync(p, `${head}- [${taskId}] ${line.replace(/\s+/g, " ").trim().slice(0, 500)}\n`);
+  }
+
+  private learningsTail(slug: string, n = 3000): string {
+    try {
+      const t = readFileSync(join(projectDir(slug), "learnings.md"), "utf8").trim();
+      return t.length > n ? `…${t.slice(-n)}` : t;
+    } catch {
+      return "";
+    }
+  }
+
+  /** TaskUpdate (and a worker's Blocked): finish an attempt of a task. */
+  private async taskUpdate(conv: EngineConv, a: any): Promise<unknown> {
+    const vault = this.d.vault;
+    const slug = conv.project;
+    if (!slug) return text("TaskUpdate needs a project.");
+    const id = String(a.id ?? "").trim() || readTasks(vault, slug).find((t) => t.status === "doing" && t.worker === conv.id)?.id;
+    const t = id ? readTasks(vault, slug).find((x) => x.id === id) : undefined;
+    if (!t) return text(`No task ${id ?? "in progress"}.`);
+    if (t.status !== "doing") return text(`Task ${t.id} is ${t.status}, not in progress.`);
+    const status = a.status === "done" ? "done" : a.status === "todo" ? "todo" : "failed";
+    let note = String(a.note ?? "");
+    if (status === "done") {
+      // The project's oracle, per task: a check whose command names {task}.
+      const spec = this.checkSpec(slug);
+      if (spec?.command.includes("{task}")) {
+        const g = await this.runCheck(slug, { VC_TASK: t.id });
+        if (g && !g.ok) {
+          const tail = g.out ? `\n--- check output (tail) ---\n${tailOf(g.out, 3000)}` : "";
+          return { success: false, contentItems: [{ type: "inputText", text: `Not done: ${g.why} for ${t.id}. Fix it and call TaskUpdate done again, or mark it failed.${tail}` }] };
+        }
+      }
+    }
+    if (typeof a.learning === "string" && a.learning.trim()) this.appendLearning(slug, t.id, a.learning);
+    const max = readLong(vault, slug).maxAttempts ?? 3;
+    const after = finishTask(vault, slug, t.id, status, note, max);
+    this.workerNudged.delete(conv.id);
+    this.workerDeadline.delete(conv.id);
+    if (conv.parent) await this.refreshParent(conv.parent);
+    const worker = conv.parent && conv.source === "worker";
+    return text(`Task ${t.id}: ${after?.status}.${worker ? " Stop now; the server gives you the next task in a fresh session." : ""}`);
+  }
+
+  /** RunWorkers: start worker conversations on the project's queue. */
+  async runWorkers(parent: EngineConv, count: number, model?: string): Promise<string> {
+    const vault = this.d.vault;
+    const slug = parent.project;
+    if (!slug) return "RunWorkers needs a project: call SetProject first.";
+    if (parent.parent) return "A worker cannot start workers.";
+    const c = taskCounts(readTasks(vault, slug));
+    if (!c.todo) return "The task queue has nothing to do: add tasks with TaskAdd first.";
+    const mine = (await allConvs(vault)).filter((w) => w.parent === parent.id && w.working);
+    const n = Math.max(0, Math.min(Math.floor(count), 8 - mine.length, c.todo));
+    if (!n) return `Not started: ${mine.length} workers are already running for this conversation (at most 8).`;
+    const st = readLong(vault, slug);
+    const cheap = model || st.models?.cheap || process.env.VC_WORKER_MODEL || this.d.model();
+    const p = readProject(slug);
+    const ids: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const w = await createConv(vault, { source: "worker" as any, parent: parent.id, project: slug, working: true, long: { cheap } }, `Worker ${mine.length + i + 1} · ${p?.name ?? slug}`);
+      ids.push(w.id);
+    }
+    for (const id of ids) await this.workerNext(id);
+    await this.refreshParent(parent.id);
+    return `Started ${n} worker(s) on ${c.todo} task(s) (model ${cheap}). They work until the queue is empty or the budget is spent; you get a wake when they are all finished. TaskList shows progress.`;
+  }
+
+  private taskPrompt(slug: string, t: Task, max: number): string {
+    const p = readProject(slug);
+    const learned = this.learningsTail(slug);
+    return [
+      `You are a worker on project "${p?.name ?? slug}", one of several working through its task queue. This is a fresh session for one task.`,
+      `Task ${t.id} (attempt ${t.attempts} of ${max}; deadline ${t.deadline_min} min): ${t.title}`,
+      t.notes ? `Notes (from Carl and earlier attempts):\n${t.notes}` : "",
+      learned ? `What other workers learned (learnings.md, latest):\n${learned}` : "",
+      `Do the task. Then call TaskUpdate {id:"${t.id}", status:"done" or "failed", note: what you did or why it failed, learning: one line the other workers should know}. Then stop: the server gives you the next task in a fresh session. Do not work on other tasks.`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  /** A worker takes its next task in a fresh session — or ends (queue empty, budget spent). */
+  async workerNext(wid: string): Promise<void> {
+    const vault = this.d.vault;
+    const conv = await readConv(vault, wid);
+    if (!conv?.project || !conv.working) return;
+    const bud = this.budgetOf(conv);
+    if (bud && bud.frac >= 1) return this.endWorker(conv, "the budget is spent");
+    const t = claimTask(vault, conv.project, wid);
+    if (!t) return this.endWorker(conv, "the queue is empty");
+    const st = readLong(vault, conv.project);
+    const max = st.maxAttempts ?? 3;
+    const model = this.taskModel(conv, t, max);
+    const from = conv.threadId;
+    await mutateConv(vault, wid, (c) => {
+      c.threadId = undefined;
+      c.threadPath = undefined;
+      c.long = { ...(c.long ?? {}), model, task: t.id };
+    });
+    if (from) this.byThread.delete(from);
+    this.workerNudged.delete(wid);
+    this.workerDeadline.set(wid, (t.claimedAt ?? Date.now()) + t.deadline_min * 60_000);
+    if (conv.parent) await this.refreshParent(conv.parent);
+    void this.run(wid, this.taskPrompt(conv.project, t, max), "task").catch((e) => this.log(`worker ${wid}: ${e}`));
+  }
+
+  /** The model for a task's attempt: the worker's cheap one (item 7 escalates). */
+  private taskModel(conv: EngineConv, _t: Task, _max: number): string {
+    return (conv.long?.cheap as string) || this.d.model();
+  }
+
+  private async endWorker(conv: EngineConv, why: string): Promise<void> {
+    this.workerDeadline.delete(conv.id);
+    await appendMessage(this.d.vault, conv.id, { role: "assistant", system: true, content: `Worker finished: ${why}.` }, { state: "done", working: false, nextWakeAt: undefined });
+    removeWakes(this.d.vault, (w) => w.conv === conv.id);
+    if (!conv.parent) return;
+    await this.refreshParent(conv.parent);
+    const parent = await readConv(this.d.vault, conv.parent);
+    const still = (await allConvs(this.d.vault)).some((w) => w.parent === conv.parent && w.working);
+    if (!parent || still || parent.state === "done" || parent.state === "blocked") return;
+    const c = taskCounts(readTasks(this.d.vault, conv.project!));
+    void this.run(parent.id, `Workers finished (${why}): ${c.done}/${c.total} done, ${c.gave_up} given up, ${c.todo} left to do.`, "wake").catch((e) => this.log(`parent wake: ${e}`));
+  }
+
+  /** A worker's turn ended: the next task, a nudge to finish this one, or a failed attempt. */
+  private async workerAfterTurn(conv: EngineConv, l: Live, status: string): Promise<void> {
+    const vault = this.d.vault;
+    const slug = conv.project;
+    if (!slug) return;
+    if (!conv.working && conv.state === "done") return;
+    const t = readTasks(vault, slug).find((x) => x.status === "doing" && x.worker === conv.id);
+    if (!t) return this.workerNext(conv.id);
+    const late = Date.now() > (t.claimedAt ?? 0) + t.deadline_min * 60_000;
+    // Waiting on a job of its own (a wake set): the task stays open until the deadline.
+    if (nextWakeFor(vault, conv.id) && !late) return;
+    let why = "";
+    if (late) why = `deadline (${t.deadline_min} min) passed`;
+    else if (status === "failed") why = "the turn failed";
+    else if (this.workerNudged.has(conv.id)) why = "ended twice without TaskUpdate";
+    if (!why) {
+      this.workerNudged.add(conv.id);
+      void this.run(conv.id, `Task ${t.id} is still open. Finish it now: TaskUpdate {id:"${t.id}", status:"done" or "failed", note, learning}.`, "nudge");
+      return;
+    }
+    removeWakes(vault, (w) => w.conv === conv.id);
+    finishTask(vault, slug, t.id, "failed", why, readLong(vault, slug).maxAttempts ?? 3);
+    this.log(`worker ${conv.id}: ${t.id} failed (${why})`);
+    await this.workerNext(conv.id);
+  }
+
+  /** The parent's line: "4 workers · 37/120 done". */
+  async refreshParent(parentId: string): Promise<void> {
+    const vault = this.d.vault;
+    const parent = await readConv(vault, parentId);
+    if (!parent?.project) return;
+    const workers = (await allConvs(vault)).filter((w) => w.parent === parentId);
+    const active = workers.filter((w) => w.working).length;
+    const c = taskCounts(readTasks(vault, parent.project));
+    const line = `${active ? `${active} worker${active === 1 ? "" : "s"}` : "workers done"} · ${c.done}/${c.total} done${c.gave_up ? ` · ${c.gave_up} given up` : ""}`;
+    if (parent.long?.workers === line) return;
+    await mutateConv(vault, parentId, (x) => {
+      x.long = { ...(x.long ?? {}), workers: line };
+    });
   }
 
   /** The tightest of the conversation's and its project's budgets: spent, cap, fraction. Null without one. */
@@ -1686,6 +1949,14 @@ export class Engine {
     const now = Date.now();
     for (const l of this.live.values()) {
       if (l.ask || l.finished || l.stalled) continue;
+      // A worker past its task's deadline is stopped; its turn's end fails the attempt.
+      const dl = this.workerDeadline.get(l.convId);
+      if (dl && now > dl && !l.stopped) {
+        this.log(`worker ${l.convId}: task deadline passed — interrupting`);
+        l.stopped = true;
+        void this.interrupt(l.convId, false);
+        continue;
+      }
       // A job of this conversation writing to its log is progress too.
       for (const p of this.jobLogs.get(l.convId) ?? []) {
         try {

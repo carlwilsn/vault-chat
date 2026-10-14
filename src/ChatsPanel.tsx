@@ -474,6 +474,8 @@ function groupConversations(list: Conversation[], query: string, projects: Proje
   const byProject = new Map<string, ProjectGroup>();
   for (const c of sorted) {
     if (!filter(c)) continue;
+    // A worker (RunWorkers) shows as its parent's "N workers" line, not a chat of its own.
+    if (c.parent) continue;
     if (isArchivedThread(c)) {
       archived.push(c);
       continue;

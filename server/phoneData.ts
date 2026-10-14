@@ -65,7 +65,8 @@ function ongoingMeta(c: any, msgs: any[]): Record<string, unknown> {
 export function conversationsSummary(vault: string): unknown {
   const convs = readConversationObjects(vault);
   convs.sort((a, b) => (int(b.lastActivityAt) ?? 0) - (int(a.lastActivityAt) ?? 0));
-  const rows = convs.slice(0, 60).map((c) => {
+  // Workers (RunWorkers) show as their parent's "N workers" line, not chats of their own.
+  const rows = convs.filter((c) => !c.parent).slice(0, 60).map((c) => {
     const msgs: any[] = Array.isArray(c.messages) ? c.messages : [];
     const visible = (m: any) => m?.hidden !== true && str(m?.content).trim() !== "";
     const last = [...msgs].reverse().find(visible);
