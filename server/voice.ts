@@ -22,6 +22,8 @@ import { readConversationObjects } from "./commands/conversations";
 import { keychainCommands } from "./keys";
 import { runGit } from "./git";
 import { conversationDetail, dispatchVoiceTool } from "./phoneData";
+import { activitySummary, appendActivity } from "./activity";
+import { voiceLineEntry, voiceToolEntry, clean } from "../src/activityCore";
 
 export type VoiceDeps = {
   /** The vault's working copy, its name on the box, and whether it is the main one (the store's). */
@@ -374,6 +376,8 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
       const task = s(a.task).trim();
       if (!task) return "Error: AskAgent needs a task.";
       const convId = s(a.conversationId).trim() || null;
+      // Into the shared stream first: the agent's first turn then shows the hand-off with the voice turns before it.
+      appendActivity(vault, voiceToolEntry("AskAgent", a, "")!);
       const out = await d.message({ text: task, convId, ...(s(a.project).trim() ? { project: s(a.project).trim() } : {}) });
       if (!out || out.error) return `Error: ${s(out?.error) || "the agent did not take it"}`;
       return JSON.stringify({ conversationId: out.convId, started: !convId, ...(out.steered ? { steered: true } : {}), ...(out.answered ? { answered: true } : {}) });
@@ -414,6 +418,10 @@ export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: n
     id = c.id;
   }
   await appendMessage(d.vault, id, msg);
+  if (!msg.system) {
+    const e = voiceLineEntry(msg.role, text, id);
+    if (e) appendActivity(d.vault, { ...e, ...(cur && typeof cur.project === "string" && cur.project ? { project: cur.project } : {}) });
+  }
   d.onWrite?.();
   return { status: 200, body: { ok: true, convId: id } };
 }
@@ -423,11 +431,54 @@ export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: stri
   const name = s(body?.name);
   const args = body?.args ?? body?.arguments ?? body?.parameters ?? {};
   if (!name) return { result: "Error: missing tool name." };
+  const a = args && typeof args === "object" ? args : {};
+  let result: string;
   try {
-    return { result: await runTool(d, name, args && typeof args === "object" ? args : {}) };
+    result = await runTool(d, name, a);
   } catch (e) {
-    return { result: typeof e === "string" ? e : `Error: ${(e as Error)?.message ?? String(e)}` };
+    result = typeof e === "string" ? e : `Error: ${(e as Error)?.message ?? String(e)}`;
   }
+  // What voice changed, into the shared stream (AskAgent wrote its own entry before the hand-off).
+  if (name !== "AskAgent") {
+    const e = voiceToolEntry(name, a, result, d.vault);
+    if (e) appendActivity(d.vault, e);
+  }
+  return { result };
+}
+
+/** The voice session's share of the shared stream: what Carl did lately, and
+ * the last exchange of the chat the session was started from. */
+export async function voiceContextBlock(d: VoiceDeps, fromConvId: string | null): Promise<string> {
+  const parts: string[] = [];
+  let project: string | null = null;
+  if (fromConvId) {
+    try {
+      const { readConv } = await import("./engine/convs");
+      const c = await readConv(d.vault, fromConvId);
+      if (c) {
+        if (typeof c.project === "string" && c.project) project = c.project;
+        if (c.source !== "voice") {
+          const msgs = (c.messages ?? []).filter((m: any) => !m.hidden && !m.system && s(m.content).trim());
+          const lastUser = [...msgs].reverse().find((m: any) => m.role === "user");
+          const lastAgent = [...msgs].reverse().find((m: any) => m.role === "assistant");
+          if (lastUser || lastAgent) {
+            parts.push(
+              [
+                `This voice session was started from the chat "${clean(c.title, 120)}" (conversation ${c.id}; AskAgent with that conversationId continues it). Its last exchange:`,
+                ...(lastUser ? [`Carl: ${clean(lastUser.content, 600)}`] : []),
+                ...(lastAgent ? [`Agent: ${clean(lastAgent.content, 600)}`] : []),
+              ].join("\n"),
+            );
+          }
+        }
+      }
+    } catch {
+      /* no conversation */
+    }
+  }
+  const act = activitySummary(d.vault, { project, excludeConv: fromConvId });
+  if (act) parts.push(act);
+  return parts.join("\n\n");
 }
 
 // ---------------------------------------------------------------- the session
@@ -475,6 +526,8 @@ export async function voiceSession(convId: string | null, d: VoiceDeps): Promise
       body: { error: err ? `ElevenLabs agent could not be provisioned (HTTP ${err.status})` : "voice is not ready on the box (no ElevenLabs key — the laptop's Settings sends it)" },
     };
   }
+  const shared = await voiceContextBlock(d, convId).catch(() => "");
+  const systemPrompt = shared ? `${ctx.systemPrompt}\n\n${shared}` : ctx.systemPrompt;
   const signedUrl = await v.getSignedUrl(ctx.elKey, ctx.agentId, other ? `vault:${d.name ?? d.vault}` : undefined);
   if (!signedUrl) return { status: 502, body: { error: "ElevenLabs refused a signed URL" } };
   return {
@@ -483,7 +536,7 @@ export async function voiceSession(convId: string | null, d: VoiceDeps): Promise
       signedUrl,
       agentId: ctx.agentId,
       voiceId: ctx.voiceId,
-      systemPrompt: ctx.systemPrompt,
+      systemPrompt,
       dynamicVariables: ctx.dynamicVariables,
       toolNames: ctx.toolNames,
       // Where the prompt's absolute paths point (a client maps them back for ScrollTo).

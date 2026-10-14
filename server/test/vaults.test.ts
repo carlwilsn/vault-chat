@@ -282,4 +282,18 @@ describe("vault-scoped routes (the real server)", () => {
     expect((await (await fetch(srv.base + "/notifications?vault=physics")).json()).notifications.length).toBe(1);
     expect((await (await fetch(srv.base + "/notifications")).json()).notifications.length).toBe(0);
   });
+
+  it("the activity stream is per vault: written and summarised in the vault the request names", async () => {
+    const r = await (await post("/api/v1/activity?vault=physics", { entry: { kind: "edit", modality: "ctrl-k", text: '"shorten the optics intro"', path: "optics.md" } })).json();
+    expect(r.ok).toBe(true);
+    expect(existsSync(join(home, "physics", ".vault-chat", "local", "activity.jsonl"))).toBe(true);
+    expect(existsSync(join(main, ".vault-chat", "local", "activity.jsonl"))).toBe(false);
+    const phys = await (await fetch(srv.base + "/api/v1/activity/summary?vault=physics&project=optics")).json();
+    expect(phys.activity).toContain("shorten the optics intro");
+    expect(phys.project).toContain("# Project: Optics (optics)");
+    const mine = await (await fetch(srv.base + "/api/v1/activity/summary")).json();
+    expect(mine.activity).toBe("");
+    expect(mine.project).not.toContain("Optics");
+    expect((await post("/api/v1/activity?vault=physics", { entry: { kind: "nope", text: "x" } })).status).toBe(400);
+  });
 });
