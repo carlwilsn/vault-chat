@@ -10,6 +10,16 @@ import { emptyConversation, type Conversation as ConvThread } from "./conversati
 import { applyNotebookEdit, readPdf, stripNotebook, assertCanWrite } from "./tools";
 import { loadSessionContext } from "./context";
 import { loadSkills, skillPromptIndex } from "./skills";
+import { voiceLineEntry, voiceToolEntry } from "./activityCore";
+
+// The shared context stream (src/activity.ts), when voice runs on this laptop:
+// the box records its own sessions (server/voice.ts). Loaded lazily — the box
+// bundles this module too.
+function recordLocalVoice(e: Parameters<typeof import("./activity").recordActivity>[1] | null): void {
+  if (!e) return;
+  const vault = useStore.getState().vaultPath;
+  void import("./activity").then((a) => a.recordActivity(vault, e)).catch(() => undefined);
+}
 
 // Voice mode runs as an ElevenLabs Conversational AI session: their
 // platform owns the audio loop (STT + LLM + TTS) and we provide the
@@ -46,6 +56,9 @@ let boxVaultRoot: string | null = null;
 function voiceAppend(m: ChatMessage): void {
   useStore.getState().appendMessage(m);
   transcriptMirror?.push(m);
+  if (!transcriptMirror && !m.system && (m.role === "user" || m.role === "assistant")) {
+    recordLocalVoice(voiceLineEntry(m.role, String(m.content ?? ""), useStore.getState().activeConversationId));
+  }
 }
 // Default — overridable via Settings → ElevenLabs → Voice model.
 // Stored in localStorage as `vault_chat_elevenlabs_llm`. ElevenLabs Agents
@@ -854,7 +867,15 @@ export async function startElevenLabsSession(): Promise<void> {
   const promptContext = await loadVoicePromptContext(voiceState.vaultPath);
   // Box mode: the vault's tools run on the box, and AskAgent reaches its agent.
   const remote = box?.tool ?? null;
-  const systemPrompt = boxSession?.systemPrompt ?? buildSystemPrompt(voiceState, customHeader, northStar, promptContext, undefined, !!remote);
+  // Voice on this laptop: the shared stream (what Carl did lately, the project's memory) from here.
+  let shared = "";
+  if (!boxSession) {
+    const a = await import("./activity");
+    shared = a.sharedContextText(await a.sharedContextFor(voiceState.vaultPath));
+  }
+  const systemPrompt = boxSession?.systemPrompt ?? buildSystemPrompt(voiceState, customHeader, northStar, promptContext, undefined, !!remote) + (shared ? `
+
+${shared}` : "");
   const dynamicVariables = buildDynamicVariables(voiceState);
 
   try {
@@ -2408,6 +2429,8 @@ function logToolCall(name: string, args: any, result: string, where = ""): void 
   const argsStr = JSON.stringify(args);
   const summary = result.length > 200 ? result.slice(0, 200) + "…" : result;
   console.log(`[voice-eleven] tool ${name}(${argsStr}) →`, summary);
+  // Ran here (not on the box, which records its own): what it changed, into the shared stream.
+  if (!where) recordLocalVoice(voiceToolEntry(name, args, result, useStore.getState().vaultPath));
   voiceAppend({
     role: "assistant",
     content: formatToolMarker(name, args) + where,

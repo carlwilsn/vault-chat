@@ -33,6 +33,7 @@ import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { join } from "node:path";
 import { StreamWire } from "../../src/streamWire";
 import { COMPACTION_DIVIDER_TEXT } from "../../src/chatContext";
+import { activitySummary, appendActivity } from "../activity";
 
 export type EngineDeps = {
   vault: string;
@@ -263,6 +264,8 @@ export class Engine {
   private timers: NodeJS.Timeout[] = [];
   private firing = new Set<string>();
   private childOf = new Map<string, string>(); // subagent threadId → parent conversation id
+  /** The shared activity stream: when each conversation last saw it (in memory; after a restart a turn sees the whole window again). */
+  private activitySeen = new Map<string, number>();
   private jobLogs = new Map<string, string[]>(); // convId → its StartJob logs
 
   constructor(private d: EngineDeps) {
@@ -387,6 +390,17 @@ export class Engine {
     const { paths, attachments } = this.saveImages(id, body);
     const context = typeof body.context === "string" && body.context.trim() ? body.context.trim() : undefined;
     const shown = textIn || "(image)";
+    // The shared stream: a pointer to this chat (its messages are stored already).
+    const now = (await readConv(this.d.vault, id).catch(() => null)) ?? conv;
+    const title = String(now.title ?? "").trim();
+    const proj = now.project;
+    appendActivity(this.d.vault, {
+      kind: "chat",
+      modality: "chat",
+      text: `Chat "${(title || shown).slice(0, 120)}"`,
+      convId: id,
+      ...(typeof proj === "string" && proj ? { project: proj } : {}),
+    });
     this.nudged.delete(id);
     // An open question: this message is the answer.
     if (this.live.get(id)?.ask || conv.pendingAsk) {
@@ -584,7 +598,8 @@ export class Engine {
       if (prior) body = `${prior}\n\n${input}`;
       const rules = rulesPrefixForTurn(conv as any);
       if (opts.context) body = `${opts.context}\n\n${body}`;
-      const texts = [rules, kind === "wake" ? input : body].filter(Boolean);
+      const activity = kind === "user" ? this.activityPrefix(conv) : "";
+      const texts = [rules, activity, kind === "wake" ? input : body].filter(Boolean);
       // Images on a model that can't see: this turn (silently) uses the vision model.
       let model = this.d.model();
       if (opts.images?.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
@@ -600,6 +615,23 @@ export class Engine {
         await appendMessage(this.d.vault, convId, { role: "assistant", content: `⚠️ The engine could not start this turn: ${(e as Error).message}`, failed: true }, { state: "idle" });
       }
     });
+  }
+
+  /**
+   * For a user turn: what Carl did elsewhere (Ctrl+K, Ctrl+L, captures, voice,
+   * other chats) since this conversation last saw the stream — the earlier
+   * entries are in its thread already. "" when there is nothing new.
+   */
+  private activityPrefix(conv: EngineConv): string {
+    const now = Date.now();
+    const block = activitySummary(this.d.vault, {
+      now,
+      project: typeof conv.project === "string" ? conv.project : null,
+      since: this.activitySeen.get(conv.id),
+      excludeConv: conv.id,
+    });
+    this.activitySeen.set(conv.id, now);
+    return block ? `${block}\n\n` : "";
   }
 
   private async ensureThread(conv: EngineConv): Promise<string> {

@@ -21,6 +21,8 @@ import {
   type InlineTurn,
 } from "./inlineEdit";
 import { loadVaultNorthStar } from "./meta";
+import { recordActivity, sharedContextFor, sharedContextText } from "./activity";
+import { editSummary } from "./activityCore";
 
 const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
 
@@ -168,6 +170,9 @@ export function InlineEditPrompt({
 
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // The shared context stream's block (project memory + recent activity),
+  // fetched once per popover on its first turn.
+  const sharedRef = useRef<string | null>(null);
   // Refs + state for the bottom-edge resize-to-expand handle. The
   // result area defaults to a ~20-line cap; dragging the handle at the
   // popup's bottom unfurls it (scroll-style) until either the user
@@ -354,6 +359,10 @@ export function InlineEditPrompt({
     setThinking(mode === "ask");
     const ac = new AbortController();
     abortRef.current = ac;
+    // Once per popover: the project's memory and what Carl did lately on
+    // every surface (the box's stream in box mode). Never blocks for long.
+    if (sharedRef.current === null) sharedRef.current = sharedContextText(await sharedContextFor(vaultPath));
+    const sharedContext = sharedRef.current || undefined;
     try {
       if (mode === "edit") {
         let acc = "";
@@ -368,6 +377,7 @@ export function InlineEditPrompt({
           priorTurns: nextPrior,
           extraImages,
           northStar: northStarRef.current,
+          sharedContext,
           abortSignal: ac.signal,
         })) {
           acc += chunk;
@@ -401,6 +411,7 @@ export function InlineEditPrompt({
           extraImages,
           chatPaneHistory,
           northStar: northStarRef.current,
+          sharedContext,
           abortSignal: ac.signal,
         })) {
           if (ev.kind === "text") {
@@ -412,6 +423,15 @@ export function InlineEditPrompt({
           } else if (ev.kind === "error") {
             setError(ev.message);
           }
+        }
+        if (acc.trim()) {
+          recordActivity(vaultPath, {
+            kind: "ask",
+            modality: "ctrl-l",
+            text: `asked "${currentPrompt}"${request.selection ? ` about "${request.selection.slice(0, 120)}"` : ""}`,
+            detail: `answer: ${acc}`,
+            ...activityWhere(),
+          });
         }
       }
     } catch (e: any) {
@@ -437,9 +457,33 @@ export function InlineEditPrompt({
     setError(null);
   };
 
+  // Where a Ctrl+K / Ctrl+L entry points: the file (vault-relative) and the spot in it.
+  const activityWhere = () => {
+    const f = currentFile ?? "";
+    const path = vaultPath && f.startsWith(vaultPath + "/") ? f.slice(vaultPath.length + 1) : f;
+    const where = request.pdfContext ? `page ${request.pdfContext.pageNum}` : request.sourceAnchor?.replace(/^page=/, "page ");
+    const s = useStore.getState();
+    const project = s.conversations.find((c) => c.id === s.activeConversationId)?.project;
+    return { ...(path ? { path } : {}), ...(where ? { where } : {}), ...(project ? { project } : {}) };
+  };
+
+  // A Ctrl+K edit into the shared stream: what was asked, what changed, kept or not.
+  const recordEdit = (outcome: "accepted" | "rejected", text: string) => {
+    recordActivity(vaultPath, {
+      kind: "edit",
+      modality: "ctrl-k",
+      text: `"${lastPrompt ?? ""}"`,
+      detail: editSummary(request.selection, text),
+      outcome,
+      ...activityWhere(),
+    });
+  };
+
   const accept = () => {
     if (!result || streaming) return;
-    onAccept(stripCodeFence(result));
+    const out = stripCodeFence(result);
+    if (mode === "edit") recordEdit("accepted", out);
+    onAccept(out);
   };
 
   const sendToChat = () => {
@@ -533,6 +577,7 @@ export function InlineEditPrompt({
 
   const cancel = () => {
     abortRef.current?.abort();
+    if (mode === "edit" && result && !streaming) recordEdit("rejected", stripCodeFence(result));
     onCancel();
   };
 
