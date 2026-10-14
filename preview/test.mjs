@@ -1,8 +1,10 @@
 // Self-test: boot every scenario (desktop; phone for phone scenarios) on each
 // running side and assert zero console errors, zero page errors, zero
 // unknown ("not faked") commands, zero refused/outbound requests and that the
-// scenario's open-steps completed.
-//   node preview/test.mjs [--side before|after|both] [--only id,id] [--shots dir]
+// scenario's open-steps completed. Scenarios play their `open` steps at full
+// speed (narrate=0); --narrated plays the narrated ones instead (captions, at
+// 2×) and asserts the narration reached its last caption.
+//   node preview/test.mjs [--side before|after|both] [--only id,id] [--shots dir] [--narrated]
 // Needs `npm run preview` running (or set PREVIEW_BEFORE / PREVIEW_AFTER).
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -19,6 +21,7 @@ const only = opt("only", "")?.split(",").filter(Boolean);
 const shots = opt("shots", null);
 if (shots) mkdirSync(shots, { recursive: true });
 const base = opt("base", "synthetic");
+const narrated = argv.includes("--narrated");
 
 // Console noise that is the app's own expected logging, not a failure.
 const ALLOWED_ERRORS = [/Download the React DevTools/];
@@ -42,23 +45,33 @@ for (const side of targets) {
   const list = await (await fetch(origin + "/__preview/scenarios.json")).json();
   for (const sc of list) {
     if (only?.length && !only.includes(sc.id)) continue;
-    const surfaces = sc.surfaces;
+    // --narrated: only the surfaces that have narration.
+    const surfaces = narrated ? sc.surfaces.filter((s) => sc.narrate?.[s]) : sc.surfaces;
     for (const surface of surfaces) {
       const phone = surface === "phone";
       const { browser, page, log } = await launch(phone ? { width: 390, height: 844, isMobile: true, deviceScaleFactor: 2 } : { width: 1400, height: 900 });
-      const url = phone ? `${origin}/phone?scenario=${sc.id}&base=${base}` : `${origin}/?scenario=${sc.id}&side=${side}&base=${base}`;
+      const url = (phone ? `${origin}/phone?scenario=${sc.id}&base=${base}` : `${origin}/?scenario=${sc.id}&side=${side}&base=${base}`) + (narrated ? "&narrate=1&speed=2" : "&narrate=0");
       const problems = [];
       try {
         await page.goto(url, { timeout: 30000 });
         if (phone) {
           await page.waitForFunction(() => window.__previewPhone?.ready && !document.querySelector(".gate"), null, { timeout: 25000 }).catch(() => problems.push("phone did not render / steps did not finish"));
           await page.waitForTimeout(1500);
+          if (narrated) await page.waitForFunction(() => window.__previewPhone?.narrated, null, { timeout: 300000 }).catch(() => problems.push("narration did not finish in 5 min"));
           const pst = await page.evaluate(() => ({ refused: window.__previewPhone?.refused ?? [], stepError: window.__previewPhone?.stepError ?? null }));
           for (const r of pst.refused) problems.push(`refused: ${r}`);
           if (pst.stepError) problems.push(`phone step: ${pst.stepError}`);
         } else {
-          await page.waitForFunction(() => window.__preview?.stepsDone, null, { timeout: 30000 }).catch(() => problems.push("steps did not finish in 30 s"));
+          await page.waitForFunction(() => window.__preview?.stepsDone, null, { timeout: narrated ? 300000 : 60000 }).catch(() => problems.push(`steps did not finish in ${narrated ? "5 min" : "60 s"}`));
           await page.waitForTimeout(1500);
+        }
+        if (narrated) {
+          const card = await page.evaluate(() => {
+            const r = document.querySelector("#vc-narrate")?.shadowRoot;
+            return r ? { n: r.querySelector(".n")?.textContent, t: r.querySelector(".t")?.textContent } : null;
+          });
+          const m = /^(\d+)\/(\d+)$/.exec(card?.n ?? "");
+          if (!card || !m || m[1] !== m[2] || !/whole conversation/.test(card.t ?? "")) problems.push(`narration did not reach its end: ${JSON.stringify(card)}`);
         }
         const st = await page.evaluate(() => {
           const p = window.__preview;

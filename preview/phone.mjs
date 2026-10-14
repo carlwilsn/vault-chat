@@ -10,9 +10,11 @@
 //   • a network wall and error reporting, like the desktop boot.
 import { readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 
+const HERE = dirname(fileURLToPath(import.meta.url));
 const cssCache = new Map();
 const fileUrl = (p) => "file:///" + p.replace(/\\/g, "/");
 
@@ -50,7 +52,7 @@ function guardScript(scenario, side) {
 </script>`;
 }
 
-export async function renderPhone({ tree, server, scenario, side, scenariosEntry, phoneVariant, prefix = "/" }) {
+export async function renderPhone({ tree, server, scenario, side, scenariosEntry, phoneVariant, prefix = "/", narrate = null }) {
   const mod = await server.ssrLoadModule(scenariosEntry);
   const phoneMod = await server.ssrLoadModule(scenariosEntry.replace(/index\.ts$/, "phone.ts"));
   const sc = mod.scenarios.find((s) => s.id === scenario) ?? mod.scenarios[0];
@@ -65,10 +67,15 @@ export async function renderPhone({ tree, server, scenario, side, scenariosEntry
   function find(s){if(s.indexOf("text:")===0){var t=s.slice(5);var all=[].slice.call(document.querySelectorAll("body *")).filter(function(e){return e.offsetParent});var ex=all.filter(function(e){return e.textContent.trim()===t});if(ex.length)return ex[ex.length-1];var pre=all.filter(function(e){return e.textContent.trim().indexOf(t)===0});return pre[pre.length-1]||null}return document.querySelector(s)}
   var i=0;function step(n){if(i>=cl.length){window.__previewPhone.ready=true;return}var opt=cl[i].charAt(0)==="?",sel=opt?cl[i].slice(1):cl[i];var e=find(sel);if(e){e.click();i++;setTimeout(function(){step(0)},450)}else if(n<(opt?14:40))setTimeout(function(){step(n+1)},150);else if(opt){i++;step(0)}else{window.__previewPhone.ready=true;window.__previewPhone.stepError="not found: "+cl[i]}}
   setTimeout(function(){step(0)},700)})();</script>`;
+  // Narrated play (runtime/narratePhone.ts): the scenario's phone beats as data,
+  // the player as a module served by this side's Vite. Not on narrate=0 (the checks): that page is exactly as before.
+  const narration = sc.phone?.narrate?.length && narrate !== "0"
+    ? `<script>window.__VC_NARRATE__ = ${JSON.stringify(sc.phone.narrate).replace(/</g, "\\u003c")};</script><script type="module" src="${prefix}@fs/${join(HERE, "runtime", "narratePhone.ts").replace(/\\/g, "/")}"></script>`
+    : "";
   // A tree with the bundled phone app (phone/) renders it through its own hook;
   // ?phone=classic keeps the old page.
   const hook = join(tree, "phone", "preview.mjs");
-  if (existsSync(hook) && phoneVariant !== "classic") return (await import(fileUrl(hook))).renderPhoneApp({ head, tail: driver });
+  if (existsSync(hook) && phoneVariant !== "classic") return (await import(fileUrl(hook))).renderPhoneApp({ head, tail: driver + narration });
   let html = readFileSync(join(tree, "src-tauri", "assets", "phone.html"), "utf8");
 
   const must = (cond, what) => {
@@ -111,6 +118,6 @@ export async function renderPhone({ tree, server, scenario, side, scenariosEntry
 
   // Replacement functions: a `$$` in the scenario's DB (display math) must not turn into `$`.
   html = html.replace(/<head>/i, () => `<head>\n${head}`);
-  html = html.replace(/<\/body>/i, () => `${driver}</body>`);
+  html = html.replace(/<\/body>/i, () => `${driver}${narration}</body>`);
   return html;
 }

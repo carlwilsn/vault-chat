@@ -142,7 +142,7 @@ export function previewPlugin(opts) {
         if (url.pathname === "/__preview/scenarios.json") {
           try {
             const mod = await s.ssrLoadModule(scenariosEntry);
-            const list = mod.scenarios.map((x) => ({ id: x.id, title: x.title, group: x.group, notes: x.notes, surfaces: x.surfaces ?? ["desktop"], phonePage: x.phone?.page ?? null }));
+            const list = mod.scenarios.map((x) => ({ id: x.id, title: x.title, group: x.group, notes: x.notes, surfaces: x.surfaces ?? ["desktop"], phonePage: x.phone?.page ?? null, narrate: { desktop: !!x.narrate?.length, phone: !!x.phone?.narrate?.length } }));
             res.setHeader("content-type", "application/json");
             return void res.end(JSON.stringify(list));
           } catch (e) {
@@ -173,7 +173,7 @@ export function previewPlugin(opts) {
         }
         if (url.pathname === "/phone" || url.pathname === "/phone.html") {
           try {
-            let html = await renderPhone({ tree: opts.tree, server: s, scenario: url.searchParams.get("scenario") ?? "home", base: url.searchParams.get("base") ?? "synthetic", side: opts.side, scenariosEntry, loadBase, prefix, phoneVariant: url.searchParams.get("phone") });
+            let html = await renderPhone({ tree: opts.tree, server: s, scenario: url.searchParams.get("scenario") ?? "home", base: url.searchParams.get("base") ?? "synthetic", side: opts.side, scenariosEntry, loadBase, prefix, phoneVariant: url.searchParams.get("phone"), narrate: url.searchParams.get("narrate") });
             // Root-relative links (icons, manifest) live under the side's base.
             if (prefix !== "/") html = html.replace(/\b(href|src)="\/(?!\/)/g, (m, a, i, all) => (all.startsWith(prefix.slice(1), i + m.length) ? m : `${a}="${prefix}`));
             res.setHeader("content-type", "text/html; charset=utf-8");

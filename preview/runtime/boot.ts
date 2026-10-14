@@ -17,6 +17,7 @@ import { seedHistory, setGitClock } from "./backend/memgit";
 import { emitFromBackend } from "./ipc";
 import { scenarios } from "../scenarios/index";
 import { runSteps } from "./steps";
+import { narrate, narrateWanted } from "./narrate";
 import { namespaceLocalStorage } from "./storage";
 import { playTour, ctl as tourCtl, type TourStep } from "./tour";
 import type { BuildCtx, Scenario } from "../scenarios/types";
@@ -191,7 +192,10 @@ export function boot(base: Base): void {
       api.stepsDone = true;
       return;
     }
-    runSteps(sc.open, vault)
+    // Opened directly, a scenario with beats plays narrated (captions, a human
+    // pace); &narrate=0 — and any checker (navigator.webdriver) — plays `open`.
+    const narrated = !!sc.narrate?.length && narrateWanted(q);
+    (narrated ? narrate({ beats: sc.narrate!, surface: "desktop", exec: (s) => runSteps([s], vault) }) : runSteps(sc.open, vault))
       .then(() => {
         api.stepsDone = true;
       })
