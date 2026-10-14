@@ -18,7 +18,7 @@
     "typecheck:phone": "tsc --noEmit -p phone",
     "tauri": "tauri",
     "predev:tauri": "node scripts/download-tectonic.mjs",
-    "build:server": "node server/build.mjs",
+    "build:server": "npm run build:phone && node server/build.mjs --phone-app",
     "test:server": "node server/build.mjs && vitest run --config server/vitest.config.ts",
     "typecheck:server": "tsc -p server/tsconfig.json",
     "test:harness": "node --import tsx --import ./test/harness/register.mjs --test \"test/harness/*.test.ts\"",
