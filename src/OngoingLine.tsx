@@ -36,7 +36,7 @@ export function OngoingLine({
   className,
   verdict = false,
 }: {
-  conversation: Pick<Conversation, "state" | "nextWakeAt" | "costUsd" | "messages" | "verdict">;
+  conversation: Pick<Conversation, "state" | "nextWakeAt" | "costUsd" | "messages" | "verdict" | "long">;
   size?: "row" | "chat";
   className?: string;
   /** Show a finished conversation's Done verdict here. */

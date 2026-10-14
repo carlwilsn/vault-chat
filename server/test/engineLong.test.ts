@@ -192,3 +192,61 @@ describe("2. Budget caps", () => {
     rig.backend.end(s2.tid);
   });
 });
+
+describe("3. Progress metric and the plateau alert", () => {
+  it("samples the pinned metric into a series, shows \"62.4% · +1.8 today\", alerts once on a plateau, tells the agent, and puts it in the Blocked push", async () => {
+    const s = await rig.start("Decompile it, keep going.");
+    await rig.backend.call(s.tid, "SetProject", { name: "Zeta" });
+    await rig.backend.call(s.tid, "KeepWorking", { on: true });
+    const val = join(rig.vault, "zeta-value.txt");
+    writeFileSync(join(rig.vault, "zeta-metric.js"), `const v = require("fs").readFileSync(${JSON.stringify(val)}, "utf8").trim(); console.log("functions: 4120; matched " + v + "%");`);
+    writeFileSync(val, "60.6");
+    const set = await rig.engine.control({ project: "zeta" }, "metric", { command: "node zeta-metric.js", every_min: 15, window_h: 1 });
+    expect(set.ok).toBe(true);
+    // The agent can't replace it.
+    const sm = await rig.backend.call(s.tid, "SetMetric", { command: "node -e \"console.log(100)\"" });
+    expect(sm.ok).toBe(false);
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    const now = Math.max(Date.now(), midnight.getTime() + 2 * 3_600_000);
+    expect((await rig.engine.sampleMetric("zeta", midnight.getTime() - 3_600_000)).value).toBe(60.6);
+    writeFileSync(val, "62.4");
+    await rig.engine.sampleMetric("zeta", now);
+    await until(async () => (await rig.readConv(s.convId))?.long?.metric === "62.4% · +1.8 today");
+    // Flat for 5 samples 15 min apart (75 min of work ≥ the 1 h window): one push.
+    for (let i = 1; i <= 5; i++) await rig.engine.sampleMetric("zeta", now + i * 15 * 60_000);
+    const plateauPings = () => rig.pings.filter((p) => p.convId === s.convId && /^No progress in 1 h/.test(p.title));
+    expect(plateauPings()).toHaveLength(1);
+    expect(plateauPings()[0].body).toMatch(/not risen past 62\.4%/);
+    await rig.engine.sampleMetric("zeta", now + 6 * 15 * 60_000);
+    expect(plateauPings()).toHaveLength(1);
+    expect(rig.engine.turnNotes(await rig.readConv(s.convId))).toMatch(/No progress: the project's metric has not risen past 62\.4%/);
+    // A rise clears the note.
+    writeFileSync(val, "63");
+    await rig.engine.sampleMetric("zeta", now + 7 * 15 * 60_000);
+    expect(rig.engine.turnNotes(await rig.readConv(s.convId))).not.toMatch(/No progress/);
+    // The Blocked push carries the line.
+    await rig.backend.call(s.tid, "Blocked", { reason: "need the symbols file" });
+    expect(rig.pings.find((p) => p.convId === s.convId && /^Blocked:/.test(p.title)).body).toMatch(/Progress: 63%/);
+    rig.backend.end(s.tid);
+    // An edited metric script is not run.
+    writeFileSync(join(rig.vault, "zeta-metric.js"), `console.log("matched 100%")`);
+    expect(await rig.engine.sampleMetric("zeta", now + 8 * 15 * 60_000)).toBeNull();
+  });
+
+  it("the series math: last number, today's change, plateau counted in active time only", async () => {
+    const { parseMetric, metricLine, plateauOf } = await import("../engine/long");
+    expect(parseMetric("built 3 files\nmatched 1203/4120 = 29.2%\n")).toEqual({ value: 29.2, unit: "%" });
+    expect(parseMetric("no numbers here")).toBeNull();
+    const t = new Date();
+    t.setHours(12, 0, 0, 0);
+    const day = t.getTime();
+    expect(metricLine([{ at: day - 86_400_000, value: 10 }, { at: day, value: 12.5 }], day)).toBe("12.5 · +2.5 today");
+    expect(metricLine([{ at: day, value: 7 }], day)).toBe("7");
+    // A 10 h gap overnight counts as 30 min of work (2 × 15 min).
+    const flat = [0, 15, 600].map((m) => ({ at: day + m * 60_000, value: 5 }));
+    expect(plateauOf(flat, 15, 1)).toBeNull(); // 15 + 30 min
+    expect(plateauOf([...flat, { at: day + 615 * 60_000, value: 5 }], 15, 1)?.best).toBe(5); // + 15 = 1 h
+    expect(plateauOf([...flat, { at: day + 615 * 60_000, value: 6 }], 15, 1)).toBeNull(); // it rose
+  });
+});

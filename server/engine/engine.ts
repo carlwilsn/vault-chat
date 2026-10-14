@@ -29,7 +29,7 @@ import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } f
 import { Ledger } from "./ledger";
 import { pdfRead, webSearch } from "./extraTools";
 import { startJob, jobStatus, type PiJobEnv } from "./pi/jobs";
-import { declaredCommand, pinCommand, readLong, runCommand, saveRunLog, tailOf, tampered, writeLong, type CommandSpec } from "./long";
+import { appendJsonl, declaredCommand, longDir, metricLine, parseMetric, pinCommand, plateauOf, readJsonl, readLong, runCommand, saveRunLog, tailOf, tampered, writeLong, type CommandSpec, type MetricSpec, type Sample } from "./long";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { join } from "node:path";
@@ -251,6 +251,18 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
+    name: "SetMetric",
+    description:
+      "Set this project's progress metric: a cheap command that prints a number (e.g. the % of functions matched). The server samples it every every_min minutes (default 15) while the project has work going, shows it to Carl, and alerts him when it has not risen in window_h hours of work (default 6). Pinned like the check: once set, only Carl changes it. A fenced command block under \"## Progress metric\" in project.md is the same.",
+    inputSchema: {
+      type: "object",
+      properties: { command: { type: "string" }, every_min: { type: "number" }, window_h: { type: "number" } },
+      required: ["command"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
     name: "SetBudget",
     description:
       "Ask Carl to cap the model spend (USD) of this conversation or its project. He approves or declines. Past 80% you are told before each turn; at 100% the work stops (blocked) until he raises it.",
@@ -325,6 +337,7 @@ export class Engine {
     });
     this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), 2_000));
     this.timers.push(setInterval(() => this.scoped(() => this.tickWatchdog()), 15_000));
+    this.timers.push(setInterval(() => this.scoped(() => void this.tickMetrics()), 60_000));
   }
 
   stop(): void {
@@ -1149,7 +1162,8 @@ export class Engine {
             c.verdict = { verdict: v.verdict, notes: v.notes, at: v.at, summary };
             if (typeof v.costUsd === "number") c.costUsd = round((c.costUsd ?? 0) + v.costUsd);
           });
-          await this.d.notify({ kind: "info", title: `Done: ${conv.title}`.slice(0, 90), body: `${summary.slice(0, 300)}\n${line}`, convId });
+          const mline = this.metricNow(conv.project);
+          await this.d.notify({ kind: "info", title: `Done: ${conv.title}`.slice(0, 90), body: `${summary.slice(0, 300)}\n${line}${mline ? `\nProgress: ${mline}` : ""}`, convId });
           return text(`Recorded as done.${g ? " The project's check passed." : ""} ${line}\nTell Carl the verdict in your reply.`);
         }
         case "Blocked": {
@@ -1157,7 +1171,8 @@ export class Engine {
           const reason = String(a.reason ?? "").trim();
           removeWakes(vault, (w) => w.conv === convId);
           await patchMeta(vault, convId, { state: "blocked", working: false, nextWakeAt: undefined });
-          await this.d.notify({ kind: "info", title: `Blocked: ${conv.title}`.slice(0, 90), body: reason.slice(0, 600), convId });
+          const mline = this.metricNow(conv.project);
+          await this.d.notify({ kind: "info", title: `Blocked: ${conv.title}`.slice(0, 90), body: `${reason.slice(0, 600)}${mline ? `\nProgress: ${mline}` : ""}`, convId });
           return text("Recorded as blocked; Carl has been notified. End your turn.");
         }
         case "Notify": {
@@ -1186,6 +1201,17 @@ export class Engine {
           writeLong(vault, conv.project, (st) => ({ ...st, check: spec }));
           const files = Object.keys(spec.files);
           return text(`Check set and pinned: \`${command}\`${files.length ? ` (with ${files.join(", ")})` : ""}. Done now runs it on the server; a changed command or file refuses Done.`);
+        }
+        case "SetMetric": {
+          if (!conv.project) return { success: false, contentItems: [{ type: "inputText", text: "SetMetric needs a project: call SetProject first." }] };
+          const cur = this.pinned(conv.project, "metric");
+          if (cur) return { success: false, contentItems: [{ type: "inputText", text: `This project's metric is already set: \`${cur.command}\`. Only Carl can change it; propose a new one with AskUser.` }] };
+          const command = String(a.command ?? "").trim();
+          if (!command) return text("SetMetric needs a command that prints a number.");
+          const spec: MetricSpec = { ...pinCommand({ command, cwd: vault, source: "agent" }), ...metricOpts(a) };
+          writeLong(vault, conv.project, (st) => ({ ...st, metric: spec }));
+          const s = await this.sampleMetric(conv.project);
+          return text(`Metric set and pinned: \`${command}\`. ${s ? `First sample: ${s.value}${s.unit ?? ""}.` : "It printed no number yet."} The server samples it every ${spec.everyMin ?? 15} min while the project has work going.`);
         }
         case "SetBudget": {
           const usd = Number(a.usd);
@@ -1243,26 +1269,36 @@ export class Engine {
 
   // ---------------------------------------------------------------- long-run controls
 
-  /** The project's check: as stored, or project.md's "## Done when" block, pinned the first time it is seen. */
-  checkSpec(slug: string): CommandSpec | null {
+  /** A project's pinned command (its check or its progress metric): as stored, or project.md's block under
+   *  "## Done when" / "## Progress metric", pinned the first time it is seen. */
+  pinned(slug: string, kind: "check" | "metric"): CommandSpec | null {
     const st = readLong(this.d.vault, slug);
-    if (st.check) return st.check;
+    if (st[kind]) return st[kind]!;
     const p = readProject(slug);
-    const dec = p ? declaredCommand(p.project, "Done when") : null;
+    const dec = p ? declaredCommand(p.project, PINNED_HEADING[kind]) : null;
     if (!dec) return null;
     const spec = pinCommand({ command: dec.command, passRegex: dec.passRegex, cwd: this.d.vault, source: "project.md" });
-    writeLong(this.d.vault, slug, (s) => ({ ...s, check: s.check ?? spec }));
-    this.log(`project ${slug}: check pinned from project.md`);
+    writeLong(this.d.vault, slug, (s) => ({ ...s, [kind]: s[kind] ?? spec }));
+    this.log(`project ${slug}: ${kind} pinned from project.md`);
     return spec;
+  }
+
+  checkSpec(slug: string): CommandSpec | null {
+    return this.pinned(slug, "check");
+  }
+
+  /** Null when the pinned command and its files are as set; else what changed. */
+  private changed(slug: string, kind: "check" | "metric", spec: CommandSpec): string | null {
+    const p = readProject(slug);
+    const declared = spec.source === "project.md" ? (p ? (declaredCommand(p.project, PINNED_HEADING[kind])?.command ?? "") : "") : null;
+    return tampered(spec, declared);
   }
 
   /** Run the project's check (null: it has none). Refused, not run, when its command or files changed since it was set. */
   async runCheck(slug: string, extraEnv?: Record<string, string>): Promise<{ ok: boolean; why: string; out: string; code: number | null; command: string; log?: string } | null> {
     const spec = this.checkSpec(slug);
     if (!spec) return null;
-    const p = readProject(slug);
-    const declared = spec.source === "project.md" ? (p ? (declaredCommand(p.project, "Done when")?.command ?? "") : "") : null;
-    const bad = tampered(spec, declared);
+    const bad = this.changed(slug, "check", spec);
     if (bad) return { ok: false, why: `the project's check was changed (${bad}); it was not run, and only Carl can re-set it`, out: "", code: null, command: spec.command };
     let command = spec.command;
     if (extraEnv?.VC_TASK) command = command.split("{task}").join(extraEnv.VC_TASK);
@@ -1277,6 +1313,89 @@ export class Engine {
           ? `the project's check output did not match ${spec.passRegex} (exit ${r.code})`
           : `the project's check failed (exit ${r.code})`;
     return { ok: r.ok, why, out: r.out, code: r.code, command, log };
+  }
+
+  private sampling = new Set<string>();
+
+  private metricSeries(slug: string): Sample[] {
+    return readJsonl<Sample>(join(longDir(this.d.vault, slug), "metric.jsonl"));
+  }
+
+  /** The project's metric line now ("62.4% · +1.8 today"), or null. */
+  metricNow(slug: string | undefined, now = Date.now()): string | null {
+    return slug ? metricLine(this.metricSeries(slug), now) : null;
+  }
+
+  /**
+   * Sample a project's progress metric: run its pinned command (sandboxed, at most 5 min), store the
+   * number it printed, refresh the line on its conversations, and alert once when it has stopped rising.
+   */
+  async sampleMetric(slug: string, at = Date.now()): Promise<Sample | null> {
+    const spec = this.pinned(slug, "metric") as MetricSpec | null;
+    if (!spec || this.sampling.has(slug)) return null;
+    const bad = this.changed(slug, "metric", spec);
+    if (bad) {
+      this.log(`project ${slug}: metric not run (${bad})`);
+      return null;
+    }
+    this.sampling.add(slug);
+    try {
+      const r = await runCommand(this.d.jobEnv, { command: spec.command, cwd: this.d.vault, timeoutMs: Math.min(spec.timeoutS ?? 300, 3600) * 1000 });
+      const m = r.refused || r.timedOut ? null : parseMetric(r.out);
+      if (!m) {
+        this.log(`project ${slug}: metric gave no number (${r.refused ?? (r.timedOut ? "timed out" : `exit ${r.code}`)})`);
+        return null;
+      }
+      const s: Sample = { at, value: m.value, ...(m.unit ? { unit: m.unit } : {}) };
+      appendJsonl(join(longDir(this.d.vault, slug), "metric.jsonl"), s);
+      const series = this.metricSeries(slug);
+      const line = metricLine(series, at);
+      for (const c of await allConvs(this.d.vault)) {
+        const active = c.working || c.state === "running" || c.state === "sleeping" || c.state === "waiting_user";
+        if (c.project !== slug || !active || c.long?.metric === line) continue;
+        await mutateConv(this.d.vault, c.id, (x) => {
+          x.long = { ...(x.long ?? {}), metric: line ?? undefined };
+        });
+      }
+      await this.checkPlateau(slug, spec, series);
+      return s;
+    } finally {
+      this.sampling.delete(slug);
+    }
+  }
+
+  /** No rise in `windowH` hours of work: one push per best value, and the agent is told before its turns. */
+  private async checkPlateau(slug: string, spec: MetricSpec, series: Sample[]): Promise<void> {
+    const windowH = spec.windowH ?? 6;
+    const p = plateauOf(series, spec.everyMin ?? 15, windowH);
+    if (!p) return;
+    const st = readLong(this.d.vault, slug);
+    if (st.plateau && st.plateau.best === p.best && st.plateau.since === p.since) return;
+    writeLong(this.d.vault, slug, (s) => ({ ...s, plateau: { best: p.best, since: p.since, alertedAt: Date.now() } }));
+    const convs = (await allConvs(this.d.vault)).filter((c) => c.project === slug && !c.parent).sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
+    const conv = convs.find((c) => c.working) ?? convs[0];
+    if (!conv) return;
+    const unit = series.at(-1)?.unit ?? "";
+    await this.d.notify({
+      kind: "info",
+      title: `No progress in ${windowH} h: ${conv.title}`.slice(0, 90),
+      body: `The progress metric has not risen past ${p.best}${unit} in ${Math.round(p.activeMs / 360_000) / 10} h of work.`,
+      convId: conv.id,
+    });
+  }
+
+  /** Every minute: sample the metric of each project with work going, when its interval is up. */
+  private async tickMetrics(now = Date.now()): Promise<void> {
+    if (shuttingDown) return;
+    const active = new Set<string>();
+    for (const c of await allConvs(this.d.vault).catch(() => [])) if (c.project && (c.working || c.state === "running" || c.state === "sleeping")) active.add(c.project);
+    for (const slug of active) {
+      const spec = readLong(this.d.vault, slug).metric ?? (this.pinned(slug, "metric") as MetricSpec | null);
+      if (!spec) continue;
+      const last = this.metricSeries(slug).at(-1);
+      if (last && now - last.at < (spec.everyMin ?? 15) * 60_000) continue;
+      void this.sampleMetric(slug).catch((e) => this.log(`metric ${slug}: ${e}`));
+    }
   }
 
   /** The tightest of the conversation's and its project's budgets: spent, cap, fraction. Null without one. */
@@ -1318,6 +1437,15 @@ export class Engine {
           : `Budget: $${bud.spent.toFixed(2)} of the ${bud.scope}'s $${bud.cap.toFixed(2)} spent (${Math.round(bud.frac * 100)}%). At 100% the work stops. Spend what is left on what matters most, and write down where you are.`,
       );
     }
+    const pl = conv.project ? readLong(this.d.vault, conv.project).plateau : undefined;
+    if (conv.project && pl) {
+      const series = this.metricSeries(conv.project);
+      const best = Math.max(...series.map((s) => s.value));
+      if (best <= pl.best) {
+        const h = (this.pinned(conv.project, "metric") as MetricSpec | null)?.windowH ?? 6;
+        notes.push(`No progress: the project's metric has not risen past ${pl.best}${series.at(-1)?.unit ?? ""} in over ${h} h of work. Step back: re-read what was tried (memory.md), change the approach, or say Blocked.`);
+      }
+    }
     return notes.length ? `<status>\n${notes.join("\n")}\n</status>\n\n` : "";
   }
 
@@ -1344,6 +1472,20 @@ export class Engine {
         const spec = pinCommand({ command, passRegex: b?.pass_regex ? String(b.pass_regex) : undefined, timeoutS: Number(b?.timeout_s) > 0 ? Number(b.timeout_s) : undefined, cwd: vault, source: "carl" });
         writeLong(vault, slug, (st) => ({ ...st, check: spec }));
         return { ok: true, check: { command: spec.command, files: Object.keys(spec.files) } };
+      }
+      if (op === "metric" && slug) {
+        if (b?.command === null || b?.command === "") {
+          writeLong(vault, slug, (st) => {
+            delete st.metric;
+            delete st.plateau;
+          });
+          return { ok: true, metric: null };
+        }
+        const command = String(b?.command ?? "").trim();
+        if (!command) return { ok: false, error: "metric needs a command (or null to remove it)" };
+        const spec: MetricSpec = { ...pinCommand({ command, timeoutS: Number(b?.timeout_s) > 0 ? Number(b.timeout_s) : undefined, cwd: vault, source: "carl" }), ...metricOpts(b) };
+        writeLong(vault, slug, (st) => ({ ...st, metric: spec }));
+        return { ok: true, metric: { command: spec.command, files: Object.keys(spec.files), everyMin: spec.everyMin ?? 15, windowH: spec.windowH ?? 6 } };
       }
       if (op === "budget") {
         const usd = b?.usd === null ? null : Number(b?.usd);
@@ -1523,6 +1665,15 @@ export class Engine {
       }
     }
   }
+}
+
+const PINNED_HEADING = { check: "Done when", metric: "Progress metric" } as const;
+
+/** A metric's sampling interval and plateau window from a tool call or an API body. */
+function metricOpts(b: any): { everyMin?: number; windowH?: number } {
+  const every = Number(b?.every_min);
+  const win = Number(b?.window_h);
+  return { ...(every > 0 ? { everyMin: Math.max(1, every) } : {}), ...(win > 0 ? { windowH: win } : {}) };
 }
 
 /** A check's time limit: its own, else VC_CHECK_TIMEOUT_S (30 min); at most 4 h. */

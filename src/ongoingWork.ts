@@ -6,7 +6,7 @@
 import type { Conversation } from "./conversations";
 
 export type OngoingTone = "running" | "waiting" | "you" | "blocked" | "done";
-export type Ongoing = { tone: OngoingTone; label: string; next?: string; cost?: string };
+export type Ongoing = { tone: OngoingTone; label: string; next?: string; cost?: string; progress?: string };
 
 /** "3:40" today, "Tue 9:00" within a week, else "Oct 14". */
 export function formatWake(at: number, now = Date.now()): string {
@@ -44,10 +44,22 @@ function lower(s: string): string {
 /** Null when the conversation is not doing long work. `verdict`: a finished
  *  conversation's Done verdict shows here too (one of Carl's open choices). */
 export function ongoingWork(
-  c: Pick<Conversation, "state" | "nextWakeAt" | "costUsd" | "messages"> & { verdict?: Conversation["verdict"] },
+  c: Pick<Conversation, "state" | "nextWakeAt" | "costUsd" | "messages"> & { verdict?: Conversation["verdict"]; long?: Conversation["long"] },
   now = Date.now(),
   reason?: string,
   verdict = false,
+): Ongoing | null {
+  const o = ongoingBase(c, now, reason, verdict);
+  // The server's long-run parts: the project's metric ("62.4% · +1.8 today"), a parent's workers.
+  const progress = [c.long?.metric, c.long?.workers].filter(Boolean).join(" · ");
+  return o && progress ? { ...o, progress } : o;
+}
+
+function ongoingBase(
+  c: Pick<Conversation, "state" | "nextWakeAt" | "costUsd" | "messages"> & { verdict?: Conversation["verdict"] },
+  now: number,
+  reason: string | undefined,
+  verdict: boolean,
 ): Ongoing | null {
   const cost = formatCost(c.costUsd);
   switch (c.state) {
@@ -76,5 +88,5 @@ export function ongoingWork(
 
 /** The line as plain text: "checking the run · next 3:40 · $1.20". */
 export function ongoingText(o: Ongoing): string {
-  return [o.label, o.next, o.cost].filter(Boolean).join(" · ");
+  return [o.label, o.progress, o.next, o.cost].filter(Boolean).join(" · ");
 }

@@ -613,7 +613,7 @@ export function boot(): void {
     else if (c.state === "blocked") { tone = "blocked"; label = "Blocked"; }
     else if (c.state === "done" && c.verdict && X.choice("verdict") === "ongoing") { tone = c.verdict.verdict === "pass" ? "done" : c.verdict.verdict === "fail" ? "blocked" : "waiting"; label = X.verdictLabel(c.verdict); }
     else return null;
-    return { tone, text: [label, next, cost].filter(Boolean).join(" · ") };
+    return { tone, text: [label, c.progress, next, cost].filter(Boolean).join(" · ") };
   }
   function setOngoing(node, og, cls) {
     node.className = cls + (og.tone === "blocked" ? " blocked" : "");
@@ -630,7 +630,7 @@ export function boot(): void {
   // The open conversation's meta: project, ongoing work, cost, and what the
   // thread shows beside the text (the Done verdict, the to-dos, the subagents).
   function metaOf(d) {
-    return { project: d.project, state: d.state, nextWakeAt: d.nextWakeAt, costUsd: d.costUsd, wakeReason: d.wakeReason, verdict: d.verdict, todos: d.todos, subagents: d.subagents };
+    return { project: d.project, state: d.state, nextWakeAt: d.nextWakeAt, costUsd: d.costUsd, wakeReason: d.wakeReason, progress: d.progress, verdict: d.verdict, todos: d.todos, subagents: d.subagents };
   }
   // The thread's tail (subagents no reply carries yet, the to-dos, the verdict
   // line) and the pinned area above the composer, per Carl's open choices.

@@ -36,8 +36,8 @@ export type ProjectLong = {
   metric?: MetricSpec;
   /** USD cap over the project's conversations (Carl's). */
   budgetUsd?: number;
-  /** The plateau alert, sent once per best value. */
-  plateau?: { best: number; alertedAt: number };
+  /** The plateau alert, sent once per best value (and when it was first reached). */
+  plateau?: { best: number; since: number; alertedAt: number };
   /** Models for workers: cheap by default, strong for a task's last attempt after `escalateAfter` failures. */
   models?: { cheap?: string; strong?: string; escalateAfter?: number };
   /** Attempts before a task is given up (default 3). */
@@ -231,4 +231,48 @@ export function readJsonl<T>(path: string): T[] {
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------- the progress metric
+
+export type Sample = { at: number; value: number; unit?: string };
+
+/** The number a metric command printed: the last one in its output ("matched 62.4%" → 62.4, "%"). */
+export function parseMetric(out: string): { value: number; unit: string } | null {
+  const all = [...out.matchAll(/(-?\d+(?:\.\d+)?)\s*(%?)/g)];
+  const m = all.at(-1);
+  if (!m) return null;
+  const value = Number(m[1]);
+  return Number.isFinite(value) ? { value, unit: m[2] ?? "" } : null;
+}
+
+const fmtNum = (v: number) => String(Math.round(v * 10) / 10);
+
+/** "62.4% · +1.8 today": the latest value, and its change since the last sample before today. */
+export function metricLine(series: Sample[], now = Date.now()): string | null {
+  const last = series.at(-1);
+  if (!last) return null;
+  const unit = last.unit ?? "";
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+  const before = [...series].reverse().find((s) => s.at < midnight.getTime());
+  const base = before ?? series.find((s) => s.at >= midnight.getTime());
+  const head = `${fmtNum(last.value)}${unit}`;
+  if (!base || base === last) return head;
+  const d = last.value - base.value;
+  return `${head} · ${d > 0 ? "+" : d < 0 ? "−" : "±"}${fmtNum(Math.abs(d))} today`;
+}
+
+/**
+ * Stalled: the best value has not been beaten for `windowH` hours of active
+ * work — the time between samples after it was first reached, each gap counted
+ * at most twice the sampling interval (a night with nothing running is not work).
+ */
+export function plateauOf(series: Sample[], everyMin: number, windowH: number): { best: number; since: number; activeMs: number } | null {
+  if (series.length < 2) return null;
+  let bi = 0;
+  for (let i = 1; i < series.length; i++) if (series[i]!.value > series[bi]!.value) bi = i;
+  let active = 0;
+  for (let i = bi + 1; i < series.length; i++) active += Math.min(series[i]!.at - series[i - 1]!.at, 2 * everyMin * 60_000);
+  return active >= windowH * 3_600_000 ? { best: series[bi]!.value, since: series[bi]!.at, activeMs: active } : null;
 }

@@ -180,8 +180,9 @@ export type ConvLong = {
   lastCheck?: { ok: boolean; at: number; why?: string };
   budgetUsd?: number;
   budgetWarned?: boolean;
-  /** The quiet line under the ongoing-work line: "62.4% · +1.8 today", "4 workers · 37/120 done". */
-  line?: string;
+  /** Quiet parts of the ongoing-work line: the project's metric ("62.4% · +1.8 today") and a parent's workers ("4 workers · 37/120 done"). */
+  metric?: string;
+  workers?: string;
   [k: string]: unknown;
 };
 

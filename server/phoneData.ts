@@ -43,6 +43,9 @@ function ongoingMeta(c: any, msgs: any[]): Record<string, unknown> {
   if (typeof c.nextWakeAt === "number") out.nextWakeAt = c.nextWakeAt;
   if (typeof c.costUsd === "number") out.costUsd = c.costUsd;
   if (c.working === true) out.working = true;
+  // The long-run parts of the ongoing line: the project's metric, a parent's workers.
+  const progress = [c.long?.metric, c.long?.workers].filter((x: unknown) => typeof x === "string" && x).join(" · ");
+  if (progress) out.progress = progress;
   if (c.state === "sleeping") {
     outer: for (let i = msgs.length - 1; i >= 0; i--) {
       const calls: any[] = Array.isArray(msgs[i]?.toolCalls) ? msgs[i].toolCalls : [];
