@@ -34,7 +34,10 @@ export class FakeBackend extends EventEmitter {
     return { turnId: `pt-${this.turns.length}` };
   }
   async steer() {}
-  async followUp() {}
+  followUps: any[] = [];
+  async followUp(threadId: string, o: any) {
+    this.followUps.push({ threadId, ...o });
+  }
   async interrupt(threadId: string, turnId: string) {
     this.interrupts.push(threadId);
     this.ev(threadId, { kind: "turnCompleted", turnId, status: "interrupted" });

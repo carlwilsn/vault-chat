@@ -28,7 +28,7 @@ import { appendMessage, patchMeta, readConv, allConvs, createConv, mutateConv, s
 import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } from "./wakes";
 import { Ledger } from "./ledger";
 import { pdfRead, webSearch } from "./extraTools";
-import { startJob, jobStatus, type PiJobEnv } from "./pi/jobs";
+import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "./pi/jobs";
 import { appendJsonl, declaredCommand, longDir, metricLine, parseMetric, pinCommand, plateauOf, readJsonl, readLong, runCommand, saveRunLog, tailOf, tampered, writeLong, type CommandSpec, type MetricSpec, type Sample } from "./long";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
@@ -201,13 +201,25 @@ export const ENGINE_TOOL_SPECS = [
     type: "function",
     name: "StartJob",
     description:
-      "Start a long-running shell command that must outlive this turn (training, downloads, builds). It runs detached, sandboxed, in the vault; output goes to a log. Returns a job id for JobStatus.",
+      "Start a long-running shell command that must outlive this turn (training, downloads, builds). It runs detached, sandboxed, in the vault, with a memory ceiling and a low CPU share; output goes to a log. It is stopped after `timeout` (default \"24h\", at most \"7d\"). At most 4 run at once in the vault. When it ends, this conversation gets a wake turn with its exit code and last lines. Returns a job id.",
     inputSchema: {
       type: "object",
-      properties: { command: { type: "string" }, name: { type: "string" } },
+      properties: { command: { type: "string" }, name: { type: "string" }, timeout: { type: "string", description: "e.g. \"36h\", \"90m\"; default 24h, max 7d" } },
       required: ["command"],
       additionalProperties: false,
     },
+  },
+  {
+    type: "function",
+    name: "JobList",
+    description: "This conversation's jobs (all: true for every job in the vault): id, state, age, command.",
+    inputSchema: { type: "object", properties: { all: { type: "boolean" } }, additionalProperties: false },
+  },
+  {
+    type: "function",
+    name: "JobStop",
+    description: "Stop a running job (its whole process tree).",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
   },
   {
     type: "function",
@@ -338,6 +350,7 @@ export class Engine {
     this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), 2_000));
     this.timers.push(setInterval(() => this.scoped(() => this.tickWatchdog()), 15_000));
     this.timers.push(setInterval(() => this.scoped(() => void this.tickMetrics()), 60_000));
+    this.timers.push(setInterval(() => this.scoped(() => void this.tickJobs()), 15_000));
   }
 
   stop(): void {
@@ -1229,7 +1242,7 @@ export class Engine {
         case "WebSearch":
           return text(await webSearch(String(a.query ?? ""), this.d.apiKey(), this.d.webSearchModel));
         case "StartJob": {
-          const out = startJob(this.d.jobEnv, vault, a);
+          const out = startJob(this.d.jobEnv, vault, a, convId);
           // Its log growing counts as this conversation's progress (the watchdog reads its mtime).
           const id = /^Started job (\S+) /.exec(out)?.[1];
           if (id) this.jobLogs.set(convId, [...(this.jobLogs.get(convId) ?? []), join(this.d.jobEnv.logDir, `${id}.log`)].slice(-8));
@@ -1237,6 +1250,10 @@ export class Engine {
         }
         case "JobStatus":
           return text(jobStatus(this.d.jobEnv, a));
+        case "JobList":
+          return text(jobList(this.d.jobEnv, convId, a.all === true));
+        case "JobStop":
+          return text(jobStop(this.d.jobEnv, String(a.id ?? "").trim(), convId));
         case "TodoWrite": {
           const todos = (Array.isArray(a.todos) ? a.todos : [])
             .slice(0, 30)
@@ -1624,6 +1641,27 @@ export class Engine {
     }
     this.log(`wake ${w.id} → ${w.conv}: ${w.reason}`);
     await this.run(w.conv, `Wake: ${w.reason}`, "wake").catch((e) => this.log(`wake failed: ${e}`));
+  }
+
+  /** A job that ended wakes the conversation that started it (never a done or blocked one). */
+  async tickJobs(): Promise<void> {
+    if (shuttingDown) return;
+    let ended: ReturnType<typeof reapJobs> = [];
+    try {
+      ended = reapJobs(this.d.jobEnv);
+    } catch (e) {
+      this.log(`jobs: ${(e as Error).message}`);
+    }
+    for (const j of ended) {
+      this.log(`job ${j.id} ended: ${j.state}${j.exit !== undefined ? ` (exit ${j.exit})` : ""}`);
+      if (!j.conv) continue;
+      const conv = await readConv(this.d.vault, j.conv);
+      if (!conv || conv.state === "done" || conv.state === "blocked") continue;
+      const how =
+        j.state === "finished" ? `finished: exit ${j.exit}` : j.state === "timeout" ? "was stopped by its time limit" : j.state === "stopped" ? "was stopped" : "ended without an exit code (stopped, or killed: out of memory?)";
+      const tail = j.tail.split("\n").slice(-30).join("\n").slice(-3000);
+      void this.run(j.conv, `Job ${j.id} ${how}.\n--- last output ---\n${tail || "(none)"}`, "wake").catch((e) => this.log(`job wake ${j.conv}: ${e}`));
+    }
   }
 
   /** The silence a turn is allowed: the stall limit, or longer while a tool call that may run longer is open
