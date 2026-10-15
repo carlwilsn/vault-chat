@@ -156,6 +156,9 @@ export type Conversation = {
   threadId?: string;
   threadPath?: string;
   project?: string;
+  // The project Carl said "Not now" to when the agent proposed it (SetProject's card), and
+  // the conversation's message count then: no second proposal until he brings one up.
+  projectDeclined?: { name: string; at: number };
   working?: boolean;
   nextWakeAt?: number;
   state?: "idle" | "running" | "sleeping" | "waiting_user" | "blocked" | "done";
@@ -298,6 +301,7 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         threadId: parsed.threadId ?? (parsed as any).codexThreadId,
         threadPath: parsed.threadPath ?? (parsed as any).codexThreadPath,
         project: parsed.project,
+        projectDeclined: parsed.projectDeclined,
         working: parsed.working,
         nextWakeAt: parsed.nextWakeAt,
         state: parsed.state,

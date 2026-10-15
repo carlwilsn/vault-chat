@@ -1,7 +1,12 @@
-// Projects: memory in <vault>/.vault-chat/projects/<slug>/, never in Carl's folders.
+// Projects: memory in <vault>/agent-projects/<slug>/ (src/agentProjects.ts has
+// the layout), a folder of its own hidden from the file tree by default.
 import { readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { ctxConfig } from "./config";
-import { exists, readOr, slugify, vcPath, writeFile } from "./files";
+import { exists, readOr, slugify, writeFile } from "./files";
+import { ensureProjectsHidden, prepareProjects, projectsPath } from "./layout";
+
+export { ensureProjectsHidden, migrateLegacyProjects, prepareProjects, projectsPath } from "./layout";
 
 export const PROJECT_FILES = {
   project: "project.md",
@@ -28,11 +33,11 @@ function vault(): string {
 }
 
 export function projectDir(slug: string): string {
-  return vcPath(vault(), "projects", slug);
+  return projectsPath(vault(), slug);
 }
 
 export function projectFilePath(slug: string, file: ProjectFile): string {
-  return vcPath(vault(), "projects", slug, PROJECT_FILES[file]);
+  return projectsPath(vault(), slug, PROJECT_FILES[file]);
 }
 
 /** The display name: project.md's first `# ` heading, else the slug. */
@@ -42,7 +47,8 @@ function nameOf(slug: string): string {
 }
 
 export function listProjects(): ProjectInfo[] {
-  const root = vcPath(vault(), "projects");
+  prepareProjects(vault());
+  const root = projectsPath(vault());
   let names: string[];
   try {
     names = readdirSync(root);
@@ -52,7 +58,7 @@ export function listProjects(): ProjectInfo[] {
   return names
     .filter((n) => {
       try {
-        return statSync(vcPath(vault(), "projects", n)).isDirectory() && n === slugify(n);
+        return statSync(projectsPath(vault(), n)).isDirectory() && n === slugify(n);
       } catch {
         return false;
       }
@@ -62,6 +68,7 @@ export function listProjects(): ProjectInfo[] {
 }
 
 export function projectExists(slug: string): boolean {
+  prepareProjects(vault());
   return !!slug && slug === slugify(slug) && exists(projectFilePath(slug, "project"));
 }
 
@@ -101,10 +108,12 @@ export function createProject(name: string, description = ""): ProjectInfo {
     progress: `# Progress: ${title}\n`,
     rules: null,
   };
+  prepareProjects(vault());
   for (const [k, body] of Object.entries(seed) as [ProjectFile, string | null][]) {
     const p = projectFilePath(slug, k);
     if (body !== null && !exists(p)) writeFile(p, body);
   }
+  ensureProjectsHidden(vault());
   return { slug, name: nameOf(slug), dir: projectDir(slug) };
 }
 
@@ -117,5 +126,5 @@ export function ensureProject(name: string, description = ""): { project: Projec
 
 /** `.vault-chat/rules.md` (global) — "" when absent. */
 export function readGlobalRules(): string {
-  return readOr(vcPath(vault(), "rules.md"));
+  return readOr(join(vault(), ".vault-chat", "rules.md"));
 }

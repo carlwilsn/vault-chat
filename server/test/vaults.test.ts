@@ -141,9 +141,9 @@ describe("two vaults on one box (engines on fake backends)", () => {
     expect(await readConv(mainVault, convB)).toBeNull();
     expect((await readConv(second, convB)).project).toBe("beta");
     // Projects are the vault's own (CONTEXT runs scoped to the engine's vault).
-    expect(existsSync(join(second, ".vault-chat", "projects", "beta"))).toBe(true);
-    expect(existsSync(join(mainVault, ".vault-chat", "projects", "beta"))).toBe(false);
-    expect(existsSync(join(mainVault, ".vault-chat", "projects", "alpha"))).toBe(true);
+    expect(existsSync(join(second, "agent-projects", "beta"))).toBe(true);
+    expect(existsSync(join(mainVault, "agent-projects", "beta"))).toBe(false);
+    expect(existsSync(join(mainVault, "agent-projects", "alpha"))).toBe(true);
     // Only the main vault's conversations are in the app's store.
     const inStore = store.getState().conversations.map((c: any) => c.id);
     expect(inStore).toContain(convA);
@@ -259,8 +259,8 @@ describe("vault-scoped routes (the real server)", () => {
     const latest = (await (await fetch(srv.base + "/poll?after=latest")).json()).next;
     const r = await (await post("/conversation/project?vault=physics", { convId: "cphys", project: "Optics" })).json();
     expect(r).toEqual({ ok: true, project: "optics" });
-    expect(existsSync(join(home, "physics", ".vault-chat", "projects", "optics"))).toBe(true);
-    expect(existsSync(join(main, ".vault-chat", "projects", "optics"))).toBe(false);
+    expect(existsSync(join(home, "physics", "agent-projects", "optics"))).toBe(true);
+    expect(existsSync(join(main, "agent-projects", "optics"))).toBe(false);
     expect((await (await fetch(srv.base + "/projects?vault=physics")).json()).projects.map((p: any) => p.slug)).toEqual(["optics"]);
     expect((await (await fetch(srv.base + "/projects")).json()).projects).toEqual([]);
     expect((await post("/conversation/project", { convId: "cphys", project: "Optics" })).status).toBe(400); // not in the main vault

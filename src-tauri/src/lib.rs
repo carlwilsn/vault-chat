@@ -1,4 +1,5 @@
 mod voice_server;
+mod agent_projects;
 mod box_sync;
 mod history;
 
@@ -611,6 +612,18 @@ async fn read_ignore_lines(vault: String) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || read_list_lines_sync(&vault, IGNORE_FILE))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// Projects as a vault folder (agent_projects.rs): move `.vault-chat/projects/*`
+/// to `agent-projects/` and hide that folder once. Run on vault open and after
+/// a project is created here. Idempotent.
+#[tauri::command]
+async fn prepare_agent_projects(vault: String) -> Result<agent_projects::Prepared, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        agent_projects::prepare(std::path::Path::new(&vault), IGNORE_FILE)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -7097,6 +7110,7 @@ pub fn run() {
             delete_file,
             create_dir,
             rename_path,
+            prepare_agent_projects,
             edit_text_file,
             glob_files,
             grep_files,

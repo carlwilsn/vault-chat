@@ -315,7 +315,7 @@ describe("the summary", () => {
     const { ensureProject } = await import("../context");
     const { withVault } = await import("../context");
     withVault(vault, () => ensureProject("Coconut", "Detect coconuts in drone images."));
-    writeFileSync(join(vault, ".vault-chat", "projects", "coconut", "memory.md"), `# Memory\n\n## Decisions\n\n- use YOLO\n${"filler ".repeat(3000)}`);
+    writeFileSync(join(vault, "agent-projects", "coconut", "memory.md"), `# Memory\n\n## Decisions\n\n- use YOLO\n${"filler ".repeat(3000)}`);
     writeFileSync(join(vault, ".vault-chat", "rules.md"), "Always cite the page.\n");
     const p = await act.projectContextFor(vault, "coconut");
     expect(p).toMatch(/^<project_context>/);

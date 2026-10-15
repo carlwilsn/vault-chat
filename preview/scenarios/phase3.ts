@@ -5,6 +5,7 @@
 // world.ts stay in, as the archive.
 import type { BuildCtx, Scenario, Step } from "./types";
 import * as W from "./world";
+import { PROJECTS_DIR } from "../../src/agentProjects";
 import { summary as phoneSummary, thread as phoneThread } from "./phone";
 
 const MIN = 60_000;
@@ -144,15 +145,18 @@ export function notifications(now: number): string[] {
 }
 
 /** world.ts's world plus the Phase 2 conversations, notifications and projects. */
-export function build(ctx: BuildCtx): void {
+export function build(ctx: BuildCtx, projectsDir: string = PROJECTS_DIR): void {
   const { now, vault } = ctx;
   ctx.conversations([...convs(now), ...W.chats(vault, now), ...W.missions(now)]);
   ctx.write(".vault-chat/notifications.jsonl", [...W.notifications(now), ...notifications(now)].join("\n") + "\n");
   ctx.write(".vault-chat/notes.jsonl", W.notes(now).join("\n") + "\n");
   ctx.write(".vault-chat/schedules.jsonl", W.schedules(now).join("\n") + "\n");
+  // Projects are a vault folder, agent-projects/ (src/agentProjects.ts). The app
+  // hides it on open (prepare_agent_projects → .vaultchatignore): not in the
+  // tree, listed in the Hidden files modal.
   for (const p of PROJECTS) {
-    ctx.write(`.vault-chat/projects/${p.slug}/project.md`, `# ${p.name}\n\n## What\n\n(synthetic fixture)\n`);
-    ctx.write(`.vault-chat/projects/${p.slug}/memory.md`, `# Memory: ${p.name}\n`);
+    ctx.write(`${projectsDir}/${p.slug}/project.md`, `# ${p.name}\n\n## What\n\n(synthetic fixture)\n`);
+    ctx.write(`${projectsDir}/${p.slug}/memory.md`, `# Memory: ${p.name}\n`);
   }
   ctx.history(W.history(now) as any);
 }
@@ -277,6 +281,27 @@ export const phase3Scenarios: Scenario[] = [
     build,
     activeConversation: "p-seed44",
     open: [...open("p-seed44"), pause(), tryClick(CHIP), pause(2200)],
+  },
+  {
+    id: "p3-projects-folder",
+    title: "Projects — a vault folder, hidden by default",
+    group: "P3 · Chat",
+    notes:
+      "A vault whose projects are still in the old place (.vault-chat/projects/). Plays: on open the app moves them to agent-projects/ and hides that folder; open Hidden files (the eye-off button over the tree): agent-projects is listed; tick it and Unhide — the folder shows in the tree with its projects, and stays shown (it is hidden by default only once). Before: projects live inside .vault-chat/, which the tree never shows.",
+    build: (c) => build(c, ".vault-chat/projects"),
+    activeConversation: "p-seed44",
+    open: [
+      ...open("p-seed44"),
+      pause(1500),
+      tryClick("[title='Hidden files']"),
+      pause(2200),
+      tryClick("label", /^agent-projects$/),
+      pause(900),
+      tryClick("button", /^Unhide$/),
+      pause(1200),
+      tryClick("button", /^agent-projects$/),
+      pause(2200),
+    ],
   },
   {
     id: "p3-ongoing",

@@ -1,6 +1,6 @@
 // The memory/project tools ENGINE exposes to the agent, and their handlers.
-import { appendSection, cap, getSection, readOr, setSection, writeFile } from "./files";
-import { ensureProject, projectExists, projectFilePath, readProject, type ProjectFile } from "./projects";
+import { appendSection, cap, getSection, readOr, setSection, slugify, writeFile } from "./files";
+import { ensureProject, findProject, projectExists, projectFilePath, readProject, type ProjectFile } from "./projects";
 import { projectCost } from "./cost";
 import type { DynamicToolCallResponse, DynamicToolSpec, ToolContext } from "./types";
 
@@ -12,7 +12,7 @@ export const contextToolSpecs: DynamicToolSpec[] = [
     type: "function",
     name: "SetProject",
     description:
-      "Tag this conversation with a project, creating the project if it does not exist (create-or-attach). Use it when Carl says work is for a project, e.g. \"this is for Coconut\". The project's memory then loads into every new session.",
+      "Propose putting this conversation in a project: Carl gets a card (\"Move this chat to Coconut?\" Yes / Not now, or \"Turn this into a new project 'Coconut'?\" Create / Not now) and only his yes applies it — the call waits for his answer. Chats without a project are normal. Use it when Carl asks (\"this is for Coconut\"), or at most once per conversation when it clearly belongs to an existing project or is becoming one; prefer an existing project's exact name when one matches. After \"Not now\", do not propose again unless he asks. On yes, the project's memory loads into every new session. Its files are in agent-projects/<slug>/ (project.md, memory.md, plan.md, progress.md, rules.md), a vault folder hidden from Carl's file tree by default.",
     inputSchema: {
       type: "object",
       properties: {
@@ -121,15 +121,57 @@ export async function handleContextTool(name: string, args: unknown, ctx: ToolCo
   }
 }
 
+const YES = /^\s*(yes|create|y|ok|okay|sure|do it|move it)\b/i;
+
+/** After a "Not now": may the agent propose again? Only once Carl has said something about a project since. */
+function carlAskedSince(conv: ToolContext["conv"], declined: { name: string; at: number }, name: string): boolean {
+  const words = [declined.name, name, "project"].map((w) => w.trim().toLowerCase()).filter(Boolean);
+  return (conv.messages ?? [])
+    .slice(declined.at)
+    .some((m) => m.role === "user" && !m.hidden && !m.system && !m.decision && words.some((w) => String(m.content ?? "").toLowerCase().includes(w)));
+}
+
+/**
+ * The agent proposes; Carl decides. A card asks him ("Move this chat to X?" /
+ * "Turn this into a new project 'X'?") and only his yes tags the conversation
+ * (and creates the project). "Not now" is remembered on the conversation: no
+ * second proposal until Carl brings a project up himself.
+ */
 async function setProjectTool(a: Record<string, unknown>, ctx: ToolContext): Promise<DynamicToolCallResponse> {
   const name = str(a.name);
   if (!name) return fail("SetProject needs a name.");
+  if (!slugify(name)) return fail(`"${name}" does not make a project name.`);
+  const existing = findProject(name);
+  if (existing && ctx.conv.project === existing.slug) return attachedText(existing.slug, "This conversation is already in it.");
+  const declined = ctx.conv.projectDeclined;
+  if (declined && !carlAskedSince(ctx.conv, declined, name)) {
+    return fail(`Carl said "Not now" to a project ("${declined.name}") for this conversation. Do not propose one again unless he asks; carry on without it.`);
+  }
+  if (!ctx.ask) return fail("SetProject needs Carl's yes, and he cannot be asked from here.");
+  const question = existing ? `Move this chat to ${existing.name}?` : `Turn this into a new project "${name.trim()}"?`;
+  const answer = String(await ctx.ask(question, existing ? ["Yes", "Not now"] : ["Create", "Not now"])).trim();
+  if (!YES.test(answer)) {
+    const mark = { name: existing?.name ?? name.trim(), at: ctx.conv.messages?.length ?? 0 };
+    ctx.conv.projectDeclined = mark;
+    await ctx.patchConversation?.({ projectDeclined: mark });
+    return ok(
+      `Carl answered: ${answer || "Not now"}. Nothing changed: the conversation stays ${ctx.conv.project ? `in ${ctx.conv.project}` : "without a project"}. Do not propose a project again unless he asks.`,
+    );
+  }
   const { project, created } = ensureProject(name, str(a.description) ?? "");
   await ctx.setConversationProject(project.slug);
   ctx.conv.project = project.slug;
-  const p = readProject(project.slug)!;
+  if (ctx.conv.projectDeclined) {
+    ctx.conv.projectDeclined = undefined;
+    await ctx.patchConversation?.({ projectDeclined: undefined });
+  }
+  return attachedText(project.slug, `Carl said yes. ${created ? "Created" : "Attached to"} project ${project.name} (${project.slug}); this conversation is tagged with it.`);
+}
+
+function attachedText(slug: string, head: string): DynamicToolCallResponse {
+  const p = readProject(slug)!;
   return ok(
-    `${created ? "Created" : "Attached to"} project ${p.name} (${p.slug}); this conversation is tagged with it.\n\n` +
+    `${head}\n\n` +
       `## project.md\n${cap(p.project, 4_000, 'ProjectMemory {action:"read", file:"project"}')}\n\n` +
       `## memory.md\n${cap(p.memory, 8_000, 'ProjectMemory {action:"read"}')}\n\n` +
       `## plan.md\n${cap(p.plan, 4_000, 'Plan {action:"read"}')}`,

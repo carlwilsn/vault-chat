@@ -1149,6 +1149,14 @@ export class Engine {
           setConversationProject: async (slug: string) => {
             await patchMeta(vault, convId, { project: slug });
           },
+          // SetProject only proposes: Carl answers an AskUser card, like AskUser's own.
+          ask: async (question: string, options: string[]) => {
+            if (!this.live.get(convId)) throw new Error("Carl cannot be asked right now; nothing changed");
+            return this.waitForAnswer(p.threadId, question, options);
+          },
+          patchConversation: async (patch) => {
+            await patchMeta(vault, convId, patch as any);
+          },
         });
       }
       switch (name) {

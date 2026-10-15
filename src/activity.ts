@@ -15,6 +15,7 @@
 // `capture` entries, coalesced.
 import { invoke } from "@tauri-apps/api/core";
 import { boxGet, boxLinkFor, boxPost, type Link } from "./boxChat";
+import { PROJECTS_DIR } from "./agentProjects";
 import {
   ACTIVITY_DIR,
   ACTIVITY_LOG,
@@ -201,7 +202,7 @@ async function localProjectContext(vault: string, project: string | null): Promi
   const rules = await readOr(join(vault, ".vault-chat/rules.md"));
   let p: ProjectFiles | null = null;
   if (project && /^[a-z0-9-]+$/.test(project)) {
-    const f = (n: string) => readOr(join(vault, `.vault-chat/projects/${project}/${n}.md`));
+    const f = (n: string) => readOr(join(vault, `${PROJECTS_DIR}/${project}/${n}.md`));
     const [proj, memory, plan, progress, prules] = await Promise.all([f("project"), f("memory"), f("plan"), f("progress"), f("rules")]);
     if (proj) {
       const name = /^#\s+(.+?)\s*$/m.exec(proj)?.[1] ?? project;

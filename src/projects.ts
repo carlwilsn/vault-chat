@@ -1,14 +1,51 @@
 // Projects on the desktop: the project chip in the chat, "New chat in project"
 // and the chat list grouped by project.
 //
-// A project is memory in `<vault>/.vault-chat/projects/<slug>/` (the layout
-// server/context/projects.ts owns); a conversation carries the slug in its
+// A project is memory in `<vault>/agent-projects/<slug>/` (src/agentProjects.ts
+// names the folder; server/context/projects.ts owns the files), a vault folder
+// hidden from the file tree by default; a conversation carries the slug in its
 // `project` meta field. In box mode the box authors every conversation, so the
 // list and the tagging go to the box (`GET /projects`,
 // `POST /conversation/project`); otherwise they are read and written here.
 import { invoke } from "@tauri-apps/api/core";
-import { useStore } from "./store";
+import { useStore, type FileEntry } from "./store";
 import { boxLinkFor, boxGet, boxPost } from "./boxChat";
+import { PROJECTS_DIR } from "./agentProjects";
+
+export type Prepared = { moved: string[]; kept: string[]; hidden: boolean };
+
+const prepared = new Map<string, Promise<Prepared | null>>();
+
+/**
+ * Once per vault per session (vault open): move projects from the old place
+ * (`.vault-chat/projects/`) to `agent-projects/` and hide that folder the first
+ * time it exists (lib.rs prepare_agent_projects). The box does the same to its
+ * copy; the moves are identical, so the sync merges them. Never throws.
+ */
+export function prepareVaultProjects(vault: string): Promise<Prepared | null> {
+  let p = prepared.get(vault);
+  if (!p) {
+    p = runPrepare(vault);
+    prepared.set(vault, p);
+  }
+  return p;
+}
+
+async function runPrepare(vault: string): Promise<Prepared | null> {
+  try {
+    const r = await invoke<Prepared>("prepare_agent_projects", { vault });
+    if (r.moved.length) console.info(`[projects] moved .vault-chat/projects/ → ${PROJECTS_DIR}/: ${r.moved.join(", ")}`);
+    if (r.kept.length) console.warn(`[projects] left in .vault-chat/projects/ (a different file is already in ${PROJECTS_DIR}/): ${r.kept.join(", ")}`);
+    // The open vault's tree: the folder appeared, or was just hidden.
+    if ((r.moved.length || r.hidden) && useStore.getState().vaultPath === vault) {
+      useStore.getState().setFiles(await invoke<FileEntry[]>("list_markdown_files", { vault }));
+    }
+    return r;
+  } catch (e) {
+    console.warn(`[projects] preparing ${vault}: ${String(e)}`);
+    return null;
+  }
+}
 
 export type ProjectInfo = { slug: string; name: string };
 
@@ -51,7 +88,7 @@ const HEADING = /^#\s+(.+?)\s*$/m;
 async function listLocal(vault: string): Promise<ProjectInfo[]> {
   let files: string[] = [];
   try {
-    files = await invoke<string[]>("glob_files", { pattern: ".vault-chat/projects/*/project.md", cwd: vault });
+    files = await invoke<string[]>("glob_files", { pattern: `${PROJECTS_DIR}/*/project.md`, cwd: vault });
   } catch {
     return [];
   }
@@ -75,6 +112,7 @@ async function listLocal(vault: string): Promise<ProjectInfo[]> {
 /** The vault's projects (box mode: the box's list). */
 export async function listProjects(vault: string | null): Promise<ProjectInfo[]> {
   if (!vault) return [];
+  await prepareVaultProjects(vault);
   const link = await boxLinkFor(vault);
   if (link) {
     try {
@@ -91,7 +129,7 @@ export async function listProjects(vault: string | null): Promise<ProjectInfo[]>
 async function createLocal(vault: string, name: string): Promise<ProjectInfo> {
   const slug = slugify(name);
   if (!slug) throw new Error(`"${name}" does not make a project name`);
-  const dir = `${vault}/.vault-chat/projects/${slug}`;
+  const dir = `${vault}/${PROJECTS_DIR}/${slug}`;
   const title = name.trim();
   const seed: Record<string, string> = {
     "project.md": `# ${title}\n\n## What\n\n(not written yet)\n\n## Why\n\n(not written yet)\n\n## Done when\n\n(not decided yet)\n\n## Status\n\nstarted ${new Date().toISOString().slice(0, 10)}\n`,
@@ -105,6 +143,8 @@ async function createLocal(vault: string, name: string): Promise<ProjectInfo> {
     const exists = await invoke<boolean>("path_exists", { path: p }).catch(() => false);
     if (!exists) await invoke("write_text_file", { path: p, contents: body });
   }
+  // The vault's first project: hide agent-projects/ (once).
+  await runPrepare(vault);
   return { slug, name: title };
 }
 

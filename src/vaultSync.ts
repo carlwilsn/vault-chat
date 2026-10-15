@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useStore, type FileEntry } from "./store";
+import { prepareVaultProjects } from "./projects";
 
 // After a pull pulls in commits from another machine, the file tree
 // should reflect new/renamed/deleted files without a manual refresh. We
@@ -287,6 +288,9 @@ export function startVaultSyncLoop(vault: string): Promise<void> {
 
 async function doStartVaultSyncLoop(vault: string): Promise<void> {
   stopVaultSyncLoop(vault);
+  // Vault open: projects move out of .vault-chat/ into agent-projects/ (hidden
+  // by default) before the first sync commits, so the move rides that commit.
+  await prepareVaultProjects(vault);
   // sync.json names a box → the per-machine-branch sync with the merge gate
   // (its cycle commits locally first, so autosave continues while the box is
   // unreachable).

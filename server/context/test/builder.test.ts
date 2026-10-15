@@ -11,13 +11,14 @@ beforeEach(() => ({ vault, cleanup } = tempVault()));
 afterEach(() => cleanup());
 
 const vc = (...p: string[]) => join(vault, ".vault-chat", ...p);
+const ap = (...p: string[]) => join(vault, "agent-projects", ...p);
 
 describe("rules on every turn", () => {
   it("rulesPrefixForTurn carries the global and project rules in full, read fresh each turn", () => {
     expect(rulesPrefixForTurn({ id: "c" })).toBe("");
     writeFileSync(vc("rules.md"), "- Never spend over $5 without asking.\n- Reply in English.\n");
     createProject("Coconut");
-    writeFileSync(vc("projects", "coconut", "rules.md"), "- Never train on the test set.\n");
+    writeFileSync(ap("coconut", "rules.md"), "- Never train on the test set.\n");
     const conv: ContextConv = { id: "c", project: "coconut" };
 
     // Simulate ten turns, with a rule added after turn 5: every prefix has every rule.
@@ -66,7 +67,7 @@ describe("buildDeveloperInstructions", () => {
   it("caps the project files, with a pointer to read more", () => {
     configureContext({ caps: { project: 500, memory: 1_000, plan: 300, progress: 200, recap: 12_000 } });
     createProject("Big");
-    const p = (f: string) => vc("projects", "big", f);
+    const p = (f: string) => ap("big", f);
     writeFileSync(p("memory.md"), "# Memory\n\n" + "M".repeat(50_000) + "\nMEMORY-END");
     writeFileSync(p("plan.md"), "PLAN-START " + "p".repeat(5_000));
     writeFileSync(p("progress.md"), "PROGRESS-OLD " + "q".repeat(5_000) + " PROGRESS-NEWEST");
@@ -99,7 +100,7 @@ describe("buildDeveloperInstructions", () => {
   });
 
   it("ignores a project tag whose folder is gone", () => {
-    mkdirSync(vc("projects"), { recursive: true });
+    mkdirSync(ap(), { recursive: true });
     const s = buildDeveloperInstructions({ id: "c", project: "deleted" });
     expect(s).toContain("This conversation has no project");
   });

@@ -17,6 +17,10 @@ export {
   formatVerdict,
   projectCost,
   setModelWindow,
+  readProject,
+  ensureProject,
+  projectDir,
+  prepareProjects,
   type Verdict,
   type ThreadTokenUsage,
 } from "../context";

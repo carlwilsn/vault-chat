@@ -7,7 +7,7 @@ import { mkdirSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { loadCatalog, modelMeta } from "./catalog";
-import { configureContext, setModelWindow } from "./context";
+import { configureContext, prepareProjects, setModelWindow } from "./context";
 import { Engine } from "./engine";
 export { engineShuttingDown } from "./engine";
 import { Ledger } from "./ledger";
@@ -272,6 +272,8 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
   const make = (v: VaultRef): Engine => {
     const st = stateOf(v);
     excludeLocalDir(v.path);
+    // Projects moved out of .vault-chat/ into agent-projects/ (hidden by default): move this vault's now.
+    prepareProjects(v.path);
     // The sandbox read-only-binds these; they must exist when it is built.
     for (const d of [join(v.path, ".vault-chat", "conversations"), join(v.path, ".vault-chat", "local"), st.jobs, st.pi.sessionsDir, st.pi.instrDir]) mkdirSync(d, { recursive: true });
     // Its work area outside the vault, writable in the sandbox (the rest of the home is read-only there).

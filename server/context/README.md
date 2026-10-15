@@ -1,6 +1,6 @@
 # server/context — projects, memory, instructions, roll-over, verifier (Order C)
 
-A library ENGINE (Order A) calls. It owns plain files under `<vault>/.vault-chat/` and makes model
+A library ENGINE (Order A) calls. It owns plain files under `<vault>/.vault-chat/` and `<vault>/agent-projects/` and makes model
 calls only for the roll-over recap and the Done verifier (OpenRouter Responses API, non-streaming,
 key read in-process from the key store; never logged). It never writes conversation files: ENGINE does,
 from what these functions return.
@@ -16,12 +16,20 @@ Import everything from `server/context/index.ts`.
 
 ```
 .vault-chat/rules.md                       Carl's global rules (short; written by hand or by the agent's shell)
-.vault-chat/projects/<slug>/project.md     # <Name> · What · Why · Done when · Status
-.vault-chat/projects/<slug>/memory.md      # Memory · Decisions · Tried and learned · Conventions (+ any ## section)
-.vault-chat/projects/<slug>/plan.md
-.vault-chat/projects/<slug>/progress.md    dated lines appended by Plan{progressNote}
-.vault-chat/projects/<slug>/rules.md       optional project rules
+agent-projects/<slug>/project.md          # <Name> · What · Why · Done when · Status
+agent-projects/<slug>/memory.md           # Memory · Decisions · Tried and learned · Conventions (+ any ## section)
+agent-projects/<slug>/plan.md
+agent-projects/<slug>/progress.md         dated lines appended by Plan{progressNote}
+agent-projects/<slug>/rules.md            optional project rules
+agent-projects/<slug>/learnings.md        workers' one-liners (ENGINE appends)
+.vault-chat/local/projects/<slug>/        the server's own state (pinned check/metric/budget, tasks): read-only to the agent
 ```
+
+`agent-projects/` is a plain vault folder (`src/agentProjects.ts` names it), hidden by default: the first
+time a vault has it, `agent-projects` is added to `.vaultchatignore` (the file tree's "Hidden files") and
+recorded in `.vault-chat/hidden-by-default`, so unhiding it there sticks. Projects used to live in
+`.vault-chat/projects/`; `prepareProjects` moves them (the app does the same on vault open,
+`prepare_agent_projects` in lib.rs), never overwriting a file.
 
 `<slug>` = `slugify(name)` (`"Coconut Detector"` → `coconut-detector`). The display name is project.md's
 first `# ` heading. Writes are atomic (temp + rename). A project is found by slug or by name, case-insensitively.
@@ -78,8 +86,13 @@ type Verdict = { verdict: "pass"|"fail"|"unsure"; notes: string[]; model: string
 
 ### Tools (what the agent sees)
 
-- `SetProject {name, description?}` — create-or-attach; calls `ctx.setConversationProject(slug)` (ENGINE persists
-  `project` on the meta) and sets `ctx.conv.project`. Returns the project's files, capped.
+- `SetProject {name, description?}` — a proposal Carl decides: `ctx.ask` raises an AskUser card ("Move this chat to
+  <existing>?" Yes / Not now, or "Turn this into a new project '<name>'?" Create / Not now) and waits. Only a yes
+  creates-or-attaches: `ctx.setConversationProject(slug)` (ENGINE persists `project` on the meta) and
+  `ctx.conv.project`; returns the project's files, capped. "Not now" leaves the chat as it was and is kept on the
+  meta (`projectDeclined {name, at}`): a later SetProject is refused without a card until Carl mentions a project
+  (or that name) himself. Already in that project: no card. No `ctx.ask`: refused. Carl's own choice (the chip,
+  the phone's sheet, `POST /conversation/project`) applies directly.
 - `ProjectMemory {action: read|append|update, file?: memory|project|rules (default memory), section?, text?}` —
   `read` the file or one `## section`; `append` to a section's end (or the file's end with no section); `update`
   replaces a section's text (created when missing). Needs a tagged project.
