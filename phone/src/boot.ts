@@ -951,6 +951,8 @@ export function boot(): void {
       if (!r.ok || d.error) throw new Error(d.error || r.status);
       if (!convId && d.convId) { convId = d.convId; convTitle = text.split("\n")[0].slice(0, 60); if (newChatProject) convMeta.project = newChatProject; newChatProject = ""; rememberConv(); }
       if (d.queued) { mine.classList.add("queued"); toast("Mid-run — queued, sends when it finishes."); }
+      // Sent while it works: into the running turn at its next step (the box steers it).
+      else if (d.steered) { mine.insertAdjacentHTML("beforeend", '<div class="steerlbl" data-el="pending" data-kind="steer">Steering · next step</div>'); }
       else { running = true; stopping = false; streamStartedAt = Date.now(); renderRunline(); }
       setHeader();
     } catch (e) {

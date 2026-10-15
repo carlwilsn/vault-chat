@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { runAgent } from "./agent";
+import { addPending, removePending, takeNext, type Pending, type PendingKind } from "./pendingInput";
 import { isArchivedThread } from "./conversations";
 import { findModel, AUTO_MODEL_ID, resolveAutoModel, getLiveCatalog } from "./providers";
 import { compactConversation } from "./compactor";
@@ -33,6 +34,43 @@ const KEEP_RECENT = 4;
 // send a true no-op. Keyed by conversation id so it works even before the
 // conversation exists in the store, and it never perturbs the run clock.
 const inFlightSends = new Set<string>();
+
+/**
+ * A message sent while the agent works (pendingInput.ts). `steer` (Enter) goes
+ * into the running turn at its next step; `queue` (Tab) runs after it ends.
+ * Box mode: the box's /message (a steer) or /message {queue} (held by its
+ * engine). Nothing running: an ordinary send.
+ */
+export async function sendMidTurn(
+  kind: PendingKind,
+  text: string,
+  contextPreamble?: string,
+  attachments?: import("./store").ChatAttachment[],
+): Promise<void> {
+  const s = useStore.getState();
+  const convId = s.activeConversationId;
+  if (s.boxChat?.on) {
+    const bc = await import("./boxChat");
+    await bc.boxSend({ text, contextPreamble, attachments, convId, mode: kind });
+    return;
+  }
+  const conv = convId ? s.conversations.find((c) => c.id === convId) : null;
+  if (!convId || conv?.status !== "running") {
+    await sendMessage(text, contextPreamble, attachments);
+    return;
+  }
+  addPending({ convId, kind, text: text.trim(), contextPreamble, attachments });
+}
+
+/** Take a pending message back (a chip's ×, or its edit). Box: a queued one is taken back from the box. */
+export async function cancelPending(id: string): Promise<Pending | null> {
+  if (id.startsWith("box:")) {
+    const [, convId, qid] = id.split(":");
+    const bc = await import("./boxChat");
+    return (await bc.boxUnqueue(convId!, qid!)) ? { id, convId: convId!, kind: "queue", text: "" } : null;
+  }
+  return removePending(id);
+}
 
 export async function sendMessage(
   text: string,
@@ -366,6 +404,31 @@ export async function sendMessage(
         const t = tools.find((x) => x.id === e.id);
         if (t) t.result = e.result;
         if (live) store.updateLiveToolResult(e.id, e.result);
+      } else if (e.kind === "steer") {
+        // Carl's steer reached the turn: what the agent did so far closes as
+        // its own reply, his message follows it, and the turn goes on after.
+        const thinking = [...thoughts, bgReasoning.trim()].filter(Boolean).join("\n\n");
+        const sofar: ChatMessage | null =
+          acc.trim() || tools.length
+            ? { role: "assistant", content: acc, toolCalls: tools.length ? tools.slice() : undefined, ...(thinking ? { thinking: thinking.slice(0, 8_000) } : {}) }
+            : null;
+        const msgs: ChatMessage[] = [
+          ...(sofar ? [sofar] : []),
+          ...e.messages.map((p): ChatMessage => ({ role: "user", content: p.text, ...(p.attachments?.length ? { attachments: p.attachments } : {}) })),
+        ];
+        for (const m of msgs) {
+          if (live) store.appendMessage(m);
+          else if (targetConvId) store.appendMessageToConversation(targetConvId, m);
+        }
+        acc = "";
+        finalSegment = "";
+        bgReasoning = "";
+        thoughts.length = 0;
+        tools.length = 0;
+        if (live) {
+          store.resetStreaming();
+          store.setBusy(true);
+        }
       } else if (e.kind === "done") {
         // User stopped/interrupted this run. For the FOREGROUND conversation
         // stopAgent/interruptAndSend already finalized the partial reply and
@@ -604,6 +667,15 @@ export async function sendMessage(
     // Run is fully settled (done / error / abort all resolve runAgent) — release
     // the in-flight latch so the next genuine turn on this thread can start.
     if (targetConvId) inFlightSends.delete(targetConvId);
+    // What Carl sent while it ran and the turn never took (a queued message, or
+    // a steer that arrived during its last step): the next turn, one at a time.
+    const next = targetConvId ? takeNext(targetConvId) : null;
+    if (next && targetConvId) {
+      setTimeout(() => {
+        const off = useStore.getState().activeConversationId !== targetConvId;
+        void sendMessage(next.text, next.contextPreamble, next.attachments, off ? targetConvId : undefined);
+      }, 0);
+    }
   }
 }
 

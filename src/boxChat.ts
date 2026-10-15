@@ -18,6 +18,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { projectForSend } from "./projects";
 import { useStore, type ChatMessage, type ChatAttachment, type LiveTool } from "./store";
+import { addPending, patchPending, removePending, type PendingKind } from "./pendingInput";
 import { readBoxConfig } from "./vaultSync";
 import type { Conversation } from "./conversations";
 import { applyStream, type StreamState } from "./streamWire";
@@ -272,6 +273,7 @@ const META_KEYS = [
   "todos",
   "subagents",
   "pendingAsk",
+  "queued",
   "askOf",
   "askNotifId",
   "askDecided",
@@ -894,6 +896,8 @@ export async function boxSend(opts: {
   contextPreamble?: string;
   attachments?: ChatAttachment[];
   convId?: string | null;
+  /** Sent while a turn runs (pendingInput.ts): steer it, or queue after it. */
+  mode?: PendingKind;
 }): Promise<boolean> {
   if (!boxChatOn() || !session) return false;
   const sess = session;
@@ -924,10 +928,42 @@ export async function boxSend(opts: {
   // created on the box by omitting the id.
   const knownToBox = sess.isKnown(convId) || (conv?.messages.some((m) => !m.boxPending) ?? false);
   const answer = knownToBox && waitingOnUser(conv);
+  // Into a running turn: a chip until the box has it (pendingInput.ts).
+  const midTurn = !!opts.mode && knownToBox && !answer && conv?.status === "running";
+  const ctx = (opts.contextPreamble ?? "").trim();
+  if (midTurn && opts.mode === "queue") {
+    // Held by the box's engine until the turn ends (its `queued` lists it).
+    const chip = addPending({ convId, kind: "queue", text: shown, sending: true });
+    const rq = await sess_post(sess, "/message", {
+      convId,
+      text: relativize(trimmed, vault),
+      clientMsgId: newClientMsgId(),
+      queue: true,
+      ...(images.length ? { images } : {}),
+      ...(ctx ? { context: relativize(ctx, vault) } : {}),
+    });
+    if (!rq.ok) {
+      removePending(chip.id);
+      appendTo(convId, { role: "assistant", system: true, content: `⚠️ The box refused the message: ${rq.error}` });
+      if (rq.network) sess.kick();
+      return true;
+    }
+    if (rq.data?.queued && typeof rq.data.qid === "string") {
+      // The conversation's `queued` takes over once the box's detail lands.
+      patchPending(chip.id, { sending: false, qid: rq.data.qid });
+      setTimeout(() => removePending(chip.id), 8_000);
+    } else removePending(chip.id); // the turn had just ended: it ran as a message
+    sess.scheduleDetail(convId, 300);
+    return true;
+  }
+  const steerChip = midTurn ? addPending({ convId, kind: "steer", text: shown, sending: true }) : null;
 
   // Optimistic: the user's turn shows at once and the thread reads running.
-  sess.addPending(convId, shown);
-  appendTo(convId, { role: "user", content: shown, boxPending: true, ...(opts.attachments?.length ? { attachments: opts.attachments } : {}) });
+  const optimistic = () => {
+    sess.addPending(convId!, shown);
+    appendTo(convId!, { role: "user", content: shown, boxPending: true, ...(opts.attachments?.length ? { attachments: opts.attachments } : {}) });
+  };
+  if (!steerChip) optimistic();
   useStore.getState().setConversationStatus(convId, "running");
   if (useStore.getState().activeConversationId === convId) {
     const cur = useStore.getState();
@@ -938,7 +974,6 @@ export async function boxSend(opts: {
     }
   }
 
-  const ctx = (opts.contextPreamble ?? "").trim();
   const payload: Record<string, unknown> = {
     text: relativize(trimmed, vault),
     clientMsgId: newClientMsgId(),
@@ -948,6 +983,11 @@ export async function boxSend(opts: {
   if (ctx) payload.context = relativize(ctx, vault);
   if (conv?.project) payload.project = knownToBox ? conv.project : projectForSend(conv.project);
   const r = await sess_post(sess, answer ? "/answer" : "/message", payload);
+  if (steerChip) {
+    // The box has it (it steers the turn at its next step): the chip becomes the message.
+    removePending(steerChip.id);
+    if (r.ok) optimistic();
+  }
 
   if (!r.ok) {
     sess.dropPending(convId, shown);
@@ -1000,6 +1040,18 @@ export function boxImages(atts: ChatAttachment[] | undefined): { name?: string; 
 
 function sess_post(sess: BoxChatSession, path: string, payload: Record<string, unknown>) {
   return httpPost(sess.link, path, payload);
+}
+
+/** Take a queued message back from the box before its turn comes. */
+export async function boxUnqueue(convId: string, qid: string): Promise<boolean> {
+  if (!boxChatOn() || !session) return false;
+  const r = await httpPost(session.link, "/message", { convId, unqueue: qid });
+  if (!r.ok || r.data?.ok === false) return false;
+  useStore.setState((st) => ({
+    conversations: st.conversations.map((c) => (c.id === convId ? { ...c, queued: (c.queued ?? []).filter((q) => q.id !== qid) } : c)),
+  }));
+  session?.scheduleDetail(convId, 300);
+  return true;
 }
 
 /** Stop the box's turn on this conversation. False = not box mode. */

@@ -361,6 +361,8 @@ const text = (t: string) => ({ success: true, contentItems: [{ type: "inputText"
 
 export class Engine {
   private live = new Map<string, Live>(); // convId → live turn
+  /** Messages Carl queued while a turn ran (/message {queue: true}): each runs, in order, after it ends. */
+  private queued = new Map<string, Array<{ id: string; body: Record<string, any> }>>();
   private byThread = new Map<string, string>(); // threadId → convId
   private chains = new Map<string, Promise<unknown>>();
   private nudged = new Set<string>();
@@ -463,6 +465,8 @@ export class Engine {
    * imagePaths: [vault-relative path]. context: a preamble the agent sees before
    * the text (not shown as the message). project: tags the conversation.
    * Returns null when the conversation is a legacy mission thread (old path).
+   * queue: while a turn runs, hold the message until it ends (→ {queued: true, qid});
+   * the conversation's `queued` lists what waits. unqueue: qid — take it back.
    */
   async message(body: {
     convId?: string | null;
@@ -473,7 +477,30 @@ export class Engine {
     imagePaths?: string[];
     /** Who started it: "voice" (the voice agent's AskAgent); a phone chat otherwise. */
     source?: string;
+    /** Hold it until the running turn ends (a follow-up), instead of steering. */
+    queue?: boolean;
+    /** Take back a queued message (its qid). */
+    unqueue?: string;
   }): Promise<Record<string, unknown> | null> {
+    if (typeof body?.unqueue === "string" && body.convId) {
+      const list = this.queued.get(body.convId) ?? [];
+      const hit = list.find((q) => q.id === body.unqueue);
+      if (!hit) return { ok: false, error: "already delivered" };
+      await this.setQueued(body.convId, list.filter((q) => q !== hit));
+      return { ok: true, convId: body.convId, unqueued: body.unqueue };
+    }
+    if (body?.queue && body.convId) {
+      const l = this.live.get(body.convId);
+      if (l && !l.finished && !l.ask) {
+        const textQ = String(body.text ?? "").trim();
+        if (!textQ && !(body.images?.length || body.imagePaths?.length)) return { error: "empty message" };
+        const qid = `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        const { queue: _q, ...rest } = body;
+        await this.setQueued(body.convId, [...(this.queued.get(body.convId) ?? []), { id: qid, body: rest }]);
+        return { ok: true, convId: body.convId, queued: true, qid };
+      }
+      // Nothing running (it just ended): an ordinary message.
+    }
     const textIn = String(body?.text ?? "").trim();
     const hasImages = (body.images?.length ?? 0) + (body.imagePaths?.length ?? 0) > 0;
     if (!textIn && !hasImages) return { error: "empty message" };
@@ -533,6 +560,23 @@ export class Engine {
     }
     void this.run(id, shown, "user", { images: paths, context, attachments }).catch((e) => this.log(`turn failed: ${e}`));
     return { ok: true, convId: id };
+  }
+
+  /** The queue for a conversation, mirrored on it (`queued`: id + text) for the clients. */
+  private async setQueued(convId: string, list: Array<{ id: string; body: Record<string, any> }>): Promise<void> {
+    if (list.length) this.queued.set(convId, list);
+    else this.queued.delete(convId);
+    await patchMeta(this.d.vault, convId, { queued: list.map((q) => ({ id: q.id, text: String(q.body.text ?? "").trim() || "(image)" })) } as any).catch(() => undefined);
+  }
+
+  /** A turn ended with messages queued: the oldest runs now (as if just sent). */
+  private async deliverQueued(convId: string): Promise<boolean> {
+    const list = this.queued.get(convId);
+    if (!list?.length) return false;
+    const [next, ...rest] = list;
+    await this.setQueued(convId, rest);
+    await this.message({ ...next!.body, convId }).catch((e) => this.log(`queued message on ${convId} failed: ${e}`));
+    return true;
   }
 
   private saveImages(convId: string, body: { images?: { name?: string; mime?: string; dataBase64?: string }[]; imagePaths?: string[] }): { paths: string[]; attachments: any[] } {
@@ -1077,6 +1121,9 @@ export class Engine {
     void this.settleCost(l.convId, conv?.threadPath ?? conv0?.threadPath, l.turnId, hasBody ? mid : null);
 
     if (l.cut || !conv) return;
+
+    // Carl queued a follow-up while this turn ran: it goes next, before any resume or nudge.
+    if (await this.deliverQueued(l.convId)) return;
 
     if (stallN) {
       this.stalls.set(l.convId, stallN);

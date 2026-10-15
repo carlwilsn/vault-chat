@@ -9,6 +9,7 @@ import { preprocessMarkdownMath } from "./mdMath";
 import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare, Mic, Paperclip, Scan, AtSign } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FullscreenVoiceBar } from "./VoiceCockpit";
+import { usePending, type PendingKind } from "./pendingInput";
 import { voiceImageMime } from "./voiceImages";
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
@@ -375,6 +376,8 @@ export function ChatPane() {
   const toggleChatsPanel = () =>
     chatFullscreen ? useStore.getState().toggleChatSidebar() : setShowChatsPanel(!showChatsPanel);
   const activeConv = conversations.find((c) => c.id === activeConversationId);
+  // Messages sent while the agent works, until delivered (pendingInput.ts).
+  const localPending = usePending(activeConversationId);
   // What the thread shows beside the text (chatExtras.tsx; uiChoices.ts picks
   // where each goes while Carl decides). Stable props, so the bubbles' memo
   // holds while a reply streams.
@@ -595,15 +598,14 @@ export function ChatPane() {
   let lastVisible = -1;
   for (let i = messages.length - 1; i >= 0; i--) if (!messages[i]!.hidden && !messages[i]!.system) { lastVisible = i; break; }
 
-  const send = async () => {
+  // While the agent works the composer stays open: Enter steers the running
+  // turn (at its next step), Tab queues a follow-up for after it, Esc stops
+  // (pendingInput.ts; chips above the composer until delivered).
+  const send = async (mid?: PendingKind) => {
     if (!ready) return;
     const text = input.trim();
     if (!text && pendingImages.length === 0) return;
-    // While the agent is mid-generation, "send" interrupts: capture
-    // the partial response as a final assistant turn, abort the
-    // current call, then send the new user message as a fresh turn.
-    // See chat-controller's interruptAndSend.
-    const actionKind: "send" | "interrupt" = busy ? "interrupt" : "send";
+    const actionKind: "send" | PendingKind = busy ? mid ?? "steer" : "send";
     // Resolve every @name token in the text — not just the ones picked
     // from the dropdown. Users type @name manually all the time, and
     // without resolution the agent just sees a literal "@foo.md" and
@@ -746,8 +748,31 @@ export function ChatPane() {
       // Enter that commits a composition must not send the message.
       if ((e.nativeEvent as { isComposing?: boolean }).isComposing) return;
       e.preventDefault();
-      if (!busy) send();
+      void send(busy ? "steer" : undefined);
+      return;
     }
+    if (busy && e.key === "Tab" && !e.shiftKey && (input.trim() || pendingImages.length > 0)) {
+      e.preventDefault();
+      void send("queue");
+      return;
+    }
+    if (busy && e.key === "Escape") {
+      e.preventDefault();
+      stop();
+    }
+  };
+  // Pending chips: this machine's (local mode, or a box message in flight) and
+  // the box's queue for this conversation (its `queued`).
+  const boxQueued = activeConv?.queued ?? [];
+  const onBox = new Set(boxQueued.map((q) => q.id));
+  const chips = [
+    ...localPending.filter((p) => !(p.qid && onBox.has(p.qid))).map((p) => ({ id: p.id, kind: p.kind, text: p.text, sending: !!p.sending || !!p.qid })),
+    ...boxQueued.map((q) => ({ id: `box:${activeConv!.id}:${q.id}`, kind: "queue" as PendingKind, text: q.text, sending: false })),
+  ];
+  const editChip = (c: { id: string; text: string }) => {
+    dispatchChatAction({ kind: "unqueue", id: c.id });
+    setInput((prev) => (prev.trim() ? `${c.text}\n${prev}` : c.text));
+    requestAnimationFrame(() => inputRef.current?.focus());
   };
 
   const onInputChange = (v: string) => {
@@ -1055,6 +1080,42 @@ export function ChatPane() {
               verdict={uiChoice("verdict") === "ongoing"}
             />
           )}
+          {chips.length > 0 && !voiceBar && (
+            <div className="mb-1.5 flex flex-col gap-1" data-el="pending-chips">
+              {chips.map((c) => (
+                <div
+                  key={c.id}
+                  data-el="pending"
+                  data-kind={c.kind}
+                  className="group flex items-center gap-2 rounded-lg border border-border/70 bg-muted/30 pl-2.5 pr-1 py-1 text-[12px]"
+                >
+                  <span className="shrink-0 text-[10.5px] text-muted-foreground">
+                    {c.kind === "steer" ? "Steering · next step" : "Queued · after this turn"}
+                  </span>
+                  <span className="flex-1 min-w-0 truncate text-foreground/90">{c.text}</span>
+                  {!c.sending && (
+                    <>
+                      <button
+                        onClick={() => editChip(c)}
+                        className="h-5 px-1.5 rounded text-[10.5px] text-muted-foreground hover:text-foreground hover:bg-accent/60"
+                        title="Edit — back into the composer"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => dispatchChatAction({ kind: "unqueue", id: c.id })}
+                        className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60"
+                        title="Remove"
+                        data-el="pending-remove"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
           {voiceBar ? (
             <FullscreenVoiceBar />
           ) : (
@@ -1182,7 +1243,7 @@ export function ChatPane() {
                 onChange={(e) => onInputChange(e.target.value)}
                 onKeyDown={onKey}
                 onPaste={onPaste}
-                placeholder={archived ? ARCHIVED_THREAD : boxDown ? BOX_UNREACHABLE : ready ? "Ask anything, or / for commands…" : "Open a vault first"}
+                placeholder={archived ? ARCHIVED_THREAD : boxDown ? BOX_UNREACHABLE : !ready ? "Open a vault first" : busy ? "Enter to steer · Tab to queue · Esc to stop" : "Ask anything, or / for commands…"}
                 disabled={!ready}
                 rows={1}
                 className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pr-20", chatFullscreen ? "!pl-11" : "!pl-3")}
@@ -1258,7 +1319,7 @@ export function ChatPane() {
                 {!busy && (
                   <Button
                     size="icon"
-                    onClick={send}
+                    onClick={() => void send()}
                     disabled={!ready || (!input.trim() && pendingImages.length === 0)}
                     className="h-7 w-7 rounded-lg"
                     title="Send"
