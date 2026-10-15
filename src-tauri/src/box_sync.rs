@@ -199,12 +199,17 @@ fn classify_error(stderr: &str) -> &'static str {
         "network is unreachable",
         "no route to host",
         "could not read from remote",
-        "502",
-        "503",
-        "504",
+        "returned error: 502",
+        "returned error: 503",
+        "returned error: 504",
         "does not appear to be a git repository",
         "unable to access",
     ];
+    // A 4xx (auth, missing repo) is a real git problem, not an unreachable box;
+    // bare "502"-style substrings used to match commit hashes in stderr too.
+    if e.contains("returned error: 4") {
+        return "git";
+    }
     if net.iter().any(|n| e.contains(n)) {
         "unreachable"
     } else {
