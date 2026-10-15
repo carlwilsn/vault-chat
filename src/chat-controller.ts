@@ -171,6 +171,8 @@ export async function sendMessage(
     if (inFlightSends.has(targetConvId)) return;
     inFlightSends.add(targetConvId);
   }
+  // The run's abort signal, for the finally below (a stopped run doesn't send the queue).
+  let runSignal: AbortSignal | null = null;
   try {
 
   // Skip compaction for off-target runs — compaction reaches into
@@ -307,6 +309,7 @@ export async function sendMessage(
   const controller = new AbortController();
   if (targetConvId) registerRun(targetConvId, controller);
   const signal = controller.signal;
+  runSignal = signal;
 
   let acc = "";
   // Reasoning accumulated locally too (not just pushed to the global
@@ -669,7 +672,9 @@ export async function sendMessage(
     if (targetConvId) inFlightSends.delete(targetConvId);
     // What Carl sent while it ran and the turn never took (a queued message, or
     // a steer that arrived during its last step): the next turn, one at a time.
-    const next = targetConvId ? takeNext(targetConvId) : null;
+    // After Esc/Stop nothing queued runs by itself: it stays as a chip for
+    // Carl to send or remove.
+    const next = targetConvId && !runSignal?.aborted ? takeNext(targetConvId) : null;
     if (next && targetConvId) {
       setTimeout(() => {
         const off = useStore.getState().activeConversationId !== targetConvId;

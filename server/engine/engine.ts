@@ -1018,7 +1018,8 @@ export class Engine {
     if (l.cut || !conv) return;
 
     // Carl queued a follow-up while this turn ran: it goes next, before any resume or nudge.
-    if (await this.deliverQueued(l.convId)) return;
+    // After a stop, the queue waits for Carl (it stays listed on the conversation).
+    if (!l.stopped && (await this.deliverQueued(l.convId))) return;
 
     if (stallN) {
       this.stalls.set(l.convId, stallN);
