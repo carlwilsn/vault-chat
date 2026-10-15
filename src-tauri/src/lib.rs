@@ -5082,6 +5082,21 @@ async fn box_discover() -> Result<Vec<box_sync::FoundBox>, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// After a box request failed: is this machine on the tailnet at all? One
+/// `tailscale status --json` run; never on a timer.
+#[tauri::command]
+async fn tailscale_check() -> Result<box_sync::TailscaleState, String> {
+    tauri::async_runtime::spawn_blocking(box_sync::tailscale_check)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// The sync chip's "Open Tailscale" (Windows, macOS).
+#[tauri::command]
+fn tailscale_open() -> Result<(), String> {
+    box_sync::open_tailscale()
+}
+
 /// Settings → Box: this vault syncs with (and chats on) `box_url` from now on.
 /// The frontend restarts its sync loop, whose first cycle pushes master.
 #[tauri::command]
@@ -7142,6 +7157,8 @@ pub fn run() {
             vault_box_sync,
             vault_box_config,
             box_discover,
+            tailscale_check,
+            tailscale_open,
             vault_box_connect,
             vault_box_disconnect,
             box_post_json,
