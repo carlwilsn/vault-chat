@@ -673,10 +673,10 @@ export const convFullScenarios: Scenario[] = [
     const sc = scenarioA(
       "conv-a-fullscreen",
       "Full conversation — fullscreen chat with the chats sidebar",
-      "conv-a's world in fullscreen chat (Ctrl+Shift+F), laid out like Claude Code desktop / Codex: the conversations on the left, grouped by project exactly like the Chats overlay (project sections with +, New project, Recent / Earlier, the filter, New), the chat beside it at reading width. Ctrl+B or the sidebar's toggle hides and shows it (remembered); the Chats button in the composer row toggles it too. Cost on the app's default now: the conversation's total, none per reply.",
+      "conv-a's world in fullscreen chat (Ctrl+Shift+F), laid out like Claude Code desktop / Codex: the conversations on the left, grouped by project exactly like the Chats overlay (project sections with +, New project, Recent / Earlier, the filter, New), the chat beside it at reading width. Ctrl+B or the sidebar's toggle hides and shows it (remembered). The composer is fullscreen's own: no Chats or New chat under it (the sidebar has both) and no camera — a + on the left opens Add photos & files (the file dialog: images attach, other files become @-references), Capture a region (the open file shows over the chat with the marquee on; Esc cancels) and Mention a vault file (the @ picker); a mic beside Send starts voice (Ctrl+D works here too — see voice-fullscreen). The scenario ends with the + menu open. Before: the composer row still had Chats, New chat and the camera, and no voice. Cost on the app's default now: the conversation's total, none per reply.",
       lsFor({ ...DEFAULTS, cost: "total" }),
     );
-    return { ...sc, open: [...(sc.open ?? []), { key: "ctrl+shift+F" }, { wait: "[data-el='chats-sidebar']" }, { sleep: 400 }] };
+    return { ...sc, open: [...(sc.open ?? []), { key: "ctrl+shift+F" }, { wait: "[data-el='chats-sidebar']" }, { sleep: 400 }, { click: "[data-el='composer-plus']", optional: true }, { sleep: 300 }] };
   })(),
   ...Object.entries(CHOICE_OPTIONS).flatMap(([choice, opts]) =>
     opts.map((opt) =>

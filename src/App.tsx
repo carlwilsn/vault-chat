@@ -19,6 +19,7 @@ import type { NoteAnchor } from "./notes";
 import { useStore } from "./store";
 import { gitInitIfNeeded } from "./git";
 import { useGlobalAnchorClickHandler } from "./linkNav";
+import { toggleVoice } from "./voice-elevenlabs";
 import { applyHljsTheme } from "./main";
 import {
   ensureVaultSyncLoop,
@@ -93,6 +94,39 @@ export default function App() {
   const vaultPath = useStore((s) => s.vaultPath);
   const fitWidth = useMemo(() => computeFitWidth(files), [files]);
   const leftMax = Math.max(fitWidth, 600);
+
+  // Fullscreen chat has no viewer, so "Capture a region" (the + menu, the voice
+  // typed reply) shows the open file over the chat with the marquee on, and
+  // closes once the capture is taken (or Esc).
+  const [captureOver, setCaptureOver] = useState(false);
+  const capturePending = useStore((s) => s.chatPaneCapturePending || s.voiceCapturePending);
+  useEffect(() => {
+    const onCapture = () => setCaptureOver(true);
+    window.addEventListener("vc-fullscreen-capture", onCapture);
+    return () => window.removeEventListener("vc-fullscreen-capture", onCapture);
+  }, []);
+  useEffect(() => {
+    if (!captureOver) return;
+    // The viewer registers its marquee listener on mount; start it after.
+    const id = setTimeout(() => window.dispatchEvent(new CustomEvent("vc-marquee-toggle")), 80);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      useStore.getState().setChatPaneCapturePending(false);
+      useStore.getState().setVoiceCapturePending(false);
+      setCaptureOver(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      clearTimeout(id);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [captureOver]);
+  useEffect(() => {
+    if (captureOver && !capturePending) setCaptureOver(false);
+  }, [captureOver, capturePending]);
+  useEffect(() => {
+    if (!chatFullscreen) setCaptureOver(false);
+  }, [chatFullscreen]);
 
   const [layoutKey, setLayoutKey] = useState<string>("empty");
   const lastVaultRef = useRef<string | null>(null);
@@ -433,6 +467,19 @@ export default function App() {
 
   useGlobalAnchorClickHandler();
 
+  // Ctrl+D — voice mode on/off. Here rather than in the titlebar so it works
+  // in fullscreen chat, which has no titlebar.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        toggleVoice();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const focusComposer = () => {
     // Composer focus is owned by ChatPane; emit a custom event so
     // we don't have to thread a ref through the Allotment tree.
@@ -485,6 +532,17 @@ export default function App() {
             <ChatPane />
           </div>
         </div>
+        {captureOver && (
+          <div className="fixed inset-0 z-40 flex flex-col bg-background" data-el="fullscreen-capture">
+            <div className="h-8 shrink-0 flex items-center justify-center gap-2 border-b border-border text-[11.5px] text-muted-foreground">
+              Drag over the region to capture
+              <span className="text-muted-foreground/60">· Esc to cancel</span>
+            </div>
+            <div className="flex-1 min-h-0">
+              <MarkdownArea />
+            </div>
+          </div>
+        )}
         {overlays}
       </div>
     );

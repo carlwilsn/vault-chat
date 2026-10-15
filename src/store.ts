@@ -122,6 +122,9 @@ export type ChatMessage = {
   // absence. INERT for now (no merge logic reads it yet); it just rides on disk
   // so it has propagated everywhere before a later release dedupes/merges by id.
   mid?: string;
+  // Voice lines: what the bubble shows instead of `content` — the same words
+  // with the spoken math as LaTeX (voiceMath.ts). `content` stays as spoken.
+  display?: string;
   // [ask redesign] A fresh option set the ask agent proposed mid-conversation
   // (via its ProposeOptions tool). The phone renders these as tappable cards
   // that STACK under the exchange — the original options at the top of the ask
@@ -535,6 +538,9 @@ type State = {
   // amplitude crosses a threshold (or speaking ends). Drives the
   // cockpit's sine-wave visualizer during the otherwise-silent gap.
   voiceThinking: boolean;
+  // The voice session's mic is muted (the fullscreen voice bar's mute, the
+  // typed-reply panel). Set by setVoiceMicMuted; cleared when the session ends.
+  voiceMicMuted: boolean;
   // True between mic-click and the ElevenLabs session reporting ready
   // — covers agent provisioning, signed-URL fetch, and the WebRTC
   // handshake. The cockpit shows "Connecting…" during this window.
@@ -980,6 +986,7 @@ export const useStore = create<State>((set) => ({
   voiceThinking: false,
   voiceConnecting: false,
   voiceCurrentTool: null,
+  voiceMicMuted: false,
   viewport: null,
   tokenUsage: { prompt: 0, completion: 0, total: 0 },
   lastContext: 0,

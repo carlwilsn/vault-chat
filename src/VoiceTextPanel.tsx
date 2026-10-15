@@ -206,7 +206,9 @@ export function VoiceTextPanel() {
     setEditPromptCapturePending(false);
     setNoteCapturePending(false);
     setVoiceCapturePending(true);
-    window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
+    // Fullscreen chat has no viewer: App shows the file over the chat for it.
+    const st = useStore.getState();
+    window.dispatchEvent(new CustomEvent(st.chatFullscreen && !st.popoutOpen ? "vc-fullscreen-capture" : "vc-marquee-toggle"));
   };
 
   const removeImage = () => setPendingImage(null);

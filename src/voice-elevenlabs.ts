@@ -11,6 +11,9 @@ import { applyNotebookEdit, readPdf, stripNotebook, assertCanWrite } from "./too
 import { loadSessionContext } from "./context";
 import { loadSkills, skillPromptIndex } from "./skills";
 import { voiceLineEntry, voiceToolEntry } from "./activityCore";
+import { cachedVoiceMath, displayVoiceMath, prefetchVoiceMath } from "./voiceMath";
+import { VoiceImagePusher, lookingAtNote, thumbDataUrl, voiceImageMime, type PushResult } from "./voiceImages";
+import { fileKind, isUnreadableAsText } from "./fileKind";
 
 // The shared context stream (src/activity.ts), when voice runs on this laptop:
 // the box records its own sessions (server/voice.ts). Loaded lazily — the box
@@ -54,7 +57,14 @@ let transcriptMirror: { push: (m: ChatMessage) => unknown } | null = null;
 // this vault for ScrollTo.
 let boxVaultRoot: string | null = null;
 function voiceAppend(m: ChatMessage): void {
-  useStore.getState().appendMessage(m);
+  // Spoken math shows as notation (voiceMath.ts): already formatted (the agent's
+  // lines are prefetched while their audio plays), or formatted when it returns.
+  const shown = m.system ? undefined : cachedVoiceMath(String(m.content ?? ""));
+  useStore.getState().appendMessage(shown ? { ...m, display: shown } : m);
+  if (shown === undefined && !m.system) {
+    const last = useStore.getState().messages[useStore.getState().messages.length - 1];
+    if (last && last.content === m.content) displayVoiceMath(last);
+  }
   transcriptMirror?.push(m);
   if (!transcriptMirror && !m.system && (m.role === "user" || m.role === "assistant")) {
     recordLocalVoice(voiceLineEntry(m.role, String(m.content ?? ""), useStore.getState().activeConversationId));
@@ -124,7 +134,7 @@ const AGENT_ID_KEY = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v21-askagent";
+const AGENT_CONFIG_VERSION = "v22-look";
 const AGENT_VERSION_KEY = "vault_chat_elevenlabs_agent_config_version";
 // Signature of the per-vault custom tools baked into the cached agent. Custom
 // tools are part of the agent's tool schema (provisioned at create time), so a
@@ -472,6 +482,31 @@ const CLIENT_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: "ShowFile",
+    description:
+      "Open a file in the user's viewer — 'pull up the diagram', 'show me that photo'. Images are attached to your context so you can see them; a PDF arrives whole. Returns what was opened.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute path to the file (vault root + a path from the file index).",
+        },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "LookAtScreen",
+    description:
+      "See what the user is looking at right now — call it for 'what's this?', 'look at this', 'can you see it?'. Attaches the open image (or the PDF page on screen) to your context, or returns the text in view.",
+    parameters: {
+      type: "object" as const,
+      properties: {},
+      required: [],
+    },
+  },
+  {
     name: "ListNotes",
     description:
       "List the user's saved notes (their scratchpad) for the current vault. Each note has an id, timestamp, status (open|resolved), anchored file path(s), and body. Use when the user asks 'what did I flag', 'what's in my notes', etc. Defaults to open notes; pass status='resolved' for the archive or 'all' for everything.",
@@ -676,7 +711,7 @@ const CLIENT_TOOL_DEFINITIONS = [
 /** The built-in voice tools by name (custom vault tools are not among them). */
 export const BUILTIN_VOICE_TOOL_NAMES: string[] = CLIENT_TOOL_DEFINITIONS.map((t) => t.name);
 /** Tools that act on the viewer: they stay in the client even when the vault runs on a box. */
-export const LOCAL_VOICE_TOOLS = new Set(["ScrollTo"]);
+export const LOCAL_VOICE_TOOLS = new Set(["ScrollTo", "ShowFile", "LookAtScreen"]);
 /** A voice tool run elsewhere (the box): name + args -> the result the agent hears. */
 export type RemoteVoiceTool = (name: string, args: any) => Promise<string>;
 
@@ -835,6 +870,7 @@ export async function startElevenLabsSession(): Promise<void> {
 
   lastViewportSent = null;
   sentPdfPaths.clear();
+  imagePusher.reset();
   sessionMutationCount = 0;
   sessionFirstUserText = null;
   resetAgentEnvelope();
@@ -937,7 +973,7 @@ ${shared}` : "");
         // reality. Critical for end_call / end-phrase paths where
         // the click handler never ran. Idempotent for manual ends
         // (endElevenLabsSession already set it).
-        useStore.setState({ voiceMode: false });
+        useStore.setState({ voiceMode: false, voiceMicMuted: false });
         useStore.getState().setVoiceConnecting(false);
         useStore.getState().setVoiceListening(false);
         useStore.getState().setVoiceSpeaking(false);
@@ -983,6 +1019,8 @@ ${shared}` : "");
           // own silence window before landing in the chat so rapid-fire
           // turns flush in order, not all at once.
           pendingAgentQueue.push(text);
+          // Its math is formatted while the audio plays, so the line lands rendered.
+          prefetchVoiceMath(text);
           void drainAgentQueue();
         }
       },
@@ -1189,7 +1227,7 @@ export async function endElevenLabsSession(): Promise<void> {
   // waitForSpeechEnd's evaluate) now sees consistent state — no
   // window where voiceMode=false but voiceSpeaking is still true
   // from the prior turn.
-  useStore.setState({ voiceMode: false });
+  useStore.setState({ voiceMode: false, voiceMicMuted: false });
   useStore.getState().setVoiceListening(false);
   useStore.getState().setVoiceSpeaking(false);
   useStore.getState().setVoiceConnecting(false);
@@ -1201,6 +1239,42 @@ export async function endElevenLabsSession(): Promise<void> {
   } catch (e) {
     console.warn("[voice-eleven] end session failed:", e);
   }
+}
+
+/** The mic button and Ctrl+D: start a session, or end the live one. voiceMode
+ *  goes on at once so the click shows; startElevenLabsSession's error paths and
+ *  onDisconnect turn it off again. */
+export function toggleVoice(): void {
+  if (!useStore.getState().voiceMode) {
+    useStore.setState({ voiceMode: true });
+    void startElevenLabsSession();
+  } else {
+    void endElevenLabsSession();
+  }
+}
+
+/** [preview harness] Run the live-session paths against a scripted ElevenLabs
+ *  conversation (the preview has no mic or ElevenLabs): levels, image uploads,
+ *  mute, end. Null ends it as onDisconnect would. `line` lands a finished
+ *  line as onMessage does (the agent's math prefetched while it "speaks"). */
+export function adoptVoiceSessionForPreview(conv: unknown): { line: (role: "user" | "agent", text: string) => void } {
+  const line = (role: "user" | "agent", text: string) => {
+    if (role === "agent") prefetchVoiceMath(text);
+    voiceAppend({ role: role === "user" ? "user" : "assistant", content: text });
+  };
+  if (conv) {
+    activeConversation = conv as ActiveConversation;
+    sentPdfPaths.clear();
+    imagePusher.reset();
+    useStore.setState({ voiceMode: true, voiceMicMuted: false });
+    useStore.getState().setVoiceConnecting(false);
+    startViewportWatch();
+  } else {
+    activeConversation = null;
+    stopViewportWatch();
+    useStore.setState({ voiceMode: false, voiceMicMuted: false });
+  }
+  return { line };
 }
 
 // Gate primitive for "the agent has finished speaking this turn."
@@ -1355,6 +1429,92 @@ async function pushPdfIfNeeded(): Promise<void> {
   }
 }
 
+// Images: the same ambient vision for an image the user has open, shows via
+// ShowFile, or asks about with LookAtScreen (voiceImages.ts: once per key a
+// session, size-capped). In box mode the image is in the vault on both sides,
+// so it is read here.
+const imagePusher = new VoiceImagePusher();
+
+/** Send the image file at `path` to the live voice conversation (once a session). */
+export async function pushVoiceImageFile(path: string, extra?: string): Promise<PushResult | "no-session"> {
+  const conv = activeConversation;
+  if (!conv) return "no-session";
+  const mime = voiceImageMime(path);
+  if (!mime) return "unsupported";
+  if (imagePusher.has(path)) return "duplicate";
+  try {
+    const bytes = await invoke<number[]>("read_binary_file", { path });
+    const blob = new Blob([new Uint8Array(bytes)], { type: mime });
+    const name = path.split(/[\\/]/).pop() ?? path;
+    return await imagePusher.push(conv, path, blob, lookingAtNote(name, extra), () => activeConversation === conv);
+  } catch (e) {
+    console.warn("[voice-eleven] image read failed:", e);
+    return "failed";
+  }
+}
+
+/** Send an image already in memory (a capture of the screen) under `key`. */
+export async function pushVoiceImageDataUrl(key: string, dataUrl: string, name: string, extra?: string): Promise<PushResult | "no-session"> {
+  const conv = activeConversation;
+  if (!conv) return "no-session";
+  try {
+    const blob = await (await fetch(dataUrl)).blob();
+    return await imagePusher.push(conv, key, blob, lookingAtNote(name, extra), () => activeConversation === conv);
+  } catch (e) {
+    console.warn("[voice-eleven] capture push failed:", e);
+    return "failed";
+  }
+}
+
+// An absolute path on this machine for a path the agent gave: the box's vault
+// root mapped to this vault, a vault-relative one joined to it.
+function localPathFor(p: string | undefined): string | null {
+  const state = useStore.getState();
+  let path = (p ?? "").trim();
+  if (!path) return null;
+  if (boxVaultRoot && state.vaultPath && path.startsWith(boxVaultRoot)) {
+    path = path.slice(boxVaultRoot.length).replace(/^[\\/]+/, "");
+  }
+  if (!/^([a-z]:[\\/]|[\\/])/i.test(path) && state.vaultPath) {
+    path = `${state.vaultPath.replace(/[\\/]+$/, "")}/${path}`;
+  }
+  return path;
+}
+
+// A small copy of an image for the thread (fullscreen chat shows what the
+// agent opened there), or null.
+async function readImageThumb(path: string): Promise<string | null> {
+  const mime = voiceImageMime(path);
+  if (!mime) return null;
+  try {
+    const bytes = await invoke<number[]>("read_binary_file", { path });
+    return await thumbDataUrl(new Blob([new Uint8Array(bytes)], { type: mime }));
+  } catch {
+    return null;
+  }
+}
+
+// The PDF page on screen as a PNG, from the viewer's own canvas (null when
+// the viewer isn't showing it — fullscreen chat, another file).
+function capturePdfPage(page: number): string | null {
+  try {
+    const c = document.querySelector<HTMLCanvasElement>(`canvas.pdf-page[data-page="${page}"]`);
+    if (!c || !c.width) return null;
+    return c.toDataURL("image/png");
+  } catch {
+    return null;
+  }
+}
+
+// The image the user has open (follow-along), pushed like the PDF.
+async function pushImageIfNeeded(): Promise<void> {
+  const state = useStore.getState();
+  if (!activeConversation || !state.followAlong) return;
+  const file = state.currentFile;
+  if (!file || fileKind(file).kind !== "image") return;
+  await pushVoiceImageFile(file);
+}
+
 export function pushViewportContextDebounced(): void {
   if (!activeConversation) return;
   if (scrollDebounceTimer !== null) clearTimeout(scrollDebounceTimer);
@@ -1377,6 +1537,7 @@ export function pushViewportContextDebounced(): void {
     // refocusing on the same PDF doesn't re-trigger an upload because
     // sentPdfPaths is a set.
     void pushPdfIfNeeded();
+    void pushImageIfNeeded();
   }, SCROLL_DEBOUNCE_MS);
 }
 
@@ -1414,6 +1575,7 @@ export function setVoiceMicMuted(muted: boolean): void {
   if (!conv) return;
   try {
     conv.setMicMuted(muted);
+    useStore.setState({ voiceMicMuted: muted });
   } catch (e) {
     console.warn("[voice-eleven] setMicMuted failed:", e);
   }
@@ -1901,6 +2063,13 @@ function buildSystemPrompt(
     "Document context (when a file is open):",
     "- You can see the full PDF the user has open — text, equations, diagrams, layout, all of it. Answer visual questions directly. Don't claim you can't see the screen.",
     "- The viewport context tells you which page they're currently on. When they say 'this', 'that math', 'explain this' — they mean their current page, not pages you recently discussed or pages that seem related. If they want a different page they'll name it.",
+    "",
+    "Seeing what the user sees:",
+    "- When the user opens an image, it is attached to your context with a short note — you can see it.",
+    "- ShowFile opens a file for the user ('pull up the figure'). An image you show is attached for you too.",
+    "- LookAtScreen when they say 'what's this?' / 'look at this' and you can't already see it.",
+    "",
+    "Math: what you say is spoken AND shown in the chat, where spoken math is rendered as notation automatically. Say equations in words ('alpha plus beta squared', 'x sub i over n'); never write LaTeX, symbols or dollar signs — they are read aloud literally.",
     "",
     "ScrollTo — moves the user's viewport to a page or anchor:",
     "- Reach for it when navigation is the natural response: they ask to move, they're going through pages with you, or you need to point at a different page to answer their question. Don't scroll just because you're mentioning another page — only when seeing it actually matters.",
@@ -2750,6 +2919,54 @@ export function buildClientToolHandlers(
         return `Scrolled to ${target.anchor} in ${target.path}`;
       },
     ),
+    ShowFile: withTracking("ShowFile", async (args: { path?: string }) => {
+      const path = localPathFor(args.path);
+      if (!path) return "Error: path is required.";
+      const name = path.split(/[\\/]/).pop() ?? path;
+      const kind = fileKind(path).kind;
+      try {
+        const content = isUnreadableAsText(path) ? "" : await invoke<string>("read_text_file", { path });
+        useStore.getState().setCurrentFile(path, content);
+      } catch (e) {
+        return `Error: ${(e as any)?.message ?? String(e)}`;
+      }
+      if (kind !== "image") return `Opened ${name} for the user.`;
+      // Fullscreen chat has no viewer: the image shows in the thread instead.
+      const s = useStore.getState();
+      if (s.chatFullscreen && !s.popoutOpen) {
+        const thumb = await readImageThumb(path);
+        if (thumb) voiceAppend({ role: "assistant", content: `Showing ${name}`, attachments: [{ imageDataUrl: thumb, sourcePath: path }] });
+      }
+      const r = await pushVoiceImageFile(path);
+      return r === "sent" || r === "duplicate"
+        ? `Showing ${name}. The image is attached — you can see it.`
+        : `Showing ${name}, but the image couldn't be attached (${r}).`;
+    }),
+    LookAtScreen: withTracking("LookAtScreen", async () => {
+      const state = useStore.getState();
+      const file = state.currentFile;
+      if (!file) return "Nothing is open on the user's screen.";
+      const name = file.split(/[\\/]/).pop() ?? file;
+      const kind = fileKind(file).kind;
+      if (kind === "image") {
+        const r = await pushVoiceImageFile(file);
+        if (r === "sent") return `Attached ${name} — you can see it now.`;
+        if (r === "duplicate") return `${name} is already in your context — look at it.`;
+        return `Couldn't attach ${name} (${r}).`;
+      }
+      if (kind === "pdf") {
+        const page = state.viewport?.path === file ? state.viewport.page : undefined;
+        const shot = page ? capturePdfPage(page) : null;
+        if (shot && page) {
+          const r = await pushVoiceImageDataUrl(`${file}#page=${page}`, shot, name, `page ${page}`);
+          if (r === "sent" || r === "duplicate") return `Attached page ${page} of ${name} as the user sees it.`;
+        }
+        void pushPdfIfNeeded();
+        return `The whole PDF ${name} is in your context${page ? `; the user is on page ${page}` : ""}.`;
+      }
+      const text = buildViewportContextText(state);
+      return text || `${name} is open, but nothing in view can be read.`;
+    }),
     ListNotes: withTracking(
       "ListNotes",
       async (args: { status?: "open" | "resolved" | "all"; limit?: number }) => {

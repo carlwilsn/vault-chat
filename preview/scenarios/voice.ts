@@ -92,7 +92,171 @@ const TASK =
 
 const pause = (ms = 1200): Step => ({ sleep: ms });
 
+// ---- voice in fullscreen chat ---------------------------------------------------
+// The ElevenLabs session is scripted (adoptVoiceSessionForPreview): its levels
+// come from the phase below (Carl talking → input, the agent → output), its
+// uploads are kept in `uploads` (what the agent was shown). Lines land the way
+// onMessage lands them, so the math pass runs for real against the fake model.
+
+const FIG = "figs/loss-landscape.png";
+let phase: "idle" | "user" | "agent" = "idle";
+let voiceLine: ((role: "user" | "agent", text: string) => void) | null = null;
+/** What the scripted conversation was sent: the note and the bytes, per image. */
+const uploads: Array<{ text?: string; size: number }> = [];
+
+function levels(on: boolean): Uint8Array {
+  const a = new Uint8Array(64);
+  if (!on) return a;
+  const t = performance.now() / 160;
+  for (let i = 0; i < a.length; i++) {
+    const shape = Math.max(0, 1 - i / 40);
+    a[i] = Math.round(255 * shape * (0.35 + 0.65 * Math.abs(Math.sin(t + i * 0.7) * Math.cos(t * 0.6 + i * 0.23))));
+  }
+  return a;
+}
+
+function scriptedConversation() {
+  const files = new Map<string, number>();
+  return {
+    getInputByteFrequencyData: () => levels(phase === "user"),
+    getOutputByteFrequencyData: () => levels(phase === "agent"),
+    async uploadFile(b: Blob) {
+      const id = `file-${files.size + 1}`;
+      files.set(id, b.size);
+      return { fileId: id };
+    },
+    sendMultimodalMessage(m: { text?: string; fileId: string }) {
+      uploads.push({ text: m.text, size: files.get(m.fileId) ?? 0 });
+    },
+    sendContextualUpdate() {},
+    sendUserMessage() {},
+    setMicMuted() {},
+    setVolume() {},
+    async endSession() {},
+  };
+}
+
+/** A small rendered figure (a loss landscape) written into the vault as a PNG. */
+async function writeFigure(vault: string): Promise<void> {
+  const c = document.createElement("canvas");
+  c.width = 480;
+  c.height = 320;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#ffffff";
+  g.fillRect(0, 0, c.width, c.height);
+  for (let k = 9; k >= 1; k--) {
+    g.beginPath();
+    g.ellipse(200, 170, 22 * k, 11 * k, -0.2, 0, Math.PI * 2);
+    g.fillStyle = `hsl(${210 + k * 14}, 70%, ${92 - k * 5}%)`;
+    g.fill();
+  }
+  g.beginPath();
+  g.arc(390, 90, 28, 0, Math.PI * 2);
+  g.fillStyle = "hsl(20, 80%, 70%)";
+  g.fill();
+  g.fillStyle = "#333";
+  g.font = "15px sans-serif";
+  g.fillText("loss(α, β)", 16, 24);
+  g.fillText("β →", 420, 306);
+  g.fillText("α ↑", 12, 300);
+  const blob: Blob = await new Promise((r) => c.toBlob((b) => r(b!), "image/png"));
+  const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
+  const [dir, name] = [`${vault}/${FIG.split("/")[0]}`, FIG.split("/")[1]];
+  await (window as any).__TAURI_INTERNALS__.invoke("write_binary_file_unique", { dir, name, bytes });
+}
+
+const vfsStart: Step = {
+  run: async ({ vault }) => {
+    phase = "idle";
+    uploads.length = 0;
+    (window as any).__vfsUploads = uploads;
+    const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+    const v: any = await import(/* @vite-ignore */ "/src/voice-elevenlabs.ts");
+    await writeFigure(vault);
+    useStore.getState().newConversation();
+    v.ensureVoiceConversation();
+    // The before tree has no voice in fullscreen (no titlebar there, and Ctrl+D
+    // lived in it): its lines land as plain text, as they would have been spoken.
+    voiceLine = v.adoptVoiceSessionForPreview
+      ? v.adoptVoiceSessionForPreview(scriptedConversation()).line
+      : (role: string, text: string) => useStore.getState().appendMessage({ role: role === "user" ? "user" : "assistant", content: text });
+  },
+};
+
+/** One scripted turn: Carl talks (input waves), tools run, the agent speaks (output waves), its line lands. */
+const vfsTurn = (heard: string, calls: Array<[string, Record<string, unknown>]>, reply: string): Step[] => [
+  { run: () => void (phase = "user") },
+  { sleep: 1400 },
+  {
+    run: async () => {
+      phase = "idle";
+      voiceLine?.("user", heard);
+      const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+      const v: any = await import(/* @vite-ignore */ "/src/voice-elevenlabs.ts");
+      const h = v.buildClientToolHandlers();
+      for (const [name, args] of calls) if (h[name]) await h[name](args);
+      useStore.getState().setVoiceSpeaking(true);
+      phase = "agent";
+    },
+  },
+  { sleep: 1600 },
+  {
+    run: async () => {
+      const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+      useStore.getState().setVoiceSpeaking(false);
+      phase = "idle";
+      voiceLine?.("agent", reply);
+    },
+  },
+  { sleep: 900 },
+];
+
+const VFS = {
+  u1: "so if the loss is alpha plus beta squared, what's the gradient with respect to beta?",
+  a1: "It's two beta. The alpha term drops out, so the gradient is just two beta.",
+  u2: "Pull up the loss landscape figure.",
+  a2: "Here it is. The valley runs along beta equals zero, which matches that gradient.",
+  u3: "What's this bump on the right?",
+  a3: "That's a local maximum near theta sub one equals two; the descent steers around it.",
+};
+
+/** The display pass's answers (the fake model), per line. */
+const VFS_MATH: Record<string, string> = {
+  [VFS.u1]: "so if the loss is $\\alpha + \\beta^2$, what's the gradient with respect to $\\beta$?",
+  [VFS.a1]: "It's $2\\beta$. The $\\alpha$ term drops out, so the gradient is just $2\\beta$.",
+  [VFS.a2]: "Here it is. The valley runs along $\\beta = 0$, which matches that gradient.",
+  [VFS.a3]: "That's a local maximum near $\\theta_1 = 2$; the descent steers around it.",
+};
+
 export const voiceScenarios: Scenario[] = [
+  {
+    id: "voice-fullscreen",
+    title: "Voice in fullscreen chat — waves at the bottom, math rendered, it sees the image",
+    group: "Voice · Fullscreen",
+    notes:
+      "Fullscreen chat (Ctrl+Shift+F), then voice — the composer's mic, or Ctrl+D, which now works in fullscreen too. The ElevenLabs side is scripted. After: the composer becomes a voice bar — the waves (Carl's input while he talks, the agent's output while it speaks), type, mute, End. Three turns: (1) “alpha plus beta squared…” — each line lands as spoken, then the display pass (the Background role's model, faked here) renders its math: α + β², 2β. The audio and the saved text stay as spoken. (2) “pull up the loss landscape figure” — ShowFile opens it; fullscreen has no viewer, so it shows in the thread, and the image goes to the voice conversation with a note (window.__vfsUploads lists what it was sent). (3) “what's this bump?” — LookAtScreen: the image is already in its context. Before: fullscreen had no voice (no titlebar mic, and Ctrl+D lived in the titlebar); the lines show as plain spoken text.",
+    clock: "2026-10-13T10:00:00",
+    build: (ctx) => P3.build(ctx),
+    llm: {
+      scripts: Object.entries(VFS_MATH).map(([line, out], i) => ({
+        id: `voice-math-${i + 1}`,
+        match: new RegExp(`^${line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`),
+        steps: [{ text: out, chunkMs: 4 }],
+      })),
+    },
+    open: [
+      { key: "ctrl+shift+F" },
+      { wait: "[data-el='chats-sidebar']" },
+      { sleep: 400 },
+      vfsStart,
+      { sleep: 600 },
+      ...vfsTurn(VFS.u1, [], VFS.a1),
+      ...vfsTurn(VFS.u2, [["ShowFile", { path: FIG }]], VFS.a2),
+      ...vfsTurn(VFS.u3, [["LookAtScreen", {}]], VFS.a3),
+      { sleep: 800 },
+    ],
+    surfaces: ["desktop"],
+  },
   {
     id: "voice-box",
     title: "Voice on the box — its tools run there, long work goes to the agent",
