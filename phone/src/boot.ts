@@ -4,6 +4,7 @@
 // that React renders (App.tsx) through element ids, exactly as before.
 import { installMock } from "./mock";
 import * as X from "./extras";
+import { createPhoneMarkdown, domToHtml } from "./markdown";
 
 export function boot(): void {
   const qs = new URLSearchParams(location.search);
@@ -93,132 +94,14 @@ export function boot(): void {
   };
 
   // ---------- markdown ----------
+  // The desktop's pipeline (./markdown.ts → src/mdPipeline.ts): the same math
+  // scanner, tables, nested lists, code, footnotes and sanitised HTML as the
+  // viewer and the chat, rendered to HTML with KaTeX already applied.
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  const isVaultPath = (u) => !/^[a-z][a-z0-9+.-]*:/i.test(u) && !u.startsWith("//");
-  const inline = (s) => {
-    let out = "";
-    for (const part of s.split(/(`[^`]+`)/)) {
-      if (part.startsWith("`") && part.endsWith("`") && part.length > 2) { out += "<code>" + esc(part.slice(1, -1)) + "</code>"; continue; }
-      let t = esc(part);
-      t = t.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, url) => '<img src="' + (isVaultPath(url) ? fileUrl(url) : url) + '" alt="' + alt + '" loading="lazy">');
-      t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => '<a href="' + (isVaultPath(url) ? fileUrl(url) : url) + '" target="_blank" rel="noopener">' + label + "</a>");
-      // Bare URLs become links. Word-boundary guards keep the emphasis rules
-      // below out of URLs (underscores in paths) and out of snake_case.
-      t = t.replace(/(^|[\s(])(https?:\/\/[^\s<>"')]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
-      t = t.replace(/\*\*\*([^*]+)\*\*\*/g, "<b><i>$1</i></b>");
-      t = t.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, "$1<i>$2</i>");
-      t = t.replace(/(^|[\s(])__([^_]+)__(?=[\s.,!?;:)]|$)/g, "$1<b>$2</b>");
-      t = t.replace(/(^|[\s(])_([^_\s][^_]*)_(?=[\s.,!?;:)]|$)/g, "$1<i>$2</i>");
-      t = t.replace(/~~([^~]+)~~/g, "<s>$1</s>");
-      out += t;
-    }
-    return out;
-  };
-  // List parsing with real nesting: indentation depth opens sublists (inside
-  // the parent <li>), task bullets render checkboxes, and ordered/unordered
-  // mix freely. The old flat parser collapsed every level to one — the main
-  // "markdown isn't fully rendering" culprit on agent output.
-  const listLine = (s) => {
-    const m = s.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
-    return m ? { indent: m[1].replace(/\t/g, "  ").length, ordered: /\d/.test(m[2]), text: m[3] } : null;
-  };
-  function buildList(items) {
-    let h = "";
-    const stack = [];
-    const close1 = () => { h += stack.pop().ordered ? "</li></ol>" : "</li></ul>"; };
-    for (const it of items) {
-      const task = it.text.match(/^\[([ xX])\]\s+(.*)$/);
-      const body = task ? (task[1] === " " ? "☐ " : "☑ ") + inline(task[2]) : inline(it.text);
-      if (!stack.length || it.indent > stack[stack.length - 1].indent) {
-        h += (it.ordered ? "<ol>" : "<ul>") + "<li>" + body;
-        stack.push({ indent: it.indent, ordered: it.ordered });
-      } else {
-        while (stack.length > 1 && stack[stack.length - 1].indent > it.indent) close1();
-        h += "</li><li>" + body;
-      }
-    }
-    while (stack.length) close1();
-    return h;
-  }
-  const mdCore = (src) => {
-    const lines = (src || "").replace(/\r\n/g, "\n").split("\n");
-    let html = "", i = 0;
-    const pbuf = [];
-    const flushP = () => { if (pbuf.length) html += "<p>" + pbuf.map(inline).join("<br>") + "</p>"; pbuf.length = 0; };
-    while (i < lines.length) {
-      const l = lines[i];
-      if (/^```/.test(l)) { flushP(); const lang = (l.match(/^```\s*(\w+)/) || [])[1] || ""; const f = []; i++; while (i < lines.length && !/^```/.test(lines[i])) f.push(lines[i++]); i++; html += "<pre><code>" + esc(f.join("\n")) + "</code></pre>"; continue; }
-      if (/^\s*$/.test(l)) { flushP(); i++; continue; }
-      const h = l.match(/^(#{1,6})\s+(.*)$/);
-      if (h) { flushP(); const n = Math.min(h[1].length, 3); html += `<h${n}>` + inline(h[2]) + `</h${n}>`; i++; continue; }
-      if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(l)) { flushP(); html += "<hr>"; i++; continue; }
-      if (/^\s*>/.test(l)) { flushP(); const qd = []; while (i < lines.length && /^\s*>/.test(lines[i])) qd.push(lines[i++].replace(/^\s*>\s?/, "")); html += "<blockquote>" + md(qd.join("\n")) + "</blockquote>"; continue; }
-      if (listLine(l)) {
-        flushP();
-        const items = [];
-        while (i < lines.length) {
-          const li = listLine(lines[i]);
-          if (li) { items.push(li); i++; continue; }
-          // An indented continuation line belongs to the previous item.
-          if (items.length && /^\s{2,}\S/.test(lines[i])) { items[items.length - 1].text += " " + lines[i].trim(); i++; continue; }
-          break;
-        }
-        html += buildList(items);
-        continue;
-      }
-      if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
-        flushP();
-        const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(c.trim()));
-        html += '<div class="tablewrap"><table><thead><tr>' + cells(l).map((c) => "<th>" + c + "</th>").join("") + "</tr></thead><tbody>";
-        i += 2;
-        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) html += "<tr>" + cells(lines[i++]).map((c) => "<td>" + c + "</td>").join("") + "</tr>";
-        html += "</tbody></table></div>"; continue;
-      }
-      pbuf.push(l); i++;
-    }
-    flushP();
-    return html;
-  };
-
-  // Math-aware markdown: protect $$…$$ and *math-like* $…$ from the markdown pass
-  // (so emphasis never mangles TeX), then KaTeX auto-renders them in the DOM.
-  //
-  // A bare "$" is usually CURRENCY, not math ("$0 GPU cost", "~$0.26"). The old
-  // greedy /\$…\$/ matched from one dollar to the next and KaTeX's single-"$"
-  // delimiter rendered the text between as math — eating chunks of supervisor
-  // threads. So: only treat $…$ as math when it looks like math (the char after
-  // the opening "$" is non-space AND non-digit, and the char before the closing
-  // "$" is non-space — currency like $0/$5 never qualifies), restore it as
-  // \(…\), and give the DOM typeset NO single-"$" delimiter at all. Bare dollars
-  // then always stay literal text.
-  let mathSeq = 0;
-  const md = (src) => {
-    const id = ++mathSeq, math = [];
-    // \[…\] and \(…\) too: unprotected, the markdown pass ate their
-    // backslashes and underscores (emphasis) before KaTeX ever saw them.
-    const s = String(src == null ? "" : src)
-      .replace(/\\\[([\s\S]+?)\\\]/g, (m, x) => { math.push("\\[" + x + "\\]"); return "@@M" + id + "_" + (math.length - 1) + "@@"; })
-      .replace(/\\\(([\s\S]+?)\\\)/g, (m, x) => { math.push("\\(" + x + "\\)"); return "@@M" + id + "_" + (math.length - 1) + "@@"; })
-      .replace(/\$\$([\s\S]+?)\$\$/g, (m, x) => { math.push("$$" + x + "$$"); return "@@M" + id + "_" + (math.length - 1) + "@@"; })
-      .replace(/\$([^\s\d$][^\n$]*?[^\s$]|[^\s\d$])\$/g, (m, x) => { math.push("\\(" + x + "\\)"); return "@@M" + id + "_" + (math.length - 1) + "@@"; });
-    // Escaped back in (KaTeX reads the text, so `a<b` stays math, never markup).
-    return mdCore(s).replace(new RegExp("@@M" + id + "_(\\d+)@@", "g"), (m, i) => esc(math[+i]));
-  };
-  function typeset(elm) {
-    if (elm && window.renderMathInElement) {
-      try {
-        window.renderMathInElement(elm, {
-          delimiters: [
-            { left: "$$", right: "$$", display: true },
-            { left: "\\[", right: "\\]", display: true },
-            { left: "\\(", right: "\\)", display: false },
-          ],
-          throwOnError: false,
-        });
-      } catch {}
-    }
-  }
-  window.addEventListener("load", () => typeset(document.body));
+  const md = createPhoneMarkdown({ toHtml: domToHtml(), fileUrl });
+  // Nothing to typeset: KaTeX ran in the pipeline. (A DOM pass would turn an
+  // escaped dollar pair back into math.) Kept so the call sites read as before.
+  function typeset(_elm) {}
 
   // ---------- state ----------
   let page = "chat";
@@ -844,7 +727,7 @@ export function boot(): void {
   function renderStream() {
     if (!streamText) { if (streamEl) { streamEl.remove(); streamEl = null; } renderRunline(); return; }
     if (!streamEl) { streamEl = document.createElement("div"); streamEl.className = "amsg stream"; msgsEl.appendChild(streamEl); }
-    streamEl.innerHTML = '<div class="md">' + md(streamText) + '</div>';
+    streamEl.innerHTML = '<div class="md">' + md(streamText, true) + '</div>';
     typeset(streamEl);
     renderRunline(); scrollDown(false);
   }

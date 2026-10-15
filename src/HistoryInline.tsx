@@ -6,25 +6,17 @@
 //
 // Also: HistoryRoot, which mounts the style the preview/setting picks.
 
-import { useEffect, useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import remarkBreaks from "remark-breaks";
-import rehypeRaw from "rehype-raw";
-import rehypeKatex from "rehype-katex";
-import rehypeHighlight from "rehype-highlight";
+import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { X } from "lucide-react";
 import { useStore } from "./store";
 import { cn } from "./lib/utils";
-import { preprocessMarkdownMath } from "./mdMath";
+import { Markdown } from "./Markdown";
 import { fullTime, historyFileAt, historyStyle, relTime, restoreNote, type NoteVersion } from "./history";
 import { actorDot, useNoteVersions, versionLabel } from "./historyParts";
 import { HistoryModal, relInVault, useEscape } from "./HistoryModal";
 import { HistorySheet } from "./HistorySheet";
 
-const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
 const norm = (p: string) => p.replace(/\\/g, "/");
 
 type InlineState = {
@@ -138,7 +130,6 @@ export function HistoryVersionView({ file }: { file: string }) {
     setContent(null);
     historyFileAt(vault, v.hash, rel).then(setContent).catch((e) => setError(String(e)));
   }, [vault, rel, v.hash]);
-  const md = useMemo(() => preprocessMarkdownMath(content ?? ""), [content]);
   const restore = async () => {
     if (!vault || !rel) return;
     setBusy(true);
@@ -173,9 +164,7 @@ export function HistoryVersionView({ file }: { file: string }) {
           <div className="text-[12px] text-muted-foreground italic">(the note did not exist in this version)</div>
         ) : (
           <div className="prose-md mx-auto opacity-90">
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]} rehypePlugins={[rehypeRaw, [rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}>
-              {md}
-            </ReactMarkdown>
+            <Markdown source={content} profile="note" />
           </div>
         )}
       </div>

@@ -1,14 +1,5 @@
 import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ComponentPropsWithoutRef, MouseEvent as ReactMouseEvent } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import remarkBreaks from "remark-breaks";
-import rehypeRaw from "rehype-raw";
-import rehypeKatex from "rehype-katex";
-import rehypeHighlight from "rehype-highlight";
-import rehypeSlug from "rehype-slug";
-import "katex/dist/katex.min.css";
 import { invoke } from "@tauri-apps/api/core";
 import { FileText, Eye, Pencil, X } from "lucide-react";
 import { useStore } from "./store";
@@ -25,19 +16,13 @@ import { UnsupportedView } from "./UnsupportedView";
 import { VAULT_PANE_MIME } from "./dnd";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { fileKind } from "./fileKind";
-import { tryOpenLink } from "./linkNav";
+import { findVaultFileByTail, tryOpenLink } from "./linkNav";
 import { HistoryStrip, HistoryVersionView, useViewingVersion } from "./HistoryInline";
 import { noteEditedFile } from "./commit-controller";
 import { pushViewportContextDebounced } from "./voice-elevenlabs";
 
-import { preprocessMarkdownMath } from "./mdMath";
-
-// Lenient KaTeX options shared across every renderer in the app:
-// `strict: "ignore"` silences "unicode in math mode" and similar
-// pedantic warnings that otherwise spam the console; `errorColor`
-// uses the foreground color so the rare unrecoverable parse error
-// reads as ordinary muted text instead of bright red.
-const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
+import { Markdown } from "./Markdown";
+import { flipNthTaskCheckbox, localPathFromUrl } from "./mdPipeline";
 
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
@@ -104,8 +89,10 @@ function SafeAnchor(props: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
 const VaultImage = memo(function VaultImage({ src, alt, ...rest }: ComponentPropsWithoutRef<"img">) {
   const currentFile = useStore((s) => s.currentFile);
   const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
 
   useEffect(() => {
+    setFailed(null);
     if (!src || !currentFile) return;
     // External / data / blob URLs — leave alone.
     if (/^(https?:|data:|blob:)/i.test(src)) {
@@ -114,7 +101,9 @@ const VaultImage = memo(function VaultImage({ src, alt, ...rest }: ComponentProp
     }
     let cancelled = false;
     let objectUrl: string | null = null;
-    const cleaned = src.replace(/^file:\/\/\/?/, "").split("#")[0].split("?")[0];
+    // `assets/my%20plot.png` (markdown percent-encodes a path with spaces)
+    // is the file "assets/my plot.png".
+    const cleaned = localPathFromUrl(src);
     const resolved = /^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned)
       ? cleaned
       : resolveRelative(currentFile, cleaned);
@@ -144,7 +133,24 @@ const VaultImage = memo(function VaultImage({ src, alt, ...rest }: ComponentProp
         objectUrl = URL.createObjectURL(blob);
         setUrl(objectUrl);
       } catch (err) {
-        console.error("vault-chat: failed to load image:", resolved, err);
+        // Not where the link points: a vault file of that name (an Obsidian
+        // `![[shot.png]]` lives in an attachments folder).
+        const byName = findVaultFileByTail(cleaned);
+        if (byName && byName !== resolved) {
+          try {
+            const bytes = await invoke<number[]>("read_binary_file", { path: byName });
+            if (cancelled) return;
+            const ext = byName.slice(byName.lastIndexOf(".") + 1).toLowerCase();
+            const blob = new Blob([new Uint8Array(bytes)], { type: ext === "svg" ? "image/svg+xml" : ext === "jpg" ? "image/jpeg" : `image/${ext || "png"}` });
+            objectUrl = URL.createObjectURL(blob);
+            setUrl(objectUrl);
+            return;
+          } catch {
+            // fall through to the not-found mark
+          }
+        }
+        if (!cancelled) setFailed(resolved);
+        console.warn("vault-chat: failed to load image:", resolved, err);
       }
     })();
     return () => {
@@ -153,30 +159,19 @@ const VaultImage = memo(function VaultImage({ src, alt, ...rest }: ComponentProp
     };
   }, [src, currentFile]);
 
+  if (failed) {
+    // Say it plainly: a missing image, not bracketed text that reads like a
+    // footnote (the chat shows the same mark).
+    return (
+      <span className="text-muted-foreground italic text-[12px] border border-dashed border-border/60 rounded px-1.5 py-0.5 inline-block" data-el="image-missing">
+        image not found: {src}
+        {alt ? ` (${alt})` : ""}
+      </span>
+    );
+  }
   if (!url) return <span className="text-muted-foreground italic">[{alt || src}]</span>;
   return <img src={url} alt={alt} {...rest} />;
 });
-
-// Flip the Nth GFM task-list checkbox in `content`. A task-list item is a
-// list item (- / * / + / "1.") whose first inline content is "[ ]", "[x]",
-// or "[X]". Matches must start on a new line; "[x]" buried inside a
-// paragraph is not a task checkbox. Blockquote-prefixed items (`> - [ ]`
-// and nested `> > - [ ]`) are matched too.
-function flipNthTaskCheckbox(content: string, n: number): string | null {
-  const re = /^([ \t]*(?:>[ \t]*)*(?:[-*+]|\d+\.)[ \t]+)\[([ xX])\]/gm;
-  let i = 0;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(content)) !== null) {
-    if (i === n) {
-      const cur = match[2];
-      const flipped = cur === " " ? "x" : " ";
-      const charIdx = match.index + match[1].length + 1; // position between the brackets
-      return content.slice(0, charIdx) + flipped + content.slice(charIdx + 1);
-    }
-    i++;
-  }
-  return null;
-}
 
 // Publishes the visible-text window for follow-along voice mode.
 // Slices a ~4000-char chunk centered on the scroll offset so the
@@ -522,11 +517,6 @@ export function MarkdownView({ paneId }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [file, isActive]);
 
-  // Cache the math-rewrite output so a checkbox flip — which only
-  // changes one byte of `content` — doesn't reparse fence regions and
-  // re-run the $$ regex on every keystroke. Cheap to keep this even
-  // when not in markdown view; the memo just no-ops.
-  const processedMarkdown = useMemo(() => preprocessMarkdownMath(content), [content]);
   // History style C: a past version shown read-only in this pane.
   const viewingVersion = useViewingVersion(file);
 
@@ -663,13 +653,7 @@ export function MarkdownView({ paneId }: Props) {
           className="flex-1 overflow-auto py-10 px-8"
         >
           <div className="prose-md mx-auto">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
-              rehypePlugins={[rehypeRaw, rehypeSlug, [rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
-              components={markdownComponents}
-            >
-              {processedMarkdown}
-            </ReactMarkdown>
+            <Markdown source={content} profile="note" components={markdownComponents} />
           </div>
         </div>
       ) : kind === "notebook" ? (

@@ -1,11 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import remarkBreaks from "remark-breaks";
-import rehypeKatex from "rehype-katex";
-import rehypeHighlight from "rehype-highlight";
-import { preprocessMarkdownMath } from "./mdMath";
+import { Markdown, StreamingMarkdown } from "./Markdown";
+import { localPathFromUrl } from "./mdPipeline";
 import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare } from "lucide-react";
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
@@ -43,29 +38,9 @@ import { isArchivedThread, ARCHIVED_THREAD } from "./conversations";
 type MentionHit = { path: string; name: string; rel: string };
 const NO_SUBAGENTS: SubagentRec[] = [];
 
-// Lenient KaTeX options shared across every renderer in the app:
-// `strict: "ignore"` silences unicode-in-math-mode and similar
-// pedantic warnings; `errorColor: currentColor` makes rare
-// unrecoverable parse errors blend in with body text instead of
-// glaring red.
-const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
-
-// Pass data:image/… URLs through; everything else falls back to the
-// built-in sanitizer. react-markdown's default strips data: URLs as
-// unsafe, which kills images promoted from marquee asks into chat.
-//
-// Also rescue Windows absolute paths (`C:/Users/...`, `C:\Users\...`).
-// defaultUrlTransform sees the `C:` prefix as a protocol — and `c` is
-// not in its safelist (`http|https|ircs?|mailto|xmpp`) — so it strips
-// the URL to empty. That's the most common shape an agent emits for an
-// image in a local-files app: the absolute path to a PNG it just
-// generated. ChatImage handles the actual bytes-from-disk load via
-// read_binary_file, so passing the string through here is harmless.
-const allowImageDataUrls = (url: string): string => {
-  if (url.startsWith("data:image/")) return url;
-  if (/^[a-zA-Z]:[\\/]/.test(url)) return url;
-  return defaultUrlTransform(url);
-};
+// Markdown (math, tables, code, safe HTML, URLs) renders through the shared
+// pipeline (Markdown.tsx / mdPipeline.ts): data:image URLs and Windows
+// absolute paths pass its URL check, so ChatImage can load them.
 
 // Render images in chat bubbles the same way MarkdownView does for
 // vault files: data:/blob:/http(s) URLs go straight to the DOM; file
@@ -92,7 +67,7 @@ const ChatImage = memo(function ChatImage({
       setUrl(src);
       return;
     }
-    const cleaned = src.replace(/^file:\/\/\/?/, "").split("#")[0].split("?")[0];
+    const cleaned = localPathFromUrl(src);
     const isAbs = /^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned);
     if (!isAbs && !vaultPath) return;
     const sep = (vaultPath ?? "").includes("\\") ? "\\" : "/";
@@ -902,20 +877,11 @@ export function ChatPane() {
             )}
             {streamingText && (
               <div className="prose-chat text-foreground/95" data-el="stream">
-                {/* While streaming, skip rehypeHighlight AND
-                    remarkMath/rehypeKatex — re-tokenizing every code
-                    block AND re-rendering every $$…$$ from scratch on
-                    every flush is O(N²) over the growing buffer and
-                    locks the main thread on long responses (most
-                    visible with high-throughput providers like Opus
-                    4.6 fast on OpenRouter). Code blocks render
-                    unstyled and math renders as raw $$ during the
-                    stream; both snap to their final form once the
-                    MessageBubble path re-renders the finalized
-                    message with the full plugin set. */}
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {streamingText}
-                </ReactMarkdown>
+                {/* Finished blocks render once each with the full
+                    pipeline; only the open tail re-renders per flush
+                    (re-rendering the whole growing reply every flush
+                    was O(N²) and locked the main thread). */}
+                <StreamingMarkdown text={streamingText} components={chatComponents} />
               </div>
             )}
           </div>
@@ -1294,27 +1260,17 @@ export const MessageBubble = memo(function MessageBubble({
               })}
             </div>
           )}
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
-            rehypePlugins={[[rehypeKatex, KATEX_OPTIONS]]}
-            urlTransform={allowImageDataUrls}
-            components={chatComponents}
-          >
-            {preprocessMarkdownMath(stripAttachedFooter(message.content))}
-          </ReactMarkdown>
+          <Markdown source={stripAttachedFooter(message.content)} profile="user" components={chatComponents} />
         </div>
       ) : (
         <div className="w-full space-y-2">
           {message.thinking && <Thought text={message.thinking} />}
           <div className="prose-chat text-foreground/95">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
-              urlTransform={allowImageDataUrls}
+            <Markdown
+              source={message.askOptions?.length ? withoutOptionList(message.content, message.askOptions) : message.content}
+              profile="chat"
               components={chatComponents}
-            >
-              {preprocessMarkdownMath(message.askOptions?.length ? withoutOptionList(message.content, message.askOptions) : message.content)}
-            </ReactMarkdown>
+            />
           </div>
           {onAsk && message.askOptions && message.askOptions.length > 0 && <AskOptions options={message.askOptions} live={askLive} chosen={askChosen} onPick={onAsk} />}
           {calls.length > 0 && (
@@ -1362,9 +1318,7 @@ function CompactionDivider({ message }: { message: ChatMessage }) {
         <div className="h-px w-8 bg-border" />
       </summary>
       <div className="mt-2 pl-4 border-l border-border prose-chat text-[12px] text-muted-foreground">
-        <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeKatex, KATEX_OPTIONS]]} components={chatComponents}>
-          {preprocessMarkdownMath(dividerSummary(message))}
-        </ReactMarkdown>
+        <Markdown source={dividerSummary(message)} profile="chat" components={chatComponents} />
       </div>
     </details>
   );
