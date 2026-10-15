@@ -1,4 +1,5 @@
-// Scenario-scripted host commands: vault sync (git remote + the box loop),
+// Scenario-scripted host commands: vault sync (the box loop and local autosave;
+// the git-remote commands stay for the before side),
 // the key store (fake values only), the shell (scripted outputs) and the
 // Tauri plugins (updater, dialog, opener, window, app).
 import { report } from "../overlay";
@@ -35,6 +36,10 @@ export type SyncScript = {
   pull?: { ok: boolean; message: string; error: boolean };
   push?: { ok: boolean; message: string; error: boolean };
   role?: "writer" | "follower";
+  /** `tailscale status --json` on the laptop (asked only after a box request
+   *  failed). Default: connected. "Open Tailscale" connects it, and the box
+   *  answers from the next cycle on. */
+  tailscale?: { installed: boolean; connected: boolean; state: string; canOpen: boolean };
   /** Box-mode chat (src/boxChat.ts): the conversations the box serves and a
    *  script of what happens next, one step per boxNext() (a scenario step). */
   boxChat?: BoxChatScript;
@@ -98,6 +103,7 @@ export function boxNext(): boolean {
   return true;
 }
 let boxCalls = 0;
+let tailscaleOpened = false;
 const boxPosts: BoxPost[] = [];
 /** What the laptop POSTed to the fake box (scenario checks). */
 export function boxPostLog(): BoxPost[] {
@@ -109,6 +115,7 @@ export function setHostConfig(c: HostConfig, now: () => number): void {
   cfg = c ? { ...c, sync: c.sync ? JSON.parse(JSON.stringify({ ...c.sync, boxChat: undefined, reports: undefined })) : undefined } : {};
   if (cfg.sync && c.sync) Object.assign(cfg.sync, { boxChat: c.sync.boxChat, reports: c.sync.reports });
   boxCalls = 0;
+  tailscaleOpened = false;
   boxConvs = JSON.parse(JSON.stringify(cfg.sync?.boxChat?.convs ?? {}));
   boxQueue = [];
   boxStep = 0;
@@ -210,7 +217,14 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     boxCalls++;
     await sleep(250);
     if (!cfg.sync?.box) return { ...okBox(), configured: false };
+    if (tailscaleOpened) return okBox();
     return { ...okBox(), ...r };
+  },
+  tailscale_check: () => (tailscaleOpened ? null : cfg.sync?.tailscale) ?? { installed: true, connected: true, state: "Running", canOpen: true },
+  tailscale_open: () => {
+    tailscaleOpened = true;
+    report("info", "Tailscale opened (the preview connects it; the box answers from the next cycle)");
+    return null;
   },
   box_discover: async () => {
     await sleep(700);

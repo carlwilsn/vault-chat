@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, Mic, Keyboard, GitMerge, CloudOff, FileWarning, AlertTriangle } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, Mic, Keyboard, GitMerge, CloudOff, FileWarning, AlertTriangle, WifiOff } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
@@ -13,7 +13,7 @@ import {
 } from "./voice-elevenlabs";
 import { VoiceCockpit } from "./VoiceCockpit";
 import { HistoryRoot } from "./HistoryInline";
-import { subscribeBoxSync, type BoxSyncState } from "./vaultSync";
+import { subscribeBoxSync, openTailscale, boxSyncNow, type BoxSyncState } from "./vaultSync";
 
 export function Titlebar() {
   const {
@@ -436,7 +436,8 @@ export function Titlebar() {
 }
 
 // Box sync chip: shown ONLY when something needs attention (a conflict that
-// closed the merge gate, the box unreachable for over a minute, a file kept
+// closed the merge gate, Tailscale on this laptop not connected (at once, with
+// Open Tailscale), the box unreachable for over a minute, a file kept
 // out of git for being over 50 MB, a GitHub backup failing for 10 min).
 // Amber, red after 10 minutes. Click for the details.
 function SyncChip() {
@@ -463,15 +464,29 @@ function SyncChip() {
       window.removeEventListener("keydown", onKey);
     };
   }, [open]);
+  const [tsError, setTsError] = useState<string | null>(null);
   if (!att || !st) return null;
+  const canOpenTs = att.kind === "tailscale" && !!st.tailscale?.canOpen;
+  const openTs = async () => {
+    setTsError(null);
+    try {
+      await openTailscale();
+      // Once it's connected the next cycle clears the chip; nudge one sooner.
+      window.setTimeout(() => void boxSyncNow(st.vault), 8000);
+    } catch (e) {
+      setTsError(String(e));
+    }
+  };
   const kind = att.kind;
-  const Icon = kind === "conflict" ? GitMerge : kind === "offline" ? CloudOff : kind === "big" ? FileWarning : AlertTriangle;
+  const Icon = kind === "conflict" ? GitMerge : kind === "tailscale" ? WifiOff : kind === "offline" ? CloudOff : kind === "big" ? FileWarning : AlertTriangle;
   const color = att.level === "red" ? "text-destructive" : "text-amber-500";
   const since = new Date(att.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const hint =
     kind === "conflict"
       ? "Ask the agent: resolve the sync conflict"
-      : kind === "offline"
+      : kind === "tailscale"
+        ? "Connect Tailscale; sync picks up again by itself."
+        : kind === "offline"
         ? "Edits are committed here and go up when the box is back."
         : kind === "big"
           ? "These stay on this machine only. Move them out of the vault, or keep them here knowingly."
@@ -479,7 +494,7 @@ function SyncChip() {
             ? "The box still has everything; only the GitHub copy is behind."
             : "Ask the agent to look at this sync error.";
   return (
-    <div ref={ref} className="relative mr-1">
+    <div ref={ref} className="relative mr-1 flex items-center">
       <button
         onClick={() => setOpen((o) => !o)}
         className={`h-7 flex items-center gap-1.5 px-2 rounded hover:bg-accent/60 text-[11.5px] ${color}`}
@@ -488,6 +503,15 @@ function SyncChip() {
         <Icon className="h-3.5 w-3.5" />
         <span className="max-w-[260px] truncate">{att.text}</span>
       </button>
+      {canOpenTs && (
+        <button
+          onClick={() => void openTs()}
+          className="h-7 px-1.5 rounded hover:bg-accent/60 text-[11.5px] text-foreground/90 underline underline-offset-2"
+          data-testid="open-tailscale"
+        >
+          Open Tailscale
+        </button>
+      )}
       {open && (
         <div className="absolute right-0 top-full mt-1 z-50 w-[360px] rounded-md border border-border bg-card shadow-xl p-3 space-y-2">
           <div className="flex items-baseline justify-between gap-2">
@@ -502,6 +526,7 @@ function SyncChip() {
             {kind === "conflict" && (
               <span className="text-muted-foreground"> (or type /resolve-sync-conflict)</span>
             )}
+            {tsError && <div className="mt-1 text-[11px] text-amber-500/90 break-words">{tsError}</div>}
           </div>
         </div>
       )}

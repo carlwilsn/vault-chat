@@ -806,6 +806,31 @@ export const scenarios: Scenario[] = [
     open: [...deskOpen(NOTE, "c-spectral"), { sleep: 1200 }, { advance: 11 * MIN }, { sleep: 3500 }],
   },
   {
+    id: "box-tailscale-down",
+    title: "Sync — Tailscale isn't connected",
+    group: "Sync",
+    notes:
+      "Box mode, and Tailscale on this laptop is stopped, so the box can't be reached. After the failed cycle the app asks Tailscale once (tailscale status --json → BackendState “Stopped”) and the chip says so at once: “Tailscale isn't connected”, with Open Tailscale beside it (Windows: the tray app; macOS: the app; Linux: the text only). Edits keep being committed here (2 waiting). Click Open Tailscale: the preview connects it and the next cycle syncs, so the chip goes away by itself. Before: the chip waits a minute and says “Box unreachable · 2 changes waiting”.",
+    build: (c) => world(c),
+    host: {
+      sync: {
+        box: BOX,
+        tailscale: { installed: true, connected: false, state: "Stopped", canOpen: true },
+        reports: [
+          {
+            ok: false,
+            message: "sync failed",
+            error: "git fetch box failed (exit 128):\nfatal: unable to access 'https://thinkbox.tail0a1b2.ts.net/git/summer-demo.git/': Could not resolve host: thinkbox.tail0a1b2.ts.net",
+            error_kind: "unreachable",
+            changes_waiting: 2,
+          },
+        ],
+      },
+    },
+    fastTimers: syncTimers,
+    open: [...deskOpen(NOTE, "c-spectral"), { sleep: 1200 }, { advance: 2 * MIN }, { sleep: 2500 }],
+  },
+  {
     id: "box-unreachable",
     title: "Phase 2 — chat when the box is unreachable",
     group: "Sync",
