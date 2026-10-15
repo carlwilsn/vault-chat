@@ -113,11 +113,12 @@ async function desktop(id, alt) {
 
       await play(1);
       s = await snapshot(page);
-      check(run, "thinking streams live", alt ? !s.thinkingLive : s.thinkingLive);
+      check(run, "thinking streams live", s.thinkingLive);
+      check(run, "no brain toggle", s.toggle === 0);
       check(run, "to-do list (first version) shown", alt ? s.todosPinned === 1 && /0\/4/.test(s.todos.join()) : /0\/4/.test(s.todos.join()));
       subagentsOnce(s, "spawn");
       const st = s.subagents.map((x) => x.state).sort().join(",");
-      check(run, "one subagent done (cost, summary), one running", st === "completed,running" && s.subagents.some((x) => /\$0\.09/.test(x.text) && /Six methods/.test(x.text)), st);
+      check(run, `one subagent done (${alt ? "cost, " : "no cost, "}summary), one running`, st === "completed,running" && s.subagents.some((x) => (alt ? /\$0\.09/.test(x.text) : !/\$/.test(x.text)) && /Six methods/.test(x.text)), st);
       check(run, `subagents shown ${alt ? "as the strip" : "inline"}`, s.subagentCards.length >= 1 && s.subagentCards.every((v) => v === (alt ? "strip" : "inline")), s.subagentCards.join());
       await shot(page, `${run}-1-subagents`);
 
@@ -131,17 +132,12 @@ async function desktop(id, alt) {
       s = await snapshot(page);
       check(run, "markdown: a table and code", s.tables >= 1 && s.code >= 1);
       check(run, "math: inline ($ and \\(\\)) and display ($$ and \\[\\])", s.katex >= 8 && s.katexDisplay >= 2, `${s.katex} inline, ${s.katexDisplay} display`);
-      if (alt) {
-        check(run, "thinking hidden until the toggle", s.thinking === 0 && s.toggle === 1);
-        await page.click("[data-el='thinking-toggle']");
-        s = await snapshot(page);
-      }
-      check(run, "the reply keeps its thinking", s.thinking >= 1);
+      check(run, "the reply keeps its thinking (the collapsed Thought line)", s.thinking >= 1 && s.toggle === 0);
       check(run, "tool calls (5, no duplicates)", s.toolCalls.some((t) => /5 tool calls/.test(t)), s.toolCalls.join(" | "));
       subagentsOnce(s, "done");
       check(run, "both subagents done", s.subagents.every((x) => x.state === "completed"));
       check(run, alt ? "to-do list updated twice; finished, it unpins" : "to-do list updated twice (4/4)", alt ? s.todosPinned === 0 && s.todos.length === 0 : /4\/4/.test(s.todos.join()), JSON.stringify(s.todos));
-      check(run, alt ? "cost: the conversation total at the top, none per reply" : "cost: under the reply", alt ? s.totalCost.length === 1 && s.replyCost.length === 0 : s.replyCost.includes("$0.34"), JSON.stringify([s.replyCost, s.totalCost]));
+      check(run, alt ? "cost: the conversation total at the top, none per reply" : "no cost in the chat", alt ? s.totalCost.length === 1 && s.replyCost.length === 0 : s.totalCost.length === 0 && s.replyCost.length === 0, JSON.stringify([s.replyCost, s.totalCost]));
       check(run, `AskUser: ${alt ? "numbered buttons" : "option cards"}, live`, s.ask.length === 1 && s.ask[0] === "1" && s.askOptions.length === 2, JSON.stringify(s.ask));
       await shot(page, `${run}-3-reply-ask`);
 
@@ -167,7 +163,7 @@ async function desktop(id, alt) {
       check(run, `Done: the verifier's verdict ${alt ? "in the ongoing line" : "at the end of the thread"}`, s.verdict.some((v) => /Verifier passed/i.test(v) || /verifier passed/.test(v)) && (alt ? s.ongoing.some((o) => o.tone === "done") : true), JSON.stringify(s.verdict));
       const m = /Context: ([\d,]+) of ([\d,]+) tokens \((\d+)%\)/.exec(s.dial);
       check(run, "the context dial reads the box's window, near its limit", !!m && m[2] === "200,000" && Number(m[3]) >= 85, s.dial);
-      check(run, "cost shown", alt ? s.totalCost.some((t) => /\$0\.52/.test(t)) : s.replyCost.length >= 4, JSON.stringify([s.replyCost, s.totalCost]));
+      check(run, alt ? "cost shown" : "no cost anywhere (ongoing line, thread)", alt ? s.totalCost.some((t) => /\$0\.52/.test(t)) : s.replyCost.length === 0 && s.totalCost.length === 0 && !s.ongoing.some((o) => /\$/.test(o.text)), JSON.stringify([s.replyCost, s.totalCost, s.ongoing]));
       subagentsOnce(s, "end");
       await shot(page, `${run}-6-done`);
     } else {
@@ -299,7 +295,7 @@ async function phone(id, alt) {
     s = await snap();
     check(run, `to-do list (first version) ${alt ? "pinned above the composer" : "in the thread"}`, /0\/4/.test(s.todos.join()) && (alt ? await page.evaluate(() => !!document.querySelector("#pinned [data-el='todos']")) : true));
     subagentsOnce(s, "spawn");
-    check(run, "one subagent done (cost, summary), one running", s.subagents.map((x) => x.state).sort().join() === "completed,running" && s.subagents.some((x) => /\$0\.09/.test(x.text) && /Six methods/.test(x.text)));
+    check(run, `one subagent done (${alt ? "cost, " : "no cost, "}summary), one running`, s.subagents.map((x) => x.state).sort().join() === "completed,running" && s.subagents.some((x) => (alt ? /\$0\.09/.test(x.text) : !/\$/.test(x.text)) && /Six methods/.test(x.text)));
     check(run, `subagents shown ${alt ? "as the strip" : "inline"}`, s.subagentCards.length >= 1 && s.subagentCards.every((v) => v === (alt ? "strip" : "inline")), s.subagentCards.join());
     await shot(page, `${run}-1-subagents`);
 
@@ -314,21 +310,12 @@ async function phone(id, alt) {
     s = await snap();
     check(run, "markdown: a table and code", s.tables >= 1 && s.code >= 1);
     check(run, "math: inline ($ and \\(\\)) and display ($$ and \\[\\])", s.katex >= 8 && s.katexDisplay >= 2, `${s.katex} inline, ${s.katexDisplay} display`);
-    check(run, "the reply keeps its thinking", s.thinking >= 1);
-    if (alt) {
-      check(run, "thinking hidden until the menu's toggle", s.thinkingShown === 0);
-      await page.tap("#menuBtn");
-      await page.waitForTimeout(250);
-      await page.tap("#thinkRow");
-      await page.waitForTimeout(250);
-      await page.tap("#menuBtn").catch(() => {});
-      s = await snap();
-      check(run, "thinking shown by the toggle", s.thinkingShown >= 1);
-    }
+    check(run, "the reply keeps its thinking (the collapsed Thought pill)", s.thinking >= 1 && s.thinkingShown >= 1);
+    check(run, "no Show thinking row in the menu", await page.evaluate(() => !document.getElementById("thinkRow")));
     check(run, "tool calls (5 steps)", s.steps.some((t) => /5 steps/.test(t)), s.steps.join(" | "));
     subagentsOnce(s, "done");
     check(run, alt ? "to-do list updated twice; finished, it unpins" : "to-do list updated twice (4/4)", alt ? s.todos.length === 0 : /4\/4/.test(s.todos.join()), JSON.stringify(s.todos));
-    check(run, alt ? "cost: the total in the header" : "cost: under the reply", alt ? s.totalCost.length === 1 && s.replyCost.length === 0 : s.replyCost.includes("$0.34"), JSON.stringify([s.replyCost, s.totalCost]));
+    check(run, alt ? "cost: the total in the header" : "no cost in the chat", alt ? s.totalCost.length === 1 && s.replyCost.length === 0 : s.totalCost.length === 0 && s.replyCost.length === 0, JSON.stringify([s.replyCost, s.totalCost]));
     await shot(page, `${run}-3-reply`);
 
     await next(1);
@@ -364,7 +351,7 @@ async function phone(id, alt) {
     await next(1);
     s = await snap();
     check(run, `Done: the verifier's verdict ${alt ? "in the ongoing line" : "at the end of the thread"}`, alt ? s.ongoingVerdict && /verifier passed/.test(s.ongoing) : s.verdict.some((v) => /verifier passed/.test(v)), JSON.stringify([s.verdict, s.ongoing]));
-    check(run, "cost shown", alt ? s.totalCost.some((t) => /\$0\.52/.test(t)) : s.replyCost.length >= 4, JSON.stringify([s.replyCost, s.totalCost]));
+    check(run, alt ? "cost shown" : "no cost anywhere (ongoing line, thread)", alt ? s.totalCost.some((t) => /\$0\.52/.test(t)) : s.replyCost.length === 0 && s.totalCost.length === 0 && !/\$/.test(s.ongoing), JSON.stringify([s.replyCost, s.totalCost, s.ongoing]));
     subagentsOnce(s, "end");
     await shot(page, `${run}-6-done`);
   } catch (e) {

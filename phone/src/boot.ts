@@ -600,7 +600,7 @@ export function boot(): void {
   function ongoingOf(c) {
     if (!c || !c.state) return null;
     // With the total in the header (the "total" option) the line doesn't repeat it.
-    const cost = X.choice("cost") === "total" ? "" : typeof c.costUsd === "number" && c.costUsd > 0 ? (c.costUsd < 0.01 ? "<$0.01" : "$" + c.costUsd.toFixed(2)) : "";
+    const cost = X.choice("cost") !== "reply" ? "" : typeof c.costUsd === "number" && c.costUsd > 0 ? (c.costUsd < 0.01 ? "<$0.01" : "$" + c.costUsd.toFixed(2)) : "";
     let tone = "", label = "", next = "";
     if (c.state === "running") { tone = "running"; label = "Working"; }
     else if (c.state === "sleeping") {
@@ -1050,23 +1050,6 @@ export function boot(): void {
     const i = Number((x.closest(".pimg") as HTMLElement).dataset.i);
     pendingImgs.splice(i, 1); renderPending();
   });
-
-  // ---------- thinking toggle (the "toggle" option) ----------
-  const THINK_KEY = "vc_show_thinking";
-  function syncThinking() {
-    const tog = X.choice("thinking") === "toggle";
-    let on = false; try { on = localStorage.getItem(THINK_KEY) === "1"; } catch {}
-    document.body.classList.toggle("thinking-toggle", tog);
-    document.body.classList.toggle("show-thinking", tog && on);
-    const st = $("thinkState"); if (st) { st.textContent = on ? "on" : "off"; st.classList.toggle("zero", !on); }
-  }
-  syncThinking();
-  const thinkRow = $("thinkRow");
-  if (thinkRow) thinkRow.onclick = () => {
-    let on = false; try { on = localStorage.getItem(THINK_KEY) === "1"; } catch {}
-    try { localStorage.setItem(THINK_KEY, on ? "0" : "1"); } catch {}
-    syncThinking();
-  };
 
   // Steer / stop a running subagent (its card in the thread or the strip).
   async function subagentOp(sid: string, op: "steer" | "stop") {

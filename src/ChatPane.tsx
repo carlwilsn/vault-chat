@@ -28,12 +28,10 @@ import {
   ReplyCost,
   Subagents,
   Thought,
-  ThinkingToggle,
   VerdictLine,
   chosenAnswer,
   isLegacySubagentRecord,
   subagentsOfMessage,
-  useShowThinking,
   withoutOptionList,
   type SubagentRec,
 } from "./chatExtras";
@@ -377,7 +375,6 @@ export function ChatPane() {
   const toggleChatsPanel = () =>
     chatFullscreen ? useStore.getState().toggleChatSidebar() : setShowChatsPanel(!showChatsPanel);
   const activeConv = conversations.find((c) => c.id === activeConversationId);
-  const showThinking = useShowThinking();
   // What the thread shows beside the text (chatExtras.tsx; uiChoices.ts picks
   // where each goes while Carl decides). Stable props, so the bubbles' memo
   // holds while a reply streams.
@@ -978,7 +975,7 @@ export function ChatPane() {
         {(streamingText || streamingReasoning || liveTools.length > 0) && (
           <div className="space-y-2">
             {liveTools.length > 0 && <LiveToolTicker tools={liveTools} />}
-            {streamingReasoning && !streamingText && (uiChoice("thinking") !== "toggle" || showThinking) && (
+            {streamingReasoning && !streamingText && (
               <ReasoningStream text={streamingReasoning} />
             )}
             {streamingText && (
@@ -1052,7 +1049,7 @@ export function ChatPane() {
           )}
           {activeConv && (
             <OngoingLine
-              conversation={{ ...activeConv, messages, ...(uiChoice("cost") === "total" ? { costUsd: undefined } : {}) }}
+              conversation={{ ...activeConv, messages, ...(uiChoice("cost") !== "reply" ? { costUsd: undefined } : {}) }}
               size="chat"
               className="px-1 pb-1.5"
               verdict={uiChoice("verdict") === "ongoing"}
@@ -1280,7 +1277,6 @@ export function ChatPane() {
               {chipAt === "footer" && !isPopout && <ProjectChip placement="up" />}
             </div>
             <div className="flex items-center gap-2">
-              <ThinkingToggle visible={!!streamingReasoning || messages.some((m) => !!m.thinking)} />
               {busy && <ElapsedTimer />}
               {lastContext > 0 && (
                 <div

@@ -5,26 +5,26 @@
 // system line). The presentation choices Carl has open are the laptop's
 // localStorage switches (src/uiChoices.ts), read here under the same keys.
 
-const CHOICES = {
-  thinking: ["vc_ui_thinking", "line", "toggle"],
+// The first option is the default. Thinking is settled: the collapsed "Thought" pill.
+const CHOICES: Record<string, readonly string[]> = {
   subagents: ["vc_ui_subagents", "inline", "strip"],
-  cost: ["vc_ui_cost", "total", "reply"], // the total by default (Carl: no per-turn spend)
+  cost: ["vc_ui_cost", "none", "total", "reply"], // none by default (Carl: "I just don't need cost")
   todos: ["vc_ui_todos", "inline", "pinned"],
   verdict: ["vc_ui_verdict", "thread", "ongoing"],
-} as const;
-type ChoiceName = keyof typeof CHOICES;
+};
+type ChoiceName = "subagents" | "cost" | "todos" | "verdict";
 
 const memo = new Map<string, string>();
 export function choice(c: ChoiceName): string {
   if (memo.has(c)) return memo.get(c)!;
-  const [key, a, b] = CHOICES[c];
+  const [key, ...options] = CHOICES[c]!;
   let v: string | null = null;
   try {
-    v = localStorage.getItem(key);
+    v = localStorage.getItem(key!);
   } catch {
     v = null;
   }
-  const out = v === b ? b : a;
+  const out = v && options.includes(v) ? v : options[0]!;
   memo.set(c, out);
   return out;
 }
@@ -37,11 +37,9 @@ export function fmtCost(usd: unknown): string {
   return typeof usd === "number" && usd > 0 ? (usd < 0.01 ? "<$0.01" : "$" + usd.toFixed(2)) : "";
 }
 
-/** The reply's thinking: a collapsed "Thought" pill ("line"), or hidden until
- *  the header's toggle shows it ("toggle": body.show-thinking). */
+/** The reply's thinking: a collapsed "Thought" pill. */
 export function thoughtHtml(text: string | undefined): string {
   if (!text || !String(text).trim()) return "";
-  if (choice("thinking") === "toggle") return '<div class="thought-x" data-el="thinking">' + esc(text) + "</div>";
   return '<div class="xblk thought" data-el="thinking"><button class="xh">Thought' + CHEV + '</button><div class="xbody">' + esc(text) + "</div></div>";
 }
 
@@ -64,7 +62,7 @@ export function subagentsHtml(list: PhoneSubagent[], variant: "inline" | "strip"
     .map((s) => {
       const st = s.state ?? "running";
       const on = st === "running";
-      const meta = [on ? "running" : st, (s.model ?? "").split("/").pop(), fmtCost(s.costUsd)].filter(Boolean).join(" · ");
+      const meta = [on ? "running" : st, (s.model ?? "").split("/").pop(), choice("cost") === "none" ? "" : fmtCost(s.costUsd)].filter(Boolean).join(" · ");
       return (
         '<div class="sa" data-el="subagent" data-sid="' + esc(s.threadId) + '" data-state="' + esc(st) + '">' +
         '<div class="sa-h"><span class="sd ' + (on ? "run" : st === "completed" ? "ok" : "bad") + '"></span><span class="sa-t">' + esc(s.task ?? "subagent") + "</span></div>" +
