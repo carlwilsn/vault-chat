@@ -203,6 +203,11 @@ const liveTheme = EditorView.theme({
     display: "block",
     padding: "0.25em 0",
   },
+  ".cm-html-comment": {
+    color: "hsl(var(--muted-foreground))",
+    opacity: "0.6",
+    fontSize: "0.9em",
+  },
   // Table styling mirrors `.prose-md table` in App.css so the rendered
   // view and the in-editor widget look identical when toggling modes.
   // Spacing lives on the wrapper as PADDING (measured by CM), not as margin on

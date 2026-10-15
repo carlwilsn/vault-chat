@@ -44,7 +44,10 @@ class RenderedBlockWidget extends WidgetType {
     // measures a block widget by its border-box height, which excludes
     // margin — a margin makes clicks below it land too low. (note 2c611cee)
     wrap.className = this.kind === "table" ? "cm-table-wrap" : "cm-html-block";
-    wrap.innerHTML = markdownHtml(this.src, "note");
+    // Rendered HTML flows as HTML: the editor's `white-space: pre-wrap` would
+    // turn the whitespace between tags into blank lines above the table.
+    wrap.style.whiteSpace = "normal";
+    wrap.innerHTML = markdownHtml(this.src, "note").trim();
     if (this.kind === "table") wrap.querySelectorAll("table").forEach((t) => t.classList.add("cm-table"));
     return wrap;
   }
@@ -382,10 +385,25 @@ export function buildDecorations(state: EditorState, tree: Tree = syntaxTree(sta
         return;
       }
 
+      // An HTML comment: the viewer hides it; here it stays (it's the
+      // user's text) but reads as a quiet aside.
+      if (name === "CommentBlock" || name === "Comment") {
+        builder.push(Decoration.mark({ class: "cm-html-comment" }).range(nFrom, nTo));
+        return false;
+      }
+
       if (name === "FencedCode") {
         const startLine = doc.lineAt(nFrom);
         const endLine = doc.lineAt(nTo);
         const a = rangeActive(nFrom, nTo);
+        // ```math renders as display math in the viewer (rehype-katex); here too.
+        const info = /^\s*(?:>\s?)*\s*(?:```|~~~)\s*([\w-]*)/.exec(startLine.text)?.[1];
+        if (info === "math" && !a && endLine.number > startLine.number + 1 && /^\s*(?:>\s?)*\s*(```|~~~)\s*$/.test(endLine.text)) {
+          const body = doc.sliceString(doc.line(startLine.number + 1).from, doc.line(endLine.number - 1).to);
+          builder.push(Decoration.replace({ widget: new MathWidget(dedentBlock("\n" + body).trim(), true), block: true }).range(startLine.from, endLine.to));
+          widgetBlocks.push([startLine.from, endLine.to]);
+          return false;
+        }
         const firstIsFence = /^\s*(?:>\s?)*\s*(```|~~~)/.test(startLine.text);
         const lastIsFence = endLine.number !== startLine.number && /^\s*(?:>\s?)*\s*(```|~~~)\s*$/.test(endLine.text);
         for (let ln = startLine.number; ln <= endLine.number; ln++) {

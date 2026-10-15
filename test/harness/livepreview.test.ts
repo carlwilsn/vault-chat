@@ -44,9 +44,10 @@ const blocks = decos.filter((d) => d.widget === "RenderedBlockWidget");
 test("live editor: every formula the viewer renders is a math widget (outside tables / HTML blocks)", () => {
   const spans = scanMath(CORPUS).spans.filter((s) => !blocks.some((b) => s.from >= b.from && s.to <= b.to));
   assert.deepEqual(
-    math.map((d) => [d.from, d.to]),
+    math.filter((d) => !d.text.startsWith("```")).map((d) => [d.from, d.to]),
     spans.map((s) => [s.from, s.to]),
   );
+  assert.ok(math.some((d) => d.text.startsWith("```math")), "a ```math fence renders as math, as in the viewer");
   assert.ok(math.length > 30, `the corpus's formulas (${math.length})`);
   for (const t of ["\\(\\alpha_t = \\beta\\)", "\\[\n\\nabla_\\theta J", "$$\\sum_i w_i$$"]) {
     assert.ok(math.some((d) => d.text.startsWith(t)), `rendered: ${t}`);
@@ -55,7 +56,7 @@ test("live editor: every formula the viewer renders is a math widget (outside ta
 
 test("live editor: nothing in code is math, and currency / escaped dollars stay text", () => {
   const code = scanMath(CORPUS).code;
-  for (const d of math) assert.ok(!code.some(([a, b]) => d.from < b && d.to > a), `math in code: ${d.text}`);
+  for (const d of math.filter((x) => !x.text.startsWith("```math"))) assert.ok(!code.some(([a, b]) => d.from < b && d.to > a), `math in code: ${d.text}`);
   const at = (needle: string) => CORPUS.indexOf(needle);
   for (const needle of ["$5 and the rerun", "\\$5 and \\$x\\$", "$not math$", "$5 per GPU-hour", "`$PATH`"]) {
     const p = at(needle);

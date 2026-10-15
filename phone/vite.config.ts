@@ -21,18 +21,11 @@ export default defineConfig({
     target: "es2022",
     // KaTeX fonts stay files (cached), not data: URIs.
     assetsInlineLimit: 0,
-    // react + KaTeX + the app in one chunk; the markdown pipeline (the
-    // desktop's remark/rehype chain, shared via src/mdPipeline.ts) in its own,
-    // so an app update doesn't re-download it; ElevenLabs is a lazy chunk.
-    chunkSizeWarningLimit: 700,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (/[\\/]node_modules[\\/](?:react-markdown|remark-|rehype-|micromark|mdast-|hast-|hastscript|unist-|unified|vfile|parse5|property-information|space-separated-tokens|comma-separated-tokens|decode-named-character-reference|character-entities|zwitch|devlop|bail|trough|is-plain-obj|extend|ccount|markdown-table|longest-streak|html-url-attributes|html-void-elements|web-namespaces|trim-lines|style-to-js|style-to-object|inline-style-parser|estree-util|entities|github-slugger)/.test(id)) return "markdown";
-          return undefined;
-        },
-      },
-    },
+    // react + KaTeX + the markdown pipeline (the desktop's remark/rehype chain,
+    // shared via src/mdPipeline.ts: ~930 kB, ~290 kB gzipped) + the app in
+    // one chunk; ElevenLabs is a lazy chunk. (Not split further:
+    // phone/preview.mjs inlines the build into one page.)
+    chunkSizeWarningLimit: 1000,
   },
   server: { port: 1430, strictPort: true },
 });
