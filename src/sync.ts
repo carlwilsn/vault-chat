@@ -1,7 +1,7 @@
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme, type TodoItem } from "./store";
-import { sendMessage, stopAgent, clearChat, setModel, interruptAndSend } from "./chat-controller";
+import { sendMessage, stopAgent, clearChat, setModel, interruptAndSend, sendMidTurn, cancelPending } from "./chat-controller";
 
 const POPOUT_LABEL = "chat-popout";
 const MAIN_LABEL = "main";
@@ -59,6 +59,14 @@ export type ChatAction =
       contextPreamble?: string;
       attachments?: import("./store").ChatAttachment[];
     }
+  // Sent while the agent works: into the running turn (steer) or after it (queue).
+  | {
+      kind: "steer" | "queue";
+      text: string;
+      contextPreamble?: string;
+      attachments?: import("./store").ChatAttachment[];
+    }
+  | { kind: "unqueue"; id: string }
   | { kind: "stop" }
   | { kind: "clear" }
   | { kind: "setModel"; id: string }
@@ -94,6 +102,8 @@ function takeStreamSnapshot(): StreamSnapshot {
 function applyActionLocal(a: ChatAction) {
   if (a.kind === "send") sendMessage(a.text, a.contextPreamble, a.attachments);
   else if (a.kind === "interrupt") interruptAndSend(a.text, a.contextPreamble, a.attachments);
+  else if (a.kind === "steer" || a.kind === "queue") void sendMidTurn(a.kind, a.text, a.contextPreamble, a.attachments);
+  else if (a.kind === "unqueue") void cancelPending(a.id);
   else if (a.kind === "stop") stopAgent();
   else if (a.kind === "clear") clearChat();
   else if (a.kind === "setModel") setModel(a.id);

@@ -43,6 +43,8 @@ function ongoingMeta(c: any, msgs: any[]): Record<string, unknown> {
   if (typeof c.nextWakeAt === "number") out.nextWakeAt = c.nextWakeAt;
   if (typeof c.costUsd === "number") out.costUsd = c.costUsd;
   if (c.working === true) out.working = true;
+  // Messages Carl queued while a turn ran (engine.ts), waiting for it to end.
+  if (Array.isArray(c.queued) && c.queued.length) out.queued = c.queued.map((q: any) => ({ id: str(q?.id), text: str(q?.text) }));
   if (c.state === "sleeping") {
     outer: for (let i = msgs.length - 1; i >= 0; i--) {
       const calls: any[] = Array.isArray(msgs[i]?.toolCalls) ? msgs[i].toolCalls : [];

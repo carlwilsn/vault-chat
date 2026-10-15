@@ -899,10 +899,7 @@ body.page-chat #pChat,body.page-activity #pAct,body.page-alerts #pAl,body.page-n
 .xblk.pdiv .xh{font-style:italic;font-size:12px;width:100%;justify-content:center}
 .xblk.pdiv .pl{display:inline-block;width:28px;height:1px;background:var(--line)}
 .xblk.pdiv .xbody{text-align:left;white-space:normal}
-.thought-x{display:none;margin:0 0 9px;padding-left:10px;border-left:1px solid var(--line);font-size:12.5px;line-height:1.5;color:var(--text-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
-body.show-thinking .thought-x{display:block}
-#thinkRow{display:none}
-body.thinking-toggle #thinkRow{display:flex}
+.steerlbl{margin-top:5px;font-size:10.5px;opacity:.75}
 .rcost{margin-top:7px;font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
 .pcard{border:1px solid var(--line);background:var(--fill);border-radius:12px;padding:9px 11px;margin:10px 0 2px;font-size:12.5px}
 .pc-h{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);margin-bottom:5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}

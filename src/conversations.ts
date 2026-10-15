@@ -160,6 +160,8 @@ export type Conversation = {
   nextWakeAt?: number;
   state?: "idle" | "running" | "sleeping" | "waiting_user" | "blocked" | "done";
   pendingAsk?: { question: string; options?: string[]; at: number; notifId?: string };
+  // [box] Messages Carl queued while a turn ran (server/engine queue), waiting for it to end.
+  queued?: { id: string; text: string }[];
   verdict?: { verdict: "pass" | "fail" | "unsure"; notes: string[]; at: number; summary?: string };
   recap?: string;
   // Subagents this conversation spawned (children: task, model, state, cost; for later display).
@@ -300,6 +302,7 @@ export async function readConversations(vault: string): Promise<Conversation[]> 
         nextWakeAt: parsed.nextWakeAt,
         state: parsed.state,
         pendingAsk: parsed.pendingAsk,
+        queued: parsed.queued,
         verdict: parsed.verdict,
         recap: parsed.recap,
         subagents: parsed.subagents,

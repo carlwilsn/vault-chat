@@ -1,12 +1,13 @@
 // Presentation choices Carl has not made yet. Each is a localStorage switch
-// between two minimal options (the preview has one scenario per option); the
-// first option is the default. Read once per page load.
+// between minimal options (the preview has one scenario per option); the
+// first option is the default. Read once per page load. Thinking is settled:
+// a collapsed quiet "Thought" line on the reply (Carl: no brain toggle).
 //
-//   thinking   "line"    a collapsed quiet "Thought" line on the reply
-//              "toggle"  hidden; a small toggle in the composer row shows all
 //   subagents  "inline"  a card per spawn in the thread, under its reply
 //              "strip"   a compact strip above the composer
-//   cost       "total"   only the conversation's total, at the top (Carl: no per-turn spend)
+//   cost       "none"    no cost in the chat at all (Carl: "I just don't need cost") —
+//                        the ledger, the Cost tool and Settings keep it
+//              "total"   only the conversation's total, at the top
 //              "reply"   each reply's cost under it
 //   todos      "inline"  the list in the thread
 //              "pinned"  pinned above the composer
@@ -16,9 +17,8 @@
 //              "buttons" numbered buttons under the question
 
 export const UI_CHOICES = {
-  thinking: { key: "vc_ui_thinking", options: ["line", "toggle"] },
   subagents: { key: "vc_ui_subagents", options: ["inline", "strip"] },
-  cost: { key: "vc_ui_cost", options: ["total", "reply"] },
+  cost: { key: "vc_ui_cost", options: ["none", "total", "reply"] },
   todos: { key: "vc_ui_todos", options: ["inline", "pinned"] },
   verdict: { key: "vc_ui_verdict", options: ["thread", "ongoing"] },
   ask: { key: "vc_ui_ask", options: ["cards", "buttons"] },

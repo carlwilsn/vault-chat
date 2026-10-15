@@ -3,8 +3,8 @@
 // the Done verifier's verdict and what a reply cost. Quiet, in the chat's own
 // vocabulary (the tool-call summary line, the plan card, the system line).
 // Where Carl has a presentation choice to make, uiChoices.ts picks the option.
-import { useState, useSyncExternalStore } from "react";
-import { ChevronDown, Brain } from "lucide-react";
+import { useState } from "react";
+import { ChevronDown } from "lucide-react";
 import type { Conversation } from "./conversations";
 import type { ChatMessage } from "./store";
 import { cn } from "./lib/utils";
@@ -16,45 +16,9 @@ export type Verdict = NonNullable<Conversation["verdict"]>;
 
 // ---------------------------------------------------------------- thinking
 
-const SHOW_KEY = "vc_show_thinking";
-let showThinking = (() => {
-  try {
-    return localStorage.getItem(SHOW_KEY) === "1";
-  } catch {
-    return false;
-  }
-})();
-const listeners = new Set<() => void>();
-function setShowThinking(v: boolean): void {
-  showThinking = v;
-  try {
-    localStorage.setItem(SHOW_KEY, v ? "1" : "0");
-  } catch {
-    /* per-device convenience */
-  }
-  for (const l of listeners) l();
-}
-function subscribeThinking(cb: () => void): () => void {
-  listeners.add(cb);
-  return () => listeners.delete(cb);
-}
-export function useShowThinking(): boolean {
-  return useSyncExternalStore(subscribeThinking, () => showThinking);
-}
-
-/** The reply's thinking: a collapsed "Thought" line ("line"), or hidden until
- *  the composer row's toggle is on ("toggle"). */
+/** The reply's thinking: a collapsed "Thought" line (click to read). */
 export function Thought({ text }: { text: string }) {
-  const shown = useShowThinking();
   if (!text.trim()) return null;
-  if (uiChoice("thinking") === "toggle") {
-    if (!shown) return null;
-    return (
-      <div data-el="thinking" className="pl-3 border-l border-border text-[11.5px] leading-relaxed text-muted-foreground/80 whitespace-pre-wrap max-h-60 overflow-auto">
-        {text}
-      </div>
-    );
-  }
   return (
     <details className="group" data-el="thinking">
       <summary className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer hover:text-foreground list-none select-none">
@@ -63,23 +27,6 @@ export function Thought({ text }: { text: string }) {
       </summary>
       <div className="mt-1.5 pl-4 border-l border-border text-[11.5px] leading-relaxed text-muted-foreground/80 whitespace-pre-wrap max-h-60 overflow-auto">{text}</div>
     </details>
-  );
-}
-
-/** The composer row's toggle ("toggle" option only, and only when there is thinking to show). */
-export function ThinkingToggle({ visible }: { visible: boolean }) {
-  const shown = useShowThinking();
-  if (uiChoice("thinking") !== "toggle" || !visible) return null;
-  return (
-    <button
-      onClick={() => setShowThinking(!shown)}
-      className={cn("flex items-center hover:text-foreground transition-colors", shown ? "text-foreground" : "text-muted-foreground")}
-      title={shown ? "Hide thinking" : "Show thinking"}
-      data-el="thinking-toggle"
-      aria-pressed={shown}
-    >
-      <Brain className="h-3 w-3" />
-    </button>
   );
 }
 
@@ -181,7 +128,7 @@ function SubagentRow({ s, onControl }: { s: SubagentRec; onControl?: (sid: strin
   const [text, setText] = useState("");
   const [err, setErr] = useState("");
   const model = (s.model ?? "").split("/").pop();
-  const cost = formatCost(s.costUsd);
+  const cost = uiChoice("cost") === "none" ? undefined : formatCost(s.costUsd);
   const control = async (op: "steer" | "stop", t?: string) => {
     if (!onControl) return;
     setErr("");

@@ -7,10 +7,7 @@ import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
 import { stopAgent } from "./chat-controller";
-import {
-  startElevenLabsSession,
-  endElevenLabsSession,
-} from "./voice-elevenlabs";
+import { toggleVoice } from "./voice-elevenlabs";
 import { VoiceCockpit } from "./VoiceCockpit";
 import { HistoryRoot } from "./HistoryInline";
 import { subscribeBoxSync, openTailscale, boxSyncNow, type BoxSyncState } from "./vaultSync";
@@ -153,37 +150,8 @@ export function Titlebar() {
     return () => window.removeEventListener("keydown", onKey);
   }, [hiddenOpen]);
 
-  // Shared toggle so click-handler + Ctrl+D shortcut do exactly the
-  // same thing (start session + connecting state on, end + cleanup
-  // on off). We don't toggle the flag here — startElevenLabsSession
-  // sets voiceMode=true via setVoiceConnecting flow on success, and
-  // endElevenLabsSession sets voiceMode=false synchronously before
-  // tearing down. Either path also covers auto-end (looksLikeEnd /
-  // end_call) so click and auto-end share one source of truth.
-  const toggleVoice = () => {
-    const turningOn = !useStore.getState().voiceMode;
-    if (turningOn) {
-      useStore.setState({ voiceMode: true });
-      void startElevenLabsSession();
-    } else {
-      void endElevenLabsSession();
-    }
-  };
-
-  // Ctrl+D global shortcut for voice mode. Uses preventDefault so
-  // it overrides the browser/editor default (which is usually
-  // bookmark / select-next-occurrence / similar).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "d") {
-        e.preventDefault();
-        toggleVoice();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
+  // The mic button; Ctrl+D (App.tsx, so it works in fullscreen chat too) runs
+  // the same toggleVoice.
   const vaultName = vaultPath ? vaultPath.split("/").filter(Boolean).pop() : null;
   const isMac =
     typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);

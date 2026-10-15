@@ -352,7 +352,7 @@ const second = (o: Opts, choice: string) => o[choice] !== undefined && o[choice]
  *  what the stage shows on the scenario's options; `show` steps are for the
  *  narrated play only (the check never runs them). */
 function beatsA(o: Opts): Beat[][] {
-  const th = second(o, "thinking"), sa = second(o, "subagents"), co = second(o, "cost"), td = second(o, "todos"), vd = second(o, "verdict"), ak = second(o, "ask");
+  const sa = second(o, "subagents"), co = second(o, "cost"), td = second(o, "todos"), vd = second(o, "verdict"), ak = second(o, "ask");
   return [
     // 0: open the conversation (the roll-over divider is at its top)
     [
@@ -372,9 +372,7 @@ function beatsA(o: Opts): Beat[][] {
     // 1: Carl asks; thinking, the plan, two subagents start; one finishes
     [
       { title: "You ask", text: "A request for a KV-cache section, typed and sent; the box picks it up and starts a turn.", spot: ".prose-user", steps: typeSend(FIRST_ASK) },
-      th
-        ? { title: "The agent thinks first", text: "Its reasoning stays out of the way in this layout — the brain toggle in the composer row shows it.", spot: "[data-el='thinking-toggle']", steps: next(1) }
-        : { title: "The agent thinks first", text: "Its reasoning streams live under “Thinking…”; when the reply lands it folds into a collapsed “Thought” line.", spot: { sel: "span", text: "^Thinking…$" }, steps: next(1) },
+      { title: "The agent thinks first", text: "Its reasoning streams live under “Thinking…”; when the reply lands it folds into a collapsed “Thought” line.", spot: { sel: "span", text: "^Thinking…$" }, steps: next(1) },
       {
         title: "Then it plans",
         text: td ? "A to-do list pinned above the composer: 4 steps, the first in progress. It updates as the work moves." : "A to-do list in the thread: 4 steps, the first in progress. It updates as the work moves.",
@@ -383,28 +381,20 @@ function beatsA(o: Opts): Beat[][] {
       },
       {
         title: "Two helper agents start in parallel",
-        text: sa ? "One subagent call starts two helpers — a compact strip above the composer, one chip each with its state." : "One subagent call starts two helpers — one card under the reply, a row each with its state and cost.",
+        text: sa ? "One subagent call starts two helpers — a compact strip above the composer, one chip each with its state." : "One subagent call starts two helpers — one card under the reply, a row each with its state.",
         spot: "[data-el='subagents']",
         steps: next(1),
       },
-      { title: "One helper finishes", text: "Its row turns done with what it cost ($0.09) and a one-line summary; the other is still reading.", spot: "[data-el='subagent'][data-state='completed']", steps: next(1) },
+      { title: "One helper finishes", text: co ? "Its row turns done with what it cost ($0.09) and a one-line summary; the other is still reading." : "Its row turns done with a one-line summary; the other is still reading.", spot: "[data-el='subagent'][data-state='completed']", steps: next(1) },
     ],
     // 2: the reply streams whole (past 6,000 characters)
     [{ title: "The reply streams in", text: "The answer arrives live — over 6,000 characters with a table, code and math — while the plan moves to 2 of 4.", spot: "[data-el='stream']", steps: next(1, 1200) }],
     // 3: it lands; then the AskUser
     [
-      th
-        ? {
-            title: "The reply lands",
-            text: "Both helpers are done and the plan reads 4/4. The reply's reasoning is hidden here: the brain toggle shows every reply's thinking — flipped on now.",
-            spot: "[data-el='thinking']",
-            steps: next(1, 1200),
-            show: [{ click: "[data-el='thinking-toggle']" }, { sleep: 600 }],
-          }
-        : { title: "The reply lands", text: "Both helpers are done and the plan reads 4/4. The reasoning is now the collapsed “Thought” line on the reply — click it to read.", spot: "[data-el='thinking']", steps: next(1, 1200) },
+      { title: "The reply lands", text: "Both helpers are done and the plan reads 4/4. The reasoning is now the collapsed “Thought” line on the reply — click it to read.", spot: "[data-el='thinking']", steps: next(1, 1200) },
       co
         ? { title: "What it cost", text: "Its five tool calls fold into one row above the text. Cost shows only as the conversation's total, top right.", spot: "[data-el='total-cost']", steps: [] }
-        : { title: "What it cost", text: "Its five tool calls fold into one row above the text; the reply's cost ($0.34) sits quietly under it.", spot: "[data-el='reply-cost']", steps: [] },
+        : { title: "The tool calls", text: "Its five tool calls fold into one row above the text. No cost anywhere in the chat — the ledger and Settings still have it.", spot: "[data-el='tool-calls']", steps: [] },
       {
         title: "The agent asks you to choose",
         text: ak ? "A question with numbered buttons under it — click one to answer. The conversation waits for you." : "A question with two option cards, the recommended one marked — tap a card to answer. The conversation waits for you.",
@@ -577,7 +567,7 @@ function phoneDbC(db: any, now: number, ls: Record<string, string> = {}): void {
  *  box (one __vcPhoneNext() per box step), the way preview/conv-check.mjs
  *  plays it. Plain data — the phone page gets it as JSON. */
 function beatsC(o: Opts): Beat<PhoneStep>[] {
-  const th = second(o, "thinking"), sa = second(o, "subagents"), co = second(o, "cost"), td = second(o, "todos"), vd = second(o, "verdict");
+  const sa = second(o, "subagents"), co = second(o, "cost"), td = second(o, "todos"), vd = second(o, "verdict");
   return [
     { title: "The same chat, on the phone", text: "The box conversation from the laptop, on the phone: every piece the laptop shows, sized for a thumb.", steps: [] },
     { title: "The conversation rolled over", text: "It continued in a fresh session — the “Earlier conversation summarized” line opens the recap.", spot: "[data-el='divider']", steps: [], show: [{ tap: "[data-el='divider'] .xh" }, { sleep: 500 }] },
@@ -589,20 +579,10 @@ function beatsC(o: Opts): Beat<PhoneStep>[] {
       steps: [{ next: 1 }],
     },
     { title: "Two helper agents start in parallel", text: sa ? "Two helpers from one call — a compact strip above the composer, one chip each." : "Two helpers from one call — one card in the thread, a row each with its state.", spot: "[data-el='subagents']", steps: [{ next: 1 }] },
-    { title: "One helper finishes", text: "Its row turns done with its cost ($0.09) and a one-line summary; the other is still reading.", spot: "[data-el='subagent'][data-state='completed']", steps: [{ next: 1 }] },
+    { title: "One helper finishes", text: co ? "Its row turns done with its cost ($0.09) and a one-line summary; the other is still reading." : "Its row turns done with a one-line summary; the other is still reading.", spot: "[data-el='subagent'][data-state='completed']", steps: [{ next: 1 }] },
     { title: "The reply streams in", text: "Over 6,000 characters arrive live — a table, code, and math typeset as it streams.", spot: ".amsg.stream", steps: [{ next: 1 }] },
-    th
-      ? {
-          title: "The reply lands",
-          text: "The plan reads 4/4. Its reasoning is hidden in this layout — the menu's thinking toggle shows it, flipped on now.",
-          spot: "[data-el='thinking']",
-          steps: [{ next: 1 }],
-          show: [{ tap: "#menuBtn" }, { sleep: 500 }, { tap: "#thinkRow" }, { sleep: 500 }, { tap: "#menuBtn", optional: true }, { sleep: 300 }],
-        }
-      : { title: "The reply lands", text: "The plan reads 4/4. The reasoning is a collapsed “Thought” line on the reply — tap to read; the tool calls fold into “5 steps”.", spot: "[data-el='thinking']", steps: [{ next: 1 }] },
-    co
-      ? { title: "What it cost", text: "Cost shows only as the conversation's total, in the header.", spot: "[data-el='total-cost']", steps: [] }
-      : { title: "What it cost", text: "The reply's cost ($0.34) sits quietly under it.", spot: "[data-el='reply-cost']", steps: [] },
+    { title: "The reply lands", text: "The plan reads 4/4. The reasoning is a collapsed “Thought” line on the reply — tap to read; the tool calls fold into “5 steps”.", spot: "[data-el='thinking']", steps: [{ next: 1 }] },
+    ...(co ? [{ title: "What it cost", text: "Cost shows only as the conversation's total, in the header.", spot: "[data-el='total-cost']", steps: [] }] : []),
     { title: "The agent asks you to choose", text: "A question with two option cards, the recommended one marked — tap a card. The conversation waits for you.", spot: ".delib-opt.inline", steps: [{ next: 1 }] },
     { title: "You pick “Only 4-bit KV”", text: "The pick goes back as your answer, and the cards go quiet.", spot: ".delib-opt.inline.chosen", steps: [{ tap: ".delib-opt.inline[data-ans='Only 4-bit KV']" }, { sleep: 700 }] },
     { title: "It schedules a check and sleeps", text: "It sets a wake for later; the working line above the composer shows it sleeping, with the next wake time.", spot: "#ongoing", steps: [{ next: 1 }] },
@@ -622,23 +602,21 @@ function beatsC(o: Opts): Beat<PhoneStep>[] {
 // ---- the scenarios ------------------------------------------------------------------
 
 const CHOICE_OPTIONS: Record<string, [string, string]> = {
-  thinking: ["line", "toggle"],
   subagents: ["inline", "strip"],
-  cost: ["reply", "total"],
+  cost: ["none", "total"],
   todos: ["inline", "pinned"],
   verdict: ["thread", "ongoing"],
   ask: ["cards", "buttons"],
 };
 const CHOICE_TEXT: Record<string, Record<string, string>> = {
-  thinking: { line: "a collapsed “Thought” line on each reply (click to read)", toggle: "hidden; the brain toggle in the composer row shows every reply's thinking" },
   subagents: { inline: "a card under the reply that spawned them", strip: "a compact strip above the composer" },
-  cost: { reply: "each reply's cost quietly under it", total: "only the conversation's total, at the top right" },
+  cost: { none: "no cost in the chat at all (the default — Carl: \"I just don't need cost\")", total: "only the conversation's total, at the top right" },
   todos: { inline: "the plan card in the thread", pinned: "the plan pinned above the composer" },
   verdict: { thread: "a quiet line at the end of the thread", ongoing: "in the ongoing line above the composer" },
   ask: { cards: "option cards (the phone's language, desktop style)", buttons: "numbered buttons under the question" },
 };
 /** Where each choice is best seen: the stage the scenario stops after. */
-const CHOICE_STAGE: Record<string, number> = { thinking: 3, subagents: 1, cost: 6, todos: 1, verdict: 6, ask: 3 };
+const CHOICE_STAGE: Record<string, number> = { subagents: 1, cost: 6, todos: 1, verdict: 6, ask: 3 };
 
 const lsFor = (opts: Record<string, string>) => Object.fromEntries(Object.entries(opts).map(([k, v]) => [`vc_ui_${k}`, v]));
 const DEFAULTS = Object.fromEntries(Object.entries(CHOICE_OPTIONS).map(([k, [a1]]) => [k, a1]));
@@ -673,10 +651,10 @@ export const convFullScenarios: Scenario[] = [
     const sc = scenarioA(
       "conv-a-fullscreen",
       "Full conversation — fullscreen chat with the chats sidebar",
-      "conv-a's world in fullscreen chat (Ctrl+Shift+F), laid out like Claude Code desktop / Codex: the conversations on the left, grouped by project exactly like the Chats overlay (project sections with +, New project, Recent / Earlier, the filter, New), the chat beside it at reading width. Ctrl+B or the sidebar's toggle hides and shows it (remembered); the Chats button in the composer row toggles it too. Cost on the app's default now: the conversation's total, none per reply.",
-      lsFor({ ...DEFAULTS, cost: "total" }),
+      "conv-a's world in fullscreen chat (Ctrl+Shift+F), laid out like Claude Code desktop / Codex: the conversations on the left, grouped by project exactly like the Chats overlay (project sections with +, New project, Recent / Earlier, the filter, New), the chat beside it at reading width. Ctrl+B or the sidebar's toggle hides and shows it (remembered). The composer is fullscreen's own: no Chats or New chat under it (the sidebar has both) and no camera — a + on the left opens Add photos & files (the file dialog: images attach, other files become @-references), Capture a region (the open file shows over the chat with the marquee on; Esc cancels) and Mention a vault file (the @ picker); a mic beside Send starts voice (Ctrl+D works here too — see voice-fullscreen). The scenario ends with the + menu open. Before: the composer row still had Chats, New chat and the camera, and no voice. Cost on the app's default now: none in the chat.",
+      lsFor(DEFAULTS),
     );
-    return { ...sc, open: [...(sc.open ?? []), { key: "ctrl+shift+F" }, { wait: "[data-el='chats-sidebar']" }, { sleep: 400 }] };
+    return { ...sc, open: [...(sc.open ?? []), { key: "ctrl+shift+F" }, { wait: "[data-el='chats-sidebar']" }, { sleep: 400 }, { click: "[data-el='composer-plus']", optional: true }, { sleep: 300 }] };
   })(),
   ...Object.entries(CHOICE_OPTIONS).flatMap(([choice, opts]) =>
     opts.map((opt) =>
@@ -713,7 +691,8 @@ export const convFullScenarios: Scenario[] = [
     host: { keys: { "api.anthropic": "sk-ant-PREVIEW-000000000000" } },
     build: buildA,
     llm: { scripts: localScripts, chunkMs: 8 },
-    localStorage: lsFor(DEFAULTS),
+    // The per-reply cost option: this is where OpenRouter's metering is checked.
+    localStorage: lsFor({ ...DEFAULTS, cost: "reply" }),
     drive: driveB,
     // Opens through the answered AskUser (the self-test's 30 s); the check plays every stage.
     open: driveB.slice(0, 4).flat(),

@@ -9,6 +9,7 @@ import { loadSkills, skillPromptIndex, expandSkillInvocation } from "./skills";
 import { loadSessionContext } from "./context";
 import { loadVaultSystemPrompt, loadVaultTools, loadVaultNorthStar, northStarPromptBlock, loadVaultMemoryIndex, vaultMemoryPromptBlock, loadVaultAssistantPrompt } from "./meta";
 import { harnessV2Enabled } from "./harness";
+import { takeSteers, type Pending } from "./pendingInput";
 
 export type TokenUsage = {
   prompt: number;
@@ -40,6 +41,8 @@ export type StreamEvent =
   // so the dial moves while a long turn runs instead of only at its end.
   | { kind: "context"; context: number }
   | { kind: "cost"; cost: TurnCost }
+  // Carl's mid-turn messages, delivered into the turn between two steps.
+  | { kind: "steer"; messages: Pending[] }
   | { kind: "error"; message: string };
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };
@@ -143,6 +146,13 @@ Preserve, in compressed form:
 - What has been done so far and what still remains
 
 Drop verbose tool outputs (file dumps, command output, listings) — keep only the conclusions. Output a tight recap (around 300-700 words) written so the agent can pick up mid-task without re-reading anything.`;
+
+/** `base` with each injected message back where it arrived (its index in the un-injected list). */
+function withSteersAt(base: ModelMessage[], injected: Array<{ at: number; msg: ModelMessage }>): ModelMessage[] {
+  const out = base.slice();
+  injected.forEach((j, k) => out.splice(j.at + k, 0, j.msg));
+  return out;
+}
 
 function estimateMessageTokens(messages: ModelMessage[]): number {
   let chars = 0;
@@ -619,7 +629,36 @@ Be terse. If the task is research, return findings as a structured list with fil
     // Set true the instant the model calls AskUser, so the auto-continue loop
     // below does NOT resume the turn after the user has been handed the decision.
     let askedUser = false;
+    // Steers (pendingInput.ts): taken between steps and kept in place for the
+    // rest of the turn. The SDK rebuilds each step's messages from the turn's
+    // own, so an injected message is re-inserted where it arrived every step,
+    // and carried into an auto-continue's messages.
+    let injected: Array<{ at: number; msg: ModelMessage }> = [];
+    const steerMessage = (p: Pending): ModelMessage => {
+      const text = [p.contextPreamble?.trim(), p.text.trim()].filter(Boolean).join("\n\n");
+      const imgs = (p.attachments ?? []).filter((a) => a.imageDataUrl?.startsWith("data:"));
+      if (!imgs.length) return { role: "user", content: text };
+      return {
+        role: "user",
+        content: [
+          ...(text ? [{ type: "text" as const, text }] : []),
+          ...imgs.map((a) => ({ type: "image" as const, image: new URL(a.imageDataUrl) })),
+        ],
+      };
+    };
+    const withSteers = (base: ModelMessage[]): ModelMessage[] => {
+      const fresh = conversationId ? takeSteers(conversationId) : [];
+      if (fresh.length) {
+        for (const p of fresh) injected.push({ at: base.length, msg: steerMessage(p) });
+        onEvent({ kind: "steer", messages: fresh });
+      }
+      if (!injected.length) return base;
+      const out = base.slice();
+      injected.forEach((j, k) => out.splice(j.at + k, 0, j.msg));
+      return out;
+    };
     const attempt = async (msgs: ModelMessage[]): Promise<AttemptResult> => {
+      injected = [];
       let gotOutput = false;
       try {
         const result = streamText({
@@ -637,7 +676,10 @@ Be terse. If the task is research, return findings as a structured list with fil
           // has grown past the threshold, summarize the older prefix and
           // keep the recent turns so a long multi-step turn doesn't die at
           // the context limit. Threshold-guarded + fail-safe (see helpers).
-          prepareStep: async ({ messages: stepMessages, steps }) => {
+          prepareStep: async ({ messages: rawStepMessages, steps }) => {
+            // Carl's steers first, so every rewrite below keeps them.
+            const stepMessages = withSteers(rawStepMessages as ModelMessage[]);
+            const unchanged = stepMessages === rawStepMessages ? undefined : { messages: stepMessages };
             try {
               const used =
                 (steps?.[steps.length - 1]?.usage as any)?.totalTokens ??
@@ -662,14 +704,14 @@ Be terse. If the task is research, return findings as a structured list with fil
                 };
                 return { messages: [...(stepMessages as ModelMessage[]), order] };
               }
-              if (used < midRunCompactAt) return undefined;
+              if (used < midRunCompactAt) return unchanged;
               const msgs = stepMessages as ModelMessage[];
               const sys = (msgs[0] as any)?.role === "system" ? msgs[0] : null;
               const cut = findTailCut(msgs, MID_RUN_KEEP_TAIL);
-              if (cut == null) return undefined;
+              if (cut == null) return unchanged;
               const prefix = msgs.slice(sys ? 1 : 0, cut);
               const tail = msgs.slice(cut);
-              if (prefix.length === 0) return undefined;
+              if (prefix.length === 0) return unchanged;
               const summary = await generateText({
                 model,
                 system: MID_RUN_COMPACT_SYSTEM,
@@ -684,7 +726,7 @@ Be terse. If the task is research, return findings as a structured list with fil
             } catch {
               // Never let compaction break the run — fall back to the
               // unmodified messages (worst case: the limit, as before).
-              return undefined;
+              return unchanged;
             }
           },
           ...(providerOptions ? { providerOptions } : {}),
@@ -770,7 +812,9 @@ Be terse. If the task is research, return findings as a structured list with fil
         const totalUsage = await result.totalUsage;
         const finishReason = await result.finishReason;
         const responseMessages = (await result.response).messages as ModelMessage[];
-        return { ok: true, usage, totalUsage, finishReason, responseMessages };
+        // The steers delivered in this attempt, in place, for an auto-continue.
+        const withInjected = injected.length ? withSteersAt([...msgs, ...responseMessages], injected).slice(msgs.length) : responseMessages;
+        return { ok: true, usage, totalUsage, finishReason, responseMessages: withInjected };
       } catch (e) {
         return { ok: false, error: e, gotOutput };
       }

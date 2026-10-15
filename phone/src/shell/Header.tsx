@@ -71,13 +71,6 @@ export function Menu() {
         </RowIco>
         <span className="nm">Voice</span>
       </button>
-      <button className="mrow" id="thinkRow">
-        <RowIco>
-          <path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.8V16h5v-.3c0-.7.4-1.4 1-1.8A6 6 0 0 0 12 3z" />
-        </RowIco>
-        <span className="nm">Show thinking</span>
-        <span className="ct zero" id="thinkState">off</span>
-      </button>
       <button className="mrow" id="settingsRow">
         <Gear />
         <span className="nm">Box &amp; settings</span>

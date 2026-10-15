@@ -6,13 +6,17 @@ import remarkBreaks from "remark-breaks";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import { preprocessMarkdownMath } from "./mdMath";
-import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare } from "lucide-react";
+import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare, Mic, Paperclip, Scan, AtSign } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { FullscreenVoiceBar } from "./VoiceCockpit";
+import { usePending, type PendingKind } from "./pendingInput";
+import { voiceImageMime } from "./voiceImages";
 import { fileKind } from "./fileKind";
 import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
 import { COMPACT_THRESHOLD, COMPACTION_DIVIDER_TEXT, windowFor, isCompactionDivider, dividerSummary } from "./chatContext";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
-import { buildViewportContextText } from "./voice-elevenlabs";
+import { buildViewportContextText, toggleVoice } from "./voice-elevenlabs";
 import { findModel, AUTO_MODEL_ID } from "./providers";
 import { loadSkills } from "./skills";
 import { isUnreadableAsText } from "./fileKind";
@@ -25,12 +29,10 @@ import {
   ReplyCost,
   Subagents,
   Thought,
-  ThinkingToggle,
   VerdictLine,
   chosenAnswer,
   isLegacySubagentRecord,
   subagentsOfMessage,
-  useShowThinking,
   withoutOptionList,
   type SubagentRec,
 } from "./chatExtras";
@@ -367,10 +369,15 @@ export function ChatPane() {
   const chatFullscreen = useStore((s) => s.chatFullscreen && !s.popoutOpen);
   const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
   const chatsShown = chatFullscreen ? chatSidebarOpen : showChatsPanel;
+  const voiceMode = useStore((s) => s.voiceMode);
+  // Fullscreen chat: voice replaces the composer with its waves (VoiceCockpit).
+  const voiceBar = chatFullscreen && voiceMode;
+  const [plusOpen, setPlusOpen] = useState(false);
   const toggleChatsPanel = () =>
     chatFullscreen ? useStore.getState().toggleChatSidebar() : setShowChatsPanel(!showChatsPanel);
   const activeConv = conversations.find((c) => c.id === activeConversationId);
-  const showThinking = useShowThinking();
+  // Messages sent while the agent works, until delivered (pendingInput.ts).
+  const localPending = usePending(activeConversationId);
   // What the thread shows beside the text (chatExtras.tsx; uiChoices.ts picks
   // where each goes while Carl decides). Stable props, so the bubbles' memo
   // holds while a reply streams.
@@ -591,15 +598,14 @@ export function ChatPane() {
   let lastVisible = -1;
   for (let i = messages.length - 1; i >= 0; i--) if (!messages[i]!.hidden && !messages[i]!.system) { lastVisible = i; break; }
 
-  const send = async () => {
+  // While the agent works the composer stays open: Enter steers the running
+  // turn (at its next step), Tab queues a follow-up for after it, Esc stops
+  // (pendingInput.ts; chips above the composer until delivered).
+  const send = async (mid?: PendingKind) => {
     if (!ready) return;
     const text = input.trim();
     if (!text && pendingImages.length === 0) return;
-    // While the agent is mid-generation, "send" interrupts: capture
-    // the partial response as a final assistant turn, abort the
-    // current call, then send the new user message as a fresh turn.
-    // See chat-controller's interruptAndSend.
-    const actionKind: "send" | "interrupt" = busy ? "interrupt" : "send";
+    const actionKind: "send" | PendingKind = busy ? mid ?? "steer" : "send";
     // Resolve every @name token in the text — not just the ones picked
     // from the dropdown. Users type @name manually all the time, and
     // without resolution the agent just sees a literal "@foo.md" and
@@ -742,8 +748,31 @@ export function ChatPane() {
       // Enter that commits a composition must not send the message.
       if ((e.nativeEvent as { isComposing?: boolean }).isComposing) return;
       e.preventDefault();
-      if (!busy) send();
+      void send(busy ? "steer" : undefined);
+      return;
     }
+    if (busy && e.key === "Tab" && !e.shiftKey && (input.trim() || pendingImages.length > 0)) {
+      e.preventDefault();
+      void send("queue");
+      return;
+    }
+    if (busy && e.key === "Escape") {
+      e.preventDefault();
+      stop();
+    }
+  };
+  // Pending chips: this machine's (local mode, or a box message in flight) and
+  // the box's queue for this conversation (its `queued`).
+  const boxQueued = activeConv?.queued ?? [];
+  const onBox = new Set(boxQueued.map((q) => q.id));
+  const chips = [
+    ...localPending.filter((p) => !(p.qid && onBox.has(p.qid))).map((p) => ({ id: p.id, kind: p.kind, text: p.text, sending: !!p.sending || !!p.qid })),
+    ...boxQueued.map((q) => ({ id: `box:${activeConv!.id}:${q.id}`, kind: "queue" as PendingKind, text: q.text, sending: false })),
+  ];
+  const editChip = (c: { id: string; text: string }) => {
+    dispatchChatAction({ kind: "unqueue", id: c.id });
+    setInput((prev) => (prev.trim() ? `${c.text}\n${prev}` : c.text));
+    requestAnimationFrame(() => inputRef.current?.focus());
   };
 
   const onInputChange = (v: string) => {
@@ -842,6 +871,80 @@ export function ChatPane() {
     });
   };
 
+  // Fullscreen's + menu. Every path the composer already has, in one place:
+  // files from disk (images as attachments, the rest as @-references), a
+  // region of the open file (the marquee — over the chat, since fullscreen has
+  // no viewer), and the @ picker for vault files.
+  const capturable = (() => {
+    const paths: string[] = [];
+    if (currentFile) paths.push(currentFile);
+    for (const p of panes) if (p.file) paths.push(p.file);
+    return paths.some((p) => {
+      const k = fileKind(p).kind;
+      return k === "pdf" || k === "html" || k === "image";
+    });
+  })();
+  const addFiles = async () => {
+    setPlusOpen(false);
+    let picked: string | string[] | null = null;
+    try {
+      picked = await openDialog({ multiple: true, directory: false, defaultPath: vaultPath ?? undefined });
+    } catch (e) {
+      console.warn("[attach] file dialog failed:", e);
+      return;
+    }
+    const paths = (picked == null ? [] : Array.isArray(picked) ? picked : [picked]).map((p) => p.replace(/\\/g, "/"));
+    const refs: Array<{ rel: string; path: string; name: string; raw: string }> = [];
+    for (const path of paths) {
+      const name = path.split("/").pop() ?? path;
+      const mime = voiceImageMime(path);
+      if (mime) {
+        try {
+          const bytes = await invoke<number[]>("read_binary_file", { path });
+          const url = await new Promise<string>((res, rej) => {
+            const r = new FileReader();
+            r.onload = () => res(String(r.result));
+            r.onerror = () => rej(r.error);
+            r.readAsDataURL(new Blob([new Uint8Array(bytes)], { type: mime }));
+          });
+          setPendingImages((prev) => [...prev, { imageDataUrl: url, sourcePath: path }]);
+          continue;
+        } catch (e) {
+          console.warn("[attach] image read failed:", e);
+        }
+      }
+      const rel = vaultPath && path.startsWith(vaultPath + "/") ? path.slice(vaultPath.length + 1) : path;
+      refs.push({ rel, path, name, raw: `@${name}` });
+    }
+    if (refs.length) {
+      setMentions((prev) => [...prev, ...refs.filter((r) => !prev.some((m) => m.path === r.path))]);
+      setInput((prev) => `${prev}${prev && !/\s$/.test(prev) ? " " : ""}${refs.map((r) => r.raw).join(" ")} `);
+    }
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+  const captureRegion = () => {
+    setPlusOpen(false);
+    if (!capturable) return;
+    const s = useStore.getState();
+    s.setEditPromptCapturePending(false);
+    s.setNoteCapturePending(false);
+    s.setVoiceCapturePending(false);
+    setChatPaneCapturePending(true);
+    // App.tsx shows the open file over the chat and starts the marquee there.
+    window.dispatchEvent(new CustomEvent("vc-fullscreen-capture"));
+  };
+  const mentionVaultFile = () => {
+    setPlusOpen(false);
+    const el = inputRef.current;
+    const v = `${input}${input && !/\s$/.test(input) ? " " : ""}@`;
+    if (el) {
+      el.value = v;
+      el.setSelectionRange(v.length, v.length);
+      el.focus();
+    }
+    onInputChange(v);
+  };
+
   return (
     <div className="h-full flex flex-col bg-card border-l border-border relative">
       {((chipAt === "top" && !isPopout) || totalCost) && (
@@ -897,7 +1000,7 @@ export function ChatPane() {
         {(streamingText || streamingReasoning || liveTools.length > 0) && (
           <div className="space-y-2">
             {liveTools.length > 0 && <LiveToolTicker tools={liveTools} />}
-            {streamingReasoning && !streamingText && (uiChoice("thinking") !== "toggle" || showThinking) && (
+            {streamingReasoning && !streamingText && (
               <ReasoningStream text={streamingReasoning} />
             )}
             {streamingText && (
@@ -971,12 +1074,51 @@ export function ChatPane() {
           )}
           {activeConv && (
             <OngoingLine
-              conversation={{ ...activeConv, messages, ...(uiChoice("cost") === "total" ? { costUsd: undefined } : {}) }}
+              conversation={{ ...activeConv, messages, ...(uiChoice("cost") !== "reply" ? { costUsd: undefined } : {}) }}
               size="chat"
               className="px-1 pb-1.5"
               verdict={uiChoice("verdict") === "ongoing"}
             />
           )}
+          {chips.length > 0 && !voiceBar && (
+            <div className="mb-1.5 flex flex-col gap-1" data-el="pending-chips">
+              {chips.map((c) => (
+                <div
+                  key={c.id}
+                  data-el="pending"
+                  data-kind={c.kind}
+                  className="group flex items-center gap-2 rounded-lg border border-border/70 bg-muted/30 pl-2.5 pr-1 py-1 text-[12px]"
+                >
+                  <span className="shrink-0 text-[10.5px] text-muted-foreground">
+                    {c.kind === "steer" ? "Steering · next step" : "Queued · after this turn"}
+                  </span>
+                  <span className="flex-1 min-w-0 truncate text-foreground/90">{c.text}</span>
+                  {!c.sending && (
+                    <>
+                      <button
+                        onClick={() => editChip(c)}
+                        className="h-5 px-1.5 rounded text-[10.5px] text-muted-foreground hover:text-foreground hover:bg-accent/60"
+                        title="Edit — back into the composer"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => dispatchChatAction({ kind: "unqueue", id: c.id })}
+                        className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60"
+                        title="Remove"
+                        data-el="pending-remove"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {voiceBar ? (
+            <FullscreenVoiceBar />
+          ) : (
           <div className="relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors">
             {skillMention && filteredSkills.length > 0 && (
               <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg z-10">
@@ -1060,19 +1202,65 @@ export function ChatPane() {
               </div>
             )}
             <div className="relative flex items-end">
+              {chatFullscreen && (
+                <div className="absolute left-2 bottom-2 z-10">
+                  <button
+                    onClick={() => setPlusOpen((o) => !o)}
+                    disabled={!ready}
+                    data-el="composer-plus"
+                    className={cn(
+                      "h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed",
+                      plusOpen && "bg-accent/60 text-foreground",
+                    )}
+                    title="Add files, capture a region, or mention a vault file"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
+                  {plusOpen && (
+                    <>
+                      <div className="fixed inset-0 z-10" onMouseDown={() => setPlusOpen(false)} />
+                      <div
+                        data-el="composer-plus-menu"
+                        className="absolute bottom-full left-0 mb-1.5 z-20 w-60 rounded-lg border border-border bg-popover p-1 shadow-lg text-[12.5px]"
+                      >
+                        <PlusItem icon={<Paperclip className="h-3.5 w-3.5" />} label="Add photos & files" onClick={() => void addFiles()} />
+                        <PlusItem
+                          icon={<Scan className="h-3.5 w-3.5" />}
+                          label="Capture a region"
+                          hint={capturable ? "Drag over the open file" : "Open a PDF, HTML file or image first"}
+                          disabled={!capturable || busy}
+                          onClick={captureRegion}
+                        />
+                        <PlusItem icon={<AtSign className="h-3.5 w-3.5" />} label="Mention a vault file" onClick={mentionVaultFile} />
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
               <Textarea
                 ref={inputRef}
                 value={input}
                 onChange={(e) => onInputChange(e.target.value)}
                 onKeyDown={onKey}
                 onPaste={onPaste}
-                placeholder={archived ? ARCHIVED_THREAD : boxDown ? BOX_UNREACHABLE : ready ? "Ask anything, or / for commands…" : "Open a vault first"}
+                placeholder={archived ? ARCHIVED_THREAD : boxDown ? BOX_UNREACHABLE : !ready ? "Open a vault first" : busy ? "Enter to steer · Tab to queue · Esc to stop" : "Ask anything, or / for commands…"}
                 disabled={!ready}
                 rows={1}
-                className="border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pl-3 !pr-20"
+                className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pr-20", chatFullscreen ? "!pl-11" : "!pl-3")}
               />
               <div className="absolute right-3 bottom-2 flex items-center gap-1">
-                {!busy && (() => {
+                {!busy && chatFullscreen && (
+                  <button
+                    onClick={toggleVoice}
+                    disabled={!vaultPath}
+                    data-el="composer-voice"
+                    className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-40"
+                    title="Voice (Ctrl+D)"
+                  >
+                    <Mic className="h-3.5 w-3.5" />
+                  </button>
+                )}
+                {!busy && !chatFullscreen && (() => {
                   // Union of what's open in main's panes — synced to
                   // the popout via state broadcast. If any visible
                   // file is marquee-capable, enable Capture.
@@ -1131,7 +1319,7 @@ export function ChatPane() {
                 {!busy && (
                   <Button
                     size="icon"
-                    onClick={send}
+                    onClick={() => void send()}
                     disabled={!ready || (!input.trim() && pendingImages.length === 0)}
                     className="h-7 w-7 rounded-lg"
                     title="Send"
@@ -1142,13 +1330,14 @@ export function ChatPane() {
               </div>
             </div>
           </div>
+          )}
+          {!voiceBar && (
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
             <div className="flex items-center gap-3 min-w-0">
               <ModelPicker modelId={modelId} apiKeys={apiKeys} onSelect={onSelectModel} />
               {chipAt === "footer" && !isPopout && <ProjectChip placement="up" />}
             </div>
             <div className="flex items-center gap-2">
-              <ThinkingToggle visible={!!streamingReasoning || messages.some((m) => !!m.thinking)} />
               {busy && <ElapsedTimer />}
               {lastContext > 0 && (
                 <div
@@ -1159,7 +1348,7 @@ export function ChatPane() {
                   <span>{formatTokens(lastContext)}</span>
                 </div>
               )}
-              {!isPopout && (
+              {!isPopout && !chatFullscreen && (
                 <button
                   onClick={toggleChatsPanel}
                   className={`relative flex items-center gap-1 text-[11px] hover:text-foreground transition-colors ${
@@ -1192,21 +1381,38 @@ export function ChatPane() {
                   )}
                 </button>
               )}
-              <button
-                onClick={() => useStore.getState().newConversation()}
-                className="hover:text-foreground transition-colors"
-                title="New chat"
-              >
-                <Plus className="h-3 w-3" />
-              </button>
+              {!chatFullscreen && (
+                <button
+                  onClick={() => useStore.getState().newConversation()}
+                  className="hover:text-foreground transition-colors"
+                  title="New chat"
+                >
+                  <Plus className="h-3 w-3" />
+                </button>
+              )}
             </div>
           </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
+
+function PlusItem({ icon, label, hint, disabled, onClick }: { icon: React.ReactNode; label: string; hint?: string; disabled?: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={hint}
+      className="w-full flex items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-foreground hover:bg-accent/60 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+    >
+      <span className="text-muted-foreground">{icon}</span>
+      <span className="flex-1">{label}</span>
+    </button>
+  );
+}
 
 function toolSummary(input: any): string {
   if (!input || typeof input !== "object") return "";
@@ -1300,12 +1506,19 @@ export const MessageBubble = memo(function MessageBubble({
             urlTransform={allowImageDataUrls}
             components={chatComponents}
           >
-            {preprocessMarkdownMath(stripAttachedFooter(message.content))}
+            {preprocessMarkdownMath(stripAttachedFooter(message.display ?? message.content))}
           </ReactMarkdown>
         </div>
       ) : (
         <div className="w-full space-y-2">
           {message.thinking && <Thought text={message.thinking} />}
+          {message.attachments && message.attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2" data-el="shown-images">
+              {message.attachments.map((a, i) => (
+                <img key={i} src={a.imageDataUrl} alt={a.sourcePath?.split("/").pop() ?? `image ${i + 1}`} className="max-h-[260px] max-w-full rounded-lg border border-border/60" />
+              ))}
+            </div>
+          )}
           <div className="prose-chat text-foreground/95">
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath]}
@@ -1313,7 +1526,7 @@ export const MessageBubble = memo(function MessageBubble({
               urlTransform={allowImageDataUrls}
               components={chatComponents}
             >
-              {preprocessMarkdownMath(message.askOptions?.length ? withoutOptionList(message.content, message.askOptions) : message.content)}
+              {preprocessMarkdownMath(message.askOptions?.length ? withoutOptionList(message.content, message.askOptions) : (message.display ?? message.content))}
             </ReactMarkdown>
           </div>
           {onAsk && message.askOptions && message.askOptions.length > 0 && <AskOptions options={message.askOptions} live={askLive} chosen={askChosen} onPick={onAsk} />}
