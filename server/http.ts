@@ -49,8 +49,6 @@ export type ServerHooks = {
     answer: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
     kill: (v: VaultScope, b: any) => Promise<Record<string, unknown> | null>;
     subagent: (v: VaultScope, convId: string, sid: string, op: "steer" | "stop", b: any) => Promise<Record<string, unknown>>;
-    /** Carl's long-run controls (a project's check, metric, budget; a conversation's budget). */
-    control?: (v: VaultScope, target: { project?: string; convId?: string }, op: string, b: any) => Promise<Record<string, unknown>>;
   };
   /** Voice (server/voice.ts) for the request's vault: its working copy, its
    * engine and sandbox — or why not. */
@@ -317,14 +315,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
     if (!hooks.engine) return json(res, 503, { error: "engine not running" });
     const out = await hooks.engine.subagent(scope, decodeURIComponent(subM[1]!), decodeURIComponent(subM[2]!), subM[3] as "steer" | "stop", await jsonBody(req));
     return json(res, out.ok ? 200 : 409, out);
-  }
-  // Carl's long-run controls: a project's check / metric / budget / models, a conversation's budget.
-  const ctlM = /^\/api\/v1\/(projects|conversations)\/([^/]+)\/(check|metric|budget|models)$/.exec(path);
-  if (ctlM && method === "POST") {
-    if (!hooks.engine?.control) return json(res, 503, { error: "engine not running" });
-    const id = decodeURIComponent(ctlM[2]!);
-    const out = await hooks.engine.control(scope, ctlM[1] === "projects" ? { project: id } : { convId: id }, ctlM[3]!, await jsonBody(req));
-    return json(res, out.ok ? 200 : 400, out);
   }
 
 

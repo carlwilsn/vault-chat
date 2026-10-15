@@ -149,13 +149,7 @@ const MAX_ROUNDS = 10;
  * Verify a Done claim. Resolves within `verifierTimeoutMs` (90 s) with
  * {verdict, notes}; a model failure or the time limit yields "unsure". Never throws.
  */
-export async function verifyDone(args: {
-  conv: ContextConv;
-  summary: string;
-  evidence: string[];
-  /** The project's check, run by the server just now (passed): the verifier reads its output, and its full log at `log`. */
-  check?: { command: string; exit: number | null; output: string; log?: string };
-}): Promise<Verdict> {
+export async function verifyDone(args: { conv: ContextConv; summary: string; evidence: string[] }): Promise<Verdict> {
   const cfg = ctxConfig();
   const model = verifierModelFor(args.conv.model ?? cfg.agentModel);
   const ctl = new AbortController();
@@ -177,11 +171,6 @@ export async function verifyDone(args: {
     (project ? `# The project's "done when" (${project.name})\n\n${cap(project.project, 3_000, "project.md is longer")}\n\n` : "") +
     `# The agent's summary\n\n${args.summary}\n\n# The agent's evidence\n\n` +
     (args.evidence.length ? args.evidence.map((e, i) => `${i + 1}. ${cap(String(e), 6_000, "evidence cut")}`).join("\n") : "(none given)") +
-    (args.check
-      ? `\n\n# The project's check, run by the server itself (not quoted by the agent)\n\n$ ${cap(args.check.command, 1_000, "command cut")}\n[exit ${args.check.exit ?? "none"}]\n${cap(args.check.output, 6_000, args.check.log ? `full output in ${args.check.log}` : "output cut", "tail")}` +
-        (args.check.log ? `\n\n(The full output is in ${args.check.log}; you can read it with read_file.)` : "") +
-        `\nThe check passed; it gates Done. Still check the summary's other claims.`
-      : "") +
     `\n\nThe vault (working directory) is ${cfg.vault}.` +
     `\n\nBefore your verdict, check every explicit constraint in what Carl asked (timing, intervals, counts, spacing, formats) against the evidence — timestamps in files and tool results included — and fail the run if one is violated.`;
 

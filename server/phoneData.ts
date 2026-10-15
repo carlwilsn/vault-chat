@@ -43,9 +43,6 @@ function ongoingMeta(c: any, msgs: any[]): Record<string, unknown> {
   if (typeof c.nextWakeAt === "number") out.nextWakeAt = c.nextWakeAt;
   if (typeof c.costUsd === "number") out.costUsd = c.costUsd;
   if (c.working === true) out.working = true;
-  // The long-run parts of the ongoing line: the project's metric, a parent's workers.
-  const progress = [c.long?.metric, c.long?.workers].filter((x: unknown) => typeof x === "string" && x).join(" · ");
-  if (progress) out.progress = progress;
   if (c.state === "sleeping") {
     outer: for (let i = msgs.length - 1; i >= 0; i--) {
       const calls: any[] = Array.isArray(msgs[i]?.toolCalls) ? msgs[i].toolCalls : [];
@@ -65,8 +62,7 @@ function ongoingMeta(c: any, msgs: any[]): Record<string, unknown> {
 export function conversationsSummary(vault: string): unknown {
   const convs = readConversationObjects(vault);
   convs.sort((a, b) => (int(b.lastActivityAt) ?? 0) - (int(a.lastActivityAt) ?? 0));
-  // Workers (RunWorkers) show as their parent's "N workers" line, not chats of their own.
-  const rows = convs.filter((c) => !c.parent).slice(0, 60).map((c) => {
+  const rows = convs.slice(0, 60).map((c) => {
     const msgs: any[] = Array.isArray(c.messages) ? c.messages : [];
     const visible = (m: any) => m?.hidden !== true && str(m?.content).trim() !== "";
     const last = [...msgs].reverse().find(visible);

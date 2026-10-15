@@ -88,7 +88,7 @@ export async function makeRig(opts: { verifier?: (req: FakeReq, n: number) => Fa
   process.env.VC_PUSH_SUBS = join(root, "subs.json");
   process.env.VC_TOKEN_FILE = join(root, "token");
   process.env.VC_SECRETS_DIR = join(root, "secrets");
-  process.env.VC_PI_UNSAFE = "1"; // the check runs unwrapped here (no bubblewrap in tests)
+  process.env.VC_PI_UNSAFE = "1"; // no bubblewrap in tests
   const verifier = await startFakeModel(opts.verifier ?? (() => ({ text: '{"verdict":"pass","notes":["ok"]}' })));
   await import("../shims/globals");
   const { registerAll } = await import("../commands/registry");

@@ -252,7 +252,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
 
   const base = piPaths(b.stateDir);
   const baseUrl = b.openrouterBase ? b.openrouterBase.replace(/\/+$/, "") : undefined;
-  writePiConfig({ paths: base, install, catalog: piCat, models: [model, visionModel, process.env.VC_WORKER_MODEL ?? "", process.env.VC_WORKER_STRONG_MODEL ?? ""], baseUrl });
+  writePiConfig({ paths: base, install, catalog: piCat, models: [model, visionModel], baseUrl });
   console.log(`[engine:pi] model ${model} (window ${win}${modelMeta(model) ? "" : piCat.has(model) ? ", pi catalog" : ", defined in models.json"}); sandbox ${bwrap ?? "OFF"}`);
 
   const home = process.env.HOME || homedir();

@@ -225,7 +225,6 @@ async function main(): Promise<void> {
           answer: async (v, b) => (await engineOf(v)).answerRoute(b),
           kill: async (v, b) => (await engineOf(v)).kill(b),
           subagent: async (v, c, sid, op, b) => (await engineOf(v)).subagent(c, sid, op, b),
-          control: async (v, t, op, b) => (await engineOf(v)).control(t, op, b),
         },
     // Voice (server/voice.ts) in the request's vault: its working copy, its
     // engine (AskAgent), its sandbox (Bash, vault tools), its sync.

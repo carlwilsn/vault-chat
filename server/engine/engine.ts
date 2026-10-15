@@ -20,8 +20,6 @@ import {
   verifyDone,
   formatVerdict,
   projectCost,
-  readProject,
-  projectDir,
   type EngineConv,
   type ThreadTokenUsage,
 } from "./context";
@@ -30,9 +28,6 @@ import { addWake, readWakes, removeWakes, nextWakeFor, parseDelay, type Wake } f
 import { Ledger } from "./ledger";
 import { pdfRead, webSearch } from "./extraTools";
 import { startJob, jobStatus, jobList, jobStop, reapJobs, type PiJobEnv } from "./pi/jobs";
-import { addTasks, claimTask, finishTask, readTasks, taskCounts, type Task } from "./tasks";
-import { mergeWorktree, prepareWorktree, removeWorktree, resolveRepo } from "./worktree";
-import { appendJsonl, declaredCommand, longDir, metricLine, parseMetric, pinCommand, plateauOf, readJsonl, readLong, runCommand, saveRunLog, tailOf, tampered, writeLong, type CommandSpec, type MetricSpec, type Sample } from "./long";
 import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { join } from "node:path";
@@ -63,7 +58,7 @@ export type EngineDeps = {
 
 /** `subagents`: the children a `subagent` call spawned (their threadIds; state and cost live in conv.subagents). */
 type ToolRec = { id?: string; name: string; input: any; result?: string; subagents?: string[] };
-type TurnKind = "user" | "wake" | "nudge" | "resume" | "task";
+type TurnKind = "user" | "wake" | "nudge" | "resume";
 
 type Live = {
   convId: string;
@@ -255,98 +250,6 @@ export const ENGINE_TOOL_SPECS = [
   },
   {
     type: "function",
-    name: "SetCheck",
-    description:
-      "Set this project's check: the command whose passing gates Done (the server runs it on Done; a failing or changed check refuses Done). Passing = exit 0, or the output matching pass_regex. Pinned when set: you can set it once; after that only Carl can change it (propose a new one with AskUser). A fenced command block in project.md's \"## Done when\" is the same.",
-    inputSchema: {
-      type: "object",
-      properties: { command: { type: "string" }, pass_regex: { type: "string" }, timeout_s: { type: "number" } },
-      required: ["command"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "TaskAdd",
-    description: "Add tasks to this project's task queue (for RunWorkers): tasks [{title, notes?, deadline_min? (default 60)}].",
-    inputSchema: {
-      type: "object",
-      properties: {
-        tasks: {
-          type: "array",
-          items: { type: "object", properties: { title: { type: "string" }, notes: { type: "string" }, deadline_min: { type: "number" } }, required: ["title"], additionalProperties: false },
-        },
-      },
-      required: ["tasks"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "TaskClaim",
-    description: "Claim the next task of the project's queue (or get the one you are on).",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-  },
-  {
-    type: "function",
-    name: "TaskUpdate",
-    description:
-      "Finish a task: status done (the server runs the project's check for it, when one is declared with {task}), failed (back to the queue; given up after 3 attempts) or todo (release it). note: what you did or why it failed. learning: one line for the other workers (shared learnings.md).",
-    inputSchema: {
-      type: "object",
-      properties: { id: { type: "string" }, status: { type: "string", enum: ["done", "failed", "todo"] }, note: { type: "string" }, learning: { type: "string" } },
-      required: ["status"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "TaskList",
-    description: "The project's task queue: counts, and the tasks (optionally of one status).",
-    inputSchema: { type: "object", properties: { status: { type: "string", enum: ["todo", "doing", "done", "failed", "gave_up"] } }, additionalProperties: false },
-  },
-  {
-    type: "function",
-    name: "RunWorkers",
-    description:
-      "Start `count` workers (at most 8) on this project's task queue. Each is a conversation of its own that takes a task, works it in a fresh session under its deadline, marks it done or failed, shares a learning, and takes the next — until the queue is empty or the budget is spent. You see their progress in TaskList; you get a wake when they are all finished. model: the workers' model (default the project's cheap one).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        count: { type: "number" },
-        model: { type: "string" },
-        repo: { type: "string", description: "A git repo (in the vault or ~/agent-work/<vault>/): each worker gets its own worktree and branch; a done task is merged back (a conflict sends it back to the queue)." },
-      },
-      required: ["count"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "SetMetric",
-    description:
-      "Set this project's progress metric: a cheap command that prints a number (e.g. the % of functions matched). The server samples it every every_min minutes (default 15) while the project has work going, shows it to Carl, and alerts him when it has not risen in window_h hours of work (default 6). Pinned like the check: once set, only Carl changes it. A fenced command block under \"## Progress metric\" in project.md is the same.",
-    inputSchema: {
-      type: "object",
-      properties: { command: { type: "string" }, every_min: { type: "number" }, window_h: { type: "number" } },
-      required: ["command"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "SetBudget",
-    description:
-      "Ask Carl to cap the model spend (USD) of this conversation or its project. He approves or declines. Past 80% you are told before each turn; at 100% the work stops (blocked) until he raises it.",
-    inputSchema: {
-      type: "object",
-      properties: { usd: { type: "number" }, scope: { type: "string", enum: ["conversation", "project"] }, reason: { type: "string" } },
-      required: ["usd"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
     name: "Cost",
     description: "Model spend in USD: this conversation by default, or a project's total.",
     inputSchema: {
@@ -411,7 +314,6 @@ export class Engine {
     });
     this.timers.push(setInterval(() => this.scoped(() => void this.tickWakes()), 2_000));
     this.timers.push(setInterval(() => this.scoped(() => this.tickWatchdog()), 15_000));
-    this.timers.push(setInterval(() => this.scoped(() => void this.tickMetrics()), 60_000));
     this.timers.push(setInterval(() => this.scoped(() => void this.tickJobs()), 15_000));
   }
 
@@ -481,7 +383,7 @@ export class Engine {
     if (body.convId) {
       conv = await readConv(this.d.vault, body.convId);
       if (!conv) return { error: `conversation ${body.convId} not found` };
-      if (LEGACY_SOURCES.has(conv.source) && !conv.parent) return null;
+      if (LEGACY_SOURCES.has(conv.source)) return null;
     } else {
       conv = await createConv(this.d.vault, body.source === "voice" ? { source: "voice" } : {}, textIn || "Image");
       // Let the phone host's store diff see the new (empty) conversation first,
@@ -566,7 +468,7 @@ export class Engine {
     const id = String(body?.convId ?? "");
     if (!id) return null;
     const conv = await readConv(this.d.vault, id);
-    if (!conv || (LEGACY_SOURCES.has(conv.source) && !conv.parent)) return null;
+    if (!conv || LEGACY_SOURCES.has(conv.source)) return null;
     const t = body.defer
       ? "Not now — I'm not picking an option. Take the default you named if there is a safe one; otherwise hold, and don't do anything irreversible or that spends money."
       : String(body?.text ?? "").trim();
@@ -596,7 +498,7 @@ export class Engine {
       return n ? { ok: true, result: `Stopped ${n} run(s).` } : null;
     }
     const conv = await readConv(this.d.vault, id);
-    if (!conv || (LEGACY_SOURCES.has(conv.source) && !conv.parent)) return null;
+    if (!conv || LEGACY_SOURCES.has(conv.source)) return null;
     const hit = await this.interrupt(id, true);
     return { ok: true, result: hit ? "Stopped — interrupting now (an in-flight command is killed)." : "Nothing running on that thread." };
   }
@@ -650,17 +552,11 @@ export class Engine {
       if (!(await this.d.backend.ready(120_000))) throw new Error(`the ${this.d.backend.name} runtime is not up`);
       let conv = await readConv(this.d.vault, convId);
       if (!conv) throw new Error(`conversation ${convId} not found`);
-      // Past its budget, only Carl's own messages still run a turn.
-      const bud = this.budgetOf(conv);
-      if (bud && bud.frac >= 1 && kind !== "user") {
-        await this.budgetReached(conv, bud);
-        return;
-      }
       if (!opts.alreadyAppended) {
         const visible: ChatMessage =
           kind === "user"
             ? { role: "user", content: input, direct: true, ...(opts.attachments?.length ? { attachments: opts.attachments } : {}) }
-            : { role: "user", content: kind === "wake" ? `⏰ ${input}` : kind === "task" ? `▶ ${input}` : `↻ ${input}`, system: true };
+            : { role: "user", content: kind === "wake" ? `⏰ ${input}` : kind === "nudge" ? `↻ ${input}` : `↻ ${input}`, system: true };
         conv = (await appendMessage(this.d.vault, convId, visible)) ?? conv;
       }
       if (!existsSync(this.d.vault) || !statSync(this.d.vault).isDirectory()) {
@@ -716,9 +612,9 @@ export class Engine {
       const rules = rulesPrefixForTurn(conv as any);
       if (opts.context) body = `${opts.context}\n\n${body}`;
       const activity = kind === "user" ? this.activityPrefix(conv) : "";
-      const texts = [rules, this.turnNotes(conv), activity, kind === "wake" ? input : body].filter(Boolean);
+      const texts = [rules, activity, kind === "wake" ? input : body].filter(Boolean);
       // Images on a model that can't see: this turn (silently) uses the vision model.
-      let model = this.modelOf(conv);
+      let model = this.d.model();
       if (opts.images?.length && !capabilitiesOf(model).images) model = this.d.visionModel ?? model;
       this.chatEvent(convId, "start");
       try {
@@ -752,7 +648,7 @@ export class Engine {
   }
 
   private async ensureThread(conv: EngineConv): Promise<string> {
-    const model = this.modelOf(conv);
+    const model = this.d.model();
     // Subagents only for models where they work (learned from use; see capabilities.ts).
     const subagents = capabilitiesOf(model).subagents;
     if (conv.threadId) {
@@ -771,7 +667,7 @@ export class Engine {
     const note = capabilityNote(model);
     const instructions = buildDeveloperInstructions(conv as any, { rolePrompt: ENGINE_ROLE_PROMPT + (note ? `\n\n${note}` : "") });
     const { threadId, ref } = await this.d.backend.startThread({
-      cwd: typeof conv.long?.cwd === "string" ? conv.long.cwd : this.d.vault,
+      cwd: this.d.vault,
       model,
       instructions,
       tools: [...ENGINE_TOOL_SPECS, ...contextToolSpecs] as any,
@@ -780,8 +676,7 @@ export class Engine {
     this.byThread.set(threadId, conv.id);
     // History from before this thread (a legacy chat, or a retry on a fresh thread): hand it over once.
     const old = conv.messages.filter((m) => !m.hidden && !m.system && (m.content ?? "").trim()).slice(0, -1);
-    // (A worker's thread is fresh per task: nothing is handed over.)
-    if (old.length && !conv.messages.some((m: any) => m.rollover) && !conv.parent) {
+    if (old.length && !conv.messages.some((m: any) => m.rollover)) {
       const t = old.slice(-30).map((m) => `${m.role}: ${(m.content ?? "").slice(0, 1500)}`).join("\n");
       (conv as any).__legacyHistory = `<earlier_conversation>\n${t.slice(-12_000)}\n</earlier_conversation>`;
     }
@@ -1090,12 +985,6 @@ export class Engine {
     }
     if (status === "completed") this.stalls.delete(l.convId);
 
-    // A worker (RunWorkers) runs its own loop — the next task, in a fresh session — not the keep-going rule.
-    if (conv.parent && conv.source === "worker") {
-      await this.workerAfterTurn(conv, l, status);
-      return;
-    }
-
     if (failedKeepGoing) {
       this.nudged.delete(l.convId);
       await this.d.notify({ kind: "info", title: `Failed: ${conv.title}`.slice(0, 90), body: (content.trim() || "Its last turn failed.").slice(0, 600), convId: l.convId });
@@ -1166,10 +1055,6 @@ export class Engine {
         if (i >= 0) c.messages[i] = { ...c.messages[i]!, costUsd: round(((c.messages[i] as any).costUsd ?? 0) + res.usd) } as any;
       }
     });
-    // Past its budget: long work stops here (a turn that is running finishes; its wake never runs).
-    const conv = await readConv(this.d.vault, convId);
-    const bud = conv ? this.budgetOf(conv) : null;
-    if (conv && bud && bud.frac >= 1 && (conv.working || conv.state === "sleeping") && !this.live.has(convId)) await this.budgetReached(conv, bud);
   }
 
   /** At boot: cost any model call a restart cut off before its lookup finished
@@ -1248,45 +1133,28 @@ export class Engine {
           return text(on ? "Keep-going mode on. End every turn with ScheduleWake, AskUser, Done or Blocked." : "Keep-going mode off.");
         }
         case "Done": {
-          if (conv.parent && conv.source === "worker") return text("A worker finishes its task with TaskUpdate (done or failed), not Done.");
+          if (l) l.flags.done = true;
           const summary = String(a.summary ?? "").trim();
           const evidence = Array.isArray(a.evidence) ? a.evidence.map(String) : [];
-          // The project's check gates Done: the server runs it; a failing or changed check refuses Done and the work goes on.
-          const g = conv.project ? await this.runCheck(conv.project) : null;
-          if (g && !g.ok) {
-            await mutateConv(vault, convId, (c) => {
-              c.working = true;
-              c.long = { ...(c.long ?? {}), lastCheck: { ok: false, at: Date.now(), why: g.why } };
-            });
-            this.nudged.delete(convId);
-            const tail = g.out ? `\n--- check output (tail) ---\n${tailOf(g.out, 3000)}` : "";
-            return { success: false, contentItems: [{ type: "inputText", text: `Done refused: ${g.why}. Keep-going stays on: fix it, then call Done again (the server reruns the check).${tail}` }] };
-          }
-          if (l) l.flags.done = true;
-          const v = await verifyDone({ conv: conv as any, summary, evidence, ...(g ? { check: { command: g.command, exit: g.code, output: g.out, log: g.log } } : {}) });
+          const v = await verifyDone({ conv: conv as any, summary, evidence });
           const line = formatVerdict(v);
           // Done ends the work: no wake of it may run a turn later.
           removeWakes(vault, (w) => w.conv === convId);
           await mutateConv(vault, convId, (c) => {
             c.working = false;
             c.nextWakeAt = undefined;
-            if (g) c.long = { ...(c.long ?? {}), lastCheck: { ok: true, at: Date.now() } };
             c.verdict = { verdict: v.verdict, notes: v.notes, at: v.at, summary };
             if (typeof v.costUsd === "number") c.costUsd = round((c.costUsd ?? 0) + v.costUsd);
           });
-          const mline = this.metricNow(conv.project);
-          await this.d.notify({ kind: "info", title: `Done: ${conv.title}`.slice(0, 90), body: `${summary.slice(0, 300)}\n${line}${mline ? `\nProgress: ${mline}` : ""}`, convId });
-          return text(`Recorded as done.${g ? " The project's check passed." : ""} ${line}\nTell Carl the verdict in your reply.`);
+          await this.d.notify({ kind: "info", title: `Done: ${conv.title}`.slice(0, 90), body: `${summary.slice(0, 300)}\n${line}`, convId });
+          return text(`Recorded as done. ${line}\nTell Carl the verdict in your reply.`);
         }
         case "Blocked": {
-          // A worker stuck on its task: the attempt fails (with the reason); the loop goes on.
-          if (conv.parent && conv.source === "worker") return await this.taskUpdate(conv, { status: "failed", note: `blocked: ${String(a.reason ?? "")}` });
           if (l) l.flags.blocked = true;
           const reason = String(a.reason ?? "").trim();
           removeWakes(vault, (w) => w.conv === convId);
           await patchMeta(vault, convId, { state: "blocked", working: false, nextWakeAt: undefined });
-          const mline = this.metricNow(conv.project);
-          await this.d.notify({ kind: "info", title: `Blocked: ${conv.title}`.slice(0, 90), body: `${reason.slice(0, 600)}${mline ? `\nProgress: ${mline}` : ""}`, convId });
+          await this.d.notify({ kind: "info", title: `Blocked: ${conv.title}`.slice(0, 90), body: reason.slice(0, 600), convId });
           return text("Recorded as blocked; Carl has been notified. End your turn.");
         }
         case "Notify": {
@@ -1301,42 +1169,6 @@ export class Engine {
           this.pings.set(convId, [...recent, Date.now()]);
           const sent = await this.d.notify({ kind: "info", title: String(a.title ?? "vault-chat").slice(0, 90), body: String(a.body ?? "").slice(0, 2000), convId });
           return text(sent ? "Notified." : "Recorded in the feed (no phone subscribed).");
-        }
-        case "SetCheck": {
-          if (!conv.project) return { success: false, contentItems: [{ type: "inputText", text: "SetCheck needs a project: call SetProject first." }] };
-          const cur = this.checkSpec(conv.project);
-          if (cur) {
-            const who = cur.source === "carl" ? "Carl" : cur.source === "agent" ? "you, earlier" : "project.md";
-            return { success: false, contentItems: [{ type: "inputText", text: `This project's check is already set (by ${who}): \`${cur.command}\`. Only Carl can change it now; propose a new one with AskUser and he sets it.` }] };
-          }
-          const command = String(a.command ?? "").trim();
-          if (!command) return text("SetCheck needs a command.");
-          const spec = pinCommand({ command, passRegex: a.pass_regex ? String(a.pass_regex) : undefined, timeoutS: Number(a.timeout_s) > 0 ? Number(a.timeout_s) : undefined, cwd: vault, source: "agent" });
-          writeLong(vault, conv.project, (st) => ({ ...st, check: spec }));
-          const files = Object.keys(spec.files);
-          return text(`Check set and pinned: \`${command}\`${files.length ? ` (with ${files.join(", ")})` : ""}. Done now runs it on the server; a changed command or file refuses Done.`);
-        }
-        case "SetMetric": {
-          if (!conv.project) return { success: false, contentItems: [{ type: "inputText", text: "SetMetric needs a project: call SetProject first." }] };
-          const cur = this.pinned(conv.project, "metric");
-          if (cur) return { success: false, contentItems: [{ type: "inputText", text: `This project's metric is already set: \`${cur.command}\`. Only Carl can change it; propose a new one with AskUser.` }] };
-          const command = String(a.command ?? "").trim();
-          if (!command) return text("SetMetric needs a command that prints a number.");
-          const spec: MetricSpec = { ...pinCommand({ command, cwd: vault, source: "agent" }), ...metricOpts(a) };
-          writeLong(vault, conv.project, (st) => ({ ...st, metric: spec }));
-          const s = await this.sampleMetric(conv.project);
-          return text(`Metric set and pinned: \`${command}\`. ${s ? `First sample: ${s.value}${s.unit ?? ""}.` : "It printed no number yet."} The server samples it every ${spec.everyMin ?? 15} min while the project has work going.`);
-        }
-        case "SetBudget": {
-          const usd = Number(a.usd);
-          const scope = a.scope === "project" ? "project" : "conversation";
-          if (!(usd > 0)) return text("SetBudget needs usd > 0.");
-          if (scope === "project" && !conv.project) return text("This conversation has no project; use scope conversation or SetProject first.");
-          const q = `Set a ${money(usd)} budget on this ${scope === "project" ? `project (${conv.project})` : "conversation"}?${a.reason ? ` ${String(a.reason).slice(0, 300)}` : ""}`;
-          const ans = await this.waitForAnswer(p.threadId, q, ["Approve", "Decline"]);
-          if (!/^\s*(approve|yes|y|ok|okay|sure)\b/i.test(ans)) return text(`Carl did not approve the budget (he said: ${ans.slice(0, 200)}).`);
-          await this.control(scope === "project" ? { project: conv.project } : { convId }, "budget", { usd });
-          return text(`Budget set: ${money(usd)} on this ${scope}. You'll be told at 80%; at 100% the work stops.`);
         }
         case "PdfRead":
           return text(await pdfRead(vault, a));
@@ -1355,29 +1187,6 @@ export class Engine {
           return text(jobList(this.d.jobEnv, convId, a.all === true));
         case "JobStop":
           return text(jobStop(this.d.jobEnv, String(a.id ?? "").trim(), convId));
-        case "TaskAdd": {
-          if (!conv.project) return text("TaskAdd needs a project: call SetProject first.");
-          const items = Array.isArray(a.tasks) ? a.tasks : [a];
-          const added = addTasks(vault, conv.project, items);
-          const c = taskCounts(readTasks(vault, conv.project));
-          return text(`Added ${added.length} task(s): ${added.map((t) => t.id).join(", ")}. Queue: ${c.todo} to do, ${c.doing} in progress, ${c.done} done of ${c.total}.`);
-        }
-        case "TaskClaim": {
-          if (!conv.project) return text("TaskClaim needs a project.");
-          const t = claimTask(vault, conv.project, convId);
-          return text(t ? `Claimed ${t.id} (attempt ${t.attempts}, ${t.deadline_min} min): ${t.title}${t.notes ? `\nNotes: ${t.notes}` : ""}` : "No task left to claim.");
-        }
-        case "TaskUpdate":
-          return await this.taskUpdate(conv, a);
-        case "TaskList": {
-          if (!conv.project) return text("TaskList needs a project.");
-          const list = readTasks(vault, conv.project).filter((t) => !a.status || t.status === a.status);
-          const c = taskCounts(readTasks(vault, conv.project));
-          const rows = list.slice(0, 60).map((t) => `- ${t.id} [${t.status}${t.attempts ? `, ${t.attempts} attempt(s)` : ""}] ${t.title}`);
-          return text(`${c.done}/${c.total} done, ${c.doing} in progress, ${c.todo} to do, ${c.gave_up} given up.\n${rows.join("\n")}${list.length > 60 ? `\n… ${list.length - 60} more` : ""}`);
-        }
-        case "RunWorkers":
-          return text(await this.runWorkers(conv, Number(a.count) || 1, a.model ? String(a.model) : undefined, a.repo ? String(a.repo) : undefined));
         case "TodoWrite": {
           const todos = (Array.isArray(a.todos) ? a.todos : [])
             .slice(0, 30)
@@ -1406,483 +1215,6 @@ export class Engine {
     } catch (e) {
       return { success: false, contentItems: [{ type: "inputText", text: `${name} failed: ${(e as Error).message}` }] };
     }
-  }
-
-  // ---------------------------------------------------------------- long-run controls
-
-  /** A project's pinned command (its check or its progress metric): as stored, or project.md's block under
-   *  "## Done when" / "## Progress metric", pinned the first time it is seen. */
-  pinned(slug: string, kind: "check" | "metric"): CommandSpec | null {
-    const st = readLong(this.d.vault, slug);
-    if (st[kind]) return st[kind]!;
-    const p = readProject(slug);
-    const dec = p ? declaredCommand(p.project, PINNED_HEADING[kind]) : null;
-    if (!dec) return null;
-    const spec = pinCommand({ command: dec.command, passRegex: dec.passRegex, cwd: this.d.vault, source: "project.md" });
-    writeLong(this.d.vault, slug, (s) => ({ ...s, [kind]: s[kind] ?? spec }));
-    this.log(`project ${slug}: ${kind} pinned from project.md`);
-    return spec;
-  }
-
-  checkSpec(slug: string): CommandSpec | null {
-    return this.pinned(slug, "check");
-  }
-
-  /** Null when the pinned command and its files are as set; else what changed. */
-  private changed(slug: string, kind: "check" | "metric", spec: CommandSpec): string | null {
-    const p = readProject(slug);
-    const declared = spec.source === "project.md" ? (p ? (declaredCommand(p.project, PINNED_HEADING[kind])?.command ?? "") : "") : null;
-    return tampered(spec, declared);
-  }
-
-  /** Run the project's check (null: it has none). Refused, not run, when its command or files changed since it was set. */
-  async runCheck(slug: string, extraEnv?: Record<string, string>): Promise<{ ok: boolean; why: string; out: string; code: number | null; command: string; log?: string } | null> {
-    const spec = this.checkSpec(slug);
-    if (!spec) return null;
-    const bad = this.changed(slug, "check", spec);
-    if (bad) return { ok: false, why: `the project's check was changed (${bad}); it was not run, and only Carl can re-set it`, out: "", code: null, command: spec.command };
-    let command = spec.command;
-    if (extraEnv?.VC_TASK) command = command.split("{task}").join(extraEnv.VC_TASK);
-    if (extraEnv?.VC_WORKTREE) command = command.split("{worktree}").join(extraEnv.VC_WORKTREE);
-    const r = await runCommand(this.d.jobEnv, { command, cwd: this.d.vault, timeoutMs: checkTimeoutMs(spec), passRegex: spec.passRegex, extraEnv });
-    if (r.refused) return { ok: false, why: `the check could not run: ${r.refused}`, out: "", code: null, command };
-    const log = saveRunLog(this.d.vault, slug, "check", r, command);
-    const why = r.ok
-      ? "passed"
-      : r.timedOut
-        ? "the project's check timed out"
-        : spec.passRegex
-          ? `the project's check output did not match ${spec.passRegex} (exit ${r.code})`
-          : `the project's check failed (exit ${r.code})`;
-    return { ok: r.ok, why, out: r.out, code: r.code, command, log };
-  }
-
-  private sampling = new Set<string>();
-
-  private metricSeries(slug: string): Sample[] {
-    return readJsonl<Sample>(join(longDir(this.d.vault, slug), "metric.jsonl"));
-  }
-
-  /** The project's metric line now ("62.4% · +1.8 today"), or null. */
-  metricNow(slug: string | undefined, now = Date.now()): string | null {
-    return slug ? metricLine(this.metricSeries(slug), now) : null;
-  }
-
-  /**
-   * Sample a project's progress metric: run its pinned command (sandboxed, at most 5 min), store the
-   * number it printed, refresh the line on its conversations, and alert once when it has stopped rising.
-   */
-  async sampleMetric(slug: string, at = Date.now()): Promise<Sample | null> {
-    const spec = this.pinned(slug, "metric") as MetricSpec | null;
-    if (!spec || this.sampling.has(slug)) return null;
-    const bad = this.changed(slug, "metric", spec);
-    if (bad) {
-      this.log(`project ${slug}: metric not run (${bad})`);
-      return null;
-    }
-    this.sampling.add(slug);
-    try {
-      const r = await runCommand(this.d.jobEnv, { command: spec.command, cwd: this.d.vault, timeoutMs: Math.min(spec.timeoutS ?? 300, 3600) * 1000 });
-      const m = r.refused || r.timedOut ? null : parseMetric(r.out);
-      if (!m) {
-        this.log(`project ${slug}: metric gave no number (${r.refused ?? (r.timedOut ? "timed out" : `exit ${r.code}`)})`);
-        return null;
-      }
-      const s: Sample = { at, value: m.value, ...(m.unit ? { unit: m.unit } : {}) };
-      appendJsonl(join(longDir(this.d.vault, slug), "metric.jsonl"), s);
-      const series = this.metricSeries(slug);
-      const line = metricLine(series, at);
-      for (const c of await allConvs(this.d.vault)) {
-        const active = c.working || c.state === "running" || c.state === "sleeping" || c.state === "waiting_user";
-        if (c.project !== slug || !active || c.long?.metric === line) continue;
-        await mutateConv(this.d.vault, c.id, (x) => {
-          x.long = { ...(x.long ?? {}), metric: line ?? undefined };
-        });
-      }
-      await this.checkPlateau(slug, spec, series);
-      return s;
-    } finally {
-      this.sampling.delete(slug);
-    }
-  }
-
-  /** No rise in `windowH` hours of work: one push per best value, and the agent is told before its turns. */
-  private async checkPlateau(slug: string, spec: MetricSpec, series: Sample[]): Promise<void> {
-    const windowH = spec.windowH ?? 6;
-    const p = plateauOf(series, spec.everyMin ?? 15, windowH);
-    if (!p) return;
-    const st = readLong(this.d.vault, slug);
-    if (st.plateau && st.plateau.best === p.best && st.plateau.since === p.since) return;
-    writeLong(this.d.vault, slug, (s) => ({ ...s, plateau: { best: p.best, since: p.since, alertedAt: Date.now() } }));
-    const convs = (await allConvs(this.d.vault)).filter((c) => c.project === slug && !c.parent).sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
-    const conv = convs.find((c) => c.working) ?? convs[0];
-    if (!conv) return;
-    const unit = series.at(-1)?.unit ?? "";
-    await this.d.notify({
-      kind: "info",
-      title: `No progress in ${windowH} h: ${conv.title}`.slice(0, 90),
-      body: `The progress metric has not risen past ${p.best}${unit} in ${Math.round(p.activeMs / 360_000) / 10} h of work.`,
-      convId: conv.id,
-    });
-  }
-
-  /** Every minute: sample the metric of each project with work going, when its interval is up. */
-  private async tickMetrics(now = Date.now()): Promise<void> {
-    if (shuttingDown) return;
-    const active = new Set<string>();
-    for (const c of await allConvs(this.d.vault).catch(() => [])) if (c.project && (c.working || c.state === "running" || c.state === "sleeping")) active.add(c.project);
-    for (const slug of active) {
-      const spec = readLong(this.d.vault, slug).metric ?? (this.pinned(slug, "metric") as MetricSpec | null);
-      if (!spec) continue;
-      const last = this.metricSeries(slug).at(-1);
-      if (last && now - last.at < (spec.everyMin ?? 15) * 60_000 - 5_000) continue; // a tick a few ms early still samples
-      void this.sampleMetric(slug).catch((e) => this.log(`metric ${slug}: ${e}`));
-    }
-  }
-
-  // ---------------------------------------------------------------- the task queue and its workers
-
-  private workerNudged = new Set<string>();
-  /** A live worker's task deadline (ms). */
-  private workerDeadline = new Map<string, number>();
-
-  /** The model a conversation's turns run on: a worker's own (its task's tier), else the box's. */
-  private modelOf(conv: EngineConv): string {
-    return typeof conv.long?.model === "string" && conv.long.model ? conv.long.model : this.d.model();
-  }
-
-  private appendLearning(slug: string, taskId: string, line: string): void {
-    const p = join(projectDir(slug), "learnings.md");
-    mkdirSync(projectDir(slug), { recursive: true });
-    const head = existsSync(p) ? "" : "# Learnings\n\nOne line per task, from the workers.\n\n";
-    appendFileSync(p, `${head}- [${taskId}] ${line.replace(/\s+/g, " ").trim().slice(0, 500)}\n`);
-  }
-
-  private learningsTail(slug: string, n = 3000): string {
-    try {
-      const t = readFileSync(join(projectDir(slug), "learnings.md"), "utf8").trim();
-      return t.length > n ? `…${t.slice(-n)}` : t;
-    } catch {
-      return "";
-    }
-  }
-
-  /** TaskUpdate (and a worker's Blocked): finish an attempt of a task. */
-  private async taskUpdate(conv: EngineConv, a: any): Promise<unknown> {
-    const vault = this.d.vault;
-    const slug = conv.project;
-    if (!slug) return text("TaskUpdate needs a project.");
-    const id = String(a.id ?? "").trim() || readTasks(vault, slug).find((t) => t.status === "doing" && t.worker === conv.id)?.id;
-    const t = id ? readTasks(vault, slug).find((x) => x.id === id) : undefined;
-    if (!t) return text(`No task ${id ?? "in progress"}.`);
-    if (t.status !== "doing") return text(`Task ${t.id} is ${t.status}, not in progress.`);
-    const status = a.status === "done" ? "done" : a.status === "todo" ? "todo" : "failed";
-    let note = String(a.note ?? "");
-    if (status === "done") {
-      // The project's oracle, per task: a check whose command names {task}.
-      const spec = this.checkSpec(slug);
-      const wt = typeof conv.long?.cwd === "string" && conv.long.repo ? conv.long.cwd : undefined;
-      if (spec?.command.includes("{task}")) {
-        const g = await this.runCheck(slug, { VC_TASK: t.id, ...(wt ? { VC_WORKTREE: wt } : {}) });
-        if (g && !g.ok) {
-          const tail = g.out ? `\n--- check output (tail) ---\n${tailOf(g.out, 3000)}` : "";
-          return { success: false, contentItems: [{ type: "inputText", text: `Not done: ${g.why} for ${t.id}. Fix it and call TaskUpdate done again, or mark it failed.${tail}` }] };
-        }
-      }
-    }
-    if (typeof a.learning === "string" && a.learning.trim()) this.appendLearning(slug, t.id, a.learning);
-    const max = readLong(vault, slug).maxAttempts ?? 3;
-    // A worker on a code repo: its worktree's work is committed and merged back; a conflict sends the task back.
-    const repo = typeof conv.long?.repo === "string" ? conv.long.repo : "";
-    if (status === "done" && repo && conv.parent) {
-      const m = mergeWorktree(repo, conv.id, `task ${t.id}: ${t.title}`.slice(0, 200));
-      if (!m.ok && m.conflict) {
-        finishTask(vault, slug, t.id, "todo", `merge conflict with the repo (${m.out}); redo it on the current HEAD`, max);
-        this.workerNudged.delete(conv.id);
-        this.workerDeadline.delete(conv.id);
-        await this.refreshParent(conv.parent);
-        return text(`Task ${t.id} could not be merged: ${m.out}. It is back in the queue (to redo on the current code). Stop now.`);
-      }
-      if (!m.ok) return { success: false, contentItems: [{ type: "inputText", text: `Not done: merging the worktree failed (${m.out}).` }] };
-      note = `${note}${note ? " " : ""}(${m.merged ? `merged: ${m.out}` : "no changes to merge"})`;
-    }
-    const after = finishTask(vault, slug, t.id, status, note, max);
-    this.workerNudged.delete(conv.id);
-    this.workerDeadline.delete(conv.id);
-    if (conv.parent) await this.refreshParent(conv.parent);
-    const worker = conv.parent && conv.source === "worker";
-    return text(`Task ${t.id}: ${after?.status}.${worker ? " Stop now; the server gives you the next task in a fresh session." : ""}`);
-  }
-
-  /** RunWorkers: start worker conversations on the project's queue. */
-  async runWorkers(parent: EngineConv, count: number, model?: string, repoPath?: string): Promise<string> {
-    const vault = this.d.vault;
-    const slug = parent.project;
-    if (!slug) return "RunWorkers needs a project: call SetProject first.";
-    let repo: string | undefined;
-    if (repoPath) {
-      const r = resolveRepo(vault, repoPath);
-      if ("error" in r) return `Not started: ${r.error}.`;
-      repo = r.repo;
-    }
-    if (parent.parent) return "A worker cannot start workers.";
-    const c = taskCounts(readTasks(vault, slug));
-    if (!c.todo) return "The task queue has nothing to do: add tasks with TaskAdd first.";
-    const mine = (await allConvs(vault)).filter((w) => w.parent === parent.id && w.working);
-    const n = Math.max(0, Math.min(Math.floor(count), 8 - mine.length, c.todo));
-    if (!n) return `Not started: ${mine.length} workers are already running for this conversation (at most 8).`;
-    const st = readLong(vault, slug);
-    const cheap = model || st.models?.cheap || process.env.VC_WORKER_MODEL || this.d.model();
-    const p = readProject(slug);
-    const ids: string[] = [];
-    for (let i = 0; i < n; i++) {
-      const w = await createConv(vault, { source: "worker" as any, parent: parent.id, project: slug, working: true, long: { cheap, ...(repo ? { repo } : {}) } }, `Worker ${mine.length + i + 1} · ${p?.name ?? slug}`);
-      ids.push(w.id);
-    }
-    for (const id of ids) await this.workerNext(id);
-    await this.refreshParent(parent.id);
-    return `Started ${n} worker(s) on ${c.todo} task(s) (model ${cheap}${repo ? `; each in its own git worktree of ${repo}, merged back per task` : ""}). They work until the queue is empty or the budget is spent; you get a wake when they are all finished. TaskList shows progress.`;
-  }
-
-  private taskPrompt(slug: string, t: Task, max: number, wt?: { path: string; repo: string }): string {
-    const p = readProject(slug);
-    const learned = this.learningsTail(slug);
-    return [
-      `You are a worker on project "${p?.name ?? slug}", one of several working through its task queue. This is a fresh session for one task.`,
-      `Task ${t.id} (attempt ${t.attempts} of ${max}; deadline ${t.deadline_min} min): ${t.title}`,
-      wt ? `Work in ${wt.path}: your own git worktree of ${wt.repo}, on the repo's latest code. Don't touch ${wt.repo} itself; when you mark the task done the server commits your changes and merges them in.` : "",
-      t.notes ? `Notes (from Carl and earlier attempts):\n${t.notes}` : "",
-      learned ? `What other workers learned (learnings.md, latest):\n${learned}` : "",
-      `Do the task. Then call TaskUpdate {id:"${t.id}", status:"done" or "failed", note: what you did or why it failed, learning: one line the other workers should know}. Then stop: the server gives you the next task in a fresh session. Do not work on other tasks.`,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-  }
-
-  /** A worker takes its next task in a fresh session — or ends (queue empty, budget spent). */
-  async workerNext(wid: string): Promise<void> {
-    const vault = this.d.vault;
-    const conv = await readConv(vault, wid);
-    if (!conv?.project || !conv.working) return;
-    const bud = this.budgetOf(conv);
-    if (bud && bud.frac >= 1) return this.endWorker(conv, "the budget is spent");
-    const t = claimTask(vault, conv.project, wid);
-    if (!t) return this.endWorker(conv, "the queue is empty");
-    const st = readLong(vault, conv.project);
-    const max = st.maxAttempts ?? 3;
-    const model = this.taskModel(conv, t, max);
-    const repo = typeof conv.long?.repo === "string" ? conv.long.repo : "";
-    let cwd: string | undefined;
-    if (repo) {
-      const w = prepareWorktree(repo, wid);
-      if ("error" in w) {
-        finishTask(vault, conv.project, t.id, "todo", "", max);
-        return this.endWorker(conv, `its worktree failed: ${w.error}`);
-      }
-      cwd = w.path;
-    }
-    const from = conv.threadId;
-    await mutateConv(vault, wid, (c) => {
-      c.threadId = undefined;
-      c.threadPath = undefined;
-      c.long = { ...(c.long ?? {}), model, task: t.id, ...(cwd ? { cwd } : {}) };
-    });
-    if (from) this.byThread.delete(from);
-    this.workerNudged.delete(wid);
-    this.workerDeadline.set(wid, (t.claimedAt ?? Date.now()) + t.deadline_min * 60_000);
-    if (conv.parent) await this.refreshParent(conv.parent);
-    void this.run(wid, this.taskPrompt(conv.project, t, max, cwd ? { path: cwd, repo } : undefined), "task").catch((e) => this.log(`worker ${wid}: ${e}`));
-  }
-
-  /** The model for a task's attempt: the worker's cheap one; after `escalateAfter` (2) failed attempts, the project's strong one. */
-  private taskModel(conv: EngineConv, t: Task, _max: number): string {
-    const cheap = (conv.long?.cheap as string) || this.d.model();
-    const m = conv.project ? readLong(this.d.vault, conv.project).models : undefined;
-    const after = m?.escalateAfter ?? 2;
-    if (after > 0 && (t.failures ?? 0) >= after) return m?.strong || process.env.VC_WORKER_STRONG_MODEL || this.d.model();
-    return cheap;
-  }
-
-  private async endWorker(conv: EngineConv, why: string): Promise<void> {
-    this.workerDeadline.delete(conv.id);
-    if (typeof conv.long?.repo === "string") removeWorktree(conv.long.repo, conv.id);
-    await appendMessage(this.d.vault, conv.id, { role: "assistant", system: true, content: `Worker finished: ${why}.` }, { state: "done", working: false, nextWakeAt: undefined });
-    removeWakes(this.d.vault, (w) => w.conv === conv.id);
-    if (!conv.parent) return;
-    await this.refreshParent(conv.parent);
-    const parent = await readConv(this.d.vault, conv.parent);
-    const still = (await allConvs(this.d.vault)).some((w) => w.parent === conv.parent && w.working);
-    if (!parent || still || parent.state === "done" || parent.state === "blocked") return;
-    const c = taskCounts(readTasks(this.d.vault, conv.project!));
-    void this.run(parent.id, `Workers finished (${why}): ${c.done}/${c.total} done, ${c.gave_up} given up, ${c.todo} left to do.`, "wake").catch((e) => this.log(`parent wake: ${e}`));
-  }
-
-  /** A worker's turn ended: the next task, a nudge to finish this one, or a failed attempt. */
-  private async workerAfterTurn(conv: EngineConv, l: Live, status: string): Promise<void> {
-    const vault = this.d.vault;
-    const slug = conv.project;
-    if (!slug) return;
-    if (!conv.working && conv.state === "done") return;
-    const t = readTasks(vault, slug).find((x) => x.status === "doing" && x.worker === conv.id);
-    if (!t) return this.workerNext(conv.id);
-    const late = Date.now() > (t.claimedAt ?? 0) + t.deadline_min * 60_000;
-    // Waiting on a job of its own (a wake set): the task stays open until the deadline.
-    if (nextWakeFor(vault, conv.id) && !late) return;
-    let why = "";
-    if (late) why = `deadline (${t.deadline_min} min) passed`;
-    else if (status === "failed") why = "the turn failed";
-    else if (this.workerNudged.has(conv.id)) why = "ended twice without TaskUpdate";
-    if (!why) {
-      this.workerNudged.add(conv.id);
-      void this.run(conv.id, `Task ${t.id} is still open. Finish it now: TaskUpdate {id:"${t.id}", status:"done" or "failed", note, learning}.`, "nudge");
-      return;
-    }
-    removeWakes(vault, (w) => w.conv === conv.id);
-    finishTask(vault, slug, t.id, "failed", why, readLong(vault, slug).maxAttempts ?? 3);
-    this.log(`worker ${conv.id}: ${t.id} failed (${why})`);
-    await this.workerNext(conv.id);
-  }
-
-  /** The parent's line: "4 workers · 37/120 done". */
-  async refreshParent(parentId: string): Promise<void> {
-    const vault = this.d.vault;
-    const parent = await readConv(vault, parentId);
-    if (!parent?.project) return;
-    const workers = (await allConvs(vault)).filter((w) => w.parent === parentId);
-    const active = workers.filter((w) => w.working).length;
-    const c = taskCounts(readTasks(vault, parent.project));
-    const line = `${active ? `${active} worker${active === 1 ? "" : "s"}` : "workers done"} · ${c.done}/${c.total} done${c.gave_up ? ` · ${c.gave_up} given up` : ""}`;
-    if (parent.long?.workers === line) return;
-    await mutateConv(vault, parentId, (x) => {
-      x.long = { ...(x.long ?? {}), workers: line };
-    });
-  }
-
-  /** The tightest of the conversation's and its project's budgets: spent, cap, fraction. Null without one. */
-  budgetOf(conv: EngineConv): { scope: "conversation" | "project"; spent: number; cap: number; frac: number } | null {
-    const out: { scope: "conversation" | "project"; spent: number; cap: number; frac: number }[] = [];
-    const cc = conv.long?.budgetUsd;
-    if (typeof cc === "number" && cc > 0) out.push({ scope: "conversation", spent: conv.costUsd ?? 0, cap: cc, frac: (conv.costUsd ?? 0) / cc });
-    const pc = conv.project ? readLong(this.d.vault, conv.project).budgetUsd : undefined;
-    if (conv.project && typeof pc === "number" && pc > 0) {
-      const spent = projectCost(conv.project)?.totalUsd ?? 0;
-      out.push({ scope: "project", spent, cap: pc, frac: spent / pc });
-    }
-    return out.sort((a, b) => b.frac - a.frac)[0] ?? null;
-  }
-
-  /** The budget is spent: the conversation ends blocked (its wakes cancelled) and Carl hears it once. */
-  private async budgetReached(conv: EngineConv, bud: { scope: string; spent: number; cap: number }): Promise<void> {
-    const already = conv.state === "blocked" && conv.long?.budgetHit;
-    removeWakes(this.d.vault, (w) => w.conv === conv.id);
-    const what = `${money(bud.spent)} of the ${bud.scope}'s ${money(bud.cap)} budget`;
-    await appendMessage(
-      this.d.vault,
-      conv.id,
-      { role: "assistant", system: true, content: `Budget reached: ${what}. The work stopped; raise the budget or send a message to go on.` },
-      { state: "blocked", working: false, nextWakeAt: undefined, long: { ...(conv.long ?? {}), budgetHit: true } },
-    );
-    this.log(`budget reached on ${conv.id}: ${what}`);
-    if (!already) await this.d.notify({ kind: "info", title: `Budget reached: ${conv.title}`.slice(0, 90), body: `Spent ${what}. It stopped.`, convId: conv.id });
-  }
-
-  /** What the agent is told in front of a turn (besides the rules): budget past 80%, a plateau. */
-  turnNotes(conv: EngineConv): string {
-    const notes: string[] = [];
-    const bud = this.budgetOf(conv);
-    if (bud && bud.frac >= 0.8) {
-      notes.push(
-        bud.frac >= 1
-          ? `Budget reached: ${money(bud.spent)} of the ${bud.scope}'s ${money(bud.cap)}. Answer Carl; start no new work unless he raises it.`
-          : `Budget: ${money(bud.spent)} of the ${bud.scope}'s ${money(bud.cap)} spent (${Math.round(bud.frac * 100)}%). At 100% the work stops. Spend what is left on what matters most, and write down where you are.`,
-      );
-    }
-    const pl = conv.project ? readLong(this.d.vault, conv.project).plateau : undefined;
-    if (conv.project && pl) {
-      const series = this.metricSeries(conv.project);
-      const best = Math.max(...series.map((s) => s.value));
-      if (best <= pl.best) {
-        const h = (this.pinned(conv.project, "metric") as MetricSpec | null)?.windowH ?? 6;
-        notes.push(`No progress: the project's metric has not risen past ${pl.best}${series.at(-1)?.unit ?? ""} in over ${h} h of work. Step back: re-read what was tried (memory.md), change the approach, or say Blocked.`);
-      }
-    }
-    return notes.length ? `<status>\n${notes.join("\n")}\n</status>\n\n` : "";
-  }
-
-  /**
-   * Carl's controls (the API, never the agent): POST /api/v1/projects/:slug/:op
-   * and /api/v1/conversations/:id/:op.
-   *   check {command | null, pass_regex?, timeout_s?}   — set (pinned) or remove the project's check
-   *   budget {usd | null}                               — a project's or a conversation's dollar cap
-   *   metric {command | null, every_min?, window_h?}    — the project's progress metric
-   *   models {cheap?, strong?, escalate_after?, max_attempts?} — workers' models: a task that failed
-   *                                                       escalate_after (2) times runs on the strong one
-   */
-  async control(target: { project?: string; convId?: string }, op: string, b: any): Promise<Record<string, unknown>> {
-    return this.scoped(async () => {
-      const vault = this.d.vault;
-      const slug = target.project ? String(target.project) : "";
-      if (slug && !readProject(slug)) return { ok: false, error: `no project ${slug}` };
-      if (op === "check" && slug) {
-        if (b?.command === null || b?.command === "") {
-          writeLong(vault, slug, (st) => {
-            delete st.check;
-          });
-          return { ok: true, check: null };
-        }
-        const command = String(b?.command ?? "").trim();
-        if (!command) return { ok: false, error: "check needs a command (or null to remove it)" };
-        const spec = pinCommand({ command, passRegex: b?.pass_regex ? String(b.pass_regex) : undefined, timeoutS: Number(b?.timeout_s) > 0 ? Number(b.timeout_s) : undefined, cwd: vault, source: "carl" });
-        writeLong(vault, slug, (st) => ({ ...st, check: spec }));
-        return { ok: true, check: { command: spec.command, files: Object.keys(spec.files) } };
-      }
-      if (op === "metric" && slug) {
-        if (b?.command === null || b?.command === "") {
-          writeLong(vault, slug, (st) => {
-            delete st.metric;
-            delete st.plateau;
-          });
-          return { ok: true, metric: null };
-        }
-        const command = String(b?.command ?? "").trim();
-        if (!command) return { ok: false, error: "metric needs a command (or null to remove it)" };
-        const spec: MetricSpec = { ...pinCommand({ command, timeoutS: Number(b?.timeout_s) > 0 ? Number(b.timeout_s) : undefined, cwd: vault, source: "carl" }), ...metricOpts(b) };
-        writeLong(vault, slug, (st) => ({ ...st, metric: spec }));
-        return { ok: true, metric: { command: spec.command, files: Object.keys(spec.files), everyMin: spec.everyMin ?? 15, windowH: spec.windowH ?? 6 } };
-      }
-      if (op === "models" && slug) {
-        const st = writeLong(vault, slug, (s) => {
-          const m = { ...(s.models ?? {}) };
-          if (typeof b?.cheap === "string") m.cheap = b.cheap || undefined;
-          if (typeof b?.strong === "string") m.strong = b.strong || undefined;
-          if (Number(b?.escalate_after) >= 0 && b?.escalate_after !== undefined) m.escalateAfter = Number(b.escalate_after);
-          s.models = m;
-          if (Number(b?.max_attempts) > 0) s.maxAttempts = Math.min(Number(b.max_attempts), 10);
-        });
-        return { ok: true, models: st.models, maxAttempts: st.maxAttempts ?? 3 };
-      }
-      if (op === "budget") {
-        const usd = b?.usd === null ? null : Number(b?.usd);
-        if (usd !== null && !(usd > 0)) return { ok: false, error: "budget needs usd > 0 (or null to remove it)" };
-        if (slug) {
-          writeLong(vault, slug, (st) => {
-            if (usd === null) delete st.budgetUsd;
-            else st.budgetUsd = usd;
-          });
-          return { ok: true, project: slug, budgetUsd: usd };
-        }
-        const id = String(target.convId ?? "");
-        const c = await mutateConv(vault, id, (c) => {
-          const lg = { ...(c.long ?? {}) };
-          if (usd === null) delete lg.budgetUsd;
-          else lg.budgetUsd = usd;
-          delete lg.budgetHit;
-          c.long = lg;
-        });
-        return c ? { ok: true, convId: id, budgetUsd: usd } : { ok: false, error: `no conversation ${id}` };
-      }
-      return { ok: false, error: `unknown control ${op}` };
-    });
   }
 
   /** Park the turn on a question until Carl answers (via /message or /answer). */
@@ -2027,8 +1359,6 @@ export class Engine {
     const stall = this.d.stallMs ?? 30 * 60_000;
     let limit = stall;
     for (const t of l.open.values()) {
-      // Done runs the project's check on the server.
-      if (t.name === "Done") limit = Math.max(limit, checkTimeoutMs() + 2 * TOOL_MARGIN_MS);
       if (t.name !== "Bash") continue;
       const def = Number(process.env.VC_PI_SHELL_TIMEOUT_S) || 1800;
       const max = Number(process.env.VC_PI_SHELL_MAX_TIMEOUT_S) || 4 * 3600;
@@ -2043,14 +1373,6 @@ export class Engine {
     const now = Date.now();
     for (const l of this.live.values()) {
       if (l.ask || l.finished || l.stalled) continue;
-      // A worker past its task's deadline is stopped; its turn's end fails the attempt.
-      const dl = this.workerDeadline.get(l.convId);
-      if (dl && now > dl && !l.stopped) {
-        this.log(`worker ${l.convId}: task deadline passed — interrupting`);
-        l.stopped = true;
-        void this.interrupt(l.convId, false);
-        continue;
-      }
       // A job of this conversation writing to its log is progress too.
       for (const p of this.jobLogs.get(l.convId) ?? []) {
         try {
@@ -2070,21 +1392,6 @@ export class Engine {
   }
 }
 
-const PINNED_HEADING = { check: "Done when", metric: "Progress metric" } as const;
-
-/** A metric's sampling interval and plateau window from a tool call or an API body. */
-function metricOpts(b: any): { everyMin?: number; windowH?: number } {
-  const every = Number(b?.every_min);
-  const win = Number(b?.window_h);
-  return { ...(every > 0 ? { everyMin: Math.max(1, every) } : {}), ...(win > 0 ? { windowH: win } : {}) };
-}
-
-/** A check's time limit: its own, else VC_CHECK_TIMEOUT_S (30 min); at most 4 h. */
-function checkTimeoutMs(spec?: CommandSpec): number {
-  const s = spec?.timeoutS ?? (Number(process.env.VC_CHECK_TIMEOUT_S) || 1800);
-  return Math.min(s, 4 * 3600) * 1000;
-}
-
 function capStr(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + `\n…[${s.length - n} more chars]` : s;
 }
@@ -2097,9 +1404,3 @@ function errText(e: any): string {
   return String(e.message ?? JSON.stringify(e)).slice(0, 500);
 }
 
-
-/** Dollars for people: cents normally, more digits for sub-dollar amounts so a $0.002 cap doesn't read "$0.00". */
-function money(usd: number): string {
-  if (usd >= 1 || usd === 0) return `$${usd.toFixed(2)}`;
-  return `$${usd < 0.01 ? usd.toFixed(4) : usd.toFixed(3)}`;
-}
