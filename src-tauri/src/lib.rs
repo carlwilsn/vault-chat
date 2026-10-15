@@ -4383,7 +4383,7 @@ fn commit_nested_repos_local(vault: &str, agent: bool) -> u32 {
     committed
 }
 
-/// Commit the vault locally — root + every nested repo — WITHOUT any remote
+/// Commit the vault locally — the root repo only — WITHOUT any remote
 /// operation. The always-on counterpart to `vault_sync_commit_local`: it runs
 /// for vaults with sync turned off so they still accrue version history and
 /// their nested-repo dots clear. No pull, push, fork, or branch.
@@ -4395,7 +4395,9 @@ async fn vault_commit_local(vault: String) -> Result<SyncOpResult, String> {
             // Self-heal the ignore set + shed tracked ephemerals every cycle, so
             // a vault never gets stuck churning history on a machine-local file.
             prepare_vault_repo(&vault);
-            let nested = commit_nested_repos_local(&vault, false);
+            // No nested-repo automation (Carl's call): code repos inside a vault are
+            // their own thing — autosave never commits inside them.
+            let nested: u32 = 0;
             // `--ignore-submodules=dirty`: don't recurse into submodule working
         // trees to detect dirtiness (on a vault with big submodules — e.g.
         // torchtitan — that scan is what pushed `status` past the 90s timeout).
