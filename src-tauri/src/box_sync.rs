@@ -248,23 +248,105 @@ pub fn parse_health(host: &str, url: &str, body: &str) -> Option<FoundBox> {
     })
 }
 
+/// Where the `tailscale` CLI may live: PATH, the Windows installer's folder,
+/// the macOS app bundle.
+const TAILSCALE_CLIS: [&str; 3] = [
+    "tailscale",
+    r"C:\Program Files\Tailscale\tailscale.exe",
+    "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+];
+
+fn tailscale_cmd(exe: &str) -> std::process::Command {
+    let mut c = std::process::Command::new(exe);
+    c.args(["status", "--json"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x08000000);
+    }
+    c
+}
+
 fn tailscale_status() -> Result<String, String> {
     let mut last = String::new();
-    for exe in ["tailscale", r"C:\Program Files\Tailscale\tailscale.exe"] {
-        let mut c = std::process::Command::new(exe);
-        c.args(["status", "--json"]);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            c.creation_flags(0x08000000);
-        }
-        match c.output() {
+    for exe in TAILSCALE_CLIS {
+        match tailscale_cmd(exe).output() {
             Ok(o) if o.status.success() => return Ok(String::from_utf8_lossy(&o.stdout).to_string()),
             Ok(o) => last = String::from_utf8_lossy(&o.stderr).trim().to_string(),
             Err(e) => last = e.to_string(),
         }
     }
     Err(format!("tailscale status failed: {}", last))
+}
+
+/// Is this machine on the tailnet? Asked only after a box request failed, so
+/// the chip can say "Tailscale isn't connected" instead of "Box unreachable".
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct TailscaleState {
+    /// The CLI ran at all. Without Tailscale installed the chip says nothing
+    /// about it.
+    pub installed: bool,
+    /// BackendState == "Running".
+    pub connected: bool,
+    /// BackendState as reported ("Running", "Stopped", "NeedsLogin", …), or
+    /// "NoService" when the CLI ran but its daemon didn't answer.
+    pub state: String,
+    /// This OS has a Tailscale app to open (Windows, macOS).
+    #[serde(rename = "canOpen")]
+    pub can_open: bool,
+}
+
+/// `BackendState` from `tailscale status --json`.
+pub fn tailscale_backend_state(status_json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(status_json).ok()?;
+    v.get("BackendState").and_then(|x| x.as_str()).map(String::from)
+}
+
+/// One `tailscale status --json` run → the state. `ran` = the CLI spawned.
+/// The CLI exits non-zero when stopped or when its service is down, so the
+/// exit code is not the answer; BackendState is.
+pub fn tailscale_state_of(ran: bool, stdout: &str) -> TailscaleState {
+    let can_open = cfg!(any(windows, target_os = "macos"));
+    if !ran {
+        return TailscaleState { installed: false, connected: false, state: "NotInstalled".into(), can_open: false };
+    }
+    let state = tailscale_backend_state(stdout).unwrap_or_else(|| "NoService".into());
+    TailscaleState { installed: true, connected: state == "Running", state, can_open }
+}
+
+pub fn tailscale_check() -> TailscaleState {
+    for exe in TAILSCALE_CLIS {
+        if let Ok(o) = tailscale_cmd(exe).output() {
+            return tailscale_state_of(true, &String::from_utf8_lossy(&o.stdout));
+        }
+    }
+    tailscale_state_of(false, "")
+}
+
+/// Open the Tailscale app so Carl can connect (Windows: the tray app, which
+/// also starts its service; macOS: the app). Linux has no app to open.
+pub fn open_tailscale() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new(r"C:\Program Files\Tailscale\tailscale-ipn.exe")
+            .creation_flags(0x00000008 | 0x00000200) // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("couldn't open Tailscale: {}", e))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", "Tailscale"])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("couldn't open Tailscale: {}", e))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        Err("no Tailscale app to open on this OS".into())
+    }
 }
 
 /// Probe every online tailnet peer's `/api/v1/health` in parallel (3 s each).

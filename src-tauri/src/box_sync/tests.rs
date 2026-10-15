@@ -538,3 +538,23 @@ fn discovery_parses_tailscale_status_and_health() {
     assert!(parse_health("x", "https://x", r#"{"status":"ok"}"#).is_none());
     assert!(parse_health("x", "https://x", "<html>").is_none());
 }
+
+#[test]
+fn tailscale_state_from_status_json() {
+    assert_eq!(tailscale_backend_state(r#"{"BackendState":"Running","Peer":{}}"#).as_deref(), Some("Running"));
+    let up = tailscale_state_of(true, r#"{"Version":"1.80.0","BackendState":"Running","Self":{}}"#);
+    assert!(up.installed && up.connected && up.state == "Running");
+    // Disconnected in the app: the CLI still prints JSON (and exits non-zero).
+    for s in ["Stopped", "NeedsLogin", "Starting", "NoState"] {
+        let st = tailscale_state_of(true, &format!(r#"{{"BackendState":"{}"}}"#, s));
+        assert!(st.installed && !st.connected && st.state == s, "{s}");
+    }
+    // The service isn't running: nothing on stdout.
+    let down = tailscale_state_of(true, "");
+    assert!(down.installed && !down.connected && down.state == "NoService");
+    assert!(!tailscale_state_of(true, "garbage").connected);
+    // Not installed: say nothing about Tailscale.
+    let none = tailscale_state_of(false, "");
+    assert!(!none.installed && !none.connected && !none.can_open);
+    assert_eq!(up.can_open, cfg!(any(windows, target_os = "macos")));
+}

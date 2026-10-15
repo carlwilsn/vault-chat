@@ -6,17 +6,6 @@ import { Button, Input, MenuSelect } from "./ui";
 import { SUPPORTED_VOICE_LLMS, DEFAULT_LLM } from "./voice-elevenlabs";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
 import {
-  readVaultSyncConfig,
-  writeVaultSyncConfig,
-  setVaultRemote,
-  vaultCommitLocal,
-  vaultPush,
-  vaultPull,
-  vaultGhCreateRepo,
-  subscribeSyncStatus,
-  startVaultSyncLoop,
-  stopVaultSyncLoop,
-  type VaultSyncConfig,
   readBoxConfig,
   subscribeBoxSync,
   boxSyncNow,
@@ -669,17 +658,15 @@ function AppearanceSection() {
 
 function BoxSection() {
   const vaultPath = useStore((s) => s.vaultPath);
-  const [config, setConfig] = useState<VaultSyncConfig | null>(null);
-  const [box, setBox] = useState<BoxConfig | null>(null);
+  // undefined = still reading sync.json; null = no box (runs on this laptop).
+  const [box, setBox] = useState<BoxConfig | null | undefined>(undefined);
   const [rev, setRev] = useState(0);
   useEffect(() => {
     if (!vaultPath) {
-      setConfig(null);
-      setBox(null);
+      setBox(undefined);
       return;
     }
     let cancelled = false;
-    void readVaultSyncConfig(vaultPath).then((c) => !cancelled && setConfig(c));
     void readBoxConfig(vaultPath).then((b) => !cancelled && setBox(b));
     return () => {
       cancelled = true;
@@ -693,26 +680,22 @@ function BoxSection() {
     void useStore.getState().loadConversations();
   };
 
+  // Sync exists only with a box. Without one, the vault is saved locally for
+  // history (always on, no setting) and nothing is pushed anywhere.
   return (
     <section className="space-y-3">
       <SectionHead
         title="Box"
-        hint={!vaultPath || !config ? "Open a vault to see its sync." : box ? `Runs on ${boxName(box)}` : "Runs on this laptop"}
+        hint={!vaultPath || box === undefined ? "Open a vault to see its sync." : box ? `Runs on ${boxName(box)}` : "Runs on this laptop"}
       />
       {vaultPath &&
-        config &&
+        box !== undefined &&
         (box ? (
           <BoxSyncPanel vault={vaultPath} box={box} onDisconnected={() => void changed(false)} />
         ) : (
-          <>
-            <BoxConnect vault={vaultPath} onConnected={() => void changed(true)} />
-            <div className="space-y-1.5">
-              <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">Git remote</h4>
-              <GitSync vault={vaultPath} config={config} setConfig={setConfig} />
-            </div>
-          </>
+          <BoxConnect vault={vaultPath} onConnected={() => void changed(true)} />
         ))}
-      <PhoneLink box={box} />
+      <PhoneLink box={box ?? null} />
     </section>
   );
 }
@@ -861,130 +844,6 @@ function BoxConnect({ vault, onConnected }: { vault: string; onConnected: () => 
   );
 }
 
-/** A vault without a box: the plain git-remote loop. */
-function GitSync({ vault, config, setConfig }: { vault: string; config: VaultSyncConfig; setConfig: (c: VaultSyncConfig) => void }) {
-  const [remoteDraft, setRemoteDraft] = useState("");
-  const [snapshot, setSnapshot] = useState({
-    lastSyncedAt: null as number | null,
-    lastMessage: "",
-    lastError: null as string | null,
-    running: false,
-    remote: null as string | null,
-    hasChanges: false,
-    ahead: 0,
-    nestedRepos: [] as string[],
-  });
-  const [busy, setBusy] = useState(false);
-  const [repoNameDraft, setRepoNameDraft] = useState("");
-  const [creatingRepo, setCreatingRepo] = useState(false);
-  useEffect(() => subscribeSyncStatus(setSnapshot), []);
-  useEffect(() => {
-    if (snapshot.remote && !remoteDraft) setRemoteDraft(snapshot.remote);
-  }, [snapshot.remote, remoteDraft]);
-
-  const toggleEnabled = async (next: boolean) => {
-    setConfig(await writeVaultSyncConfig(vault, { enabled: next }));
-    if (next) await startVaultSyncLoop(vault);
-    else stopVaultSyncLoop(vault);
-  };
-  const withBusy = async (fn: () => Promise<unknown>) => {
-    setBusy(true);
-    try {
-      await fn();
-    } catch (e) {
-      console.warn("[vault-sync]", e);
-    } finally {
-      setBusy(false);
-    }
-  };
-  const saveRemote = () =>
-    withBusy(async () => {
-      await setVaultRemote(vault, remoteDraft.trim());
-      if (config.enabled) await startVaultSyncLoop(vault);
-    });
-  const createGhRepo = () =>
-    withBusy(async () => {
-      const name = repoNameDraft.trim();
-      if (!name) return;
-      const result = await vaultGhCreateRepo(vault, name, true);
-      if (!result.ok) return console.warn("[vault-sync] gh repo create:", result.message);
-      setRepoNameDraft("");
-      setCreatingRepo(false);
-      if (config.enabled) await startVaultSyncLoop(vault);
-    });
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-[12px] text-foreground/90">Auto-sync</span>
-        <label className="flex items-center gap-2 shrink-0 cursor-pointer">
-          <span className="text-[10.5px] text-muted-foreground">{config.enabled ? "on" : "off"}</span>
-          <input type="checkbox" className="vc-checkbox" checked={config.enabled} onChange={(e) => toggleEnabled(e.target.checked)} />
-        </label>
-      </div>
-      <div className="flex gap-2">
-        <Input
-          type="text"
-          value={remoteDraft}
-          onChange={(e) => setRemoteDraft(e.target.value)}
-          placeholder="git@github.com:user/repo.git"
-          className="font-mono text-[11.5px]"
-        />
-        <Button size="sm" onClick={saveRemote} disabled={busy}>
-          Save
-        </Button>
-      </div>
-      {!snapshot.remote && !creatingRepo && (
-        <button onClick={() => setCreatingRepo(true)} className="text-[10.5px] text-muted-foreground/80 hover:text-foreground underline">
-          Create on GitHub (gh repo create)
-        </button>
-      )}
-      {creatingRepo && (
-        <div className="flex gap-2">
-          <Input
-            type="text"
-            value={repoNameDraft}
-            onChange={(e) => setRepoNameDraft(e.target.value)}
-            placeholder="repo name (e.g. school)"
-            className="font-mono text-[11.5px]"
-          />
-          <Button size="sm" onClick={createGhRepo} disabled={busy || !repoNameDraft.trim()}>
-            Create
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setCreatingRepo(false);
-              setRepoNameDraft("");
-            }}
-          >
-            Cancel
-          </Button>
-        </div>
-      )}
-      <div className="flex items-center gap-2 flex-wrap">
-        <SyncStatusRow snapshot={snapshot} enabled={config.enabled} />
-        <span className="text-[10.5px] text-muted-foreground/70">·</span>
-        <button
-          onClick={() => withBusy(() => vaultPull(vault))}
-          disabled={busy || !snapshot.remote}
-          className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          force pull
-        </button>
-        <button
-          onClick={() => withBusy(async () => (await vaultCommitLocal(vault), await vaultPush(vault)))}
-          disabled={busy || !snapshot.remote}
-          className="text-[10.5px] text-muted-foreground hover:text-foreground underline disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          force push
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // Read-only status of the box sync, plus "Sync now". Everything here comes
 // from the last cycle's report (src-tauri/src/box_sync.rs).
 function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxConfig; onDisconnected: () => void }) {
@@ -1111,88 +970,6 @@ function BoxSyncPanel({ vault, box, onDisconnected }: { vault: string; box: BoxC
       )}
     </div>
   );
-}
-
-function SyncStatusRow({
-  snapshot,
-  enabled,
-}: {
-  snapshot: {
-    lastSyncedAt: number | null;
-    lastMessage: string;
-    lastError: string | null;
-    running: boolean;
-    remote: string | null;
-    hasChanges: boolean;
-    ahead: number;
-  };
-  enabled: boolean;
-}) {
-  const [, force] = useState(0);
-  useEffect(() => {
-    const id = window.setInterval(() => force((n) => n + 1), 5000);
-    return () => window.clearInterval(id);
-  }, []);
-  if (!enabled) {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
-        idle
-      </span>
-    );
-  }
-  if (snapshot.lastError) {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] text-destructive">
-        <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
-        {snapshot.lastError}
-      </span>
-    );
-  }
-  if (snapshot.running) {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <span className="relative inline-flex h-1.5 w-1.5">
-          <span className="absolute inset-0 rounded-full bg-emerald-500 opacity-60 animate-ping" />
-          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
-        </span>
-        syncing…
-      </span>
-    );
-  }
-  // Unpushed local commits — not "synced" yet. The pull loop flushes
-  // these each cycle, so this is normally transient; if it lingers, it's
-  // honestly surfacing a push that isn't going through.
-  if (snapshot.ahead > 0) {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] text-amber-500">
-        <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-        {snapshot.ahead} unpushed · pending
-      </span>
-    );
-  }
-  const label = snapshot.lastSyncedAt
-    ? `synced · ${relativeAgo(snapshot.lastSyncedAt)} ago`
-    : snapshot.remote
-      ? "waiting"
-      : "no remote";
-  return (
-    <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-      {label}
-    </span>
-  );
-}
-
-function relativeAgo(ts: number): string {
-  const sec = Math.floor((Date.now() - ts) / 1000);
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h`;
-  const day = Math.floor(hr / 24);
-  return `${day}d`;
 }
 
 /** The phone app's one home is the box (always on): its fixed https link, no
