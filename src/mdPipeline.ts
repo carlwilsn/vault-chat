@@ -286,6 +286,12 @@ function cleanProps(el: HNode): void {
       continue;
     }
     if (key === "formTarget" || key === "srcDoc" || key === "is") delete p[key];
+    if (key === "name") {
+      // `<img name="getElementById">` would shadow document.getElementById
+      // (named access). An old-style `<a name="x">` anchor keeps working as an id.
+      if (el.tagName === "a" && p.id == null && typeof v === "string") p.id = v;
+      delete p[key];
+    }
   }
   if (el.tagName === "a" && typeof p.target === "string") {
     // A raw link that opens a window gets no handle back on the app.

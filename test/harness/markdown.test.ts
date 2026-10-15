@@ -456,3 +456,11 @@ test("a single ~ means 'about', not strikethrough; ~~x~~ still strikes", () => {
     assert.match(texts(v), /about ~5 min, ~\$6 and ~10 GB/);
   }
 });
+
+test("raw HTML can't clobber document methods by name; <a name> anchors become ids", () => {
+  for (const s of SURFACES) {
+    const html = render('<img name="getElementById" src="a.png"> <a name="old-anchor">here</a>\n', s);
+    assert.doesNotMatch(html, /name="/, s);
+    assert.match(html, /id="old-anchor"/, s);
+  }
+});
