@@ -8,6 +8,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { prepareAgentProjects } from "../../server/context/layout.ts";
 
 export type FakeTauri = {
   root: string;
@@ -78,6 +79,8 @@ export function installFakeTauri(vault: string): FakeTauri {
       return null;
     },
     list_dir: () => [],
+    // lib.rs prepare_agent_projects — the same moves (server/context/layout.ts), on the temp vault.
+    prepare_agent_projects: ({ vault: v }) => prepareAgentProjects(v),
     glob_files: () => [],
     grep_files: () => [],
     conversations_read: () => [...state.conversations.values()].map((c) => JSON.stringify(c)),

@@ -31,11 +31,11 @@ const out = (r: any) => String(r?.text ?? "");
 /** A project with a check script in the vault, declared in project.md's "Done when". */
 async function projectWithCheck(name: string, script: string, block?: string): Promise<{ convId: string; tid: string; slug: string }> {
   const s = await rig.start(`Work on ${name} and keep going.`);
-  const r = await rig.backend.call(s.tid, "SetProject", { name });
+  const r = await rig.setProject(s, name);
   expect(r.ok).toBe(true);
   const slug = name.toLowerCase();
   writeFileSync(join(rig.vault, `${slug}-check.js`), script);
-  const pmd = join(rig.vault, ".vault-chat", "projects", slug, "project.md");
+  const pmd = join(rig.vault, "agent-projects", slug, "project.md");
   const cur = readFileSync(pmd, "utf8");
   writeFileSync(pmd, cur.replace("(not decided yet)", `All functions match.\n\n\`\`\`sh\n${block ?? `node ${slug}-check.js`}\n\`\`\`\n\n# a comment line in the section is fine`));
   await rig.backend.call(s.tid, "KeepWorking", { on: true });
@@ -93,7 +93,7 @@ describe("1. Done is gated by an executable check the agent cannot edit", () => 
     expect(out(r)).toMatch(/gamma-check\.js changed since the check was set/);
     // Put the script back but swap the command in project.md: refused too.
     writeFileSync(join(rig.vault, "gamma-check.js"), `console.log("ok"); process.exit(0);`);
-    const pmd = join(rig.vault, ".vault-chat", "projects", "gamma", "project.md");
+    const pmd = join(rig.vault, "agent-projects", "gamma", "project.md");
     writeFileSync(pmd, readFileSync(pmd, "utf8").replace("node gamma-check.js", "node -e 0"));
     const r2 = await rig.backend.call(p.tid, "Done", { summary: "Done.", evidence: [] });
     expect(r2.ok).toBe(false);
@@ -109,7 +109,7 @@ describe("1. Done is gated by an executable check the agent cannot edit", () => 
 
   it("SetCheck: the agent may set a project's first check (pass_regex), once", async () => {
     const s = await rig.start("Delta work");
-    await rig.backend.call(s.tid, "SetProject", { name: "Delta" });
+    await rig.setProject(s, "Delta");
     mkdirSync(join(rig.vault, "tools"), { recursive: true });
     writeFileSync(join(rig.vault, "tools", "score.js"), `console.log("score: 97%")`);
     const a = await rig.backend.call(s.tid, "SetCheck", { command: "node tools/score.js", pass_regex: "score: (9\\d|100)%" });
@@ -166,7 +166,7 @@ describe("2. Budget caps", () => {
 
   it("a project budget counts every conversation of the project; SetBudget needs Carl's approval", async () => {
     const s = await rig.start("Project budget");
-    await rig.backend.call(s.tid, "SetProject", { name: "Epsilon" });
+    await rig.setProject(s, "Epsilon");
     const pending = rig.backend.call(s.tid, "SetBudget", { usd: 5, scope: "project", reason: "a long grind" });
     await until(async () => !!(await rig.readConv(s.convId))?.pendingAsk);
     expect((await rig.readConv(s.convId)).pendingAsk.question).toMatch(/\$5\.00 budget on this project \(epsilon\)/);
@@ -196,7 +196,7 @@ describe("2. Budget caps", () => {
 describe("3. Progress metric and the plateau alert", () => {
   it("samples the pinned metric into a series, shows \"62.4% · +1.8 today\", alerts once on a plateau, tells the agent, and puts it in the Blocked push", async () => {
     const s = await rig.start("Decompile it, keep going.");
-    await rig.backend.call(s.tid, "SetProject", { name: "Zeta" });
+    await rig.setProject(s, "Zeta");
     await rig.backend.call(s.tid, "KeepWorking", { on: true });
     const val = join(rig.vault, "zeta-value.txt");
     writeFileSync(join(rig.vault, "zeta-metric.js"), `const v = require("fs").readFileSync(${JSON.stringify(val)}, "utf8").trim(); console.log("functions: 4120; matched " + v + "%");`);
@@ -346,7 +346,7 @@ const workersOf = async (parent: string) => (await rig.allConvs()).filter((c) =>
 describe("5. Task queue with fresh worker sessions", () => {
   it("workers claim tasks, each in a fresh session; learnings are shared; failures retry then give up; the parent sees the count and is woken at the end", async () => {
     const s = await rig.start("Decompile the overlay functions in parallel.");
-    await rig.backend.call(s.tid, "SetProject", { name: "Eta" });
+    await rig.setProject(s, "Eta");
     const add = await rig.backend.call(s.tid, "TaskAdd", { tasks: [{ title: "fn_a" }, { title: "fn_b", notes: "tricky jump table" }, { title: "fn_c" }] });
     expect(out(add)).toMatch(/Added 3 task\(s\): t1, t2, t3/);
     const threads0 = rig.backend.threads.length;
@@ -372,7 +372,7 @@ describe("5. Task queue with fresh worker sessions", () => {
     const a2 = await workerTurn(A.id);
     expect(a2.text).toMatch(/Task t3/);
     expect(a2.text).toMatch(/the overlay is compiled with -O2/);
-    expect(readFileSync(join(rig.vault, ".vault-chat", "projects", "eta", "learnings.md"), "utf8")).toMatch(/- \[t1\] the overlay is compiled with -O2/);
+    expect(readFileSync(join(rig.vault, "agent-projects", "eta", "learnings.md"), "utf8")).toMatch(/- \[t1\] the overlay is compiled with -O2/);
     // B ends without TaskUpdate: one nudge, then the attempt fails and t2 goes back to the queue.
     const n = rig.backend.turns.length;
     rig.backend.end(b1.tid);
@@ -417,7 +417,7 @@ describe("5. Task queue with fresh worker sessions", () => {
 
   it("the per-task check gates done; a task past its deadline is stopped and fails the attempt", async () => {
     const s = await rig.start("Theta tasks");
-    await rig.backend.call(s.tid, "SetProject", { name: "Theta" });
+    await rig.setProject(s, "Theta");
     writeFileSync(join(rig.vault, "theta-check.js"), `process.exit(process.argv[2] === "t1" ? 0 : 1)`);
     await rig.engine.control({ project: "theta" }, "check", { command: "node theta-check.js {task}" });
     const { writeLong } = await import("../engine/long");
@@ -463,7 +463,7 @@ describe("6. A git worktree per worker", () => {
     sh(repo, "git", ["add", "-A"]);
     sh(repo, "git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "base"]);
     const s = await rig.start("Port the functions.");
-    await rig.backend.call(s.tid, "SetProject", { name: "Iota" });
+    await rig.setProject(s, "Iota");
     await rig.backend.call(s.tid, "TaskAdd", { tasks: [{ title: "edit shared one way" }, { title: "edit shared another way" }, { title: "add a file" }] });
     const bad = await rig.backend.call(s.tid, "RunWorkers", { count: 2, repo: "../.." });
     expect(out(bad)).toMatch(/Not started: .* (outside|not a git repo)/);
@@ -522,7 +522,7 @@ describe("6. A git worktree per worker", () => {
 describe("7. Model tiering", () => {
   it("workers start on the project's cheap model; a task that failed twice runs its last attempt on the strong one", async () => {
     const s = await rig.start("Kappa grind");
-    await rig.backend.call(s.tid, "SetProject", { name: "Kappa" });
+    await rig.setProject(s, "Kappa");
     const m = await rig.engine.control({ project: "kappa" }, "models", { cheap: "deepseek/deepseek-v4.1-flash", strong: "anthropic/claude-opus-5.5" });
     expect(m.ok).toBe(true);
     await rig.backend.call(s.tid, "TaskAdd", { tasks: [{ title: "hard one" }] });

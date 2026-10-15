@@ -116,6 +116,22 @@ describe("the agent sandbox (bubblewrap argv)", () => {
     for (const d of ["conversations", "local"]) expect(at(o, "--ro-bind", join(vault, ".vault-chat", d), join(vault, ".vault-chat", d))).toBeGreaterThan(ownAt);
   });
 
+  it("projects: agent-projects/ is the agent's to write (in the rw vault, nothing over it); the server's project state in .vault-chat/local/projects stays read-only", () => {
+    mkdirSync(join(vault, "agent-projects", "coconut"), { recursive: true });
+    mkdirSync(join(vault, ".vault-chat", "local", "projects", "coconut"), { recursive: true });
+    const sb = buildSandbox(base());
+    for (const argv of [sb.outer!, sb.shell!]) {
+      const own = at(argv, "--bind", vault, vault);
+      expect(own).toBeGreaterThan(0);
+      expect(argv.some((x) => x.includes("agent-projects"))).toBe(false);
+      const local = join(vault, ".vault-chat", "local");
+      expect(at(argv, "--ro-bind", local, local)).toBeGreaterThan(own);
+      expect(at(argv, "--bind", local, local)).toBe(-1);
+    }
+    expect(sb.denyWrite).toContain(join(vault, ".vault-chat", "local"));
+    expect(sb.denyWrite.some((p) => p.includes("agent-projects"))).toBe(false);
+  });
+
   it("hides credentials, the key store, tokens and the server's env file — last, so nothing re-exposes them", () => {
     const sb = buildSandbox(base());
     for (const argv of [sb.outer!, sb.shell!]) {

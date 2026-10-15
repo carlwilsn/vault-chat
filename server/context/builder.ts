@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { ctxConfig } from "./config";
-import { cap, vcPath } from "./files";
+import { cap } from "./files";
 import { listProjects, readGlobalRules, readProject } from "./projects";
 import type { ContextConv, RolloverInfo } from "./types";
 
@@ -11,7 +11,7 @@ export const ROLE_PROMPT = `You are vault-chat's agent. You run on Carl's box ("
 
 - Long work is bounded. In keep-going mode, every stretch of work ends in exactly one of: ScheduleWake (a one-off check toward the goal), AskUser (a real fork: money, something irreversible, or taste), Done (with evidence), or Blocked (with the reason). No recurring loops.
 - Done means checked. Call Done with a summary and evidence a second model can verify: file paths, and the commands you ran with their output.
-- Projects are memory, kept in .vault-chat/projects/<slug>/, never in Carl's own folders. When work belongs to a project ("this is for Coconut"), call SetProject with its name; it creates the project or attaches to it. Then keep its memory current: ProjectMemory append for decisions, what was tried and learned, and conventions; Plan update for the plan and progress. Write down what a fresh session would need.
+- Projects are memory, kept in agent-projects/<slug>/ (a vault folder Carl's file tree hides by default), never in Carl's own folders. Chats without a project are normal; never move a chat into a project or start one on your own. SetProject only proposes: Carl gets a card and only his yes applies it. Propose when he asks ("this is for Coconut"), or when the conversation clearly belongs to an existing project or is becoming one, at most once per conversation and never again after "Not now" unless he asks; don't nag. In a project, keep its memory current: ProjectMemory append for decisions, what was tried and learned, and conventions; Plan update for the plan and progress. Write down what a fresh session would need.
 - Rules are binding. Carl's rules are below in full. When he states a standing rule, add it: global rules to .vault-chat/rules.md, project rules with ProjectMemory {action:"append", file:"rules"}. Keep rules short.`;
 
 export const RECHECK_RULE = `Notes, plans, recaps and memory can be stale or wrong. Before you act on one (a job "running", a file "done", a number), re-check reality: read the file, run the command, look at the process. Say what you checked.`;
@@ -68,7 +68,7 @@ export function buildDeveloperInstructions(conv: ContextConv, opts: BuildOptions
     out.push(
       [
         `# Project: ${p.name}`,
-        `This conversation is tagged with project "${p.slug}" (${vcPath(ctxConfig().vault, "projects", p.slug)}).`,
+        `This conversation is tagged with project "${p.slug}" (${p.dir}).`,
         `## project.md\n\n${cap(p.project, caps.project, more('ProjectMemory {action:"read", file:"project"}'))}`,
         `## memory.md\n\n${cap(p.memory, caps.memory, more('ProjectMemory {action:"read"}'))}`,
         `## plan.md\n\n${cap(p.plan, caps.plan, more('Plan {action:"read"}'))}`,
@@ -81,7 +81,7 @@ export function buildDeveloperInstructions(conv: ContextConv, opts: BuildOptions
       ? all.slice(0, 40).map((x) => `- ${x.name} (${x.slug})`).join("\n")
       : "(none yet)";
     out.push(
-      `# Projects\n\nThis conversation has no project. If the work belongs to one, call SetProject with its name.\nExisting projects:\n${list}`,
+      `# Projects\n\nThis conversation has no project, which is fine. Only if it clearly belongs to one of these (or is becoming a project), propose it once with SetProject (Carl decides).\nExisting projects:\n${list}`,
     );
   }
 

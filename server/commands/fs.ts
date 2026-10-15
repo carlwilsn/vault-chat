@@ -14,6 +14,7 @@ import { dirname, join, relative } from "node:path";
 import { emitLocal } from "../bus";
 import { globFiles, globMatchName } from "./glob";
 import type { CommandFn } from "./registry";
+import { prepareAgentProjects } from "../context/layout";
 
 const NOTES_DIR = ".vault-chat"; // lib.rs:122
 const IGNORE_FILE = ".vaultchatignore"; // lib.rs:114
@@ -335,6 +336,8 @@ export const fsCommands: Record<string, CommandFn> = {
     return out;
   },
 
+  // lib.rs prepare_agent_projects (agent_projects.rs): projects out of .vault-chat/, agent-projects/ hidden once
+  prepare_agent_projects: ({ vault }) => prepareAgentProjects(vault),
   // lib.rs:668
   read_deny_lines: ({ vault }) => readListLines(vault, DENY_FILE),
   // lib.rs:732

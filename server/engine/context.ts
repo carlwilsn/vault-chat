@@ -20,6 +20,7 @@ export {
   readProject,
   ensureProject,
   projectDir,
+  prepareProjects,
   type Verdict,
   type ThreadTokenUsage,
 } from "../context";

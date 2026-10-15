@@ -61,7 +61,7 @@ before(async () => {
   providers.setOpenRouterBaseURL(or.url);
   useStore.setState({ vaultPath: vault } as any);
   // A project with memory, and global rules — what the chat already reads.
-  const p = path.join(vault, ".vault-chat", "projects", "coconut");
+  const p = path.join(vault, "agent-projects", "coconut");
   fs.mkdirSync(p, { recursive: true });
   fs.writeFileSync(path.join(p, "project.md"), "# Coconut\n\n## What\n\nDetect coconuts in drone images.\n");
   fs.writeFileSync(path.join(p, "memory.md"), "# Memory\n\n## Decisions\n\n- use YOLO at 640px\n");
