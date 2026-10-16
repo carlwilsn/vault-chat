@@ -346,6 +346,12 @@ export function ChatPane() {
   const chatsShown = chatFullscreen ? chatSidebarOpen : showChatsPanel;
   // Fullscreen chat: voice replaces the composer with its waves (VoiceCockpit).
   const voiceMode = useStore((s) => s.voiceMode);
+  // The empty chat's greeting, like the phone's — one per conversation.
+  const greeting = useMemo(() => {
+    const g = ["Welcome back!", "He returns!", "Ready to work?", "Welcome, sir.", "At your service."];
+    return g[Math.floor(Math.random() * g.length)];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversationId]);
   const voiceBar = false; // fullscreen voice lives in the bottom strip (VoiceStrip); the composer stays
   const [plusOpen, setPlusOpen] = useState(false);
   const toggleChatsPanel = () =>
@@ -922,10 +928,10 @@ export function ChatPane() {
 
   return (
     <div className="h-full flex flex-col bg-card border-l border-border relative">
-      {((chipAt === "top" && !isPopout) || totalCost) && (
+      {((chipAt === "top" && !isPopout) || chatFullscreen || totalCost) && (
         <div className="shrink-0 px-3 pt-2">
           <div className="max-w-[820px] mx-auto flex items-center">
-            {chipAt === "top" && !isPopout && <ProjectChip placement="down" />}
+            {chatFullscreen ? <div className="flex-1 flex justify-center"><ProjectChip placement="down" variant="title" /></div> : chipAt === "top" && !isPopout && <ProjectChip placement="down" />}
             {totalCost && (
               <span className="ml-auto text-[11px] text-muted-foreground tabular-nums" data-el="total-cost" title="What this conversation has cost so far">
                 {totalCost}
@@ -941,8 +947,8 @@ export function ChatPane() {
       >
         <div className="max-w-[820px] mx-auto space-y-4">
         {messages.length === 0 && !streamingText && (
-          <div className="flex flex-col items-center justify-center h-full text-center px-4 space-y-3">
-            <p className="text-[13px] text-foreground/90">Ready.</p>
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none" data-el="greeting">
+            <p className="text-[22px] font-semibold text-foreground/90">{greeting}</p>
           </div>
         )}
 
@@ -1303,7 +1309,7 @@ export function ChatPane() {
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
             <div className="flex items-center gap-3 min-w-0">
               <ModelPicker modelId={modelId} apiKeys={apiKeys} onSelect={onSelectModel} />
-              {chipAt === "footer" && !isPopout && <ProjectChip placement="up" />}
+              {chipAt === "footer" && !isPopout && !chatFullscreen && <ProjectChip placement="up" />}
             </div>
             <div className="flex items-center gap-2">
               {busy && <ElapsedTimer />}

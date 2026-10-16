@@ -33,7 +33,7 @@ export function useProjects(): ProjectInfo[] {
   return list;
 }
 
-export function ProjectChip({ placement = "up" }: { placement?: "up" | "down" }) {
+export function ProjectChip({ placement = "up", variant = "chip" }: { placement?: "up" | "down"; variant?: "chip" | "title" }) {
   const activeId = useStore((s) => s.activeConversationId);
   const conv = useStore((s) => s.conversations.find((c) => c.id === s.activeConversationId));
   const projects = useProjects();
@@ -89,6 +89,13 @@ export function ProjectChip({ placement = "up" }: { placement?: "up" | "down" })
 
   return (
     <div className="relative" ref={ref}>
+      {variant === "title" ? (
+        // Fullscreen header, like the phone's: the chat's name, its project under it.
+        <button onClick={() => setOpen(!open)} data-el="chat-title" className="flex flex-col items-center leading-tight max-w-[60vw]" title="Project — click to change">
+          <span className="text-[13px] font-semibold text-foreground truncate max-w-full">{conv?.title || "New chat"}</span>
+          <span className={cn("text-[11px] truncate max-w-full", current ? "text-muted-foreground" : "text-muted-foreground/60")}>{label}</span>
+        </button>
+      ) : (
       <button
         onClick={() => setOpen(!open)}
         className={cn(
@@ -101,10 +108,11 @@ export function ProjectChip({ placement = "up" }: { placement?: "up" | "down" })
         <span className="max-w-[160px] truncate">{label}</span>
         <Chevron className="h-3 w-3" />
       </button>
+      )}
       {open && (
         <div
           className={cn(
-            "absolute left-0 w-64 rounded-lg border border-border bg-card shadow-lg z-50 flex flex-col",
+            variant === "title" ? "absolute left-1/2 -translate-x-1/2 w-64" : "absolute left-0 w-64 rounded-lg border border-border bg-card shadow-lg z-50 flex flex-col",
             placement === "up" ? "bottom-full mb-1" : "top-full mt-1",
           )}
         >
