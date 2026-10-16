@@ -153,6 +153,40 @@ describe("steer and queue", () => {
     expect(await userTexts(r.convId)).toEqual(["Write the section.", "Keep it under a page.", "Then check the build.", "And open a PR."]);
   });
 
+  it("a steer lands after what the turn already showed: the reply so far closes as its own message, the rest follows", async () => {
+    const r = await engine.message({ text: "Go through the three chapters." });
+    await until(() => backend.turns.some((t) => t.texts?.join(" ").includes("three chapters")));
+    const turn = backend.turns.length;
+    const tid = backend.turns[turn - 1].threadId;
+    const turnId = `pt-${turn}`;
+    backend.ev(tid, { kind: "turnStarted", turnId });
+    backend.ev(tid, { kind: "textDelta", itemId: "x1", delta: "Reading chapter one" });
+    backend.ev(tid, { kind: "tool", itemId: "c1", name: "Read", input: { path: "ch1.md" }, result: "text" });
+    backend.ev(tid, { kind: "tool", itemId: "c2", name: "subagent", input: { task: "ch2" } }); // in flight
+    await new Promise((res) => setTimeout(res, 50));
+    const s = await engine.message({ convId: r.convId, text: "still working?" });
+    expect(s.steered).toBe(true);
+    // The in-flight call finishes on the message it was closed into; its children too.
+    backend.ev(tid, { kind: "subagents", itemId: "c2", children: ["sa1"], op: "spawnAgent", done: true, ok: true });
+    backend.ev(tid, { kind: "tool", itemId: "c2", name: "subagent", result: "spawned" });
+    // The rest of the turn: the same text item finishes (whole), then more.
+    backend.ev(tid, { kind: "text", itemId: "x1", text: "Reading chapter one, then two." });
+    backend.ev(tid, { kind: "textDelta", itemId: "x2", delta: "Yes — on chapter three now." });
+    backend.ev(tid, { kind: "tool", itemId: "c3", name: "Read", input: { path: "ch3.md" }, result: "text" });
+    backend.ev(tid, { kind: "turnCompleted", turnId, status: "completed" });
+    await until(async () => (await readConv(vault, r.convId))?.state === "idle");
+    const msgs = ((await readConv(vault, r.convId))?.messages ?? []).filter((m: any) => !m.system);
+    expect(msgs.map((m: any) => [m.role, m.content])).toEqual([
+      ["user", "Go through the three chapters."],
+      ["assistant", "Reading chapter one"],
+      ["user", "still working?"],
+      ["assistant", ", then two.\n\nYes — on chapter three now."],
+    ]);
+    expect(msgs[1].toolCalls.map((t: any) => [t.id, t.result])).toEqual([["c1", "text"], ["c2", "spawned"]]);
+    expect(msgs[1].toolCalls[1].subagents).toEqual(["sa1"]);
+    expect(msgs[3].toolCalls.map((t: any) => t.id)).toEqual(["c3"]);
+  });
+
   it("queue with nothing running is an ordinary message", async () => {
     const before = backend.turns.length;
     const r = await engine.message({ text: "Hello" });

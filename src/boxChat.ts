@@ -844,6 +844,20 @@ class BoxChatSession {
     }
   }
 
+  /** A steer was taken: the streamed reply-so-far becomes a (local, until the
+   *  box's copy lands) message, and the live stream starts over after it. */
+  closeLiveReply(id: string): void {
+    const s = useStore.getState();
+    const isActive = s.activeConversationId === id;
+    const text = (isActive ? s.streamingText : s.convRuntime[id]?.streamingText) ?? "";
+    this.streams.delete(id);
+    if (isActive) {
+      if (s.streamingText || s.liveTools.length) useStore.setState({ streamingText: "", liveTools: [] });
+    } else if (s.convRuntime[id]) s.setConvRuntime(id, { ...s.convRuntime[id]!, streamingText: "", liveTools: [] });
+    const shown = text.replace(/^…/, "").trim();
+    if (shown) appendTo(id, { role: "assistant", content: shown, boxPending: true });
+  }
+
   addPending(id: string, text: string): void {
     this.pending.set(id, [...(this.pending.get(id) ?? []), text]);
   }
@@ -1035,7 +1049,11 @@ export async function boxSend(opts: {
     sess.addPending(convId!, shown);
     appendTo(convId!, { role: "user", content: shown, boxPending: true, ...(opts.attachments?.length ? { attachments: opts.attachments } : {}) });
   };
-  if (!steerChip) optimistic();
+  if (!steerChip) {
+    // A plain send into a running turn steers it too: same placement.
+    if (knownToBox && !answer && conv?.status === "running") sess.closeLiveReply(convId);
+    optimistic();
+  }
   useStore.getState().setConversationStatus(convId, "running");
   if (useStore.getState().activeConversationId === convId) {
     const cur = useStore.getState();
@@ -1058,7 +1076,12 @@ export async function boxSend(opts: {
   if (steerChip) {
     // The box has it (it steers the turn at its next step): the chip becomes the message.
     removePending(steerChip.id);
-    if (r.ok) optimistic();
+    if (r.ok) {
+      // As on the laptop: the reply so far closes as its own message (the box
+      // stores it so too), and Carl's lands after it — not above the live turn.
+      sess.closeLiveReply(convId);
+      optimistic();
+    }
   }
 
   if (!r.ok) {

@@ -21,6 +21,8 @@ class FakeBox {
   boot = "boot-1";
   /** The next /conversation answer is the state at its request, sent this many ms later. */
   delayNextDetail = 0;
+  /** Store a steer as the engine does: the reply so far, then the message. */
+  splitSteer = false;
   posts: { path: string; body: any }[] = [];
   /** Every request's route and the vault it named (`?vault=`). */
   seen: { route: string; vault: string | null }[] = [];
@@ -143,6 +145,12 @@ class FakeBox {
             if (!c) return send(404, { error: "no such conversation" });
             // Like the engine: an image alone is recorded as "(image)".
             const shown = String(body.text ?? "").trim() || (body.images?.length ? "(image)" : "");
+            // Like the engine: a steer closes the reply so far as its own message first.
+            const steered = this.splitSteer && c.status === "running";
+            if (steered) {
+              c.messages.push({ role: "assistant", content: "Working on it", toolCalls: [{ id: "r1", name: "Read", input: { path: "a.md" }, result: "x" }] });
+              this.emit({ type: "message", convId: id, role: "assistant", content: "Working on it", tools: ["Read"] });
+            }
             c.messages.push({ role: "user", content: shown });
             c.lastActivityAt = Date.now();
             if (c.status !== "running") {
@@ -151,7 +159,7 @@ class FakeBox {
               this.emit({ type: "status", convId: id, status: "running" });
             }
             this.emit({ type: "message", convId: id, role: "user", content: shown, tools: [] });
-            this.emit({ type: "runtime", convId: id, text: "Working on it", tool: "Read", steps: [], startedAt: c.runStartedAt });
+            if (!steered) this.emit({ type: "runtime", convId: id, text: "Working on it", tool: "Read", steps: [], startedAt: c.runStartedAt });
             return send(200, { ok: true, convId: id });
           }
           case "POST /kill": {
@@ -284,6 +292,31 @@ test("a message into a running thread steers it on the box (no local interrupt)"
   assert.ok(!S().messages.some((m) => /interrupted/.test(m.content)), "nothing is cut short locally");
   box.finish("box1", "done both");
   await waitFor("idle", () => !S().busy && S().messages.at(-1)?.content === "done both");
+});
+
+test("a steer shows after what the turn already showed — at once, and as the box stores it", async () => {
+  box.splitSteer = true;
+  try {
+    S().selectConversation("box1");
+    await chat.sendMessage("go through the chapters");
+    await waitFor("streaming", () => S().busy && S().streamingText === "Working on it");
+    const n = S().messages.length;
+    await chat.sendMidTurn("steer", "still working?");
+    // At once: the reply so far closed above Carl's message, the live stream empty after it.
+    assert.deepEqual(S().messages.slice(n).map((m) => [m.role, m.content]), [["assistant", "Working on it"], ["user", "still working?"]]);
+    assert.equal(S().streamingText, "");
+    // The box's copy lands: the same order, its full-fidelity message in place of the local one.
+    await waitFor("box copy", () => S().messages.slice(n).every((m) => !m.boxPending) && S().messages[n]?.toolCalls?.length === 1);
+    assert.deepEqual(S().messages.slice(n).map((m) => [m.role, m.content]), [["assistant", "Working on it"], ["user", "still working?"]]);
+    assert.ok(S().busy, "the turn still runs");
+    box.emit({ type: "runtime", convId: "box1", text: "Yes — chapter three now.", tool: "", steps: [] });
+    await waitFor("rest streams after it", () => S().streamingText === "Yes — chapter three now.");
+    box.finish("box1", "Yes — chapter three now.");
+    await waitFor("done", () => !S().busy && S().messages.at(-1)?.content === "Yes — chapter three now.");
+    assert.deepEqual(S().messages.slice(n).map((m) => m.role), ["assistant", "user", "assistant"]);
+  } finally {
+    box.splitSteer = false;
+  }
 });
 
 test("Stop is the box's /kill; the thread reads running until the box ends it", async () => {

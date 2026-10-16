@@ -87,6 +87,8 @@ type Live = {
   open: Map<string, { name: string; input: any }>;
   /** The message that carried the last question (its tool calls were moved there): a late result lands on it. */
   asked: { mid: string; ids: Set<string> } | null;
+  /** Text items closed into a message mid-stream (a steer): what of each was already shown there. */
+  closedTexts?: Map<string, string>;
   cut: boolean;
   stalled: boolean;
   stopped: boolean;
@@ -463,6 +465,9 @@ export class Engine {
     // A running turn: steer it.
     const l = this.live.get(id);
     if (l && l.turnId && !l.finished) {
+      // What the turn showed so far becomes its own message, so Carl's lands
+      // after it (as on the laptop) and the rest of the turn after that.
+      await this.closeReplySoFar(l);
       await appendMessage(this.d.vault, id, { role: "user", content: shown, direct: true, ...(attachments.length ? { attachments } : {}) });
       try {
         await this.d.backend.steer(l.threadId, l.turnId, { texts: [context ? `${context}\n\n${shown}` : shown], images: paths });
@@ -796,11 +801,15 @@ export class Engine {
         this.pushRuntime(l);
         this.chatStream(l);
         return;
-      case "text":
+      case "text": {
         if (!l.texts.has(e.itemId)) l.order.push(e.itemId);
-        l.texts.set(e.itemId, e.text);
+        // Part of it already closed into its own message (a steer): only the rest is new.
+        const shown = l.closedTexts?.get(e.itemId);
+        const t = shown && e.text.startsWith(shown) ? e.text.slice(shown.length).replace(/^\s+/, "") : e.text;
+        l.texts.set(e.itemId, t);
         this.pushRuntime(l);
         return;
+      }
       case "reasoningDelta":
         l.reasoningLive += e.delta;
         this.pushRuntime(l);
@@ -914,7 +923,18 @@ export class Engine {
         }
       }
     }
-    if (i === undefined) return;
+    if (i === undefined) {
+      // The call was closed into its own message (a steer, a question): the children go there.
+      const a = l.asked;
+      if (a?.ids.has(itemId)) {
+        void mutateConv(this.d.vault, l.convId, (c) => {
+          const m: any = c.messages.find((x: any) => x.mid === a.mid);
+          const t = m?.toolCalls?.find((x: any) => x.id === itemId);
+          if (t) t.subagents = [...new Set([...(t.subagents ?? []), ...children])];
+        }).catch(() => undefined);
+      }
+      return;
+    }
     const cur = l.tools[i]!;
     const have = cur.subagents ?? [];
     const add = children.filter((c) => !have.includes(c));
@@ -962,6 +982,32 @@ export class Engine {
       const cur = l.tools[i]!;
       l.tools[i] = { ...cur, ...t, input: t.input ?? cur.input, result: t.result ?? cur.result };
     }
+  }
+
+  /** A steer mid-turn: the reply so far (its text and tool calls) is stored as
+   * a message of its own now; the turn's end stores only what came after. A
+   * result for a call still in flight lands on that message (toAskedMessage). */
+  private async closeReplySoFar(l: Live): Promise<void> {
+    const before = this.turnContent(l);
+    if (!before.trim() && !l.tools.length) return;
+    const mid = newMessageId();
+    const open = l.tools.filter((t) => t.id && t.result === undefined).map((t) => t.id!);
+    const msg: any = {
+      role: "assistant",
+      mid,
+      content: capStr(before, MSG_CAP),
+      ...(l.turnId ? { turnId: l.turnId } : {}),
+      ...(l.tools.length ? { toolCalls: l.tools } : {}),
+    };
+    if (open.length) l.asked = { mid, ids: new Set(open) };
+    const closed = l.closedTexts ?? new Map<string, string>();
+    for (const k of l.order) closed.set(k, (closed.get(k) ?? "") + (l.texts.get(k) ?? ""));
+    l.closedTexts = closed;
+    l.order = [];
+    l.texts = new Map();
+    l.tools = [];
+    l.toolIndex = new Map();
+    await appendMessage(this.d.vault, l.convId, msg);
   }
 
   private turnContent(l: Live): string {
