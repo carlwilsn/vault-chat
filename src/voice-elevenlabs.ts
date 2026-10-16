@@ -15,6 +15,7 @@ import { cachedVoiceMath, displayVoiceMath, prefetchVoiceMath } from "./voiceMat
 import { VoiceImagePusher, lookingAtNote, thumbDataUrl, voiceImageMime, type PushResult } from "./voiceImages";
 import { fileKind, isUnreadableAsText } from "./fileKind";
 import { stripAudioTags } from "./voiceTags";
+import { QuietGate } from "./voiceQuiet";
 
 // The shared context stream (src/activity.ts), when voice runs on this laptop:
 // the box records its own sessions (server/voice.ts). Loaded lazily — the box
@@ -895,6 +896,7 @@ export async function startElevenLabsSession(): Promise<void> {
   lastViewportSent = null;
   sentPdfPaths.clear();
   imagePusher.reset();
+  quietGate.reset();
   sessionMutationCount = 0;
   sessionFirstUserText = null;
   resetAgentEnvelope();
@@ -970,6 +972,9 @@ ${shared}` : "");
         } catch {}
       },
       onInterruption: () => {
+        // Diagnostics for "it cut out and said a different sentence": a barge-in
+        // ElevenLabs detected (the user's voice — or the agent's own echo).
+        console.info("[voice-eleven] interruption (barge-in) at", new Date().toISOString(), quietGate.pending ? `— ${quietGate.pending} push(es) held` : "");
         // Barge-in: drop buffered agent audio so it stops immediately, and
         // the queued envelope with it — that audio will never be heard.
         stopAgentAudioNative();
@@ -995,6 +1000,7 @@ ${shared}` : "");
           system: true,
         });
         transcriptMirror = null;
+        quietGate.reset();
         voiceChats = null;
         activeConversation = null;
         stopViewportWatch();
@@ -1446,6 +1452,8 @@ async function pushPdfIfNeeded(): Promise<void> {
     if (!activeConversation || activeConversation !== conv) return;
     const blob = new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
     const { fileId } = await conv.uploadFile(blob);
+    // A user turn for the agent: never while it speaks.
+    await quietGate.quiet(60_000);
     if (!activeConversation || activeConversation !== conv) return;
     const name = file.split(/[\\/]/).pop() ?? "document.pdf";
     conv.sendMultimodalMessage({
@@ -1465,6 +1473,24 @@ async function pushPdfIfNeeded(): Promise<void> {
 // session, size-capped). In box mode the image is in the vault on both sides,
 // so it is read here.
 const imagePusher = new VoiceImagePusher();
+// Our own pushes (contextual updates, uploads) wait while the agent speaks — an
+// upload is a user turn and cut its reply off mid-sentence (voiceQuiet.ts).
+const quietGate = new QuietGate(() => useStore.getState().voiceSpeaking);
+{
+  // voiceSpeaking is the SDK's mode (onModeChange): speaking holds, the end of it flushes.
+  let was = useStore.getState().voiceSpeaking;
+  useStore.subscribe((st) => {
+    if (st.voiceSpeaking === was) return;
+    was = st.voiceSpeaking;
+    quietGate.modeChanged();
+  });
+}
+/** [tests] Pushes held until the agent stops speaking. */
+export function heldVoicePushes(): number {
+  return quietGate.pending;
+}
+/** How long a tool's own image push may wait for the agent to stop talking. */
+const TOOL_PUSH_WAIT_MS = 10_000;
 
 /** Send the image file at `path` to the live voice conversation (once a session). */
 export async function pushVoiceImageFile(path: string, extra?: string): Promise<PushResult | "no-session"> {
@@ -1473,6 +1499,8 @@ export async function pushVoiceImageFile(path: string, extra?: string): Promise<
   const mime = voiceImageMime(path);
   if (!mime) return "unsupported";
   if (imagePusher.has(path)) return "duplicate";
+  await quietGate.quiet(TOOL_PUSH_WAIT_MS);
+  if (activeConversation !== conv) return "failed";
   try {
     const bytes = await invoke<number[]>("read_binary_file", { path });
     const blob = new Blob([new Uint8Array(bytes)], { type: mime });
@@ -1488,6 +1516,8 @@ export async function pushVoiceImageFile(path: string, extra?: string): Promise<
 export async function pushVoiceImageDataUrl(key: string, dataUrl: string, name: string, extra?: string): Promise<PushResult | "no-session"> {
   const conv = activeConversation;
   if (!conv) return "no-session";
+  await quietGate.quiet(TOOL_PUSH_WAIT_MS);
+  if (activeConversation !== conv) return "failed";
   try {
     const blob = await (await fetch(dataUrl)).blob();
     return await imagePusher.push(conv, key, blob, lookingAtNote(name, extra), () => activeConversation === conv);
@@ -1551,24 +1581,27 @@ export function pushViewportContextDebounced(): void {
   if (scrollDebounceTimer !== null) clearTimeout(scrollDebounceTimer);
   scrollDebounceTimer = setTimeout(() => {
     scrollDebounceTimer = null;
-    const conv = activeConversation;
-    if (!conv) return;
-    const state = useStore.getState();
-    if (!state.followAlong) return;
-    const text = buildViewportContextText(state);
-    if (text && text !== lastViewportSent) {
-      lastViewportSent = text;
-      try {
-        conv.sendContextualUpdate(text);
-      } catch (e) {
-        console.warn("[voice-eleven] contextual update failed:", e);
+    // Held while the agent speaks; only the latest viewport goes when it stops.
+    quietGate.run("viewport", () => {
+      const conv = activeConversation;
+      if (!conv) return;
+      const state = useStore.getState();
+      if (!state.followAlong) return;
+      const text = buildViewportContextText(state);
+      if (text && text !== lastViewportSent) {
+        lastViewportSent = text;
+        try {
+          conv.sendContextualUpdate(text);
+        } catch (e) {
+          console.warn("[voice-eleven] contextual update failed:", e);
+        }
       }
-    }
-    // Fire-and-forget the PDF push. Independent of the text update —
-    // refocusing on the same PDF doesn't re-trigger an upload because
-    // sentPdfPaths is a set.
-    void pushPdfIfNeeded();
-    void pushImageIfNeeded();
+      // Fire-and-forget the PDF push. Independent of the text update —
+      // refocusing on the same PDF doesn't re-trigger an upload because
+      // sentPdfPaths is a set.
+      void pushPdfIfNeeded();
+      void pushImageIfNeeded();
+    });
   }, SCROLL_DEBOUNCE_MS);
 }
 
@@ -1590,11 +1623,14 @@ export function sendVoiceTypingHint(kind: "opened" | "still-typing"): void {
     kind === "opened"
       ? "The user has opened the typed-input panel and is composing a reply. Stay silent. Do not check in, do not fill the silence, do not call end_call. Their typed message will arrive as a normal user turn — wait for it."
       : "The user is still typing in the panel. Keep waiting silently.";
-  try {
-    conv.sendContextualUpdate(text);
-  } catch (e) {
-    console.warn("[voice-eleven] typing-hint contextual update failed:", e);
-  }
+  quietGate.run("typing", () => {
+    if (activeConversation !== conv) return;
+    try {
+      conv.sendContextualUpdate(text);
+    } catch (e) {
+      console.warn("[voice-eleven] typing-hint contextual update failed:", e);
+    }
+  });
 }
 
 export function isVoiceSessionActive(): boolean {
