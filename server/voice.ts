@@ -397,6 +397,30 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
   }
 }
 
+// ---------------------------------------------------------------- live sessions
+
+/** A voice session with no tool call or transcript line for this long is over (a client that died without its end line). */
+export const VOICE_IDLE_MS = 10 * 60_000;
+/** Per vault: when its voice session last did anything. Present = a session is live. */
+const voiceLive = new Map<string, number>();
+
+/** A voice session is live in `vault` (its session was minted, a tool ran, a line was said) — or, `ended`, it is over. */
+export function voiceActivity(vault: string, ended = false, now = Date.now()): void {
+  if (ended) voiceLive.delete(vault);
+  else voiceLive.set(vault, now);
+}
+
+/** Live voice sessions on this box (one per vault at most): the health's busy
+ * counts them, so the updater never restarts the server under someone talking. */
+export function activeVoiceSessions(now = Date.now()): number {
+  let n = 0;
+  for (const at of voiceLive.values()) if (now - at < VOICE_IDLE_MS) n++;
+  return n;
+}
+
+/** The end-of-session line the clients write ("Voice session ended."). */
+const ENDED_LINE = /^voice session ended\b/i;
+
 // ---------------------------------------------------------------- transcripts
 
 /** POST /api/v1/voice/transcript: one line of a voice session (what was said,
@@ -408,10 +432,14 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
 export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: number; body: Record<string, unknown> }> {
   const text = s(b?.text).trim();
   if (!text) return { status: 400, body: { error: "empty transcript line" } };
+  const ended = b?.ended === true || (b?.system === true && ENDED_LINE.test(text));
+  voiceActivity(d.vault, ended);
   const msg = { role: b?.role === "user" ? ("user" as const) : ("assistant" as const), content: text.slice(0, 20_000), ...(b?.system === true ? { system: true } : {}) };
   const { readConv, createConv, appendMessage } = await import("./engine/convs");
   let id = s(b?.convId);
   const cur = id ? await readConv(d.vault, id) : null;
+  // The end of a session where nothing was said: no conversation for it.
+  if (ended && (!cur || cur.source !== "voice")) return { status: 200, body: { ok: true, convId: null } };
   if (!cur || cur.source !== "voice") {
     const from = s(b?.fromConvId) ? await readConv(d.vault, s(b.fromConvId)) : null;
     const project = s(b?.project) || (from && typeof from.project === "string" ? from.project : "");
@@ -432,6 +460,7 @@ export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: stri
   const name = s(body?.name);
   const args = body?.args ?? body?.arguments ?? body?.parameters ?? {};
   if (!name) return { result: "Error: missing tool name." };
+  voiceActivity(d.vault);
   const a = args && typeof args === "object" ? args : {};
   let result: string;
   try {
@@ -554,6 +583,8 @@ export async function voiceSession(
   const systemPrompt = composeVoicePrompt(ctx.systemPrompt, shared);
   const signedUrl = await v.getSignedUrl(ctx.elKey, ctx.agentId, other ? `vault:${d.name ?? d.vault}` : undefined);
   if (!signedUrl) return { status: 502, body: { error: "ElevenLabs refused a signed URL" } };
+  // Someone is about to talk: the box is busy until the session's end line (or VOICE_IDLE_MS of silence).
+  voiceActivity(d.vault);
   return {
     status: 200,
     body: {

@@ -168,6 +168,7 @@ async function main(): Promise<void> {
   });
 
   const { startHttpServer } = await import("./http");
+  const { activeVoiceSessions } = await import("./voice");
   const server = await startHttpServer({
     health: async () => ({
       ok: true,
@@ -189,7 +190,13 @@ async function main(): Promise<void> {
       vault: cfg.vaultName,
       git: gitState,
       keys: { openrouter: hasKey("api.openrouter"), elevenlabs: hasKey("service.elevenlabs") },
-      busy: { runs: activeRuns().length },
+      // A live voice session counts as a run: the updater waits for busy.runs == 0
+      // (server/deploy/vault-chat-update.sh), so it never restarts under someone talking.
+      busy: (() => {
+        const agent = activeRuns().length;
+        const voice = activeVoiceSessions();
+        return { runs: agent + voice, agent, voice };
+      })(),
       conversations: useStore.getState().conversations.length,
       sync: syncSummary(),
       engine: engine.error ? { error: engine.error } : engine.health(),

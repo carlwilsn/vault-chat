@@ -6,7 +6,8 @@
 #      (or one that already failed its health check here);
 #   2. download vault-chat-server.mjs (+ its .sha256), server-version.json and the
 #      phone assets tarball (+ .sha256) into versions/<ver>/, refusing any bad sha;
-#   3. wait until /api/v1/health reports busy.runs == 0 (at most 2 h, then go anyway);
+#   3. wait until /api/v1/health reports busy.runs == 0 — agent runs and live voice
+#      sessions both count (at most 2 h, then go anyway);
 #   4. swap the `current` symlink to versions/<ver> and restart the server unit;
 #   5. /api/v1/health must report <ver> within 90 s — otherwise swap the symlink back,
 #      restart, mark <ver> failed (so it is not retried every 10 min) and

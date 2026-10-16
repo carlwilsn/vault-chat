@@ -2027,10 +2027,11 @@ export function boot(): void {
   // own (POST /api/v1/voice/transcript): the first line makes it, the rest
   // name it; in order, one at a time. A new session makes a new one.
   let vVoiceConv: string | null = null, vVoiceFrom: string | null = null, vLines: Promise<unknown> = Promise.resolve();
-  function vSaveLine(role: string, text: string) {
+  function vSaveLine(role: string, text: string, end = false) {
     vLines = vLines.then(async () => {
       try {
-        const r = await api("/api/v1/voice/transcript", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: vVoiceConv, fromConvId: vVoiceFrom, role, text }) });
+        // `end`: the session is over — the box stops counting it as busy (its updater waits for that); no line is saved when nothing was said.
+        const r = await api("/api/v1/voice/transcript", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ convId: vVoiceConv, fromConvId: vVoiceFrom, role, text, ...(end ? { system: true, ended: true } : {}) }) });
         const j = await r.json();
         if (j && typeof j.convId === "string") vVoiceConv = j.convId;
       } catch {}
@@ -2080,7 +2081,7 @@ export function boot(): void {
       setVErr(String((e && e.message) || e));
     }
   }
-  function vTeardown() { vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vAgentSpeaking = false; vAgentEnvReset(); vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; { const vh = $("vhint"); if (vh) vh.textContent = ""; } vConv = null; vConnecting = false; }
+  function vTeardown() { if (vLive) vSaveLine("assistant", "Voice session ended.", true); vLive = false; cancelAnimationFrame(vRafId); vRafId = 0; vTeardownAudio(); vAutoRetried = false; vAgentSpeaking = false; vAgentEnvReset(); vSmoothed.fill(0); for (const b of vBars) b.style.transform = "scaleY(.16)"; document.body.classList.remove("voice", "voicemin", "vconnecting", "vmicmuted"); vMuted = false; { const vh = $("vhint"); if (vh) vh.textContent = ""; } vConv = null; vConnecting = false; }
   async function vStop() { try { if (vConv) await vConv.endSession(); } catch {} vTeardown(); }
   $("voiceRow").onclick = () => {
     closeMenu();

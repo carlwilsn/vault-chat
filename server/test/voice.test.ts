@@ -282,6 +282,8 @@ describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
       const out = await voice.voiceSession(null, deps);
       expect(out.status).toBe(200);
       expect(out.body.signedUrl).toBe("wss://fake.elevenlabs/x?sig=1");
+      // Minting a session makes the box busy until the session ends.
+      expect(voice.activeVoiceSessions()).toBeGreaterThan(0);
       expect(out.body.toolNames).toEqual(expect.arrayContaining(["Read", "Write", "Bash", "AskAgent", "AgentStatus", "ScrollTo"]));
       expect(String(out.body.systemPrompt)).toContain("AskAgent");
       expect(JSON.stringify(out.body)).not.toContain("el-canary-key");
@@ -363,5 +365,30 @@ describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
     } finally {
       globalThis.fetch = real;
     }
+  });
+});
+
+describe("a live voice session keeps the box busy (the updater waits on busy.runs)", () => {
+  it("from the session, a tool or a line until the end line, or VOICE_IDLE_MS of silence", async () => {
+    // Clear whatever the earlier tests left live.
+    voice.voiceActivity(vault, true);
+    voice.voiceActivity(vault2, true);
+    expect(voice.activeVoiceSessions()).toBe(0);
+    await voice.voiceTool(deps, { name: "Read", args: { path: "notes/a.md" } });
+    expect(voice.activeVoiceSessions()).toBe(1);
+    const a = await voice.voiceTranscript(deps2, { role: "user", text: "lab question" });
+    expect(voice.activeVoiceSessions()).toBe(2);
+    // Ten minutes without a tool or a line: that client is gone.
+    expect(voice.activeVoiceSessions(Date.now() + voice.VOICE_IDLE_MS + 1)).toBe(0);
+    await voice.voiceTool(deps, { name: "Read", args: { path: "notes/a.md" } });
+    await voice.voiceTranscript(deps2, { convId: a.body.convId, role: "user", text: "lab question again" });
+    // The end line (the clients' "Voice session ended.", a system line) ends it.
+    await voice.voiceTranscript(deps2, { convId: a.body.convId, role: "assistant", text: "Voice session ended.", system: true });
+    expect(voice.activeVoiceSessions()).toBe(1);
+    // Said by the agent (not a system line), the words don't end anything.
+    await voice.voiceTranscript(deps, { role: "assistant", text: "Voice session ended is what the button says." });
+    expect(voice.activeVoiceSessions()).toBe(1);
+    await voice.voiceTranscript(deps, { role: "assistant", text: "x", ended: true });
+    expect(voice.activeVoiceSessions()).toBe(0);
   });
 });
