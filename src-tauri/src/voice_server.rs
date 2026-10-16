@@ -166,6 +166,19 @@ pub fn is_running() -> bool {
     server_slot().lock().unwrap_or_else(|e| e.into_inner()).is_some()
 }
 
+/// The `tailscale` CLI, without a console window: from a GUI process each run
+/// otherwise flashes one on Windows (two per launch, via `voice_server_url`).
+fn tailscale_cmd() -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut c = std::process::Command::new("tailscale");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    c
+}
+
 /// Expose the local voice server over **Tailscale HTTPS** and return the secure
 /// `https://<machine>.ts.net` base. This is the link that works on a phone:
 /// browsers only grant the mic (`navigator.mediaDevices`) over HTTPS or
@@ -177,10 +190,10 @@ pub fn is_running() -> bool {
 /// isn't available — the caller then falls back to the http IP (localhost-only).
 pub fn https_url(port: u16) -> Option<String> {
     // Idempotently set up the proxy: https://<name>.ts.net/ -> 127.0.0.1:port.
-    let _ = std::process::Command::new("tailscale")
+    let _ = tailscale_cmd()
         .args(["serve", "--bg", "--https=443", &format!("http://127.0.0.1:{}", port)])
         .output();
-    let out = std::process::Command::new("tailscale")
+    let out = tailscale_cmd()
         .args(["status", "--json"])
         .output()
         .ok()?;
@@ -203,7 +216,7 @@ pub fn https_url(port: u16) -> Option<String> {
 /// Best-effort `http://<tailscale-ip>:<port>` — the http fallback (works only on
 /// localhost / same machine; a phone needs `https_url`).
 pub fn tailscale_url(port: u16) -> Option<String> {
-    let out = std::process::Command::new("tailscale")
+    let out = tailscale_cmd()
         .args(["ip", "-4"])
         .output()
         .ok()?;
