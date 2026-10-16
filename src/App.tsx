@@ -529,11 +529,13 @@ export default function App() {
               <PanelLeftOpen className="h-3.5 w-3.5" />
             </button>
           )}
-          <div className="flex-1 min-w-0">
-            <ChatPane />
+          <div className="flex-1 min-w-0 flex flex-col">
+            <div className="flex-1 min-h-0">
+              <ChatPane />
+            </div>
+            <VoiceStrip />
           </div>
         </div>
-        <VoiceStrip />
         {captureOver && (
           <div className="fixed inset-0 z-40 flex flex-col bg-background" data-el="fullscreen-capture">
             <div className="h-8 shrink-0 flex items-center justify-center gap-2 border-b border-border text-[11.5px] text-muted-foreground">

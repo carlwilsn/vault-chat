@@ -103,16 +103,15 @@ export function VoiceMicGroup() {
   );
 }
 
-// Fullscreen chat has no titlebar: the same voice control sits in a strip at
-// the bottom — the mic (+ keyboard) on the left, the bars centred while voice
-// is on, exactly as at the top.
+// Fullscreen chat has no titlebar: while voice is on, the titlebar's waves sit
+// under the composer — just the bars, no line, no buttons (the mic is in the
+// composer).
 export function VoiceStrip() {
+  const voiceMode = useStore((s) => s.voiceMode);
+  if (!voiceMode) return null;
   return (
-    <div data-el="voice-strip" className="h-9 shrink-0 flex items-center bg-card border-t border-border relative">
+    <div data-el="voice-strip" className="h-7 shrink-0 relative">
       <VoiceCockpit />
-      <div className="px-2">
-        <VoiceMicGroup />
-      </div>
     </div>
   );
 }

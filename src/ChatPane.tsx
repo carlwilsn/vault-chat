@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import { Markdown, StreamingMarkdown } from "./Markdown";
 import { localPathFromUrl } from "./mdPipeline";
-import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare, Paperclip, Scan, AtSign } from "lucide-react";
+import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare, Mic, Paperclip, Scan, AtSign } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { usePending, type PendingKind } from "./pendingInput";
 import { voiceImageMime } from "./voiceImages";
@@ -10,7 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
 import { COMPACT_THRESHOLD, COMPACTION_DIVIDER_TEXT, windowFor, isCompactionDivider, dividerSummary } from "./chatContext";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
-import { buildViewportContextText } from "./voice-elevenlabs";
+import { buildViewportContextText, toggleVoice } from "./voice-elevenlabs";
 import { findModel, AUTO_MODEL_ID } from "./providers";
 import { loadSkills } from "./skills";
 import { isUnreadableAsText } from "./fileKind";
@@ -344,6 +344,7 @@ export function ChatPane() {
   const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
   const chatsShown = chatFullscreen ? chatSidebarOpen : showChatsPanel;
   // Fullscreen chat: voice replaces the composer with its waves (VoiceCockpit).
+  const voiceMode = useStore((s) => s.voiceMode);
   const voiceBar = false; // fullscreen voice lives in the bottom strip (VoiceStrip); the composer stays
   const [plusOpen, setPlusOpen] = useState(false);
   const toggleChatsPanel = () =>
@@ -1211,6 +1212,20 @@ export function ChatPane() {
                 className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pr-20", chatFullscreen ? "!pl-11" : "!pl-3")}
               />
               <div className="absolute right-3 bottom-2 flex items-center gap-1">
+                {chatFullscreen && (
+                  <button
+                    onClick={toggleVoice}
+                    disabled={!vaultPath}
+                    data-el="composer-voice"
+                    className={cn(
+                      "h-7 w-7 flex items-center justify-center rounded-lg hover:bg-accent/60 hover:text-foreground disabled:opacity-40",
+                      voiceMode ? "text-foreground" : "text-muted-foreground",
+                    )}
+                    title={voiceMode ? "Voice on — Ctrl+D to turn off" : "Voice (Ctrl+D)"}
+                  >
+                    <Mic className="h-3.5 w-3.5" strokeWidth={voiceMode ? 2.5 : 2} />
+                  </button>
+                )}
                 {!busy && !chatFullscreen && (() => {
                   // Union of what's open in main's panes — synced to
                   // the popout via state broadcast. If any visible
