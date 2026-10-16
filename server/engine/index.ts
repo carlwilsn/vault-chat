@@ -30,6 +30,8 @@ export type EngineBoot = {
   vaults?: () => VaultRef[];
   /** A turn ended in a vault other than the main one (a sync cycle brings the result to the laptop). */
   onTurnEnded?: (name: string) => void;
+  /** The agent wrote files in a vault (vault-relative paths): publish them now (server/liveEdits.ts). */
+  onFilesWritten?: (name: string, paths: string[]) => void;
   stateDir: string;
   secretsDir: string;
   tokenPath: string;
@@ -345,6 +347,7 @@ export async function startEngine(b: EngineBoot): Promise<EngineHandle> {
       notify: engineNotify(b, v.main ? undefined : v),
       ...(v.main ? {} : { log: (m: string) => console.log(`[engine:${v.name}] ${m}`) }),
       deny: others,
+      onFilesWritten: (paths) => b.onFilesWritten?.(v.name, paths),
     });
     engine.start();
     backend.start();

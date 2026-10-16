@@ -32,6 +32,7 @@ import { ENGINE_ROLE_PROMPT } from "./prompt";
 import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { join } from "node:path";
 import { StreamWire } from "../../src/streamWire";
+import { WRITE_TOOLS, writtenPath } from "../liveEdits";
 import { COMPACTION_DIVIDER_TEXT } from "../../src/chatContext";
 import { activitySummary, appendActivity, contextImage } from "../activity";
 import { CAPTURE_FRESH_MS, chatExchangeEntry } from "../../src/activityCore";
@@ -55,6 +56,8 @@ export type EngineDeps = {
   visionModel?: string;
   /** The other vaults on this box (and their state): the verifier may not read them. */
   deny?: () => string[];
+  /** A Write/Edit/NotebookEdit succeeded: the vault-relative paths it changed (server/liveEdits.ts). */
+  onFilesWritten?: (paths: string[]) => void;
 };
 
 /** `subagents`: the children a `subagent` call spawned (their threadIds; state and cost live in conv.subagents). */
@@ -835,7 +838,13 @@ export class Engine {
           }
         }
         if (e.result === undefined) l.open.set(e.itemId, { name: e.name, input: e.input ?? l.open.get(e.itemId)?.input });
-        else l.open.delete(e.itemId);
+        else {
+          if (WRITE_TOOLS.has(e.name) && !e.result.startsWith("[error]")) {
+            const p = writtenPath(this.d.vault, l.open.get(e.itemId)?.input);
+            if (p) this.d.onFilesWritten?.([p]);
+          }
+          l.open.delete(e.itemId);
+        }
         if (this.toAskedMessage(l, e.itemId, { name: e.name, input: e.input, result: e.result })) return;
         this.upsertTool(l, e.itemId, { name: e.name, input: e.input, result: e.result });
         this.pushRuntime(l);

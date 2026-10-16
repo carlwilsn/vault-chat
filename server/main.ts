@@ -82,7 +82,13 @@ async function main(): Promise<void> {
   // stays in the bundle for legacy mission threads until Phase 3 removes it.
   const { notificationAppend } = await import("./commands/phone");
   const { startEngine, engineModel, engineShuttingDown } = await import("./engine");
-  const { startBoxSync, syncStatus, syncSummary, triggerSync, listVaults, addVault, vaultPaths } = await import("./sync");
+  const { startBoxSync, syncStatus, syncSummary, triggerSync, syncNow, listVaults, addVault, vaultPaths } = await import("./sync");
+  // An agent's edits reach the laptop's open file in seconds: commit + publish, then /poll "vault_changed".
+  const { LiveEdits } = await import("./liveEdits");
+  const liveEdits = new LiveEdits({
+    flush: (name) => syncNow(name === cfg.vaultName ? undefined : name),
+    broadcast: (ev) => getRing().push(JSON.stringify(ev)),
+  });
   // Every vault on the box; the main one keeps its own paths (config).
   const vaultRefs = () =>
     listVaults().map((v) => (v.main ? { name: v.name, path: cfg.vault, bare: cfg.bareRepo, main: true } : { name: v.name, path: vaultPaths(v.name).vault, bare: vaultPaths(v.name).bare, main: false }));
@@ -99,6 +105,7 @@ async function main(): Promise<void> {
     vaultName: cfg.vaultName,
     vaults: vaultRefs,
     onTurnEnded: (name) => triggerSync(name),
+    onFilesWritten: (name, paths) => liveEdits.note(name, paths),
     stateDir: cfg.stateDir,
     secretsDir: cfg.secretsDir,
     tokenPath: cfg.tokenPath,
@@ -255,7 +262,7 @@ async function main(): Promise<void> {
           return engine.engine ? engine.shellFor?.(v.name) : undefined;
         },
         message: async (b) => (await engineOf(v)).message(b),
-        onWrite: () => triggerSync(v.main ? undefined : v.name),
+        onWrite: (paths) => (paths?.length ? liveEdits.note(v.name, paths) : triggerSync(v.main ? undefined : v.name)),
         openrouterKey: () => {
           const v = keychainCommands.keychain_get({ key: "api.openrouter" });
           return typeof v === "string" && v ? v : null;

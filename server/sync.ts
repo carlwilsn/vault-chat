@@ -174,6 +174,12 @@ exit 0
     this.schedule(200);
   }
 
+  /** A cycle that starts after this call (an in-flight one may predate a write): resolves when it is done. */
+  async flush(): Promise<void> {
+    if (this.inFlight) await this.inFlight.catch(() => {});
+    await this.runOnce();
+  }
+
   /** One full cycle; concurrent calls coalesce into one follow-up run. */
   runOnce(): Promise<void> {
     if (this.inFlight) {
@@ -446,6 +452,12 @@ export async function startBoxSync(alert: Alert): Promise<BoxSync | null> {
 export function triggerSync(name?: string): void {
   if (name && added.has(name)) added.get(name)!.trigger();
   else instance?.trigger();
+}
+
+/** Commit and publish a vault now (an agent's edit): resolves when the cycle is done; no-op without sync. */
+export async function syncNow(name?: string): Promise<void> {
+  const s = name && added.has(name) ? added.get(name)! : instance;
+  if (s) await s.flush();
 }
 
 export function syncStatus(): unknown {

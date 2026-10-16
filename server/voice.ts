@@ -36,8 +36,9 @@ export type VoiceDeps = {
   shell?: string[] | null;
   /** The engine's /message (start or continue a box chat). */
   message?: (b: { text: string; project?: string; convId?: string | null; source?: "voice" }) => Promise<Record<string, unknown> | null>;
-  /** After a write: run a sync cycle so it reaches the laptop. */
-  onWrite?: () => void;
+  /** After a write: run a sync cycle so it reaches the laptop; `paths` (vault-relative) when a file tool
+   * wrote them — the open file on the laptop then updates live (server/liveEdits.ts). */
+  onWrite?: (paths?: string[]) => void;
   openrouterKey?: () => string | null;
   webSearchModel?: string;
 };
@@ -251,8 +252,8 @@ async function store(): Promise<any> {
 
 async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
   const vault = d.vault;
-  const wrote = (msg: string) => {
-    d.onWrite?.();
+  const wrote = (msg: string, rel?: string) => {
+    d.onWrite?.(rel ? [rel] : undefined);
     return msg;
   };
   switch (name) {
@@ -295,12 +296,12 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
     case "Write": {
       const { abs, rel } = voicePath(vault, a.path, "write");
       fsCommands.write_text_file({ path: abs, contents: s(a.contents) });
-      return wrote(`Wrote ${rel}`);
+      return wrote(`Wrote ${rel}`, rel);
     }
     case "Edit": {
-      const { abs } = voicePath(vault, a.path, "write");
+      const { abs, rel } = voicePath(vault, a.path, "write");
       const out = fsCommands.edit_text_file({ path: abs, oldString: s(a.old_string), newString: s(a.new_string), replaceAll: !!a.replace_all }) as string;
-      return wrote(out.split(abs).join(relIn(realish(resolve(vault)), abs) ?? abs));
+      return wrote(out.split(abs).join(relIn(realish(resolve(vault)), abs) ?? abs), rel);
     }
     case "NotebookEdit": {
       const { abs, rel } = voicePath(vault, a.path, "write");
@@ -308,7 +309,7 @@ async function runTool(d: VoiceDeps, name: string, a: any): Promise<string> {
       const r = applyNotebookEdit(readFileSync(abs, "utf8"), a.action, Number(a.cell_index), a.source, a.cell_type);
       if (!r.ok) return `Error: ${r.error}`;
       fsCommands.write_text_file({ path: abs, contents: r.contents });
-      return wrote(`${r.summary} in ${rel}`);
+      return wrote(`${r.summary} in ${rel}`, rel);
     }
     case "PdfExtract": {
       const { abs } = voicePath(vault, a.path, "read");
