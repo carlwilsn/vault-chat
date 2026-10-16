@@ -10,7 +10,7 @@ import { loadConfig, SERVER_VERSION, SERVER_REV } from "./config";
 import { registerCommands } from "./commands";
 import { initRing } from "./ring";
 import { loadKeyStore, hasKey, keychainCommands, saveKeys, keyNames } from "./keys";
-import { hostname } from "node:os";
+import { hostname, userInfo } from "node:os";
 import { getRing } from "./ring";
 
 function fatal(msg: string, code = 2): never {
@@ -173,6 +173,15 @@ async function main(): Promise<void> {
       ok: true,
       app: "vault-chat-server",
       name: hostname(),
+      // The account and the vaults' working copies: the laptop's terminal opens `ssh user@box` in one.
+      user: (() => {
+        try {
+          return userInfo().username;
+        } catch {
+          return process.env.USER || null;
+        }
+      })(),
+      vaults: vaultRefs().map((v) => ({ name: v.name, path: v.path })),
       hasKey: hasKey("api.openrouter"),
       keyNames: keyNames(),
       version: SERVER_VERSION,

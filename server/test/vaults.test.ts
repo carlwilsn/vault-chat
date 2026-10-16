@@ -240,6 +240,16 @@ describe("vault-scoped routes (the real server)", () => {
   const ids = async (path: string) => ((await (await fetch(srv.base + path)).json()).conversations ?? []).map((c: any) => c.id);
   const post = (path: string, body: unknown) => fetch(srv.base + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
+  it("health names the box's user and each vault's working copy (the laptop's terminal opens ssh there)", async () => {
+    const { userInfo } = await import("node:os");
+    const h = await (await fetch(srv.base + "/api/v1/health")).json();
+    expect(h.user).toBe(userInfo().username);
+    expect(h.vaultPath).toBe(main);
+    expect(h.vaults).toEqual(expect.arrayContaining([{ name: "school2", path: main }, { name: "physics", path: join(home, "physics") }]));
+    expect((await (await fetch(srv.base + "/api/v1/health?vault=physics")).json()).vaultPath).toBe(join(home, "physics"));
+    expect((await (await fetch(srv.base + "/api/v1/health?vault=nope")).json()).vaultPath).toBeNull();
+  });
+
   it("no vault is the main vault; ?vault= and X-VC-Vault scope the request; an unknown vault is 404", async () => {
     // (The app keeps a fresh empty chat of its own in the main vault.)
     expect(await ids("/conversations")).toContain("cmain");

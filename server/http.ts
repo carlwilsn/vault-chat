@@ -248,7 +248,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   }
 
   // ---- /api/v1 ----
-  if (path === "/api/v1/health" && method === "GET") return json(res, 200, await hooks.health());
+  if (path === "/api/v1/health" && method === "GET") {
+    // `vaultPath`: the working copy of the vault the request names (the laptop's
+    // terminal button opens an SSH shell there); null when this box has no such vault.
+    const want = url.searchParams.get("vault") || String(req.headers["x-vc-vault"] ?? "") || null;
+    const sc = hooks.vault ? hooks.vault(want) : !want || want === cfg.vaultName ? { path: cfg.vault } : null;
+    return json(res, 200, { ...(await hooks.health()), vaultPath: sc?.path ?? null });
+  }
   if (path === "/api/v1/sync" && method === "GET") return json(res, 200, hooks.syncStatus());
   if (path === "/api/v1/alert" && method === "POST") {
     const b = await jsonBody(req);
