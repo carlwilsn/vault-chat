@@ -462,6 +462,25 @@ export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: n
   return { status: 200, body: { ok: true, convId: id } };
 }
 
+/** SetProject {name}: the session's chat into that project, created when new (an empty name takes it out).
+ * The client names its chats beside the args: `convId` (the session's own voice
+ * conversation, once a line made it) and `fromConvId` (the chat it started from). */
+async function setProjectTool(d: VoiceDeps, body: any, a: Record<string, unknown>): Promise<string> {
+  const { readConv } = await import("./engine/convs");
+  const own = s(body?.convId);
+  const ownConv = own ? await readConv(d.vault, own).catch(() => null) : null;
+  const target = ownConv && ownConv.source === "voice" ? own : s(body?.fromConvId);
+  if (!target) return "Error: there is no chat to put into a project yet — say something first, then ask again.";
+  const want = s(a.name).trim();
+  const { setProject, projectsList } = await import("./projectRoutes");
+  const before = new Set(projectsList(d.vault).projects.map((p) => p.slug));
+  const r = await setProject(d.vault, { convId: target, project: want || null });
+  if ("error" in r) return `Error: ${r.error}`;
+  d.onWrite?.();
+  if (!r.project) return "Done — this chat is no longer in a project.";
+  return `Done — this chat is now in the project "${want}"${before.has(r.project) ? "" : " (a new project)"}.`;
+}
+
 /** POST /api/v1/voice/tool {name, args}. Never throws: errors are the result the agent hears. */
 export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: string }> {
   const name = s(body?.name);
@@ -471,7 +490,7 @@ export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: stri
   const a = args && typeof args === "object" ? args : {};
   let result: string;
   try {
-    result = await runTool(d, name, a);
+    result = name === "SetProject" ? await setProjectTool(d, body, a) : await runTool(d, name, a);
   } catch (e) {
     result = typeof e === "string" ? e : `Error: ${(e as Error)?.message ?? String(e)}`;
   }

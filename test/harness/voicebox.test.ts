@@ -19,12 +19,17 @@ const server = http.createServer((req, res) => {
     const body = raw ? JSON.parse(raw) : {};
     posts.push({ path: req.url ?? "", body });
     res.writeHead(200, { "content-type": "application/json" });
+    if ((req.url ?? "").startsWith("/conversation/project")) {
+      res.end(JSON.stringify({ ok: true, project: body.project ? String(body.project).toLowerCase().replace(/[^a-z0-9]+/g, "-") : null }));
+      return;
+    }
     res.end(JSON.stringify({ result: `box ran ${body.name}` }));
   });
 });
 
 // Only `vault` is box-connected.
 fake.setHandler("vault_box_config", ({ vault: v }) => (v === vault ? { box: boxUrl, vault: "v" } : null));
+fake.setHandler("box_get_json", async ({ url }) => ({ status: 200, body: String(url).includes("/projects") ? JSON.stringify({ projects: [{ slug: "thesis", name: "Thesis" }] }) : "{}" }));
 fake.setHandler("box_post_json", async ({ url, body }) => {
   const r = await fetch(url, { method: "POST", body, headers: { "content-type": "application/json" } });
   return { status: r.status, body: await r.text() };
@@ -159,4 +164,23 @@ test("the transcript is saved on the box in order, and the local thread moves to
   );
   assert.equal(useStore.getState().activeConversationId, "box-voice-1");
   assert.ok(!useStore.getState().conversations.some((c) => c.id === localId));
+});
+
+test("SetProject: voice files this chat under a project (new or existing) — local in box mode, through the box's /conversation/project", async () => {
+  const h = voice.buildClientToolHandlers((await boxVoiceTool(vault))!);
+  const id = useStore.getState().newConversation();
+  // A voice thread the box has (its lines were saved there).
+  const said = [{ role: "user" as const, content: "let's plan the whiteboard" }];
+  useStore.setState((st) => ({ messages: said, conversations: st.conversations.map((c) => (c.id === id ? { ...c, messages: said } : c)) }));
+  posts.length = 0;
+  const out = await h.SetProject({ name: "Whiteboard" });
+  assert.match(out, /now in the project "Whiteboard" \(a new project\)/);
+  assert.deepEqual(posts.map((p) => [p.path, p.body]), [["/conversation/project?vault=v", { convId: id, project: "Whiteboard" }]]);
+  assert.equal(useStore.getState().conversations.find((c) => c.id === id)?.project, "whiteboard");
+  // An existing one is just joined.
+  assert.match(await h.SetProject({ name: "Thesis" }), /now in the project "Thesis"\.$/);
+  // The agent is told it can, and AskAgent's project says what it does.
+  const defs = voice.CLIENT_TOOL_DEFINITIONS;
+  assert.ok(defs.some((d) => d.name === "SetProject"));
+  assert.match(defs.find((d) => d.name === "AskAgent")!.parameters.properties.project.description, /creates the project if it is new/);
 });

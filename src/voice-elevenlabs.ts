@@ -53,7 +53,10 @@ const AGENT_NAME = "vault-chat";
 
 // Box mode: the session's lines are saved on the box as they land (voiceBox.ts
 // voiceTranscriptMirror). Null when voice runs here.
-let transcriptMirror: { push: (m: ChatMessage) => unknown } | null = null;
+let transcriptMirror: { push: (m: ChatMessage) => unknown; id?: () => string; done?: () => Promise<unknown> } | null = null;
+// The live session's chats: its own thread (box mode: the box's id once the
+// first line made it) and the one it started from — SetProject's target.
+let voiceChats: { own: () => string | null; from: string | null } | null = null;
 // The box's vault root (absolute paths in the box's prompt) — mapped back to
 // this vault for ScrollTo.
 let boxVaultRoot: string | null = null;
@@ -140,7 +143,7 @@ const AGENT_ID_KEY = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v22-look";
+const AGENT_CONFIG_VERSION = "v23-setproject";
 const AGENT_VERSION_KEY = "vault_chat_elevenlabs_agent_config_version";
 // Signature of the per-vault custom tools baked into the cached agent. Custom
 // tools are part of the agent's tool schema (provisioned at create time), so a
@@ -266,7 +269,7 @@ const READ_CAP = 24_000;
 // / `constant_value`). Missing descriptions return HTTP 422 on
 // agent-create with a per-property loc trail. Make sure every leaf
 // property below has one.
-const CLIENT_TOOL_DEFINITIONS = [
+export const CLIENT_TOOL_DEFINITIONS = [
   {
     name: "Read",
     description:
@@ -694,10 +697,25 @@ const CLIENT_TOOL_DEFINITIONS = [
       type: "object" as const,
       properties: {
         task: { type: "string", description: "What the agent should do, in full — it does not hear this voice conversation." },
-        project: { type: "string", description: "Optional. The project the chat belongs to (its name)." },
+        project: {
+          type: "string",
+          description: "Optional. Starts the agent's work as a project with this name — creates the project if it is new (or files the work under the existing one).",
+        },
         conversationId: { type: "string", description: "Optional. Continue this agent chat instead of starting a new one." },
       },
       required: ["task"],
+    },
+  },
+  {
+    name: "SetProject",
+    description:
+      "Put this chat (the voice conversation; before anything was said, the chat the session started from) into a project, creating the project if it is new. Use when the user says to file this under a project, start a project, or move this to a project. An empty name takes it out of its project.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string", description: "The project's name (an existing one, or a new one to create)." },
+      },
+      required: ["name"],
     },
   },
   {
@@ -717,7 +735,7 @@ const CLIENT_TOOL_DEFINITIONS = [
 /** The built-in voice tools by name (custom vault tools are not among them). */
 export const BUILTIN_VOICE_TOOL_NAMES: string[] = CLIENT_TOOL_DEFINITIONS.map((t) => t.name);
 /** Tools that act on the viewer: they stay in the client even when the vault runs on a box. */
-export const LOCAL_VOICE_TOOLS = new Set(["ScrollTo", "ShowFile", "LookAtScreen"]);
+export const LOCAL_VOICE_TOOLS = new Set(["ScrollTo", "ShowFile", "LookAtScreen", "SetProject"]);
 /** A voice tool run elsewhere (the box): name + args -> the result the agent hears. */
 export type RemoteVoiceTool = (name: string, args: any) => Promise<string>;
 
@@ -896,6 +914,10 @@ export async function startElevenLabsSession(): Promise<void> {
   }
   const voiceConvId = ensureVoiceConversation();
   transcriptMirror = box ? voiceTranscriptMirror(box, voiceConvId, fromConvId) : null;
+  {
+    const mirror = transcriptMirror;
+    voiceChats = { own: () => mirror?.id?.() ?? voiceConvId, from: fromConvId };
+  }
   boxVaultRoot = boxSession?.vaultRoot ?? null;
   startViewportWatch();
 
@@ -973,6 +995,7 @@ ${shared}` : "");
           system: true,
         });
         transcriptMirror = null;
+        voiceChats = null;
         activeConversation = null;
         stopViewportWatch();
         // Flip the mic-button source of truth off so it matches
@@ -2050,6 +2073,9 @@ export function buildSystemPrompt(
     "- CreateNote saves a quick reminder when the user says 'remember', 'jot that down'. Keep notes brief.",
     "- ListNotes shows flagged items — only when the user asks for them; never to open a session. ResolveNote closes one when it's been addressed.",
     "",
+    "Projects:",
+    "- You CAN create and assign projects: SetProject {name} puts this chat into that project, creating it if it is new — no confirmation needed, the user asked you. Never say you have no project tool.",
+    "",
     "Web:",
     "- WebFetch when you have a URL — reads the page as text.",
     "- WebSearch for current info or to find a URL. Requires a Tavily key; if missing the tool returns an error you can relay to the user.",
@@ -2061,6 +2087,7 @@ export function buildSystemPrompt(
           "- Your tools run on the box, against its copy of the vault; your writes sync like any agent edit.",
           "- For long or heavy work (research, many edits, builds, anything over a minute), don't grind through it yourself: hand it to the agent with AskAgent (a full task description — it doesn't hear this call), tell the user it's on it, and offer to report back. Keep the conversationId.",
           "- When the user asks how it's going, or you offered to report back, call AgentStatus and summarise it in a sentence or two.",
+          "- To start the agent's work as a project, pass AskAgent's project (the project's name; a new name creates the project).",
           "",
         ].join("\n")
       : "",
@@ -2592,6 +2619,8 @@ function formatToolMarker(name: string, args: any): string {
     }
     case "AgentStatus":
       return `Checked on the agent`;
+    case "SetProject":
+      return String(args.name ?? "").trim() ? `Put this chat in the project "${String(args.name).trim()}"` : "Took this chat out of its project";
     case "Bash": {
       const cmd = String(args.command ?? "").trim().replace(/\s+/g, " ");
       const snip = cmd.length > 80 ? cmd.slice(0, 77) + "…" : cmd;
@@ -2613,6 +2642,26 @@ function logToolCall(name: string, args: any, result: string, where = ""): void 
     content: formatToolMarker(name, args) + where,
     system: true,
   });
+}
+
+/** SetProject: this session's chat into project `name` (created when new; "" = out of its project).
+ *  Its own thread once it has lines (box mode: the box's copy), else the chat it started from. */
+export async function setVoiceChatProject(name: unknown): Promise<string> {
+  const want = typeof name === "string" ? name.trim() : "";
+  await transcriptMirror?.done?.();
+  const s = useStore.getState();
+  const own = voiceChats?.own() ?? null;
+  const ownConv = own ? s.conversations.find((c) => c.id === own) : undefined;
+  const ownMsgs = ownConv ? (s.activeConversationId === own ? s.messages : ownConv.messages) : [];
+  const target = own && ownMsgs.some((m) => !m.system) ? own : (voiceChats?.from ?? own ?? s.activeConversationId);
+  if (!target) return "Error: there is no chat to put into a project.";
+  const p = await import("./projects");
+  const known = await p.listProjects(s.vaultPath).catch(() => []);
+  const r = await p.setConversationProject(target, want || null, known);
+  if (!r.ok) return `Error: ${r.error}`;
+  if (!r.slug) return "Done — this chat is no longer in a project.";
+  const isNew = !known.some((k) => k.slug === r.slug);
+  return `Done — this chat is now in the project "${want || r.slug}"${isNew ? " (a new project)" : ""}.`;
 }
 
 // Wraps a tool handler so the cockpit knows what's running. Sets
@@ -2950,6 +2999,7 @@ export function buildClientToolHandlers(
         ? `Showing ${name}. The image is attached — you can see it.`
         : `Showing ${name}, but the image couldn't be attached (${r}).`;
     }),
+    SetProject: withTracking("SetProject", (args: { name?: string }) => setVoiceChatProject(args?.name)),
     LookAtScreen: withTracking("LookAtScreen", async () => {
       const state = useStore.getState();
       const file = state.currentFile;

@@ -2023,7 +2023,7 @@ export function boot(): void {
     for (let i = 0; i < NUM_BARS; i++) { const decayed = vSmoothed[i] * DECAY; vSmoothed[i] = raw[i] > decayed ? raw[i] : decayed; const h = 0.16 + Math.min(1, vSmoothed[i]) * 0.84; vBars[i].style.transform = `scaleY(${h.toFixed(3)})`; }
     vRafId = requestAnimationFrame(vMeter);
   }
-  function vClientTools(toolNames) { const tools = {}; for (const name of toolNames || []) { tools[name] = async (params) => { try { const r = await api("/api/v1/voice/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, args: params || {} }) }); const j = await r.json(); return typeof j.result === "string" ? j.result : "error: " + (j.error || r.status); } catch (e) { return "error: " + String(e); } }; } return tools; }
+  function vClientTools(toolNames) { const tools = {}; for (const name of toolNames || []) { tools[name] = async (params) => { try { if (name === "SetProject") await vLines; /* this session's chats (SetProject's target): its voice conversation once a line made it, the chat it started from */ const r = await api("/api/v1/voice/tool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, args: params || {}, convId: vVoiceConv, fromConvId: vVoiceFrom }) }); const j = await r.json(); return typeof j.result === "string" ? j.result : "error: " + (j.error || r.status); } catch (e) { return "error: " + String(e); } }; } return tools; }
   // The session's lines are saved on the box as a voice conversation of their
   // own (POST /api/v1/voice/transcript): the first line makes it, the rest
   // name it; in order, one at a time. A new session makes a new one.

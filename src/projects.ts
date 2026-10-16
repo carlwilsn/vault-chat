@@ -193,7 +193,7 @@ export async function setConversationProject(
   useStore.setState((st) => ({
     conversations: st.conversations.map((c) => (c.id === convId ? { ...c, project: slug ?? undefined } : c)),
   }));
-  window.dispatchEvent(new CustomEvent("vc-projects-changed"));
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(new CustomEvent("vc-projects-changed"));
   return { ok: true, slug };
 }
 

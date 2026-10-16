@@ -293,6 +293,8 @@ describe("GET /api/v1/voice/session (ElevenLabs faked)", () => {
       expect(voice.activeVoiceSessions()).toBeGreaterThan(0);
       expect(out.body.toolNames).toEqual(expect.arrayContaining(["Read", "Write", "Bash", "AskAgent", "AgentStatus", "ScrollTo"]));
       expect(String(out.body.systemPrompt)).toContain("AskAgent");
+      expect(String(out.body.systemPrompt)).toMatch(/SetProject {name} puts this chat into that project/);
+      expect(out.body.toolNames).toContain("SetProject");
       expect(JSON.stringify(out.body)).not.toContain("el-canary-key");
       const create = calls.find((c) => c.url.includes("/agents/create"))!;
       expect(create.key).toBe("el-canary-key");
@@ -397,5 +399,34 @@ describe("a live voice session keeps the box busy (the updater waits on busy.run
     expect(voice.activeVoiceSessions()).toBe(1);
     await voice.voiceTranscript(deps, { role: "assistant", text: "x", ended: true });
     expect(voice.activeVoiceSessions()).toBe(0);
+  });
+});
+
+describe("SetProject (voice files its chat under a project)", () => {
+  it("puts the session's voice conversation into the project, creating it when new; before a line, the chat it started from", async () => {
+    const { readConv, createConv } = await import("../engine/convs");
+    const from = await createConv(vault, {}, "the chat voice started from");
+    const line = await voice.voiceTranscript(deps, { convId: null, fromConvId: from.id, role: "user", text: "make this a project called Whiteboard" });
+    const own = String(line.body.convId);
+    const out = await voice.voiceTool(deps, { name: "SetProject", args: { name: "Whiteboard" }, convId: own, fromConvId: from.id });
+    expect(out.result).toMatch(/now in the project "Whiteboard" \(a new project\)/);
+    expect((await readConv(vault, own))?.project).toBe("whiteboard");
+    expect(existsSync(join(vault, "agent-projects", "whiteboard"))).toBe(true);
+    // Again: an existing project is joined, not made twice.
+    expect((await voice.voiceTool(deps, { name: "SetProject", args: { name: "Whiteboard" }, convId: own })).result).not.toMatch(/new project/);
+    // Nothing said yet (no voice conversation): the chat the session started from.
+    await voice.voiceTool(deps, { name: "SetProject", args: { name: "Whiteboard" }, convId: null, fromConvId: from.id });
+    expect((await readConv(vault, from.id))?.project).toBe("whiteboard");
+    // An empty name takes it out.
+    expect((await voice.voiceTool(deps, { name: "SetProject", args: { name: "" }, convId: own })).result).toMatch(/no longer in a project/);
+    expect((await readConv(vault, own))?.project).toBeUndefined();
+    expect((await voice.voiceTool(deps, { name: "SetProject", args: { name: "X" } })).result).toMatch(/^Error: there is no chat/);
+  });
+
+  it("is in the box's session: the tool, and the prompt says voice can make projects", async () => {
+    const v = await import("../../src/voice-elevenlabs");
+    expect(v.BUILTIN_VOICE_TOOL_NAMES).toContain("SetProject");
+    const askAgent = v.CLIENT_TOOL_DEFINITIONS.find((t: any) => t.name === "AskAgent") as any;
+    expect(askAgent.parameters.properties.project.description).toMatch(/starts the agent's work as a project/i);
   });
 });
