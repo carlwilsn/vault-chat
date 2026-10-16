@@ -283,7 +283,7 @@ fn mission_zone_is_never_written_by_the_laptop() {
     assert_eq!(read(&r.laptop, ".vault-chat/conversations/m1.jsonl"), mission);
     // [phase 2] …nor any other conversation: the box authors every one.
     assert!(!r.laptop.join(".vault-chat/conversations/chat2.jsonl").exists());
-    assert_eq!(crate::vault_sync_role(v), "follower", "box mode = follower: no local scheduler/missions");
+    assert_eq!(crate::vault_sync_role_sync(v), "follower", "box mode = follower: no local scheduler/missions");
 
     // A zone-only conflict (a stale laptop commit that bypassed the sanitize)
     // resolves to the box's side instead of closing the gate.
@@ -403,7 +403,7 @@ fn without_sync_json_nothing_changes() {
     assert!(!rep.configured && !rep.committed);
     assert_eq!(git(&base, &["remote"]), "", "no box remote added");
     assert_ne!(git_code(&base, &["rev-parse", "--verify", "HEAD"]), 0, "nothing committed");
-    assert_eq!(crate::vault_sync_role(v.clone()), "writer");
+    assert_eq!(crate::vault_sync_role_sync(v.clone()), "writer");
     // Mission threads are still written (this machine may host missions).
     let lines = vec!["{\"id\":\"m9\",\"source\":\"mission\",\"messages\":[]}".to_string()];
     tauri::async_runtime::block_on(crate::conversations_write_all(v, lines)).unwrap();

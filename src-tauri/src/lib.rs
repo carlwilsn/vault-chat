@@ -5306,15 +5306,17 @@ async fn vault_sync_role(vault: String) -> String {
     // A vault whose sync.json names a box is a follower: the box hosts its
     // missions and fires its schedules; this machine relays to it. (A git
     // process: off the main thread.)
-    tauri::async_runtime::spawn_blocking(move || {
-        if is_sync_follower(&vault) || box_sync::box_config(&vault).is_some() {
-            "follower".to_string()
-        } else {
-            "writer".to_string()
-        }
-    })
-    .await
-    .unwrap_or_else(|_| "writer".into())
+    tauri::async_runtime::spawn_blocking(move || vault_sync_role_sync(vault))
+        .await
+        .unwrap_or_else(|_| "writer".into())
+}
+
+fn vault_sync_role_sync(vault: String) -> String {
+    if is_sync_follower(&vault) || box_sync::box_config(&vault).is_some() {
+        "follower".to_string()
+    } else {
+        "writer".to_string()
+    }
 }
 
 /// One box-sync cycle (sync.json mode): commit, fetch `box`, merge gate, push
