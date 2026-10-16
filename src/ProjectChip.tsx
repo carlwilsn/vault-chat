@@ -179,3 +179,17 @@ export function ProjectChip({ placement = "up", variant = "chip" }: { placement?
     </div>
   );
 }
+
+/** Fullscreen top bar: the chat's name, then " · <project>" only when the chat
+ *  is in one. Display only — projects are picked in the chats sidebar. */
+export function ChatTitle() {
+  const conv = useStore((s) => s.conversations.find((c) => c.id === s.activeConversationId));
+  const projects = useProjects();
+  const proj = conv?.project ? projectName(conv.project, projects) : "";
+  return (
+    <div data-el="chat-title" className="flex items-baseline gap-1.5 min-w-0 max-w-[60vw] text-[13px]">
+      <span className="font-semibold text-foreground truncate">{conv?.title || "New chat"}</span>
+      {proj && <span className="text-muted-foreground truncate">· {proj}</span>}
+    </div>
+  );
+}

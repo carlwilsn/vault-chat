@@ -934,10 +934,10 @@ export function ChatPane() {
 
   return (
     <div className="h-full flex flex-col bg-card border-l border-border relative">
-      {((chipAt === "top" && !isPopout) || chatFullscreen || totalCost) && (
+      {((chipAt === "top" && !isPopout && !chatFullscreen) || totalCost) && (
         <div className="shrink-0 px-3 pt-2">
           <div className="max-w-[820px] mx-auto flex items-center">
-            {chatFullscreen ? <div className="flex-1 flex justify-center"><ProjectChip placement="down" variant="title" /></div> : chipAt === "top" && !isPopout && <ProjectChip placement="down" />}
+            {chipAt === "top" && !isPopout && !chatFullscreen && <ProjectChip placement="down" />}
             {totalCost && (
               <span className="ml-auto text-[11px] text-muted-foreground tabular-nums" data-el="total-cost" title="What this conversation has cost so far">
                 {totalCost}
