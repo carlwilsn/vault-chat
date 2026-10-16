@@ -21,8 +21,11 @@ export default defineConfig({
     target: "es2022",
     // KaTeX fonts stay files (cached), not data: URIs.
     assetsInlineLimit: 0,
-    // react + KaTeX + the app in one chunk; ElevenLabs is a lazy chunk.
-    chunkSizeWarningLimit: 700,
+    // react + KaTeX + the markdown pipeline (the desktop's remark/rehype chain,
+    // shared via src/mdPipeline.ts: ~930 kB, ~290 kB gzipped) + the app in
+    // one chunk; ElevenLabs is a lazy chunk. (Not split further:
+    // phone/preview.mjs inlines the build into one page.)
+    chunkSizeWarningLimit: 1000,
   },
   server: { port: 1430, strictPort: true },
 });

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
 import { isUnreadableAsText } from "./fileKind";
 import { openUrl, isExternalHref } from "./opener";
+import { localPathFromUrl } from "./mdPipeline";
 
 function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
@@ -40,7 +41,9 @@ export async function tryOpenLink(href: string | null | undefined): Promise<bool
 
   const { vaultPath, currentFile, setCurrentFile } = useStore.getState();
 
-  const cleaned = href.replace(/^file:\/\/\/?/, "").split("#")[0].split("?")[0];
+  // Percent-escapes decoded: `[x](My%20Note.md)` (and a wiki link's
+  // `[[My Note]]`) names the file "My Note.md".
+  const cleaned = localPathFromUrl(href);
   let target: string | null = null;
   if (/^([a-zA-Z]:[\/\\]|[\/\\])/.test(cleaned)) {
     target = cleaned;
@@ -52,15 +55,40 @@ export async function tryOpenLink(href: string | null | undefined): Promise<bool
 
   if (!target) return true;
 
-  try {
-    const content = isUnreadableAsText(target)
-      ? ""
-      : await invoke<string>("read_text_file", { path: target });
-    setCurrentFile(target, content);
-  } catch (err) {
-    console.error("[link] failed to open:", target, err);
+  // A link that doesn't resolve where it points (a wiki link `[[Note]]` to a
+  // note in another folder, a path relative to some other note) opens the
+  // vault file it names, matched by its path's tail.
+  const candidates = [target];
+  const byName = findVaultFileByTail(cleaned);
+  if (byName && byName !== target) candidates.push(byName);
+  for (const path of candidates) {
+    try {
+      const content = isUnreadableAsText(path)
+        ? ""
+        : await invoke<string>("read_text_file", { path });
+      setCurrentFile(path, content);
+      return true;
+    } catch (err) {
+      if (path === candidates[candidates.length - 1]) console.error("[link] failed to open:", target, err);
+    }
   }
   return true;
+}
+
+/** The vault file whose path ends with `rel` (`Note.md`, `lectures/Note.md`),
+ *  preferring the shortest path; null if none. */
+export function findVaultFileByTail(rel: string): string | null {
+  const tail = rel.replace(/\\/g, "/").replace(/^(\.\.?\/)+/, "").toLowerCase();
+  if (!tail) return null;
+  let best: string | null = null;
+  for (const f of useStore.getState().files) {
+    if (f.is_dir) continue;
+    const p = f.path.replace(/\\/g, "/").toLowerCase();
+    if (p === tail || p.endsWith("/" + tail)) {
+      if (!best || f.path.length < best.length) best = f.path;
+    }
+  }
+  return best;
 }
 
 // Centralized anchor-click handler. Any click on an <a> anywhere in the

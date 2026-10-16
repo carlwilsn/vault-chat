@@ -199,6 +199,39 @@
   .prose-md .katex-display { @apply my-4; }
   .prose-md img { @apply rounded-md my-3 max-w-full; }
 
+  /* What every markdown surface shares (mdPipeline.ts renders them all):
+     long words and URLs wrap, a wide equation or table scrolls in place
+     instead of pushing the pane sideways, task items in a reply carry no
+     bullet, footnotes read as notes, and an invalid formula shows its
+     source in a quiet monospace. */
+  .prose-md, .prose-chat, .prose-user { overflow-wrap: break-word; }
+  .prose-md .katex-display, .prose-chat .katex-display, .prose-user .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 2px 0;
+  }
+  .prose-md .tablewrap, .prose-chat .tablewrap, .prose-user .tablewrap { overflow-x: auto; max-width: 100%; }
+  .prose-md .tablewrap > table, .prose-chat .tablewrap > table { overflow-wrap: normal; }
+  .prose-chat li.task-list-item, .prose-user li.task-list-item { list-style: none; margin-left: -1.1rem; }
+  .prose-chat li.task-list-item > input[type="checkbox"], .prose-user li.task-list-item > input[type="checkbox"] {
+    margin: 0 6px 0 0;
+    vertical-align: -2px;
+  }
+  .prose-md .footnotes, .prose-chat .footnotes {
+    @apply mt-6 pt-2 border-t border-border/60 text-[0.9em] text-muted-foreground;
+  }
+  .prose-md .footnotes .sr-only, .prose-chat .footnotes .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  .prose-md kbd, .prose-chat kbd {
+    @apply px-1 py-px rounded border border-border bg-muted text-[0.85em] font-mono;
+  }
+  .prose-md details > summary, .prose-chat details > summary { cursor: pointer; }
+  .prose-md .katex-error, .prose-chat .katex-error, .prose-user .katex-error {
+    @apply font-mono text-[0.9em] opacity-80;
+  }
+
   /* GFM task list — remark-gfm wraps the <li> with class
      `task-list-item` and inserts a leading <input type="checkbox">.
      We remove the default bullet on those <li>s but keep a real

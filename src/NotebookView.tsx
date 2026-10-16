@@ -1,14 +1,9 @@
 import { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
-import { preprocessMarkdownMath } from "./mdMath";
+import { Markdown } from "./Markdown";
 import { Eye } from "lucide-react";
 import "katex/dist/katex.min.css";
-
-const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
 
 type NbCell =
   | { cell_type: "markdown"; source: string | string[] }
@@ -91,12 +86,7 @@ function Cell({ cell, lang }: { cell: NbCell; lang: string }) {
   if (cell.cell_type === "markdown") {
     return (
       <div className="prose-md">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
-        >
-          {preprocessMarkdownMath(joinSource(cell.source))}
-        </ReactMarkdown>
+        <Markdown source={joinSource(cell.source)} profile="chat" />
       </div>
     );
   }
@@ -176,12 +166,7 @@ function renderMime(mime: string, value: string) {
   if (mime === "text/markdown") {
     return (
       <div className="prose-md">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
-        >
-          {preprocessMarkdownMath(value)}
-        </ReactMarkdown>
+        <Markdown source={value} profile="chat" />
       </div>
     );
   }

@@ -1,11 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
-import rehypeHighlight from "rehype-highlight";
-import { preprocessMarkdownMath } from "./mdMath";
+import { StreamingMarkdown } from "./Markdown";
 import { Check, X, Loader2, CornerDownLeft, MessageSquare, StickyNote, Camera } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
@@ -23,8 +18,6 @@ import {
 import { loadVaultNorthStar } from "./meta";
 import { recordActivity, sharedContextFor, sharedContextText } from "./activity";
 import { editSummary } from "./activityCore";
-
-const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
 
 export type InlineEditMode = "edit" | "ask";
 
@@ -975,12 +968,7 @@ export function InlineEditPrompt({
                 </div>
               )}
               {result && (
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[[rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
-                >
-                  {preprocessMarkdownMath(result)}
-                </ReactMarkdown>
+                <StreamingMarkdown text={result} />
               )}
               {streaming && result && (
                 <Loader2 className="inline h-3 w-3 ml-1 animate-spin text-muted-foreground align-[-2px]" />

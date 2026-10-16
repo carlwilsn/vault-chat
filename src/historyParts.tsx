@@ -4,14 +4,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import remarkBreaks from "remark-breaks";
-import rehypeRaw from "rehype-raw";
-import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import { FilePlus, FileText, FileX, Pencil } from "lucide-react";
-import { preprocessMarkdownMath } from "./mdMath";
+import { Markdown } from "./Markdown";
 import { fileKind } from "./fileKind";
 import { cn } from "./lib/utils";
 import {
@@ -23,8 +18,6 @@ import {
   type HistoryEntry,
   type NoteVersion,
 } from "./history";
-
-const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
 
 export function StatusGlyph({ status }: { status: string }) {
   if (status === "A") return <FilePlus className="h-3 w-3 text-emerald-500 shrink-0" />;
@@ -69,12 +62,7 @@ export function HistoricalPreview({ path, content, deleted }: { path: string; co
   if (kind === "markdown") {
     return (
       <div className="prose-chat px-4 py-3">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
-          rehypePlugins={[rehypeRaw, [rehypeKatex, KATEX_OPTIONS], rehypeHighlight]}
-        >
-          {preprocessMarkdownMath(content)}
-        </ReactMarkdown>
+        <Markdown source={content} profile="note" />
       </div>
     );
   }

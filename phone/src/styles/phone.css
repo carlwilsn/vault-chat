@@ -227,6 +227,16 @@ body.page-notes #pNotes{display:flex}
 .md th{font-weight:600;background:var(--fill);white-space:nowrap}
 .md tbody tr:nth-child(even) td{background:rgba(255,255,255,.02)}
 .md hr{border:none;border-top:1px solid var(--line);margin:.7em 0}
+/* The rest of what the shared markdown pipeline (src/mdPipeline.ts) emits. */
+.md h4,.md h5,.md h6{font-size:1em;margin:.5em 0 .25em}
+.md li.task-list-item{list-style:none;margin-left:-1.2em}
+.md li.task-list-item>input[type=checkbox]{margin:0 .4em 0 0;vertical-align:-1px;accent-color:var(--link)}
+.md .footnotes{margin-top:.8em;padding-top:.3em;border-top:1px solid var(--line);font-size:.9em;color:var(--dim)}
+.md .footnotes .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+.md kbd{border:1px solid var(--line);border-radius:4px;padding:0 4px;font:11.5px ui-monospace,Menlo,Consolas,monospace;background:var(--panel)}
+.md details>summary{cursor:pointer}
+.md .katex-error{font:12px ui-monospace,Menlo,Consolas,monospace;opacity:.85}
+.md .tablewrap>table{overflow-wrap:normal}
 
 /* North Star proposal card (```plan block) */
 .plancard{background:var(--fill);border:1px solid var(--line-2);border-radius:13px;padding:12px 13px;margin:3px 0}
