@@ -1585,7 +1585,7 @@ function LiveToolTicker({ tools }: { tools: LiveTool[] }) {
   const done = tools.filter((t) => t.result).length;
   const running = !latest.result;
   return (
-    <div className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground overflow-hidden">
+    <div data-el="live-tool" className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground overflow-hidden">
       <Wrench className={cn("h-3 w-3 shrink-0", running && "animate-pulse")} />
       <span
         key={latest.id}
@@ -1636,7 +1636,7 @@ function ReasoningStream({ text }: { text: string }) {
     }
   }, [text, open]);
   return (
-    <div className="rounded-md border border-border/40 bg-muted/30 text-[11.5px]">
+    <div data-el="live-thinking" className="rounded-md border border-border/40 bg-muted/30 text-[11.5px]">
       <button
         onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-1.5 w-full px-2.5 py-1 text-muted-foreground hover:text-foreground"

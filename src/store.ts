@@ -2236,10 +2236,26 @@ export const useStore = create<State>((set) => ({
         convRuntime = { ...convRuntime, [to]: convRuntime[from]! };
         delete convRuntime[from];
       }
+      // The box's run may have streamed under its id before the rekey (its
+      // events land in convRuntime while the chat is still the local id): the
+      // open chat picks that up now instead of waiting for the next event.
+      const rt = s.activeConversationId === from ? convRuntime[to] : undefined;
+      if (rt) {
+        convRuntime = { ...convRuntime };
+        delete convRuntime[to];
+      }
       return {
         conversations,
         convRuntime,
         ...(s.activeConversationId === from ? { activeConversationId: to } : {}),
+        ...(rt
+          ? {
+              busy: true,
+              streamingText: rt.streamingText || s.streamingText,
+              streamingReasoning: rt.streamingReasoning || s.streamingReasoning,
+              liveTools: rt.liveTools?.length ? rt.liveTools : s.liveTools,
+            }
+          : {}),
       };
     });
     if (useStore.getState().activeConversationId === to) {
