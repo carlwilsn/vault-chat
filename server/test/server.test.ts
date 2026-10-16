@@ -85,6 +85,10 @@ describe("/poll sequence across a restart", () => {
       srv = await startServer({ home, vault, secrets });
       const fresh = await (await fetch(srv.base + "/poll?after=latest")).json();
       expect(fresh.next).toBeGreaterThanOrEqual(cursor);
+      // Each process says who it is: a client sees the restart and resyncs whole.
+      expect(typeof first.boot).toBe("string");
+      expect(fresh.boot).not.toBe(first.boot);
+      expect(got.boot).toBe(first.boot);
       await kill();
       const t0 = Date.now();
       const after = await (await fetch(`${srv.base}/poll?after=${cursor}`)).json();

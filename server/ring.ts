@@ -6,6 +6,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { renameRetry } from "./atomic";
 import { dirname } from "node:path";
+import { randomBytes } from "node:crypto";
 
 const RING_MAX = 300;
 const BLOCK = 1000;
@@ -15,6 +16,10 @@ export class EventRing {
   private next: number;
   private reservedUpTo: number;
   private waiters = new Set<() => void>();
+  /** This process's id: every /poll answer carries it, so a client sees a
+   * restart (the events of the turn the restart cut were never in this ring)
+   * and resyncs whole instead of trusting its cursor. */
+  readonly boot = randomBytes(6).toString("hex");
 
   constructor(private floorPath: string) {
     let floor = 0;

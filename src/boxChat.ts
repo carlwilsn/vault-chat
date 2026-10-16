@@ -334,6 +334,13 @@ function writeBoxCache(vault: string): void {
 class BoxChatSession {
   stopped = false;
   private cursor: number | null = null;
+  /** The box process the cursor belongs to (/poll's `boot`); a new one = it restarted. */
+  private boot: string | null = null;
+  /** Set when the stream broke (unreachable, a restart, a sequence reset): the next head resyncs whole. */
+  private stale = false;
+  /** Per conversation: the newest detail request; an older answer landing later is dropped. */
+  private detailGen = new Map<string, number>();
+  private detailRetries = new Map<string, number>();
   private known = new Set<string>();
   private pending = new Map<string, string[]>();
   private detailTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -394,30 +401,42 @@ class BoxChatSession {
         if (this.cursor === null) {
           const head = await httpGet(this.link, "/poll?after=latest", 15_000);
           this.cursor = Number(head?.next) || 0;
-          await this.syncAll();
+          if (typeof head?.boot === "string") this.boot = head.boot;
+          const whole = this.stale;
+          this.stale = false;
+          await this.syncAll(whole);
           this.setReach(true);
           backoff = 1000;
         }
-        if (Date.now() - this.lastList > LIST_REFRESH_MS) await this.syncList();
+        if (Date.now() - this.lastList > LIST_REFRESH_MS) {
+          await this.syncList();
+          // The safety net under the events: a thread this laptop still shows
+          // running is re-read from the box, so a missed end can't freeze it.
+          for (const id of this.runningHere()) this.scheduleDetail(id, 0);
+        }
         const r = await httpGet(this.link, `/poll?after=${this.cursor}`, POLL_TIMEOUT_MS);
         if (!this.live()) return;
         this.setReach(true);
         backoff = 1000;
         const next = Number(r?.next);
+        // Another box process than the cursor's (it restarted between two
+        // polls), or a sequence that went backwards (the ring lost its state):
+        // the events in between are gone — resync everything, these included.
+        const restarted = typeof r?.boot === "string" && this.boot !== null && r.boot !== this.boot;
+        if (restarted || (Number.isFinite(next) && next < (this.cursor ?? 0))) {
+          this.cursor = null;
+          this.stale = true;
+          continue;
+        }
         const events: any[] = Array.isArray(r?.events) ? r.events : [];
         for (const ev of events) this.onEvent(ev);
-        if (Number.isFinite(next)) {
-          if (next < (this.cursor ?? 0)) {
-            // The ring lost its state: resync everything.
-            this.cursor = null;
-            continue;
-          }
-          this.cursor = next;
-        }
+        if (Number.isFinite(next)) this.cursor = next;
       } catch (e) {
         if (!this.live()) return;
         this.setReach(false, String((e as Error)?.message ?? e));
         this.cursor = null;
+        // Whatever happened on the box meanwhile reached no event here.
+        this.stale = true;
         await new Promise<void>((res) => {
           const t = setTimeout(res, backoff);
           this.wake = () => {
@@ -436,19 +455,56 @@ class BoxChatSession {
     this.wake?.();
   }
 
-  private async syncAll(): Promise<void> {
+  /** Conversations this laptop shows as running (or with live state left over). */
+  private runningHere(): string[] {
+    const s = useStore.getState();
+    const ids = new Set<string>();
+    for (const c of s.conversations) if (c.status === "running" && this.known.has(c.id)) ids.add(c.id);
+    for (const id of Object.keys(s.convRuntime)) if (this.known.has(id)) ids.add(id);
+    if (s.busy && s.activeConversationId && this.known.has(s.activeConversationId)) ids.add(s.activeConversationId);
+    return [...ids];
+  }
+
+  /** `whole`: the stream broke (the box restarted, was unreachable, or its
+   *  sequence reset). The live state this laptop holds came from a stream that
+   *  is gone: drop it, and re-read every conversation it showed running. */
+  private async syncAll(whole = false): Promise<void> {
+    const reread = new Set<string>(whole ? this.runningHere() : []);
+    if (whole) this.clearLive();
     await this.syncList();
     try {
       const st = await httpGet(this.link, "/status", 10_000);
       const runs: any[] = Array.isArray(st?.runs) ? st.runs : [];
       for (const r of runs) {
-        if (typeof r?.convId === "string") this.scheduleDetail(r.convId, 0);
+        if (typeof r?.convId === "string") reread.add(r.convId);
       }
     } catch {
       /* /status is optional for the chat */
     }
     const active = useStore.getState().activeConversationId;
-    if (active && this.known.has(active)) this.scheduleDetail(active, 0);
+    if (active && this.known.has(active)) reread.add(active);
+    for (const id of reread) this.scheduleDetail(id, 0);
+  }
+
+  /** Forget the streamed reply-so-far, tools and runtime; the details re-read
+   *  next carry the truth (status, plan, messages). */
+  private clearLive(): void {
+    this.streams.clear();
+    useStore.setState((s) => {
+      const patch: Record<string, unknown> = {};
+      const mine = Object.keys(s.convRuntime).filter((id) => this.known.has(id));
+      if (mine.length) {
+        const rt = { ...s.convRuntime };
+        for (const id of mine) delete rt[id];
+        patch.convRuntime = rt;
+      }
+      if (s.streamingText || s.streamingReasoning || s.liveTools.length) {
+        patch.streamingText = "";
+        patch.streamingReasoning = "";
+        patch.liveTools = [];
+      }
+      return patch;
+    });
   }
 
   async syncList(): Promise<void> {
@@ -515,19 +571,35 @@ class BoxChatSession {
       id,
       setTimeout(() => {
         this.detailTimers.delete(id);
-        void this.fetchDetail(id).catch(() => {});
+        void this.fetchDetail(id).then(
+          () => this.detailRetries.delete(id),
+          () => {
+            // A failed re-read would leave the thread as it last was (a box
+            // just back from a restart answers slowly): try again, a few times.
+            const n = (this.detailRetries.get(id) ?? 0) + 1;
+            if (n > 4 || !this.live()) return void this.detailRetries.delete(id);
+            this.detailRetries.set(id, n);
+            this.scheduleDetail(id, 1000 * 2 ** n);
+          },
+        );
       }, ms),
     );
   }
 
   async fetchDetail(id: string): Promise<void> {
+    // Answers can land out of order (a slow one asked before the turn ended
+    // lands after the fresh one): only the newest request's answer applies.
+    const gen = (this.detailGen.get(id) ?? 0) + 1;
+    this.detailGen.set(id, gen);
     let d: BoxDetail;
     try {
       d = await httpGet(this.link, `/conversation?id=${encodeURIComponent(id)}&n=${DETAIL_N}&full=1`, 15_000);
     } catch (e) {
       if ((e as { status?: number }).status === 404) return; // not on the box (yet)
+      if (this.detailGen.get(id) !== gen) return; // a newer request owns it
       throw e;
     }
+    if (this.detailGen.get(id) !== gen) return;
     if (!this.live() || !d || typeof d !== "object") return;
     this.known.add(id);
     this.applyDetail(id, d);

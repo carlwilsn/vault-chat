@@ -17,6 +17,10 @@ class FakeBox {
   convs = new Map<string, Conv>();
   ring: { seq: number; ev: any }[] = [];
   seq = 100;
+  /** The process id /poll answers carry (server/ring.ts `boot`). */
+  boot = "boot-1";
+  /** The next /conversation answer is the state at its request, sent this many ms later. */
+  delayNextDetail = 0;
   posts: { path: string; body: any }[] = [];
   /** Every request's route and the vault it named (`?vault=`). */
   seen: { route: string; vault: string | null }[] = [];
@@ -29,6 +33,16 @@ class FakeBox {
 
   emit(ev: any) {
     this.ring.push({ seq: ++this.seq, ev });
+    for (const w of [...this.waiters]) w();
+  }
+
+  /** The box process restarts: a new boot id, its ring starts over at `seq`
+   *  (lower = the sequence reset; higher = the persisted floor), and the
+   *  old process's events are gone. */
+  restart(seq: number) {
+    this.boot = `boot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    this.ring = [];
+    this.seq = seq;
     for (const w of [...this.waiters]) w();
   }
 
@@ -69,13 +83,14 @@ class FakeBox {
         switch (route) {
           case "GET /poll": {
             const a = u.searchParams.get("after");
-            if (a === "latest") return send(200, { next: this.seq, events: [] });
+            if (a === "latest") return send(200, { next: this.seq, events: [], boot: this.boot });
             const after = Number(a);
+            if (after > this.seq) return send(200, { next: this.seq, events: [], boot: this.boot });
             const deadline = Date.now() + 1500;
             for (;;) {
               const evs = this.ring.filter((e) => e.seq > after);
               if (evs.length || Date.now() > deadline || this.down) {
-                return send(200, { next: evs.length ? evs[evs.length - 1]!.seq : after, events: evs.map((e) => e.ev) });
+                return send(200, { next: evs.length ? evs[evs.length - 1]!.seq : after, events: evs.map((e) => e.ev), boot: this.boot });
               }
               await new Promise<void>((r) => {
                 const t = setTimeout(r, 100);
@@ -103,7 +118,11 @@ class FakeBox {
             const base = { id: c.id, title: c.title, source: c.source, status: c.status, runStartedAt: c.runStartedAt ?? null };
             if (this.full && u.searchParams.get("full") === "1") {
               const { messages, ...meta } = c;
-              return send(200, { ...base, full: true, meta, messages });
+              const body = JSON.parse(JSON.stringify({ ...base, full: true, meta, messages }));
+              const delay = this.delayNextDetail;
+              this.delayNextDetail = 0;
+              if (delay) await new Promise((r) => setTimeout(r, delay));
+              return send(200, body);
             }
             return send(200, {
               ...base,
@@ -377,6 +396,81 @@ test("a long reply streams whole, with its thinking and the box's context; meta 
   box.finish("box1", "another chart");
   await waitFor("answered alone", () => !S().busy && S().messages.at(-1)?.content === "another chart");
   assert.ok(!S().messages.some((m) => /can't be sent to the box/.test(m.content)));
+});
+
+/** A turn on box1 with a three-step plan, running and streaming on the laptop. */
+async function planTurn(text: string) {
+  S().selectConversation("box1");
+  await chat.sendMessage(text);
+  await waitFor("running", () => S().busy && S().streamingText === "Working on it");
+  const c = box.conv("box1") as any;
+  c.state = "running";
+  c.todos = [
+    { content: "one", status: "in_progress" },
+    { content: "two", status: "pending" },
+    { content: "three", status: "pending" },
+  ];
+  box.emit({ type: "meta", convId: "box1" });
+  await waitFor("plan 1/3", () => active().todos?.length === 3 && active().todos?.[0]?.status === "in_progress");
+  return c;
+}
+
+/** The turn ends on the box with no event this laptop will ever see. */
+function finishUnseen(c: any, text: string) {
+  c.messages.push({ role: "assistant", content: text });
+  c.todos = c.todos.map((t: any) => ({ ...t, status: "completed" }));
+  c.state = "done";
+  c.verdict = "pass";
+  c.status = "idle";
+  c.runStartedAt = undefined;
+  c.lastActivityAt = Date.now();
+}
+
+const converged = (text: string) => () =>
+  !S().busy &&
+  active().status === "idle" &&
+  S().messages.at(-1)?.content === text &&
+  active().state === "done" &&
+  !!active().todos?.every((t) => t.status === "completed") &&
+  S().streamingText === "" &&
+  S().liveTools.length === 0 &&
+  !S().convRuntime.box1;
+
+test("the box restarts between two polls (no error seen, a new process): the laptop resyncs whole", async () => {
+  const c = await planTurn("job across a quick restart");
+  // The self-update: SIGTERM, a new process at once. Its ring starts above the
+  // old floor, and the turn resumed and finished there — the old process's
+  // stream (and its end) never reached this laptop.
+  finishUnseen(c, "all three done after the restart");
+  box.restart(box.seq + 1000);
+  await waitFor("converged", converged("all three done after the restart"), 10000);
+});
+
+test("the box restarts while unreachable and its sequence resets: the laptop converges on the final state", async () => {
+  const c = await planTurn("job across a long restart");
+  box.down = true;
+  await waitFor("unreachable", () => S().boxChat?.reachable === false, 15000);
+  finishUnseen(c, "finished while you were away");
+  box.restart(3);
+  box.down = false;
+  await waitFor("converged", converged("finished while you were away"), 20000);
+  assert.equal(S().boxChat?.reachable, true);
+});
+
+test("a slow re-read from before the end lands after the end: the older answer is dropped", async () => {
+  const c = await planTurn("job with a slow read");
+  // The meta re-read is slow (a box just back up) and carries the running state…
+  box.delayNextDetail = 1200;
+  c.todos = [{ content: "one", status: "completed" }, { content: "two", status: "in_progress" }, { content: "three", status: "pending" }];
+  box.emit({ type: "meta", convId: "box1" });
+  await new Promise((r) => setTimeout(r, 200));
+  // …and the turn ends before it lands.
+  finishUnseen(c, "ended before the slow read");
+  box.emit({ type: "message", convId: "box1", role: "assistant", content: "ended before the slow read", tools: [] });
+  box.emit({ type: "status", convId: "box1", status: "idle" });
+  await waitFor("converged", converged("ended before the slow read"), 5000);
+  await new Promise((r) => setTimeout(r, 1500)); // the slow, stale answer has landed by now
+  assert.ok(converged("ended before the slow read")(), "the stale running snapshot did not win");
 });
 
 test("box unreachable: composer state says why, a send is refused honestly, it recovers", async () => {

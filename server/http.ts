@@ -535,12 +535,13 @@ const legacyVoice = new Map<string, { id: string | null; at: number }>();
 async function poll(res: ServerResponse, url: URL, want: string, main: string): Promise<void> {
   const ring = getRing();
   const raw = url.searchParams.get("after") ?? "";
-  if (raw === "" || raw === "latest") return json(res, 200, `{"next":${ring.latest()},"events":[]}`);
+  const boot = JSON.stringify(ring.boot);
+  if (raw === "" || raw === "latest") return json(res, 200, `{"next":${ring.latest()},"events":[],"boot":${boot}}`);
   let after = Number.parseInt(raw, 10);
   if (!Number.isFinite(after)) after = ring.latest();
   // A cursor from the future (state lost): hand back the real cursor at once
   // so the client resyncs instead of waiting forever.
-  if (after > ring.latest()) return json(res, 200, `{"next":${ring.latest()},"events":[]}`);
+  if (after > ring.latest()) return json(res, 200, `{"next":${ring.latest()},"events":[],"boot":${boot}}`);
   const deadline = Date.now() + 25_000;
   let closed = false;
   res.on("close", () => (closed = true));
@@ -548,7 +549,7 @@ async function poll(res: ServerResponse, url: URL, want: string, main: string): 
     const got = ring.after(after);
     const events = got.events.filter((l) => eventVault(l, main) === want);
     if (events.length || Date.now() >= deadline || closed) {
-      return json(res, 200, `{"next":${got.next},"events":[${events.join(",")}]}`);
+      return json(res, 200, `{"next":${got.next},"events":[${events.join(",")}],"boot":${boot}}`);
     }
     after = got.next;
     await ring.wait(Math.min(1000, deadline - Date.now()));
