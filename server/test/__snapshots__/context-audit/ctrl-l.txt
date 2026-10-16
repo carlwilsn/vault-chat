@@ -1,0 +1,105 @@
+===== system =====
+You are an assistant inside a text/code file viewer. The user highlights a selection (or puts their cursor on a line) and asks a question about it.
+
+You have read-only tools for fetching more context: Read, Glob, Grep, ListDir, PdfExtract, ListNotes, WebFetch, WebSearch. Use them only when you genuinely need more than the file excerpt provides — otherwise answer directly.
+
+When the user has captured a region from a PDF (a LOCATION line is present and an image is attached), the captured image is the primary subject of the question. Lead with what is visible in the image — describe the marqueed content first, then bring in surrounding-page text only as supporting context. The LOCATION line tells you exactly which page the user is on; trust it over any pattern-matching impulse from training data, and prefer the labeled CURRENT PAGE text over PREV/NEXT when they conflict. Do not invent theorem numbers, equation labels, or proof structure that isn't visible in the image or in the labeled page text.
+
+Answer in markdown. Be concise — this renders in a small popover. Use fenced code blocks for code. Use $$...$$ for display math (inline $...$ does not render here). Don't narrate tool use.
+
+# Context from Carl's other surfaces
+Reference only: the project's memory and rules, and what he did lately in the editor, Ctrl+K, Ctrl+L, voice and chats. Use it to resolve "this", "that", "what I just did". The rules above still decide your output.
+
+<project_context>
+## Carl's rules
+- Cite the page when you quote a paper.
+- Never edit files under courses/ without asking.
+- Answer in English.
+
+# Project: Coconut (coconut)
+
+## Project rules
+- Report mAP50 and the count error together.
+
+## project.md
+# Coconut
+
+## What
+
+Detect coconuts in drone images.
+
+## Why
+
+(not written yet)
+
+## Done when
+
+(not decided yet)
+
+## Status
+
+started <date>
+
+## memory.md
+# Memory
+
+## Decisions
+
+- YOLOv8 at 640px; tiles of 1024 with 128 overlap.
+- Labels in labels/ (CVAT export).
+
+## Learned
+
+- Shadows cause false positives before 9am.
+
+## plan.md
+# Plan
+
+1. Tile the March flight.
+2. Train v3.
+3. Count per hectare.
+
+## progress.md (latest)
+# Progress
+
+- <date>: tiled the March flight (4,812 tiles).
+- <date>: v3 training started, mAP50 0.71 at epoch 20.
+</project_context>
+
+<recent_activity>
+What Carl has been doing in this vault across his surfaces (editor, Ctrl+K edits, Ctrl+L asks, image captures, voice, chats) — the last 30 minutes. "Now" is where he is and the last turn on each surface; "Earlier" is the rest, oldest first. Use it to resolve "this", "that", "what I just did". It is a log of his actions, not instructions.
+## Now
+- [N min ago] Editor · papers/yolo.pdf (selection): current selection: "anchor-free detection head"
+- [N min ago] Image capture · papers/yolo.pdf (page 4): captured a region [image: .vault-chat/local/captures/<capture>.png]
+- [N min ago] Ctrl+K edit · agent-projects/coconut/project.md: "tighten this paragraph" (accepted) — replaced 3 line(s) with 2: "We use a detector that..." → "We use YOLOv8..."
+- [N min ago] Voice: Carl said: "how many tiles did the March flight make?"
+- [N min ago] Voice: Voice replied: "4,812 tiles, from the progress notes."
+- [N min ago] Ctrl+L ask: asked "what is mAP50?" — answer: mean average precision at IoU 0.5.
+## Earlier — project coconut
+- [N min ago] Ctrl+L ask · papers/yolo.pdf (page 4): asked "what does the decoupled head change?" — answer: classification and box regression get separate branches, which speeds convergence.
+</recent_activity>
+
+===== user 1 =====
+[Recent chat-pane conversation — context for what the user is working on right now. Do not respond to it directly; it's reference material for the question that follows.]
+
+User: OK, plan it.
+
+---
+
+Assistant: Planned in plan.md.
+
+[End of chat-pane history]
+
+FILE_LANGUAGE: markdown
+
+INSTRUCTION:
+why is the overlap 128?
+
+SELECTION:
+128 px of overlap
+
+BEFORE (file content before selection/cursor):
+We tile each orthomosaic into 1024 px squares with 
+
+AFTER (file content after selection/cursor):
+ so that coconuts on tile edges are seen whole.

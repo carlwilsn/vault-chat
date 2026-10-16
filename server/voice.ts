@@ -22,7 +22,7 @@ import { readConversationObjects } from "./commands/conversations";
 import { keychainCommands } from "./keys";
 import { runGit } from "./git";
 import { conversationDetail, dispatchVoiceTool } from "./phoneData";
-import { activitySummary, appendActivity } from "./activity";
+import { activitySummary, appendActivity, projectContextFor } from "./activity";
 import { voiceLineEntry, voiceToolEntry, clean } from "../src/activityCore";
 
 export type VoiceDeps = {
@@ -447,9 +447,20 @@ export async function voiceTool(d: VoiceDeps, body: any): Promise<{ result: stri
   return { result };
 }
 
+/** The voice builder's marker for "this thread's recent turns are in the prompt" (src/voice-elevenlabs buildSystemPrompt). */
+const THREAD_HISTORY_MARK = "Recent conversation context (earlier turns of THIS same thread";
+export const hasThreadHistory = (prompt: string) => prompt.includes(THREAD_HISTORY_MARK);
+
+/** The voice session's prompt: the builder's, then the shared stream's block. */
+export function composeVoicePrompt(base: string, shared: string): string {
+  return shared ? `${base}\n\n${shared}` : base;
+}
+
 /** The voice session's share of the shared stream: what Carl did lately, and
- * the last exchange of the chat the session was started from. */
-export async function voiceContextBlock(d: VoiceDeps, fromConvId: string | null): Promise<string> {
+ * the last exchange of the chat the session was started from (unless
+ * `exchange: false` — the prompt carries that chat's turns already). The
+ * stream leaves that chat's own exchange out either way. */
+export async function voiceContextBlock(d: VoiceDeps, fromConvId: string | null, o: { exchange?: boolean } = {}): Promise<string> {
   const parts: string[] = [];
   let project: string | null = null;
   if (fromConvId) {
@@ -458,7 +469,7 @@ export async function voiceContextBlock(d: VoiceDeps, fromConvId: string | null)
       const c = await readConv(d.vault, fromConvId);
       if (c) {
         if (typeof c.project === "string" && c.project) project = c.project;
-        if (c.source !== "voice") {
+        if (c.source !== "voice" && o.exchange !== false) {
           const msgs = (c.messages ?? []).filter((m: any) => !m.hidden && !m.system && s(m.content).trim());
           const lastUser = [...msgs].reverse().find((m: any) => m.role === "user");
           const lastAgent = [...msgs].reverse().find((m: any) => m.role === "assistant");
@@ -477,6 +488,9 @@ export async function voiceContextBlock(d: VoiceDeps, fromConvId: string | null)
       /* no conversation */
     }
   }
+  // Carl's rules and the project's memory: binding on voice as on every surface (the builder loads AGENTS.md-style files only).
+  const proj = await projectContextFor(d.vault, project);
+  if (proj) parts.unshift(proj);
   const act = activitySummary(d.vault, { project, excludeConv: fromConvId });
   if (act) parts.push(act);
   return parts.join("\n\n");
@@ -527,8 +541,9 @@ export async function voiceSession(convId: string | null, d: VoiceDeps): Promise
       body: { error: err ? `ElevenLabs agent could not be provisioned (HTTP ${err.status})` : "voice is not ready on the box (no ElevenLabs key — the laptop's Settings sends it)" },
     };
   }
-  const shared = await voiceContextBlock(d, convId).catch(() => "");
-  const systemPrompt = shared ? `${ctx.systemPrompt}\n\n${shared}` : ctx.systemPrompt;
+  // The builder already carries this thread's recent turns when it found them: then not its last exchange again.
+  const shared = await voiceContextBlock(d, convId, { exchange: !hasThreadHistory(ctx.systemPrompt) }).catch(() => "");
+  const systemPrompt = composeVoicePrompt(ctx.systemPrompt, shared);
   const signedUrl = await v.getSignedUrl(ctx.elKey, ctx.agentId, other ? `vault:${d.name ?? d.vault}` : undefined);
   if (!signedUrl) return { status: 502, body: { error: "ElevenLabs refused a signed URL" } };
   return {

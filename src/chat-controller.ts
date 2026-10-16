@@ -12,6 +12,7 @@ import { scheduledDeliveryText } from "./scheduleDelivery";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import { registerRun, unregisterRun, abortRun } from "./runRegistry";
 import { activeWindow, COMPACT_THRESHOLD, windowFor } from "./chatContext";
+import { chatExchangeEntry } from "./activityCore";
 import {
   useStore,
   type ChatMessage,
@@ -488,6 +489,12 @@ export async function sendMessage(
             store.appendMessageToConversation(targetConvId, assistantMsg);
             store.setConversationStatus(targetConvId, "idle");
           }
+        }
+        // The shared stream: this chat's latest exchange (Ctrl+L, Ctrl+K and voice read it).
+        if (targetConvId) {
+          const convNow = useStore.getState().conversations.find((c) => c.id === targetConvId) ?? targetConv;
+          const entry = chatExchangeEntry({ convId: targetConvId, title: convNow?.title, user: trimmed || (attachments?.length ? "(image)" : ""), agent: acc, project: convNow?.project ?? null });
+          void import("./activity").then((a) => a.recordActivity(vault, entry)).catch(() => undefined);
         }
         // The run is over — drop its replay buffer so a later return to
         // this thread shows the finished message, not stale streaming.

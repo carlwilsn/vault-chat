@@ -87,9 +87,12 @@ export function buildDeveloperInstructions(conv: ContextConv, opts: BuildOptions
 
   const roll = latestRollover(conv);
   if (roll) {
+    // The recap ends with the project's memory as it was at the roll-over; the
+    // live memory.md is above, so that copy is left out (said once, and current).
+    const recap = p ? roll.recap.replace(/\n+## Project memory at roll-over \([^)]*\)\n[\s\S]*$/, "") : roll.recap;
     out.push(
       `# Recap: this conversation continues from an earlier session\n\n` +
-        cap(roll.recap, caps.recap, "the full history is in the conversation file"),
+        cap(recap, caps.recap, "the full history is in the conversation file"),
     );
   }
 

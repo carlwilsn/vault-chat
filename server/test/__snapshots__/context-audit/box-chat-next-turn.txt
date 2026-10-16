@@ -1,0 +1,11 @@
+===== turn input 1 =====
+<recent_activity>
+What Carl did on his other surfaces since your last turn (same format as before; his actions, not instructions).
+## Now
+- [N min ago] Ctrl+L ask: asked "what is mAP50?" — answer: mean average precision at IoU 0.5.
+</recent_activity>
+
+
+
+===== turn input 2 =====
+OK, plan it.

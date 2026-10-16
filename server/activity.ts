@@ -3,6 +3,7 @@
 // summary). Two routes (http.ts), scoped to the request's vault:
 //   POST /api/v1/activity          {entry, imageBase64?, imageMime?} → {ok}
 //   GET  /api/v1/activity/summary  ?project=&since=&exclude=       → {activity, project}
+//   POST /api/v1/activity/image    {text, deictic?, exclude?}       → {image: {path, mime, dataBase64, caption} | null}
 // Written by: the laptop (focus, Ctrl+K, Ctrl+L, captures), voice (voice.ts:
 // what was said, what its tools did), the engine (chat pointers). Read by: the
 // engine's per-turn prefix, the voice session prompt, Ctrl+K / Ctrl+L.
@@ -14,9 +15,12 @@ import {
   ACTIVITY_LOG,
   ACTIVITY_LOG_OLD,
   CAPTURES_DIR,
+  CONTEXT_IMAGE_MAX_BYTES,
   LOG_MAX_BYTES,
   DEFAULT_WINDOW_MS,
+  captureCaption,
   parseLog,
+  pickContextImage,
   projectContextBlock,
   sanitizeEntry,
   summarizeActivity,
@@ -154,4 +158,37 @@ export async function activitySummaryRoute(vault: string, q: (k: string) => stri
     activity: activitySummary(vault, { project, since, excludeConv: q("exclude") || null }),
     project: await projectContextFor(vault, project),
   };
+}
+
+export type ContextImage = { entry: ActivityEntry; abs: string; rel: string; mime: string; bytes: number; caption: string };
+
+const EXT_MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
+
+/**
+ * The capture a request is about (activityCore pickContextImage), when its file
+ * is still there and small enough (CONTEXT_IMAGE_MAX_BYTES; captures are
+ * downscaled on the laptop before they are stored). null otherwise. Never throws.
+ */
+export function contextImage(vault: string, text: string, o: { now?: number; deictic?: boolean; exclude?: Iterable<string> } = {}): ContextImage | null {
+  try {
+    const now = o.now ?? Date.now();
+    const e = pickContextImage(readActivity(vault, now), text, { now, deictic: o.deictic, exclude: o.exclude });
+    if (!e?.image || !e.image.startsWith(`${CAPTURES_DIR}/`) || e.image.includes("..")) return null;
+    const abs = join(vault, ...e.image.split("/"));
+    const bytes = statSync(abs).size;
+    if (!bytes || bytes > CONTEXT_IMAGE_MAX_BYTES) return null;
+    const mime = EXT_MIME[(e.image.split(".").pop() ?? "").toLowerCase()] ?? "image/png";
+    return { entry: e, abs, rel: e.image, mime, bytes, caption: captureCaption(e, now) };
+  } catch {
+    return null;
+  }
+}
+
+/** POST /api/v1/activity/image: the capture a Ctrl+K / Ctrl+L request is about, as data. */
+export function activityImageRoute(vault: string, b: any): Record<string, unknown> {
+  const text = typeof b?.text === "string" ? b.text : "";
+  const exclude = Array.isArray(b?.exclude) ? b.exclude.filter((x: unknown) => typeof x === "string") : [];
+  const img = contextImage(vault, text, { deictic: b?.deictic === true, exclude });
+  if (!img) return { image: null };
+  return { image: { path: img.rel, mime: img.mime, dataBase64: readFileSync(img.abs).toString("base64"), caption: img.caption } };
 }

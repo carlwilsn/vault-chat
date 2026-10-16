@@ -61,6 +61,8 @@ export type CapturedExtra = {
   imageDataUrl: string;
   sourcePath?: string;
   sourceAnchor?: string | null;
+  /** Says what the image is (a capture the request refers to); replaces the source caption. */
+  caption?: string;
 };
 
 // Emit a user-turn content array with text + captioned image parts.
@@ -74,22 +76,19 @@ function makeUserContent(text: string, images: CapturedExtra[]): any {
   const parts: unknown[] = [{ type: "text", text }];
   for (const img of images) {
     const src = img.sourcePath ? img.sourcePath.split("/").pop() : null;
-    const caption = src
-      ? `Captured region from ${src}${img.sourceAnchor ? ` (${img.sourceAnchor})` : ""}:`
-      : "Captured region:";
+    const caption = img.caption
+      ? img.caption
+      : src
+        ? `Captured region from ${src}${img.sourceAnchor ? ` (${img.sourceAnchor})` : ""}:`
+        : "Captured region:";
     parts.push({ type: "text", text: caption });
     parts.push({ type: "image", image: new URL(img.imageDataUrl) });
   }
   return parts;
 }
 
-export async function* runInlineEdit(
-  p: InlineEditParams,
-): AsyncGenerator<string, void, void> {
-  const spec = findModel(p.modelId) ?? findModel(DEFAULT_MODEL_ID);
-  if (!spec) throw new Error(`unknown model: ${p.modelId}`);
-  const model = buildModel(spec, p.apiKey);
-
+/** Exactly what a Ctrl+K request sends (the system prompt and the messages). */
+export function buildInlineEditRequest(p: InlineEditParams): { system: string; messages: ModelMessage[] } {
   const messages: ModelMessage[] = [];
   const prior = p.priorTurns ?? [];
   const extras: CapturedExtra[] = p.extraImages ?? [];
@@ -109,10 +108,19 @@ export async function* runInlineEdit(
     // Single-turn case; attach extras to the only user message.
     messages.push({ role: "user", content: makeUserContent(firstContent, extras) });
   }
+  return { system: withSharedContext(prependNorthStar(SYSTEM, p.northStar), p.sharedContext), messages };
+}
 
+export async function* runInlineEdit(
+  p: InlineEditParams,
+): AsyncGenerator<string, void, void> {
+  const spec = findModel(p.modelId) ?? findModel(DEFAULT_MODEL_ID);
+  if (!spec) throw new Error(`unknown model: ${p.modelId}`);
+  const model = buildModel(spec, p.apiKey);
+  const { system, messages } = buildInlineEditRequest(p);
   const result = streamText({
     model,
-    system: withSharedContext(prependNorthStar(SYSTEM, p.northStar), p.sharedContext),
+    system,
     messages,
     abortSignal: p.abortSignal,
   });
@@ -242,6 +250,32 @@ export async function* runInlineAsk(
     if (allTools[name]) tools[name] = allTools[name];
   }
 
+  const { system, messages } = buildInlineAskRequest(p);
+  const result = streamText({
+    model,
+    system,
+    messages,
+    tools: tools as any,
+    stopWhen: stepCountIs(8),
+    abortSignal: p.abortSignal,
+  });
+
+  for await (const part of result.fullStream) {
+    if (part.type === "text-delta") {
+      if ("text" in part && typeof part.text === "string") {
+        yield { kind: "text", delta: part.text };
+      }
+    } else if (part.type === "tool-call") {
+      yield { kind: "thinking" };
+    } else if (part.type === "error") {
+      const err = (part as { error?: { message?: string } }).error;
+      yield { kind: "error", message: err?.message ?? String(err) };
+    }
+  }
+}
+
+/** Exactly what a Ctrl+L request sends (the system prompt and the messages; the tools are the read-only set). */
+export function buildInlineAskRequest(p: InlineAskParams): { system: string; messages: ModelMessage[] } {
   const messages: ModelMessage[] = [];
   const prior = p.priorTurns ?? [];
   const firstPrompt = prior[0]?.prompt ?? p.prompt;
@@ -293,27 +327,7 @@ export async function* runInlineAsk(
     });
   }
 
-  const result = streamText({
-    model,
-    system: withSharedContext(prependNorthStar(ASK_SYSTEM, p.northStar), p.sharedContext),
-    messages,
-    tools: tools as any,
-    stopWhen: stepCountIs(8),
-    abortSignal: p.abortSignal,
-  });
-
-  for await (const part of result.fullStream) {
-    if (part.type === "text-delta") {
-      if ("text" in part && typeof part.text === "string") {
-        yield { kind: "text", delta: part.text };
-      }
-    } else if (part.type === "tool-call") {
-      yield { kind: "thinking" };
-    } else if (part.type === "error") {
-      const err = (part as { error?: { message?: string } }).error;
-      yield { kind: "error", message: err?.message ?? String(err) };
-    }
-  }
+  return { system: withSharedContext(prependNorthStar(ASK_SYSTEM, p.northStar), p.sharedContext), messages };
 }
 
 // Build the first-turn user content for a PDF marquee ask. Layout:
