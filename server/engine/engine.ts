@@ -283,6 +283,8 @@ export class Engine {
   private activitySeen = new Map<string, number>();
   /** Captures already sent to each conversation's model (in memory): one is never attached twice. */
   private imagesGiven = new Map<string, Set<string>>();
+  /** The rules each thread last received (its instructions at start, or a turn's prefix): a turn repeats them only when they changed. In memory; after a restart a resumed thread gets them once more. */
+  private rulesSent = new Map<string, string>();
   private jobLogs = new Map<string, string[]>(); // convId → its StartJob logs
 
   constructor(private d: EngineDeps) {
@@ -664,7 +666,10 @@ export class Engine {
       let body = input;
       const prior = (conv as any).__legacyHistory as string | undefined;
       if (prior) body = `${prior}\n\n${input}`;
-      const rules = rulesPrefixForTurn(conv as any);
+      // The rules are in the thread already (its instructions, or an earlier prefix): only a change goes in front of the turn.
+      const rulesNow = rulesPrefixForTurn(conv as any);
+      const rules = this.rulesSent.get(threadId) === rulesNow ? "" : rulesNow;
+      this.rulesSent.set(threadId, rulesNow);
       if (opts.context) body = `${opts.context}\n\n${body}`;
       const activity = kind === "user" ? this.activityPrefix(conv) : "";
       const texts = [rules, activity, kind === "wake" ? input : body].filter(Boolean);
@@ -729,6 +734,7 @@ export class Engine {
       subagents,
     });
     this.byThread.set(threadId, conv.id);
+    this.rulesSent.set(threadId, rulesPrefixForTurn(conv as any)); // the instructions carry them in full
     // History from before this thread (a legacy chat, or a retry on a fresh thread): hand it over once.
     const old = conv.messages.filter((m) => !m.hidden && !m.system && (m.content ?? "").trim()).slice(0, -1);
     if (old.length && !conv.messages.some((m: any) => m.rollover)) {
@@ -1090,6 +1096,7 @@ export class Engine {
       if (typeof r.costUsd === "number") c.costUsd = round((c.costUsd ?? 0) + r.costUsd);
     });
     if (from) this.byThread.delete(from);
+    this.activitySeen.delete(conv.id); // the new thread has seen nothing: its first turn gets the whole block
     this.log(`rolled ${conv.id} over (from ${from}); next turn starts a new thread`);
   }
 

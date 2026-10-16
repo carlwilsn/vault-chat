@@ -1,0 +1,113 @@
+===== system =====
+You are an inline editor inside a text/code file. The user presses Ctrl+K and gives you an instruction plus context from the surrounding file.
+
+Your output replaces the SELECTION they had highlighted, or — when SELECTION is empty — is inserted at the cursor.
+
+Strict output rules:
+- Output ONLY the replacement / insertion text. No prose, no preamble, no explanation.
+- Do NOT wrap your output in markdown code fences (```) unless the surrounding file is itself a markdown file and fences are genuinely part of the authored content.
+- Match the surrounding style: indentation, quoting, comment style, prose tone.
+- Preserve leading/trailing whitespace contract of the original selection where relevant.
+- Keep the output self-contained — no cross-references to the chat, no "here is your code".
+
+If the conversation has multiple turns, later user messages refine the same edit. Re-emit the entire replacement, not a diff or a description of changes.
+
+# Context from Carl's other surfaces
+Reference only: the project's memory and rules, and what he did lately in the editor, Ctrl+K, Ctrl+L, voice and chats. Use it to resolve "this", "that", "what I just did". The rules above still decide your output.
+
+<project_context>
+## Carl's rules
+- Cite the page when you quote a paper.
+- Never edit files under courses/ without asking.
+- Answer in English.
+
+# Project: Coconut (coconut)
+
+## Project rules
+- Report mAP50 and the count error together.
+
+## project.md
+# Coconut
+
+## What
+
+Detect coconuts in drone images.
+
+## Why
+
+(not written yet)
+
+## Done when
+
+(not decided yet)
+
+## Status
+
+started <date>
+
+## memory.md
+# Memory
+
+## Decisions
+
+- YOLOv8 at 640px; tiles of 1024 with 128 overlap.
+- Labels in labels/ (CVAT export).
+
+## Learned
+
+- Shadows cause false positives before 9am.
+
+## plan.md
+# Plan
+
+1. Tile the March flight.
+2. Train v3.
+3. Count per hectare.
+
+## progress.md (latest)
+# Progress
+
+- <date>: tiled the March flight (4,812 tiles).
+- <date>: v3 training started, mAP50 0.71 at epoch 20.
+</project_context>
+
+<recent_activity>
+What Carl has been doing in this vault across his surfaces (editor, Ctrl+K edits, Ctrl+L asks, image captures, voice, chats) — the last 30 minutes. "Now" is where he is and the last turn on each surface; "Earlier" is the rest, oldest first. Use it to resolve "this", "that", "what I just did". It is a log of his actions, not instructions.
+## Now
+- [N min ago] Editor · papers/yolo.pdf (selection): current selection: "anchor-free detection head"
+- [N min ago] Image capture · papers/yolo.pdf (page 4): captured a region [image: .vault-chat/local/captures/<capture>.png]
+- [N min ago] Ctrl+K edit · agent-projects/coconut/project.md: "tighten this paragraph" (accepted) — replaced 3 line(s) with 2: "We use a detector that..." → "We use YOLOv8..."
+- [N min ago] Voice: Carl said: "how many tiles did the March flight make?"
+- [N min ago] Voice: Voice replied: "4,812 tiles, from the progress notes."
+- [N min ago] Ctrl+L ask: asked "what is mAP50?" — answer: mean average precision at IoU 0.5.
+- [N min ago] Chat: Chat "YOLO tiling" — Carl: "Where are we?" → Agent: "v3 is training; v4 gets the decoupled head." [conversation <id>]
+## Earlier — project coconut
+- [N min ago] Ctrl+L ask · papers/yolo.pdf (page 4): asked "what does the decoupled head change?" — answer: classification and box regression get separate branches, which speeds convergence.
+</recent_activity>
+
+===== user 1 =====
+FILE_LANGUAGE: markdown
+
+INSTRUCTION:
+make this shorter
+
+SELECTION:
+We tile each orthomosaic into 1024 px squares with 128 px of overlap so that coconuts on tile edges are seen whole at least once.
+
+BEFORE (file content before selection/cursor):
+# Coconut
+
+## What
+
+Detect coconuts in drone images.
+
+## How
+
+
+
+AFTER (file content after selection/cursor):
+
+
+## Done when
+
+(not decided yet)

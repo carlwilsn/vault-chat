@@ -1970,7 +1970,7 @@ function voiceNowNote(): string {
   }
 }
 
-function buildSystemPrompt(
+export function buildSystemPrompt(
   state: ReturnType<typeof useStore.getState>,
   customHeader: string,
   northStar: string,
