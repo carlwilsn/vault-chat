@@ -15,8 +15,8 @@ export function withSharedContext(system: string, shared?: string): string {
   if (!t) return system;
   return (
     `${system}\n\n# Context from Carl's other surfaces\n` +
-    `Reference only: the project's memory and rules, and what he did lately in the editor, Ctrl+K, Ctrl+L, voice and chats. ` +
-    `Use it to resolve "this", "that", "what I just did". The rules above still decide your output.\n\n${t}`
+    `Carl's rules in it are binding, like the rules above. The rest (project memory, what he did lately in the editor, Ctrl+K, Ctrl+L, voice and chats) is context: ` +
+    `use it to resolve "this", "that", "what I just did". Your output format is still set by the instructions above.\n\n${t}`
   );
 }
 
