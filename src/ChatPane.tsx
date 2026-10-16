@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import { Markdown, StreamingMarkdown } from "./Markdown";
 import { localPathFromUrl } from "./mdPipeline";
-import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare, Mic, Paperclip, Scan, AtSign } from "lucide-react";
+import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { usePending, type PendingKind } from "./pendingInput";
 import { voiceImageMime } from "./voiceImages";
@@ -910,9 +910,15 @@ export function ChatPane() {
     s.setEditPromptCapturePending(false);
     s.setNoteCapturePending(false);
     s.setVoiceCapturePending(false);
+    // Popout: the main window runs the marquee and bounces the image back.
+    if (isPopout) {
+      dispatchChatAction({ kind: "startCapture" });
+      return;
+    }
     setChatPaneCapturePending(true);
-    // App.tsx shows the open file over the chat and starts the marquee there.
-    window.dispatchEvent(new CustomEvent("vc-fullscreen-capture"));
+    // Fullscreen has no viewer: App.tsx shows the open file over the chat and
+    // starts the marquee there. Otherwise the marquee runs on the viewer.
+    window.dispatchEvent(new CustomEvent(chatFullscreen ? "vc-fullscreen-capture" : "vc-marquee-toggle"));
   };
   const mentionVaultFile = () => {
     setPlusOpen(false);
@@ -1172,7 +1178,7 @@ export function ChatPane() {
               </div>
             )}
             <div className="relative flex items-end">
-              {chatFullscreen && (
+              {(
                 <div className="absolute left-2 bottom-2 z-10">
                   <button
                     onClick={() => setPlusOpen((o) => !o)}
@@ -1216,7 +1222,7 @@ export function ChatPane() {
                 placeholder={archived ? ARCHIVED_THREAD : boxDown ? BOX_UNREACHABLE : !ready ? "Open a vault first" : busy ? "Enter to steer · Tab to queue · Esc to stop" : "Ask anything, or / for commands…"}
                 disabled={!ready}
                 rows={1}
-                className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2", chatFullscreen && voiceMode ? "!pr-32" : "!pr-20", chatFullscreen ? "!pl-11" : "!pl-3")}
+                className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2", chatFullscreen && voiceMode ? "!pr-32" : "!pr-20", "!pl-11")}
               />
               <div className="absolute right-3 bottom-2 flex items-center gap-1">
                 {chatFullscreen && <InlineVoiceWaves />}
@@ -1234,48 +1240,6 @@ export function ChatPane() {
                     <Mic className="h-3.5 w-3.5" strokeWidth={voiceMode ? 2.5 : 2} />
                   </button>
                 )}
-                {!busy && !chatFullscreen && (() => {
-                  // Union of what's open in main's panes — synced to
-                  // the popout via state broadcast. If any visible
-                  // file is marquee-capable, enable Capture.
-                  const paths: string[] = [];
-                  if (currentFile) paths.push(currentFile);
-                  for (const p of panes) if (p.file) paths.push(p.file);
-                  const canMarquee = paths.some((p) => {
-                    const k = fileKind(p).kind;
-                    return k === "pdf" || k === "html" || k === "image";
-                  });
-                  return (
-                    <button
-                      onClick={() => {
-                        if (!canMarquee) return;
-                        // In popout: route via chat:action; main
-                        // fires the marquee on its own window and
-                        // bounces the resulting image back.
-                        if (isPopout) {
-                          dispatchChatAction({ kind: "startCapture" });
-                          return;
-                        }
-                        const s = useStore.getState();
-                        s.setEditPromptCapturePending(false);
-                        s.setNoteCapturePending(false);
-                        setChatPaneCapturePending(true);
-                        window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
-                      }}
-                      disabled={!ready || !canMarquee}
-                      className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
-                      title={
-                        canMarquee
-                          ? isPopout
-                            ? "Capture region from main window's current viewer"
-                            : "Capture region from the current viewer"
-                          : "Open a PDF, HTML file, or image to capture a region"
-                      }
-                    >
-                      <Camera className="h-3.5 w-3.5" />
-                    </button>
-                  );
-                })()}
                 {/* Two states for the trailing button group:
                     - idle: just the Send arrow.
                     - busy: just the Stop square (Send is hidden entirely). */}
