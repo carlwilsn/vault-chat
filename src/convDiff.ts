@@ -9,6 +9,16 @@ import { StreamWire } from "./streamWire";
 const MSG_CAP = 20_000;
 const REASONING_TAIL = 2_000;
 
+/** What a live tool line names beside the tool ("Write dog.svg"): its path, command, pattern or url — never its content. */
+export function toolArg(input: unknown): string {
+  if (!input || typeof input !== "object") return "";
+  for (const k of ["path", "file_path", "command", "pattern", "url"]) {
+    const v = (input as any)[k];
+    if (typeof v === "string" && v) return v.split("\n")[0]!.slice(0, 200);
+  }
+  return "";
+}
+
 /** The slice of the store a diff reads. The foreground fields exist only in the app's store. */
 export type DiffState = {
   conversations: Conversation[];
@@ -117,12 +127,14 @@ export function makeConvDiff(
     for (const [id, rt] of Object.entries(s.convRuntime)) {
       const full = rt.streamingText ?? "";
       const reasoning = (rt.streamingReasoning ?? "").slice(-REASONING_TAIL);
-      const tool = rt.liveTools?.length ? rt.liveTools[rt.liveTools.length - 1]!.name : "";
+      const lastTool = rt.liveTools?.length ? rt.liveTools[rt.liveTools.length - 1]! : null;
+      const tool = lastTool?.name ?? "";
+      const arg = lastTool ? toolArg(lastTool.input) : "";
       // The live thought-by-thought timeline for this run - the phone renders it
       // as a growing list so a thread opened mid-run shows it working step by step.
       const steps = (rt.liveSteps ?? []).slice(-40);
       const lastAction = steps.length ? steps[steps.length - 1]!.action : "";
-      const sig = [tool, full.length, full.slice(-200), reasoning.length, reasoning.slice(-80), steps.length, lastAction, rt.lastContext ?? 0].join("|");
+      const sig = [tool, arg, full.length, full.slice(-200), reasoning.length, reasoning.slice(-80), steps.length, lastAction, rt.lastContext ?? 0].join("|");
       if ((full || reasoning || tool || steps.length) && lastStreamSent.get(id) !== sig) {
         lastStreamSent.set(id, sig);
         broadcast({
@@ -130,6 +142,7 @@ export function makeConvDiff(
           convId: id,
           ...wire.next(id, full),
           tool,
+          ...(arg ? { toolArg: arg } : {}),
           steps,
           ...(reasoning ? { reasoning } : {}),
           ...(rt.lastContext ? { context: rt.lastContext } : {}),

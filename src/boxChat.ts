@@ -716,7 +716,7 @@ class BoxChatSession {
       case "runtime": {
         if (!id) return;
         this.setLive(id, e);
-        this.setRuntime(id, this.streamText(id, e), String(e.tool ?? ""), e.steps, Number(e.startedAt) || undefined, false, typeof e.reasoning === "string" ? e.reasoning : undefined);
+        this.setRuntime(id, this.streamText(id, e), String(e.tool ?? ""), e.steps, Number(e.startedAt) || undefined, false, typeof e.reasoning === "string" ? e.reasoning : undefined, typeof e.toolArg === "string" ? e.toolArg : undefined);
         return;
       }
       case "message": {
@@ -816,8 +816,10 @@ class BoxChatSession {
     startedAt: number | undefined,
     clearOnly = false,
     reasoning?: string,
+    toolArg?: string,
   ): void {
-    const liveTools: LiveTool[] = tool ? [{ id: `box-live-${tool}`, name: tool, input: {} }] : [];
+    // toolArg: the call's path/command (src/convDiff.ts), shown beside the name ("Write dog.svg").
+    const liveTools: LiveTool[] = tool ? [{ id: `box-live-${tool}`, name: tool, input: toolArg ? { path: toolArg } : {} }] : [];
     const s = useStore.getState();
     if (!clearOnly && !s.conversations.some((c) => c.id === id && c.status === "running")) this.setStatus(id, true);
     if (s.activeConversationId === id) {

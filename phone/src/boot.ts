@@ -1010,7 +1010,7 @@ export function boot(): void {
       // The whole reply, rebuilt from its pieces (offset + delta); before the
       // first keyframe of a stream joined midway, its tail.
       const st = X.applyStream(prev && prev.stream, d);
-      liveByConv.set(d.convId, { running: true, stream: st, text: st.whole || !st.text || typeof d.offset !== "number" ? st.text : "…" + st.text, tool: d.tool || "", startedAt: d.startedAt ?? (prev && prev.startedAt) ?? null });
+      liveByConv.set(d.convId, { running: true, stream: st, text: st.whole || !st.text || typeof d.offset !== "number" ? st.text : "…" + st.text, tool: d.tool ? d.tool + (d.toolArg ? " " + d.toolArg : "") : "", startedAt: d.startedAt ?? (prev && prev.startedAt) ?? null });
       updateConvDot();
     } else if (d.type === "status" && d.convId) {
       // The dot sets (convRunning/convUnseen) track YOUR chats only — the
@@ -1033,7 +1033,7 @@ export function boot(): void {
       updateConvDot();
     }
 
-    if (d.type === "runtime" && d.convId === convId) { running = true; streamText = liveByConv.get(convId)?.text || ""; streamTool = d.tool || ""; streamStartedAt = d.startedAt ?? streamStartedAt; renderStream(); setHeader(); }
+    if (d.type === "runtime" && d.convId === convId) { running = true; streamText = liveByConv.get(convId)?.text || ""; streamTool = d.tool ? d.tool + (d.toolArg ? " " + d.toolArg : "") : ""; streamStartedAt = d.startedAt ?? streamStartedAt; renderStream(); setHeader(); }
     else if (d.type === "message" && d.convId === convId) {
       markSeen(convId);
       if (d.role === "user" && lastSentText !== null && d.content === lastSentText) { lastSentText = null; return; }

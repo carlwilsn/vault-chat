@@ -173,6 +173,8 @@ interface PollEvent {
   convId?: string;
   text?: string;
   tool?: string;
+  /** The live tool's path/command, shown beside its name (src/convDiff.ts). */
+  toolArg?: string;
   steps?: TimelineStep[];
   status?: string;
   /** two-lane chat lifecycle: start | stream | end (coder: + activity) */
