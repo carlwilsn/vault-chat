@@ -273,14 +273,13 @@ export const phase3Scenarios: Scenario[] = [
     open: [...open("p-evaltable"), pause(), tryClick(CHIP), pause(1200), tryClick("button", /^New chat in BitNet 160M/), pause(2000)],
   },
   {
-    id: "p3-chat-chip-footer",
-    title: "Project chip — option B: beside the model picker",
+    id: "p3-chat-row-project",
+    title: "Projects — a chat's folder action in the Chats panel",
     group: "P3 · Chat",
-    notes: "Plays: the same chip in the composer's footer row, next to the model picker, opened.",
-    localStorage: { vc_project_chip: "footer" },
+    notes: "Plays: open Chats; the first row's folder action (on hover) opens the project menu — the projects, No project, New project… named in place. The chat pane has no project chip.",
     build,
     activeConversation: "p-seed44",
-    open: [...open("p-seed44"), pause(), tryClick(CHIP), pause(2200)],
+    open: [...open("p-seed44"), pause(), { click: CHATS }, pause(900), tryClick("[data-el='row-project']"), pause(900), tryClick("[data-el='row-new-project']"), pause(2200)],
   },
   {
     id: "p3-projects-folder",

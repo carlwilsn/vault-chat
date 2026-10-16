@@ -33,7 +33,6 @@ import {
 } from "./chatExtras";
 import { uiChoice } from "./uiChoices";
 import { formatCost } from "./ongoingWork";
-import { ProjectChip } from "./ProjectChip";
 import { OngoingLine } from "./OngoingLine";
 import { isArchivedThread, ARCHIVED_THREAD } from "./conversations";
 
@@ -389,15 +388,6 @@ export function ChatPane() {
     const id = useStore.getState().activeConversationId;
     return id ? boxSubagent(id, sid, op, text) : Promise.resolve<string | null>("No conversation.");
   }, []);
-  // Where the project chip sits — a preview switch while Carl picks
-  // ("top": a quiet line over the thread; "footer": beside the model picker).
-  const [chipAt] = useState<"top" | "footer">(() => {
-    try {
-      return localStorage.getItem("vc_project_chip") === "footer" ? "footer" : "top";
-    } catch {
-      return "top";
-    }
-  });
   const [pendingImages, setPendingImages] = useState<
     Array<{
       imageDataUrl: string;
@@ -934,10 +924,10 @@ export function ChatPane() {
 
   return (
     <div className="h-full flex flex-col bg-card border-l border-border relative">
-      {((chipAt === "top" && !isPopout && !chatFullscreen) || totalCost) && (
+      {/* Projects are set in the chats panel (a row's folder action), not here. */}
+      {totalCost && (
         <div className="shrink-0 px-3 pt-2">
           <div className="max-w-[820px] mx-auto flex items-center">
-            {chipAt === "top" && !isPopout && !chatFullscreen && <ProjectChip placement="down" />}
             {totalCost && (
               <span className="ml-auto text-[11px] text-muted-foreground tabular-nums" data-el="total-cost" title="What this conversation has cost so far">
                 {totalCost}
@@ -1273,7 +1263,6 @@ export function ChatPane() {
           <div className="flex items-center justify-between px-1 pt-1.5 text-[11px] text-muted-foreground">
             <div className="flex items-center gap-3 min-w-0">
               <ModelPicker modelId={modelId} apiKeys={apiKeys} onSelect={onSelectModel} />
-              {chipAt === "footer" && !isPopout && !chatFullscreen && <ProjectChip placement="up" />}
             </div>
             <div className="flex items-center gap-2">
               {busy && <ElapsedTimer />}

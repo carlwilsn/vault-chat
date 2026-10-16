@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Plus, X as XIcon, Trash2, Mic, CheckCheck, ChevronRight, Folder, PanelLeftClose } from "lucide-react";
+import { MessageSquare, Plus, X as XIcon, Trash2, Mic, CheckCheck, ChevronRight, Folder, FolderInput, PanelLeftClose, Check } from "lucide-react";
 import { useStore } from "./store";
 import { conversationPreview, isArchivedThread, type Conversation } from "./conversations";
 import { ongoingWork } from "./ongoingWork";
@@ -170,6 +170,8 @@ function ChatsList({
         onPicked?.();
       }}
       onDelete={() => deleteConversation(c.id)}
+      projects={projects}
+      onProject={(nameOrSlug) => void setConversationProject(c.id, nameOrSlug, projects)}
     />
   );
 
@@ -397,17 +399,100 @@ function FolderRow({
   );
 }
 
+/** A row's project action: the projects, "No project", and "New project…" named in place. */
+function ProjectMenu({
+  current,
+  projects,
+  onPick,
+  onClose,
+}: {
+  current: string | undefined;
+  projects: ProjectInfo[];
+  onPick: (nameOrSlug: string | null) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [naming, setNaming] = useState<string | null>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [onClose]);
+  const item = "w-full text-left px-2.5 h-7 flex items-center gap-2 rounded text-[12px] hover:bg-accent/60";
+  const pick = (v: string | null) => {
+    onPick(v);
+    onClose();
+  };
+  return (
+    <div
+      ref={ref}
+      data-el="row-project-menu"
+      className="absolute right-2 top-8 z-20 w-52 max-h-72 overflow-auto rounded-md border border-border bg-popover text-popover-foreground shadow-lg p-1"
+      onClick={(e) => e.stopPropagation()}
+    >
+      {projects.map((p) => (
+        <button key={p.slug} className={item} onClick={() => pick(p.slug)}>
+          <Folder className="h-3 w-3 text-muted-foreground shrink-0" />
+          <span className="truncate flex-1">{p.name}</span>
+          {current === p.slug && <Check className="h-3 w-3 shrink-0" />}
+        </button>
+      ))}
+      {current && (
+        <button className={cn(item, "text-muted-foreground")} onClick={() => pick(null)}>
+          <span className="w-3 shrink-0" />
+          No project
+        </button>
+      )}
+      {naming === null ? (
+        <button className={cn(item, "text-muted-foreground")} onClick={() => setNaming("")} data-el="row-new-project">
+          <Plus className="h-3 w-3 shrink-0" />
+          New project…
+        </button>
+      ) : (
+        <input
+          autoFocus
+          value={naming}
+          data-el="row-new-project-name"
+          onChange={(e) => setNaming(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && naming.trim()) pick(naming.trim());
+          }}
+          placeholder="Project name, then Enter"
+          className="w-full h-7 px-2 mt-0.5 rounded bg-background border border-border text-[12px] placeholder:text-muted-foreground/60 focus:outline-none focus:border-ring/40"
+        />
+      )}
+    </div>
+  );
+}
+
 function Row({
   conversation,
   active,
   onSelect,
   onDelete,
+  projects,
+  onProject,
 }: {
   conversation: Conversation;
   active: boolean;
   onSelect: () => void;
   onDelete: () => void;
+  projects: ProjectInfo[];
+  onProject: (nameOrSlug: string | null) => void;
 }) {
+  const [menu, setMenu] = useState(false);
   const c = conversation;
   const time = relativeTime(c.lastActivityAt);
   const preview = conversationPreview(c);
@@ -427,8 +512,8 @@ function Row({
     <div
       className={
         active
-          ? "border-b border-border/40 bg-accent flex items-start gap-2 group"
-          : "border-b border-border/40 hover:bg-accent/40 flex items-start gap-2 group"
+          ? "relative border-b border-border/40 bg-accent flex items-start gap-1 group"
+          : "relative border-b border-border/40 hover:bg-accent/40 flex items-start gap-1 group"
       }
     >
       <button
@@ -465,6 +550,21 @@ function Row({
           {preview && <div className={previewClass}>{preview}</div>}
         </span>
       </button>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          setMenu((v) => !v);
+        }}
+        data-el="row-project"
+        className={cn(
+          "transition-opacity h-7 w-7 mt-1 flex items-center justify-center rounded text-muted-foreground hover:bg-accent/60 hover:text-foreground shrink-0",
+          menu ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+        )}
+        title={c.project ? "Move to another project" : "Put in a project"}
+      >
+        <FolderInput className="h-3 w-3" />
+      </button>
+      {menu && <ProjectMenu current={c.project} projects={projects} onPick={onProject} onClose={() => setMenu(false)} />}
       <button
         onClick={(e) => {
           e.stopPropagation();
