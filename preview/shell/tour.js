@@ -12,7 +12,7 @@
 // window.__preview.tour(...) (runtime/tour.ts).
 (() => {
   const $ = (s) => document.querySelector(s);
-  const SIZES = { desktop: [1400, 900], popout: [520, 820], phone: [390, 844] };
+  const SIZES = { desktop: [1400, 900], popout: [980, 820], phone: [390, 844] };
   const T = (window.__tour = { active: false, index: 0, phases: [], results: [], done: false, paused: false });
   let slides = [];
   let token = 0;

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { isPopout } from "./windowKind";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import type { ModelSpec, ProviderId } from "./providers";
@@ -784,6 +785,12 @@ type State = {
     currentFile?: string | null;
     panePaths?: string[];
     files?: FileEntry[];
+    // The chats list and which one is open (the popout's sidebar and title),
+    // the list without each chat's messages — the open one's come as messages.
+    conversations?: Conversation[];
+    activeConversationId?: string | null;
+    // Voice runs in the main window; the popout's mic and waves show it.
+    voice?: Pick<State, "voiceMode" | "voiceConnecting" | "voiceSpeaking" | "voiceListening" | "voiceMicMuted">;
   }) => void;
   saveCurrentChat: () => void;
   loadSavedChat: (id: string) => void;
@@ -798,7 +805,8 @@ type State = {
   loadConversations: () => Promise<void>;
   refreshConversationFromDisk: (vault: string, convId: string) => Promise<void>;
   refreshConversationsFromDisk: (vault: string) => Promise<void>;
-  newConversation: () => string;
+  /** `id`: the chat popout picks the id and the main window creates it. */
+  newConversation: (id?: string) => string;
   selectConversation: (id: string) => void;
   // Resolves once the durable on-disk tombstone write has settled. The
   // in-memory removal is always synchronous (desktop UI stays optimistic), so
@@ -1817,6 +1825,9 @@ export const useStore = create<State>((set) => ({
         currentFile: s.currentFile !== undefined ? s.currentFile : prev.currentFile,
         panes: nextPanes,
         files: s.files ?? prev.files,
+        ...(s.conversations ? { conversations: s.conversations } : {}),
+        ...(s.activeConversationId !== undefined ? { activeConversationId: s.activeConversationId } : {}),
+        ...(s.voice ?? {}),
       };
     }),
   applyChatStream: (s) =>
@@ -2040,8 +2051,8 @@ export const useStore = create<State>((set) => ({
       return patch;
     });
   },
-  newConversation: () => {
-    const fresh = emptyConversation();
+  newConversation: (id) => {
+    const fresh = id ? { ...emptyConversation(), id } : emptyConversation();
     set((s) => {
       // Snapshot whatever is in-flight into the prior active entry
       // before swapping.
@@ -2378,6 +2389,8 @@ let conversationsLastMessagesRef: ChatMessage[] | null = null;
 let conversationsLastBusy = false;
 let conversationsLastListRef: Conversation[] | null = null;
 useStore.subscribe((state) => {
+  // The chat popout shows main's list (sync.ts); main alone writes it.
+  if (isPopout) return;
   if (!state.conversationsLoaded) return;
   const activeId = state.activeConversationId;
   const messagesChanged = state.messages !== conversationsLastMessagesRef;

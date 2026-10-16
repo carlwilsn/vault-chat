@@ -2,7 +2,7 @@
 // Toggle, the fixture-data switch, and the log of backend gaps ("not faked")
 // and refused outbound requests reported by the frames.
 const $ = (s) => document.querySelector(s);
-const SIZES = { desktop: [1400, 900], popout: [520, 820], phone: [390, 844] };
+const SIZES = { desktop: [1400, 900], popout: [980, 820], phone: [390, 844] };
 let cfg = { sides: {} };
 let scenarios = [];
 const state = Object.assign(

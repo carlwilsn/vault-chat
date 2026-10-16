@@ -477,7 +477,7 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     const url = options?.url ?? "index.html?view=chat";
     const full = new URL(String(url), location.href);
     for (const [k, v] of new URLSearchParams(location.search)) if (!full.searchParams.has(k) && k !== "view") full.searchParams.set(k, v);
-    window.open(full.href, `vc-preview-${options?.label ?? "popout"}`, "width=520,height=820");
+    window.open(full.href, `vc-preview-${options?.label ?? "popout"}`, "width=980,height=820");
     return null;
   },
 };

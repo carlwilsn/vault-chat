@@ -148,6 +148,13 @@ async function createLocal(vault: string, name: string): Promise<ProjectInfo> {
   return { slug, name: title };
 }
 
+// The chat popout shows the main window's chats list, so it hands project
+// changes to main (sync.ts installs this there) instead of writing its own.
+let toMain: ((convId: string, nameOrSlug: string | null) => void) | null = null;
+export function routeProjectChangesTo(fn: (convId: string, nameOrSlug: string | null) => void): void {
+  toMain = fn;
+}
+
 /**
  * Tag a conversation with a project (create-or-attach by name or slug), or
  * clear it with null. Returns the slug set, or an error message.
@@ -170,6 +177,10 @@ export async function setConversationProject(
     const hit = known.find((p) => p.slug === slugify(want) || p.name.toLowerCase() === want.toLowerCase());
     slug = hit?.slug ?? slugify(want);
     if (!slug) return { ok: false, error: `"${want}" does not make a project name` };
+  }
+  if (toMain) {
+    toMain(convId, want);
+    return { ok: true, slug };
   }
 
   if (link && onBox) {
@@ -200,6 +211,10 @@ export async function setConversationProject(
 /** A fresh chat already tagged with `slug`. */
 export function newChatInProject(slug: string): string {
   const id = useStore.getState().newConversation();
+  if (toMain) {
+    toMain(id, slug);
+    return id;
+  }
   useStore.setState((st) => ({
     conversations: st.conversations.map((c) => (c.id === id ? { ...c, project: slug } : c)),
   }));

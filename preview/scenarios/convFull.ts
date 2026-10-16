@@ -656,6 +656,27 @@ export const convFullScenarios: Scenario[] = [
     );
     return { ...sc, open: [...(sc.open ?? []), { key: "ctrl+shift+F" }, { wait: "[data-el='chats-sidebar']" }, { sleep: 400 }, { click: "[data-el='composer-plus']", optional: true }, { sleep: 300 }] };
   })(),
+  (() => {
+    const sc = scenarioA(
+      "popout",
+      "Full conversation — the chat popped out (same as fullscreen chat)",
+      "conv-a's world with the chat popped out into its own window. Open it on the Popout surface (shell: #scenario=popout&surface=popout): the main window on the left (docked, its chat pane gone while popped out), the popout on the right. The popout is the fullscreen chat itself (compare conv-a-fullscreen): the chats sidebar (New chat, New project, a + per project, Ctrl+B hides it), the chat's top bar (sidebar toggle, the chat's name · project, the popout's own window controls), the composer with the + menu, the mic and the voice waves, no camera, no Chats/New buttons. The chats list, the open chat and voice are the main window's: picking or starting a chat in the popout does it in main and comes back; Capture a region runs its marquee on main's viewer. Before: a 540px window with its own 'Chat' header, a Settings button and the docked composer (camera, Chats, New).",
+      lsFor(DEFAULTS),
+    );
+    return {
+      ...sc,
+      open: [
+        ...(sc.open ?? []),
+        // What openChatPopout does in main, minus the window (the shell shows the popout frame).
+        { run: async () => {
+          const { useStore } = await import(/* @vite-ignore */ "/src/store.ts");
+          useStore.getState().setPopoutOpen(true);
+          (window as any).__preview.emit("chat:ready");
+        } },
+        { sleep: 400 },
+      ],
+    };
+  })(),
   ...Object.entries(CHOICE_OPTIONS).flatMap(([choice, opts]) =>
     opts.map((opt) =>
       scenarioA(

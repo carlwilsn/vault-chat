@@ -8,13 +8,12 @@ import { FileTree } from "./FileTree";
 import { MarkdownArea } from "./MarkdownArea";
 import { ChatPane } from "./ChatPane";
 import { SettingsPane } from "./SettingsPane";
-import { Titlebar, WindowControls } from "./Titlebar";
-import { ChatTitle } from "./ProjectChip";
+import { Titlebar } from "./Titlebar";
+import { FullscreenChat } from "./FullscreenChat";
 import { NotePopup } from "./NotePopup";
 import { VoiceTextPanel } from "./VoiceTextPanel";
 import { NotesPanel } from "./NotesPanel";
-import { ChatsPanel, ChatsSidebar } from "./ChatsPanel";
-import { PanelLeftOpen } from "lucide-react";
+import { ChatsPanel } from "./ChatsPanel";
 import { UpdateBanner } from "./UpdateBanner";
 import { fileKind } from "./fileKind";
 import type { NoteAnchor } from "./notes";
@@ -22,7 +21,7 @@ import { useStore } from "./store";
 import { gitInitIfNeeded } from "./git";
 import { useGlobalAnchorClickHandler } from "./linkNav";
 import { toggleVoice } from "./voice-elevenlabs";
-import { applyHljsTheme } from "./main";
+import { applyHljsTheme } from "./hljsTheme";
 import {
   ensureVaultSyncLoop,
   stopVaultSyncLoop,
@@ -88,8 +87,6 @@ export default function App() {
   const rightCollapsed = useStore((s) => s.rightCollapsed);
   const popoutOpen = useStore((s) => s.popoutOpen);
   const chatFullscreen = useStore((s) => s.chatFullscreen);
-  const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
-  const toggleChatSidebar = useStore((s) => s.toggleChatSidebar);
   const showSettings = useStore((s) => s.showSettings);
   const chatHidden = rightCollapsed || popoutOpen;
   const files = useStore((s) => s.files);
@@ -504,46 +501,12 @@ export default function App() {
     </>
   );
 
-  // Fullscreen chat mode: like Claude Code desktop / Codex — the chats in a
-  // collapsible left sidebar (Ctrl+B), the chat beside it. No titlebar, no
-  // Allotment, no viewer. Same Ctrl+Shift+F exits. Skipped when the chat is
-  // popped out (the popout window owns its own surface).
+  // Fullscreen chat mode (FullscreenChat.tsx): the chats sidebar and the chat,
+  // no titlebar, no Allotment, no viewer. Same Ctrl+Shift+F exits. Skipped
+  // when the chat is popped out (the popout window is the fullscreen chat).
   if (chatFullscreen && !popoutOpen) {
     return (
-      <div className="h-full w-full bg-background flex flex-col relative">
-        <div className="flex-1 min-h-0 flex relative">
-          {chatSidebarOpen && <ChatsSidebar onFocusComposer={focusComposer} />}
-          <div className="flex-1 min-w-0 flex flex-col bg-card">
-            {/* The chat's own top bar, in the chat's colour: sidebar toggle (when
-                it's hidden), the chat's name, the window controls. */}
-            <div
-              data-tauri-drag-region
-              className="h-9 shrink-0 flex items-center relative select-none"
-              title="Drag to move window — Ctrl+Shift+F to exit fullscreen chat"
-            >
-              <div className="px-2 flex items-center relative z-10">
-                {!chatSidebarOpen && (
-                  <button
-                    onClick={toggleChatSidebar}
-                    data-el="chats-sidebar-open"
-                    className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-                    title="Show chats (Ctrl+B)"
-                  >
-                    <PanelLeftOpen className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-              <div data-tauri-drag-region className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <ChatTitle />
-              </div>
-              <div data-tauri-drag-region className="flex-1 h-full" />
-              <WindowControls className="relative z-10" />
-            </div>
-            <div className="flex-1 min-h-0">
-              <ChatPane />
-            </div>
-          </div>
-        </div>
+      <FullscreenChat onFocusComposer={focusComposer}>
         {captureOver && (
           <div className="fixed inset-0 z-40 flex flex-col bg-background" data-el="fullscreen-capture">
             <div className="h-8 shrink-0 flex items-center justify-center gap-2 border-b border-border text-[11.5px] text-muted-foreground">
@@ -556,7 +519,7 @@ export default function App() {
           </div>
         )}
         {overlays}
-      </div>
+      </FullscreenChat>
     );
   }
 

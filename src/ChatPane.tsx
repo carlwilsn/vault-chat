@@ -339,9 +339,10 @@ export function ChatPane() {
     : offscreenChats.some((c) => c.unread)
       ? "unseen"
       : null;
-  // Fullscreen chat shows the chats as its left sidebar (App.tsx), so the
-  // button opens and closes that; the docked layout keeps the overlay.
-  const chatFullscreen = useStore((s) => s.chatFullscreen && !s.popoutOpen);
+  // Fullscreen chat shows the chats as its left sidebar (FullscreenChat.tsx),
+  // so the button opens and closes that; the docked layout keeps the overlay.
+  // The popout window is the fullscreen chat.
+  const chatFullscreen = useStore((s) => isPopout || (s.chatFullscreen && !s.popoutOpen));
   const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
   const chatsShown = chatFullscreen ? chatSidebarOpen : showChatsPanel;
   // Fullscreen chat: voice replaces the composer with its waves (VoiceCockpit).
@@ -1224,7 +1225,8 @@ export function ChatPane() {
                 {chatFullscreen && <InlineVoiceWaves />}
                 {chatFullscreen && (
                   <button
-                    onClick={toggleVoice}
+                    // Voice runs in the main window (the popout's mic asks it).
+                    onClick={isPopout ? () => dispatchChatAction({ kind: "toggleVoice" }) : toggleVoice}
                     disabled={!vaultPath}
                     data-el="composer-voice"
                     className={cn(

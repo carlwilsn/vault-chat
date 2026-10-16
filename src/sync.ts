@@ -2,11 +2,16 @@ import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type Theme, type TodoItem } from "./store";
 import { sendMessage, stopAgent, clearChat, setModel, interruptAndSend, sendMidTurn, cancelPending } from "./chat-controller";
+import type { Conversation } from "./conversations";
+import { newConversationId } from "./conversations";
+import { listProjects, routeProjectChangesTo, setConversationProject } from "./projects";
+import { toggleVoice, voiceBarLevels } from "./voice-elevenlabs";
+import { isPopout } from "./windowKind";
 
 const POPOUT_LABEL = "chat-popout";
 const MAIN_LABEL = "main";
 
-export const isPopout = new URLSearchParams(window.location.search).get("view") === "chat";
+export { isPopout };
 
 // Two-tier broadcast:
 // - chat:state carries message list + session metadata, fires only when
@@ -32,6 +37,19 @@ type StateSnapshot = {
   // ChatPane.send() can see the vault file list — without this the
   // popout's `files` is always [] and @-refs silently drop.
   files: FileEntry[];
+  // The popout is the fullscreen chat: its sidebar lists main's chats and its
+  // title names the open one. Each chat without its messages (the open one's
+  // are `messages`), so a long history is not re-sent on every turn.
+  conversations: Conversation[];
+  activeConversationId: string | null;
+  // Voice runs in main; the popout's mic and waves show its state.
+  voice: {
+    voiceMode: boolean;
+    voiceConnecting: boolean;
+    voiceSpeaking: boolean;
+    voiceListening: boolean;
+    voiceMicMuted: boolean;
+  };
 };
 
 type StreamSnapshot = {
@@ -70,7 +88,15 @@ export type ChatAction =
   | { kind: "stop" }
   | { kind: "clear" }
   | { kind: "setModel"; id: string }
-  | { kind: "startCapture" };
+  | { kind: "startCapture" }
+  // The fullscreen chat's sidebar, mic and Ctrl+T, from the popout: main owns
+  // the chats list (it runs the agent and writes the list to disk).
+  | { kind: "newConversation"; id: string }
+  | { kind: "selectConversation"; id: string }
+  | { kind: "deleteConversation"; id: string }
+  | { kind: "markAllRead" }
+  | { kind: "setProject"; convId: string; nameOrSlug: string | null }
+  | { kind: "toggleVoice" };
 
 function takeStateSnapshot(): StateSnapshot {
   const s = useStore.getState();
@@ -85,6 +111,15 @@ function takeStateSnapshot(): StateSnapshot {
     currentFile: s.currentFile,
     panePaths: s.panes.map((p) => p.file),
     files: s.files,
+    conversations: s.conversations.map((c) => (c.messages.length ? { ...c, messages: [] } : c)),
+    activeConversationId: s.activeConversationId,
+    voice: {
+      voiceMode: s.voiceMode,
+      voiceConnecting: s.voiceConnecting,
+      voiceSpeaking: s.voiceSpeaking,
+      voiceListening: s.voiceListening,
+      voiceMicMuted: s.voiceMicMuted,
+    },
   };
 }
 
@@ -117,6 +152,17 @@ function applyActionLocal(a: ChatAction) {
     s.setNoteCapturePending(false);
     s.setChatPaneCapturePending(true);
     window.dispatchEvent(new CustomEvent("vc-marquee-toggle"));
+  } else if (a.kind === "newConversation") useStore.getState().newConversation(a.id);
+  else if (a.kind === "selectConversation") useStore.getState().selectConversation(a.id);
+  else if (a.kind === "deleteConversation") void useStore.getState().deleteConversation(a.id);
+  else if (a.kind === "markAllRead") useStore.getState().markAllRead();
+  else if (a.kind === "toggleVoice") toggleVoice();
+  else if (a.kind === "setProject") {
+    void listProjects(useStore.getState().vaultPath)
+      .then((known) => setConversationProject(a.convId, a.nameOrSlug, known))
+      .then((r) => {
+        if (!r.ok) console.warn("[popout] project:", r.error);
+      });
   }
 }
 
@@ -168,7 +214,14 @@ export async function installMainSync() {
       state.vaultPath !== prev.vaultPath ||
       state.currentFile !== prev.currentFile ||
       state.panes !== prev.panes ||
-      state.files !== prev.files;
+      state.files !== prev.files ||
+      state.conversations !== prev.conversations ||
+      state.activeConversationId !== prev.activeConversationId ||
+      state.voiceMode !== prev.voiceMode ||
+      state.voiceConnecting !== prev.voiceConnecting ||
+      state.voiceSpeaking !== prev.voiceSpeaking ||
+      state.voiceListening !== prev.voiceListening ||
+      state.voiceMicMuted !== prev.voiceMicMuted;
     if (stateChanged) broadcastState();
 
     const streamChanged =
@@ -192,11 +245,63 @@ export async function installMainSync() {
       emitTo(POPOUT_LABEL, "chat:captured", payload).catch(() => {});
       useStore.getState().setChatPaneLastCapture(null);
     }
+
+    // The popout's voice waves: voice's audio is here, so send its levels
+    // (~16 frames a second) while voice is on and the chat is popped out.
+    const relay = state.popoutOpen && state.voiceMode;
+    if (relay && !levelRelay) {
+      levelRelay = setInterval(() => {
+        emitTo(POPOUT_LABEL, "voice:levels", voiceBarLevels(VOICE_BARS)).catch(() => {});
+      }, 60);
+    }
+  });
+  useStore.subscribe((state) => {
+    if (levelRelay && !(state.popoutOpen && state.voiceMode)) {
+      clearInterval(levelRelay);
+      levelRelay = null;
+    }
+  });
+  // A project made or changed here: the popout's lists re-read theirs.
+  window.addEventListener("vc-projects-changed", () => {
+    if (useStore.getState().popoutOpen) emitTo(POPOUT_LABEL, "projects:changed", null).catch(() => {});
   });
 }
 
+const VOICE_BARS = 12;
+let levelRelay: ReturnType<typeof setInterval> | null = null;
+let relayed: number[] = [];
+
+/** The popout's voice waves: the latest levels main sent (0 when none). */
+export function relayedVoiceLevels(n: number): number[] {
+  return Array.from({ length: n }, (_, i) => relayed[i] ?? 0);
+}
+
+/** The popout's chats list is main's: these store actions go to main, which
+ *  applies them and broadcasts the list back (chat:state). */
+function routeChatsToMain() {
+  const send = (a: ChatAction) => dispatchChatAction(a);
+  useStore.setState({
+    newConversation: (id?: string) => {
+      const nid = id ?? newConversationId();
+      send({ kind: "newConversation", id: nid });
+      return nid;
+    },
+    selectConversation: (id: string) => send({ kind: "selectConversation", id }),
+    deleteConversation: async (id: string) => send({ kind: "deleteConversation", id }),
+    markAllRead: () => send({ kind: "markAllRead" }),
+  });
+  routeProjectChangesTo((convId, nameOrSlug) => send({ kind: "setProject", convId, nameOrSlug }));
+}
+
 export async function installPopoutSync() {
+  routeChatsToMain();
   await installThemeSync();
+  await listen<number[]>("voice:levels", (e) => {
+    relayed = Array.isArray(e.payload) ? e.payload : [];
+  });
+  await listen("projects:changed", () => {
+    window.dispatchEvent(new CustomEvent("vc-projects-changed"));
+  });
   let gotSnapshot = false;
   await listen<StateSnapshot>("chat:state", (e) => {
     gotSnapshot = true;
@@ -251,7 +356,8 @@ export async function openChatPopout() {
   const w = new WebviewWindow(POPOUT_LABEL, {
     url: "index.html?view=chat",
     title: "Chat",
-    width: 540,
+    // The fullscreen chat's layout: the chats sidebar (272px) beside the chat.
+    width: 980,
     height: 820,
     minWidth: 380,
     minHeight: 400,

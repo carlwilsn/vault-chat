@@ -1,12 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Keyboard, Mic } from "lucide-react";
 import { useStore } from "./store";
-import {
-  toggleVoice,
-  getAgentEnvelopeLevels,
-  getInputLevels,
-  getOutputLevels,
-} from "./voice-elevenlabs";
+import { toggleVoice, voiceBarLevels } from "./voice-elevenlabs";
+import { isPopout } from "./windowKind";
+import { relayedVoiceLevels } from "./sync";
 
 const NUM_BARS = 12;
 const LEVEL_DECAY = 0.85;
@@ -129,29 +126,8 @@ function VoiceBars({
   useEffect(() => {
     let raf = 0;
     const tick = () => {
-      const s = useStore.getState();
-      // Two sources, picked per-frame:
-      //   • speaking → TTS output spectrum, or the chunk-derived playback
-      //     envelope when the analyser reads dead (suspended AudioContext /
-      //     buffer-up — the documented unreliable cases)
-      //   • otherwise → live mic input (idle / listening / silent gaps)
-      // While voiceSpeaking is on, the mic is NEVER the source: bars tracking
-      // the user's ambient noise during the agent's turn is exactly the "wave
-      // out of sync with the voice" desync (note 852e435b).
-      // No synthesized motion: a fake "thinking" wave reads as ongoing
-      // audio after the user barges in, which is misleading. Bars
-      // sitting flat-low during latency is fine — connecting state has
-      // its own label, and the rest is honestly silence.
-      const out = s.voiceSpeaking ? getOutputLevels(n) : null;
-      // Polled every speaking frame regardless of which source wins — polling
-      // advances the envelope's playback cursor, so it stays in sync for the
-      // frames where the analyser flakes out.
-      const env = s.voiceSpeaking ? getAgentEnvelopeLevels(n) : null;
-      const outActive =
-        out !== null && out.reduce((a, b) => a + b, 0) > 0.05;
-      // A muted mic is honestly silent, whatever the analyser still reads.
-      const raw: number[] =
-        outActive && out ? out : env !== null ? env : s.voiceMicMuted ? new Array(n).fill(0) : getInputLevels(n);
+      // The levels' sources are voiceBarLevels'; the popout's come from main.
+      const raw: number[] = isPopout ? relayedVoiceLevels(n) : voiceBarLevels(n);
 
       const sm = smoothed.current;
       for (let i = 0; i < n; i++) {
