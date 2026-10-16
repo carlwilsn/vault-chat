@@ -73,6 +73,15 @@ export async function boxVoiceSession(
 ): Promise<{ session?: BoxVoiceSession; error?: string; unreachable?: boolean; unsupported?: boolean }> {
   const q = new URLSearchParams();
   if (convId) q.set("convId", convId);
+  // This laptop's Settings → voice model and voice: the box's agent uses them.
+  try {
+    const llm = localStorage.getItem("vault_chat_elevenlabs_llm");
+    const voice = localStorage.getItem("vault_chat_elevenlabs_voice");
+    if (llm) q.set("llm", llm);
+    if (voice) q.set("voice", voice);
+  } catch {
+    /* no storage */
+  }
   const qs = q.toString();
   try {
     const s = await get(b.link, `/api/v1/voice/session${qs ? `?${qs}` : ""}`, 20_000);

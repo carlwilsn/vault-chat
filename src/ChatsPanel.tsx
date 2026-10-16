@@ -4,7 +4,7 @@ import { useStore } from "./store";
 import { conversationPreview, isArchivedThread, type Conversation } from "./conversations";
 import { ongoingWork } from "./ongoingWork";
 import { useProjects } from "./ProjectChip";
-import { newChatInProject, projectName, type ProjectInfo } from "./projects";
+import { newChatInProject, projectName, setConversationProject, type ProjectInfo } from "./projects";
 import { cn } from "./lib/utils";
 
 // How the list groups by project — a preview switch while Carl picks:
@@ -182,6 +182,20 @@ function ChatsList({
     setTimeout(() => onFocusComposer?.(), 0);
   };
 
+  // New project: named in place, then a chat in it (the project itself is
+  // written when that chat is first sent — the same as picking one).
+  const [naming, setNaming] = useState<string | null>(null);
+  const createProject = async (name: string) => {
+    setNaming(null);
+    const id = useStore.getState().newConversation();
+    await setConversationProject(id, name, projects);
+    setQuery("");
+    onPicked?.();
+    const store = useStore.getState();
+    if (store.rightCollapsed) store.toggleRight();
+    setTimeout(() => onFocusComposer?.(), 0);
+  };
+
   const handleNew = () => {
     newConversation();
     setQuery("");
@@ -247,20 +261,37 @@ function ChatsList({
                   {p.items.map(row)}
                 </Section>
               ))}
-            {!query.trim() && (
-              <button
-                onClick={() => {
-                  handleNew();
-                  // The chip's picker, open on its name field: the same
-                  // find-or-name step as setting a chat's project.
-                  setTimeout(() => window.dispatchEvent(new CustomEvent("vc-open-project-picker")), 50);
-                }}
-                className="w-full px-4 pt-3 pb-1 flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider text-muted-foreground/70 hover:text-foreground font-medium"
-              >
-                <Plus className="h-3 w-3" />
-                New project
-              </button>
-            )}
+            {!query.trim() &&
+              (naming === null ? (
+                <button
+                  onClick={() => setNaming("")}
+                  data-el="new-project"
+                  className="w-full px-4 pt-3 pb-1 flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider text-muted-foreground/70 hover:text-foreground font-medium"
+                >
+                  <Plus className="h-3 w-3" />
+                  New project
+                </button>
+              ) : (
+                // Name it here: Enter makes the project and opens a chat in it.
+                <div className="px-4 pt-3 pb-1">
+                  <input
+                    autoFocus
+                    value={naming}
+                    data-el="new-project-name"
+                    onChange={(e) => setNaming(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && naming.trim()) void createProject(naming.trim());
+                      if (e.key === "Escape") {
+                        e.stopPropagation();
+                        setNaming(null);
+                      }
+                    }}
+                    onBlur={() => !naming.trim() && setNaming(null)}
+                    placeholder="Project name, then Enter"
+                    className="w-full h-7 px-2 rounded bg-background border border-border text-[12px] placeholder:text-muted-foreground/60 focus:outline-none focus:border-ring/40"
+                  />
+                </div>
+              ))}
             {style === "folders" && sections.projects.length > 0 && (
               <Section label="Projects">
                 {sections.projects.map((p) => {

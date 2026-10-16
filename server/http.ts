@@ -335,7 +335,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   if (path === "/api/v1/voice/session" && method === "GET") {
     const d = (await hooks.voice?.(scope)) ?? { error: "voice not available" };
     if ("error" in d) return json(res, 503, d);
-    const out = await voiceSession(url.searchParams.get("convId"), d);
+    const out = await voiceSession(url.searchParams.get("convId"), d, { llm: url.searchParams.get("llm"), voice: url.searchParams.get("voice") });
     return json(res, out.status, out.body);
   }
   if (path === "/api/v1/voice/transcript" && method === "POST") {

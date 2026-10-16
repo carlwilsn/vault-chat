@@ -518,8 +518,16 @@ export async function fileIndex(vault: string, cap = 2000): Promise<string[]> {
   }
 }
 
-export async function voiceSession(convId: string | null, d: VoiceDeps): Promise<{ status: number; body: Record<string, unknown> }> {
+export async function voiceSession(
+  convId: string | null,
+  d: VoiceDeps,
+  choice: { llm?: string | null; voice?: string | null } = {},
+): Promise<{ status: number; body: Record<string, unknown> }> {
   const v = await import("../src/voice-elevenlabs");
+  // The laptop's Settings choice (voice model, voice) — the box's agent follows
+  // it; a changed model re-provisions the agent (ensureAgent compares).
+  if (choice.llm && v.SUPPORTED_VOICE_LLMS.has(choice.llm)) localStorage.setItem("vault_chat_elevenlabs_llm", choice.llm);
+  if (choice.voice && /^[A-Za-z0-9]{8,40}$/.test(choice.voice)) localStorage.setItem("vault_chat_elevenlabs_voice", choice.voice);
   v.resetAgentCreateBreaker();
   // Another vault than the store's: its working copy, its own conversation for
   // the history, and an agent of its own (its own tools).

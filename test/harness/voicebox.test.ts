@@ -100,6 +100,8 @@ test("the session is the box's; unreachable and no-voice-for-this-vault are told
   const { boxVoice, boxVoiceSession } = await import("../../src/voiceBox.ts");
   const b = (await boxVoice(vault))!;
   const seen: string[] = [];
+  localStorage.removeItem("vault_chat_elevenlabs_llm");
+  localStorage.removeItem("vault_chat_elevenlabs_voice");
   const ok = await boxVoiceSession(b, "c1", async (_l, path) => {
     seen.push(path);
     return { signedUrl: "wss://fake/x", systemPrompt: "box prompt", toolNames: ["Read", "EchoKey"], vaultRoot: "/home/carl/vaults/v" };
@@ -107,6 +109,17 @@ test("the session is the box's; unreachable and no-voice-for-this-vault are told
   assert.equal(ok.session?.signedUrl, "wss://fake/x");
   assert.deepEqual(seen, ["/api/v1/voice/session?convId=c1"]);
   assert.equal(b.link.vault, "v", "(boxGet adds ?vault= from the link)");
+  // Settings' voice model and voice ride along: the box's agent uses them.
+  localStorage.setItem("vault_chat_elevenlabs_llm", "claude-sonnet-4-6");
+  localStorage.setItem("vault_chat_elevenlabs_voice", "JBFqnCBsd6RMkjVDRZzb");
+  const chosen: string[] = [];
+  await boxVoiceSession(b, "c1", async (_l, path) => {
+    chosen.push(path);
+    return { signedUrl: "wss://fake/y", systemPrompt: "p", toolNames: [] };
+  });
+  assert.deepEqual(chosen, ["/api/v1/voice/session?convId=c1&llm=claude-sonnet-4-6&voice=JBFqnCBsd6RMkjVDRZzb"]);
+  localStorage.removeItem("vault_chat_elevenlabs_llm");
+  localStorage.removeItem("vault_chat_elevenlabs_voice");
   const down = await boxVoiceSession(b, null, async () => {
     throw "error sending request: connection refused";
   });
