@@ -397,8 +397,15 @@ export function LiveEditor({
     if (!view) return;
     const cur = view.state.doc.toString();
     if (cur !== value) {
+      // Replace only the span that differs (an agent's edit reloaded live):
+      // the cursor and scroll position outside it stay where they were.
+      let a = 0;
+      const max = Math.min(cur.length, value.length);
+      while (a < max && cur.charCodeAt(a) === value.charCodeAt(a)) a++;
+      let b = 0;
+      while (b < max - a && cur.charCodeAt(cur.length - 1 - b) === value.charCodeAt(value.length - 1 - b)) b++;
       view.dispatch({
-        changes: { from: 0, to: cur.length, insert: value },
+        changes: { from: a, to: cur.length - b, insert: value.slice(a, value.length - b) },
         annotations: ExternalSet.of(true),
       });
     }

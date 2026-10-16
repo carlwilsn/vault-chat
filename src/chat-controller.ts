@@ -8,6 +8,7 @@ import { estimateBashEta } from "./eta-estimator";
 import { gitCommitAll } from "./git";
 import { flushEditCommit } from "./commit-controller";
 import { safetyCommit } from "./autosave";
+import { refreshOpenFiles } from "./liveReload";
 import { scheduledDeliveryText } from "./scheduleDelivery";
 import { bumpHeartbeat, endHeartbeat } from "./runHeartbeat";
 import { registerRun, unregisterRun, abortRun } from "./runRegistry";
@@ -299,8 +300,6 @@ export async function sendMessage(
   const vault = cur.vaultPath!;
   // modelId was already resolved above (mission/phone convs swap to their
   // model). Don't re-read from store here — that would undo the override.
-  const currentFile = cur.currentFile;
-  const openPaneIds = cur.panes.map((p) => p.id);
   const isTargetActive = () =>
     useStore.getState().activeConversationId === targetConvId;
   // Each run owns its own AbortController, registered in the run registry
@@ -596,20 +595,8 @@ export async function sendMessage(
           invoke<FileEntry[]>("list_markdown_files", { vault })
             .then(store.setFiles)
             .catch(() => {});
-          if (openPaneIds.length > 0) {
-            for (const paneId of openPaneIds) {
-              const pane = useStore.getState().panes.find((p) => p.id === paneId);
-              if (!pane) continue;
-              const path = pane.file;
-              invoke<string>("read_text_file", { path })
-                .then((text) => useStore.getState().setPaneFile(paneId, path, text))
-                .catch(() => {});
-            }
-          } else if (currentFile) {
-            invoke<string>("read_text_file", { path: currentFile })
-              .then((text) => store.reloadCurrent(currentFile, text))
-              .catch(() => {});
-          }
+          // Open panes whose file changed show it (never over unsaved typing).
+          void refreshOpenFiles({ vault });
         }
       } else if (e.kind === "error") {
         // A user-initiated stop/interrupt aborts the run, which surfaces

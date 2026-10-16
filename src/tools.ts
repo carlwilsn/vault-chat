@@ -5,6 +5,7 @@ import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { useStore, type TodoItem } from "./store";
 import { buildNote } from "./notes";
+import { refreshOpenFiles } from "./liveReload";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -445,6 +446,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         await guardDenied(path);
         await guardWritable(path);
         await invoke("write_text_file", { path, contents });
+        void refreshOpenFiles({ paths: [path] });
         return `wrote ${path}`;
       },
     }),
@@ -477,12 +479,14 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         guardPath(path);
         await guardDenied(path);
         await guardWritable(path);
-        return await invoke<string>("edit_text_file", {
+        const out = await invoke<string>("edit_text_file", {
           path,
           oldString: old_string,
           newString: new_string,
           replaceAll: replace_all ?? false,
         });
+        void refreshOpenFiles({ paths: [path] });
+        return out;
       },
     }),
 
@@ -663,6 +667,7 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
           const result = applyNotebookEdit(raw, action, cell_index, source, cell_type);
           if (!result.ok) return `${result.error}: ${path}`;
           await invoke("write_text_file", { path, contents: result.contents });
+          void refreshOpenFiles({ paths: [path] });
           return `${result.summary} in ${path}`;
         } catch (e) {
           return `NotebookEdit failed: ${(e as Error).message}`;

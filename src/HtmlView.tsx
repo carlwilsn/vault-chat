@@ -139,8 +139,20 @@ const SCROLLBAR_INJECT = `<style id="__vc_scrollbar_base">
   else run();
 })();</script>`;
 
-function injectHeadScripts(html: string): string {
-  const payload = SCROLLBAR_INJECT + LINK_INTERCEPT + MARQUEE_BRIDGE;
+// Reports the page's scroll to the parent, and (on a reload of the same page
+// with new content: an agent's edit shown live) puts it back where it was.
+const scrollKeeper = (y: number) => `<script>(function(){
+  var y = ${Math.max(0, Math.round(y))};
+  if (y) addEventListener('load', function(){ scrollTo(0, y); setTimeout(function(){ scrollTo(0, y); }, 50); });
+  var t = 0;
+  addEventListener('scroll', function(){
+    clearTimeout(t);
+    t = setTimeout(function(){ try { parent.postMessage({ __vc_scroll: scrollY }, '*'); } catch(_) {} }, 80);
+  }, { passive: true });
+})();</script>`;
+
+function injectHeadScripts(html: string, scrollY = 0): string {
+  const payload = SCROLLBAR_INJECT + LINK_INTERCEPT + MARQUEE_BRIDGE + scrollKeeper(scrollY);
   if (/<head[^>]*>/i.test(html)) {
     return html.replace(/<head[^>]*>/i, (m) => m + payload);
   }
@@ -148,8 +160,11 @@ function injectHeadScripts(html: string): string {
 }
 
 export function HtmlView({ content, path }: { content: string; path?: string | null }) {
+  // The page's last scroll (reported by scrollKeeper); a new path starts at the top.
+  const scrollRef = useRef<{ path: string | null | undefined; y: number }>({ path, y: 0 });
+  if (scrollRef.current.path !== path) scrollRef.current = { path, y: 0 };
   const srcDoc = useMemo(
-    () => injectHeadScripts(path ? rewriteAssetUrls(content, path) : content),
+    () => injectHeadScripts(path ? rewriteAssetUrls(content, path) : content, scrollRef.current.y),
     [content, path],
   );
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -176,6 +191,11 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       if (e.source !== iframeRef.current?.contentWindow) return;
+      const sy = (e.data as { __vc_scroll?: unknown } | null)?.__vc_scroll;
+      if (typeof sy === "number") {
+        scrollRef.current.y = sy;
+        return;
+      }
       const data = e.data as {
         __vc_open_url?: unknown;
         __vc_open_path?: unknown;

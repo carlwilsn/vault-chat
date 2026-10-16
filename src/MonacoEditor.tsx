@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
 import { useStore } from "./store";
@@ -58,6 +58,32 @@ export function MonacoEditor({
     });
     return () => cancelAnimationFrame(id);
   }, [pendingScrollAnchor, path, clearScrollAnchor]);
+
+  // A new value from outside (an agent's edit reloaded live): edit only the
+  // span that differs, before the wrapper would replace the whole model, so
+  // the cursor and scroll position stay where they were.
+  const valuePathRef = useRef(path);
+  useLayoutEffect(() => {
+    const samePath = valuePathRef.current === path;
+    valuePathRef.current = path;
+    const ed = editorRef.current;
+    const model = ed?.getModel();
+    if (!samePath || !ed || !model) return;
+    const cur = model.getValue();
+    if (cur === value) return;
+    let a = 0;
+    const max = Math.min(cur.length, value.length);
+    while (a < max && cur.charCodeAt(a) === value.charCodeAt(a)) a++;
+    let b = 0;
+    while (b < max - a && cur.charCodeAt(cur.length - 1 - b) === value.charCodeAt(value.length - 1 - b)) b++;
+    const from = model.getPositionAt(a);
+    const to = model.getPositionAt(cur.length - b);
+    const top = ed.getScrollTop();
+    ed.executeEdits("external", [
+      { range: { startLineNumber: from.lineNumber, startColumn: from.column, endLineNumber: to.lineNumber, endColumn: to.column }, text: value.slice(a, value.length - b) },
+    ]);
+    ed.setScrollTop(top);
+  }, [value, path]);
 
   const onMount = (
     editor: monaco.editor.IStandaloneCodeEditor,

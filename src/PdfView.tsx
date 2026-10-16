@@ -28,10 +28,13 @@ export function PdfView({
   relPath,
   paneId,
   extraToolbar,
+  rev = 0,
 }: {
   path: string;
   relPath?: string;
   paneId?: string | null;
+  /** Bumped when the file changed on disk (liveReload.ts): re-read it, keeping scroll and zoom. */
+  rev?: number;
   // Optional cluster of buttons inserted into the right-side toolbar
   // immediately before the marquee toggle. TexView uses this slot to
   // render its source/preview toggle so .tex preview has one bar (not
@@ -115,16 +118,21 @@ export function PdfView({
     return () => cancelAnimationFrame(id);
   }, [pendingScrollAnchor, path, loading, clearScrollAnchor]);
 
+  const loadedPathRef = useRef<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     const host = hostRef.current;
     if (!host) return;
+    // The same file again (it changed on disk): come back to where Carl was.
+    const reload = loadedPathRef.current === path;
+    loadedPathRef.current = path;
+    const keepScroll = reload ? scrollRef.current?.scrollTop ?? 0 : 0;
     host.innerHTML = "";
     pageTextsRef.current = [];
     setLoading(true);
     setError(null);
     setPages(0);
-    setZoom(1);
+    if (!reload) setZoom(1);
 
     // Virtualized rendering: build empty page wrappers up front so the
     // scroll height is correct, then lazily render canvas + text-layer
@@ -417,6 +425,7 @@ export function PdfView({
           teardownObserver.observe(wrap);
         }
 
+        if (keepScroll) scroller.scrollTop = keepScroll;
         setLoading(false);
       } catch (e) {
         if (!cancelled) {
@@ -449,7 +458,7 @@ export function PdfView({
       tearDownPageRef.current = null;
       if (doc) doc.destroy();
     };
-  }, [path]);
+  }, [path, rev]);
 
   // Re-rasterize visible pages when zoom changes so canvas pixels
   // stay sharp instead of getting CSS-stretched by the host wrapper's

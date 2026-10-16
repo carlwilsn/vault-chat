@@ -20,6 +20,7 @@ import { findVaultFileByTail, tryOpenLink } from "./linkNav";
 import { HistoryStrip, HistoryVersionView, useViewingVersion } from "./HistoryInline";
 import { noteEditedFile } from "./commit-controller";
 import { pushViewportContextDebounced } from "./voice-elevenlabs";
+import { applyDiskContent, registerDirty, setDiskChanged, useLiveFiles } from "./liveReload";
 
 import { Markdown } from "./Markdown";
 import { flipNthTaskCheckbox, localPathFromUrl } from "./mdPipeline";
@@ -256,6 +257,13 @@ export function MarkdownView({ paneId }: Props) {
     };
   }, []);
 
+  // Live refresh (liveReload.ts): typing not yet on disk keeps an agent's
+  // change from replacing this buffer — the header offers Reload instead.
+  useEffect(() => (file ? registerDirty(file, () => lastUserValue.current !== lastSaved.current) : undefined), [file]);
+  const normFile = file ? file.replace(/\\/g, "/").replace(/\/+$/, "") : "";
+  const diskChanged = useLiveFiles((s) => !!(normFile && s.diskChanged[normFile]));
+  const rev = useLiveFiles((s) => (normFile ? s.revs[normFile] ?? 0 : 0));
+
   // When the buffer is replaced by something other than the user typing
   // — the agent reloading the open file after a run, a voice-tool write,
   // an external-sync reload — the new content IS the on-disk truth, so
@@ -269,6 +277,11 @@ export function MarkdownView({ paneId }: Props) {
     if (content !== lastUserValue.current) {
       lastSaved.current = content;
       lastUserValue.current = content;
+      // A save still pending holds the old buffer: writing it would undo the new content.
+      if (saveTimer.current) {
+        window.clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
     }
   }, [content]);
 
@@ -318,19 +331,15 @@ export function MarkdownView({ paneId }: Props) {
         ? live.panes.find((p) => p.id === paneId)?.file
         : live.currentFile;
       if (livePath !== file) return;
-      // External-mutation guard. If something else (Obsidian, a sync
-      // client, a script) rewrote the file since we last synced it,
-      // our buffer doesn't reflect the on-disk truth — overwriting
-      // would silently destroy the external change. Reload instead.
+      // External-mutation guard. If something else (the agent, a sync
+      // merge, a script) rewrote the file since we last synced it, our
+      // buffer doesn't reflect the on-disk truth — overwriting would
+      // silently destroy that change, and reloading would destroy the
+      // typing. Neither: the header asks (Reload · Keep mine).
       try {
         const onDisk = await invoke<string>("read_text_file", { path: file });
         if (onDisk !== lastSaved.current) {
-          if (paneId) {
-            useStore.getState().setPaneFile(paneId, file, onDisk);
-          } else if (useStore.getState().currentFile === file) {
-            useStore.getState().setCurrentFile(file, onDisk);
-          }
-          lastSaved.current = onDisk;
+          setDiskChanged(file, true);
           return;
         }
       } catch {
@@ -348,6 +357,31 @@ export function MarkdownView({ paneId }: Props) {
         console.error("autosave failed", e);
       }
     }, 300);
+  };
+
+  const reloadFromDisk = async () => {
+    if (!file) return;
+    try {
+      const onDisk = await invoke<string>("read_text_file", { path: file });
+      lastSaved.current = onDisk;
+      lastUserValue.current = onDisk;
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+      applyDiskContent(file, onDisk);
+    } catch (e) {
+      console.error("reload failed", e);
+    }
+  };
+  const keepMine = async () => {
+    if (!file) return;
+    try {
+      await invoke("write_text_file", { path: file, contents: content });
+      lastSaved.current = content;
+      lastUserValue.current = content;
+      setDiskChanged(file, false);
+      noteEditedFile(file);
+    } catch (e) {
+      console.error("save failed", e);
+    }
   };
 
   const onPaneClick = () => {
@@ -580,6 +614,32 @@ export function MarkdownView({ paneId }: Props) {
           )}
         </div>
         <div className="flex items-center gap-3">
+          {diskChanged && (
+            <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground" data-testid="disk-changed" draggable={false}>
+              Changed by the agent —
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void reloadFromDisk();
+                }}
+                className="text-primary hover:underline"
+                title="Show the file as it is on disk (drops your unsaved typing)"
+              >
+                Reload
+              </button>
+              ·
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void keepMine();
+                }}
+                className="hover:text-foreground hover:underline"
+                title="Save your version over the agent's"
+              >
+                Keep mine
+              </button>
+            </span>
+          )}
           {showToggle && (
             <button
               onClick={(e) => {
@@ -659,7 +719,7 @@ export function MarkdownView({ paneId }: Props) {
       ) : kind === "notebook" ? (
         <NotebookView content={content} />
       ) : kind === "pdf" ? (
-        <PdfView path={file} relPath={relPath} paneId={paneId} />
+        <PdfView path={file} relPath={relPath} paneId={paneId} rev={rev} />
       ) : kind === "tex" ? (
         <TexView
           path={file}
@@ -674,7 +734,7 @@ export function MarkdownView({ paneId }: Props) {
       ) : kind === "html" ? (
         <HtmlView content={content} path={file} />
       ) : kind === "image" ? (
-        <ImageView path={file} />
+        <ImageView path={file} rev={rev} />
       ) : kind === "video" ? (
         <VideoView path={file} />
       ) : kind === "unsupported" ? (

@@ -17,7 +17,8 @@ function mimeFor(ext: string): string {
   return "application/octet-stream";
 }
 
-export function ImageView({ path }: { path: string }) {
+/** `rev`: bumped when the file changed on disk (liveReload.ts) — re-read in place. */
+export function ImageView({ path, rev = 0 }: { path: string; rev?: number }) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [marqueeOn, setMarqueeOn] = useState(false);
@@ -41,10 +42,13 @@ export function ImageView({ path }: { path: string }) {
     setZoom({ scale: 1, tx: 0, ty: 0 });
   }, [path]);
 
+  const shownPathRef = useRef(path);
   useEffect(() => {
     let cancelled = false;
     let objectUrl: string | null = null;
-    setUrl(null);
+    // A reload of the same image keeps the old one up until the new one is read.
+    if (shownPathRef.current !== path) setUrl(null);
+    shownPathRef.current = path;
     setError(null);
     (async () => {
       try {
@@ -63,7 +67,7 @@ export function ImageView({ path }: { path: string }) {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [path]);
+  }, [path, rev]);
 
   // Ctrl+M toggles marquee via the window event dispatched by the
   // top-level keydown handler in MarkdownView.

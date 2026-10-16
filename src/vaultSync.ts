@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useStore, type FileEntry } from "./store";
 import { prepareVaultProjects } from "./projects";
+import { refreshOpenFiles } from "./liveReload";
 
 // After a pull pulls in commits from another machine, the file tree
 // should reflect new/renamed/deleted files without a manual refresh. We
@@ -422,6 +423,8 @@ export type BoxSyncReport = {
   message: string;
   committed: boolean;
   merged: boolean;
+  /** The files the merge changed (vault-relative); open panes showing them reload. */
+  merged_paths?: string[];
   conflict: { files: string[]; since: number } | null;
   error: string | null;
   error_kind: "unreachable" | "git" | null;
@@ -559,7 +562,8 @@ export function subscribeBoxSync(fn: BoxListener): () => void {
   return () => boxListeners.delete(fn);
 }
 
-/** Run one cycle now (Settings' "Sync now"). */
+/** Run one cycle now (Settings' "Sync now"; the box's "vault_changed" on /poll).
+ *  A cycle already running gets one follow-up, so a box commit made during it still comes in. */
 export async function boxSyncNow(vault: string): Promise<void> {
   const k = boxKick.get(vault);
   if (k) await k();
@@ -772,6 +776,7 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
     }
   };
 
+  let again = false;
   const cycle = async () => {
     if (cancelled || inFlight) return;
     inFlight = true;
@@ -831,6 +836,8 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
         appendSyncLog(vault, "merge", "box-sync", r.message);
         void refreshFileTreeIfChanged(vault);
         void useStore.getState().refreshConversationsFromDisk(vault);
+        // The agent's edits on the box show in the open panes now (never over unsaved typing).
+        void refreshOpenFiles({ vault, paths: r.merged_paths?.length ? r.merged_paths : null });
       } else if (r.committed) {
         void forceRefreshFileTree(vault);
       }
@@ -839,7 +846,18 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
     } finally {
       inFlight = false;
       if (!cancelled && boxStates.get(vault)?.running) set({ running: false });
+      if (again && !cancelled) {
+        again = false;
+        void cycle();
+      }
     }
+  };
+  const kick = (): Promise<void> => {
+    if (inFlight) {
+      again = true;
+      return Promise.resolve();
+    }
+    return cycle();
   };
 
   const timer = window.setInterval(() => void cycle(), BOX_CYCLE_MS);
@@ -847,7 +865,7 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
   const clock = window.setInterval(() => {
     if (boxStates.has(vault)) set({});
   }, 30_000);
-  boxKick.set(vault, cycle);
+  boxKick.set(vault, kick);
   loops.set(vault, {
     vault,
     cancel: () => {

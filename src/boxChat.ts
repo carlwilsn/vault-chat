@@ -19,7 +19,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { projectForSend } from "./projects";
 import { useStore, type ChatMessage, type ChatAttachment, type LiveTool } from "./store";
 import { addPending, patchPending, removePending, type PendingKind } from "./pendingInput";
-import { readBoxConfig } from "./vaultSync";
+import { readBoxConfig, boxSyncNow } from "./vaultSync";
 import type { Conversation } from "./conversations";
 import { applyStream, type StreamState } from "./streamWire";
 import { lastReportedContext } from "./chatContext";
@@ -700,6 +700,11 @@ class BoxChatSession {
     if (!e || typeof e !== "object") return;
     const id = typeof e.convId === "string" ? e.convId : "";
     switch (e.type) {
+      case "vault_changed":
+        // The agent on the box edited files and published them: fetch + merge
+        // them now (the gate's rules as ever); the merge reloads open panes.
+        void boxSyncNow(this.vault);
+        return;
       case "status": {
         if (!id) return;
         const running = e.status === "running";
