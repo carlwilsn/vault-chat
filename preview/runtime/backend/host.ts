@@ -282,7 +282,19 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
       const has = (n: string) => names.includes(n);
       return {
         status: 200,
-        body: JSON.stringify({ ok: true, app: "vault-chat-server", name: b.name, version: b.version, hasKey: has("api.openrouter"), keyNames: names, keys: { openrouter: has("api.openrouter"), elevenlabs: has("service.elevenlabs") } }),
+        body: JSON.stringify({
+          ok: true,
+          app: "vault-chat-server",
+          name: b.name,
+          version: b.version,
+          hasKey: has("api.openrouter"),
+          keyNames: names,
+          keys: { openrouter: has("api.openrouter"), elevenlabs: has("service.elevenlabs") },
+          // The box's account and the requested vault's working copy (the terminal button's ssh target).
+          user: "carl",
+          vaults: (b.vaults ?? []).map((name) => ({ name, path: `/home/carl/vaults/${name}` })),
+          vaultPath: `/home/carl/vaults/${u.searchParams.get("vault") || (b.vaults ?? [])[0] || "summer-demo"}`,
+        }),
       };
     }
     if (u.pathname.endsWith("/api/v1/voice/session")) {

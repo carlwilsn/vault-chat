@@ -117,6 +117,10 @@ export const miscCommands: Record<string, (a: Record<string, any>) => unknown> =
     report("info", `would open a terminal in ${cwd ?? "~"} (not in the preview)`);
     return null;
   },
+  open_box_terminal: ({ host, user, path }) => {
+    report("info", `would open a terminal on the box: ssh -t ${user}@${host} (cd ${path}) — not in the preview`);
+    return null;
+  },
   compile_tex: () => {
     throw "preview: TeX compilation is not available in the preview";
   },

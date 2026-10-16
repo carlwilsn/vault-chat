@@ -10,6 +10,7 @@ import { stopAgent } from "./chat-controller";
 import { VoiceCockpit, VoiceMicGroup } from "./VoiceCockpit";
 import { HistoryRoot } from "./HistoryInline";
 import { subscribeBoxSync, openTailscale, boxSyncNow, type BoxSyncState } from "./vaultSync";
+import { openTerminal, subscribeTerminalNote, terminalBoxName, terminalTitle } from "./terminal";
 
 export function Titlebar() {
   const {
@@ -208,17 +209,7 @@ export function Titlebar() {
         >
           <ExternalLink className="h-3.5 w-3.5" />
         </button>
-        <button
-          onClick={() =>
-            invoke("open_terminal", { cwd: vaultPath ?? undefined }).catch((err) =>
-              console.error("[terminal] failed:", err),
-            )
-          }
-          className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1"
-          title={vaultPath ? `Open terminal in ${vaultPath} (Ctrl+J)` : "Open terminal (Ctrl+J)"}
-        >
-          <Terminal className="h-3.5 w-3.5" />
-        </button>
+        <TerminalButton vaultPath={vaultPath} />
         <button
           onClick={() => setShowSettings(!showSettings)}
           className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1"
@@ -435,5 +426,50 @@ export function WindowControls({ className = "" }: { className?: string }) {
         <X className="h-3.5 w-3.5" />
       </button>
     </div>
+  );
+}
+
+/** The terminal where the chat runs: on the box for a box vault (Shift: this laptop), else here. */
+function TerminalButton({ vaultPath }: { vaultPath: string | null }) {
+  const [box, setBox] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    setBox(null);
+    void terminalBoxName(vaultPath).then((n) => live && setBox(n));
+    return () => {
+      live = false;
+    };
+  }, [vaultPath]);
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const off = subscribeTerminalNote((n) => {
+      setNote(n);
+      if (t) clearTimeout(t);
+      t = setTimeout(() => setNote(null), 6000);
+    });
+    return () => {
+      off();
+      if (t) clearTimeout(t);
+    };
+  }, []);
+  return (
+    <>
+      {note && (
+        <span className="text-[11px] text-muted-foreground mr-1 max-w-[280px] truncate" title={note} data-testid="terminal-note">
+          {note}
+        </span>
+      )}
+      <button
+        onClick={(e) => {
+          void openTerminal({ shift: e.shiftKey }).catch((err) => console.error("[terminal] failed:", err));
+        }}
+        className="h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 text-muted-foreground mr-1"
+        title={terminalTitle(box)}
+        aria-label={terminalTitle(box)}
+      >
+        <Terminal className="h-3.5 w-3.5" />
+      </button>
+    </>
   );
 }
