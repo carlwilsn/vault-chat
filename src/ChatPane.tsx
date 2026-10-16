@@ -982,6 +982,11 @@ export function ChatPane() {
 
         {verdict && uiChoice("verdict") === "thread" && <VerdictLine verdict={verdict} />}
 
+        {/* Running, nothing streamed yet: the model is thinking without showing it
+            (OpenAI-family reasoning via OpenRouter streams none). Gone at the first
+            text, thinking or tool line. */}
+        {busy && !compacting && !streamingText && !streamingReasoning && liveTools.length === 0 && <ReasoningStream text="" />}
+
         {(streamingText || streamingReasoning || liveTools.length > 0) && (
           <div className="space-y-2">
             {liveTools.length > 0 && <LiveToolTicker tools={liveTools} />}
@@ -1354,6 +1359,7 @@ function toolSummary(input: any): string {
   if (!input || typeof input !== "object") return "";
   const primary =
     input.path ??
+    input.file_path ??
     input.command ??
     input.pattern ??
     input.url ??
@@ -1635,6 +1641,15 @@ function ReasoningStream({ text }: { text: string }) {
       tailRef.current.scrollTop = tailRef.current.scrollHeight;
     }
   }, [text, open]);
+  // Thinking with nothing to show (no text streamed yet): the label alone, quietly alive.
+  if (!text)
+    return (
+      <div data-el="live-thinking" data-silent="" className="rounded-md border border-border/40 bg-muted/30 text-[11.5px]">
+        <div className="px-2.5 py-1 text-muted-foreground">
+          <span className="italic animate-pulse">Thinking</span>
+        </div>
+      </div>
+    );
   return (
     <div data-el="live-thinking" className="rounded-md border border-border/40 bg-muted/30 text-[11.5px]">
       <button
