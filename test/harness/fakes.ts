@@ -35,7 +35,8 @@ export function installFakeTauri(vault: string): FakeTauri {
     g.__vcFetchGuard = true;
     g.fetch = (input: any, init?: any) => {
       const url = String(typeof input === "string" ? input : input?.url ?? input);
-      if (!/^https?:\/\/(127\.0\.0\.1|localhost)[:/]/.test(url)) {
+      // A data: URL is not the network (the AI SDK reads an image part given as one through fetch).
+      if (!/^data:/.test(url) && !/^https?:\/\/(127\.0\.0\.1|localhost)[:/]/.test(url)) {
         return Promise.reject(new Error(`test fetch guard: refusing non-loopback request to ${url}`));
       }
       return realFetch(input, init);

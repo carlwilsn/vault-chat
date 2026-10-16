@@ -103,7 +103,7 @@ test("local mode: entries land in this vault's .vault-chat/local/activity.jsonl 
 test("local mode: the shared context is built here — the summary and the project's memory and rules", async () => {
   const c = await activity.sharedContextFor(vault, "coconut");
   assert.match(c.activity, /^<recent_activity>/);
-  assert.ok(c.activity.includes("## Project coconut"));
+  assert.ok(c.activity.includes("## Now")); // the last Ctrl+K edit, the latest capture, the last voice line
   assert.ok(c.activity.includes('Ctrl+K edit · notes/a.md: "make the title shorter" (accepted)'));
   assert.ok(c.activity.includes("[image: .vault-chat/local/captures/"));
   assert.match(c.project, /^<project_context>/);
