@@ -286,11 +286,9 @@ function ChatsList({
                 })}
               </Section>
             )}
-            {sections.recent.length > 0 && <Section label="Recent">{sections.recent.map(row)}</Section>}
-            {sections.earlier.length > 0 && <Section label="Earlier">{sections.earlier.map(row)}</Section>}
+            {sections.chats.length > 0 && <Section label="Chats">{sections.chats.map(row)}</Section>}
             {sections.projects.length === 0 &&
-              sections.recent.length === 0 &&
-              sections.earlier.length === 0 && (
+              sections.chats.length === 0 && (
                 <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
                   No matches.
                 </div>
@@ -457,7 +455,6 @@ function SourceIcon({ source }: { source: string }) {
   return null;
 }
 
-const DAY = 24 * 60 * 60 * 1000;
 
 function groupConversations(list: Conversation[], query: string, projects: ProjectInfo[]) {
   const q = query.trim().toLowerCase();
@@ -467,9 +464,7 @@ function groupConversations(list: Conversation[], query: string, projects: Proje
     return hay.includes(q);
   };
   const sorted = list.slice().sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-  const now = Date.now();
-  const recent: Conversation[] = [];
-  const earlier: Conversation[] = [];
+  const chats: Conversation[] = [];
   const archived: Conversation[] = [];
   const byProject = new Map<string, ProjectGroup>();
   for (const c of sorted) {
@@ -487,12 +482,11 @@ function groupConversations(list: Conversation[], query: string, projects: Proje
       g.items.push(c);
       continue;
     }
-    if (now - c.lastActivityAt <= DAY) recent.push(c);
-    else earlier.push(c);
+    chats.push(c); // newest first (sorted above); no time buckets
   }
   // The most recently active project first.
   const groups = [...byProject.values()].sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-  return { projects: groups, recent, earlier, archived };
+  return { projects: groups, chats, archived };
 }
 
 export function relativeTime(ts: number): string {

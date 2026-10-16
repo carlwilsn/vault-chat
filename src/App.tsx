@@ -513,7 +513,7 @@ export default function App() {
       <div className="h-full w-full bg-background flex flex-col relative">
         <div className="flex-1 min-h-0 flex relative">
           {chatSidebarOpen && <ChatsSidebar onFocusComposer={focusComposer} />}
-          <div className="flex-1 min-w-0 flex flex-col">
+          <div className="flex-1 min-w-0 flex flex-col bg-card">
             {/* The chat's own top bar, in the chat's colour: sidebar toggle (when
                 it's hidden), the chat's name, the window controls. */}
             <div
