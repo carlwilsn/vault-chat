@@ -21,7 +21,8 @@ export const VOICE_LLMS: { id: string; label: string }[] = [
 
 /** Ids stored by older versions → the nearest current one (an explicit choice is kept). */
 const OLD_IDS: Record<string, string> = {
-  "gemini-2.5-flash": "gemini-3.5-flash",
+  // The old default, never a real pick: it becomes the new default.
+  "gemini-2.5-flash": DEFAULT_VOICE_LLM,
   "claude-sonnet-4-5@20250929": "claude-sonnet-4-6",
   "claude-sonnet-4@20250514": "claude-sonnet-4-6",
   "claude-3-7-sonnet": "claude-sonnet-4-6",

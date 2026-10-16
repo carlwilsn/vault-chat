@@ -37,7 +37,7 @@ test("models: the default is GPT-6 Luna; old stored ids map to the nearest curre
   assert.equal(L.normalizeVoiceLlm(null), "gpt-6-luna");
   assert.equal(L.normalizeVoiceLlm("claude-sonnet-4-6"), "claude-sonnet-4-6");
   assert.equal(L.normalizeVoiceLlm("claude-haiku-4-5-20251001"), "claude-haiku-4-5");
-  assert.equal(L.normalizeVoiceLlm("gemini-2.5-flash"), "gemini-3.5-flash");
+  assert.equal(L.normalizeVoiceLlm("gemini-2.5-flash"), "gpt-6-luna");
   assert.equal(L.normalizeVoiceLlm("claude-3-7-sonnet"), "claude-sonnet-4-6");
   assert.equal(L.normalizeVoiceLlm("something-gone"), "gpt-6-luna");
   for (const id of ["claude-sonnet-5-5", "claude-sonnet-4-6", "claude-haiku-5-5", "claude-haiku-4-5", "gemini-3.8-flash", "gemini-3.5-flash", "gpt-6.1-sol", "gpt-6-luna", "glm-52"])
