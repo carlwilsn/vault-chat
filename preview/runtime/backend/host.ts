@@ -102,12 +102,16 @@ export function boxNext(): boolean {
   const st = cfg.sync?.boxChat?.steps?.[boxStep];
   if (!st) return false;
   boxStep++;
+  boxPlay(st);
+  return true;
+}
+/** Play one step the check itself wrote (a turn the scenario does not script). */
+export function boxPlay(st: BoxStep): void {
   for (const [id, msgs] of Object.entries(st.append ?? {})) if (boxConvs[id]) boxConvs[id].messages = [...boxConvs[id].messages, ...msgs];
   for (const [id, m] of Object.entries(st.meta ?? {})) if (boxConvs[id]) boxConvs[id].meta = { ...(boxConvs[id].meta ?? {}), ...m };
   for (const [id, v] of Object.entries(st.status ?? {})) if (boxConvs[id]) boxConvs[id].status = v;
   Object.assign(boxMerge, st.merge ?? {});
   boxQueue.push(...(st.events ?? []));
-  return true;
 }
 let boxCalls = 0;
 let tailscaleOpened = false;

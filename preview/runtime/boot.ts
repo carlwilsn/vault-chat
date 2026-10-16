@@ -12,7 +12,7 @@ import { report, reports, setOverlayHidden } from "./overlay";
 import * as fs from "./shims/memfs";
 import { conversationsWriteAll } from "../../server/commands/conversations";
 import { dispatch, calls, unknownCommands, setOverrides, knownCommands } from "./backend/index";
-import { setHostConfig, boxNext, boxPostLog } from "./backend/host";
+import { setHostConfig, boxNext, boxPlay, boxPostLog } from "./backend/host";
 import { seedHistory, setGitClock } from "./backend/memgit";
 import { emitFromBackend } from "./ipc";
 import { scenarios } from "../scenarios/index";
@@ -154,6 +154,8 @@ export function boot(base: Base): void {
     advance: (ms: number) => advance(ms),
     /** Box-mode chat: play the fake box's next scripted step. */
     boxNext: () => boxNext(),
+    /** Box-mode chat: play a step the check wrote itself. */
+    boxPlay: (st: Parameters<typeof boxPlay>[0]) => boxPlay(st),
     /** What the laptop POSTed to the fake box. */
     boxPosts: () => boxPostLog(),
     /** Play one of the scenario's drive stages (the full-conversation checks). */
