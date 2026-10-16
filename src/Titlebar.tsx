@@ -2,13 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, Mic, Keyboard, GitMerge, CloudOff, FileWarning, AlertTriangle, WifiOff } from "lucide-react";
+import { FolderOpen, Minus, Square, Copy, X, Settings, PanelLeft, PanelRight, ExternalLink, Eye, Terminal, RefreshCw, StickyNote, GitMerge, CloudOff, FileWarning, AlertTriangle, WifiOff } from "lucide-react";
 import { useStore, type FileEntry } from "./store";
 import { openChatPopout } from "./sync";
 import { gitInitIfNeeded } from "./git";
 import { stopAgent } from "./chat-controller";
-import { toggleVoice } from "./voice-elevenlabs";
-import { VoiceCockpit } from "./VoiceCockpit";
+import { VoiceCockpit, VoiceMicGroup } from "./VoiceCockpit";
 import { HistoryRoot } from "./HistoryInline";
 import { subscribeBoxSync, openTailscale, boxSyncNow, type BoxSyncState } from "./vaultSync";
 
@@ -30,27 +29,7 @@ export function Titlebar() {
     notes,
     showHistory,
     setShowHistory,
-    voiceMode,
   } = useStore();
-  const voiceTextPanelOpen = useStore((s) => s.voiceTextPanelOpen);
-  const setVoiceTextPanelOpen = useStore((s) => s.setVoiceTextPanelOpen);
-  // The keyboard slide-out hugs the mic button, so right after the
-  // user clicks the mic to enter voice mode their cursor is sitting
-  // on top of the trigger — the button would slide out immediately,
-  // unprompted. Suppress hover-expand until the cursor has left the
-  // group at least once (or until we observe voice mode flipping on
-  // with the cursor already elsewhere, e.g. Ctrl+D).
-  const micGroupRef = useRef<HTMLDivElement | null>(null);
-  const [kbArmed, setKbArmed] = useState(false);
-  useEffect(() => {
-    if (!voiceMode) {
-      setKbArmed(false);
-      return;
-    }
-    const el = micGroupRef.current;
-    const hoveringNow = !!el && el.matches(":hover");
-    if (!hoveringNow) setKbArmed(true);
-  }, [voiceMode]);
   const [maximized, setMaximized] = useState(false);
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const [hiddenLines, setHiddenLines] = useState<string[]>([]);
@@ -213,59 +192,7 @@ export function Titlebar() {
                 <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
               )}
             </button>
-            <div
-              ref={micGroupRef}
-              className="relative flex items-center group"
-              onMouseLeave={() => {
-                if (voiceMode) setKbArmed(true);
-              }}
-            >
-              <button
-                onClick={toggleVoice}
-                className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 relative z-10 bg-card ${
-                  voiceMode ? "text-foreground" : "text-muted-foreground"
-                }`}
-                title={
-                  voiceMode
-                    ? "Voice mode (on) — Ctrl+D to turn off"
-                    : "Voice mode (off) — Ctrl+D to turn on"
-                }
-              >
-                <Mic className="h-3.5 w-3.5" strokeWidth={voiceMode ? 2.5 : 2} />
-              </button>
-              {/* Keyboard slide-out: starts tucked behind the mic (lower
-                  z + translated back under it), slides out to the right
-                  on hover or whenever the panel is open. Wrapper has
-                  fixed width so the rest of the titlebar doesn't shift
-                  as the button reveals. */}
-              {voiceMode && (
-                <div
-                  className={`overflow-hidden transition-[max-width] duration-200 ease-out ${
-                    voiceTextPanelOpen
-                      ? "max-w-7"
-                      : kbArmed
-                        ? "max-w-0 group-hover:max-w-7"
-                        : "max-w-0"
-                  }`}
-                >
-                  <button
-                    onClick={() => setVoiceTextPanelOpen(!voiceTextPanelOpen)}
-                    className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${
-                      voiceTextPanelOpen
-                        ? "text-foreground"
-                        : "text-muted-foreground"
-                    }`}
-                    title={
-                      voiceTextPanelOpen
-                        ? "Close text input"
-                        : "Type to the voice agent instead of speaking"
-                    }
-                  >
-                    <Keyboard className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              )}
-            </div>
+            <VoiceMicGroup />
           </>
         )}
       </div>

@@ -1,12 +1,11 @@
-import { useEffect, useRef } from "react";
-import { Keyboard, Mic, MicOff, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Keyboard, Mic } from "lucide-react";
 import { useStore } from "./store";
 import {
-  endElevenLabsSession,
+  toggleVoice,
   getAgentEnvelopeLevels,
   getInputLevels,
   getOutputLevels,
-  setVoiceMicMuted,
 } from "./voice-elevenlabs";
 
 const NUM_BARS = 12;
@@ -44,58 +43,76 @@ export function VoiceCockpit() {
   );
 }
 
-// Fullscreen chat has no titlebar: voice lives at the bottom, in place of the
-// composer — the waves (Carl's voice while he talks, the agent's while it
-// speaks), and type / mute / end. The thread above shows the lines as today.
-export function FullscreenVoiceBar() {
-  const connecting = useStore((s) => s.voiceConnecting);
-  const muted = useStore((s) => s.voiceMicMuted);
-  const tool = useStore((s) => s.voiceCurrentTool);
-  const typing = useStore((s) => s.voiceTextPanelOpen);
-  const btn =
-    "h-8 w-8 shrink-0 flex items-center justify-center rounded-full text-muted-foreground hover:bg-accent/60 hover:text-foreground transition-colors";
+// The titlebar's voice control — the mic, and the keyboard that slides out of
+// it while voice is on. Shared by the titlebar and the fullscreen strip so the
+// two are one control.
+export function VoiceMicGroup() {
+  const voiceMode = useStore((s) => s.voiceMode);
+  const vaultPath = useStore((s) => s.vaultPath);
+  const voiceTextPanelOpen = useStore((s) => s.voiceTextPanelOpen);
+  const setVoiceTextPanelOpen = useStore((s) => s.setVoiceTextPanelOpen);
+  // Right after the click that turns voice on the cursor sits on the mic, so
+  // the keyboard would slide out unprompted: arm hover only once it has left.
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [kbArmed, setKbArmed] = useState(false);
+  useEffect(() => {
+    if (!voiceMode) {
+      setKbArmed(false);
+      return;
+    }
+    const el = ref.current;
+    if (!(el && el.matches(":hover"))) setKbArmed(true);
+  }, [voiceMode]);
   return (
     <div
-      data-el="voice-bar"
-      className="relative flex items-center gap-2 h-[52px] px-2 rounded-2xl border border-border bg-background"
+      ref={ref}
+      className="relative flex items-center group"
+      onMouseLeave={() => {
+        if (voiceMode) setKbArmed(true);
+      }}
     >
       <button
-        onClick={() => useStore.getState().setVoiceTextPanelOpen(!typing)}
-        className={btn + (typing ? " text-foreground bg-accent/60" : "")}
-        title={typing ? "Close the typed reply" : "Type to the voice agent instead of speaking"}
+        onClick={toggleVoice}
+        disabled={!vaultPath}
+        data-el="voice-mic"
+        className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 relative z-10 bg-card disabled:opacity-40 ${
+          voiceMode ? "text-foreground" : "text-muted-foreground"
+        }`}
+        title={voiceMode ? "Voice mode (on) — Ctrl+D to turn off" : "Voice mode (off) — Ctrl+D to turn on"}
       >
-        <Keyboard className="h-4 w-4" />
+        <Mic className="h-3.5 w-3.5" strokeWidth={voiceMode ? 2.5 : 2} />
       </button>
-      <div className="flex-1 min-w-0 flex items-center justify-center">
-        {connecting ? (
-          <span className="text-[12px] text-muted-foreground animate-pulse">Connecting…</span>
-        ) : (
-          <VoiceBars count={36} height={24} barClass="w-[3px] rounded-full" gapClass="gap-[3px]" />
-        )}
-      </div>
-      {tool && !connecting && (
-        <span className="absolute left-12 text-[11px] text-muted-foreground truncate max-w-[30%]" data-el="voice-tool">
-          {tool}…
-        </span>
+      {voiceMode && (
+        <div
+          className={`overflow-hidden transition-[max-width] duration-200 ease-out ${
+            voiceTextPanelOpen ? "max-w-7" : kbArmed ? "max-w-0 group-hover:max-w-7" : "max-w-0"
+          }`}
+        >
+          <button
+            onClick={() => setVoiceTextPanelOpen(!voiceTextPanelOpen)}
+            className={`h-7 w-7 flex items-center justify-center rounded hover:bg-accent/60 ${
+              voiceTextPanelOpen ? "text-foreground" : "text-muted-foreground"
+            }`}
+            title={voiceTextPanelOpen ? "Close text input" : "Type to the voice agent instead of speaking"}
+          >
+            <Keyboard className="h-3.5 w-3.5" />
+          </button>
+        </div>
       )}
-      <button
-        onClick={() => setVoiceMicMuted(!muted)}
-        disabled={connecting}
-        className={btn + (muted ? " text-destructive" : "") + " disabled:opacity-40"}
-        title={muted ? "Unmute the mic" : "Mute the mic"}
-        data-el="voice-mute"
-      >
-        {muted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-      </button>
-      <button
-        onClick={() => void endElevenLabsSession()}
-        className="h-8 px-3 shrink-0 flex items-center gap-1.5 rounded-full bg-foreground text-background text-[12px] font-medium hover:opacity-90"
-        title="End voice (Ctrl+D)"
-        data-el="voice-end"
-      >
-        <X className="h-3.5 w-3.5" />
-        End
-      </button>
+    </div>
+  );
+}
+
+// Fullscreen chat has no titlebar: the same voice control sits in a strip at
+// the bottom — the mic (+ keyboard) on the left, the bars centred while voice
+// is on, exactly as at the top.
+export function VoiceStrip() {
+  return (
+    <div data-el="voice-strip" className="h-9 shrink-0 flex items-center bg-card border-t border-border relative">
+      <VoiceCockpit />
+      <div className="px-2">
+        <VoiceMicGroup />
+      </div>
     </div>
   );
 }

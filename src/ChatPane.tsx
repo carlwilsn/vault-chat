@@ -1,9 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import { Markdown, StreamingMarkdown } from "./Markdown";
 import { localPathFromUrl } from "./mdPipeline";
-import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare, Mic, Paperclip, Scan, AtSign } from "lucide-react";
+import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, Camera, X, MessageSquare, Paperclip, Scan, AtSign } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { FullscreenVoiceBar } from "./VoiceCockpit";
 import { usePending, type PendingKind } from "./pendingInput";
 import { voiceImageMime } from "./voiceImages";
 import { fileKind } from "./fileKind";
@@ -11,7 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { dispatchChatAction, isPopout } from "./sync";
 import { COMPACT_THRESHOLD, COMPACTION_DIVIDER_TEXT, windowFor, isCompactionDivider, dividerSummary } from "./chatContext";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
-import { buildViewportContextText, toggleVoice } from "./voice-elevenlabs";
+import { buildViewportContextText } from "./voice-elevenlabs";
 import { findModel, AUTO_MODEL_ID } from "./providers";
 import { loadSkills } from "./skills";
 import { isUnreadableAsText } from "./fileKind";
@@ -344,9 +343,8 @@ export function ChatPane() {
   const chatFullscreen = useStore((s) => s.chatFullscreen && !s.popoutOpen);
   const chatSidebarOpen = useStore((s) => s.chatSidebarOpen);
   const chatsShown = chatFullscreen ? chatSidebarOpen : showChatsPanel;
-  const voiceMode = useStore((s) => s.voiceMode);
   // Fullscreen chat: voice replaces the composer with its waves (VoiceCockpit).
-  const voiceBar = chatFullscreen && voiceMode;
+  const voiceBar = false; // fullscreen voice lives in the bottom strip (VoiceStrip); the composer stays
   const [plusOpen, setPlusOpen] = useState(false);
   const toggleChatsPanel = () =>
     chatFullscreen ? useStore.getState().toggleChatSidebar() : setShowChatsPanel(!showChatsPanel);
@@ -1082,9 +1080,7 @@ export function ChatPane() {
               ))}
             </div>
           )}
-          {voiceBar ? (
-            <FullscreenVoiceBar />
-          ) : (
+          {(
           <div className="relative flex flex-col rounded-2xl border border-border bg-background focus-within:border-ring/40 focus-within:ring-[0.5px] focus-within:ring-ring/20 transition-colors">
             {skillMention && filteredSkills.length > 0 && (
               <div className="absolute bottom-full left-0 right-0 max-h-[240px] overflow-auto bg-popover border-t border-x border-border shadow-lg z-10">
@@ -1215,17 +1211,6 @@ export function ChatPane() {
                 className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pr-20", chatFullscreen ? "!pl-11" : "!pl-3")}
               />
               <div className="absolute right-3 bottom-2 flex items-center gap-1">
-                {!busy && chatFullscreen && (
-                  <button
-                    onClick={toggleVoice}
-                    disabled={!vaultPath}
-                    data-el="composer-voice"
-                    className="h-7 w-7 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-40"
-                    title="Voice (Ctrl+D)"
-                  >
-                    <Mic className="h-3.5 w-3.5" />
-                  </button>
-                )}
                 {!busy && !chatFullscreen && (() => {
                   // Union of what's open in main's panes — synced to
                   // the popout via state broadcast. If any visible

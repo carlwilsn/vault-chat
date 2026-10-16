@@ -485,8 +485,7 @@ export function boot(): void {
     // With the total in the header (the "total" option) the line doesn't repeat it.
     const cost = X.choice("cost") !== "reply" ? "" : typeof c.costUsd === "number" && c.costUsd > 0 ? (c.costUsd < 0.01 ? "<$0.01" : "$" + c.costUsd.toFixed(2)) : "";
     let tone = "", label = "", next = "";
-    if (c.state === "running") { tone = "running"; label = "Working"; }
-    else if (c.state === "sleeping") {
+    if (c.state === "sleeping") {
       tone = "waiting";
       const r = String(c.wakeReason || "").trim();
       label = r ? r[0].toLowerCase() + r.slice(1) : "Waiting";

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { VoiceStrip } from "./VoiceCockpit";
 import { Allotment, LayoutPriority } from "allotment";
 import { invoke } from "@tauri-apps/api/core";
 import type { FileEntry } from "./store";
@@ -532,6 +533,7 @@ export default function App() {
             <ChatPane />
           </div>
         </div>
+        <VoiceStrip />
         {captureOver && (
           <div className="fixed inset-0 z-40 flex flex-col bg-background" data-el="fullscreen-capture">
             <div className="h-8 shrink-0 flex items-center justify-center gap-2 border-b border-border text-[11.5px] text-muted-foreground">

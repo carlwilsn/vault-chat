@@ -58,8 +58,8 @@ export function ongoingWork(
       const word = v.verdict === "pass" ? "verifier passed" : v.verdict === "fail" ? "verifier failed" : "verifier unsure";
       return { tone: v.verdict === "pass" ? "done" : v.verdict === "fail" ? "blocked" : "waiting", label: `Done · ${word}${note ? ` — ${note.trim()}` : ""}`, cost };
     }
-    case "running":
-      return { tone: "running", label: "Working", cost };
+    // A running turn already shows in the chat itself (the streaming reply):
+    // no separate "Working" line.
     case "sleeping": {
       const why = reason ?? lastWakeReason(c);
       const next = c.nextWakeAt && c.nextWakeAt > now - 60_000 ? `next ${formatWake(c.nextWakeAt, now)}` : undefined;
