@@ -11,6 +11,7 @@ import { dispatchChatAction, isPopout } from "./sync";
 import { COMPACT_THRESHOLD, COMPACTION_DIVIDER_TEXT, windowFor, isCompactionDivider, dividerSummary } from "./chatContext";
 import { useStore, type ChatMessage, type FileEntry, type LiveTool, type TodoItem } from "./store";
 import { buildViewportContextText, toggleVoice } from "./voice-elevenlabs";
+import { InlineVoiceWaves } from "./VoiceCockpit";
 import { findModel, AUTO_MODEL_ID } from "./providers";
 import { loadSkills } from "./skills";
 import { isUnreadableAsText } from "./fileKind";
@@ -1209,9 +1210,10 @@ export function ChatPane() {
                 placeholder={archived ? ARCHIVED_THREAD : boxDown ? BOX_UNREACHABLE : !ready ? "Open a vault first" : busy ? "Enter to steer · Tab to queue · Esc to stop" : "Ask anything, or / for commands…"}
                 disabled={!ready}
                 rows={1}
-                className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2 !pr-20", chatFullscreen ? "!pl-11" : "!pl-3")}
+                className={cn("border-0 bg-transparent min-h-0 max-h-[200px] focus-visible:ring-0 shadow-none !py-2", chatFullscreen && voiceMode ? "!pr-32" : "!pr-20", chatFullscreen ? "!pl-11" : "!pl-3")}
               />
               <div className="absolute right-3 bottom-2 flex items-center gap-1">
+                {chatFullscreen && <InlineVoiceWaves />}
                 {chatFullscreen && (
                   <button
                     onClick={toggleVoice}

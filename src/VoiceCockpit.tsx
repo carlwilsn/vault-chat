@@ -104,15 +104,15 @@ export function VoiceMicGroup() {
 }
 
 // Fullscreen chat has no titlebar: while voice is on, the titlebar's waves sit
-// under the composer — just the bars, no line, no buttons (the mic is in the
-// composer).
-export function VoiceStrip() {
+// inside the composer, beside its mic — no extra row, nothing moves.
+export function InlineVoiceWaves() {
   const voiceMode = useStore((s) => s.voiceMode);
+  const connecting = useStore((s) => s.voiceConnecting);
   if (!voiceMode) return null;
   return (
-    <div data-el="voice-strip" className="h-7 shrink-0 relative">
-      <VoiceCockpit />
-    </div>
+    <span data-el="voice-waves" className="flex items-center h-7 px-1">
+      {connecting ? <span className="text-[10.5px] text-muted-foreground animate-pulse">Connecting…</span> : <VoiceBars />}
+    </span>
   );
 }
 

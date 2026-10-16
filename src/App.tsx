@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { VoiceStrip } from "./VoiceCockpit";
 import { Allotment, LayoutPriority } from "allotment";
 import { invoke } from "@tauri-apps/api/core";
 import type { FileEntry } from "./store";
@@ -529,11 +528,8 @@ export default function App() {
               <PanelLeftOpen className="h-3.5 w-3.5" />
             </button>
           )}
-          <div className="flex-1 min-w-0 flex flex-col">
-            <div className="flex-1 min-h-0">
-              <ChatPane />
-            </div>
-            <VoiceStrip />
+          <div className="flex-1 min-w-0">
+            <ChatPane />
           </div>
         </div>
         {captureOver && (
