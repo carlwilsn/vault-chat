@@ -13,6 +13,8 @@ const ExternalSet = Annotation.define<boolean>();
 import { EditorView, keymap } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { Table } from "@lezer/markdown";
+// `$$ … $$` / `\[ … \]` as a block, so TeX lines are never setext / list / rule markup.
+import { DisplayMath } from "./mdMathBlock";
 import { indentUnit } from "@codemirror/language";
 import { history, historyKeymap, defaultKeymap, indentWithTab } from "@codemirror/commands";
 import {
@@ -308,7 +310,7 @@ export function LiveEditor({
         ...historyKeymap,
       ]),
       indentUnit.of("    "),
-      markdown({ extensions: [Table] }),
+      markdown({ extensions: [Table, DisplayMath] }),
       currentFileField,
       livePreviewField,
       liveTheme,

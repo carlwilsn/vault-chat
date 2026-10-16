@@ -12,6 +12,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { Table } from "@lezer/markdown";
 import { ensureSyntaxTree } from "@codemirror/language";
 import { buildDecorations, currentFileField } from "../../src/livePreview.ts";
+import { DisplayMath } from "../../src/mdMathBlock.ts";
 import { scanMath } from "../../src/mdMath.ts";
 import { markdownHtml } from "../../src/mdHtml.ts";
 import { shape } from "./mdShape.ts";
@@ -25,7 +26,7 @@ function decorate(doc: string, cursor = 0): Deco[] {
   const state = EditorState.create({
     doc,
     selection: EditorSelection.cursor(cursor),
-    extensions: [markdown({ extensions: [Table] }), currentFileField],
+    extensions: [markdown({ extensions: [Table, DisplayMath] }), currentFileField],
   });
   // The editor parses a long doc in the background; here, all of it at once.
   const tree = ensureSyntaxTree(state, state.doc.length, 10_000)!;
