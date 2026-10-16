@@ -391,6 +391,9 @@ pub struct BoxSyncReport {
     pub committed: bool,
     /// box/box was merged into master this cycle.
     pub merged: bool,
+    /// The files that merge changed (vault-relative): the open panes showing
+    /// them reload in place (src/liveReload.ts).
+    pub merged_paths: Vec<String>,
     /// The merge gate is closed by this conflict.
     pub conflict: Option<ConflictState>,
     /// Full stderr of the step that failed (fetch/push/merge), if any.
@@ -867,6 +870,14 @@ fn merge_gate(vault: &str) -> Result<Gate, String> {
     Err(full_err(&o, &e, c, "git merge box/box"))
 }
 
+/// What the merge just made changed: `git merge` left the pre-merge HEAD in ORIG_HEAD.
+fn merged_paths(vault: &str) -> Vec<String> {
+    match run_git(vault, &["-c", "core.quotePath=false", "diff", "--name-only", "ORIG_HEAD", "HEAD"]) {
+        Ok((o, _, 0)) => o.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn changes_waiting(vault: &str) -> u32 {
     run_git(vault, &["rev-list", "--count", "HEAD", "--not", "--remotes=box"])
         .ok()
@@ -1000,6 +1011,7 @@ pub fn box_sync_cycle(vault: &str) -> BoxSyncReport {
             Ok(Gate::Merged) => {
                 st.conflict = None;
                 r.merged = true;
+                r.merged_paths = merged_paths(vault);
             }
             Ok(Gate::Conflict(files)) => {
                 let since = st.conflict.as_ref().map(|c| c.since).unwrap_or_else(now_ms);
