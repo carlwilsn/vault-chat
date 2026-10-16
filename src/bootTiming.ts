@@ -62,7 +62,8 @@ function releaseSettled(): void {
  * the phone host) — it still runs, just not in the way.
  */
 export function afterVaultReady(maxMs = 4000): Promise<void> {
-  if (marks.has("vault ready") || bootNow() > 20_000) return Promise.resolve();
+  // Only an app launch in progress waits (no "boot" mark: a harness, a headless run).
+  if (!marks.has("boot") || marks.has("vault ready") || bootNow() > 20_000) return Promise.resolve();
   return new Promise((resolve) => {
     let done = false;
     const finish = () => {
