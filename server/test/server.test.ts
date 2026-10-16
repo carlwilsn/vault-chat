@@ -68,8 +68,7 @@ describe("auth", () => {
     expect(r.status).toBe(200);
     const j = await r.json();
     expect(j.path).toBe("notes/ideas.md");
-    expect(Buffer.from(j.base64, "base64").toString("utf8")).toBe("- an idea
-");
+    expect(Buffer.from(j.base64, "base64").toString("utf8")).toBe("- an idea\n");
     expect((await get("../outside.md")).status).toBe(403);
     expect((await get(join(home, "phone-token"))).status).toBe(403);
     expect((await get(".git/config")).status).toBe(403);
