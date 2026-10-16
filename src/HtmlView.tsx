@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { rewriteAssetUrls } from "./htmlAssets";
+import { rewriteAssetUrls, resolveRelative } from "./htmlAssets";
+import { invoke } from "@tauri-apps/api/core";
+import { isUnreadableAsText } from "./fileKind";
 import { openUrl, isExternalHref } from "./opener";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
@@ -12,10 +14,25 @@ const LINK_INTERCEPT = `<script>(function(){
     while (el && el.tagName !== 'A') el = el.parentElement;
     if (!el) return;
     var href = el.getAttribute('href');
-    if (!href || !isExternal(href)) return;
+    if (!href) return;
+    // The page has no address of its own (srcdoc): an in-page "#x" link would
+    // resolve against the app's address and load vault-chat in this frame.
+    if (href.charAt(0) === '#') {
+      e.preventDefault();
+      var id = decodeURIComponent(href.slice(1));
+      var t = id ? (document.getElementById(id) || document.querySelector('[name="' + id.replace(/"/g, '') + '"]')) : null;
+      if (t) t.scrollIntoView({ block: 'start' }); else if (!id) window.scrollTo(0, 0);
+      return;
+    }
+    if (/^javascript:/i.test(href)) return;
     e.preventDefault();
     e.stopPropagation();
-    try { parent.postMessage({ __vc_open_url: href }, '*'); } catch(_) {}
+    if (isExternal(href)) {
+      try { parent.postMessage({ __vc_open_url: href }, '*'); } catch(_) {}
+    } else {
+      // Another file in the vault: vault-chat opens it in its own viewer.
+      try { parent.postMessage({ __vc_open_path: href }, '*'); } catch(_) {}
+    }
   }
   document.addEventListener('click', handle, true);
   document.addEventListener('auxclick', handle, true);
@@ -161,8 +178,24 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
       if (e.source !== iframeRef.current?.contentWindow) return;
       const data = e.data as {
         __vc_open_url?: unknown;
+        __vc_open_path?: unknown;
         __vc_marquee_result?: { text?: unknown; before?: unknown; after?: unknown };
       } | null;
+      if (typeof data?.__vc_open_path === "string" && path) {
+        const rel = data.__vc_open_path.replace(/^file:\/\/\/?/, "").split("#")[0].split("?")[0];
+        if (rel) {
+          const target = /^([a-zA-Z]:[\/\\]|[\/\\])/.test(rel) ? rel : resolveRelative(path, decodeURIComponent(rel));
+          void (async () => {
+            try {
+              const content = isUnreadableAsText(target) ? "" : await invoke<string>("read_text_file", { path: target });
+              useStore.getState().setCurrentFile(target, content);
+            } catch (err) {
+              console.warn("[html] couldn't open linked file:", target, err);
+            }
+          })();
+        }
+        return;
+      }
       if (typeof data?.__vc_open_url === "string" && isExternalHref(data.__vc_open_url)) {
         openUrl(data.__vc_open_url).catch((err) =>
           console.error("[opener] failed:", err),
@@ -352,7 +385,11 @@ export function HtmlView({ content, path }: { content: string; path?: string | n
           ref={iframeRef}
           sandbox="allow-scripts"
           srcDoc={srcDoc}
-          className="absolute inset-0 w-full h-full bg-background"
+          // Pages render as authored for a normal (light) browser: the app's dark
+          // theme must not flip a page's own `prefers-color-scheme: dark` styles,
+          // and a page with no background shows white, not the app's colour.
+          style={{ colorScheme: "light" }}
+          className="absolute inset-0 w-full h-full bg-white"
           title="HTML preview"
         />
         {marqueeOn && (

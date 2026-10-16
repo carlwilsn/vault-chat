@@ -5,7 +5,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 
 // Resolve a relative path against the directory of `baseFile`.
 // Mirrors MarkdownView's resolveRelative.
-function resolveRelative(baseFile: string, rel: string): string {
+export function resolveRelative(baseFile: string, rel: string): string {
   const sep = baseFile.includes("\\") ? "\\" : "/";
   const baseParts = baseFile.slice(0, baseFile.lastIndexOf(sep)).split(sep);
   const relParts = rel.replace(/^\.\/+/, "").split(/[\/\\]/);
