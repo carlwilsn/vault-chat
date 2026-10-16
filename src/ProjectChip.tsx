@@ -187,8 +187,8 @@ export function ChatTitle() {
   const projects = useProjects();
   const proj = conv?.project ? projectName(conv.project, projects) : "";
   return (
-    <div data-el="chat-title" className="flex items-baseline gap-1.5 min-w-0 max-w-[60vw] text-[13px]">
-      <span className="font-semibold text-foreground truncate">{conv?.title || "New chat"}</span>
+    <div data-el="chat-title" className="flex items-baseline gap-1.5 min-w-0 max-w-[60%] text-[12px]">
+      <span className="text-foreground/85 truncate">{conv?.title || "New chat"}</span>
       {proj && <span className="text-muted-foreground truncate">· {proj}</span>}
     </div>
   );
