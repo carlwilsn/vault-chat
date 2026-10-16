@@ -256,6 +256,13 @@ describe("POST /api/v1/voice/transcript", () => {
     const rows = (conversationsSummary(vault) as any).conversations;
     expect(rows.find((r: any) => r.id === id)?.source).toBe("voice");
     expect((await voice.voiceTranscript(deps, { role: "user", text: "  " })).status).toBe(400);
+    // The agent's audio tags (an older client sends them) never reach the saved text.
+    await voice.voiceTranscript(deps, { convId: id, role: "assistant", text: "[excited] Yes, it absolutely does!" });
+    const bare = await voice.voiceTranscript(deps, { convId: id, role: "assistant", text: "[laughs]" });
+    expect(bare.status).toBe(200);
+    const after = await readConv(vault, id);
+    expect(after?.messages.slice(-1).map((m: any) => m.content)).toEqual(["Yes, it absolutely does!"]);
+    expect(after?.messages.length).toBe(4);
   });
 });
 

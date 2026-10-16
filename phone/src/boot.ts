@@ -5,6 +5,7 @@
 import { installMock } from "./mock";
 import * as X from "./extras";
 import { createPhoneMarkdown, domToHtml } from "./markdown";
+import { stripAudioTags } from "../../src/voiceTags";
 
 export function boot(): void {
   const qs = new URLSearchParams(location.search);
@@ -2067,7 +2068,7 @@ export function boot(): void {
         onDisconnect: () => { if (!timedOut) vTeardown(); },
         onError: (m) => setVErr(typeof m === "string" ? m : (m && m.message) || "voice error"),
         onAudio: (b64) => { try { vAgentEnvPush(b64); } catch {} },
-        onMessage: ({ message, role }) => { const text = (message || "").trim(); if (text) vSaveLine(role === "user" ? "user" : "assistant", text); },
+        onMessage: ({ message, role }) => { const raw = (message || "").trim(); const text = role === "user" ? raw : stripAudioTags(raw); if (text) vSaveLine(role === "user" ? "user" : "assistant", text); },
         // Mode leaving "speaking" = the playback buffer drained (or barge-in) —
         // everything that arrived was heard, so drop the queued envelope tail.
         onModeChange: ({ mode }) => { vAgentSpeaking = mode === "speaking"; if (!vAgentSpeaking) vAgentEnvReset(); },

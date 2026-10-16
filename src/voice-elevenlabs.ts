@@ -14,6 +14,7 @@ import { voiceLineEntry, voiceToolEntry } from "./activityCore";
 import { cachedVoiceMath, displayVoiceMath, prefetchVoiceMath } from "./voiceMath";
 import { VoiceImagePusher, lookingAtNote, thumbDataUrl, voiceImageMime, type PushResult } from "./voiceImages";
 import { fileKind, isUnreadableAsText } from "./fileKind";
+import { stripAudioTags } from "./voiceTags";
 
 // The shared context stream (src/activity.ts), when voice runs on this laptop:
 // the box records its own sessions (server/voice.ts). Loaded lazily — the box
@@ -57,6 +58,11 @@ let transcriptMirror: { push: (m: ChatMessage) => unknown } | null = null;
 // this vault for ScrollTo.
 let boxVaultRoot: string | null = null;
 function voiceAppend(m: ChatMessage): void {
+  if (m.role === "assistant" && !m.system && typeof m.content === "string") {
+    const content = stripAudioTags(m.content);
+    if (!content) return;
+    if (content !== m.content) m = { ...m, content };
+  }
   // Spoken math shows as notation (voiceMath.ts): already formatted (the agent's
   // lines are prefetched while their audio plays), or formatted when it returns.
   const shown = m.system ? undefined : cachedVoiceMath(String(m.content ?? ""));
@@ -988,7 +994,9 @@ ${shared}` : "");
         void finalizeSessionMutations();
       },
       onMessage: ({ message, role }) => {
-        const text = (message ?? "").trim();
+        // The agent's audio tags ("[excited]") shaped the audio; the transcript drops them.
+        const raw = (message ?? "").trim();
+        const text = role === "agent" ? stripAudioTags(raw) : raw;
         if (!text) return;
         // Live append: each completed user/agent turn lands in the
         // chat pane as it arrives, not buffered until session end.

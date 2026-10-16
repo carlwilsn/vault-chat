@@ -24,6 +24,7 @@ import { runGit } from "./git";
 import { conversationDetail, dispatchVoiceTool } from "./phoneData";
 import { activitySummary, appendActivity, projectContextFor } from "./activity";
 import { voiceLineEntry, voiceToolEntry, clean } from "../src/activityCore";
+import { stripAudioTags } from "../src/voiceTags";
 
 export type VoiceDeps = {
   /** The vault's working copy, its name on the box, and whether it is the main one (the store's). */
@@ -430,8 +431,14 @@ const ENDED_LINE = /^voice session ended\b/i;
  * laptop's local id, an engine chat) starts a new one, tagged with the
  * project of `fromConvId` (the chat the user was in). Returns the id. */
 export async function voiceTranscript(d: VoiceDeps, b: any): Promise<{ status: number; body: Record<string, unknown> }> {
-  const text = s(b?.text).trim();
-  if (!text) return { status: 400, body: { error: "empty transcript line" } };
+  const said = s(b?.text).trim();
+  if (!said) return { status: 400, body: { error: "empty transcript line" } };
+  // The agent's audio tags ("[excited]") are for its TTS, not the transcript (an older client sends them).
+  const text = b?.role !== "user" && b?.system !== true ? stripAudioTags(said) : said;
+  if (!text) {
+    voiceActivity(d.vault);
+    return { status: 200, body: { ok: true, convId: s(b?.convId) || null } };
+  }
   const ended = b?.ended === true || (b?.system === true && ENDED_LINE.test(text));
   voiceActivity(d.vault, ended);
   const msg = { role: b?.role === "user" ? ("user" as const) : ("assistant" as const), content: text.slice(0, 20_000), ...(b?.system === true ? { system: true } : {}) };
