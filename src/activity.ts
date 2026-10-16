@@ -21,8 +21,11 @@ import {
   ACTIVITY_LOG,
   ACTIVITY_LOG_OLD,
   CAPTURES_DIR,
+  CONTEXT_IMAGE_MAX_BYTES,
   appendToLog,
+  captureCaption,
   parseLog,
+  pickContextImage,
   projectContextBlock,
   sanitizeEntry,
   summarizeActivity,
@@ -98,6 +101,8 @@ function splitDataUrl(u: string): { b64: string; mime: string } | null {
 }
 
 async function writeBatch(vault: string, items: Pending[]): Promise<void> {
+  // A capture goes into the stream downscaled (a later request may send it to a model).
+  for (const p of items) if (p.input.imageDataUrl) p.input = { ...p.input, imageDataUrl: await fitCapture(p.input.imageDataUrl) };
   const link = await boxLinkFor(vault).catch(() => null);
   if (link) {
     for (const p of items) await postOne(link, p.input);
@@ -121,6 +126,40 @@ async function writeBatch(vault: string, items: Pending[]): Promise<void> {
     text = r.log;
   }
   await invoke("write_text_file", { path: log, contents: text });
+}
+
+/** Longest side of a stored capture. */
+export const CAPTURE_MAX_SIDE = 1568;
+
+/**
+ * A capture made fit for a model request: at most CAPTURE_MAX_SIDE px on its
+ * longest side and CONTEXT_IMAGE_MAX_BYTES (JPEG when it has to shrink).
+ * Where the page cannot draw (node, tests) the original is kept.
+ */
+export async function fitCapture(dataUrl: string): Promise<string> {
+  const g = globalThis as { createImageBitmap?: (b: Blob) => Promise<ImageBitmap>; OffscreenCanvas?: typeof OffscreenCanvas; FileReader?: typeof FileReader };
+  const img = splitDataUrl(dataUrl);
+  if (!img || !g.createImageBitmap || !g.OffscreenCanvas || !g.FileReader) return dataUrl;
+  try {
+    const bin = atob(img.b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const bmp = await g.createImageBitmap(new Blob([bytes], { type: img.mime }));
+    const scale = Math.min(1, CAPTURE_MAX_SIDE / Math.max(bmp.width, bmp.height));
+    if (scale === 1 && bytes.length <= CONTEXT_IMAGE_MAX_BYTES) return dataUrl;
+    const c = new g.OffscreenCanvas(Math.max(1, Math.round(bmp.width * scale)), Math.max(1, Math.round(bmp.height * scale)));
+    c.getContext("2d")?.drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await c.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+    const Reader = g.FileReader;
+    return await new Promise<string>((res, rej) => {
+      const r = new Reader();
+      r.onload = () => res(String(r.result));
+      r.onerror = () => rej(r.error);
+      r.readAsDataURL(blob);
+    });
+  } catch {
+    return dataUrl;
+  }
 }
 
 async function postOne(link: Link, input: ActivityInput): Promise<void> {
@@ -167,18 +206,24 @@ export function currentProject(): string | null {
  * Box mode asks the box (the log is there); `timeoutMs` keeps it off the
  * critical path.
  */
-export async function sharedContextFor(vault: string | null | undefined, project: string | null = currentProject(), timeoutMs = 2500): Promise<SharedContext> {
+export async function sharedContextFor(
+  vault: string | null | undefined,
+  project: string | null = currentProject(),
+  timeoutMs = 2500,
+  /** Leave out this chat's exchange (the surface carries its transcript already). */
+  excludeConv: string | null = null,
+): Promise<SharedContext> {
   const none = { activity: "", project: "" };
   if (!vault) return none;
   await flushActivity().catch(() => undefined);
   try {
     const link = await boxLinkFor(vault).catch(() => null);
     if (link) {
-      const q = project ? `?project=${encodeURIComponent(project)}` : "";
-      const r = await boxGet(link, `/api/v1/activity/summary${q}`, timeoutMs);
+      const q = [project ? `project=${encodeURIComponent(project)}` : "", excludeConv ? `exclude=${encodeURIComponent(excludeConv)}` : ""].filter(Boolean).join("&");
+      const r = await boxGet(link, `/api/v1/activity/summary${q ? `?${q}` : ""}`, timeoutMs);
       return { activity: typeof r?.activity === "string" ? r.activity : "", project: typeof r?.project === "string" ? r.project : "" };
     }
-    return { activity: await localSummary(vault, project), project: await localProjectContext(vault, project) };
+    return { activity: await localSummary(vault, project, Date.now(), excludeConv), project: await localProjectContext(vault, project) };
   } catch (e) {
     console.warn("[activity] shared context unavailable:", e);
     return none;
@@ -193,9 +238,60 @@ async function readOr(path: string): Promise<string> {
   }
 }
 
-export async function localSummary(vault: string, project: string | null, now = Date.now()): Promise<string> {
-  const text = (await readOr(join(vault, ACTIVITY_LOG_OLD))) + "\n" + (await readOr(join(vault, ACTIVITY_LOG)));
-  return summarizeActivity(parseLog(text), { now, project });
+export async function localSummary(vault: string, project: string | null, now = Date.now(), excludeConv: string | null = null): Promise<string> {
+  return summarizeActivity(await localEntries(vault), { now, project, excludeConv });
+}
+
+async function localEntries(vault: string): Promise<ActivityEntry[]> {
+  return parseLog((await readOr(join(vault, ACTIVITY_LOG_OLD))) + "\n" + (await readOr(join(vault, ACTIVITY_LOG))));
+}
+
+/** The capture a request refers to, as data for an image part. */
+export type ContextImageData = { path: string; dataUrl: string; caption: string; sourcePath?: string; sourceAnchor?: string };
+
+/**
+ * The latest capture, when this request is about it ("this figure", "what I
+ * circled"; with `deictic`, "this" within a few minutes of the capture) —
+ * activityCore pickContextImage. Box mode asks the box (the captures are
+ * there); otherwise this vault's own. One image, at most
+ * CONTEXT_IMAGE_MAX_BYTES. null when there is none, it is too big, or
+ * anything fails.
+ */
+export async function contextImageFor(
+  vault: string | null | undefined,
+  text: string,
+  o: { deictic?: boolean; exclude?: string[] } = {},
+): Promise<ContextImageData | null> {
+  if (!vault || !text.trim()) return null;
+  await flushActivity().catch(() => undefined);
+  try {
+    const link = await boxLinkFor(vault).catch(() => null);
+    if (link) {
+      const r = await boxPost(link, "/api/v1/activity/image", { text, deictic: !!o.deictic, exclude: o.exclude ?? [] });
+      const im = r.ok ? (r.data?.image as { path?: string; mime?: string; dataBase64?: string; caption?: string } | null | undefined) : null;
+      if (!im?.dataBase64 || !im.path || im.dataBase64.length * 0.75 > CONTEXT_IMAGE_MAX_BYTES) return null;
+      return { path: im.path, dataUrl: `data:${im.mime ?? "image/png"};base64,${im.dataBase64}`, caption: String(im.caption ?? "") };
+    }
+    const now = Date.now();
+    const e = pickContextImage(await localEntries(vault), text, { now, deictic: o.deictic, exclude: o.exclude });
+    if (!e?.image) return null;
+    const bytes = await invoke<number[]>("read_binary_file", { path: join(vault, e.image) });
+    if (!bytes?.length || bytes.length > CONTEXT_IMAGE_MAX_BYTES) return null;
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.slice(i, i + 0x8000));
+    const ext = (e.image.split(".").pop() ?? "png").toLowerCase();
+    const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/png";
+    return {
+      path: e.image,
+      dataUrl: `data:${mime};base64,${btoa(bin)}`,
+      caption: captureCaption(e, now),
+      ...(e.path ? { sourcePath: e.path } : {}),
+      ...(e.where ? { sourceAnchor: e.where } : {}),
+    };
+  } catch (err) {
+    console.warn("[activity] context image unavailable:", err);
+    return null;
+  }
 }
 
 async function localProjectContext(vault: string, project: string | null): Promise<string> {

@@ -272,11 +272,16 @@ describe("the summary", () => {
       E(4, { kind: "edit", modality: "ctrl-k", text: '"tighten"', path: "coconut/readme.md", project: "coconut" }),
       E(3, { kind: "chat", modality: "chat", text: 'Chat "Me"', convId: "me" }),
       E(2, { kind: "ask", modality: "ctrl-l", text: 'asked "why"', project: "coconut" }),
+      E(6, { kind: "voice", modality: "voice", text: "Voice wrote coconut/plan.md", project: "coconut" }),
     ];
     const s = core.summarizeActivity(entries, { now, project: "coconut", excludeConv: "me" });
-    expect(s).toContain("## Project coconut");
+    // Now: the last turn on each surface; then the earlier entries, the project's first.
+    expect(s).toContain("## Now");
+    expect(s).toContain("## Earlier — project coconut");
+    expect(s).toContain("## Earlier — elsewhere in the vault");
     expect(s.indexOf("tighten")).toBeLessThan(s.indexOf("Voice edited"));
     expect(s.indexOf('asked "why"')).toBeLessThan(s.indexOf("Voice edited"));
+    expect(s.indexOf("Voice wrote coconut/plan.md")).toBeLessThan(s.indexOf("Voice edited"));
     expect(s).not.toContain('Chat "Me"');
     const later = core.summarizeActivity(entries, { now, since: now - 2.5 * 60_000 });
     expect(later).toContain('asked "why"');

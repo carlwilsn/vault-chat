@@ -21,7 +21,7 @@ import {
   type InlineTurn,
 } from "./inlineEdit";
 import { loadVaultNorthStar } from "./meta";
-import { recordActivity, sharedContextFor, sharedContextText } from "./activity";
+import { contextImageFor, recordActivity, sharedContextFor, sharedContextText } from "./activity";
 import { editSummary } from "./activityCore";
 
 const KATEX_OPTIONS = { strict: "ignore", errorColor: "currentColor" } as const;
@@ -135,6 +135,7 @@ export function InlineEditPrompt({
     imageDataUrl: string;
     sourcePath?: string;
     sourceAnchor?: string | null;
+    caption?: string;
   };
   const [extraImages, setExtraImages] = useState<CapturedImage[]>([]);
   const [capturing, setCapturing] = useState(false);
@@ -172,7 +173,9 @@ export function InlineEditPrompt({
   const abortRef = useRef<AbortController | null>(null);
   // The shared context stream's block (project memory + recent activity),
   // fetched once per popover on its first turn.
-  const sharedRef = useRef<string | null>(null);
+  const sharedRef = useRef<Partial<Record<InlineEditMode, string>>>({});
+  // Captures this popover already sent with a request (never twice).
+  const imagesGivenRef = useRef<string[]>([]);
   // Refs + state for the bottom-edge resize-to-expand handle. The
   // result area defaults to a ~20-line cap; dragging the handle at the
   // popup's bottom unfurls it (scroll-style) until either the user
@@ -361,8 +364,24 @@ export function InlineEditPrompt({
     abortRef.current = ac;
     // Once per popover: the project's memory and what Carl did lately on
     // every surface (the box's stream in box mode). Never blocks for long.
-    if (sharedRef.current === null) sharedRef.current = sharedContextText(await sharedContextFor(vaultPath));
-    const sharedContext = sharedRef.current || undefined;
+    // Ctrl+L's first turn carries the open chat's last turns (chatPaneHistory),
+    // so its summary leaves that chat's exchange out — said once, not twice.
+    const activeConv = useStore.getState().activeConversationId;
+    if (sharedRef.current[mode] === undefined) {
+      sharedRef.current[mode] = sharedContextText(await sharedContextFor(vaultPath, undefined, undefined, mode === "ask" ? activeConv : null));
+    }
+    const sharedContext = sharedRef.current[mode] || undefined;
+    // "This figure", "what I circled": the latest capture itself, when the
+    // request is about it and carries no image of its own (one, capped, once
+    // per popover). With a selection, "this" is the selection, not an image.
+    let turnImages = extraImages;
+    if (extraImages.length === 0 && !(mode === "ask" && request.imageDataUrl)) {
+      const img = await contextImageFor(vaultPath, currentPrompt, { deictic: !request.selection?.trim(), exclude: imagesGivenRef.current });
+      if (img) {
+        imagesGivenRef.current.push(img.path);
+        turnImages = [{ imageDataUrl: img.dataUrl, sourcePath: img.sourcePath, sourceAnchor: img.sourceAnchor ?? null, caption: img.caption }];
+      }
+    }
     try {
       if (mode === "edit") {
         let acc = "";
@@ -375,7 +394,7 @@ export function InlineEditPrompt({
           after: request.after,
           language: request.language,
           priorTurns: nextPrior,
-          extraImages,
+          extraImages: turnImages,
           northStar: northStarRef.current,
           sharedContext,
           abortSignal: ac.signal,
@@ -408,7 +427,7 @@ export function InlineEditPrompt({
           pdfContext: request.pdfContext,
           attachedFiles,
           priorTurns: nextPrior,
-          extraImages,
+          extraImages: turnImages,
           chatPaneHistory,
           northStar: northStarRef.current,
           sharedContext,

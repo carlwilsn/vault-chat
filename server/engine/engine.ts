@@ -33,7 +33,8 @@ import { capabilitiesOf, capabilityNote, learn } from "./capabilities";
 import { join } from "node:path";
 import { StreamWire } from "../../src/streamWire";
 import { COMPACTION_DIVIDER_TEXT } from "../../src/chatContext";
-import { activitySummary, appendActivity } from "../activity";
+import { activitySummary, appendActivity, contextImage } from "../activity";
+import { CAPTURE_FRESH_MS, chatExchangeEntry } from "../../src/activityCore";
 
 export type EngineDeps = {
   vault: string;
@@ -280,6 +281,8 @@ export class Engine {
   private childOf = new Map<string, string>(); // subagent threadId → parent conversation id
   /** The shared activity stream: when each conversation last saw it (in memory; after a restart a turn sees the whole window again). */
   private activitySeen = new Map<string, number>();
+  /** Captures already sent to each conversation's model (in memory): one is never attached twice. */
+  private imagesGiven = new Map<string, Set<string>>();
   private jobLogs = new Map<string, string[]>(); // convId → its StartJob logs
 
   constructor(private d: EngineDeps) {
@@ -428,19 +431,27 @@ export class Engine {
       }
     }
     const { paths, attachments } = this.saveImages(id, body);
-    const context = typeof body.context === "string" && body.context.trim() ? body.context.trim() : undefined;
+    let context = typeof body.context === "string" && body.context.trim() ? body.context.trim() : undefined;
     const shown = textIn || "(image)";
-    // The shared stream: a pointer to this chat (its messages are stored already).
+    // "This plot", "what I circled": the latest capture itself goes with the turn (one, capped), once per chat.
+    const given = this.imagesGiven.get(id) ?? new Set<string>();
+    this.imagesGiven.set(id, given);
+    if (paths.length) {
+      // The message carries its own image — most likely that capture: never sent again.
+      const latest = contextImage(this.d.vault, "the image", {});
+      if (latest && Date.now() - latest.entry.ts <= CAPTURE_FRESH_MS) given.add(latest.rel);
+    } else if (textIn) {
+      const img = contextImage(this.d.vault, textIn, { deictic: true, exclude: given });
+      if (img) {
+        given.add(img.rel);
+        paths.push(img.abs);
+        context = [context, img.caption].filter(Boolean).join("\n\n");
+      }
+    }
+    // The shared stream: this chat's latest exchange (Carl's side now; the reply when the turn ends).
     const now = (await readConv(this.d.vault, id).catch(() => null)) ?? conv;
-    const title = String(now.title ?? "").trim();
     const proj = now.project;
-    appendActivity(this.d.vault, {
-      kind: "chat",
-      modality: "chat",
-      text: `Chat "${(title || shown).slice(0, 120)}"`,
-      convId: id,
-      ...(typeof proj === "string" && proj ? { project: proj } : {}),
-    });
+    appendActivity(this.d.vault, chatExchangeEntry({ convId: id, title: String(now.title ?? "").trim() || shown, user: shown, agent: null, project: typeof proj === "string" ? proj : null }));
     this.nudged.delete(id);
     // An open question: this message is the answer.
     if (this.live.get(id)?.ask || conv.pendingAsk) {
@@ -1010,6 +1021,11 @@ export class Engine {
     const hasBody = !!(content.trim() || l.tools.length);
     let conv = hasBody ? await appendMessage(vault, l.convId, msg, meta) : await patchMeta(vault, l.convId, meta);
     setLive(this.d.vault, l.convId, false);
+    // The shared stream: this chat's latest exchange, now with the reply (Ctrl+L, Ctrl+K, voice read it).
+    if (hasBody && !l.cut && conv) {
+      const lastUser = [...(conv.messages ?? [])].reverse().find((m: any) => m.role === "user" && !m.hidden && !m.system && String(m.content ?? "").trim());
+      appendActivity(vault, chatExchangeEntry({ convId: l.convId, title: conv.title, user: lastUser?.content ?? "", agent: content, project: typeof conv.project === "string" ? conv.project : null }));
+    }
     this.log(`turn ${l.kind} on ${l.convId} ${status}${l.cut ? " (cut)" : ""} → ${state}`);
 
     // Cost, from the rollout's response ids (async; lands a few seconds later).

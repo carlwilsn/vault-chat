@@ -16,7 +16,7 @@ import { validVaultName } from "./sync";
 import { validKeyName } from "./keys";
 import { projectsList, setProject } from "./projectRoutes";
 import { voiceTool, voiceSession, voiceTranscript, type VoiceDeps } from "./voice";
-import { activityPost, activitySummaryRoute } from "./activity";
+import { activityImageRoute, activityPost, activitySummaryRoute } from "./activity";
 import PHONE_PAGE_INLINE from "../src-tauri/assets/phone.html";
 import VOICE_PAGE_INLINE from "../src-tauri/assets/voice.html";
 import PHONE_SW_INLINE from "../src-tauri/assets/phone-sw.js?raw";
@@ -349,6 +349,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, hooks: ServerHo
   }
   if (path === "/api/v1/activity/summary" && method === "GET") {
     return json(res, 200, await activitySummaryRoute(vault, q));
+  }
+  if (path === "/api/v1/activity/image" && method === "POST") {
+    return json(res, 200, activityImageRoute(vault, await jsonBody(req)));
   }
 
   switch (`${method} ${path}`) {
