@@ -1588,6 +1588,126 @@ fn open_terminal(cwd: Option<String>) -> Result<(), String> {
     }
 }
 
+/// The command line for a shell on the box, in a vault's working copy:
+/// `ssh -t user@host "cd '<path>' && exec $SHELL -l"`. Inputs are checked
+/// (host/user charset, path absolute, no control characters) and the path is
+/// single-quoted for the box's shell, so nothing in it is interpreted there.
+fn box_ssh_argv(host: &str, user: &str, path: &str) -> Result<Vec<String>, String> {
+    let ok_host = !host.is_empty()
+        && host.len() <= 253
+        && !host.starts_with('-')
+        && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':'));
+    if !ok_host {
+        return Err(format!("bad box host: {:?}", host));
+    }
+    let ok_user = !user.is_empty()
+        && user.len() <= 64
+        && !user.starts_with('-')
+        && user.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    if !ok_user {
+        return Err(format!("bad box user: {:?}", user));
+    }
+    if !path.starts_with('/') || path.len() > 4096 || path.chars().any(|c| c.is_control()) {
+        return Err(format!("bad box path: {:?}", path));
+    }
+    let quoted = format!("'{}'", path.replace('\'', r"'\''"));
+    Ok(vec![
+        "ssh".to_string(),
+        "-t".to_string(),
+        format!("{}@{}", user, host),
+        format!("cd {} && exec $SHELL -l", quoted),
+    ])
+}
+
+/// POSIX-shell quoting of one word (for the macOS Terminal script line).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn sh_quote(word: &str) -> String {
+    if !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || "@%+=:,./-_".contains(c)) {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
+/// Run `argv` in a new terminal window (the same terminals `open_terminal` uses).
+fn launch_in_new_terminal(argv: &[String]) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Windows Terminal when there is one (`;` is its command separator: escaped),
+        // else the command in a console window of its own (CREATE_NEW_CONSOLE: the
+        // same as `cmd /c start`, without cmd's quoting rules).
+        let wt_args: Vec<String> = argv.iter().map(|a| a.replace(';', "\\;")).collect();
+        if Command::new("wt")
+            .arg("-w")
+            .arg("new")
+            .arg("new-tab")
+            .args(&wt_args)
+            .creation_flags(0x08000000)
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+        Command::new(&argv[0])
+            .args(&argv[1..])
+            .creation_flags(0x00000010)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let line = argv.iter().map(|a| sh_quote(a)).collect::<Vec<_>>().join(" ");
+        let script_str = line.replace('\\', "\\\\").replace('"', "\\\"");
+        Command::new("osascript")
+            .args([
+                "-e",
+                &format!("tell application \"Terminal\" to do script \"{}\"", script_str),
+                "-e",
+                "tell application \"Terminal\" to activate",
+            ])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let with = |pre: &[&str]| -> Vec<String> {
+            pre.iter().map(|s| s.to_string()).chain(argv.iter().cloned()).collect()
+        };
+        let attempts: [(&str, Vec<String>); 6] = [
+            ("kitty", with(&[])),
+            ("ptyxis", with(&["--new-window", "--"])),
+            ("konsole", with(&["-e"])),
+            ("gnome-terminal", with(&["--"])),
+            ("x-terminal-emulator", with(&["-e"])),
+            ("xterm", with(&["-e"])),
+        ];
+        for (term, args) in &attempts {
+            if Command::new(term)
+                .args(args)
+                .env_remove("PYTHONHOME")
+                .env_remove("PYTHONPATH")
+                .spawn()
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        Err("no terminal emulator found".to_string())
+    }
+}
+
+/// A terminal on the box, in a vault's working copy, over SSH (the tailnet).
+#[tauri::command]
+fn open_box_terminal(host: String, user: String, path: String) -> Result<(), String> {
+    let argv = box_ssh_argv(&host, &user, &path)?;
+    launch_in_new_terminal(&argv)
+}
+
 #[tauri::command]
 async fn read_text_file(path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -7145,6 +7265,7 @@ pub fn run() {
             schedules_read,
             schedules_write_all,
             open_terminal,
+            open_box_terminal,
             git_init_if_needed,
             git_commit_all,
             git_repo_root_for_file,
@@ -7205,4 +7326,50 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod box_terminal_tests {
+    use super::{box_ssh_argv, sh_quote};
+
+    #[test]
+    fn ssh_argv_cds_into_the_vault_and_starts_a_login_shell() {
+        let a = box_ssh_argv("thinkbox", "carlwilsn", "/home/carlwilsn/vaults/school2").unwrap();
+        assert_eq!(
+            a,
+            vec!["ssh", "-t", "carlwilsn@thinkbox", "cd '/home/carlwilsn/vaults/school2' && exec $SHELL -l"]
+        );
+        let ip = box_ssh_argv("100.79.81.14", "carl_w.1", "/v").unwrap();
+        assert_eq!(ip[2], "carl_w.1@100.79.81.14");
+    }
+
+    #[test]
+    fn path_is_single_quoted_for_the_box_shell() {
+        let a = box_ssh_argv("box", "u", "/v/it's $HOME; rm -rf /`x`").unwrap();
+        assert_eq!(a[3], r"cd '/v/it'\''s $HOME; rm -rf /`x`' && exec $SHELL -l");
+    }
+
+    #[test]
+    fn bad_inputs_are_refused() {
+        for (h, u, p) in [
+            ("", "u", "/v"),
+            ("-oProxyCommand=x", "u", "/v"),
+            ("box host", "u", "/v"),
+            ("box;x", "u", "/v"),
+            ("box", "", "/v"),
+            ("box", "-l", "/v"),
+            ("box", "u@x", "/v"),
+            ("box", "u", "relative/v"),
+            ("box", "u", ""),
+            ("box", "u", "/v\nrm -rf /"),
+        ] {
+            assert!(box_ssh_argv(h, u, p).is_err(), "{:?}", (h, u, p));
+        }
+    }
+
+    #[test]
+    fn sh_quote_words() {
+        assert_eq!(sh_quote("carl@box"), "carl@box");
+        assert_eq!(sh_quote("cd 'a' && x"), r"'cd '\''a'\'' && x'");
+    }
 }
