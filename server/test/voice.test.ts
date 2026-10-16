@@ -205,12 +205,28 @@ describe("POST /api/v1/voice/tool", () => {
 });
 
 describe("the vault's own voice tools on the box", () => {
-  it("run in the sandbox runner with the args on stdin and only their declared keys", async () => {
+  it("run in the sandbox runner with the args on stdin and every key as an environment variable", async () => {
     const r = await tool("EchoKey", { word: "hello" });
     expect(r).toContain('"word":"hello"');
     expect(r).toContain("demo=demo-canary");
-    expect(r).toContain("other=none");
+    // Carl's call: the keys he adds are the agent's — all of them, not only the declared.
+    expect(r).toContain("other=other-canary");
     expect(r).toContain("pwd=echo");
+  });
+
+  it("voice's Bash has the keys as environment variables (names mapped), the key files still hidden", async () => {
+    const r = await tool("Bash", { command: 'echo "d=${DEMO_KEY:-none} o=${OTHER_KEY:-none}"' });
+    expect(r).toContain("d=demo-canary o=other-canary");
+    // A key synced since is in the next command (read at each spawn).
+    const keys = await import("../keys");
+    await keys.saveKeys(join(root, "secrets"), { "user.DEMO_KEY": "demo-canary", "user.OTHER_KEY": "other-canary", "user.lambda_api_key": "lambda-canary", "api.openrouter": "or-canary" });
+    try {
+      const r2 = await tool("Bash", { command: 'echo "l=${LAMBDA_API_KEY:-none} or=${#OPENROUTER_API_KEY}"' });
+      expect(r2).toContain("l=lambda-canary or=9");
+      expect(keys.agentKeyEnvNames()).toEqual(["DEMO_KEY", "LAMBDA_API_KEY", "OPENROUTER_API_KEY", "OTHER_KEY"]);
+    } finally {
+      await keys.saveKeys(join(root, "secrets"), { "user.DEMO_KEY": "demo-canary", "user.OTHER_KEY": "other-canary" });
+    }
   });
 });
 

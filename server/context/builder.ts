@@ -6,6 +6,7 @@ import { ctxConfig } from "./config";
 import { cap } from "./files";
 import { listProjects, readGlobalRules, readProject } from "./projects";
 import type { ContextConv, RolloverInfo } from "./types";
+import { agentKeyEnvNames } from "../keys";
 
 export const ROLE_PROMPT = `You are vault-chat's agent. You run on Carl's box ("thinkbox"), in his vault's working copy; he talks to you from his laptop and his phone, often while away. One conversation can keep working for hours or days.
 
@@ -116,13 +117,20 @@ export function agentWorkArea(vault: string): string {
  * sandbox (it wants the session dbus under /run/user, which is hidden); the old
  * headless mode with its own profile in /tmp works, and `timeout` bounds it.
  */
-export function machineText(o: { chrome: string | null; work: string | null }): string {
+export function machineText(o: { chrome: string | null; work: string | null; keys?: string[] }): string {
   const parts = ["# This machine"];
   if (o.work) {
     parts.push(
       `Your sandbox: your home directory is read-only, and credentials (SSH keys, tokens, other vaults) are not visible. ` +
         `You can write to this vault's working copy, to /tmp, and to your work area \`${o.work}/\` — use it for code checkouts, builds, ` +
         `virtualenvs and scratch that don't belong in the vault (point caches there or at /tmp, e.g. \`npm_config_cache=/tmp/npm-cache\`).`,
+    );
+  }
+  if (o.keys?.length) {
+    // Names only: the values are in the environment of every command you run (Bash, StartJob, subagents).
+    parts.push(
+      `API keys Carl added are yours to use, as environment variables in every command you run (Bash, StartJob jobs, subagents): ` +
+        `${o.keys.map((k) => `\`$${k}\``).join(", ")}. Use them by name; never print, echo or write their values anywhere (files, messages, logs, commits).`,
     );
   }
   if (o.chrome) {
@@ -153,5 +161,5 @@ function findChrome(): string | null {
 
 function machineBlock(): string | null {
   if (process.platform === "win32") return null;
-  return machineText({ chrome: findChrome(), work: agentWorkArea(ctxConfig().vault) });
+  return machineText({ chrome: findChrome(), work: agentWorkArea(ctxConfig().vault), keys: agentKeyEnvNames() });
 }

@@ -115,9 +115,11 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
           name: "bash",
           args: {
             command:
-              "echo ENV=$(env | grep -c -e ^OPENROUTER -e API_KEY -e sk-or-); " + // (PI_PROVIDER=openrouter is not a key)
+              // Carl's call: the keys are the agent's, as environment variables (never printed here).
+              "echo ENV=$(env | grep -c ^OPENROUTER_API_KEY=); " +
+              'echo LEN=$(printf %s "$OPENROUTER_API_KEY" | wc -c); ' +
               "echo STORE=$(cat " + "SECRETS" + "/fallback.key " + "SECRETS" + "/secrets.age 2>/dev/null | wc -c); " +
-              "echo PROCENV=$(cat /proc/*/environ 2>/dev/null | tr '\\0' '\\n' | grep -c canary); " +
+              "echo PROCENV=$(cat /proc/*/environ 2>/dev/null | tr '\\0' '\\n' | grep -c PASSVAL); " +
               "echo SYSTEMD=$(systemd-run --user --quiet true 2>&1 >/dev/null; echo rc=$?); " +
               "echo END-KEY1",
           },
@@ -147,7 +149,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     // Path placeholders in scenarios.
     for (const s of Object.values(scenarios))
       s.forEach((f, i) => {
-        s[i] = (prev) => JSON.parse(JSON.stringify(f(prev)).replaceAll("SECRETS", secrets).replaceAll("STATE", state));
+        s[i] = (prev) => JSON.parse(JSON.stringify(f(prev)).replaceAll("SECRETS", secrets).replaceAll("STATE", state).replaceAll("PASSVAL", PASS));
       });
     or = await fakeChat();
     or.respond = makeResponder(scenarios, outputs);
@@ -345,7 +347,7 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(u.attachments?.[0]?.capturedFilePath).toMatch(/^\.vault-chat\/captures\//);
   });
 
-  it.skipIf(!linux)("the key is out of reach: env, key store, other processes' env, systemd escape", async () => {
+  it.skipIf(!linux)("the keys are in the command's env by name; the key store, the passphrase and systemd stay out of reach", async () => {
     const r = await post("/message", { text: "KEY1 look around" });
     await assistantSays(r.convId, /KEY1 done/);
     const o = outputs.KEY1 ?? "";
@@ -353,7 +355,9 @@ describe.skipIf(!PI_DIR)("pi engine (real pi 1.1.0, fake chat-completions OpenRo
     expect(o).not.toContain(CANARY);
     expect(o).not.toContain(PASS);
     const line = (k: string) => o.split("\n").find((l) => l.startsWith(`${k}=`));
-    expect(line("ENV")).toBe("ENV=0");
+    // Carl's call: the keys he adds are the agent's (asked of the host per command; never in a prompt or log).
+    expect(line("ENV")).toBe("ENV=1");
+    expect(line("LEN")).toBe(`LEN=${CANARY.length}`);
     expect(line("STORE")).toBe("STORE=0");
     expect(line("PROCENV")).toBe("PROCENV=0");
     expect(line("SYSTEMD")).toMatch(/rc=[1-9]/); // the user's systemd bus is hidden: no escape

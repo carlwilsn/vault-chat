@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { Decrypter, Encrypter } from "age-encryption";
 import { writeAtomic } from "./atomic";
 import type { CommandFn } from "./commands/registry";
+import { keyEnv } from "../src/keyEnv";
 
 let secrets: Map<string, string> = new Map();
 let loadError: string | null = null;
@@ -88,6 +89,18 @@ export async function saveKeys(dir: string, keys: Record<string, string>): Promi
 /** The names in the store (never the values). */
 export function keyNames(): string[] {
   return [...secrets.keys()].filter((k) => !!secrets.get(k)).sort();
+}
+
+/** Every key as the agent's environment (src/keyEnv.ts names), read now — a
+ * key synced since is in the next command. Values go only into child
+ * processes' environments, never into a prompt or a log. */
+export function agentKeyEnv(): Record<string, string> {
+  return keyEnv(secrets);
+}
+
+/** The variable names agentKeyEnv() sets (for the agent's instructions). */
+export function agentKeyEnvNames(): string[] {
+  return Object.keys(agentKeyEnv()).sort();
 }
 
 export function hasKey(name: string): boolean {

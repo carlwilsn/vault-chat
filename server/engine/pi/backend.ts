@@ -105,6 +105,8 @@ export type PiBackendOptions = {
   idleMs: number;
   maxProcs: number;
   subagents: SubagentOptions;
+  /** The keys as environment variables (server/keys.ts agentKeyEnv), read at each command: the agent's Bash gets them. */
+  keyEnv?: () => Record<string, string>;
   log?: (s: string) => void;
 };
 
@@ -611,6 +613,15 @@ export class PiBackend extends EventEmitter {
     }
   }
 
+  /** The keys for a command the agent runs (empty without a key store). */
+  agentEnv(): Record<string, string> {
+    try {
+      return this.o.keyEnv?.() ?? {};
+    } catch {
+      return {};
+    }
+  }
+
   /** The extension's host calls (vault-chat's tools, AskUser included) and any other dialog. */
   private async onUi(t: Thread, req: any): Promise<void> {
     const reply = (o: Record<string, unknown>) => t.proc.write({ type: "extension_ui_response", id: req.id, ...o });
@@ -621,6 +632,8 @@ export class PiBackend extends EventEmitter {
       } catch {
         return reply({ value: JSON.stringify({ text: "bad host call", isError: true }) });
       }
+      // The extension's Bash asks for the keys before each command (never shown to the model).
+      if (call.tool === "__env") return reply({ value: JSON.stringify({ env: this.agentEnv() }) });
       if (!this.h) return reply({ value: JSON.stringify({ text: "engine not ready", isError: true }) });
       if (call.tool === "__subagent") {
         if (!t.subagents) return reply({ value: JSON.stringify({ ok: false, text: "Subagents are off for this conversation." }) });

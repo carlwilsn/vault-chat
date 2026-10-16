@@ -607,11 +607,21 @@ export function buildTools(vault: string, options: BuildToolsOptions = {}) {
         else abortSignal?.addEventListener("abort", onAbort, { once: true });
         let result: { stdout: string; stderr: string; code: number; timed_out: boolean };
         try {
+          // The keys Carl added are the agent's: every key as an environment
+          // variable (src/keyEnv.ts names), read now. Never in the prompt.
+          let env: Record<string, string> | undefined;
+          try {
+            const [{ laptopKeys }, { keyEnv }] = await Promise.all([import("./boxKeys"), import("./keyEnv")]);
+            env = keyEnv(Object.entries(await laptopKeys()));
+          } catch {
+            env = undefined;
+          }
           result = await invoke("bash_exec", {
             command,
             cwd: cwd ?? vault,
             timeoutMs: timeout_ms ?? 120_000,
             cancelId,
+            ...(env && Object.keys(env).length ? { env } : {}),
           });
         } finally {
           abortSignal?.removeEventListener("abort", onAbort);

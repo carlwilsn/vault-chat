@@ -67,9 +67,12 @@ export default function vaultChat(pi) {
   const wrap = json(E.VC_PI_SHELL_WRAP, null); // argv prefix ending in "--", or null
   const defTimeout = Number(E.VC_PI_SHELL_TIMEOUT_S) || 1800;
   const maxTimeout = Number(E.VC_PI_SHELL_MAX_TIMEOUT_S) || 4 * 3600;
+  // The keys Carl added to vault-chat are the agent's: asked of the host before each
+  // command (so a key synced since is there), passed only into the command's env.
+  let keyEnv = {};
   const bash = createBashToolDefinition(process.cwd(), {
     spawnHook: ({ command, cwd, env }) => {
-      const clean = scrubEnv(env);
+      const clean = { ...scrubEnv(env), ...keyEnv };
       if (!Array.isArray(wrap) || !wrap.length) return { command, cwd, env: clean };
       return { command: `${wrap.map(shq).join(" ")} bash -c ${shq(command)}`, cwd, env: clean };
     },
@@ -77,6 +80,13 @@ export default function vaultChat(pi) {
   pi.registerTool({
     ...bash,
     async execute(id, params, signal, onUpdate, ctx) {
+      try {
+        const v = await ctx.ui.editor("vc:host-call", JSON.stringify({ tool: "__env", args: {} }));
+        const got = json(v, {});
+        keyEnv = got && typeof got.env === "object" && got.env ? got.env : {};
+      } catch {
+        /* no host answer: the command runs without keys */
+      }
       const p = { ...params };
       const t = Number(p.timeout);
       p.timeout = Number.isFinite(t) && t > 0 ? Math.min(t, maxTimeout) : defTimeout;

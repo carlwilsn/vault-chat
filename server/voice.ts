@@ -19,7 +19,7 @@ import { fsCommands } from "./commands/fs";
 import { netCommands } from "./commands/net";
 import { killTree } from "./commands/proc";
 import { readConversationObjects } from "./commands/conversations";
-import { keychainCommands } from "./keys";
+import { keychainCommands, agentKeyEnv } from "./keys";
 import { runGit } from "./git";
 import { conversationDetail, dispatchVoiceTool } from "./phoneData";
 import { activitySummary, appendActivity, projectContextFor } from "./activity";
@@ -166,7 +166,8 @@ function runSandboxed(d: VoiceDeps, argv: string[], o: { cwd: string; timeoutMs:
 }
 
 async function runShell(d: VoiceDeps, command: string, timeoutMs: number): Promise<string> {
-  const r = await runSandboxed(d, ["bash", "-lc", command], { cwd: d.vault, timeoutMs });
+  // The keys Carl added are the agent's (as environment variables, read now).
+  const r = await runSandboxed(d, ["bash", "-lc", command], { cwd: d.vault, timeoutMs, extraEnv: agentKeyEnv() });
   if ("refused" in r) return `Error: Bash is ${r.refused}`;
   const parts = [`exit: ${r.code}${r.timedOut ? " (TIMED OUT)" : ""}`];
   if (r.out) parts.push(`stdout:\n${clip(r.out, OUT_CAP)}`);
@@ -187,15 +188,16 @@ function interpreter(path: string): string[] | null {
 }
 
 /** A vault tool (TOOL.md + run.*), run like the laptop runs it (stdin = the
- * args as JSON, cwd = its folder, stdout = the result), but sandboxed and with
- * only its declared keys. ElevenLabs waits 30 s for a client tool. */
+ * args as JSON, cwd = its folder, stdout = the result), but sandboxed, with
+ * the keys as environment variables (its declared ones under their own names). ElevenLabs waits 30 s for a client tool. */
 async function runVaultTool(d: VoiceDeps, name: string, args: unknown): Promise<string | null> {
   const { vaultToolSpecs } = await import("../src/meta");
   const hit = (await vaultToolSpecs(d.vault)).find((x) => x.spec.name === name);
   if (!hit) return null;
   const argv = interpreter(hit.runPath);
   if (!argv) return `Error: no interpreter for ${hit.runPath}`;
-  const keys: Record<string, string> = {};
+  // Every key (as the agent's commands get them), plus each declared one under its own name.
+  const keys: Record<string, string> = { ...agentKeyEnv() };
   for (const k of hit.spec.requires_keys ?? []) {
     const v = keychainCommands.keychain_get({ key: `user.${k}` });
     if (typeof v === "string" && v) keys[k] = v;

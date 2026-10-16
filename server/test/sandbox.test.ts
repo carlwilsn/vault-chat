@@ -229,4 +229,27 @@ describe("the machine section of the developer instructions", () => {
     // No browser: the sandbox note alone.
     expect(machineText({ chrome: null, work: "/w" })).not.toMatch(/browser/i);
   });
+
+  it("names the key variables the agent has (never their values)", async () => {
+    const { machineText } = await import("../context");
+    const t = machineText({ chrome: null, work: "/w", keys: ["OPENROUTER_API_KEY", "LAMBDA_API_KEY"] });
+    expect(t).toContain("`$OPENROUTER_API_KEY`, `$LAMBDA_API_KEY`");
+    expect(t).toMatch(/never print, echo or write their values/);
+    expect(machineText({ chrome: null, work: "/w", keys: [] })).not.toMatch(/API keys/);
+  });
+
+  it("maps the keychain's names to environment variables", async () => {
+    const { envNameForKey, keyEnv } = await import("../../src/keyEnv");
+    expect(envNameForKey("api.openrouter")).toBe("OPENROUTER_API_KEY");
+    expect(envNameForKey("api.anthropic")).toBe("ANTHROPIC_API_KEY");
+    expect(envNameForKey("api.openai")).toBe("OPENAI_API_KEY");
+    expect(envNameForKey("api.google")).toBe("GOOGLE_API_KEY");
+    expect(envNameForKey("service.tavily")).toBe("TAVILY_API_KEY");
+    expect(envNameForKey("service.elevenlabs")).toBe("ELEVENLABS_API_KEY");
+    expect(envNameForKey("user.lambda_api_key")).toBe("LAMBDA_API_KEY");
+    expect(envNameForKey("user.hf-token")).toBe("HF_TOKEN");
+    expect(envNameForKey("api.groq")).toBe("GROQ_API_KEY");
+    expect(envNameForKey("keystore.passphrase")).toBeNull();
+    expect(keyEnv([["api.openrouter", "a"], ["keystore.passphrase", "p"], ["user.x", ""], ["user.OPENROUTER_API_KEY", "b"]])).toEqual({ OPENROUTER_API_KEY: "a" });
+  });
 });

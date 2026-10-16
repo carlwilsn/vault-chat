@@ -231,6 +231,7 @@ export class Subagents {
         return reply({ value: JSON.stringify({ text: "bad host call", isError: true }) });
       }
       const name = String(call.tool ?? "");
+      if (name === "__env") return reply({ value: JSON.stringify({ env: this.b.agentEnv() }) });
       if (name === "Done") {
         c.summary = String(call.args?.summary ?? "").trim() || null;
         return reply({ value: JSON.stringify({ text: "Recorded. Now end with your report: your final message is what the parent agent receives." }) });
