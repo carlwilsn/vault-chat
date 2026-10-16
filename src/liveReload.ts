@@ -4,6 +4,11 @@
 // Text views get the new text (scroll kept by each view); PDFs and images
 // re-render on a revision bump. A pane with unsaved typing is never
 // overwritten: it shows "Changed by the agent — Reload · Keep mine" instead.
+//
+// Box mode goes one step ahead of the sync: the box announces each write at
+// once (/poll "file_changed"), and a pane showing that file fetches the box's
+// bytes and shows them (boxFileChanged) — display only, nothing is written to
+// this disk; the merge catches the disk up behind it and then matches.
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
@@ -49,6 +54,83 @@ export function registerDirty(path: string, isDirty: () => boolean): () => void 
 function isDirty(path: string): boolean {
   for (const f of dirtyChecks.get(norm(path)) ?? []) if (f()) return true;
   return false;
+}
+
+// ---- the box's copy, shown ahead of the disk ----
+
+/** Binaries (images, PDFs) showing the box's bytes until the merge lands (normalized path → bytes). */
+const boxBytes = new Map<string, Uint8Array>();
+/** Text the box has that the disk doesn't yet (a pane's Reload takes it). */
+const boxText = new Map<string, string>();
+const boxTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** The bytes a binary view shows: the box's copy while it is ahead of the disk, else the file. */
+export async function readShownBytes(path: string): Promise<Uint8Array> {
+  const o = boxBytes.get(norm(path));
+  if (o) return o;
+  return new Uint8Array(await invoke<number[]>("read_binary_file", { path }));
+}
+
+/** What a pane's Reload should show: the box's newer text if there is one, else null (read the disk). */
+export function pendingBoxText(path: string): string | null {
+  return boxText.get(norm(path)) ?? null;
+}
+
+const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
+const bumpRev = (k: string) => useLiveFiles.setState((s) => ({ revs: { ...s.revs, [k]: (s.revs[k] ?? 0) + 1 } }));
+
+export type BoxFileFetch = (rel: string) => Promise<Uint8Array | null>;
+
+/**
+ * The box wrote `rel` (vault-relative) in the open vault: every pane showing
+ * it shows the box's bytes, ~150 ms after the last write to it. Text panes
+ * get the text (unsaved typing gets "Changed by the agent" instead); images
+ * and PDFs re-render from the bytes. Nothing touches this disk.
+ */
+export function boxFileChanged(o: { vault: string; rel: string; fetch: BoxFileFetch; delayMs?: number }): void {
+  const vaultPath = useStore.getState().vaultPath;
+  if (!vaultPath || norm(o.vault) !== norm(vaultPath)) return;
+  const rel = o.rel.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!rel || rel.split("/").includes("..")) return;
+  const k = norm(`${vaultPath}/${rel}`);
+  if (!openFiles().some((f) => norm(f) === k)) return;
+  const t = boxTimers.get(k);
+  if (t) clearTimeout(t);
+  boxTimers.set(
+    k,
+    setTimeout(() => {
+      boxTimers.delete(k);
+      void showBoxFile(vaultPath, k, rel, o.fetch);
+    }, o.delayMs ?? 150),
+  );
+}
+
+async function showBoxFile(vaultPath: string, k: string, rel: string, fetch: BoxFileFetch): Promise<void> {
+  let bytes: Uint8Array | null;
+  try {
+    bytes = await fetch(rel);
+  } catch (e) {
+    console.warn("[live] box file fetch failed:", rel, e);
+    return;
+  }
+  if (!bytes || useStore.getState().vaultPath !== vaultPath) return;
+  const file = openFiles().find((f) => norm(f) === k);
+  if (!file) return;
+  if (isUnreadableAsText(file)) {
+    const { kind } = fileKind(file);
+    if (kind !== "pdf" && kind !== "image") return;
+    const prev = boxBytes.get(k);
+    if (prev && sameBytes(prev, bytes)) return;
+    boxBytes.set(k, bytes);
+    bumpRev(k);
+    return;
+  }
+  const text = new TextDecoder().decode(bytes);
+  const shown = shownContent(file);
+  if (!shown.length || shown.every((c) => c === text)) return;
+  boxText.set(k, text);
+  if (isDirty(file)) setDiskChanged(file, true);
+  else applyDiskContent(file, text);
 }
 
 /** Every pane (or the single view) showing `path` gets `content`. */
@@ -99,7 +181,20 @@ export async function refreshOpenFiles(o: { vault?: string | null; paths?: strin
       if (named && !named.has(k)) return;
       if (isUnreadableAsText(file)) {
         const { kind } = fileKind(file);
-        if (named && (kind === "pdf" || kind === "image")) useLiveFiles.setState((s) => ({ revs: { ...s.revs, [k]: (s.revs[k] ?? 0) + 1 } }));
+        if (!named || (kind !== "pdf" && kind !== "image")) return;
+        // The box's copy already on screen and the merge brought the same
+        // bytes: nothing to redraw, only the override goes.
+        const ahead = boxBytes.get(k);
+        if (ahead) {
+          boxBytes.delete(k);
+          try {
+            const disk = new Uint8Array(await invoke<number[]>("read_binary_file", { path: file }));
+            if (sameBytes(disk, ahead)) return;
+          } catch {
+            /* redraw from whatever is there */
+          }
+        }
+        bumpRev(k);
         return;
       }
       let text: string;
@@ -107,6 +202,12 @@ export async function refreshOpenFiles(o: { vault?: string | null; paths?: strin
         text = await invoke<string>("read_text_file", { path: file });
       } catch {
         return; // deleted or unreadable: the tree's own refresh handles it
+      }
+      // The disk caught up (or moved on): the box's text is no longer ahead of it.
+      const ahead = boxText.get(k);
+      if (ahead !== undefined) {
+        if (named || ahead === text) boxText.delete(k);
+        else return; // the box's copy is still ahead of this disk: its merge brings it
       }
       const shown = shownContent(file);
       if (!shown.length || shown.every((c) => c === text)) return;

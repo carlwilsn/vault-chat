@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import * as pdfjs from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { FileText, ZoomIn, ZoomOut, BoxSelect, X } from "lucide-react";
 import { cn } from "./lib/utils";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
+import { readShownBytes } from "./liveReload";
 import { pushViewportContextDebounced } from "./voice-elevenlabs";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
@@ -283,8 +283,8 @@ export function PdfView({
 
     (async () => {
       try {
-        const bytes = await invoke<number[]>("read_binary_file", { path });
-        const data = new Uint8Array(bytes);
+        // The box's copy while it is ahead of the disk (a live edit), else the file.
+        const data = (await readShownBytes(path)).slice();
         if (cancelled) return;
         doc = (await pdfjs.getDocument({ data }).promise) as unknown as typeof doc;
         if (cancelled) {

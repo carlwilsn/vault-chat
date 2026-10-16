@@ -97,6 +97,8 @@ let boxQueue: unknown[] = [];
 let boxStep = 0;
 /** The box's published edits the laptop has not merged yet (BoxStep.merge). */
 let boxMerge: NonNullable<BoxStep["merge"]> = {};
+/** The laptop's vault (the fake box's working copy = it plus boxMerge). */
+let laptopVault: string | null = null;
 /** Play the box script's next step (a scenario/tour step calls it). */
 export function boxNext(): boolean {
   const st = cfg.sync?.boxChat?.steps?.[boxStep];
@@ -130,6 +132,7 @@ export function setHostConfig(c: HostConfig, now: () => number): void {
   boxConvs = JSON.parse(JSON.stringify(cfg.sync?.boxChat?.convs ?? {}));
   boxQueue = [];
   boxMerge = {};
+  laptopVault = null;
   boxStep = 0;
   boxPosts.length = 0;
   keys.clear();
@@ -230,7 +233,10 @@ function boxVoiceTool(name: string, args: any): string {
 
 export const hostCommands: Record<string, (a: Record<string, any>) => unknown> = {
   // ---- sync ----
-  vault_box_config: () => cfg.sync?.box ?? null,
+  vault_box_config: ({ vault }) => {
+    if (vault) laptopVault = String(vault);
+    return cfg.sync?.box ?? null;
+  },
   vault_box_sync: async ({ vault }) => {
     const list = cfg.sync?.reports ?? [];
     const r = list.length ? list[Math.min(boxCalls, list.length - 1)] : {};
@@ -332,6 +338,21 @@ export const hostCommands: Record<string, (a: Record<string, any>) => unknown> =
     }
     const miss = unknownVault(u);
     if (miss) return miss;
+    if (u.pathname.endsWith("/api/v1/vault/file")) {
+      // server/http.ts vaultFileRoute: a file as the box has it now (its agent's
+      // edits not merged here yet included), base64; inside the vault only.
+      const rel = u.searchParams.get("path") ?? "";
+      if (!laptopVault || !rel || rel.startsWith("/") || rel.split("/").includes("..") || rel.split("/").includes(".git"))
+        return { status: 403, body: JSON.stringify({ error: "outside the vault" }) };
+      const cur = fs.readText(`${laptopVault}/${rel}`);
+      const m = boxMerge[rel];
+      const text = m === undefined ? cur : typeof m === "function" ? m(cur) : m;
+      if (text == null) return { status: 404, body: JSON.stringify({ error: "no such file" }) };
+      const bytes = new TextEncoder().encode(text);
+      let bin = "";
+      for (const b of bytes) bin += String.fromCharCode(b);
+      return { status: 200, body: JSON.stringify({ path: rel, size: bytes.length, base64: btoa(bin) }) };
+    }
     const p = u.pathname.replace(/^.*?(\/(poll|conversations|conversation|status|api\/v1\/models))/, "$1");
     if (p === "/api/v1/models" && cfg.sync?.boxChat?.models) return { status: 200, body: JSON.stringify(cfg.sync.boxChat.models) };
     const ok = (v: unknown) => ({ status: 200, body: JSON.stringify(v) });

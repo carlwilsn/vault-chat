@@ -490,7 +490,7 @@ const boxStates = new Map<string, BoxSyncState>();
 type BoxListener = (s: BoxSyncState | null) => void;
 const boxListeners = new Set<BoxListener>();
 const boxConfigCache = new Map<string, { cfg: BoxConfig | null; at: number }>();
-const boxKick = new Map<string, () => Promise<void>>();
+const boxKick = new Map<string, (o?: { pull?: boolean }) => Promise<void>>();
 
 /** The box this vault syncs with (from `.vault-chat/sync.json`), or null. */
 export async function readBoxConfig(vault: string): Promise<BoxConfig | null> {
@@ -564,10 +564,31 @@ export function subscribeBoxSync(fn: BoxListener): () => void {
 }
 
 /** Run one cycle now (Settings' "Sync now"; the box's "vault_changed" on /poll).
- *  A cycle already running gets one follow-up, so a box commit made during it still comes in. */
-export async function boxSyncNow(vault: string): Promise<void> {
-  const k = boxKick.get(vault);
-  if (k) await k();
+ *  A cycle already running gets one follow-up, so a box commit made during it still comes in.
+ *  `pull`: the box just published an edit — commit, fetch, merge, and leave the
+ *  pushes to the next full cycle (the edit lands here seconds sooner). */
+export async function boxSyncNow(vault: string, o: { pull?: boolean } = {}): Promise<void> {
+  const k = boxKick.get(vault) ?? boxKick.get(vaultKey(vault));
+  if (k) await k(o);
+}
+
+const vaultKey = (v: string) => v.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+
+// One box cycle at a time per repo, whichever loop asks (a vault tracked under
+// two spellings must not run two cycles over one working copy). Git itself is
+// serialized per repo in Rust (lib.rs git_serialized); this keeps whole cycles
+// from interleaving.
+const cycleTails = new Map<string, Promise<unknown>>();
+function oneCycleAtATime<T>(vault: string, fn: () => Promise<T>): Promise<T> {
+  const key = vaultKey(vault);
+  const prev = cycleTails.get(key) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  const tail = run.catch(() => {});
+  cycleTails.set(key, tail);
+  void tail.then(() => {
+    if (cycleTails.get(key) === tail) cycleTails.delete(key);
+  });
+  return run;
 }
 
 function plural(n: number, w: string): string {
@@ -777,13 +798,16 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
     }
   };
 
-  let again = false;
-  const cycle = async () => {
+  // A follow-up after the running cycle: null = none; true = a pull is enough.
+  let again: boolean | null = null;
+  // `o` may be anything a promise hands on (`.then(cycle)`): only `{pull: true}` pulls.
+  const cycle = async (o?: unknown) => {
     if (cancelled || inFlight) return;
+    const pull = !!o && typeof o === "object" && (o as { pull?: unknown }).pull === true;
     inFlight = true;
     set({ running: true });
     try {
-      const r = await invoke<BoxSyncReport>("vault_box_sync", { vault }).catch(
+      const r = await oneCycleAtATime(vault, () => invoke<BoxSyncReport>("vault_box_sync", { vault, pull })).catch(
         (e): BoxSyncReport => ({
           configured: true,
           ok: false,
@@ -847,18 +871,19 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
     } finally {
       inFlight = false;
       if (!cancelled && boxStates.get(vault)?.running) set({ running: false });
-      if (again && !cancelled) {
-        again = false;
-        void cycle();
+      if (again !== null && !cancelled) {
+        const pullAgain = again;
+        again = null;
+        void cycle({ pull: pullAgain });
       }
     }
   };
-  const kick = (): Promise<void> => {
+  const kick = (o: { pull?: boolean } = {}): Promise<void> => {
     if (inFlight) {
-      again = true;
+      again = again === null ? !!o.pull : again && !!o.pull;
       return Promise.resolve();
     }
-    return cycle();
+    return cycle({ pull: !!o.pull });
   };
 
   const timer = window.setInterval(() => void cycle(), BOX_CYCLE_MS);
@@ -867,6 +892,7 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
     if (boxStates.has(vault)) set({});
   }, 30_000);
   boxKick.set(vault, kick);
+  if (!boxKick.has(vaultKey(vault))) boxKick.set(vaultKey(vault), kick);
   loops.set(vault, {
     vault,
     cancel: () => {
@@ -874,6 +900,7 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
       window.clearInterval(timer);
       window.clearInterval(clock);
       boxKick.delete(vault);
+      if (boxKick.get(vaultKey(vault)) === kick) boxKick.delete(vaultKey(vault));
     },
   });
   void cycle().finally(() =>

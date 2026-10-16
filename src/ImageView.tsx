@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { InlineEditPrompt, type InlineEditRequest } from "./InlineEditPrompt";
 import { useStore } from "./store";
+import { readShownBytes } from "./liveReload";
 
 function mimeFor(ext: string): string {
   const e = ext.toLowerCase();
@@ -52,11 +52,13 @@ export function ImageView({ path, rev = 0 }: { path: string; rev?: number }) {
     setError(null);
     (async () => {
       try {
-        const bytes = await invoke<number[]>("read_binary_file", { path });
+        // The box's copy while it is ahead of the disk (a live edit), else the file.
+        const bytes = await readShownBytes(path);
         if (cancelled) return;
         const dot = path.lastIndexOf(".");
         const ext = dot > 0 ? path.slice(dot + 1) : "";
-        const blob = new Blob([new Uint8Array(bytes)], { type: mimeFor(ext) });
+        // A fresh blob URL per read: the webview never serves a cached copy of the same path.
+        const blob = new Blob([bytes.slice()], { type: mimeFor(ext) });
         objectUrl = URL.createObjectURL(blob);
         setUrl(objectUrl);
       } catch (e) {

@@ -20,7 +20,7 @@ import { findVaultFileByTail, tryOpenLink } from "./linkNav";
 import { HistoryStrip, HistoryVersionView, useViewingVersion } from "./HistoryInline";
 import { noteEditedFile } from "./commit-controller";
 import { pushViewportContextDebounced } from "./voice-elevenlabs";
-import { applyDiskContent, registerDirty, setDiskChanged, useLiveFiles } from "./liveReload";
+import { applyDiskContent, pendingBoxText, registerDirty, setDiskChanged, useLiveFiles } from "./liveReload";
 
 import { Markdown } from "./Markdown";
 import { flipNthTaskCheckbox, localPathFromUrl } from "./mdPipeline";
@@ -362,7 +362,8 @@ export function MarkdownView({ paneId }: Props) {
   const reloadFromDisk = async () => {
     if (!file) return;
     try {
-      const onDisk = await invoke<string>("read_text_file", { path: file });
+      // Box mode: the box's copy when it is ahead of this disk (a live edit not merged yet).
+      const onDisk = pendingBoxText(file) ?? (await invoke<string>("read_text_file", { path: file }));
       lastSaved.current = onDisk;
       lastUserValue.current = onDisk;
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
