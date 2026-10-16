@@ -431,6 +431,21 @@ export async function answerModelRequest(url: URL, init: RequestInit | undefined
     if (path === "/v1/voices") return json({ voices: EL_VOICES });
     if (path.startsWith("/v1/text-to-speech/")) return new Response(chime(), { headers: { "content-type": "audio/wav" } });
     if (path === "/v1/convai/agents/create") return json({ agent_id: "preview-agent" });
+    // The voice models ElevenLabs runs and what each takes (src/voiceLlms.ts reads it). Faked.
+    if (path === "/v1/convai/llm/list")
+      return json({
+        llms: [
+          { llm: "gpt-6-luna", supports_image_input: true, supports_document_input: false, available_reasoning_efforts: ["none", "low", "medium", "high"] },
+          { llm: "gpt-6.1-sol", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: ["low", "medium", "high"] },
+          { llm: "claude-sonnet-5-5", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: [] },
+          { llm: "claude-sonnet-4-6", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: [] },
+          { llm: "claude-haiku-5-5", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: [] },
+          { llm: "claude-haiku-4-5", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: [] },
+          { llm: "gemini-3.8-flash", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: ["none", "low", "high"] },
+          { llm: "gemini-3.5-flash", supports_image_input: true, supports_document_input: true, available_reasoning_efforts: ["none", "low", "high"] },
+          { llm: "glm-52", supports_image_input: false, supports_document_input: false, available_reasoning_efforts: ["none", "high"] },
+        ],
+      });
     return null;
   }
   if (host === "api.anthropic.com") {

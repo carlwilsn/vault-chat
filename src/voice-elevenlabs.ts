@@ -16,6 +16,7 @@ import { VoiceImagePusher, lookingAtNote, thumbDataUrl, voiceImageMime, type Pus
 import { fileKind, isUnreadableAsText } from "./fileKind";
 import { stripAudioTags } from "./voiceTags";
 import { QuietGate } from "./voiceQuiet";
+import { DEFAULT_VOICE_LLM, isVoiceLlm, llmInfo, normalizeVoiceLlm, reasoningEffortFor, voiceLlmList, type VoiceLlmInfo } from "./voiceLlms";
 
 // The shared context stream (src/activity.ts), when voice runs on this laptop:
 // the box records its own sessions (server/voice.ts). Loaded lazily — the box
@@ -80,71 +81,44 @@ function voiceAppend(m: ChatMessage): void {
     recordLocalVoice(voiceLineEntry(m.role, String(m.content ?? ""), useStore.getState().activeConversationId));
   }
 }
-// Default — overridable via Settings → ElevenLabs → Voice model.
-// Stored in localStorage as `vault_chat_elevenlabs_llm`. ElevenLabs Agents
-// accept both bare aliases (claude-sonnet-4-6) and dated forms
-// (claude-sonnet-4-5@20250929); we use the bare alias for the newest models
-// since it stays current as ElevenLabs rolls dates. Gemini 3.5 Flash: same
-// native PDF + multimodal context as 2.5 (why voice PDF-walkthroughs stay on a
-// Gemini model — see isGeminiLlm / pushPdfIfNeeded), but faster TTFT and
-// Sonnet-class reasoning. It pareto-dominates 2.5-flash, so it's the default
-// and stored 2.5 values migrate up (below). Verified in ElevenLabs' supported
-// LLM list (2026-07).
-export const DEFAULT_LLM = "gemini-3.5-flash";
+// The voice model — Settings → Models → Voice; stored as `vault_chat_elevenlabs_llm`.
+// The ids, the default and the old-id mapping are src/voiceLlms.ts; what each
+// model can take (images, documents) comes from ElevenLabs' own list.
+export const DEFAULT_LLM = DEFAULT_VOICE_LLM;
 const LLM_STORAGE = "vault_chat_elevenlabs_llm";
 const AGENT_LLM_KEY = "vault_chat_elevenlabs_agent_llm";
 
-// Models ElevenLabs Agents can actually run for voice — NOT every model the rest
-// of the app supports. Agents runs no Claude Opus, and only specific Gemini tiers
-// (no gemini-2.5-pro). Keep this in sync with the Settings voice-model dropdown.
-// Verified against ElevenLabs' supported-LLM list + changelog (2026-07).
-export const SUPPORTED_VOICE_LLMS = new Set<string>([
-  "gemini-3.5-flash",
-  "gemini-2.5-flash", // superseded by 3.5-flash; kept so a stored value never hard-fails provisioning
-  "claude-sonnet-4-6",
-  "claude-sonnet-4-5@20250929",
-  "claude-sonnet-4@20250514",
-  "claude-3-7-sonnet",
-  "claude-haiku-4-5-20251001",
-]);
+/** Every id a client may send (current, and old ones that map to a current one). */
+export const SUPPORTED_VOICE_LLMS = { has: (v: string) => isVoiceLlm(v) };
 
-// One-time pareto upgrade of the voice brain: gemini-2.5-flash → gemini-3.5-flash
-// (same Gemini family + native PDF vision, strictly faster/smarter). ensureAgent's
-// `provisionedWith !== wantedLlm` check then re-provisions the agent automatically
-// on the next voice session — no AGENT_CONFIG_VERSION bump needed. Only touches a
-// value explicitly set to old 2.5-flash; Claude / already-3.5 users are untouched.
-try {
-  if (localStorage.getItem(LLM_STORAGE) === "gemini-2.5-flash") {
-    localStorage.setItem(LLM_STORAGE, "gemini-3.5-flash");
-  }
-} catch {}
-
-// A stored value outside the supported set (e.g. left over from before a model
-// was dropped) falls back to the default, so voice never fails provisioning on a
-// model ElevenLabs would reject.
+// A stored old id maps to the nearest current one; nothing stored is the default.
 function getCurrentLlm(): string {
-  const stored = localStorage.getItem(LLM_STORAGE);
-  return stored && SUPPORTED_VOICE_LLMS.has(stored) ? stored : DEFAULT_LLM;
+  return normalizeVoiceLlm(localStorage.getItem(LLM_STORAGE));
 }
 
-// Gemini reads PDFs natively as part of the multimodal context we
-// upload via pushPdfIfNeeded — it can see every page, diagram, and
-// equation without any extraction tool. Registering PdfExtract for
-// Gemini just confuses the agent: it sometimes forgets it has direct
-// vision and reaches for the tool, burning a round-trip and getting
-// degraded text-only output. Skip the tool (and the prompt section
-// that tells the agent to use it) when running on Gemini. Other LLMs
-// the ElevenLabs orchestrator supports — Claude, OpenAI — don't get
-// the PDF blob piped to them the same way, so they keep the tool.
-function isGeminiLlm(llm: string): boolean {
-  return llm.toLowerCase().startsWith("gemini");
+/** What the current model takes, from the cached list (sync; null = not known yet). */
+function cachedLlmInfo(llm: string): VoiceLlmInfo | null {
+  try {
+    const raw = localStorage.getItem("vault_chat_elevenlabs_llm_list");
+    return raw ? llmInfo((JSON.parse(raw) as { list: VoiceLlmInfo[] }).list, llm) : null;
+  } catch {
+    return null;
+  }
+}
+/** The model reads an uploaded PDF itself (else it gets PdfExtract and no upload). */
+function readsDocuments(llm: string): boolean {
+  return cachedLlmInfo(llm)?.documents === true;
+}
+/** The model sees uploaded images (unknown counts as yes, as before the list). */
+function seesImages(llm: string): boolean {
+  return cachedLlmInfo(llm)?.images !== false;
 }
 const AGENT_ID_KEY = "vault_chat_elevenlabs_agent_id";
 // Bump whenever the agent-create body changes in a way that affects
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v23-setproject";
+const AGENT_CONFIG_VERSION = "v24-honest";
 const AGENT_VERSION_KEY = "vault_chat_elevenlabs_agent_config_version";
 // Signature of the per-vault custom tools baked into the cached agent. Custom
 // tools are part of the agent's tool schema (provisioned at create time), so a
@@ -1440,6 +1414,8 @@ async function pushPdfIfNeeded(): Promise<void> {
   if (!file) return;
   if (!file.toLowerCase().endsWith(".pdf")) return;
   if (sentPdfPaths.has(file)) return;
+  // Only to a model that reads documents (else it has PdfExtract).
+  if (!readsDocuments(getCurrentLlm())) return;
 
   pdfUploadInFlight = true;
   try {
@@ -1456,10 +1432,7 @@ async function pushPdfIfNeeded(): Promise<void> {
     await quietGate.quiet(60_000);
     if (!activeConversation || activeConversation !== conv) return;
     const name = file.split(/[\\/]/).pop() ?? "document.pdf";
-    conv.sendMultimodalMessage({
-      text: `[The user has opened ${name}. The full PDF is attached for your reference — you can see every page including diagrams, equations, and layout. The viewport context will tell you which page they are currently viewing.]`,
-      fileId,
-    });
+    sendFilesMessage(conv, `[The user has opened ${name}. The full PDF is attached for your reference — you can see every page including diagrams, equations, and layout. The viewport context will tell you which page they are currently viewing.]`, [fileId]);
     sentPdfPaths.add(file);
   } catch (e) {
     console.warn("[voice-eleven] PDF upload failed:", e);
@@ -1473,6 +1446,39 @@ async function pushPdfIfNeeded(): Promise<void> {
 // session, size-capped). In box mode the image is in the vault on both sides,
 // so it is read here.
 const imagePusher = new VoiceImagePusher();
+
+type FileConv = {
+  uploadFile(b: Blob): Promise<{ fileId: string }>;
+  sendMultimodalMessage(m: { text?: string; fileId: string }): void;
+};
+
+/** A multimodal_message in the current shape — `files: [{type: "file_input", file_id}]`
+ *  (≤ 5; the single `file` field the SDK still sends is deprecated). Falls back to
+ *  the SDK's own call where its connection isn't reachable. */
+export function sendFilesMessage(conv: FileConv, text: string | undefined, fileIds: string[]): void {
+  const ids = fileIds.filter(Boolean).slice(0, 5);
+  if (!ids.length) return;
+  // The SDK's connection (protected in its types, there at runtime).
+  const c = (conv as unknown as { connection?: { sendMessage?: (m: Record<string, unknown>) => void } }).connection;
+  const send = c?.sendMessage?.bind(c);
+  if (send) {
+    send({
+      type: "multimodal_message",
+      ...(text ? { text: { type: "user_message", text } } : {}),
+      files: ids.map((file_id) => ({ type: "file_input", file_id })),
+    });
+    return;
+  }
+  for (const [i, fileId] of ids.entries()) conv.sendMultimodalMessage({ ...(i === 0 && text ? { text } : {}), fileId });
+}
+
+/** The image pusher's sink: uploads through the SDK, sends in the current shape. */
+function fileSink(conv: FileConv): import("./voiceImages").VoiceImageSink {
+  return {
+    uploadFile: (b) => conv.uploadFile(b),
+    sendMultimodalMessage: (m) => sendFilesMessage(conv, m.text, [m.fileId]),
+  };
+}
 // Our own pushes (contextual updates, uploads) wait while the agent speaks — an
 // upload is a user turn and cut its reply off mid-sentence (voiceQuiet.ts).
 const quietGate = new QuietGate(() => useStore.getState().voiceSpeaking);
@@ -1498,6 +1504,7 @@ export async function pushVoiceImageFile(path: string, extra?: string): Promise<
   if (!conv) return "no-session";
   const mime = voiceImageMime(path);
   if (!mime) return "unsupported";
+  if (!seesImages(getCurrentLlm())) return "unsupported";
   if (imagePusher.has(path)) return "duplicate";
   await quietGate.quiet(TOOL_PUSH_WAIT_MS);
   if (activeConversation !== conv) return "failed";
@@ -1505,7 +1512,7 @@ export async function pushVoiceImageFile(path: string, extra?: string): Promise<
     const bytes = await invoke<number[]>("read_binary_file", { path });
     const blob = new Blob([new Uint8Array(bytes)], { type: mime });
     const name = path.split(/[\\/]/).pop() ?? path;
-    return await imagePusher.push(conv, path, blob, lookingAtNote(name, extra), () => activeConversation === conv);
+    return await imagePusher.push(fileSink(conv), path, blob, lookingAtNote(name, extra), () => activeConversation === conv);
   } catch (e) {
     console.warn("[voice-eleven] image read failed:", e);
     return "failed";
@@ -1520,7 +1527,7 @@ export async function pushVoiceImageDataUrl(key: string, dataUrl: string, name: 
   if (activeConversation !== conv) return "failed";
   try {
     const blob = await (await fetch(dataUrl)).blob();
-    return await imagePusher.push(conv, key, blob, lookingAtNote(name, extra), () => activeConversation === conv);
+    return await imagePusher.push(fileSink(conv), key, blob, lookingAtNote(name, extra), () => activeConversation === conv);
   } catch (e) {
     console.warn("[voice-eleven] capture push failed:", e);
     return "failed";
@@ -1591,7 +1598,8 @@ export function pushViewportContextDebounced(): void {
       if (text && text !== lastViewportSent) {
         lastViewportSent = text;
         try {
-          conv.sendContextualUpdate(text);
+          // A stable context id: the newer viewport replaces the older (never a user turn).
+          conv.sendContextualUpdate(text, { contextId: "viewport" });
         } catch (e) {
           console.warn("[voice-eleven] contextual update failed:", e);
         }
@@ -1626,7 +1634,7 @@ export function sendVoiceTypingHint(kind: "opened" | "still-typing"): void {
   quietGate.run("typing", () => {
     if (activeConversation !== conv) return;
     try {
-      conv.sendContextualUpdate(text);
+      conv.sendContextualUpdate(text, { contextId: "typing" });
     } catch (e) {
       console.warn("[voice-eleven] typing-hint contextual update failed:", e);
     }
@@ -1704,10 +1712,7 @@ export async function sendVoiceUserMultimodal(
     if (!activeConversation || activeConversation !== conv) return false;
     const { fileId } = await conv.uploadFile(blob);
     if (!activeConversation || activeConversation !== conv) return false;
-    conv.sendMultimodalMessage({
-      text: trimmed || undefined,
-      fileId,
-    });
+    sendFilesMessage(conv, trimmed || undefined, [fileId]);
   } catch (e) {
     console.warn("[voice-eleven] sendVoiceUserMultimodal failed:", e);
     return false;
@@ -1855,6 +1860,15 @@ Speech rules:
 - Open every response with a brief acknowledgment ("yeah", "sure", "mm", "got it", "one sec") so the user hears you immediately. Substance follows. The ack bridges the moment before the real answer arrives.
 - Don't end your turn with "Want me to..." or "What would you like to next..." prompts. Answer and stop. If the user wants more, they'll ask.
 - When asked to read content, call Read / Glob / Grep and speak it naturally.`;
+
+// Always in the prompt, under any header (a vault's own voice.md replaces the
+// header, not these): the voice was sycophantic and claimed things it can't do
+// ("[excited] Yes, it absolutely does!" to a question whose answer was no).
+export const VOICE_HONESTY_RULES = `Honesty — accurate over agreeable:
+- No flattery or hype. Never "great question", "absolutely", "fantastic idea", "you're so right", "I love that". Calm, even tone; don't perform excitement or any other emotion.
+- If the user is wrong, say so plainly and give the correct answer. Disagree when it's warranted. If the true answer to a yes/no question is no, say no.
+- Never claim a tool or a capability you don't have, and never guess what one does. If you're not sure, say "I'm not sure" — then check with a tool if one can tell you.
+- Your tools, exactly: Read, ListDir, Glob, Grep (the vault's files); Write, Edit, NotebookEdit (change them); PdfExtract (a PDF's text); ScrollTo, ShowFile, LookAtScreen (the user's screen); CreateNote, ListNotes, ResolveNote (notes); WebFetch, WebSearch (the web); Bash (a shell in the vault); SetProject (put this chat into a project, creating it if new); and, when the vault runs on a box, AskAgent and AgentStatus — hand work to the main agent (a separate, stronger agent with hours of compute) and check on it. AskAgent's project starts that work as a project; it is not itself a project.`;
 
 // Compact file index for the system prompt. Voice mode struggles to
 // "find" files when it has to guess paths from a name — dumping the
@@ -2062,12 +2076,10 @@ export function buildSystemPrompt(
   const header = customHeader.trim() || DEFAULT_VOICE_PROMPT_HEADER;
   const northStarBlock = northStarPromptBlock(northStar);
   const vaultIndex = buildVaultIndex(state, fileIndex);
-  const gemini = isGeminiLlm(getCurrentLlm());
-  // For Gemini the PDF blob is in the multimodal context — no
-  // PdfExtract tool is registered, so the agent shouldn't be told
-  // about it. For other LLMs (Claude / OpenAI on ElevenLabs) the
-  // tool is the only way in.
-  const pdfReadingLine = gemini
+  // A model that reads uploaded documents (ElevenLabs' list says so) gets the
+  // open PDF itself and no PdfExtract tool; the others read PDFs through the tool.
+  const docs = readsDocuments(getCurrentLlm());
+  const pdfReadingLine = docs
     ? "- PDFs: you can see them directly — the full document is in your multimodal context. Don't try to Read .pdf files as text; just look at the pages."
     : "- PdfExtract is how you read PDFs (Read won't work on .pdf). `pages` arg accepts '1', '1-5', '3,5,7'.";
   // The user's per-vault custom tools — same set the text agent loads. List them
@@ -2082,6 +2094,8 @@ export function buildSystemPrompt(
     : "";
   return [
     header,
+    "",
+    VOICE_HONESTY_RULES,
     "",
     `Vault root (absolute): ${vault}`,
     voiceNowNote(),
@@ -2296,6 +2310,113 @@ function isTransientStatus(status: number): boolean {
 // tools), so switching vaults never re-creates an agent. No slot: the laptop's.
 const slotKey = (name: string, slot?: string) => (slot ? `${name}:${slot}` : name);
 
+/** Filler the agent says while a slow model is still thinking (soft timeout): short and neutral. */
+const SOFT_TIMEOUT_MESSAGE = "One sec.";
+/** Back-channel words that never interrupt the agent ("yeah" while it talks is listening, not a new turn). */
+export const INTERRUPTION_IGNORE_TERMS = ["yeah", "yep", "mm", "mhm", "mm-hm", "uh-huh", "ok", "okay", "right", "sure"];
+/** When the chosen model is down: Claude Haiku, then a small GPT (ElevenLabs' default chain starts with Gemini). */
+export const BACKUP_LLMS = ["claude-haiku-4-5", "gpt-4.1-mini"];
+
+/** The agent ElevenLabs creates for vault-chat (POST /v1/convai/agents/create).
+ *  `info` is the model's row in ElevenLabs' list (what it can take, its reasoning). */
+export function buildAgentCreateBody(o: {
+  llm: string;
+  info: VoiceLlmInfo | null;
+  customTools: { name: string; description: string; parameters: unknown }[];
+  voiceId: string;
+}): Record<string, unknown> {
+  const readsDocs = o.info?.documents === true;
+  const effort = reasoningEffortFor(o.info);
+  return {
+    name: AGENT_NAME,
+    conversation_config: {
+      agent: {
+        first_message: "",
+        language: "en",
+        prompt: {
+          prompt: "(per-session override)",
+          llm: o.llm,
+          // Even and factual, not performative (Carl: the voice was sycophantic).
+          temperature: 0.4,
+          // A spoken reply wants no thinking: "none" when the model offers it, else its lowest.
+          ...(effort ? { reasoning_effort: effort } : {}),
+          backup_llm_config: { preference: "override", order: BACKUP_LLMS },
+          tools: [
+            ...CLIENT_TOOL_DEFINITIONS
+              // A model that reads the PDF itself (an uploaded document) doesn't need PdfExtract —
+              // the tool is dead weight that occasionally distracts it.
+              .filter((t) => !(readsDocs && t.name === "PdfExtract"))
+              // A custom vault tool with the same name as a built-in wins
+              // (matches the text agent's { ...builtin, ...custom } merge).
+              .filter((t) => !o.customTools.some((c) => c.name === t.name))
+              .map((t) => ({
+                type: "client" as const,
+                name: t.name,
+                description: t.description,
+                parameters: t.parameters,
+                // CRITICAL: defaults to false — without it the agent never sees the tool's result.
+                expects_response: true,
+                response_timeout_secs: 30,
+              })),
+            // The vault's own tools — the same ones the text agent loads.
+            ...o.customTools.map((t) => ({
+              type: "client" as const,
+              name: t.name,
+              description: t.description,
+              parameters: t.parameters,
+              expects_response: true,
+              response_timeout_secs: 30,
+            })),
+            // NB: end_call is intentionally omitted (it hung up on long study
+            // silences). skip_turn is the lever for the 30 s re-engage: the agent
+            // has a concrete "nothing to add" action instead of filler.
+            { type: "system" as const, name: "skip_turn" },
+          ],
+        },
+      },
+      // A natural, low-latency voice, NOT the expressive mode: expressive_mode
+      // (on by default) makes the model write "[excited]"-style audio tags and
+      // perform emotions. src/voiceTags.ts still strips any from the transcript.
+      tts: {
+        model_id: "eleven_flash_v2_5",
+        expressive_mode: false,
+        voice_id: o.voiceId,
+      },
+      // Two hours (the 10-minute default hung up mid-explanation); never hang up on silence.
+      conversation: {
+        max_duration_seconds: 7200,
+        silence_end_call_timeout: -1,
+        // Uploads (PDFs, images) reach the model only with file input on.
+        file_input: { enabled: true, max_files_per_conversation: 10 },
+      },
+      turn: {
+        // Silence before ElevenLabs re-engages the agent (max 30 s; skip_turn answers it).
+        turn_timeout: 30,
+        turn_model: "turn_v3",
+        // Wait for the user to finish (study talk has pauses); back-channel words don't interrupt.
+        turn_eagerness: "patient",
+        interruption_ignore_terms: INTERRUPTION_IGNORE_TERMS,
+        merge_with_default_ignore_terms: true,
+        // Start the reply while the end of the turn is being confirmed (lower latency).
+        speculative_turn: true,
+        soft_timeout_config: { timeout_seconds: 3, message: SOFT_TIMEOUT_MESSAGE },
+      },
+      // Another voice in the room (a video, someone nearby) is not the user barging in.
+      vad: { background_voice_detection: true },
+      asr: { provider: "scribe_realtime" },
+    },
+    // Per-session overrides must be enabled here or they are silently ignored.
+    platform_settings: {
+      overrides: {
+        conversation_config_override: {
+          agent: { prompt: { prompt: true }, first_message: true, language: true },
+          tts: { voice_id: true },
+        },
+      },
+    },
+  };
+}
+
 async function ensureAgent(apiKey: string, opts?: { vault?: string; slot?: string }): Promise<string | null> {
   const AGENT_ID_STORAGE = slotKey(AGENT_ID_KEY, opts?.slot);
   const AGENT_LLM_AT_PROVISION = slotKey(AGENT_LLM_KEY, opts?.slot);
@@ -2328,6 +2449,8 @@ async function ensureAgent(apiKey: string, opts?: { vault?: string; slot?: strin
   if (stale) {
     localStorage.removeItem(AGENT_ID_STORAGE);
   }
+  // What ElevenLabs says this model takes (images, documents) and how it reasons.
+  const llmList = await voiceLlmList(apiKey);
   try {
     const res = await fetch("https://api.elevenlabs.io/v1/convai/agents/create", {
       method: "POST",
@@ -2335,143 +2458,7 @@ async function ensureAgent(apiKey: string, opts?: { vault?: string; slot?: strin
         "xi-api-key": apiKey,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        name: AGENT_NAME,
-        conversation_config: {
-          agent: {
-            first_message: "",
-            language: "en",
-            prompt: {
-              prompt: "(per-session override)",
-              llm: wantedLlm,
-              tools: [
-                ...CLIENT_TOOL_DEFINITIONS
-                  // Strip PdfExtract for Gemini — it reads PDFs from
-                  // the multimodal blob directly, the tool is dead
-                  // weight that occasionally distracts it.
-                  .filter(
-                    (t) =>
-                      !(isGeminiLlm(wantedLlm) && t.name === "PdfExtract"),
-                  )
-                  // A custom vault tool with the same name as a built-in wins
-                  // (matches the text agent's { ...builtin, ...custom } merge).
-                  .filter((t) => !customTools.some((c) => c.name === t.name))
-                  .map((t) => ({
-                  type: "client" as const,
-                  name: t.name,
-                  description: t.description,
-                  parameters: t.parameters,
-                  // CRITICAL: defaults to false. When false, the SDK
-                  // calls our handler but doesn't pass the return
-                  // value back to the agent — every tool call
-                  // appears empty to the model. With this true the
-                  // agent actually receives and reasons over the
-                  // result string.
-                  expects_response: true,
-                  response_timeout_secs: 30,
-                })),
-                // Custom per-vault tools — the SAME ones the text agent loads
-                // (loadVaultTools), so a tool you add to the vault works whether
-                // you type or talk. Same client-tool contract: the box runs the
-                // handler (buildClientToolHandlers) and hands the result back.
-                ...customTools.map((t) => ({
-                  type: "client" as const,
-                  name: t.name,
-                  description: t.description,
-                  parameters: t.parameters,
-                  expects_response: true,
-                  response_timeout_secs: 30,
-                })),
-                // NB: end_call is intentionally omitted. The agent
-                // kept calling it after a few "you still there?"
-                // check-ins on long study silences. Manual mic-off
-                // + the client-side looksLikeEnd whitelist handle
-                // every real "we're done" path.
-                //
-                // skip_turn: the actual lever for the check-in
-                // problem. turn_timeout (max 30s) is platform-
-                // enforced, so the agent gets prompted to take a
-                // turn every 30s of user silence; the prompt rule
-                // "don't produce a check-in" wasn't strong enough.
-                // With skip_turn the agent has a concrete action to
-                // take ("I have nothing to add → call skip_turn")
-                // that produces actual silence instead of filler.
-                { type: "system" as const, name: "skip_turn" },
-              ],
-            },
-          },
-          tts: {
-            voice_id:
-              localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID,
-          },
-          // ElevenLabs caps conversations at 10 minutes by default,
-          // which is way too short for a study session — the platform
-          // just hangs up with "Voice session ended." mid-explanation.
-          // Bump to 2 hours.
-          //
-          // silence_end_call_timeout: -1 explicitly disables the
-          // "user went quiet, hang up" behavior. The platform default
-          // is supposedly -1 but at least some accounts seem to get
-          // ~30s applied implicitly — setting it ourselves removes the
-          // ambiguity. Study sessions involve long thinking pauses.
-          conversation: {
-            max_duration_seconds: 7200,
-            silence_end_call_timeout: -1,
-          },
-          // turn_timeout is the duration ElevenLabs waits on user
-          // silence before "re-engaging" the agent (prompting it for
-          // another turn — which the LLM tends to fill with "you
-          // still there?" check-ins, then escalates). Platform range
-          // is 1-30s; not disable-able. Max it out so study pauses
-          // breathe; the prompt also tells the agent to stay silent
-          // when it IS re-engaged.
-          turn: {
-            turn_timeout: 30,
-            // Turn v3 — ElevenLabs' default turn-detection model since the June
-            // 2026 Original-ASR retirement. Better turn accuracy + lower turn
-            // latency than v2, which is exactly the axis voice has fought on (the
-            // "you still there?" check-ins, skip_turn). Pinned so it's legible
-            // what we're on, not left to a shifting platform default.
-            turn_model: "turn_v3",
-          },
-          // Scribe v2.2 Realtime. ElevenLabs retired the "Original ASR" (provider
-          // "elevenlabs", now deprecated) and made scribe_realtime the default —
-          // more accurate across every language they tested, which should also
-          // curb the STT "hears words I didn't say" hallucinations (note
-          // dd77dc56). Pinned explicitly + AGENT_CONFIG_VERSION bumped so the
-          // cached agent re-provisions onto it now rather than waiting on the
-          // server-side migration window. Revisit when a newer Scribe ships.
-          asr: {
-            provider: "scribe_realtime",
-          },
-          // Required for sendMultimodalMessage / file uploads to reach
-          // the agent's LLM. Without `enabled: true` ElevenLabs accepts
-          // the upload but doesn't forward the image content to the
-          // model — multimodal messages would silently degrade to text.
-          // Cap matches a normal study-session worth of slide flips;
-          // we cache by (path, page) so practical churn is much lower.
-          file_input: {
-            enabled: true,
-            max_files_per_conversation: 200,
-          },
-        },
-        // Per-session overrides must be explicitly enabled in the
-        // agent's platform_settings or the orchestrator silently
-        // ignores them at session start. Whitelist the ones we
-        // actually use: prompt + first_message + language + voice_id.
-        platform_settings: {
-          overrides: {
-            conversation_config_override: {
-              agent: {
-                prompt: { prompt: true },
-                first_message: true,
-                language: true,
-              },
-              tts: { voice_id: true },
-            },
-          },
-        },
-      }),
+      body: JSON.stringify(buildAgentCreateBody({ llm: wantedLlm, info: llmInfo(llmList, wantedLlm), customTools, voiceId: localStorage.getItem(VOICE_ID_STORAGE) ?? DEFAULT_VOICE_ID })),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");

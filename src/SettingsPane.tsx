@@ -3,7 +3,7 @@ import { ArrowLeft, Check, X, Plus, ChevronDown } from "lucide-react";
 import { useStore } from "./store";
 import { PROVIDER_LABEL, AUTO_MODEL_ID, type ModelSpec, type ProviderId } from "./providers";
 import { Button, Input, MenuSelect } from "./ui";
-import { SUPPORTED_VOICE_LLMS, DEFAULT_LLM } from "./voice-elevenlabs";
+import { VOICE_LLMS, normalizeVoiceLlm } from "./voiceLlms";
 import { listUserKeys, setUserKey, deleteUserKey } from "./keychain";
 import {
   readBoxConfig,
@@ -77,15 +77,7 @@ export function SettingsPane() {
 
 // ---- Models ------------------------------------------------------------------
 
-const VOICE_OPTIONS: PickOption[] = [
-  { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
-  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-  { value: "claude-sonnet-4-5@20250929", label: "Claude Sonnet 4.5" },
-  { value: "claude-sonnet-4@20250514", label: "Claude Sonnet 4" },
-  { value: "claude-3-7-sonnet", label: "Claude 3.7 Sonnet" },
-  { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
-];
+const VOICE_OPTIONS: PickOption[] = VOICE_LLMS.map((m) => ({ value: m.id, label: m.label }));
 
 type PickOption = { value: string; label: string; hint?: string };
 
@@ -239,10 +231,8 @@ function ModelsSection() {
   const setAutoRouterCostBias = useStore((s) => s.setAutoRouterCostBias);
 
   const [voiceLlm, setVoiceLlm] = useState(() => {
-    // A stored model ElevenLabs no longer runs falls back to the default, so
-    // the picker never renders blank.
-    const stored = localStorage.getItem("vault_chat_elevenlabs_llm");
-    return stored && SUPPORTED_VOICE_LLMS.has(stored) ? stored : DEFAULT_LLM;
+    // An old id shows as its nearest current one; nothing chosen is the default.
+    return normalizeVoiceLlm(localStorage.getItem("vault_chat_elevenlabs_llm"));
   });
   const saveVoiceLlm = (v: string) => {
     localStorage.setItem("vault_chat_elevenlabs_llm", v);
@@ -261,7 +251,8 @@ function ModelsSection() {
     `${modelId}|${!!orKey}`,
   );
   const bgCheck = useCheck(() => checkModel("background", backgroundModelId, orKey), `${backgroundModelId}|${!!orKey}`);
-  const voiceCheck = useCheck(() => checkVoiceModel(voiceLlm), voiceLlm);
+  const elKey = useStore((s) => s.serviceKeys.elevenlabs);
+  const voiceCheck = useCheck(() => checkVoiceModel(voiceLlm, elKey), `${voiceLlm}|${!!elKey}`);
 
   const rows: Array<{ role: RoleId; picker: ReactNode; check: ModelCheck | null }> = [
     {

@@ -201,10 +201,15 @@ export async function checkModel(role: "chat" | "background", id: string, key?: 
   return v.state === "unknown" && why ? { state: "unknown", why } : v;
 }
 
-/** The voice agent runs on ElevenLabs, not OpenRouter, so its check is what
- *  vault-chat's voice code can hand that model: only Gemini gets the open PDF
- *  itself (every page, diagrams included); the others get only its text,
- *  through a tool. All of them take the images the user marks on screen. */
-export function checkVoiceModel(llm: string): Check {
-  return verdict({ images: true, pdf: llm.toLowerCase().startsWith("gemini") }, ROLE_NEEDS.voice);
+/** The voice agent runs on ElevenLabs, not OpenRouter: its check is ElevenLabs'
+ *  own model list (GET /v1/convai/llm/list — supports_image_input,
+ *  supports_document_input), never a guess from the name. A model that can't take
+ *  a PDF says so here (it reads PDFs as text, through PdfExtract). */
+export async function checkVoiceModel(llm: string, elevenKey?: string | null): Promise<Check> {
+  const { voiceLlmList, llmInfo } = await import("./voiceLlms");
+  const list = await voiceLlmList(elevenKey);
+  if (!list) return { state: "unknown", why: elevenKey ? "ElevenLabs' model list didn't load" : "add an ElevenLabs key to check it" };
+  const info = llmInfo(list, llm);
+  if (!info) return { state: "unknown", why: "not in ElevenLabs' model list" };
+  return verdict({ images: info.images ?? undefined, pdf: info.documents ?? undefined }, ROLE_NEEDS.voice);
 }
