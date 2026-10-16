@@ -1,4 +1,5 @@
 mod voice_server;
+mod boot_watch;
 mod agent_projects;
 mod box_sync;
 mod history;
@@ -7027,8 +7028,15 @@ fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+/// Startup timing for the app log: process uptime + main-thread stalls (boot_watch.rs).
+#[tauri::command]
+async fn boot_timing() -> boot_watch::BootTiming {
+    boot_watch::timing()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    boot_watch::mark_process_start();
     // WebKitGTK's sandboxed WebProcess can't resolve GStreamer plugins on this
     // stack unless the system plugin dir is on GST_PLUGIN_SYSTEM_PATH. Without
     // it, mic capture sees "0 devices" (the WebProcess even caches an empty
@@ -7094,6 +7102,14 @@ pub fn run() {
         })
         .setup(|app| {
             use tauri::Manager;
+
+            // Time every main-thread stall in the first minutes (app-log.txt's
+            // boot summary) — a blocked main thread is what Windows calls
+            // "Not responding".
+            {
+                let h = app.handle().clone();
+                boot_watch::watch_main_thread(move |f| h.run_on_main_thread(f).is_ok());
+            }
 
             // System tray: the daemon's handle when its window is hidden.
             // Left-click reopens the window; the menu offers Show / Quit
@@ -7322,6 +7338,7 @@ pub fn run() {
             voice_server_url,
             voice_tool_respond,
             set_run_in_background,
+            boot_timing,
             app_ready
         ])
         .run(tauri::generate_context!())

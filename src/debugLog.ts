@@ -157,14 +157,36 @@ export async function flushDebugLogToDisk(vaultPath: string | null): Promise<voi
     .join("\n");
   try {
     await invoke("append_debug_log", { vaultPath, text: header + lines + "\n" });
-    // Only clear after a successful write so we never lose the trail.
-    buf = [];
-    try {
-      localStorage.removeItem(LS_KEY);
-    } catch {
-      /* ignore */
-    }
+    // Only clear after a successful write so we never lose the trail — and
+    // clear only what was written: entries logged while the write was in
+    // flight (everything right after "boot" used to vanish here) stay for the
+    // next flush.
+    dropFlushed(saved);
   } catch {
     // Couldn't write — keep the buffer for the next attempt.
+  }
+}
+
+// Remove the flushed entries from the buffer and its localStorage mirror,
+// keeping anything logged after `saved` was read.
+function dropFlushed(saved: Entry[]): void {
+  // Since `saved` was read the buffer has only grown at the end (or been
+  // trimmed at the front), so the last flushed entry sits at or before index
+  // saved.length - 1. Not found: it was trimmed away (or another flush already
+  // dropped it), so everything left is newer.
+  const last = saved[saved.length - 1];
+  let j = -1;
+  for (let p = Math.min(saved.length, buf.length) - 1; p >= 0; p--) {
+    if (buf[p].t === last.t && buf[p].tag === last.tag) {
+      j = p;
+      break;
+    }
+  }
+  buf = j === -1 ? buf : buf.slice(j + 1);
+  try {
+    if (buf.length) localStorage.setItem(LS_KEY, JSON.stringify(buf));
+    else localStorage.removeItem(LS_KEY);
+  } catch {
+    /* ignore */
   }
 }

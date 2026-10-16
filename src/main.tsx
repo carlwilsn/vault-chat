@@ -24,6 +24,7 @@ import {
   useStore,
 } from "./store";
 import { installDebugLog, flushDebugLogToDisk, vlog } from "./debugLog";
+import { bootMark, installBootTiming } from "./bootTiming";
 import { installAutosaveNet } from "./autosave";
 import { startPhoneVoiceHost } from "./phoneVoice";
 import { startPhoneAppHost } from "./phoneApp";
@@ -33,6 +34,8 @@ import { initBackgroundMode } from "./background";
 // crash during boot still leaves a trail.
 installDebugLog();
 vlog("boot", { view: new URLSearchParams(window.location.search).get("view") });
+installBootTiming();
+bootMark("boot");
 // Flush whatever the previous (possibly frozen) session left behind to
 // the current vault's .vault-chat/app-log.txt, and re-flush whenever the
 // active vault changes so the trail lands in the right vault folder.
@@ -115,6 +118,7 @@ function reveal(via: string) {
   if (revealed) return;
   revealed = true;
   vlog("reveal", { via });
+  bootMark("first paint", { via });
   invoke("app_ready").catch((e) => console.warn("[boot] app_ready:", e));
   setTimeout(() => {
     const splash = document.getElementById("vault-splash");

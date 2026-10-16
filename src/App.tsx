@@ -30,6 +30,7 @@ import {
 } from "./vaultSync";
 import { startSchedulerLoop, stopSchedulerLoop } from "./schedulerLoop";
 import { startActivityWatch } from "./activity";
+import { bootMark } from "./bootTiming";
 import "./App.css";
 
 export default function App() {
@@ -71,6 +72,7 @@ export default function App() {
       try {
         const listed = await invoke<FileEntry[]>("list_markdown_files", { vault: saved });
         if (!cancelled) setFiles(listed);
+        bootMark("tree", { files: listed.length });
         gitInitIfNeeded(saved).catch(() => {});
       } catch {
         if (!cancelled) {
@@ -281,7 +283,9 @@ export default function App() {
   // per-vault, then store mirrors keep it in sync to disk.
   useEffect(() => {
     if (vaultPath && !conversationsLoaded) {
-      loadConversations();
+      void loadConversations().finally(() =>
+        bootMark("chats", { chats: useStore.getState().conversations.length }),
+      );
     }
   }, [vaultPath, conversationsLoaded, loadConversations]);
 

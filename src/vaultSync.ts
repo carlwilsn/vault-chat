@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore, type FileEntry } from "./store";
 import { prepareVaultProjects } from "./projects";
 import { refreshOpenFiles } from "./liveReload";
+import { bootMark } from "./bootTiming";
 
 // After a pull pulls in commits from another machine, the file tree
 // should reflect new/renamed/deleted files without a manual refresh. We
@@ -360,7 +361,7 @@ function startAutosaveLoop(vault: string): void {
   const commitInterval = window.setInterval(() => {
     void commitPass();
   }, AUTOSAVE_INTERVAL_MS);
-  void commitPass(); // initial pass on open
+  void commitPass().finally(() => markSyncIdle(vault, "autosave")); // initial pass on open
   loops.set(vault, {
     vault,
     cancel: () => {
@@ -875,5 +876,12 @@ function startBoxSyncLoop(vault: string, cfg: BoxConfig): void {
       boxKick.delete(vault);
     },
   });
-  void cycle();
+  void cycle().finally(() =>
+    markSyncIdle(vault, "box", { ok: boxStates.get(vault)?.report?.ok ?? null }),
+  );
+}
+
+// The boot log's "sync idle": the open vault's first sync / autosave pass is done.
+function markSyncIdle(vault: string, kind: string, data?: Record<string, unknown>): void {
+  if (useStore.getState().vaultPath === vault) bootMark("sync idle", { kind, ...(data ?? {}) });
 }
