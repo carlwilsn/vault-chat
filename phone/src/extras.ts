@@ -80,6 +80,8 @@ export type PhoneTodo = { content: string; status: string; activeForm?: string }
 export function todosHtml(todos: PhoneTodo[]): string {
   if (!todos?.length) return "";
   const done = todos.filter((t) => t.status === "completed").length;
+  // Every step done: one quiet line, like the verdict's.
+  if (done === todos.length) return '<div class="pverdict" data-el="todos-done"><span class="od done"></span><span>Plan · ' + done + "/" + todos.length + " done</span></div>";
   const rows = todos
     .map((t) => '<div class="td ' + esc(t.status) + '"><span class="tdd"></span><span>' + esc(t.status === "in_progress" && t.activeForm ? t.activeForm : t.content) + "</span></div>")
     .join("");

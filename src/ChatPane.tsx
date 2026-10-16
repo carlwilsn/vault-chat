@@ -1,6 +1,7 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import { Markdown, StreamingMarkdown } from "./Markdown";
 import { localPathFromUrl } from "./mdPipeline";
+import { planDone, planIndex } from "./planPlace";
 import { Plus, Square, ArrowUp, ChevronDown, ChevronUp, Wrench, X, MessageSquare, Mic, Paperclip, Scan, AtSign } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { usePending, type PendingKind } from "./pendingInput";
@@ -564,6 +565,8 @@ export function ChatPane() {
   }
 
   const todos: TodoItem[] = activeConv?.todos?.length ? activeConv.todos : agentTodos;
+  const planInline = todos.length > 0 && uiChoice("todos") === "inline";
+  const planAt = planInline ? planIndex(messages, busy) : -1;
   const verdict = activeConv?.state === "done" ? activeConv.verdict : undefined;
   const totalCost = uiChoice("cost") === "total" ? formatCost(activeConv?.costUsd ?? messages.reduce((n, m) => n + (m.costUsd ?? m.usage?.costUsd ?? 0), 0)) : undefined;
   let lastVisible = -1;
@@ -950,15 +953,18 @@ export function ChatPane() {
 
         {messages.map((m, i) =>
           m.hidden ? null : (
-            <MessageBubble
-              key={i}
-              message={m}
-              askLive={!!m.askOptions?.length && i === lastVisible && !busy}
-              askChosen={m.askOptions?.length ? chosenAnswer(messages, i) : undefined}
-              onAsk={answerAsk}
-              spawns={subagentsInline ? spawnsAt[i] : undefined}
-              onSubagent={controlSubagent}
-            />
+            <Fragment key={i}>
+              <MessageBubble
+                message={m}
+                askLive={!!m.askOptions?.length && i === lastVisible && !busy}
+                askChosen={m.askOptions?.length ? chosenAnswer(messages, i) : undefined}
+                onAsk={answerAsk}
+                spawns={subagentsInline ? spawnsAt[i] : undefined}
+                onSubagent={controlSubagent}
+              />
+              {/* The plan sits with the turn that last wrote it (planPlace.ts). */}
+              {planInline && i === planAt && <AgentTodoList todos={todos} />}
+            </Fragment>
           ),
         )}
 
@@ -970,7 +976,7 @@ export function ChatPane() {
           </div>
         )}
 
-        {todos.length > 0 && uiChoice("todos") === "inline" && <AgentTodoList todos={todos} />}
+        {planInline && planAt < 0 && <AgentTodoList todos={todos} />}
 
         {verdict && uiChoice("verdict") === "thread" && <VerdictLine verdict={verdict} />}
 
@@ -1503,6 +1509,21 @@ function CompactionDivider({ message }: { message: ChatMessage }) {
 // The agent maintains this list via the TodoWrite tool.
 function AgentTodoList({ todos }: { todos: TodoItem[] }) {
   const done = todos.filter((t) => t.status === "completed").length;
+  const [open, setOpen] = useState(false);
+  // Every step done: one quiet line (click for the steps).
+  if (planDone(todos) && !open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        data-el="todos-done"
+        className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+        title="Show the plan's steps"
+      >
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-600/70" />
+        Plan · {done}/{todos.length} done
+      </button>
+    );
+  }
   return (
     <div className="rounded-md border border-border/60 bg-muted/30 p-2.5 space-y-1" data-el="todos">
       <div className="flex items-center justify-between text-[10.5px] text-muted-foreground">

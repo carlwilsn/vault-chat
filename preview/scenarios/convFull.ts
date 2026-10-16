@@ -376,7 +376,7 @@ function beatsA(o: Opts): Beat[][] {
       {
         title: "Then it plans",
         text: td ? "A to-do list pinned above the composer: 4 steps, the first in progress. It updates as the work moves." : "A to-do list in the thread: 4 steps, the first in progress. It updates as the work moves.",
-        spot: td ? "[data-el='todos-pinned']" : "[data-el='todos']",
+        spot: td ? "[data-el='todos-pinned']" : "[data-el='todos'], [data-el='todos-done']",
         steps: [],
       },
       {
@@ -575,7 +575,7 @@ function beatsC(o: Opts): Beat<PhoneStep>[] {
     {
       title: "It thinks, then plans",
       text: td ? "The agent reasons first, then a to-do list appears, pinned above the composer: 4 steps, the first in progress." : "The agent reasons first, then a to-do list appears in the thread: 4 steps, the first in progress.",
-      spot: "[data-el='todos']",
+      spot: "[data-el='todos'], [data-el='todos-done']",
       steps: [{ next: 1 }],
     },
     { title: "Two helper agents start in parallel", text: sa ? "Two helpers from one call — a compact strip above the composer, one chip each." : "Two helpers from one call — one card in the thread, a row each with its state.", spot: "[data-el='subagents']", steps: [{ next: 1 }] },
