@@ -580,7 +580,7 @@ function VoiceSection() {
       const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
         method: "POST",
         headers: { "xi-api-key": key, "content-type": "application/json", accept: "audio/mpeg" },
-        body: JSON.stringify({ text: TEST_LINE, model_id: "eleven_flash_v2_5" }),
+        body: JSON.stringify({ text: TEST_LINE, model_id: "eleven_flash_v2" }),
       });
       if (!res.ok) throw new Error(`ElevenLabs ${res.status}`);
       const url = URL.createObjectURL(await res.blob());

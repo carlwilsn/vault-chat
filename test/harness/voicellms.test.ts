@@ -77,7 +77,7 @@ test("the agent ElevenLabs creates: natural TTS (no expressive mode), patient tu
   const list = L.parseLlmList(LIST);
   const body: any = voice.buildAgentCreateBody({ llm: "gpt-6-luna", info: L.llmInfo(list, "gpt-6-luna"), customTools: [], voiceId: "v1" });
   const cc = body.conversation_config;
-  assert.deepEqual(cc.tts, { model_id: "eleven_flash_v2_5", expressive_mode: false, voice_id: "v1" });
+  assert.deepEqual(cc.tts, { model_id: "eleven_flash_v2", expressive_mode: false, voice_id: "v1" });
   assert.ok(!/eleven_v3/.test(JSON.stringify(body)));
   assert.equal(cc.turn.turn_eagerness, "patient");
   assert.equal(cc.turn.turn_model, "turn_v3");

@@ -118,7 +118,7 @@ const AGENT_ID_KEY = "vault_chat_elevenlabs_agent_id";
 // the agent itself — tool schema, expects_response flags, override
 // permissions. Mismatch with the cached agent triggers re-provision
 // on next session, so updates roll out without manual intervention.
-const AGENT_CONFIG_VERSION = "v24-honest";
+const AGENT_CONFIG_VERSION = "v25-flash2";
 const AGENT_VERSION_KEY = "vault_chat_elevenlabs_agent_config_version";
 // Signature of the per-vault custom tools baked into the cached agent. Custom
 // tools are part of the agent's tool schema (provisioned at create time), so a
@@ -1725,6 +1725,31 @@ export async function sendVoiceUserMultimodal(
   return true;
 }
 
+/**
+ * One frame of the voice waves' raw levels (0..1 per bar). Two sources, picked
+ * per frame:
+ *   • speaking → TTS output spectrum, or the chunk-derived playback envelope
+ *     when the analyser reads dead (suspended AudioContext / buffer-up — the
+ *     documented unreliable cases)
+ *   • otherwise → live mic input (idle / listening / silent gaps)
+ * While voiceSpeaking is on, the mic is NEVER the source: bars tracking the
+ * user's ambient noise during the agent's turn is exactly the "wave out of sync
+ * with the voice" desync (note 852e435b). No synthesized motion: a fake
+ * "thinking" wave reads as ongoing audio after the user barges in. The chat
+ * popout gets these from the main window (sync.ts), where voice runs.
+ */
+export function voiceBarLevels(n: number): number[] {
+  const s = useStore.getState();
+  const out = s.voiceSpeaking ? getOutputLevels(n) : null;
+  // Polled every speaking frame regardless of which source wins — polling
+  // advances the envelope's playback cursor, so it stays in sync for the
+  // frames where the analyser flakes out.
+  const env = s.voiceSpeaking ? getAgentEnvelopeLevels(n) : null;
+  const outActive = out !== null && out.reduce((a, b) => a + b, 0) > 0.05;
+  // A muted mic is honestly silent, whatever the analyser still reads.
+  return outActive && out ? out : env !== null ? env : s.voiceMicMuted ? new Array(n).fill(0) : getInputLevels(n);
+}
+
 export function getInputLevels(n: number): number[] {
   if (!activeConversation) return new Array(n).fill(0);
   try {
@@ -2378,7 +2403,8 @@ export function buildAgentCreateBody(o: {
       // (on by default) makes the model write "[excited]"-style audio tags and
       // perform emotions. src/voiceTags.ts still strips any from the transcript.
       tts: {
-        model_id: "eleven_flash_v2_5",
+        // English agents must use flash or turbo v2 (ElevenLabs refuses v2_5 with a 400).
+        model_id: "eleven_flash_v2",
         expressive_mode: false,
         voice_id: o.voiceId,
       },
